@@ -243,23 +243,32 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
     buddy_id, key, _ = await _setup(harness)
 
     apps = (await _context(client, buddy_id, key))["messaging_apps"]
+    async with harness.session_factory() as session:
+        bridge_ids = {
+            bridge.type: bridge.id
+            for bridge in await session.scalars(select(CollaborationBridge))
+        }
 
     assert sorted(apps["connected"], key=lambda app: app["platform"]) == [
         {
+            "id": bridge_ids["discord"],
             "platform": "discord",
             "name": "Acme Discord",
             "status": "active",
             "is_default": False,
             "installed_with": "own_app",
             "your_account_linked": False,
+            "your_usernames": [],
         },
         {
+            "id": bridge_ids["slack"],
             "platform": "slack",
             "name": "Acme Slack",
             "status": "active",
             "is_default": True,
             "installed_with": "official_app",
             "your_account_linked": True,
+            "your_usernames": ["ada"],
         },
     ]
     assert [
@@ -371,6 +380,14 @@ class TestGivingAgentsServices:
         )
         assert github["connection"] == "active"
         assert github["agents_using"] == ["reviewer"]
+        assert (github["unavailable_reason"], github["unavailable_code"]) == (
+            None,
+            None,
+        )
+        datadog = next(
+            entry for entry in context["services"] if entry["slug"] == "datadog"
+        )
+        assert datadog["unavailable_code"] == "not_set_up"
 
         taken = await _op(
             client,
@@ -428,6 +445,27 @@ class TestGivingAgentsServices:
         assert refused.status_code >= 400
         assert "no agent named" in refused.text
         assert await _grants(harness, "bobs-agent") == []
+
+    async def test_an_agent_cannot_give_itself_a_service(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        harness.protocol.service_broker = harness.broker
+        buddy_id, key, ada_id = await _setup(harness)
+        async with harness.session_factory() as session:
+            await connect_github(session, ada_id, TEST_KEYRING)
+            await session.commit()
+
+        refused = await _op(
+            client,
+            buddy_id,
+            key,
+            "set_agent_service",
+            {"agent_name": "switch-buddy-ada", "service": "github"},
+        )
+
+        assert refused.status_code == 403, refused.text
+        assert "can't change its own settings" in refused.text
+        assert await _grants(harness, "switch-buddy-ada") == []
 
     async def test_says_what_is_missing_before_a_service_is_connected(
         self, harness: Harness, client: httpx.AsyncClient

@@ -33,10 +33,13 @@ DELIVERY_TIMEOUT = 10.0
 
 
 class _Consumer:
-    def __init__(self) -> None:
-        self.display_name = "agent"
+    def __init__(self, display_name: str = "agent") -> None:
+        self.display_name = display_name
         self.transport_user_id = "@agent:test"
         self.stopped = False
+
+    async def set_display_name(self, display_name: str) -> None:
+        self.display_name = display_name
 
     def preload_agent(self, agent: Agent) -> None:
         return None
@@ -52,7 +55,7 @@ class _Factory:
     """Each client reads for itself, in every process."""
 
     def create_actor(self, record: Any) -> _Consumer:
-        return _Consumer()
+        return _Consumer(record.display_name)
 
     def create_consumer(self, client_type: str, actor: _Consumer) -> _Consumer:
         return actor
@@ -142,6 +145,38 @@ class TestAcrossProcesses:
         await _eventually(lambda: there.get(agent.client_id) is not None)  # type: ignore[arg-type]
         # The announcing process re-reads too, and starts what it lacks.
         await _eventually(lambda: here.get(agent.client_id) is not None)  # type: ignore[arg-type]
+
+    async def test_an_agent_renamed_in_one_process_is_renamed_in_the_other(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        two_processes: tuple[ClientLifecycleService, ClientLifecycleService],
+    ) -> None:
+        """Bridges recognise an agent's own messages by the name its copy
+        sends under, and a bridge held there keeps per-agent identities, so
+        both have to follow a rename served here."""
+        here, there = two_processes
+        agent = await _register(session_factory)
+        client_id = agent.client_id
+        assert client_id is not None
+        here.announce(TENANT_ZERO_ID)
+        await _eventually(lambda: there.get(client_id) is not None)
+        told: list[str] = []
+        there.add_agents_changed_listener(told.append)
+
+        # As `AgentCore.rename_agent` does: rename the client row, announce.
+        async with session_factory() as session:
+            client = await session.get(Client, client_id)
+            assert client is not None
+            client.display_name = "renamed-agent"
+            await session.commit()
+        here.announce(TENANT_ZERO_ID)
+
+        await _eventually(
+            lambda: (
+                getattr(there.get(client_id), "display_name", None) == "renamed-agent"
+            )
+        )
+        await _eventually(lambda: TENANT_ZERO_ID in told)
 
     async def test_a_client_deleted_in_one_process_stops_in_the_other(
         self,

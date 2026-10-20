@@ -114,7 +114,7 @@ async def list_service_connections(
     for entry in CATALOG.values():
         definition = entry.definition
         connection = connections.get(definition.slug)
-        unavailable = broker.availability(definition.slug)
+        unavailable = broker.unavailable(definition.slug)
         entries.append(
             {
                 "slug": definition.slug,
@@ -125,7 +125,12 @@ async def list_service_connections(
                 "auth_type": definition.auth.type,
                 "connectable": broker.connectable(definition.slug),
                 "configured": unavailable is None,
-                "unavailable_reason": unavailable,
+                "unavailable_reason": None
+                if unavailable is None
+                else unavailable.reason,
+                # Why, for a client to say what each person can do about it:
+                # `UnavailableCode` in `connections/broker.py`.
+                "unavailable_code": None if unavailable is None else unavailable.code,
                 # Whether it waits on the server's operator setting up its app
                 # under Connectors, so a client can offer them that.
                 "server_setup_needed": broker.server_setup_needed(definition.slug),

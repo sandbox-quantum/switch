@@ -11,7 +11,10 @@ export type CommandContext = {
    * provider how to run agent <name>, and the provider owns the answer (CHOO-1440).
    */
   agentArgs?: string[];
+  /** Skip every permission check. Wins over `autoMode` when both are set. */
   autoApprove: boolean;
+  /** The provider's own automatic review: safe actions run, risky ones still ask. */
+  autoMode: boolean;
   initialPrompt?: string;
   /** Switch Console session UUID — used as the session token for providers that track their
    * own session across the Switch Console lifetime (e.g. claude --session-id, opencode --session). */

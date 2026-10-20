@@ -18,6 +18,18 @@ export function applyContextAffinity(
   });
 }
 
+/** The indexed kinds a search covers, for the hint under a too-short query. */
+export function indexedSearchLabel(includeSessions: boolean): string {
+  return includeSessions ? 'agents, sessions and commands' : 'agents and commands';
+}
+
+/** The search box's placeholder, naming only what the palette will find. */
+export function paletteSearchPlaceholder(includeSessions: boolean): string {
+  return includeSessions
+    ? 'Search agents, sessions, rooms, servers, actions…'
+    : 'Search agents, rooms, servers, actions…';
+}
+
 /** Per-kind cap for renderer-matched results. Enough to be useful, few enough
  *  that one kind cannot crowd out the rest of the palette. */
 const RENDERER_RESULT_LIMIT = 8;

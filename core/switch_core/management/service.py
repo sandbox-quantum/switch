@@ -1295,7 +1295,6 @@ class ManagementService:
                 models=spec.models,
                 metadata=metadata,
                 owner_id=owner_id,
-                owner_only=True,
             )
         except AgentExistsError as exc:
             raise ManagementError(409, reason_codes.VALIDATION_ERROR, str(exc)) from exc
@@ -1405,8 +1404,10 @@ class ManagementService:
             previous = await self.controllers.get(
                 session, tenant_id, existing.controller_id
             )
-            # The old machine's workspace for the agent means nothing on the new one.
-            if directory == default_directory(previous, agent.name):
+            # The old machine's workspace for the agent means nothing on the
+            # new one. Matched on the workspaces folder rather than the exact
+            # path, because a rename pins the folder under the agent's old name.
+            if _inside_workspaces(previous, directory):
                 directory = None
         if directory is None:
             directory = default_directory(controller, agent.name)
@@ -1491,6 +1492,42 @@ class ManagementService:
         await session.commit()
         self.presence.unbind(agent_id, DETACH_UNASSIGNED)
         self._nudge(tenant_id, revisions)
+
+    async def agent_renamed(
+        self, session: AsyncSession, tenant_id: str, agent_id: str, old_name: str
+    ) -> None:
+        """Hand a renamed agent's new name to the machine that runs it.
+
+        The assignment carries the agent's name live, so all a rename needs is
+        a new revision for the controller to pull. A definition naming no
+        directory would have the controller derive the workspace from the name,
+        moving the agent to an empty folder, so the old one is pinned first.
+        """
+        row = await self.definitions.get_for_agent(session, tenant_id, agent_id)
+        if row is None:
+            return
+        definition = dict(row.definition)
+        if definition.get("directory") is None and row.controller_id is not None:
+            controller = await self.controllers.get(
+                session, tenant_id, row.controller_id
+            )
+            directory = default_directory(controller, old_name)
+            if directory is not None:
+                definition["directory"] = directory
+        await self.definitions.update(
+            session,
+            tenant_id,
+            agent_id,
+            controller_id=row.controller_id,
+            desired_state=row.desired_state,
+            definition=definition,
+        )
+        revisions = await self._bump_and_collect(
+            session, tenant_id, {row.controller_id}
+        )
+        await session.commit()
+        self._nudge(tenant_id, revisions)
+        logger.info("Told the controller of agent %s about its new name", agent_id)
 
     async def forget_deleted_agent(
         self, session: AsyncSession, tenant_id: str, agent_id: str
@@ -1654,6 +1691,20 @@ def default_directory(controller: AgentController | None, name: str) -> str | No
     if platform.get("os") == "windows":
         return ntpath.join(root, name)
     return posixpath.join(root, name)
+
+
+def _inside_workspaces(controller: AgentController | None, directory: str) -> bool:
+    """Whether `directory` is one of the workspaces `controller` makes for its
+    agents: a folder directly inside its workspaces folder."""
+    if controller is None:
+        return False
+    root = workspaces_dir_of(controller)
+    if root is None:
+        return False
+    platform = controller.platform or {}
+    if platform.get("os") == "windows":
+        return bool(ntpath.dirname(ntpath.normpath(directory)) == ntpath.normpath(root))
+    return posixpath.dirname(posixpath.normpath(directory)) == posixpath.normpath(root)
 
 
 def with_directory(

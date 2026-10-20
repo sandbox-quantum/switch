@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { runtimeModeFor } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 /**
@@ -33,7 +34,6 @@ vi.mock('@main/core/managed-switch-server/session-readiness', () => ({
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn(async () => null) }));
 vi.mock('@main/core/switch-rooms/auto-session-store', () => ({
-  listAutoSessionAgentIds: vi.fn(async () => []),
   listStoppedControllerAgentIds: vi.fn(async () => []),
 }));
 vi.mock('@main/core/ssh/connect/connect-agent-ssh', () => ({ ensureSshConnected: vi.fn() }));
@@ -58,7 +58,7 @@ vi.mock('./shared-agent-runtime', () => ({
       input: {
         sessionId: 'watcher',
         cwd: '/work',
-        runtimeMode: (await mocks.agent()).autoApprove ? 'full-access' : 'approval-required',
+        runtimeMode: runtimeModeFor(await mocks.agent()),
       },
     },
     execution: { credentialsPath: '/work/.switch/agents/scout.json' },
@@ -82,8 +82,9 @@ vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn() } }));
 const {
   configureAgentHost,
   configureAgentHostFor,
-  keepAutoApproveChoice,
-  recordAutoApproveOnHost,
+  keepRuntimeModeChoice,
+  permissionsForRuntimeMode,
+  recordRuntimeModeOnHost,
 } = await import('./agent-host');
 
 const run = promisify(execFile);
@@ -97,8 +98,8 @@ const ctx = {
   },
 };
 
-function agent(autoApprove: boolean) {
-  return { id: 'agent-1', name: 'scout', switchAgentId: 'switch-agent-1', autoApprove };
+function agent(autoApprove: boolean, autoMode = false) {
+  return { id: 'agent-1', name: 'scout', switchAgentId: 'switch-agent-1', autoApprove, autoMode };
 }
 
 function savedSpec(runtimeMode: string) {
@@ -152,6 +153,28 @@ it('takes auto-approve from the host when another Console changed it', async () 
   expect(mocks.updateAgent).toHaveBeenCalledWith({ agentId: 'agent-1', autoApprove: true });
 });
 
+it('takes auto mode from the host when another Console chose it', async () => {
+  mocks.agent.mockResolvedValue(agent(true));
+  mocks.bringUp.mockResolvedValue({ root, runtimeMode: 'auto', legacyStopped: [] });
+
+  await configureAgentHost('agent-1', { connected: true, spawning: true }, 'explicit');
+
+  expect(mocks.updateAgent).toHaveBeenCalledWith({
+    agentId: 'agent-1',
+    autoApprove: false,
+    autoMode: true,
+  });
+});
+
+it('turns both settings off when the host asks for approval', () => {
+  expect(permissionsForRuntimeMode('approval-required')).toEqual({
+    autoApprove: false,
+    autoMode: false,
+  });
+  // Bypass overrides auto mode, so full access leaves the row's auto mode as it is.
+  expect(permissionsForRuntimeMode('full-access')).toEqual({ autoApprove: true });
+});
+
 it('leaves the row alone when it already agrees with the host', async () => {
   mocks.agent.mockResolvedValue(agent(true));
 
@@ -203,7 +226,7 @@ it('keeps a changed setting on the host for a watcher that starts no sessions', 
   savedSpec('approval-required');
 
   // The value is the one just chosen, which the row does not hold yet.
-  await recordAutoApproveOnHost('agent-1', true);
+  await recordRuntimeModeOnHost('agent-1', 'full-access');
 
   expect(readSpec().start.input.runtimeMode).toBe('full-access');
   expect(readChoice().runtimeMode).toBe('full-access');
@@ -215,17 +238,27 @@ it('keeps auto-approve turned off on the host as asking for approval', async () 
   mocks.agent.mockResolvedValue(agent(true));
   savedSpec('full-access');
 
-  await recordAutoApproveOnHost('agent-1', false);
+  await recordRuntimeModeOnHost('agent-1', 'approval-required');
 
   expect(readSpec().start.input.runtimeMode).toBe('approval-required');
   expect(readChoice().runtimeMode).toBe('approval-required');
+});
+
+it('keeps auto mode on the host as the auto runtime mode', async () => {
+  mocks.agent.mockResolvedValue(agent(false));
+  savedSpec('approval-required');
+
+  await recordRuntimeModeOnHost('agent-1', 'auto');
+
+  expect(readSpec().start.input.runtimeMode).toBe('auto');
+  expect(readChoice().runtimeMode).toBe('auto');
 });
 
 it('keeps a choice on the host without touching a watcher about to be rewritten', async () => {
   mocks.agent.mockResolvedValue(agent(false));
   savedSpec('approval-required');
 
-  await keepAutoApproveChoice('agent-1', true);
+  await keepRuntimeModeChoice('agent-1', 'full-access');
 
   expect(readChoice().runtimeMode).toBe('full-access');
   expect(readSpec().start.input.runtimeMode).toBe('approval-required');
@@ -234,14 +267,14 @@ it('keeps a choice on the host without touching a watcher about to be rewritten'
 
 it('keeps nothing on a host for an agent that is not there, or never linked, or local', async () => {
   mocks.agent.mockResolvedValueOnce(undefined);
-  await expect(keepAutoApproveChoice('agent-1', true)).rejects.toThrow(/does not exist/);
+  await expect(keepRuntimeModeChoice('agent-1', 'full-access')).rejects.toThrow(/does not exist/);
 
   mocks.agent.mockResolvedValueOnce({ ...agent(true), switchAgentId: null });
-  await keepAutoApproveChoice('agent-1', true);
+  await keepRuntimeModeChoice('agent-1', 'full-access');
 
   mocks.agent.mockResolvedValueOnce(agent(true));
   mocks.location.mockResolvedValueOnce({ id: 'local', dir: '/work', sshHost: null });
-  await recordAutoApproveOnHost('agent-1', true);
+  await recordRuntimeModeOnHost('agent-1', 'full-access');
 
   expect(() => readChoice()).toThrow(/ENOENT/);
 });
@@ -250,7 +283,7 @@ it('has nothing to record for an agent that has never had a watcher', async () =
   mocks.agent.mockResolvedValue(agent(true));
   rmSync(root, { recursive: true, force: true });
 
-  await recordAutoApproveOnHost('agent-1', true);
+  await recordRuntimeModeOnHost('agent-1', 'full-access');
 
   expect(() => readSpec()).toThrow(/ENOENT/);
 });

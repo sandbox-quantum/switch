@@ -6,6 +6,7 @@ import {
   dashboardOrigin,
   type RemoteAgentRoom,
   type RemoteRoomSummary,
+  type RetireOutcome,
 } from '@shared/core/switch-servers/switch-servers';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { serverAvailability } from './server-availability';
@@ -86,6 +87,14 @@ export class SwitchRoomsStore {
    * set rather than only the keys that happen to be cached — an agent created
    * after the sidebar mounted is otherwise never fetched. */
   private trackedIdentities: { workspaceId: string; switchAgentId: string }[] = [];
+  /** Agents whose membership is on screen outside the sidebar's own list, such
+   * as a managed agent's page, with how many views show each. The tracked list
+   * holds only this install's local agents, so without these a page's rooms are
+   * read once and a room the agent joins later never appears. */
+  private readonly watchedIdentities = new Map<
+    string,
+    { workspaceId: string; switchAgentId: string; views: number }
+  >();
 
   constructor() {
     makeAutoObservable(this);
@@ -235,15 +244,27 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * Delete a room in its workspace, then re-read what is left.
+   * Delete a room in its workspace, then re-read what is left. Resolves to
+   * what became of its platform channel: null when it had none or it was kept,
+   * which it is unless `retireChannel` asks for it to be archived, deleted or
+   * left as its platform allows.
    *
    * Throws on refusal rather than reporting a boolean: the caller is a
    * confirmation dialog, and a delete that quietly did nothing would leave the
    * room on screen with no account of why.
    */
-  async deleteRoom(workspaceId: string, roomId: string): Promise<void> {
-    await rpc.workspaces.deleteRoom({ workspaceId, roomId });
+  async deleteRoom(
+    workspaceId: string,
+    roomId: string,
+    options: { retireChannel: boolean }
+  ): Promise<RetireOutcome | null> {
+    const channel = await rpc.workspaces.deleteRoom({
+      workspaceId,
+      roomId,
+      retireChannel: options.retireChannel,
+    });
     await this.refreshRoomState();
+    return channel;
   }
 
   /**
@@ -463,9 +484,33 @@ export class SwitchRoomsStore {
     runInAction(() => {
       this.trackedIdentities = agents;
     });
+    const identities = new Map(agents.map((a) => [key(a.workspaceId, a.switchAgentId), a]));
+    for (const [k, watched] of this.watchedIdentities)
+      if (!identities.has(k)) identities.set(k, watched);
     await Promise.all(
-      agents.map((a) => this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options))
+      [...identities.values()].map((a) =>
+        this.fetchAgentRooms(a.workspaceId, a.switchAgentId, options)
+      )
     );
+  }
+
+  /**
+   * Keep an agent's membership current while a view shows it: read it now, and
+   * again on every refresh until the returned function is called.
+   */
+  watchMembership(workspaceId: string, switchAgentId: string): () => void {
+    const k = key(workspaceId, switchAgentId);
+    const watched = this.watchedIdentities.get(k);
+    if (watched) watched.views += 1;
+    else this.watchedIdentities.set(k, { workspaceId, switchAgentId, views: 1 });
+    void this.fetchAgentRooms(workspaceId, switchAgentId, { force: true });
+    return () =>
+      runInAction(() => {
+        const current = this.watchedIdentities.get(k);
+        if (!current) return;
+        if (current.views > 1) current.views -= 1;
+        else this.watchedIdentities.delete(k);
+      });
   }
 
   isLoading(workspaceId: string, switchAgentId: string): boolean {

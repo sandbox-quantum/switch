@@ -1,16 +1,18 @@
-import { ChevronDown, MessageSquare } from 'lucide-react';
+import { ChevronDown, Laptop, MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { AgentProfile } from '@renderer/features/managed-agents/agent-profile';
+import { agentSections } from '@renderer/features/managed-agents/agent-sections';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { SidebarMenuRow } from '@renderer/features/sidebar/sidebar-primitives';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
-import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
-import { BuddyAvatar } from './buddy-avatar';
+import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import { expectedBuddyName, firstNameOf, isBuddy } from './buddy-identity';
 import { reportBuddyStep } from './buddy-telemetry';
 import { BuddyWelcome } from './buddy-welcome';
@@ -19,30 +21,16 @@ import { BUDDY_CHAT_NAME, openBuddyChat } from './open-buddy';
 type SwitchBuddyParams = { serverId: string };
 
 /** The agent page's title bar, as it will be with the Welcome chat open. */
-const SwitchBuddyTitlebar = observer(function SwitchBuddyTitlebar() {
-  const { params } = useParams('switchBuddy');
-  const user = switchServersStore.statusFor(params.serverId)?.user ?? null;
+function SwitchBuddyTitlebar() {
   return (
     <Titlebar
-      className="border-b border-border pr-[7px]"
+      className="pr-0"
       leftClassName="w-[300px] shrink-0 self-stretch border-r border-border [-webkit-app-region:drag]"
-      leftSlot={
-        <TitlebarBreadcrumb
-          crumbs={[
-            {
-              key: 'agent',
-              icon: <BuddyAvatar size={16} shape="round" />,
-              label: expectedBuddyName(user),
-              maxWidthClassName: 'max-w-none',
-            },
-          ]}
-        />
-      }
-      rightClassName="min-w-0 flex-1 justify-between gap-3 pl-4 [-webkit-app-region:drag]"
+      rightClassName="min-w-0 flex-1 justify-between gap-3 self-stretch border-b border-border pr-[7px] pl-4 [-webkit-app-region:drag]"
       rightSlot={<span className="truncate text-sm font-medium">{BUDDY_CHAT_NAME}</span>}
     />
   );
-});
+}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -70,6 +58,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   const buddy = managed.data?.find(isBuddy) ?? null;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const user = switchServersStore.statusFor(serverId)?.user ?? null;
+  const serviceConnections = useFeatureFlags(serverId).service_connections;
 
   useEffect(() => {
     if (buddy) void openBuddyChat(serverId, buddy);
@@ -88,6 +77,19 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
+        <AgentProfile
+          name={expectedBuddyName(user)}
+          iconUrl={BUDDY_ICON_URL}
+          serverId={serverId}
+          machine={{
+            icon: Laptop,
+            text: 'This computer',
+            title: 'switch-buddy runs on this computer.',
+          }}
+          sections={agentSections(serviceConnections, undefined)}
+          selected={null}
+          onSelect={null}
+        />
         <Section title="Direct chats">
           <SidebarMenuRow isActive onClick={() => {}}>
             <span className="flex size-6 shrink-0 items-center justify-center">

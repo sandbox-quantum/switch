@@ -40,6 +40,7 @@ function agent(revision: number, overrides: Partial<AgentAssignment> = {}): Agen
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
     },

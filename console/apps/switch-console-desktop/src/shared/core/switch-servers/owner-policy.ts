@@ -37,9 +37,6 @@ export type AddressingMode = 'ownerAndAgents' | 'owner' | 'anyone' | 'custom';
 
 /**
  * Its owner, and nobody and nothing else — not even the owner's own agents.
- * The default for a new agent: the strictest thing on offer is what an agent
- * running on someone's own machine should start on, and widening it is one
- * choice away.
  */
 export function ownerOnlyPolicy(): AddressingPolicy {
   return { rules: [ownerRule(false)] };
@@ -55,6 +52,16 @@ export function ownerOnlyPolicy(): AddressingPolicy {
  */
 export function ownerAndMyAgentsPolicy(): AddressingPolicy {
   return { rules: [ownerRule(true)] };
+}
+
+/**
+ * The policy a new agent starts on: its owner and the owner's own agents, so
+ * an owner's agents can work together out of the box while other people and
+ * their agents stay out. The same default switch-core gives an agent
+ * registered without a choice (`default_agent_policy`).
+ */
+export function defaultAgentPolicy(): AddressingPolicy {
+  return ownerAndMyAgentsPolicy();
 }
 
 function ownerRule(ownerAgents: boolean): AddressingRule {

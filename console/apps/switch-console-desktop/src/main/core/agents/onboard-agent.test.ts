@@ -87,6 +87,7 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 }));
 
 const { onboardAgent } = await import('./onboard-agent');
+const { createAgent } = await import('./createAgent');
 
 function params(overrides: Record<string, unknown> = {}) {
   return {
@@ -210,5 +211,26 @@ describe('the onboarded agent’s config file', () => {
     await onboardAgent(params());
 
     expect(h.importAgentConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('the onboarded agent’s permission settings', () => {
+  it.each([undefined, 'build-box'])(
+    'start in auto mode with bypass off, wherever it runs (%s)',
+    async (sshHost) => {
+      await onboardAgent(params(sshHost ? { sshHost } : {}));
+
+      expect(createAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ autoApprove: false, autoMode: true })
+      );
+    }
+  );
+
+  it('take an explicit choice over the defaults', async () => {
+    await onboardAgent(params({ autoApprove: true, autoMode: false }));
+
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ autoApprove: true, autoMode: false })
+    );
   });
 });

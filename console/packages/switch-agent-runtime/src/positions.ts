@@ -7,8 +7,8 @@
 /**
  * How far a connection has read, as one number per source of events, each
  * numbered on its own. `s` is the agent's own events: the events meant for the
- * agent (messages addressed to it, the room joins it listens for, commands,
- * task events), not the ones it sent. `r:<room id>` is a room's conversation, which
+ * agent (messages addressed to it, the room joins it listens for, commands),
+ * not the ones it sent. `r:<room id>` is a room's conversation, which
  * the server sends only to a connection that reads everything said in the room.
  * The server names the sources, so apart from `s` this runtime keeps whatever
  * keys it is sent without interpreting them.

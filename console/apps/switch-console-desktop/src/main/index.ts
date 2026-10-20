@@ -26,6 +26,7 @@ import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
+import { serverVersionChoice } from './core/managed-switch-server/server-version';
 import { initializeHostReachability } from './core/remote-hosts/host-reachability-startup';
 import { hostReachabilityService } from './core/remote-hosts/production-host-reachability';
 import {
@@ -57,11 +58,15 @@ import { registerLogEnrichment } from './lib/log-enrichment';
 import { log } from './lib/logger';
 import { withRPCLogContext } from './lib/rpc-logging';
 import { rpcRouter } from './rpc';
-import { resolveUserEnv } from './utils/userEnv';
+import { ensureUserBinDirsInPath, resolveUserEnv } from './utils/userEnv';
 
 if (import.meta.env.DEV) {
   dotenvConfig({ path: '.env.local', override: false });
 }
+
+// A SWITCH_CONSOLE_SERVER_VERSION this run cannot honour stops the launch here,
+// naming the variable, rather than leaving managed servers on another version.
+serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
 
@@ -112,6 +117,7 @@ app.on('activate', () => {
 
 void app.whenReady().then(async () => {
   await resolveUserEnv();
+  ensureUserBinDirsInPath();
 
   try {
     await initializeDatabase();

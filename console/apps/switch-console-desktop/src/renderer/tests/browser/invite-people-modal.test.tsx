@@ -15,6 +15,7 @@ const listInvitations = vi.hoisted(() => vi.fn());
 const createInvitation = vi.hoisted(() => vi.fn());
 const revokeInvitation = vi.hoisted(() => vi.fn());
 const byId = vi.hoisted(() => vi.fn());
+const serverById = vi.hoisted(() => vi.fn());
 const listJoinDomains = vi.hoisted(() => vi.fn());
 const addJoinDomain = vi.hoisted(() => vi.fn());
 const removeJoinDomain = vi.hoisted(() => vi.fn());
@@ -45,6 +46,10 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { byId },
 }));
 
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: { serverById },
+}));
+
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Dialog } from '@renderer/lib/ui/dialog';
@@ -63,6 +68,10 @@ function workspace(role: 'owner' | 'admin' | 'member') {
     createdAt: '',
     updatedAt: '',
   };
+}
+
+function server(managed: boolean, managementKind: 'local' | 'remote' | null) {
+  return { id: 'srv-1', managed, managementKind };
 }
 
 function invitation(overrides: Record<string, unknown>) {
@@ -86,6 +95,7 @@ beforeEach(() => {
   createInvitation.mockReset();
   revokeInvitation.mockReset();
   byId.mockReset().mockReturnValue(workspace('admin'));
+  serverById.mockReset().mockReturnValue(server(false, null));
   listJoinDomains.mockReset().mockResolvedValue({ kind: 'unsupported' });
   addJoinDomain.mockReset().mockResolvedValue(undefined);
   removeJoinDomain.mockReset().mockResolvedValue(undefined);
@@ -143,6 +153,27 @@ describe('the invite-people modal', () => {
     expect(administersWorkspace(workspace('owner') as never)).toBe(true);
     expect(administersWorkspace(workspace('admin') as never)).toBe(true);
     expect(administersWorkspace(workspace('member') as never)).toBe(false);
+  });
+
+  it('explains instead of offering a form on a server running on this computer', async () => {
+    serverById.mockReturnValue(server(true, 'local'));
+    const el = await render();
+
+    expect(el.textContent).toContain('People elsewhere can’t reach it');
+    expect(el.querySelector('#invite-people-email')).toBeNull();
+    expect(listInvitations).not.toHaveBeenCalled();
+    expect(createInvitation).not.toHaveBeenCalled();
+    await act(async () => button(el, 'Close').click());
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('keeps the form on a server Console runs on an SSH host', async () => {
+    serverById.mockReturnValue(server(true, 'remote'));
+    listInvitations.mockResolvedValue({ invitations: [], emailEnabled: true });
+    const el = await render();
+
+    expect(el.querySelector('#invite-people-email')).not.toBeNull();
+    expect(el.textContent).not.toContain('People elsewhere can’t reach it');
   });
 
   it('e-mails an addressed invitation and still shows its link', async () => {

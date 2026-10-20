@@ -8,11 +8,7 @@ import {
   getManagedServer,
 } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
-import {
-  COMPATIBLE_SWITCH_VERSION,
-  RELEASE_REPO_NAME,
-  RELEASE_REPO_OWNER,
-} from '@shared/app-identity';
+import { RELEASE_REPO_NAME, RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type DeployedTelemetry,
@@ -37,6 +33,7 @@ import {
 import { registerManagedServer } from '../pipeline';
 import { clearPorts, resolvePorts } from '../ports';
 import { clearSecrets, loadOrCreateSecrets } from '../secrets';
+import { managedSwitchVersion } from '../server-version';
 import { telemetryConsent } from '../telemetry-consent';
 import { materializeBundle, pruneBundleCopies, readLocalServerBundle } from './bundle';
 import {
@@ -173,7 +170,7 @@ async function backupDataDirectory(
   onMessage: (message: string) => void
 ): Promise<string> {
   onMessage(
-    `Backing up the database before updating switch-core ${from} → ${COMPATIBLE_SWITCH_VERSION}…`
+    `Backing up the database before updating switch-core ${from} → ${managedSwitchVersion()}…`
   );
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const directory = path.join(layout.backups, `${stamp}-switch-core-${from}`);
@@ -182,7 +179,7 @@ async function backupDataDirectory(
   await writeFile(
     path.join(directory, 'README.txt'),
     [
-      `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${COMPATIBLE_SWITCH_VERSION}.`,
+      `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${managedSwitchVersion()}.`,
       '',
       'pgdata/   a copy of the PostgreSQL data directory, taken with the server stopped',
       '',
@@ -275,7 +272,7 @@ export async function nativeMattermostLauncher(
   checkoutRoot: string | null,
   onLog: (line: string) => void
 ): Promise<(onProgress: (message: string) => void) => Promise<void>> {
-  const install = await existingSwitchCoreInstall(layout, COMPATIBLE_SWITCH_VERSION, checkoutRoot);
+  const install = await existingSwitchCoreInstall(layout, managedSwitchVersion(), checkoutRoot);
   if (install === null) {
     throw new Error(
       'The server has not been set up yet, so there is nothing to add Mattermost to.'
@@ -327,7 +324,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     deployed.kind === 'deployed' &&
     deployed.version !== CHECKOUT_IMAGE_TAG
   ) {
-    const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
+    const drift = classifyVersionDrift(deployed.version, managedSwitchVersion());
     if (drift?.direction === 'downgrade') {
       return {
         result: { kind: 'version-downgrade', deployed: drift.deployed, expected: drift.expected },
@@ -347,7 +344,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       })
     : null;
 
-  const shipped = await readLocalServerBundle(opts.bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const shipped = await readLocalServerBundle(opts.bundleRoot, managedSwitchVersion());
   const bundle =
     shipped === null ? null : await materializeBundle(shipped, layout.toolchain, onMessage);
   const uv = await resolveUv(layout, bundle, onMessage);
@@ -356,7 +353,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     layout,
     uv,
     bundle,
-    version: COMPATIBLE_SWITCH_VERSION,
+    version: managedSwitchVersion(),
     owner: RELEASE_REPO_OWNER,
     repo: RELEASE_REPO_NAME,
     checkoutRoot,
@@ -523,7 +520,7 @@ export async function stopNativeStack(
   layout: NativeLayout,
   bundleRoot: string | null
 ): Promise<void> {
-  const bundle = await readLocalServerBundle(bundleRoot, COMPATIBLE_SWITCH_VERSION);
+  const bundle = await readLocalServerBundle(bundleRoot, managedSwitchVersion());
   const binaries = await findPostgresForCluster(layout, bundle);
   await stopProcesses(layout, binaries, () => {});
   if (binaries === null) await stopClusterByPid(layout);

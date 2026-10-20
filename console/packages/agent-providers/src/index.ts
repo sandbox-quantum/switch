@@ -13,7 +13,7 @@ export type {
   StdioMcpServerSpec,
   TurnAttachment,
 } from './adapter';
-export { ProviderSessionError, ProviderUnavailableError } from './adapter';
+export { ProviderSessionError, ProviderUnavailableError, runtimeModeFor } from './adapter';
 export type { ClaudeAdapterLogger, ClaudeAdapterOptions } from './claude/claude-adapter';
 export { ClaudeAdapter, createClaudeAdapter } from './claude/claude-adapter';
 export type {
@@ -166,6 +166,7 @@ export { readSharedCredentials, sharedConfigSchema } from './host/shared-config'
 export type { SharedHostConfig } from './host/shared-config';
 
 export { providerReadinessSchema } from './readiness';
+export { verifyClaudeSignIn } from './claude/sign-in';
 export type { ProviderReadiness, SignInCheckInput } from './readiness';
 export {
   acpProviderRuntime,

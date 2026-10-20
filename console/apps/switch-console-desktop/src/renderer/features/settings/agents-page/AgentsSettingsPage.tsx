@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react';
 import React, { useCallback, useState } from 'react';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { useAgentInstallationStatuses } from '@renderer/lib/stores/use-agent-installation-statuses';
+import { recheckThisComputer } from '@renderer/lib/stores/use-this-computer-report';
 import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { ToggleGroup, ToggleGroupItem } from '@renderer/lib/ui/toggle-group';
@@ -17,11 +18,15 @@ export function AgentsSettingsPage() {
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
+    // Both checks run again: the controller's report, which the page shows
+    // when there is one, and Console's own, which install and update use.
+    const controller = recheckThisComputer(queryClient);
     probeAll(undefined, {
       onSettled: () => {
-        void queryClient
-          .invalidateQueries({ queryKey: ['provider-readiness'] })
-          .finally(() => setRefreshing(false));
+        void Promise.all([
+          controller,
+          queryClient.invalidateQueries({ queryKey: ['provider-readiness'] }),
+        ]).finally(() => setRefreshing(false));
       },
     });
   }, [probeAll, queryClient]);

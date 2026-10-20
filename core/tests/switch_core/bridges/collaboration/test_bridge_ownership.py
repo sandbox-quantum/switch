@@ -246,7 +246,12 @@ class _LoudChat(_Chat):
 
 class _PublisherThatFailsToStop:
     """A bridge's session-activity publisher whose stop raises. Stands in for
-    anything that can go wrong as a bridge stops, before its adapter does."""
+    anything that can go wrong as a bridge stops, before its adapter does.
+    It can be swapped in while the bridge is still starting: the adapter
+    listens before the bridge starts its publisher, so `start` has to work."""
+
+    def start(self) -> None:
+        pass
 
     async def stop(self) -> None:
         raise RuntimeError("the publisher's task had died")

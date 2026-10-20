@@ -380,6 +380,14 @@ class ClientLifecycleService:
             if client_tenant != tenant_id or client_id in present
         }
         agents_changed = False
+        # A rename served elsewhere changes the name a copy here sends under
+        # (bridges recognise an agent's own messages by it) and the identities
+        # a bridge here holds for the agent, so both follow it now.
+        for record in records:
+            actor = self._clients.get(record.id)
+            if actor is not None and actor.display_name != record.display_name:
+                await actor.set_display_name(record.display_name)
+                agents_changed |= record.type == "agent"
         for client_id in running_before:
             if client_id in self._client_tenants and client_id not in present:
                 logger.info("Client %s was deleted elsewhere; stopping it", client_id)

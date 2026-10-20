@@ -106,11 +106,31 @@ def needs_operator_app(definition: ConnectionDefinition) -> bool:
     return app_kind(definition) is not None
 
 
+def github_needs_https(kind: AppKind | None, public_url: str | None) -> bool:
+    """Whether a GitHub App can't be set up on a server at `public_url`:
+    GitHub sends people back only to an https address. An unset public URL
+    is not this: setting it is the operator's first step for every app."""
+    return (
+        kind == "github_app"
+        and public_url is not None
+        and urlsplit(public_url).scheme != "https"
+    )
+
+
 def not_set_up(name: str) -> str:
     """What members are told about a service whose app is not set up here."""
     return (
-        f"{name} is not set up on this server. Ask whoever runs your Switch "
-        "server to add it under Connectors in the Switch dashboard."
+        f"{name} is not set up on this server. Whoever runs your Switch server "
+        "can set it up in Switch Console, under Admin → Connector apps."
+    )
+
+
+def cannot_work_here(name: str) -> str:
+    """What members are told about a service whose app this server can't
+    have: GitHub's, on a server without an https address."""
+    return (
+        f"{name} can't be used on this server: it needs the server to have an "
+        "https address."
     )
 
 

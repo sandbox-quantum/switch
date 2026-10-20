@@ -372,6 +372,13 @@
       "when": 1791559324805,
       "tag": "0052_one_server_url",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1792510951310,
+      "tag": "0053_agent_auto_mode",
+      "breakpoints": true
     }
   ]
 }

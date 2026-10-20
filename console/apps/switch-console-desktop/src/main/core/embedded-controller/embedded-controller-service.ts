@@ -207,6 +207,18 @@ export class EmbeddedControllerService {
     return record?.kind === 'enrolled' ? record.controllerId : null;
   }
 
+  /**
+   * The servers this computer runs a controller for now: enrolled, and its
+   * controller started in this session. Only these can have a fresh report of
+   * this computer's providers on the server.
+   */
+  async runningServerIds(): Promise<string[]> {
+    const records = await this.deps.records.all();
+    return Object.entries(records)
+      .filter(([serverId, record]) => record.kind === 'enrolled' && this.runners.has(serverId))
+      .map(([serverId]) => serverId);
+  }
+
   /** Turns it on: enrolls through the signed-in session of `workspaceId`, then starts the controller. */
   async enable(serverId: string, workspaceId: string): Promise<void> {
     if (this.unsupportedReason) throw new Error(this.unsupportedReason);

@@ -47,6 +47,8 @@ class AuditAction(StrEnum):
     SERVICE_DISCONNECTED = "service.disconnected"
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
+    AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
 

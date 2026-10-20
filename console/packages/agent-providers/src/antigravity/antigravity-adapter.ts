@@ -46,12 +46,19 @@ export const antigravityAcp: AcpProviderHooks = {
   // only a session start sends it and the sign-in check never does.
   authMethodId: () => 'oauth-personal',
   promptCapabilities: { image: true, audio: true, embeddedContext: true },
-  sessionMode: (runtimeMode) =>
-    runtimeMode === 'full-access'
-      ? 'yolo'
-      : runtimeMode === 'auto-accept-edits'
-        ? 'auto_edit'
-        : 'default',
+  // Antigravity has no reviewer of its own, so auto mode is its auto-edit
+  // mode: edits run, commands and connector calls still ask.
+  sessionMode: (runtimeMode) => {
+    switch (runtimeMode) {
+      case 'full-access':
+        return 'yolo';
+      case 'auto-accept-edits':
+      case 'auto':
+        return 'auto_edit';
+      case 'approval-required':
+        return 'default';
+    }
+  },
   nativeSessionIdPrefix: {
     prefix: 'acp:',
     legacyMessage:

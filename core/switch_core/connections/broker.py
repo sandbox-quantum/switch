@@ -51,7 +51,12 @@ from switch_core.connections.adapters import (
 )
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
-from switch_core.connections.app_credentials import needs_operator_app, not_set_up
+from switch_core.connections.app_credentials import (
+    app_kind,
+    cannot_work_here,
+    github_needs_https,
+    not_set_up,
+)
 from switch_core.connections.loader import (
     TOKEN_PLACEHOLDER,
     AccessLevel,
@@ -129,6 +134,30 @@ SWITCHED_OFF = "Switched off on this server."
 # Why a connection needs reconnecting: the operator replaced the app it
 # signed in through.
 CLIENT_REPLACED = "client_replaced"
+
+
+# Why a service can't be used on this server, for a client to act on; the
+# reason beside it is the sentence people read.
+UnavailableCode = Literal[
+    # Not built yet: the catalog has it switched off.
+    "coming_soon",
+    # The operator switched it off on this server (`DISABLED_SERVICES`).
+    "switched_off",
+    # Its app can't be set up on this server: GitHub's needs an https address.
+    "needs_https",
+    # Its app is the operator's to set up, under Connector apps, and isn't.
+    "app_not_set_up",
+    # Nothing on this server connects it, and nothing the operator saves would.
+    "not_set_up",
+    # It can be connected but not granted: its app is missing a part.
+    "not_fully_set_up",
+]
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    code: UnavailableCode
+    reason: str
 
 
 class ServiceError(Exception):
@@ -330,6 +359,7 @@ class ServiceBroker:
         token_retention: timedelta,
         workspace_services: WorkspaceServiceStore,
         workspace_gate: bool,
+        public_url: str | None,
     ) -> None:
         unknown = sorted(set(adapters) - set(catalog))
         if unknown:
@@ -353,6 +383,8 @@ class ServiceBroker:
         # Whether a workspace admin's switch applies: on with the
         # `service_connections` flag, so with it off GitHub works as before.
         self._workspace_gate = workspace_gate
+        # `GATEWAY_PUBLIC_URL`, which decides whether GitHub's App can work here.
+        self._public_url = public_url
         # The access token being fetched for each connection, by (tenant,
         # owner, service), for callers that ask while it is.
         self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
@@ -1080,13 +1112,8 @@ class ServiceBroker:
 
     def server_setup_needed(self, service: str) -> bool:
         """Whether `service` waits on the operator setting up its app here."""
-        entry = self._catalog.get(service)
-        return (
-            entry is not None
-            and entry.definition.enabled
-            and needs_operator_app(entry.definition)
-            and service not in self._adapters
-        )
+        unavailable = self.unavailable(service)
+        return unavailable is not None and unavailable.code == "app_not_set_up"
 
     def client_replaced(self, connection: ServiceConnection) -> bool:
         """Whether `connection` signed in through a client its service no
@@ -1113,21 +1140,32 @@ class ServiceBroker:
 
     def availability(self, service: str) -> str | None:
         """Why `service` cannot be granted on this server, or None if it can."""
+        unavailable = self.unavailable(service)
+        return None if unavailable is None else unavailable.reason
+
+    def unavailable(self, service: str) -> Unavailable | None:
+        """Why `service` cannot be granted on this server, as a code and the
+        sentence people read, or None if it can."""
         entry = self._catalog.get(service)
         if entry is None or not entry.definition.enabled:
-            return "Not available yet."
+            return Unavailable("coming_soon", "Not available yet.")
+        name = entry.definition.name
         reason = self._disabled.get(service)
         if reason is not None:
-            return reason
+            return Unavailable("switched_off", reason)
         adapter = self._adapters.get(service)
         if adapter is None:
-            if needs_operator_app(entry.definition):
-                return not_set_up(entry.definition.name)
-            return f"{entry.definition.name} is not set up on this server."
+            kind = app_kind(entry.definition)
+            if github_needs_https(kind, self._public_url):
+                return Unavailable("needs_https", cannot_work_here(name))
+            if kind is not None:
+                return Unavailable("app_not_set_up", not_set_up(name))
+            return Unavailable("not_set_up", f"{name} is not set up on this server.")
         if not adapter.can_issue:
-            return (
-                f"{entry.definition.name} can be connected on this server but "
-                "not granted to agents: it is not fully set up."
+            return Unavailable(
+                "not_fully_set_up",
+                f"{name} can be connected on this server but not granted to "
+                "agents: it is not fully set up.",
             )
         return None
 

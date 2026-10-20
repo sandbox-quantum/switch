@@ -1,7 +1,5 @@
 """Room-safe presentation metadata for SDK collaboration messages."""
 
-from urllib.parse import urlencode, urlsplit
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,26 +11,6 @@ from switch_core.db.models import (
     ExternalUserClaim,
 )
 from switch_core.sessions.contract import TurnUpsert
-
-
-def session_console_url(
-    server: str | None, agent_id: str, room_id: str, session_id: str
-) -> str | None:
-    """Use the configured server and current SDK identity, never legacy state."""
-    if (
-        not server
-        or urlsplit(server).scheme not in {"http", "https"}
-        or not urlsplit(server).netloc
-    ):
-        return None
-    return "switchdash://session?" + urlencode(
-        {
-            "server": server.rstrip("/"),
-            "agent": agent_id,
-            "room": room_id,
-            "session": session_id,
-        }
-    )
 
 
 async def notification_recipient(

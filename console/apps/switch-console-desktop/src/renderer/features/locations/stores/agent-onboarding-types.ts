@@ -16,9 +16,10 @@ export interface PickModeData extends BaseModeData {
   providerId: AgentProviderId;
   /** When set, the agent runs at a remote location on this SSH host + dir. */
   remote?: { sshHost: string; dir: string };
-  /** Seed for the per-agent bypass-permissions flag. Omit to take the default
-   * (false for local, true for remote). */
+  /** Seeds for the per-agent permission settings. Omit to take
+   * `NEW_AGENT_PERMISSIONS`. */
   autoApprove?: boolean;
+  autoMode?: boolean;
 }
 
 export type ModeData = PickModeData;

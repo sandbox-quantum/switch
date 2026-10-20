@@ -11,7 +11,8 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 
-from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.agent.commands import COMMANDS, Command
+from switch_core.bridges.collaboration import own_app_setup
 from switch_core.bridges.collaboration.own_app_setup import (
     SetupCheckError,
     check_slack,
@@ -37,6 +38,30 @@ class TestSlackManifest:
         assert manifest["settings"]["socket_mode_enabled"] is True
         assert {c["command"] for c in manifest["features"]["slash_commands"]} == {
             f"/{command.name}" for command in COMMANDS if command.description.strip()
+        }
+
+    def test_every_registered_command_does_something(self) -> None:
+        registered = {
+            c["command"].removeprefix("/")
+            for c in slack_manifest()["features"]["slash_commands"]
+        }
+        by_name = {command.name: command for command in COMMANDS}
+
+        assert "admin" not in registered
+        for name in registered:
+            assert by_name[name].handler is not None, name
+
+    def test_a_command_without_a_handler_is_not_registered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            own_app_setup,
+            "COMMANDS",
+            [*COMMANDS, Command("does-nothing", "Says it does something.")],
+        )
+
+        assert "/does-nothing" not in {
+            c["command"] for c in slack_manifest()["features"]["slash_commands"]
         }
 
     def test_stays_inside_slacks_limits(self) -> None:

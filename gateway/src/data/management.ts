@@ -146,6 +146,9 @@ export interface Definition {
   provider: Provider;
   model: string | null;
   instructions: string;
+  /** The provider's own automatic review: safe actions run, risky ones still ask. */
+  auto_mode: boolean;
+  /** Bypass: every permission check skipped. Wins over `auto_mode`. */
   auto_approve: boolean;
   directory: string | null;
   isolation: Isolation;

@@ -1,8 +1,13 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type * as AppIdentity from '@shared/app-identity';
-import type { StartLocalServerResult } from '@shared/core/managed-switch-server/managed-switch-server';
+import {
+  CHECKOUT_IMAGE_TAG,
+  type StartLocalServerResult,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 import type * as ManagedUpgrade from './managed-upgrade';
 import type { StartStackOptions } from './pipeline';
+import type * as ServerVersion from './server-version';
+import type { ServerVersionChoice } from './server-version';
 
 const m = vi.hoisted(() => ({
   managed: vi.fn(),
@@ -31,10 +36,19 @@ vi.mock('@main/core/switch-servers/delete-server-agents', () => ({
   deleteAgentsForServer: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getManagedServer: m.managed }));
+const checkout = vi.hoisted(() => ({ found: null as string | null, toggled: false }));
 vi.mock('./checkout-build', () => ({
-  findCoreCheckout: () => null,
-  isCheckoutBuildEnabled: vi.fn(),
+  findCoreCheckout: () => checkout.found,
+  isCheckoutBuildEnabled: async () => checkout.toggled,
   setCheckoutBuildEnabled: vi.fn(),
+}));
+const serverVersion = vi.hoisted(() => ({
+  choice: { kind: 'pin', version: '0.11.0' } as ServerVersionChoice,
+}));
+vi.mock('./server-version', async (importOriginal) => ({
+  ...(await importOriginal<typeof ServerVersion>()),
+  serverVersionChoice: () => serverVersion.choice,
+  managedSwitchVersion: () => serverVersion.choice.version,
 }));
 const images = vi.hoisted(() => vi.fn());
 vi.mock('./compose', () => ({
@@ -152,6 +166,9 @@ function upgradingStart(result: StartLocalServerResult = started) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  checkout.found = null;
+  checkout.toggled = false;
+  serverVersion.choice = { kind: 'pin', version: '0.11.0' };
   m.managed.mockResolvedValue({ id: 'local', name: 'Local' });
   m.running.mockResolvedValue(true);
   m.version.mockResolvedValue(behind);
@@ -611,4 +628,60 @@ it('starts a server on Docker as before when it cannot be moved yet', async () =
   expect(move.export).not.toHaveBeenCalled();
   expect(m.start).toHaveBeenCalledOnce();
   expect(service.getStatus().notice).toBeNull();
+});
+
+it('builds from this checkout on every start when the variable says so, whatever the toggle says', async () => {
+  serverVersion.choice = { kind: 'checkout', version: '0.11.0', root: '/src/switch' };
+  m.version.mockResolvedValue({ deployedVersion: null, drift: null });
+  m.running.mockResolvedValue(false);
+  m.start.mockResolvedValue(started);
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(service.getStatus().checkoutBuild).toEqual({
+    root: '/src/switch',
+    enabled: true,
+    forcedBy: 'SWITCH_CONSOLE_SERVER_VERSION=checkout',
+  });
+  await expect(service.setCheckoutBuild(false)).rejects.toThrow(
+    /SWITCH_CONSOLE_SERVER_VERSION=checkout/
+  );
+  await service.start();
+  expect(m.start).toHaveBeenCalledWith(expect.objectContaining({ checkoutRoot: '/src/switch' }));
+  expect(service.getStatus().deployedVersion).toBe(CHECKOUT_IMAGE_TAG);
+});
+
+it('builds a native server from this checkout when the variable says so', async () => {
+  serverVersion.choice = { kind: 'checkout', version: '0.11.0', root: '/src/switch' };
+  runtime.read.mockResolvedValue('native');
+  native.running.mockResolvedValue(false);
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.start();
+  expect(native.start).toHaveBeenCalledWith(
+    expect.objectContaining({ checkoutRoot: '/src/switch' })
+  );
+});
+
+it('runs the release the variable names, holding the checkout toggle off', async () => {
+  serverVersion.choice = { kind: 'release', version: '0.12.0' };
+  checkout.found = '/src/switch';
+  checkout.toggled = true;
+  m.version.mockResolvedValue({ deployedVersion: null, drift: null });
+  m.running.mockResolvedValue(false);
+  m.start.mockResolvedValue(started);
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(service.getStatus().version).toBe('0.12.0');
+  expect(m.version).toHaveBeenCalledWith(expect.anything(), '0.12.0');
+  expect(service.getStatus().checkoutBuild).toEqual({
+    root: '/src/switch',
+    enabled: false,
+    forcedBy: 'SWITCH_CONSOLE_SERVER_VERSION=0.12.0',
+  });
+  await service.start();
+  expect(m.start).toHaveBeenCalledWith(expect.objectContaining({ checkoutRoot: null }));
+  expect(service.getStatus().deployedVersion).toBe('0.12.0');
 });

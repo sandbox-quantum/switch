@@ -85,6 +85,11 @@ class DefinitionV1(_GatewayBody):
     # `advanced_config`.
     advanced_config: dict[str, Any] = Field(default_factory=dict)
     instructions: str = ""
+    # The provider's own automatic review: safe actions run, risky ones still
+    # ask. A stored definition without the key predates it and reads as off
+    # (`stored_definition`).
+    auto_mode: bool = True
+    # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
     directory: str | None = None
     # `shared`: the agent host runs inside its machine's controller.
@@ -435,6 +440,12 @@ class CreateOperationRequest(_GatewayBody):
 # ── Wire shapes ───────────────────────────────────────────────────────────────
 
 
+def stored_definition(definition: dict[str, Any]) -> dict[str, Any]:
+    """A stored v1 definition with the fields it may predate filled in as they
+    read: a definition saved before `auto_mode` existed has it off."""
+    return {**definition, "auto_mode": definition.get("auto_mode", False)}
+
+
 def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
     """An `AgentAssignment`: the stored v1 definition, plus the agent's `name`,
     `display_name` and `icon_url` read from its own row.
@@ -455,6 +466,7 @@ def assignment_entry(row: AgentDefinitionRow, agent: Agent) -> dict[str, Any]:
             "model": definition.get("model"),
             "advanced_config": definition.get("advanced_config", {}),
             "instructions": definition.get("instructions", ""),
+            "auto_mode": definition.get("auto_mode", False),
             "auto_approve": definition.get("auto_approve", False),
             "directory": definition.get("directory"),
             "isolation": definition.get("isolation", "shared"),
@@ -648,7 +660,7 @@ def managed_agent_view(
         "controller_state": controller_state,
         "desired_state": row.desired_state,
         "revision": row.revision,
-        "definition": row.definition,
+        "definition": stored_definition(row.definition),
         "status": agent_status_from(controller, agent.id),
         "created_at": wire_time(row.created_at),
         "updated_at": wire_time(row.updated_at),

@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { controllerConnectionId } from '@switch-console/agent-providers';
+import { controllerConnectionId, type RuntimeMode } from '@switch-console/agent-providers';
 import {
   AgentManagedByControllerError,
   managedRecordFor,
@@ -47,7 +47,8 @@ async function readSubagentSwitchId(
 }
 
 /**
- * Where a remote watcher's auto-approve comes from when it is written. Several
+ * Where a remote watcher's permission settings (bypass and auto mode, as the
+ * one runtime mode they select) come from when it is written. Several
  * Consoles on one account write the same watcher from their own rows, so the
  * shared value is the last explicit choice, kept in `auto-approve.json` rather
  * than read from the saved spec, which any Console's row may have written.
@@ -57,22 +58,37 @@ async function readSubagentSwitchId(
  */
 export type AutoApproveSource = 'host' | 'this-console';
 
-type ConsoleRuntimeMode = 'full-access' | 'approval-required';
-
 /**
- * Atomically keeps an auto-approve choice beside a watcher and, with a third
+ * Atomically keeps a runtime mode choice beside a watcher and, with a third
  * argument `spec`, in its saved spec too. A missing root is a no-op: the first
  * watcher is written from the row.
  */
 const RECORD_AUTO_APPROVE_CHOICE = `const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');const [root,mode,spec]=process.argv.slice(1);if(!fs.existsSync(root))process.exit(0);const put=(file,data)=>{const tmp=file+'.'+crypto.randomUUID();fs.writeFileSync(tmp,JSON.stringify(data),{mode:0o600});fs.renameSync(tmp,file)};if(spec==='spec'){const f=path.join(root,'config.json');let c=null;try{c=JSON.parse(fs.readFileSync(f,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e}if(c){c.start.input.runtimeMode=mode;put(f,c)}}put(path.join(root,'${AUTO_APPROVE_CHOICE_FILE}'),{runtimeMode:mode,at:new Date().toISOString()})`;
 
-function runtimeModeFor(autoApprove: boolean): ConsoleRuntimeMode {
-  return autoApprove ? 'full-access' : 'approval-required';
+/**
+ * The agent settings a runtime mode taken from the host stands for. Full
+ * access says nothing about auto mode, which bypass overrides, so it is left
+ * as the row has it.
+ */
+export function permissionsForRuntimeMode(mode: RuntimeMode): {
+  autoApprove: boolean;
+  autoMode?: boolean;
+} {
+  switch (mode) {
+    case 'full-access':
+      return { autoApprove: true };
+    case 'auto':
+      return { autoApprove: false, autoMode: true };
+    case 'approval-required':
+      return { autoApprove: false, autoMode: false };
+    case 'auto-accept-edits':
+      throw new Error('Console never chooses the auto-accept-edits runtime mode.');
+  }
 }
 
-async function writeAutoApproveChoice(
+async function writeRuntimeModeChoice(
   agentId: string,
-  autoApprove: boolean,
+  mode: RuntimeMode,
   what: 'spec' | 'choice-only'
 ): Promise<void> {
   const agent = await getAgentById(agentId);
@@ -82,31 +98,23 @@ async function writeAutoApproveChoice(
   const transport = locationTransport(location);
   if (transport.kind !== 'ssh') return;
   const { ctx, root } = await resolveWatcherRoot(transport, location.dir, agent.switchAgentId);
-  await ctx.exec('node', [
-    '-e',
-    RECORD_AUTO_APPROVE_CHOICE,
-    root,
-    runtimeModeFor(autoApprove),
-    what,
-  ]);
+  await ctx.exec('node', ['-e', RECORD_AUTO_APPROVE_CHOICE, root, mode, what]);
 }
 
 /**
- * Keep a person's auto-approve choice on the host ahead of the push that
- * rewrites the watcher, so a racing watcher write takes the new value. Takes
- * the value rather than reading the row, so the caller can write it first.
+ * Keep a person's permission choice, as the runtime mode it selects, on the
+ * host ahead of the push that rewrites the watcher, so a racing watcher write
+ * takes the new value. Takes the value rather than reading the row, so the
+ * caller can write it first.
  */
-export async function keepAutoApproveChoice(agentId: string, autoApprove: boolean): Promise<void> {
-  await writeAutoApproveChoice(agentId, autoApprove, 'choice-only');
+export async function keepRuntimeModeChoice(agentId: string, mode: RuntimeMode): Promise<void> {
+  await writeRuntimeModeChoice(agentId, mode, 'choice-only');
 }
 
-/** {@link keepAutoApproveChoice}, and the saved spec too, for a watcher that is
+/** {@link keepRuntimeModeChoice}, and the saved spec too, for a watcher that is
  * not starting sessions and so has nothing about to rewrite its spec. */
-export async function recordAutoApproveOnHost(
-  agentId: string,
-  autoApprove: boolean
-): Promise<void> {
-  await writeAutoApproveChoice(agentId, autoApprove, 'spec');
+export async function recordRuntimeModeOnHost(agentId: string, mode: RuntimeMode): Promise<void> {
+  await writeRuntimeModeChoice(agentId, mode, 'spec');
 }
 
 /**
@@ -265,10 +273,10 @@ export async function configureAgentHostFor(
       stopped: brought.legacyStopped,
     });
   if (brought.runtimeMode !== null) {
-    log.info('agent-host: taking auto-approve from the host, where another Console set it', {
+    log.info('agent-host: taking the runtime mode from the host, where another Console set it', {
       agentId,
       runtimeMode: brought.runtimeMode,
     });
-    await updateAgent({ agentId, autoApprove: brought.runtimeMode === 'full-access' });
+    await updateAgent({ agentId, ...permissionsForRuntimeMode(brought.runtimeMode) });
   }
 }

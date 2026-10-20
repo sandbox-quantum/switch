@@ -346,7 +346,7 @@ class TestDeleteRoom:
         await svc.add_agents_to_room(room_id, agent_ids=agent_ids)
         provisioning.calls.clear()
 
-        await svc.delete_room(room_id)
+        await svc.delete_room(room_id, retire_channel=True)
 
         assert [kind for kind, _who, _live in provisioning.calls] == [
             "kick",

@@ -12,6 +12,7 @@ import {
   managedAgentState,
 } from '@renderer/features/managed-agents/managed-agent-state';
 import {
+  useMachineLabel,
   useManagedAgents,
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
@@ -121,6 +122,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
   const label = managedAgentLabel(agent);
   const state = managedAgentState(agent);
   const provider = providerDisplayName(agent.definition.provider) ?? agent.definition.provider;
+  const machine = useMachineLabel(agent);
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
       <button
@@ -142,7 +144,7 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-foreground">{label}</div>
           <div className="truncate text-xs text-foreground-muted">
-            {provider} · {agent.machine?.name ?? 'no machine'}
+            {provider} · {machine ?? 'no machine'}
           </div>
         </div>
       </div>

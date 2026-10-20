@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Plug, Plus, Settings } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
@@ -7,11 +7,8 @@ import { ChatRow } from '@renderer/features/chats/components/chat-row';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
-import {
-  SidebarItemMiniButton,
-  SidebarMenuAction,
-  SidebarMenuRow,
-} from '@renderer/features/sidebar/sidebar-primitives';
+import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
+import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
@@ -21,7 +18,7 @@ import { EmptyState } from '@renderer/lib/ui/empty-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
-import { AgentRoomSummary } from './agent-room-summary';
+import { AgentProfile, managedAgentMachineLine } from './agent-profile';
 import {
   type AgentSection,
   agentSections,
@@ -31,14 +28,7 @@ import {
 import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
-
-const NAV_ITEMS = [
-  { section: 'connections', label: 'Connections', icon: Plug },
-  { section: 'settings', label: 'Agent settings', icon: Settings },
-] as const satisfies readonly { section: AgentSection; label: string; icon: typeof Settings }[];
-
-export const agentSectionLabel = (section: AgentSection): string =>
-  NAV_ITEMS.find((item) => item.section === section)!.label;
+import { useRunsOnThisComputer } from './use-managed-agents';
 
 /**
  * The sections the agent's page offers, and the one showing: `chosen` from
@@ -113,7 +103,7 @@ export function openAgentChat(
   return direct.find((chat) => chat.roomId === roomId) ?? direct[0] ?? null;
 }
 
-/** The room summarised on an agent's page in place of a chat, if one is. */
+/** The room shown on an agent's page in place of a chat, if one is. */
 export function openAgentRoom(
   agent: ManagedAgentView,
   room: string | undefined,
@@ -124,8 +114,8 @@ export function openAgentRoom(
 }
 
 /**
- * An agent's page: its navigation (the agent's settings, its direct chats and
- * the rooms it is in, each summarised in place) beside what is selected.
+ * An agent's page: its profile (with buttons to its own sections), its direct
+ * chats and the rooms it is in, each opened in place beside the column.
  * The selection is kept in the view's params; with none chosen it is the
  * newest direct chat, and an agent with none gets one started once per visit.
  */
@@ -133,12 +123,13 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const { params, setParams } = useParams('managedAgent');
   const { serverId, workspaceId, agentId } = agent;
   useEffect(() => {
-    void switchRoomsStore.fetchAgentRooms(workspaceId, agentId);
+    return switchRoomsStore.watchMembership(workspaceId, agentId);
   }, [workspaceId, agentId]);
 
   const { agentRooms, direct, rooms } = conversationsOf(agent);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
+  const thisComputer = useRunsOnThisComputer(agent);
   const shownRoom = openAgentRoom(agent, params.room, section);
   const roomId = shownRoom ? null : (openAgentChat(agent, params.roomId)?.roomId ?? null);
   const open = (id: string) => setParams({ roomId: id, section: undefined, room: undefined });
@@ -169,24 +160,15 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-r border-border p-2">
-        <nav aria-label="Agent" className="flex flex-col gap-[2px] pb-3">
-          {NAV_ITEMS.filter((item) => sections.includes(item.section)).map((item) => (
-            <SidebarMenuRow
-              key={item.section}
-              isActive={section === item.section}
-              onClick={() => setParams({ section: item.section })}
-            >
-              <div className="flex h-6 min-w-0 flex-1 items-center gap-1">
-                <span className="flex size-6 shrink-0 items-center justify-center">
-                  <item.icon className="size-4 text-foreground-muted" />
-                </span>
-                <SidebarMenuAction className="overflow-hidden">
-                  <span className="min-w-0 truncate">{item.label}</span>
-                </SidebarMenuAction>
-              </div>
-            </SidebarMenuRow>
-          ))}
-        </nav>
+        <AgentProfile
+          name={managedAgentLabel(agent)}
+          iconUrl={agent.iconUrl}
+          serverId={serverId}
+          machine={managedAgentMachineLine(agent, thisComputer)}
+          sections={sections}
+          selected={section}
+          onSelect={(chosen) => setParams({ section: chosen })}
+        />
         <Section title="Direct chats" addLabel="New chat" onAdd={() => void newChat()}>
           {chatsStore.listError && <Note>{chatsStore.listError}</Note>}
           {direct.map((chat) => (
@@ -228,19 +210,14 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           <ManagedAgentPage agent={agent} serviceGrants={!sections.includes('connections')} />
         ) : section === 'connections' ? (
           <AgentConnectionsTab
+            serverId={serverId}
             workspaceId={workspaceId}
             agentId={agentId}
             agentName={managedAgentLabel(agent)}
             cloud={agent.machine !== null && isCloudMachine(agent.machine)}
           />
         ) : shownRoom ? (
-          <AgentRoomSummary
-            key={shownRoom}
-            roomId={shownRoom}
-            fallbackName={
-              rooms.find((listed) => listed.roomId === shownRoom)?.roomName ?? shownRoom
-            }
-          />
+          <EmbeddedRoom roomId={shownRoom} />
         ) : roomId ? (
           <>
             <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />

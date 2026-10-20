@@ -6,7 +6,7 @@ import {
 } from '@main/core/switch-servers/servers-store';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION, RELEASE_REPO_OWNER } from '@shared/app-identity';
+import { RELEASE_REPO_OWNER } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type ConnectRemoteServerResult,
@@ -38,6 +38,7 @@ import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
 import { type LocalServerSecrets, withNewerSecrets } from './secret-values';
 import { clearSecrets, loadOrCreateSecrets, readSecrets, storeSecrets } from './secrets';
+import { managedSwitchVersion } from './server-version';
 import type { ServerLease } from './stack-lock';
 import {
   driftOf,
@@ -152,7 +153,7 @@ async function refuseDowngrade(
   if (deployed.kind === 'deployed' && deployed.version === CHECKOUT_IMAGE_TAG) {
     log.warn(
       `managed-switch-server: ${host.label} currently runs a local checkout build, so the ` +
-        `downgrade check cannot run; pointing it back at pinned switch-core ${COMPATIBLE_SWITCH_VERSION}.`
+        `downgrade check cannot run; pointing it back at pinned switch-core ${managedSwitchVersion()}.`
     );
     return null;
   }
@@ -162,11 +163,11 @@ async function refuseDowngrade(
     });
     return null;
   }
-  const drift = classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION);
+  const drift = classifyVersionDrift(deployed.version, managedSwitchVersion());
   if (drift?.direction === 'unknown') {
     log.error(
       `managed-switch-server: starting ${host.label} without proving it is not a downgrade — ` +
-        `deployed switch-core ${deployed.version} and pinned ${COMPATIBLE_SWITCH_VERSION} are not comparable. ` +
+        `deployed switch-core ${deployed.version} and pinned ${managedSwitchVersion()} are not comparable. ` +
         `If the deployed one is in fact newer, its database has already migrated and this start may strand it.`
     );
     return null;
@@ -203,11 +204,11 @@ async function migrateOffMatrix(
   if (checkoutRoot !== null) return null;
   const deployed = await readDeployedVersion(host);
   if (deployed.kind !== 'deployed' || deployed.version === CHECKOUT_IMAGE_TAG) return null;
-  if (!crossesMatrixBoundary(deployed.version, COMPATIBLE_SWITCH_VERSION)) return null;
+  if (!crossesMatrixBoundary(deployed.version, managedSwitchVersion())) return null;
 
   log.info(
     `managed-switch-server: ${host.label} is crossing the Matrix boundary ` +
-      `(${deployed.version} → ${COMPATIBLE_SWITCH_VERSION}); backfilling first`
+      `(${deployed.version} → ${managedSwitchVersion()}); backfilling first`
   );
   // Bring the stack up as it stands. The backfill reads the homeserver and the
   // database, and this is the last moment both are still here.
@@ -220,7 +221,7 @@ async function migrateOffMatrix(
   return {
     kind: 'matrix-migration-failed',
     deployed: deployed.version,
-    expected: COMPATIBLE_SWITCH_VERSION,
+    expected: managedSwitchVersion(),
     detail: backfill.detail,
   };
 }
@@ -595,7 +596,7 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // user's answer reaches the server, and no supervisor can forget to carry it.
   const telemetryEnabled = await shareUsageData(host, plan, await telemetryConsent());
   const env = buildEnvFile({
-    version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
+    version: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : managedSwitchVersion(),
     registry: GHCR_REGISTRY,
     namespace: RELEASE_REPO_OWNER,
     ports: settings.ports,

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
+import type { RuntimeMode } from '../adapter';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
 import { replaceFile } from '../host/replace-file';
 
@@ -10,12 +11,12 @@ import { replaceFile } from '../host/replace-file';
  * in: Codex's default is read-only, which on a machine with no Codex
  * configuration of its own leaves an agent unable to write in its own
  * directory. An agent that bypasses permissions gets full access, any other
- * may write in its workspace; a `sandbox_mode` the configuration already
- * names is kept.
+ * (auto mode included) may write in its workspace; a `sandbox_mode` the
+ * configuration already names is kept.
  */
-export function withManagedCodexSandbox(config: string, autoApprove: boolean): string {
+export function withManagedCodexSandbox(config: string, runtimeMode: RuntimeMode): string {
   if ('sandbox_mode' in parse(config)) return config;
-  const mode = autoApprove ? 'danger-full-access' : 'workspace-write';
+  const mode = runtimeMode === 'full-access' ? 'danger-full-access' : 'workspace-write';
   return `sandbox_mode = "${mode}"\n${config}`;
 }
 

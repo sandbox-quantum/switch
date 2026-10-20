@@ -30,6 +30,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_core import AgentDeletionResult
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -221,10 +222,11 @@ class _Protocol:
 
     async def delete_agent(
         self, *, agent_id: str | None = None, agent_name: str | None = None
-    ) -> None:
+    ) -> AgentDeletionResult:
         async with self._session_factory() as session:
             await AgentStore().get(session, agent_id or "")
         self._calls.record("bridge identity removal")
+        return AgentDeletionResult(bridge_failures=[])
 
     async def get_agent_statuses_by_ids_in_session(
         self, session: AsyncSession, room_id: str, agent_ids: list[str]

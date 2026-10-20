@@ -101,6 +101,7 @@ import {
   contractPlatform,
   mapAgentProcess,
   PathProviderLocator,
+  providerLoginTest,
   ProviderStatuses,
   toolStatuses,
 } from './status';
@@ -432,6 +433,7 @@ async function precheckCommand(args: string[]): Promise<number> {
     },
     sealed: null,
     probeCwd: probeDir,
+    verify: providerLoginTest(probeDir),
     now: Date.now,
     log,
     onChange: () => {},
@@ -442,7 +444,10 @@ async function precheckCommand(args: string[]): Promise<number> {
     writing = writing.then(() => writeProviderSeed(out, providers.results()));
     return writing;
   };
-  await Promise.all(PROVIDERS.map((provider) => providers.check(provider).then(write)));
+  // Setting up is when a login that is there but does not work must show.
+  await Promise.all(
+    PROVIDERS.map((provider) => providers.check(provider, { verify: true }).then(write))
+  );
   await writing;
   return EXIT_OK;
 }
@@ -633,6 +638,9 @@ async function runCommand(args: string[]): Promise<number> {
                 new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
               ),
         locator: new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe')),
+        // Agents running as users of their own sign in as those users, which
+        // a test prompt from the controller's user would not show.
+        verifyLogin: agentRuntime === 'default' ? providerLoginTest(dataDir) : undefined,
         rechecks,
         refreshPath,
         providerSeed,

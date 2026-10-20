@@ -119,6 +119,13 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     reportPage(page);
   };
 
+  /** Back one page, as every page's Back goes: the flow decides where that is, not the page. */
+  const back = () => {
+    const from = onboardingStore.page;
+    const to = onboardingStore.back();
+    if (to !== from) reportPage(to);
+  };
+
   /** Leave the first-run pages for the app, on the server they set up. */
   const finish = (serverId: string | null) => {
     onboardingStore.reset();
@@ -187,7 +194,7 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     <WizardChromeProvider chrome="page" exit={exit}>
       {/* Keyed by page, so each one opens afresh, with its entrance. */}
       <Fragment key={page}>
-        {currentPage(server, cloudChoice, goTo, finish, finishWithBuddy)}
+        {currentPage(server, cloudChoice, goTo, back, finish, finishWithBuddy)}
       </Fragment>
     </WizardChromeProvider>
   );
@@ -211,12 +218,9 @@ function pageServerId(): string | null {
  * workspace is next.
  */
 function connectedTo(server: SwitchServer, via: 'external' | 'cloud'): void {
-  onboardingStore.connected(server, via);
-  if (switchServersStore.isConnected(server.id)) {
-    onboardingStore.goTo('pickWorkspace');
-    return;
-  }
-  reportPage('signIn');
+  const signedIn = switchServersStore.isConnected(server.id);
+  onboardingStore.connected(server, via, signedIn);
+  if (!signedIn) reportPage('signIn');
 }
 
 function choiceForPage(page: OnboardingPage): AddServerChoiceName {
@@ -236,6 +240,7 @@ function currentPage(
   server: SwitchServer | null,
   cloud: CloudChoiceState,
   goTo: (page: OnboardingPage) => void,
+  back: () => void,
   finish: (serverId: string | null) => void,
   finishWithBuddy: (
     serverId: string,
@@ -256,7 +261,7 @@ function currentPage(
       return (
         <HowToRunPage
           cloud={cloud}
-          onBack={() => goTo('welcome')}
+          onBack={back}
           onLocal={() => goTo('local')}
           onExternal={() => goTo('connect')}
         />
@@ -264,7 +269,7 @@ function currentPage(
     case 'local':
       return (
         <LocalSetupStep
-          onBack={() => goTo('howToRun')}
+          onBack={back}
           onDone={(serverId) => {
             // Console signed in to the stack it runs as its admin: the
             // workspace is next, not a sign-in page.
@@ -283,7 +288,7 @@ function currentPage(
       return (
         <SignInStep
           server={server}
-          onBack={() => goTo(onboardingStore.via === 'cloud' ? 'howToRun' : 'connect')}
+          onBack={back}
           onClose={null}
           onSignedIn={() => goTo('pickWorkspace')}
         />
@@ -293,7 +298,7 @@ function currentPage(
       return (
         <PickWorkspacePage
           server={server}
-          onBack={() => goTo(onboardingStore.via === 'local' ? 'howToRun' : 'signIn')}
+          onBack={back}
           onPicked={() => goTo('meetBuddy')}
           onCreate={() => goTo('createWorkspace')}
         />
@@ -305,7 +310,7 @@ function currentPage(
           server={server}
           // Nothing to go back to when the account is in no workspace and has
           // no invitation: the picker sent the user straight here.
-          onBack={onboardingStore.pickerHasChoices ? () => goTo('pickWorkspace') : null}
+          onBack={onboardingStore.previousPage === null ? null : back}
           onCreated={() => goTo('meetBuddy')}
         />
       );
@@ -317,7 +322,7 @@ function currentPage(
         return (
           <PickWorkspacePage
             server={server}
-            onBack={() => goTo('signIn')}
+            onBack={back}
             onPicked={() => goTo('meetBuddy')}
             onCreate={() => goTo('createWorkspace')}
           />
@@ -344,6 +349,8 @@ function currentPage(
       isEdit={false}
       firstRun
       existing={server}
+      // Also drawn for a later page whose server is gone, so its Back is the
+      // address form's own rather than that page's.
       onBack={() => goTo('howToRun')}
       onClose={() => goTo('howToRun')}
       onSuccess={() => finish(server?.id ?? null)}

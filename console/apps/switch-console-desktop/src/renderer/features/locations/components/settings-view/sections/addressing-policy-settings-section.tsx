@@ -159,7 +159,7 @@ export function AddressingPolicyRow({
             Who can talk to your agent
             <InfoTooltip
               label="More info about addressing"
-              content="Talking to an agent means an @mention, a targeted message, or a delegated task. Only you, anyone in the agent's rooms, or whoever a rule admits."
+              content="Talking to an agent means an @mention or a targeted message. Only you, anyone in the agent's rooms, or whoever a rule admits."
             />
           </span>
         }

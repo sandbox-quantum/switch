@@ -58,7 +58,7 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
 }) {
   return (
     <SidebarMenuRow
-      className="group/row flex h-[30px] justify-between py-0 text-[13px]"
+      className="group/row flex h-[32px] justify-between py-0 text-[13.5px]"
       data-active={isActive || undefined}
       isActive={isActive}
       title={title}
@@ -69,16 +69,16 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
           selection highlight still spans the sidebar's full width at every
           depth. */}
       <div className="flex min-w-0 flex-1 items-center gap-[9px]" style={depthIndent(depth)}>
-        {/* 21px inside an 18px slot, so the larger circle reads at the same
+        {/* 24px inside a 20px slot, so the larger circle reads at the same
             weight as the provider glyphs it replaced without growing the row or
             shifting the label. */}
-        <span className="relative flex size-[18px] shrink-0 items-center justify-center">
-          <span className="-mx-[1.5px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
+        <span className="relative flex size-[20px] shrink-0 items-center justify-center">
+          <span className="-mx-[2px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
             <AgentAvatar
               name={label}
               iconUrl={iconUrl}
               serverId={serverId}
-              size={21}
+              size={24}
               className={cn('bg-transparent', dimmed && 'opacity-60')}
             />
           </span>
@@ -130,9 +130,9 @@ const DOT_COLOR: Record<AgentPresence['tone'], string> = {
 /**
  * A see-through circle cut from the avatar's corner, a little larger than the
  * dot centred in it, so the dot stands clear on whatever is behind the row.
- * The dot's centre is at 18px of the 21px avatar.
+ * The dot's centre is at 20.5px of the 24px avatar.
  */
-const NOTCH_MASK = 'radial-gradient(circle at 18px 18px, transparent 5px, #000 5.5px)';
+const NOTCH_MASK = 'radial-gradient(circle at 20.5px 20.5px, transparent 5px, #000 5.5px)';
 const PRESENCE_NOTCH: CSSProperties = { maskImage: NOTCH_MASK, WebkitMaskImage: NOTCH_MASK };
 
 function PresenceDot({ presence }: { presence: AgentPresence }) {

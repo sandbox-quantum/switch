@@ -125,8 +125,8 @@ export function connectionStates(
         ready: false,
         note:
           entry.status === 'needs_reauthorization'
-            ? `Reconnect ${entry.name} under Connections.`
-            : `Connect ${entry.name} under Connections first.`,
+            ? `Reconnect ${entry.name} under Connectors.`
+            : `Connect ${entry.name} under Connectors first.`,
       };
     return { ...base, ready: true, note: null };
   });
@@ -146,6 +146,10 @@ export function runAgent(params: {
   const { entry, values, name } = params;
   const filled = (text: string) => interpolate(text, { ...values, agent: name });
   const isolation = entry.isolation ? filled(entry.isolation) : 'shared';
+  const autoMode =
+    typeof entry.autoMode === 'string'
+      ? values[entry.autoMode.replace(/^\{|\}$/g, '')] === true
+      : entry.autoMode !== false;
   const autoApprove =
     typeof entry.autoApprove === 'string'
       ? values[entry.autoApprove.replace(/^\{|\}$/g, '')] === true
@@ -169,9 +173,10 @@ export function runAgent(params: {
       unknown
     >,
     isolation: isolation === 'isolated' ? 'isolated' : 'shared',
+    autoMode,
     autoApprove,
     directory: directory === `${AGENTS_DIR}/${name}` ? null : directory,
-    addressing: entry.addressing ?? 'owner',
+    addressing: entry.addressing ?? 'owner-agents',
     connections: connectionsFor(entry, values),
   };
 }

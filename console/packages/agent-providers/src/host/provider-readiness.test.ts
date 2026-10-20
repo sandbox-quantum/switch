@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseClaudeAuthStatus } from '../claude/sign-in';
+import { CLAUDE_TOO_OLD, parseClaudeAuthStatus, parseClaudeTestReply } from '../claude/sign-in';
 import { parseCursorAbout } from '../cursor/cursor-adapter';
 import { checkProviderReadiness } from './provider-readiness';
 
@@ -23,6 +23,25 @@ describe('a Cursor API key', () => {
 describe('provider authentication', () => {
   it('recognizes signed-out Claude without assuming an installed CLI is ready', () => {
     expect(parseClaudeAuthStatus('{"loggedIn":false}').status).toBe('unauthenticated');
+  });
+  it('says an old Claude Code cannot report its sign-in, instead of failing the check', () => {
+    expect(parseClaudeAuthStatus('Usage: claude [options] [command] [prompt]')).toEqual({
+      status: 'unknown',
+      message: CLAUDE_TOO_OLD,
+      models: [],
+    });
+  });
+  it('takes a test prompt that answered as signed in', () => {
+    expect(parseClaudeTestReply('{"type":"result","is_error":false,"result":"OK"}').status).toBe(
+      'authenticated'
+    );
+  });
+  it('takes a test prompt that failed as not signed in, with what Claude said', () => {
+    const answer = parseClaudeTestReply(
+      '{"type":"result","is_error":true,"result":"Invalid API key · Fix external API key"}'
+    );
+    expect(answer.status).toBe('unauthenticated');
+    expect(answer.message).toContain('Invalid API key');
   });
   it('accepts native API-key authentication', () => {
     expect(parseClaudeAuthStatus('{"loggedIn":true,"authMethod":"api-key"}').status).toBe(

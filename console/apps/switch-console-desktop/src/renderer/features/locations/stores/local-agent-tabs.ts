@@ -7,7 +7,7 @@ export type LocalAgentTabOption = { value: LocalAgentTab; label: string };
 
 const TABS: readonly LocalAgentTabOption[] = [
   { value: 'overview', label: 'Overview' },
-  { value: 'connections', label: 'Connections' },
+  { value: 'connections', label: 'Connectors' },
 ];
 
 /**

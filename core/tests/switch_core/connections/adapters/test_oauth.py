@@ -474,6 +474,7 @@ class TestThroughTheBroker:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
         secret = await _sign_in(adapter, vendor)
         # Due for renewal: inside the fifteen minutes a pass-through keeps.

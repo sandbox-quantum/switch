@@ -62,9 +62,9 @@ Create that file, with the `name` in its frontmatter matching the registered age
 
 Starting the same agent by hand succeeds, which is what makes this read as Switch Console being unreliable rather than as a missing file. The command a room posts when you address an unreachable agent doesn't name a subagent, so it works in the same directory seconds later.
 
-### Auto-create agent never wakes up
+### Agent never wakes up when addressed
 
-Same cause as **Agent not found on launch**, with nothing at all to see. **Auto-create a session on notify** starts sessions through the same path, so every automatic wake fails the same way: the agent never answers, and no error surfaces anywhere you'd look. Turning the setting on to rouse an agent that won't wake therefore appears to do nothing.
+Same cause as **Agent not found on launch**, with nothing at all to see. Switch Console starts sessions for an addressed agent through the same path, so every automatic wake fails the same way: the agent never answers, and no error surfaces anywhere you'd look.
 
 Create the definition file described in that entry.
 
@@ -76,7 +76,7 @@ Real-time delivery has to be switched on for the session, and Switch Console kno
 
 **Note**
 
-Real-time delivery depends on how the agent is authenticated. Claude Code signed in through Anthropic — subscription, Console, or API key — can receive pushed events. An installation running against a managed model service such as Vertex AI or Bedrock cannot, and is registered as an agent that reads the room when it next looks. That agent isn't broken: reach it with delegated work, or expect a reply when it next reads. Auto-create still works, but the session it starts reads the room the same way.
+Real-time delivery depends on how the agent is authenticated. Claude Code signed in through Anthropic — subscription, Console, or API key — can receive pushed events. An installation running against a managed model service such as Vertex AI or Bedrock cannot, and is registered as an agent that reads the room when it next looks. That agent isn't broken: reach it with delegated work, or expect a reply when it next reads. Switch Console still starts a session when it's addressed, but that session reads the room the same way.
 
 ## Talking to an agent in a room
 

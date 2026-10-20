@@ -78,14 +78,29 @@ export function permissionConfigFor(
   mcpNames: string[]
 ): Record<string, OpencodePermissionAction> {
   if (mode === 'full-access') return { '*': 'allow', external_directory: 'allow' };
-  const config: Record<string, OpencodePermissionAction> = { '*': 'ask', edit: editAction(mode) };
+  const config: Record<string, OpencodePermissionAction> =
+    mode === 'auto' ? {} : { '*': 'ask', edit: editAction(mode) };
   for (const permission of NEVER_ASK) config[permission] = 'allow';
   for (const permission of mcpPermissionKeys(mcpNames)) config[permission] = 'allow';
+  if (mode === 'auto') return config;
   for (const permission of ASK_UNLESS_ALLOWED) config[permission] = 'ask';
   return config;
 }
 
-/** The per-session ruleset passed to `session.create` and re-asserted on resume. */
+function allowRules(permissions: readonly string[]): OpencodePermissionRule[] {
+  return permissions.map((permission) => ({ permission, pattern: '*', action: 'allow' }));
+}
+
+/**
+ * The per-session ruleset passed to `session.create` and re-asserted on resume
+ * (an update replaces the session's ruleset rather than adding to it).
+ *
+ * OpenCode evaluates the last matching rule across the agent's configuration
+ * and then this ruleset, so a rule here overrides the person's own. Auto mode
+ * is OpenCode's `--auto`: every ask is approved by the adapter, and only what
+ * the person's configuration denies stays denied, so its ruleset carries no
+ * catch-all that would turn those denials back into asks.
+ */
 export function permissionRulesFor(
   mode: RuntimeMode,
   mcpNames: string[]
@@ -96,15 +111,11 @@ export function permissionRulesFor(
       { permission: 'external_directory', pattern: '*', action: 'allow' },
     ];
   }
+  if (mode === 'auto') return allowRules([...NEVER_ASK, ...mcpPermissionKeys(mcpNames)]);
   return [
     { permission: '*', pattern: '*', action: 'ask' },
     { permission: 'edit', pattern: '*', action: editAction(mode) },
-    ...NEVER_ASK.map((permission) => ({ permission, pattern: '*', action: 'allow' as const })),
-    ...mcpPermissionKeys(mcpNames).map((permission) => ({
-      permission,
-      pattern: '*',
-      action: 'allow' as const,
-    })),
+    ...allowRules([...NEVER_ASK, ...mcpPermissionKeys(mcpNames)]),
     ...ASK_UNLESS_ALLOWED.map((permission) => ({
       permission,
       pattern: '*',

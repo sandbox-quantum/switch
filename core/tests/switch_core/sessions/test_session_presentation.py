@@ -1,6 +1,5 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -8,27 +7,7 @@ from switch_core.sessions.contract import TurnUpsert
 from switch_core.sessions.presentation import (
     activity_error_summary,
     notification_recipient,
-    session_console_url,
 )
-
-
-def test_console_link_uses_current_sdk_identity_and_configured_server():
-    result = session_console_url(
-        "https://switch.example/", "agent&1", "room 2", "sdk-session"
-    )
-    parts = urlsplit(result)
-    assert (parts.scheme, parts.netloc) == ("switchdash", "session")
-    assert parse_qs(parts.query) == {
-        "server": ["https://switch.example"],
-        "agent": ["agent&1"],
-        "room": ["room 2"],
-        "session": ["sdk-session"],
-    }
-
-
-@pytest.mark.parametrize("server", [None, "", "localhost", "file:///tmp/server"])
-def test_console_link_does_not_invent_a_server(server):
-    assert session_console_url(server, "agent", "room", "session") is None
 
 
 async def test_slack_thread_participant_needs_no_mention_or_identity_lookup():

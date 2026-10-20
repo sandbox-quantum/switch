@@ -89,6 +89,7 @@ describe("createManagedAgent", () => {
           provider: "claude",
           model: null,
           instructions: "",
+          auto_mode: true,
           auto_approve: false,
           directory: null,
           isolation: "shared",
@@ -102,7 +103,7 @@ describe("createManagedAgent", () => {
     expect(JSON.parse(init.body as string)).toMatchObject({
       name: "pm-agent",
       controller_id: "c1",
-      definition: { provider: "claude" },
+      definition: { provider: "claude", auto_mode: true, auto_approve: false },
     });
   });
 });

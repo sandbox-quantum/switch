@@ -160,6 +160,22 @@ def test_plan_resolves_the_machine_and_keeps_the_room_addressing():
     assert yaml.safe_load(plan.document or "")["room"]["agents"] == ["switch-expert"]
 
 
+def test_an_agent_without_addressing_is_planned_on_the_default():
+    document = EXPERT.replace(
+        """    addressing:
+      - if: "{start_in} == new_room"
+        value: { anyone_in: [expert_room] }
+      - value: anyone
+""",
+        "",
+    )
+    plan = plan_template(
+        document, {}, {}, builtins={"$creator": "ada"}, machines=MACHINES
+    )
+    (agent,) = plan.new_agents
+    assert agent.addressing == "owner-agents"
+
+
 def test_lint_reads_a_v2_document():
     assert lint_template(EXPERT).warnings == []
     broken = EXPERT.replace("type: room\n    if:", "type: rom\n    if:").replace(

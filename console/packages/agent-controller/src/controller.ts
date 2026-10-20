@@ -1,4 +1,4 @@
-import type { OpenAgentStream } from '@switch-console/agent-providers';
+import type { OpenAgentStream, ProviderReadiness } from '@switch-console/agent-providers';
 import { AgentHub } from './agent-hub';
 import {
   AccessTokens,
@@ -23,6 +23,7 @@ import {
   type AgentCursor,
   type Assignment,
   isProvider,
+  type Provider,
   type StatusReport,
   statusReportSchema,
   type ToolStatus,
@@ -89,6 +90,8 @@ export type ControllerDeps = {
    * its events on and the folder agents with no directory of their own work in.
    */
   runtime: (openStream: (agentId: string) => OpenAgentStream, workspaces: string) => AgentRuntime;
+  /** Tries a provider's own login with a test prompt; absent where agents run as other users. */
+  verifyLogin?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
   locator: ProviderLocator;
   /**
    * Requests to check every provider again now, served while the controller
@@ -411,6 +414,7 @@ export async function runController(
     runtime,
     sealed,
     probeCwd: deps.dataDir,
+    verify: deps.verifyLogin,
     now: deps.now,
     log,
     onChange: () => reporter?.request(),
@@ -500,14 +504,16 @@ export async function runController(
             );
           },
           recheckProvider: async (provider) => {
-            const status = await providers.check(provider);
+            // Asked for by someone fixing a login, like the Console recheck,
+            // so the login is tried for real.
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
             // Agents move onto a login given since, or off one withdrawn.
             void reconcileLocally();
             return status;
           },
           takeUpLogin: async (provider) => {
-            const status = await providers.check(provider);
+            const status = await providers.check(provider, { verify: true });
             await reporter?.sendNow();
             void reconcileLocally();
             return { status, problem: providers.loginProblem(provider) };
@@ -553,7 +559,9 @@ export async function runController(
 
   const stopServingRechecks = deps.rechecks.serve(async () => {
     await deps.refreshPath();
-    await providers.checkAll();
+    // A recheck is asked for by someone setting up or fixing a login, so
+    // each login is tried for real, not only reported as there.
+    await providers.checkAll({ verify: true });
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();

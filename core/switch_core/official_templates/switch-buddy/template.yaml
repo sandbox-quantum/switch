@@ -45,4 +45,4 @@ resources:
     directory: "{directory}"
     repo: https://github.com/sandbox-quantum/switch
     can_manage_agents: true
-    addressing: owner
+    addressing: owner-agents

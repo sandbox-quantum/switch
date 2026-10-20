@@ -44,6 +44,7 @@ const agent = (agentId: string, controllerId: string | null, name: string): Mana
   isolation: 'shared',
   directory: null,
   autoApprove: false,
+  autoMode: false,
   status: null,
 });
 

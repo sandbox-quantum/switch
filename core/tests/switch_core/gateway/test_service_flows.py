@@ -113,6 +113,7 @@ def _world(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
+        public_url=None,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker

@@ -7,6 +7,7 @@ import {
   type ProviderReadiness,
   providerUnsupportedReason,
   readCliToolStatuses,
+  verifyClaudeSignIn,
 } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
@@ -202,14 +203,21 @@ export function providerStatusFrom(
     checked_at: checkedAt,
   };
   if (!readiness) return { ...base, auth: 'unknown', auth_source: null, reason: 'internal' };
+  const said = readiness.message ? { auth_problem: readiness.message.slice(0, 300) } : {};
   switch (readiness.status) {
     case 'authenticated':
       return { ...base, auth: 'ok', auth_source: 'local' };
     case 'unauthenticated':
     case 'unconfigured':
-      return { ...base, auth: 'missing', auth_source: null, reason: 'provider_login_missing' };
+      return {
+        ...base,
+        auth: 'missing',
+        auth_source: null,
+        reason: 'provider_login_missing',
+        ...said,
+      };
     case 'unknown':
-      return { ...base, auth: 'unknown', auth_source: null };
+      return { ...base, auth: 'unknown', auth_source: null, ...said };
   }
 }
 
@@ -249,6 +257,13 @@ export class ProviderStatuses {
     private readonly deps: {
       locator: ProviderLocator;
       runtime: Pick<AgentRuntime, 'probe'>;
+      /**
+       * A real test of a provider's own login (one short prompt), for those
+       * whose status command only says a login is there. Null when the
+       * provider has none. Costs a request, so `check` runs it only when
+       * asked to or when the login was not already known to work.
+       */
+      verify?: (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null;
       /** The logins Switch gives this machine; null when it cannot open any. */
       sealed: SealedLogins | null;
       probeCwd: string;
@@ -296,13 +311,24 @@ export class ProviderStatuses {
     });
   }
 
-  /** Checks one provider now, its own login first, then one given to the machine. */
-  async check(provider: Provider): Promise<ProviderStatus> {
+  /**
+   * Checks one provider now, its own login first, then one given to the
+   * machine. With `verify`, a login the provider says it has is also tried
+   * with a test prompt; without it, only when it was not already known to work.
+   */
+  async check(provider: Provider, options: { verify?: boolean } = {}): Promise<ProviderStatus> {
     const sequence = ++this.checks;
     const at = this.deps.now();
     const checkedAt = new Date(at).toISOString();
     const located = await this.deps.locator.locate(provider);
-    const readiness = located ? await this.probe(provider, located.path, null) : null;
+    let readiness = located ? await this.probe(provider, located.path, null) : null;
+    const knownToWork = this.entries.get(provider)?.status;
+    if (
+      located &&
+      readiness?.status === 'authenticated' &&
+      (options.verify || !(knownToWork?.auth === 'ok' && knownToWork.auth_source === 'local'))
+    )
+      readiness = (await this.tryLogin(provider, located.path)) ?? readiness;
     let status = providerStatusFrom(provider, located, readiness, checkedAt);
     let login: GivenLogin | null = null;
     let problem: ProviderEntry['problem'] = null;
@@ -392,6 +418,19 @@ export class ProviderStatuses {
     return this.entries.get(provider)?.problem ?? null;
   }
 
+  /** The test prompt's answer, or null when the provider has none or it could not run. */
+  private async tryLogin(provider: Provider, path: string): Promise<ProviderReadiness | null> {
+    try {
+      return (await this.deps.verify?.(provider, path)) ?? null;
+    } catch (error) {
+      this.deps.log.warn('Could not try a provider’s login with a test prompt', {
+        provider,
+        error: errorMessage(error),
+      });
+      return null;
+    }
+  }
+
   private async probe(
     provider: Provider,
     path: string,
@@ -431,8 +470,8 @@ export class ProviderStatuses {
   }
 
   /** Checks every provider now, whatever its last check, all at once. */
-  async checkAll(): Promise<void> {
-    await Promise.all(PROVIDERS.map((provider) => this.check(provider)));
+  async checkAll(options: { verify?: boolean } = {}): Promise<void> {
+    await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
   }
 
   /** Checks every provider whose last check is older than the TTL, all at once. */
@@ -468,7 +507,13 @@ export class ProviderStatuses {
 }
 
 function fingerprintProvider(status: ProviderStatus): string {
-  return JSON.stringify([status.installed, status.version, status.auth, status.reason ?? null]);
+  return JSON.stringify([
+    status.installed,
+    status.version,
+    status.auth,
+    status.reason ?? null,
+    status.auth_problem ?? null,
+  ]);
 }
 
 /** An agent host that stopped because its token was refused (by the relay, now). */
@@ -677,7 +722,14 @@ export class StatusCollector {
 export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
   return JSON.stringify({
     revision: report.controller.assignment_revision,
-    providers: report.providers.map((p) => [p.provider, p.installed, p.version, p.auth, p.reason]),
+    providers: report.providers.map((p) => [
+      p.provider,
+      p.installed,
+      p.version,
+      p.auth,
+      p.reason,
+      p.auth_problem,
+    ]),
     tools: report.tools.map((t) => [t.tool, t.state, t.reason]),
     agents: report.agents.map((a) => [
       a.agent_id,
@@ -693,4 +745,26 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
       ? [report.update.target, report.update.state, report.update.problem]
       : null,
   });
+}
+
+/**
+ * The test prompt for the providers that have one, run in `cwd` with this
+ * process's environment: Claude Code, whose status command only says a login
+ * is there.
+ */
+export function providerLoginTest(
+  cwd: string
+): (provider: Provider, binaryPath: string) => Promise<ProviderReadiness> | null {
+  return (provider, binaryPath) =>
+    provider === 'claude'
+      ? verifyClaudeSignIn({
+          binaryPath,
+          cwd,
+          env: Object.fromEntries(
+            Object.entries(process.env).filter(
+              (entry): entry is [string, string] => entry[1] !== undefined
+            )
+          ),
+        })
+      : null;
 }

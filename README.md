@@ -6,7 +6,7 @@
   <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-**Bring humans and AI agents together in the tools where your team already works**
+**Open-source AI teammates, working alongside your team in Slack, Teams, Discord, Telegram and Mattermost. Self-host it, with any agent and any model.**
 
 <a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
 
@@ -25,17 +25,27 @@
 
 </div>
 
-Switch is the underlying infrastructure and framework that allows you to build teams where humans and agents work side by side.
+More than a single AI bot you ask questions to: Switch turns each channel into a room where your team and everyone's AI teammates work together, with shared context.
 
-- 💬 **Bring your agents where your team already collaborates**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost. Nobody has to learn a new tool or move anywhere.
-- 🌍 **Any agent, any provider, any framework, running anywhere**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain HR agent on your servers. If it speaks the protocol, it can join.
-- 🧩 **Design how humans and agents work together**. Set the instructions a channel runs under, hand out roles, and pass work as tracked tasks. How your team operates is something you design, not something a model improvises.
-- 🛡️ **Run your team with confidence**. Define who can talk to which agent and in what context. Guardrails and cost reporting are coming next, Switch AI among the ways to get them.
+- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere.
+- 🌍 **Any agent, any model, any provider**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain agent on your servers. If it speaks the protocol, it can join.
+- 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and tools (Google Workspace, Jira, GitHub), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
+- 🏠 **Self-hosted, and the context is yours**. Run Switch on your own servers. Your team's context stays with your company, so you can change agents, models or vendors at any time without losing it.
+- 🛡️ **Run your team with confidence**. Decide who can talk to which agent, and in which rooms. Guardrails and cost reporting come with [Switch Trust](https://www.switchagents.ai/trust) and [Switch ROI](https://www.switchagents.ai/roi).
 
+## Get started in two steps
 
-<div align="center">
-<img src="assets/switch-overview.jpg" alt="Switch architecture — agents and platforms connected through Switch" width="860">
-</div>
+1. **Install Switch Console**, the desktop app, for your platform.
+2. **Open it and talk to switch-buddy**, your own assistant in Switch. Tell it what you want: it creates your first agents and channels, helps you connect the chat app your team uses, and answers anything about Switch.
+
+| Platform | Install |
+| --- | --- |
+| macOS | [Apple Silicon](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) · [Intel](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
+| Windows | [Installer](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
+| Linux x64 | [AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [DEB](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
+| Linux ARM64 | [AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [DEB](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
+
+See the [latest release](https://github.com/sandbox-quantum/switch/releases/latest) for all desktop builds.
 
 ## Watch it work
 
@@ -124,9 +134,9 @@ Most tools in this space want to become the place your team works. Switch does n
 
 Getting humans and agents to work as one team is the part nobody has solved yet. That is where our effort goes, rather than into rebuilding chat apps and coding agents that already work well.
 
-## Getting started
+## Docs
 
-### Let an agent walk you through the onboarding
+### Let an agent walk you through them
 
 
 Rather than working through the documentation yourself, connect an agent to it
@@ -162,122 +172,10 @@ opencode mcp add
 ```
 Then follow the procedure and provide `https://docs.switchagents.ai/mcp` as the MCP server URL.
 
+### Read them yourself
 
-
-### I want to try it out myself
-
-**Follow the [getting started guide](https://docs.switchagents.ai/switch-rooms/getting-started).**
-It covers the whole path properly. The short version:
-
-1. Download the Switch Console app for your platform and install it.
-2. Start a local server from the app.
-3. Add your first agent: a name, a working directory, and the provider you use.
-4. Create a channel and talk to it.
-
-| Platform | Download |
-|---|---|
-| macOS (Apple Silicon) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) |
-| macOS (Intel) | [.dmg](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
-| Linux (x64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x86_64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-amd64.deb) |
-| Linux (arm64) — **early access** | [.AppImage](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.AppImage) · [.deb](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.deb) |
-| Windows (x64) — **early access** | [.exe](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.exe) |
-
-**Early access means the Windows and Linux builds of Switch Console are ready to use and still changing.** Expect rough edges, and behavior that can differ from one release to the next. When you hit one, [open an issue](https://github.com/sandbox-quantum/switch/issues) — a report is what moves it up the list. This is about the desktop app only: running a Switch server on Linux is the primary deployment path and carries no such label.
-
-
-### I want to deploy Switch for my team
-
-Read [hosting remotely](https://docs.switchagents.ai/switch-rooms/deploy/host-remotely).
-
-
-## Architecture at a glance
-
-
-### Switch Core
-
-```mermaid
-flowchart LR
-  subgraph people["People"]
-    slack["Slack"]
-    teams["Teams"]
-    discord["Discord"]
-    telegram["Telegram"]
-    mattermost["Mattermost"]
-  end
-
-  subgraph core["Switch Core"]
-    collab["Collaboration Bridge"]
-    rooms[("Rooms in PostgreSQL<br/>messages · media · LISTEN/NOTIFY")]
-    agentbridge["Agent Bridge<br/>HTTP + SSE · MCP"]
-    gateway["Gateway API"]
-  end
-
-  subgraph agents["Agents"]
-    cli["CLI agents<br/>via Switch Console"]
-    custom["Custom agents<br/>via Agent Protocol"]
-  end
-
-  dashboard["Operator Dashboard"]
-
-  slack --- collab
-  teams --- collab
-  discord --- collab
-  telegram --- collab
-  mattermost --- collab
-
-  collab <--> rooms
-  rooms <--> agentbridge
-  rooms --- gateway
-  gateway --- dashboard
-
-  agentbridge <--> cli
-  agentbridge <--> custom
-```
-
-Switch Core is the infrastructure that joins your agents and your collaboration
-apps together.
-
-At its centre are rooms, held in PostgreSQL, where everyone meets. Every
-participant is a client of that store: people arriving through a bridged
-channel, agents connected through the Agent Bridge, and Switch's own services.
-
-**Agent Bridge.** Agents speak the Switch Agent Protocol: HTTP for what they
-send, SSE for what Switch pushes back, so they hear about a message as it
-happens. [Switch Console](console/) and the sidecar it deploys to remote hosts
-speak it for every CLI-based agent session they start: each session gets the
-Switch tools as a local MCP server and a skill that teaches it the room
-workflow.
-
-**Collaboration Bridge.** Each chat platform connects through its own adapter,
-with its own transport: Socket Mode for Slack, an HTTP listener for Teams, the
-gateway websocket for Discord, long polling for Telegram, a websocket for
-Mattermost. It relays both ways,
-maps each channel to a room, and gives every agent its own name and avatar in
-the channel.
-
-**Room Service and Gateway API.** The management layer: rooms, roles,
-instructions, permissions, attached knowledge and connected messaging apps. The
-Gateway API is the control plane behind the operator dashboard, and PostgreSQL
-holds the state.
-
-### Switch Console
-
-Switch Console is the desktop app on the other side of the Agent Bridge. It does
-three jobs.
-
-**It runs your agents.** Define an agent once with its name, working directory
-and provider, and Console handles its identity, credentials and sessions,
-including starting one automatically when somebody addresses it in a channel.
-Run it on your own machine, or on a remote host you own so it is there for your
-team around the clock.
-
-**It manages the everyday.** Connect your messaging apps, create channels and
-configure who and what is in them, without leaving the app. The operator
-dashboard covers the rest.
-
-**It runs your server.** Point it at your team's Switch server, or have it stand
-one up for you, on this machine or on a host you own, without you writing any
-Compose or Helm configuration.
+- [Getting started](https://docs.switchagents.ai/switch-rooms/getting-started): from your first agent to your first channel.
+- [Hosting remotely](https://docs.switchagents.ai/switch-rooms/deploy/host-remotely): deploy Switch for your team.
 
 ## Telemetry
 

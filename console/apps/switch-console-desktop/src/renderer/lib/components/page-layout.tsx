@@ -6,6 +6,8 @@ export type PageSidebarItem<T extends string = string> = {
   id: T;
   label: string;
   isExternal?: boolean;
+  /** Drawn at the item's far end, such as a status dot. */
+  trailing?: React.ReactNode;
 };
 
 export function PageSidebarMenu<T extends string>({
@@ -106,6 +108,7 @@ function PageSidebarButton<T extends string>({
     >
       <span className="text-left">{item.label}</span>
       {item.isExternal && <ExternalLink className="h-4 w-4" />}
+      {item.trailing && <span className="ml-auto flex items-center">{item.trailing}</span>}
     </button>
   );
 }

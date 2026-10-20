@@ -49,6 +49,7 @@ export type Draft = {
   description: string;
   iconUrl: string | null;
   instructions: string;
+  autoMode: boolean;
   autoApprove: boolean;
   /** Where it runs on its machine; empty for wherever the machine chooses. */
   directory: string;
@@ -80,6 +81,7 @@ export function draftOf(
     description: agent.description,
     iconUrl: agent.iconUrl,
     instructions: agent.definition.instructions,
+    autoMode: agent.definition.autoMode,
     autoApprove: agent.definition.autoApprove,
     directory: shownDirectory(agent, machine),
     ownProcess: agent.definition.isolation === 'isolated',
@@ -129,6 +131,7 @@ export function editOf(
     );
     definition.advancedConfig = { ...Object.fromEntries(unknown), ...advancedConfig };
   }
+  if (after.autoMode !== before.autoMode) definition.autoMode = after.autoMode;
   if (after.autoApprove !== before.autoApprove) definition.autoApprove = after.autoApprove;
   if (after.instructions !== before.instructions) definition.instructions = after.instructions;
 

@@ -19,6 +19,7 @@ const workspaces = vi.hoisted(() => ({
   disconnectService: vi.fn(),
   getGitHubConnection: vi.fn(),
   setServiceGrant: vi.fn(),
+  setWorkspaceService: vi.fn(),
 }));
 const switchServers = vi.hoisted(() => ({
   openGitHubInstallation: vi.fn(),
@@ -49,10 +50,23 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'workspace' },
 }));
 
-const admin = vi.hoisted(() => ({ administers: false }));
+const admin = vi.hoisted(() => ({ administers: false, operator: false }));
 
 vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
-  administersWorkspaceInScope: () => admin.administers,
+  administersWorkspaceInScope: () => admin.administers || admin.operator,
+  operatesServer: () => admin.operator,
+}));
+
+const server = vi.hoisted(() => ({ managed: false }));
+
+vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
+  switchServersStore: {
+    get servers() {
+      return [
+        { id: 'server', name: 'Dev Server', managed: server.managed, managementKind: 'local' },
+      ];
+    },
+  },
 }));
 
 /** Stands in for the app's navigation: a card opens its profile by navigating. */
@@ -143,6 +157,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     connectable: true,
     status: 'not_connected',
     unavailable_reason: null,
+    unavailable_code: null,
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,
@@ -172,6 +187,8 @@ let root: Root | null = null;
 beforeEach(() => {
   navigation.reset();
   admin.administers = false;
+  admin.operator = false;
+  server.managed = false;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   switchServers.openGitHubInstallation.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
@@ -228,6 +245,24 @@ it("shows the workspace's catalog, what the person has on Yours and everything o
   expect(button(/^Linear/, grid(page)!)?.textContent).toMatch(/Coming soon/);
 });
 
+it('opens on Discover when nothing is connected yet, and stays on the tab the person picks', async () => {
+  const unconnected = CATALOG.map((item) =>
+    item.status === 'connected' ? { ...item, status: 'not_connected' as const } : item
+  );
+  workspaces.getServiceConnections.mockResolvedValue(unconnected);
+  const page = await render();
+
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  const pressed = (name: string) =>
+    page.querySelector(`button[aria-label="${name}"]`)?.getAttribute('aria-pressed');
+  expect(pressed('Discover')).toBe('true');
+  expect(button(/^Example/, grid(page)!)).toBeDefined();
+
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Yours"]')!.click());
+  await vi.waitFor(() => expect(pressed('Yours')).toBe('true'));
+  expect(page.textContent).toContain('You have not connected anything yet.');
+});
+
 it('marks a service the server cannot use with its reason, without offering to connect it', async () => {
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   const page = await render();
@@ -240,6 +275,116 @@ it('marks a service the server cannot use with its reason, without offering to c
     'GitHub is not set up on this server.'
   );
   expect(page.querySelector('button[aria-label="Connect GitHub"]')).toBeNull();
+});
+
+const NOT_SET_UP = entry({
+  slug: 'example',
+  name: 'Example',
+  connectable: false,
+  unavailable_reason: 'Example is not set up on this server.',
+  unavailable_code: 'app_not_set_up',
+});
+
+async function discover(catalog: ConnectionCatalogEntry[]): Promise<HTMLElement> {
+  workspaces.getServiceConnections.mockResolvedValue(catalog);
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
+  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
+  return page;
+}
+
+it("offers the server's operator to set up an app that is not set up, on the card and the profile", async () => {
+  admin.operator = true;
+  const page = await discover([NOT_SET_UP]);
+
+  expect(button(/^Example/, grid(page)!)!.textContent).toMatch(/Needs setup/);
+  const setUp = page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]');
+  expect(setUp).not.toBeNull();
+  await act(async () => setUp!.click());
+  expect(navigation.view()).toBe('admin');
+  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+
+  navigation.navigate('connectors', { connector: 'example' });
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  expect(button(/^Set up$/, page)).toBeDefined();
+  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+});
+
+it('tells anyone else who sets the app up, with no button to press', async () => {
+  admin.administers = true;
+  const page = await discover([NOT_SET_UP]);
+
+  const card = button(/^Example/, grid(page)!)!;
+  expect(card.textContent).toMatch(/Unavailable/);
+  expect(card.textContent).toContain('Ask whoever runs your Switch server to set it up.');
+  expect(card.textContent).not.toContain('Switch dashboard');
+  expect(page.querySelector('button[aria-label="Set up Example"]')).toBeNull();
+  expect(page.querySelector('button[aria-label="Connect Example"]')).toBeNull();
+
+  await act(async () => card.click());
+  await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
+  expect(button(/^Set up$/, page)).toBeUndefined();
+  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+});
+
+it("says GitHub can't work on a server without https, and offers this computer's sign-in instead", async () => {
+  admin.operator = true;
+  server.managed = true;
+  const github = entry({
+    slug: 'github',
+    name: 'GitHub',
+    connectable: false,
+    unavailable_reason: "GitHub can't be used on this server.",
+    unavailable_code: 'needs_https',
+  });
+  workspaces.getServiceConnections.mockResolvedValue([github]);
+  const page = await render();
+  await vi.waitFor(() => expect(grid(page)).not.toBeNull());
+  await act(async () => page.querySelector<HTMLElement>('button[aria-label="Discover"]')!.click());
+  await vi.waitFor(() => expect(button(/^GitHub/, grid(page)!)).toBeDefined());
+
+  const card = button(/^GitHub/, grid(page)!)!;
+  expect(card.textContent).toMatch(/Unavailable/);
+  expect(card.textContent).toContain("this computer's own GitHub sign-in");
+  expect(page.querySelector('button[aria-label="Set up GitHub"]')).toBeNull();
+  expect(page.querySelector('button[aria-label="Connect GitHub"]')).toBeNull();
+});
+
+it('lets a workspace admin turn on a service the workspace has off, from its card', async () => {
+  admin.administers = true;
+  const off = entry({ slug: 'example', name: 'Example', workspace_enabled: false });
+  workspaces.setWorkspaceService.mockResolvedValue({
+    slug: 'example',
+    enabled: true,
+    warning: null,
+  });
+  const page = await discover([off]);
+
+  const turnOn = page.querySelector<HTMLButtonElement>('button[aria-label="Turn on Example"]');
+  expect(turnOn).not.toBeNull();
+  workspaces.getServiceConnections.mockResolvedValue([{ ...off, workspace_enabled: true }]);
+  await act(async () => turnOn!.click());
+
+  expect(workspaces.setWorkspaceService).toHaveBeenCalledWith({
+    workspaceId: 'workspace',
+    service: 'example',
+    enabled: true,
+  });
+  await vi.waitFor(() =>
+    expect(page.querySelector('button[aria-label="Connect Example"]')).not.toBeNull()
+  );
+});
+
+it('tells a member to ask a workspace admin about a service the workspace has off', async () => {
+  const page = await discover([
+    entry({ slug: 'example', name: 'Example', workspace_enabled: false }),
+  ]);
+
+  expect(button(/^Example/, grid(page)!)!.textContent).toContain(
+    'Ask a workspace admin to turn it on.'
+  );
+  expect(page.querySelector('button[aria-label="Turn on Example"]')).toBeNull();
 });
 
 it('shows the real error when the catalog cannot be read, with Retry', async () => {

@@ -892,7 +892,6 @@ async def test_the_worst_streamed_message_is_one_slack_would_accept() -> None:
         _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
-        session_url="switchdash://session?server=https%3A%2F%2Fswitch.example&session=s",
     )
 
     assert (

@@ -24,6 +24,7 @@ import {
   type WorkspaceServiceChange,
   connectionAgentsSchema,
   connectionCatalogSchema,
+  knownUnavailableCode,
   serviceConnectionsSchema,
   workspaceServiceChangeSchema,
   workspaceServicesSchema,
@@ -67,8 +68,10 @@ import {
 import {
   type AddressingPolicy,
   type AddTeamsTeamResult,
+  type AgentRenameOutcome,
   type BridgeConfigField,
   type BridgeDirectoryUser,
+  type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
   type DeleteBridgeResult,
@@ -85,6 +88,7 @@ import {
   type RemoteRoomRole,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
+  type RetireOutcome,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -1381,6 +1385,38 @@ export async function updateAgentDisplayName(
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
 
+/**
+ * Rename an agent and set its display name in one step
+ * (`PUT /agents/{id}/name`). The display name is always sent: the current one
+ * keeps it, null clears it. Only the agent's owner (or an admin) may; a
+ * refusal (a name in use, a clash in a room or on a chat platform) surfaces as
+ * a `GatewayError` carrying the server's reason.
+ */
+export async function renameAgent(
+  server: SwitchServer,
+  agentId: string,
+  name: string,
+  displayName: string | null
+): Promise<AgentRenameOutcome> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/name`, {
+    authenticated: true,
+    method: 'PUT',
+    body: { name, display_name: displayName },
+  });
+  const json = (await res.json()) as {
+    agent: AgentSummaryJson;
+    old_name: string;
+    bridge_failures: string[];
+    templates_mentioning_old_name: string[];
+  };
+  return {
+    agent: toRemoteAgentSummary(json.agent),
+    oldName: json.old_name,
+    bridgeFailures: json.bridge_failures,
+    templatesMentioningOldName: json.templates_mentioning_old_name,
+  };
+}
+
 /** List a server's room groups (`GET /room-groups`), for the addressing-rule
  * room-group selector. */
 export async function fetchRoomGroups(server: SwitchServer): Promise<RemoteRoomGroup[]> {
@@ -2190,58 +2226,6 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
   }));
 }
 
-/** A subagent registered via the bulk endpoint. `apiKey` is a secret — keep it
- * in the main process (write it to the subagent's settings file); never pass it
- * to the renderer. */
-export type BulkRegisteredSubagent = {
-  agentName: string;
-  name: string;
-  id: string;
-  apiKey: string;
-};
-
-/**
- * Register Claude Code subagents under a parent agent on `server`
- * (session-authed `POST /gateway/agents/register-known-bulk`). The signed-in
- * user must own the parent. A 409 (one or more names already exist) surfaces as
- * a `GatewayError` with status 409 so the caller can offer to overwrite.
- */
-export async function registerSubagentsBulk(
-  server: SwitchServer,
-  params: {
-    parentAgentId: string;
-    subagents: { agentName: string; description: string }[];
-    /** Register every subagent with the `auto_session` connection model, so a
-     * watcher auto-spawns a session when the subagent is addressed. */
-    autoSession: boolean;
-    overwrite?: boolean;
-  }
-): Promise<BulkRegisteredSubagent[]> {
-  const res = await gatewayFetch(server, '/agents/register-known-bulk', {
-    authenticated: true,
-    method: 'POST',
-    body: {
-      agent_type: 'claude-code',
-      parent_agent_id: params.parentAgentId,
-      options: params.autoSession ? { auto_session: true } : {},
-      subagents: params.subagents.map((s) => ({
-        subagent_name: s.agentName,
-        description: s.description,
-      })),
-      overwrite: params.overwrite ?? false,
-    },
-  });
-  const json = (await res.json()) as {
-    results: Array<{ subagent_name: string; name: string; id: string; api_key: string }>;
-  };
-  return json.results.map((r) => ({
-    agentName: r.subagent_name,
-    name: r.name,
-    id: r.id,
-    apiKey: r.api_key,
-  }));
-}
-
 /**
  * Delete an agent on `server` (session-authed `DELETE /agents/{agentId}`). Used
  * to deregister a subagent's child identity when it is removed from Switch Console.
@@ -2379,6 +2363,7 @@ export type TemplateRunAgent = {
   model: string | null;
   advancedConfig: Record<string, unknown>;
   isolation: 'shared' | 'isolated';
+  autoMode: boolean;
   autoApprove: boolean;
   /** May start with `{$agents_dir}`, the machine's own folder for agents; null for the agent's own workspace there. */
   directory: string | null;
@@ -2449,6 +2434,7 @@ export async function runTemplateWithAgents(
       model: a.model,
       advanced_config: a.advancedConfig,
       isolation: a.isolation,
+      auto_mode: a.autoMode,
       auto_approve: a.autoApprove,
       directory: a.directory,
       addressing: a.addressing,
@@ -2910,6 +2896,9 @@ type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
   agent_ids?: string[];
   connected_user_names?: string[];
+  /** Absent from a server that predates it; kept absent rather than read as
+   * "no channel", so the delete dialog can say it does not know. */
+  channel_on_delete?: ChannelRetirement | null;
 };
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -2918,6 +2907,7 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     instructions: r.instructions ?? null,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
+    channelOnDelete: r.channel_on_delete,
   };
 }
 
@@ -2998,18 +2988,38 @@ export async function removeRoomAgent(
 }
 
 /**
- * Delete a room outright (`DELETE /rooms/{id}`), taking its history and its
- * bridged channel with it.
+ * Delete a room outright (`DELETE /rooms/{id}`), taking its history with it,
+ * and resolve to what became of its platform channel.
+ *
+ * The channel is kept unless `retireChannel` asks otherwise: people often
+ * delete a room to take the agents out of a channel they keep using. Asked,
+ * the server retires it as far as the platform allows — archived on Slack and
+ * Mattermost, deleted on Discord, left by the bot on Telegram, kept on Teams —
+ * and reports it (`?retire_channel=true`, sent only when asked, so the request
+ * is unchanged for the default). A channel it could not retire comes back
+ * `failed` with the reason: the room is deleted regardless, and the channel
+ * needs removing by hand. Null when the room had no channel, the channel was
+ * kept, or the server predates the report.
  *
  * The gateway decides who may: its owner, or an admin. Switch Console hides the
  * action from anyone else, but that is a courtesy — a refusal here is the
  * authoritative answer and is surfaced rather than swallowed.
  */
-export async function deleteRoom(server: SwitchServer, roomId: string): Promise<void> {
-  await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
+export async function deleteRoom(
+  server: SwitchServer,
+  roomId: string,
+  options: { retireChannel?: boolean } = {}
+): Promise<RetireOutcome | null> {
+  const query = options.retireChannel ? '?retire_channel=true' : '';
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}${query}`, {
     authenticated: true,
     method: 'DELETE',
   });
+  const json = (await res.json()) as {
+    channel?: { outcome: RetireOutcome['outcome']; reason?: string | null } | null;
+  };
+  if (!json.channel) return null;
+  return { outcome: json.channel.outcome, reason: json.channel.reason ?? null };
 }
 
 /**
@@ -3132,6 +3142,7 @@ export async function getConnectionCatalog(
     connectable: entry.connectable,
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
+    unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
     loopback_ports: entry.loopback_ports,
@@ -3154,6 +3165,7 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         ...entry,
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -3675,6 +3687,8 @@ export type ControllerProviderReport = {
   provider: string;
   installed: boolean;
   auth: 'ok' | 'expired' | 'missing' | 'unknown';
+  /** Why its login does not work, in the controller's words; null when it said nothing. */
+  problem: string | null;
 };
 
 /** A managed agent as the owner's list shows it. */
@@ -3704,6 +3718,8 @@ export type ManagedAgent = {
    * workspace for the agent; null only when the machine has not said where that is.
    */
   directory: string | null;
+  /** Off for a definition saved before auto mode existed, as the server reports it. */
+  autoMode: boolean;
   autoApprove: boolean;
   status: {
     process: string;
@@ -3748,6 +3764,7 @@ type ManagedAgentJson = {
     advanced_config?: unknown;
     instructions?: unknown;
     directory?: unknown;
+    auto_mode?: unknown;
     auto_approve?: unknown;
     isolation?: unknown;
   } | null;
@@ -3895,10 +3912,17 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   if (!Array.isArray(providers)) return [];
   return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
     if (!entry || typeof entry !== 'object') return [];
-    const { provider, installed, auth } = entry as Record<string, unknown>;
+    const { provider, installed, auth, auth_problem } = entry as Record<string, unknown>;
     if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
     const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
-    return [{ provider, installed, auth: known ?? 'unknown' }];
+    return [
+      {
+        provider,
+        installed,
+        auth: known ?? 'unknown',
+        problem: typeof auth_problem === 'string' && auth_problem ? auth_problem : null,
+      },
+    ];
   });
 }
 
@@ -3954,6 +3978,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
       typeof json.definition?.instructions === 'string' ? json.definition.instructions : '',
     isolation: json.definition?.isolation === 'isolated' ? 'isolated' : 'shared',
     directory: typeof json.definition?.directory === 'string' ? json.definition.directory : null,
+    autoMode: json.definition?.auto_mode === true,
     autoApprove: json.definition?.auto_approve === true,
     status: json.status
       ? {
@@ -4088,6 +4113,7 @@ export type ManagedAgentDefinitionBody = {
   /** Keyed by the provider's advanced configuration fields; unset fields are absent. */
   advanced_config: Record<string, AdvancedConfigValue>;
   instructions: string;
+  auto_mode: boolean;
   auto_approve: boolean;
   directory: string | null;
 };

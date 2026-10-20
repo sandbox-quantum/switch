@@ -41,6 +41,7 @@ const EXAMPLE: ConnectionCatalogEntry = {
   connectable: true,
   status: 'not_connected',
   unavailable_reason: null,
+  unavailable_code: null,
   pass_through: false,
   token_lifetime: null,
   loopback_ports: null,

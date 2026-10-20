@@ -221,10 +221,13 @@ export const agents = sqliteTable(
     workspaceId: text('workspace_id').references(() => workspaces.id, { onDelete: 'set null' }),
     status: text('status'),
     // When set, Switch Console launches this agent's CLI with its auto-approve /
-    // "bypass permissions" flag (e.g. `--dangerously-skip-permissions`).
-    // Defaults false for local agents; onboarding seeds it true for remote
-    // agents (see onboard-agent). Editable per agent in location settings.
+    // "bypass permissions" flag (e.g. `--dangerously-skip-permissions`). Wins
+    // over `autoMode`. Editable per agent in location settings.
     autoApprove: integer('auto_approve', { mode: 'boolean' }).notNull().default(false),
+    // When set, sessions run in the provider's own auto mode: safe actions run
+    // without asking, risky ones still ask. The column defaults false so rows
+    // that predate it keep their behaviour; every create path sets it.
+    autoMode: integer('auto_mode', { mode: 'boolean' }).notNull().default(false),
     // The display name of the agent's owner on the Switch server, set when the
     // agent was loaded from another install rather than created here.
     ownerName: text('owner_name'),

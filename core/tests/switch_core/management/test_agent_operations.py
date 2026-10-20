@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.addressing import owner_only_policy
+from switch_core.addressing import default_agent_policy, parse_policy
 from switch_core.bridges.agent.mcp.server import mcp
 from switch_core.bridges.agent.operations import all_operations, definitions
 from switch_core.bridges.agent.operations import context as op_context
@@ -403,7 +403,17 @@ class TestCreateAgent:
         assert created.owner_id == owner.id
         assert created.display_name == "Builder"
         assert created.can_manage_agents is False
-        assert created.addressing_policy == owner_only_policy([]).model_dump()
+        assert created.addressing_policy == default_agent_policy().model_dump()
+        # The agent that made it, which has the same owner, can address it.
+        assert parse_policy(created.addressing_policy).allows(
+            room_id="any-room",
+            group_id=None,
+            sender_kind="agent",
+            sender_id=agent_id,
+            sender_user_ids=[],
+            sender_owner_user_id=owner.id,
+            owner_user_id=owner.id,
+        )
         async with harness.session_factory() as session:
             row = (
                 await session.execute(
@@ -423,10 +433,34 @@ class TestCreateAgent:
         }
         assert row.definition["instructions"] == "Build it."
         assert row.definition["directory"] == "/work/builder"
+        assert row.definition["auto_mode"] is True
         assert row.definition["auto_approve"] is False
         binding = harness.protocol.connections.controllers.binding(created.id)
         assert binding is not None
         assert binding.controller_id == controller.controller_id
+
+    async def test_auto_mode_can_be_left_off(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        agent_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        response = await _call(
+            client,
+            agent_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", auto_mode=False),
+        )
+
+        assert response.status_code == 200, response.text
+        new_id = response.json()["result"]["agent_id"]
+        definition = (await _assigned(client, controller))[new_id]["definition"]
+        assert (definition["auto_mode"], definition["auto_approve"]) == (False, False)
 
     async def test_by_id_and_stopped(
         self, harness: Harness, client: httpx.AsyncClient
@@ -669,6 +703,8 @@ class TestListManagedAgents:
             "provider": "claude",
             "model": None,
             "advanced_config": {},
+            "auto_mode": True,
+            "auto_approve": False,
             "directory": f"{WORKSPACES_DIR}/builder",
             "machine": {
                 "id": controller.controller_id,
@@ -747,6 +783,33 @@ class TestUpdateAgentDetail:
         assert row is not None
         assert row.addressing_policy is None
 
+    async def test_an_agent_cannot_change_itself(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        for change in (
+            {"auto_approve": True},
+            {"addressing": "anyone"},
+            {"description": "Mine now"},
+        ):
+            response = await _call(
+                client,
+                helper_id,
+                "update_agent_detail",
+                bearer(key),
+                {"agent_id": helper_id, **change},
+            )
+
+            assert response.status_code == 403, response.text
+            assert "can't change its own settings" in response.json()["detail"]
+        row = await _agent_row(harness, "helper")
+        assert row is not None
+        assert row.description != "Mine now"
+
     async def test_a_definition_edit_bumps_the_revision_and_reaches_the_machine(
         self, harness: Harness, client: httpx.AsyncClient
     ) -> None:
@@ -793,6 +856,90 @@ class TestUpdateAgentDetail:
         assert after["definition"]["auto_approve"] is True
         assert after["definition"]["directory"] == "/work/next"
         assert after["definition"]["provider"] == "claude"
+
+    async def test_auto_mode_alone_can_be_turned_off_and_on(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+
+        async def set_auto_mode(on: bool) -> dict[str, Any]:
+            response = await _call(
+                client,
+                helper_id,
+                "update_agent_detail",
+                bearer(key),
+                {"agent_id": new_id, "auto_mode": on},
+            )
+            assert response.status_code == 200, response.text
+            return response.json()["result"]["managed"]
+
+        off = await set_auto_mode(False)
+        assigned_off = (await _assigned(client, controller))[new_id]["definition"]
+        on = await set_auto_mode(True)
+        assigned_on = (await _assigned(client, controller))[new_id]["definition"]
+
+        assert (off["auto_mode"], off["auto_approve"]) == (False, False)
+        assert (assigned_off["auto_mode"], assigned_off["auto_approve"]) == (
+            False,
+            False,
+        )
+        assert on["auto_mode"] is True
+        assert assigned_on["auto_mode"] is True
+        assert on["revision"] > off["revision"]
+
+    async def test_an_agent_from_before_auto_mode_keeps_it_off(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+        async with harness.session_factory() as session:
+            row = (
+                await session.execute(
+                    select(AgentDefinition).where(AgentDefinition.agent_id == new_id)
+                )
+            ).scalar_one()
+            older = {k: v for k, v in row.definition.items() if k != "auto_mode"}
+            await session.execute(
+                update(AgentDefinition)
+                .where(AgentDefinition.agent_id == new_id)
+                .values(definition=older)
+            )
+            await session.commit()
+
+        [listed] = (
+            await _call(client, helper_id, "list_managed_agents", bearer(key))
+        ).json()["result"]
+        assigned = (await _assigned(client, controller))[new_id]["definition"]
+        viewed = await client.get(
+            f"/gateway/management/agents/{new_id}", cookies=cookies_for(owner)
+        )
+        edited = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "model": "opus"},
+        )
+        after = (await _assigned(client, controller))[new_id]["definition"]
+
+        assert listed["auto_mode"] is False
+        assert assigned["auto_mode"] is False
+        assert viewed.status_code == 200, viewed.text
+        assert viewed.json()["definition"]["auto_mode"] is False
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["result"]["managed"]["auto_mode"] is False
+        assert (after["model"], after["auto_mode"]) == ("opus", False)
 
     async def test_moves_the_agent_to_another_machine(
         self, harness: Harness, client: httpx.AsyncClient
@@ -1142,6 +1289,7 @@ class TestRunTemplateCreatesManagedAgents:
             ).scalar_one()
         assert row.controller_id == controller.controller_id
         assert row.definition["isolation"] == "isolated"
+        assert row.definition["auto_mode"] is True
         assert row.definition["directory"] == f"{WORKSPACES_DIR}/solo"
         assert (
             "clone https://github.com/acme/widgets into it"
@@ -1255,6 +1403,7 @@ class TestTheConsoleRunsATemplateWithAgents:
                         name="pair",
                         isolation="isolated",
                         addressing="anyone",
+                        auto_mode=False,
                     ),
                 ],
                 "yaml": None,
@@ -1270,6 +1419,12 @@ class TestTheConsoleRunsATemplateWithAgents:
         pair = await _agent_row(harness, "pair")
         assert pair is not None and pair.owner_id == owner.id
         assert pair.addressing_policy is None
+        solo = await _agent_row(harness, "solo")
+        assert solo is not None
+        assigned = await _assigned(client, controller)
+        # `solo` is sent without `auto_mode`, as an older Console sends it.
+        assert assigned[solo.id]["definition"]["auto_mode"] is True
+        assert assigned[pair.id]["definition"]["auto_mode"] is False
 
     async def test_refuses_with_every_problem_and_creates_nothing(
         self, harness: Harness, client: httpx.AsyncClient

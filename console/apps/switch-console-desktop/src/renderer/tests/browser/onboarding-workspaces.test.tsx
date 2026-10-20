@@ -142,7 +142,7 @@ afterEach(async () => {
 
 /** The flow, opened at the page that follows a successful sign-in. */
 async function renderAtPickWorkspace(): Promise<HTMLDivElement> {
-  onboardingStore.connected(SERVER as never, 'external');
+  onboardingStore.connected(SERVER as never, 'external', false);
   onboardingStore.goTo('pickWorkspace');
 
   container = document.createElement('div');

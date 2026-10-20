@@ -24,7 +24,6 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
     IntegrationProfile,
     MessagePayload,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.agent.server_connectors.base import (
     ConnectorReporter,
@@ -88,9 +87,6 @@ class _Connector(ServerSideConnector):
                     pre_invocation_mediation=[],
                     post_invocation_mediation=[],
                     event_reporting=[],
-                    task_protocol=TaskProtocolConfig(
-                        can_delegate=False, can_accept=False
-                    ),
                 ),
             )
         ]

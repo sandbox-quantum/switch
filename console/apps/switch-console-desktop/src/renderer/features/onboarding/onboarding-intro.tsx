@@ -1,6 +1,9 @@
 import { motion } from 'motion/react';
 import {
+  Component,
   type CSSProperties,
+  type ErrorInfo,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -9,6 +12,7 @@ import {
 } from 'react';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
 import { Button } from '@renderer/lib/ui/button';
+import { log } from '@renderer/utils/logger';
 import aurora from './intro/assets/aurora.svg';
 import './intro/fonts/intro-fonts.css';
 import { introScale } from './intro/intro-scale';
@@ -27,13 +31,48 @@ const OUTRO_RISE = 48;
 
 /**
  * The intro that opens the first run, before Welcome: the Switch mark opens,
- * two agents take in what Switch does and step out into a conversation.
+ * two agents take in what Switch does and step out into a conversation. An
+ * install onboarded before it existed gets it once over the app instead.
  *
  * The real window is its frame. It plays once at full size, smaller only in a
- * smaller window, in the app's theme, then fades into Welcome. A click, Esc or
- * Skip goes straight there; with reduced motion it shows its last frame.
+ * smaller window, in the app's theme, then fades into what it stood in front
+ * of. A click, Esc or Skip goes straight there; with reduced motion it shows
+ * its last frame. If it fails to draw, it counts as done rather than standing
+ * between the user and the app.
  */
 export function OnboardingIntro({ onDone }: { onDone: () => void }) {
+  return (
+    <IntroBoundary onFailed={onDone}>
+      <IntroPlayer onDone={onDone} />
+    </IntroBoundary>
+  );
+}
+
+class IntroBoundary extends Component<
+  { onFailed: () => void; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    log.warn('The intro failed to draw; skipping it', {
+      event: 'onboarding_intro_failed',
+      error: { name: error.name, message: error.message, stack: error.stack },
+      componentStack: info.componentStack,
+    });
+    this.props.onFailed();
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+function IntroPlayer({ onDone }: { onDone: () => void }) {
   const { effectiveTheme } = useTheme();
   const frame = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);

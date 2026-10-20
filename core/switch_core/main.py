@@ -96,6 +96,7 @@ from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
+from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
 from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
@@ -167,7 +168,6 @@ from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -682,7 +682,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     agent_session_store = AgentSessionStore()
     room_store = RoomStore()
     client_store = ClientStore()
-    task_store = TaskStore()
     bridge_store = CollaborationBridgeStore()
     external_user_store = ExternalUserStore()
     bridge_message_map_store = BridgeMessageMapStore()
@@ -940,6 +939,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     collab_lifecycle._room_service = room_service
 
+    # The rename and delete commands reach AgentCore through this, bound once
+    # AgentCore exists below.
+    agent_admin = AgentAdministration()
+    deletion_requests = AgentDeletionRequests()
+
     # Registered after RoomService is built: the command consumer owns the
     # `!invite-agent` command, which reuses RoomService to add agents to the
     # room (and any bridged channel).
@@ -955,6 +959,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         reference_store=reference_store,
         agent_session_store=agent_session_store,
         room_service=room_service,
+        user_store=user_store,
+        agent_admin=agent_admin,
+        deletion_requests=deletion_requests,
         connections=connections,
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
@@ -977,7 +984,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         external_user_store=external_user_store,
@@ -997,6 +1003,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             else None
         ),
     )
+    agent_admin.bind(protocol)
+    protocol.deletion_requests = deletion_requests
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
@@ -1296,6 +1304,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         token_retention=timedelta(days=config.service_token_retention_days),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
+        public_url=config.gateway_public_url,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker

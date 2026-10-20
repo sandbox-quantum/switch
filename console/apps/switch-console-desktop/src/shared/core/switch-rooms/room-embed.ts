@@ -39,6 +39,16 @@ export type RoomEmbed =
   | { kind: 'unlinked'; platform: string };
 
 /**
+ * Whether a room bridged to `bridgeType` can have its conversation drawn
+ * inline. Only Mattermost can: it is the platform Switch runs and holds a
+ * session for. Whether a given room's channel can be reached right now is
+ * decided when it is opened; this is only whether its platform ever can.
+ */
+export function bridgeCanEmbed(bridgeType: string | null): boolean {
+  return bridgeType === 'mattermost';
+}
+
+/**
  * Mattermost deeplinks are `mattermost://<host>/<team>/channels/<name>`, which
  * a webview cannot load. Rewrite one onto the http(s) origin we actually serve
  * Mattermost from, preserving the team/channel path.

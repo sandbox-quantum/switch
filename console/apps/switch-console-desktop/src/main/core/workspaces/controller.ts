@@ -71,6 +71,7 @@ import {
   updateCanManageAgents,
   updateAgentDescription,
   updateAgentDisplayName,
+  renameAgent,
   updateAgentIcon,
   updateRoom,
   updateTemplate,
@@ -107,6 +108,7 @@ import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
   AddressingPolicy,
+  AgentRenameOutcome,
   AddTeamsTeamResult,
   AgentIconBackfill,
   AgentVerifyResult,
@@ -133,6 +135,7 @@ import type {
   RemoteRoomRole,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
+  RetireOutcome,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
@@ -728,8 +731,14 @@ export const workspacesController = createRPCController({
       removeRoomAgent(server, params.roomId, params.agentId)
     ),
 
-  /** Delete a room and everything in it. The gateway enforces who may. */
-  deleteRoom: async (params: { workspaceId: string; roomId: string }): Promise<void> => {
+  /** Delete a room and everything in it, resolving to what became of its
+   * platform channel (see `deleteRoom` in the gateway client). The channel is
+   * kept unless `retireChannel` is true. The gateway enforces who may. */
+  deleteRoom: async (params: {
+    workspaceId: string;
+    roomId: string;
+    retireChannel?: boolean;
+  }): Promise<RetireOutcome | null> => {
     const known = await workspaceServer(params.workspaceId);
     const report = (outcome: TelemetryOutcome) =>
       trackEvent('room_deleted', { server_kind: serverKindOf(known), outcome });
@@ -742,14 +751,18 @@ export const workspacesController = createRPCController({
       throw unreachable;
     }
 
-    await withWorkspaceSession(params.workspaceId, async (server) => {
+    return withWorkspaceSession(params.workspaceId, async (server) => {
+      let channel: RetireOutcome | null;
       try {
-        await deleteRoom(server, params.roomId);
+        channel = await deleteRoom(server, params.roomId, {
+          retireChannel: params.retireChannel ?? false,
+        });
       } catch (error) {
         report('failure');
         throw error;
       }
       report('success');
+      return channel;
     });
   },
 
@@ -996,6 +1009,21 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentDisplayName(server, params.agentId, params.displayName)
+    ),
+
+  /**
+   * Rename an agent on its Switch server, with its display name in the same
+   * step. Only the server's half: a Console agent's own files follow through
+   * `agents.renameLocal`.
+   */
+  renameAgent: (params: {
+    workspaceId: string;
+    agentId: string;
+    name: string;
+    displayName: string | null;
+  }): Promise<AgentRenameOutcome> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      renameAgent(server, params.agentId, params.name, params.displayName)
     ),
 
   verifyAgent: (params: { workspaceId: string; agentId: string }): Promise<AgentVerifyResult> =>

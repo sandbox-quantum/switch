@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagementController } from '@main/core/switch-servers/gateway-client';
-import { machineProvider, ownedMachines } from './owned-machines';
+import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import { machineProvider, ownedMachines, thisComputerReport } from './owned-machines';
 
 function controller(patch: Partial<ManagementController> & { id: string }): ManagementController {
   return {
@@ -20,20 +21,24 @@ function controller(patch: Partial<ManagementController> & { id: string }): Mana
 
 describe('machineProvider', () => {
   it('is ready only when installed and logged in', () => {
-    expect(machineProvider({ provider: 'claude', installed: true, auth: 'ok' })).toEqual({
+    expect(
+      machineProvider({ provider: 'claude', installed: true, auth: 'ok', problem: null })
+    ).toEqual({
       provider: 'claude',
       ready: true,
       problem: null,
+      detail: null,
     });
   });
 
   it('says why a provider is not ready', () => {
     const problem = (installed: boolean, auth: 'ok' | 'expired' | 'missing' | 'unknown') =>
-      machineProvider({ provider: 'codex', installed, auth });
+      machineProvider({ provider: 'codex', installed, auth, problem: null });
     expect(problem(false, 'ok')).toEqual({
       provider: 'codex',
       ready: false,
       problem: 'not installed',
+      detail: null,
     });
     expect(problem(true, 'missing').problem).toBe('not logged in');
     expect(problem(true, 'expired').problem).toBe('login expired');
@@ -41,6 +46,23 @@ describe('machineProvider', () => {
       provider: 'codex',
       ready: false,
       problem: 'login not checked yet',
+      detail: null,
+    });
+  });
+
+  it('stops waiting on a login the machine could not check, and says why', () => {
+    expect(
+      machineProvider({
+        provider: 'claude',
+        installed: true,
+        auth: 'unknown',
+        problem: 'Claude Code did not say whether it is signed in. It may be too old.',
+      })
+    ).toEqual({
+      provider: 'claude',
+      ready: false,
+      problem: 'login could not be checked',
+      detail: 'Claude Code did not say whether it is signed in. It may be too old.',
     });
   });
 });
@@ -52,7 +74,7 @@ describe('ownedMachines', () => {
         controller({
           id: 'laptop',
           kind: 'console',
-          providers: [{ provider: 'claude', installed: true, auth: 'ok' }],
+          providers: [{ provider: 'claude', installed: true, auth: 'ok', problem: null }],
           workspacesDir: '/data/workspaces',
           os: null,
         }),
@@ -68,7 +90,7 @@ describe('ownedMachines', () => {
         name: 'laptop',
         kind: 'console',
         state: 'online',
-        providers: [{ provider: 'claude', ready: true, problem: null }],
+        providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
         workspacesDir: '/data/workspaces',
         os: null,
         local: { kind: 'this-computer' },
@@ -108,5 +130,48 @@ describe('ownedMachines', () => {
       sshHosts: [],
     });
     expect(cloud?.cloud).toBe(true);
+  });
+});
+
+describe('thisComputerReport', () => {
+  const claude = { provider: 'claude', ready: true, problem: null, detail: null };
+  function machine(patch: Partial<OwnedMachine>): OwnedMachine {
+    return {
+      id: 'mac',
+      name: 'mac',
+      kind: 'daemon',
+      state: 'online',
+      providers: [claude],
+      acceptsLogins: false,
+      cloud: false,
+      workspacesDir: null,
+      os: null,
+      local: { kind: 'this-computer' },
+      ...patch,
+    };
+  }
+
+  it('takes what this computer reported to the first server that has a report', async () => {
+    const machines: Record<string, OwnedMachine[] | null> = {
+      'no-management': null,
+      'not-reported': [machine({ providers: [] })],
+      reported: [machine({ id: 'other', local: null }), machine({})],
+    };
+    expect(
+      await thisComputerReport(Object.keys(machines), (id) => Promise.resolve(machines[id]!))
+    ).toEqual({ serverId: 'reported', providers: [claude] });
+  });
+
+  it('skips a server it cannot ask, and an offline report that may be stale', async () => {
+    const report = await thisComputerReport(['down', 'offline'], (id) =>
+      id === 'down'
+        ? Promise.reject(new Error('signed out'))
+        : Promise.resolve([machine({ state: 'offline' })])
+    );
+    expect(report).toBeNull();
+  });
+
+  it('is null when this computer runs no controller', async () => {
+    expect(await thisComputerReport([], () => Promise.resolve([machine({})]))).toBeNull();
   });
 });

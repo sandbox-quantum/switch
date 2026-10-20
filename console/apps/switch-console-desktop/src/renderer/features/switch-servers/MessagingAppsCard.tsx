@@ -21,7 +21,7 @@ import { workspacesStore } from '@renderer/features/workspaces/workspaces-store'
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast as showToast, useToast } from '@renderer/lib/hooks/use-toast';
+import { toast as showToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -41,11 +41,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { log } from '@renderer/utils/logger';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { ConnectedChatsList } from './ConnectedChatsList';
+import { LinkAccountPrompts } from './link-account-prompts';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
   identityLinkOrderingNote,
-  shouldOfferIdentityLinkOnConnect,
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
 } from './messaging-apps-warning';
@@ -93,9 +93,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   className?: string;
 }) {
   const queryClient = useQueryClient();
-  const { toast } = useToast();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
-  const showClaimIdentity = useShowModal('claimIdentityModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
   const showConnectChat = useShowModal('connectChatModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
@@ -234,38 +232,9 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
             onClick={() =>
               showConnectMessagingApp({
                 serverId,
+                // The dialog re-reads the bridge list and offers to link
+                // your account on the new app itself, wherever it is opened.
                 onClosed: refreshChats,
-                onSuccess: ({ bridgeId, displayName, directorySearchSupported }) => {
-                  // Refresh the bridge list everywhere it is consumed — this
-                  // card and the room-creation picker share the query key.
-                  void queryClient.invalidateQueries({ queryKey: ['remote-bridges', workspaceId] });
-                  void switchRoomsStore.refreshRoomState();
-                  // Step 2 of connecting a workspace: say which account in it
-                  // is yours (CHOO-2137). Offered here because this is the one
-                  // moment the workspace is on the user's mind, and it is
-                  // skippable — the new bridge's own row reopens it later.
-                  //
-                  // Not offered at all on a platform with no searchable
-                  // directory: Switch can only name people who have spoken to
-                  // it there, and nobody has spoken to a connection made a
-                  // second ago. The search would be guaranteed empty, which
-                  // teaches the user that they are not in their own workspace.
-                  // Linking waits for the server page, by which time someone
-                  // has messaged the app and there is a name to pick. Say that,
-                  // rather than closing on nothing and leaving the step looking
-                  // forgotten.
-                  if (
-                    workspaceId !== null &&
-                    shouldOfferIdentityLinkOnConnect({ directorySearchSupported })
-                  ) {
-                    showClaimIdentity({ workspaceId, bridgeId });
-                    return;
-                  }
-                  const note = identityLinkOrderingNote({ displayName, directorySearchSupported });
-                  if (note !== null) {
-                    toast({ title: 'Link your account later', description: note });
-                  }
-                },
               })
             }
           >
@@ -274,6 +243,8 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
           </Button>
         )}
       </div>
+
+      <LinkAccountPrompts workspaceId={workspaceId} bridges={bridges} identities={identities} />
 
       {/* Same shape as the addressing editor's owner warning, so the two
         readings of one problem look like one problem.

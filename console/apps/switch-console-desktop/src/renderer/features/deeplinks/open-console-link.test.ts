@@ -4,12 +4,18 @@ const navigate = vi.hoisted(() => vi.fn());
 const showModal = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
 const list = vi.hoisted(() => vi.fn());
+const administers = vi.hoisted(() => vi.fn(() => true));
 const servers = vi.hoisted(() => ({
   activeServerId: 'srv-1' as string | null,
   servers: [
-    { id: 'srv-1', url: 'http://localhost:8000', dashboardUrl: null },
-    { id: 'srv-2', url: 'https://switch.example.com', dashboardUrl: null },
-    { id: 'srv-3', url: 'https://old-api.example.com', dashboardUrl: 'https://old.example.com' },
+    { id: 'srv-1', url: 'http://localhost:8000', dashboardUrl: null, managed: true },
+    { id: 'srv-2', url: 'https://switch.example.com', dashboardUrl: null, managed: false },
+    {
+      id: 'srv-3',
+      url: 'https://old-api.example.com',
+      dashboardUrl: 'https://old.example.com',
+      managed: false,
+    },
   ],
   setActive: vi.fn(async (id: string) => {
     servers.activeServerId = id;
@@ -30,6 +36,9 @@ vi.mock('@renderer/lib/ipc', () => ({ rpc: { managedAgents: { list } } }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: servers,
 }));
+vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
+  administersWorkspaceInScope: administers,
+}));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'ws-1' },
 }));
@@ -45,6 +54,43 @@ describe('openConsoleLink', () => {
   it('opens a page on the server on screen', async () => {
     await openConsoleLink('switchdash://open/rooms');
     expect(navigate).toHaveBeenCalledWith('serverRooms', { serverId: 'srv-1' });
+  });
+
+  it('opens the Server page of a server this Console runs', async () => {
+    await openConsoleLink('switchdash://open/server');
+    expect(navigate).toHaveBeenCalledWith('managedServer', { serverId: 'srv-1' });
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens the home of a server someone else runs, and says it has no Server page', async () => {
+    await openConsoleLink('switchdash://open/server?server=https%3A%2F%2Fswitch.example.com');
+    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-2' });
+    expect(navigate).not.toHaveBeenCalledWith('managedServer', expect.anything());
+    expect(toastError).toHaveBeenCalledWith(
+      'This server has no Server page here',
+      expect.anything()
+    );
+  });
+
+  it('opens Admin on the section its tab names', async () => {
+    await openConsoleLink('switchdash://open/admin?tab=apps');
+    expect(navigate).toHaveBeenCalledWith('admin', { serverId: 'srv-1', section: 'apps' });
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens the home for someone who does not administer the workspace, and says why', async () => {
+    administers.mockReturnValueOnce(false);
+    await openConsoleLink('switchdash://open/admin?server=https%3A%2F%2Fswitch.example.com');
+    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-2' });
+    expect(navigate).not.toHaveBeenCalledWith('admin', expect.anything());
+    expect(toastError).toHaveBeenCalledWith('Admin is for workspace admins', expect.anything());
+  });
+
+  it('opens the Status page for someone who runs the server without administering it', async () => {
+    administers.mockReturnValueOnce(false);
+    await openConsoleLink('switchdash://open/admin');
+    expect(navigate).toHaveBeenCalledWith('managedServer', { serverId: 'srv-1' });
+    expect(toastError).not.toHaveBeenCalled();
   });
 
   it('opens a dialog over the page it belongs to', async () => {

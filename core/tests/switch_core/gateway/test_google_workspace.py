@@ -107,6 +107,7 @@ def _world(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -365,25 +366,27 @@ class TestDisconnect:
 
 class TestAvailability:
     @pytest.mark.parametrize(
-        ("client_settings", "disabled", "reason"),
+        ("client_settings", "disabled", "reason", "code"),
         [
             (
                 False,
                 {},
-                "Google Workspace is not set up on this server. Ask whoever runs "
-                "your Switch server to add it under Connectors in the Switch "
-                "dashboard.",
+                "Google Workspace is not set up on this server. Whoever runs your "
+                "Switch server can set it up in Switch Console, under Admin → "
+                "Connector apps.",
+                "app_not_set_up",
             ),
             (
                 True,
                 {SERVICE: "Coming to this service soon."},
                 "Coming to this service soon.",
+                "switched_off",
             ),
         ],
         ids=["no-client-settings", "switched-off"],
     )
     async def test_says_why_google_workspace_cannot_be_used_here(
-        self, session_factory, client_settings, disabled, reason
+        self, session_factory, client_settings, disabled, reason, code
     ) -> None:
         world = _world(
             session_factory,
@@ -400,3 +403,4 @@ class TestAvailability:
         ]
         assert entry["connectable"] is False
         assert entry["unavailable_reason"] == reason
+        assert entry["unavailable_code"] == code

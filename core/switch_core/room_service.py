@@ -27,6 +27,7 @@ from switch_core.authz import Principal, can, validate_visibility_pair
 from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelType,
+    RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -821,7 +822,17 @@ class RoomService:
                 session, room_id, id_by_name[agent_name.lower()], alias
             )
 
-    async def delete_room(self, room_id: str) -> None:
+    async def delete_room(
+        self, room_id: str, *, retire_channel: bool
+    ) -> RetireOutcome | None:
+        """Delete a room, and with `retire_channel` retire its platform channel.
+
+        A person deleting a room asks for the channel to go with it; removing a
+        whole connection does not, because the bot may already have lost its
+        access. Returns what became of the channel, or None when the room has
+        none or was not asked to retire it. A channel that could not be retired
+        does not stop the room being deleted: it comes back as `failed`.
+        """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
@@ -851,6 +862,16 @@ class RoomService:
                         room.transport_room_id, client.transport_user_id
                     )
 
+            channel: RetireOutcome | None = None
+            if retire_channel and bridge_id and room.external_channel_id:
+                if room.channel_type == "direct":
+                    # A direct message cannot be archived or deleted by anyone.
+                    channel = RetireOutcome(outcome="kept")
+                else:
+                    channel = await self._retire_channel(
+                        room_id, bridge_id, room.external_channel_id
+                    )
+
             await self._provisioning.delete_room(room.transport_room_id)
 
             async with self._session_factory() as session:
@@ -870,7 +891,7 @@ class RoomService:
         logger.info("Deleted room %s", room_id)
 
         if self._telemetry is None:
-            return
+            return channel
         emit_safely(
             self._telemetry,
             "room_deleted",
@@ -885,6 +906,38 @@ class RoomService:
                 "agent_count": agent_count,
             },
         )
+        return channel
+
+    async def _retire_channel(
+        self, room_id: str, bridge_id: str, external_channel_id: str
+    ) -> RetireOutcome:
+        collaboration_core = self._collab_lifecycle.get(bridge_id)
+        if collaboration_core is None:
+            outcome = RetireOutcome.failed(
+                "The messaging connection is not running, so Switch could not "
+                "reach the channel"
+            )
+        else:
+            try:
+                outcome = await collaboration_core.adapter.retire_channel(
+                    external_channel_id
+                )
+            except Exception as e:
+                logger.warning(
+                    "Retiring channel %s of deleted room %s raised",
+                    external_channel_id,
+                    room_id,
+                    exc_info=True,
+                )
+                return RetireOutcome.failed(str(e) or type(e).__name__)
+        if outcome.outcome == "failed":
+            logger.warning(
+                "Channel %s of deleted room %s was not retired: %s",
+                external_channel_id,
+                room_id,
+                outcome.reason,
+            )
+        return outcome
 
     async def _resolve_names_to_ids(self, agent_names: list[str]) -> list[str]:
         unique_names = list(dict.fromkeys(agent_names))

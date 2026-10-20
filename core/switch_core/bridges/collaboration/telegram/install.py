@@ -58,7 +58,7 @@ _BRIDGE_NAME = "Telegram"
 
 #: What Telegram says, refusing `leaveChat`, when the bot is already out of
 #: the chat. Other refusals leave it in, so only these count as having left.
-_ALREADY_OUT = ("chat not found", "not a member", "was kicked")
+ALREADY_OUT = ("chat not found", "not a member", "was kicked")
 
 _REMOVED_STATUSES = frozenset({"left", "kicked"})
 _PRESENT_STATUSES = frozenset({"member", "administrator"})
@@ -447,7 +447,7 @@ class TelegramAppInstaller(MessagingAppInstaller):
         try:
             await self._client.bot.leave_chat(chat_id=int(external_workspace_id))
         except (BadRequest, Forbidden) as refused:
-            if not any(phrase in str(refused).lower() for phrase in _ALREADY_OUT):
+            if not any(phrase in str(refused).lower() for phrase in ALREADY_OUT):
                 raise MessagingInstallError(
                     f"Telegram refused to let the bot leave chat "
                     f"{external_workspace_id}: {refused}. It is still in the "

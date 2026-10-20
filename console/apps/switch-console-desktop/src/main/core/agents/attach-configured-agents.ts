@@ -11,7 +11,7 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
-import type { Agent } from '@shared/core/agents/agents';
+import { NEW_AGENT_PERMISSIONS, type Agent } from '@shared/core/agents/agents';
 import type { OnboardAgentError } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { sameApiEndpoint } from '@shared/core/switch-servers/switch-servers';
@@ -171,7 +171,7 @@ export async function attachConfiguredAgents(
       switchAgentId: found.switchAgentId,
       apiEndpoint: found.apiEndpoint,
       workspaceId: targetWorkspace.id,
-      autoApprove: params.sshHost !== null,
+      ...NEW_AGENT_PERMISSIONS,
       ownerName: ownerName ?? null,
     });
     created.push(agent);

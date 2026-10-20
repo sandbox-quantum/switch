@@ -55,7 +55,6 @@ def _served_prefixes() -> set[str]:
         client_lifecycle=object(),  # type: ignore[arg-type]
         collab_lifecycle=object(),  # type: ignore[arg-type]
         event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
-        task_store=object(),  # type: ignore[arg-type]
         resource_service=object(),  # type: ignore[arg-type]
         api_key_store=object(),  # type: ignore[arg-type]
         external_user_store=object(),  # type: ignore[arg-type]

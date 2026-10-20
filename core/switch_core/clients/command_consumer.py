@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Literal
 
 from switch_core.agent_display_name import agent_label_with_identifier
@@ -12,6 +13,7 @@ from switch_core.clients.admin_messages import (
     AdminMessageType,
     admin_extra_content,
 )
+from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
 from switch_core.clients.consumer import Consumer
 from switch_core.clients.mentions import (
     mention_regex,
@@ -27,6 +29,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.events import CommandEvent
 from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.transport import InboundMessage, RoomRef
@@ -35,6 +38,9 @@ if TYPE_CHECKING:
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
+
+# How long a `!delete-agent` waits for its confirmation.
+DELETE_CONFIRM_SECONDS = 120.0
 
 
 class CommandConsumer(Consumer[SystemActor]):
@@ -64,6 +70,9 @@ class CommandConsumer(Consumer[SystemActor]):
         reference_store: ReferenceStore,
         agent_session_store: AgentSessionStore,
         room_service: RoomService,
+        user_store: UserStore,
+        agent_admin: AgentAdministration,
+        deletion_requests: AgentDeletionRequests,
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
     ) -> None:
@@ -77,6 +86,13 @@ class CommandConsumer(Consumer[SystemActor]):
         self._reference_store = reference_store
         self._agent_session_store = agent_session_store
         self._room_service = room_service
+        self._user_store = user_store
+        self._agent_admin = agent_admin
+        self._deletion_requests = deletion_requests
+        # (room id, sender, agent id) -> when an unconfirmed `!delete-agent`
+        # lapses. In memory: a restart drops a pending deletion, which errs on
+        # the side of not deleting.
+        self._pending_deletes: dict[tuple[str, str, str], float] = {}
         # Whether `!follow-ups` and `!assign-agent` mean anything here: with
         # the feature flag off they say so rather than claim a change.
         self._follow_the_conversation_enabled = follow_the_conversation_enabled
@@ -110,6 +126,24 @@ class CommandConsumer(Consumer[SystemActor]):
 
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         await dispatch_admin_command(self, room, event)
+
+    def request_delete(self, room_id: str, sender: str, agent_id: str) -> None:
+        self._prune_pending_deletes()
+        self._pending_deletes[(room_id, sender, agent_id)] = (
+            time.monotonic() + DELETE_CONFIRM_SECONDS
+        )
+
+    def take_delete_request(self, room_id: str, sender: str, agent_id: str) -> bool:
+        """Whether this sender asked to delete this agent here, recently
+        enough; the request is used up either way."""
+        self._prune_pending_deletes()
+        return self._pending_deletes.pop((room_id, sender, agent_id), None) is not None
+
+    def _prune_pending_deletes(self) -> None:
+        now = time.monotonic()
+        for key, expires in list(self._pending_deletes.items()):
+            if expires <= now:
+                del self._pending_deletes[key]
 
     async def reply_command(
         self,

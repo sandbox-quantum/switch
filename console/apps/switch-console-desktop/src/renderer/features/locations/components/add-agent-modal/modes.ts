@@ -2,8 +2,9 @@ import { useCallback, useEffect, useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
 import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
+import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
+import { defaultAgentPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 
 export function usePickMode() {
@@ -55,12 +56,13 @@ export function useConfigureAgentForm(serverId: string | null) {
   // with none runs on its provider's defaults, and the description stands in
   // where a provider needs a prompt.
   const [instructions, setInstructions] = useState('');
-  const [autoApprove, setAutoApproveRaw] = useState(false);
-  const [autoApproveTouched, setAutoApproveTouched] = useState(false);
-  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts
-  // owner-scoped (CHOO-2137). Applied via a follow-up PUT after creation.
+  const [autoApprove, setAutoApprove] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoApprove);
+  const [autoMode, setAutoMode] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoMode);
+  // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
+  // the default, its owner and the owner's agents. Applied via a follow-up PUT
+  // after creation.
   const [addressingPolicy, setAddressingPolicy] = useState<AddressingPolicy | null>(() =>
-    ownerOnlyPolicy()
+    defaultAgentPolicy()
   );
   // The agent's icon (CHOO-2171). A new agent opens on a random bot rather than
   // one drawn from its name: the name is empty at that point, so a name-derived
@@ -83,11 +85,6 @@ export function useConfigureAgentForm(serverId: string | null) {
     }
   }, [thirdPartyAvatarsEnabled, iconUrl]);
 
-  const setAutoApprove = useCallback((value: boolean) => {
-    setAutoApproveRaw(value);
-    setAutoApproveTouched(true);
-  }, []);
-
   const setDisplayName = useCallback((value: string) => {
     setDisplayNameRaw(value);
     setDisplayNameTouched(true);
@@ -105,20 +102,6 @@ export function useConfigureAgentForm(serverId: string | null) {
     setTypedName(value);
     setAgentNameFolded(value.replace(/[A-Z]/g, (c) => c.toLowerCase()));
   }, []);
-
-  /**
-   * What the run location implies, for as long as the user has not answered
-   * themselves: an agent on a host is put there to run unattended, and a
-   * permission prompt nobody is watching stalls the session. Kept as a
-   * suggestion rather than a reset so a deliberate answer survives a change of
-   * mind about where the agent runs.
-   */
-  const suggestAutoApprove = useCallback(
-    (value: boolean) => {
-      setAutoApproveRaw((current) => (autoApproveTouched ? current : value));
-    },
-    [autoApproveTouched]
-  );
 
   const nameIsValid = AGENT_NAME_PATTERN.test(agentName);
   const nameIsRejected = agentName.length > 0 && !nameIsValid;
@@ -156,7 +139,8 @@ export function useConfigureAgentForm(serverId: string | null) {
     setInstructions,
     autoApprove,
     setAutoApprove,
-    suggestAutoApprove,
+    autoMode,
+    setAutoMode,
     addressingPolicy,
     setAddressingPolicy,
     iconUrl,

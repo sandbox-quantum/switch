@@ -12,7 +12,8 @@ import { legacySidecarSlug, STOP_LEGACY_SIDECAR_FN } from './legacy-sidecar';
 import { WATCHER_ROOT } from './state-roots';
 import { WAIT_FOR_WATCHER_STOP_FN } from './watcher-inspection';
 
-/** Where the auto-approve choice a Console made is kept, beside the watcher. */
+/** Where the runtime mode choice a Console made is kept, beside the watcher. The
+ * name predates auto mode and is read by every Console on the account. */
 export const AUTO_APPROVE_CHOICE_FILE = 'auto-approve.json';
 
 /**
@@ -24,7 +25,7 @@ export const AUTO_APPROVE_CHOICE_FILE = 'auto-approve.json';
  * deployed for the agent, if one is still there; write the watch flags,
  * clearing a takeover marker when asked; then either wait for a watcher that
  * is being stopped to go, or launch it from the configuration staged for it —
- * taking the auto-approve choice kept on the host first, when asked, since
+ * taking the runtime mode choice kept on the host first, when asked, since
  * another Console on the account may have set it. The staged configuration is
  * removed whatever happens, since it holds the agent's credentials.
  *
@@ -62,7 +63,7 @@ try {
         chosen = JSON.parse(fs.readFileSync(path.join(root, '${AUTO_APPROVE_CHOICE_FILE}'), 'utf8'))?.runtimeMode ?? null;
       } catch (e) { if (e.code !== 'ENOENT') throw e; }
       const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if ((chosen === 'full-access' || chosen === 'approval-required') && chosen !== config.start.input.runtimeMode) {
+      if ((chosen === 'full-access' || chosen === 'auto' || chosen === 'approval-required') && chosen !== config.start.input.runtimeMode) {
         config.start.input.runtimeMode = chosen;
         put(configPath, config);
         out.runtimeMode = chosen;
@@ -94,7 +95,7 @@ export type BringUpOptions = {
   spawn: boolean;
   /** Remove a takeover marker: an explicit start, or any stop. */
   clear: boolean;
-  /** Take the auto-approve choice kept on the host into the staged configuration. */
+  /** Take the runtime mode choice kept on the host into the staged configuration. */
   adoptAutoApprove: boolean;
   entrypoint: string;
   /** The directory the configuration is staged in, or null when stopping. */
@@ -103,7 +104,7 @@ export type BringUpOptions = {
 
 const resultSchema = z.object({
   root: z.string(),
-  runtimeMode: z.enum(['full-access', 'approval-required']).nullable(),
+  runtimeMode: z.enum(['full-access', 'auto', 'approval-required']).nullable(),
   legacyStopped: z.array(z.string()),
 });
 

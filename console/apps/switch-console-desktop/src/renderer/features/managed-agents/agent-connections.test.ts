@@ -5,6 +5,7 @@ import {
   agentConnectionCards,
   connectionCardDetail,
   connectionCardStatus,
+  noConnectorsSetUp,
   ownerOnlyRequest,
   ownerOnlyWarningText,
   showsOwnerOnlyWarning,
@@ -25,6 +26,7 @@ function service(
     connectable: true,
     status: 'connected',
     unavailable_reason: null,
+    unavailable_code: null,
     pass_through: true,
     token_lifetime: null,
     loopback_ports: null,
@@ -149,6 +151,28 @@ describe('the note naming unconnected services', () => {
 
   it('is absent when everything is connected', () => {
     expect(unconnectedNote([])).toBeNull();
+  });
+});
+
+describe('whether the owner has any connector set up', () => {
+  it('is none while every service is unconnected or coming soon', () => {
+    expect(
+      noConnectorsSetUp([
+        service('atlassian', { status: 'not_connected' }),
+        service('notion', { status: 'coming_soon' }),
+      ])
+    ).toBe(true);
+    expect(noConnectorsSetUp([])).toBe(true);
+  });
+
+  it('counts a connection that needs reconnecting as set up', () => {
+    expect(
+      noConnectorsSetUp([
+        service('atlassian', { status: 'not_connected' }),
+        service('datadog', { status: 'needs_reauthorization' }),
+      ])
+    ).toBe(false);
+    expect(noConnectorsSetUp([service('github', { status: 'connected' })])).toBe(false);
   });
 });
 

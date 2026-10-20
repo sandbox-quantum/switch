@@ -6,6 +6,7 @@ import { getServer } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
 import type { MattermostTheme } from '@shared/core/switch-rooms/mattermost-theme';
 import {
+  bridgeCanEmbed,
   channelUrlFromDeeplink,
   mattermostPartition,
   type RoomEmbed,
@@ -154,7 +155,7 @@ export async function resolveChannelEmbed(params: {
     };
   }
 
-  if (bridgeType !== 'mattermost') {
+  if (!bridgeCanEmbed(bridgeType)) {
     if (externalChannelUrl) {
       return { kind: 'external', url: externalChannelUrl, platform: bridgeType };
     }

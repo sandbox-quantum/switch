@@ -36,7 +36,6 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.task_store import TaskStore
 from switch_core.gateway.ui import GatewayUi, GatewayUiMiddleware
 from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
@@ -61,7 +60,6 @@ def create_agent_bridge_app(
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
     event_buffer: EventBuffer,
-    task_store: TaskStore,
     resource_service: ResourceService,
     api_key_store: ApiKeyStore,
     external_user_store: ExternalUserStore,
@@ -99,7 +97,6 @@ def create_agent_bridge_app(
         collab_lifecycle=collab_lifecycle,
         event_buffer=event_buffer,
         connections=connections,
-        task_store=task_store,
         resource_service=resource_service,
         api_key_store=api_key_store,
         api_key_cache=api_key_cache,

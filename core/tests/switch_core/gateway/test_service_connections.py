@@ -117,6 +117,7 @@ class TestConnections:
             for key in (
                 "configured",
                 "unavailable_reason",
+                "unavailable_code",
                 "status",
                 "consent",
                 "external_identity",
@@ -124,6 +125,7 @@ class TestConnections:
         } == {
             "configured": True,
             "unavailable_reason": None,
+            "unavailable_code": None,
             "status": "active",
             "consent": "read",
             "external_identity": "login-1001",
@@ -135,6 +137,7 @@ class TestConnections:
         asana = entries["asana"]
         assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
         assert asana["configured"] is False
+        assert asana["unavailable_code"] == "coming_soon"
         assert asana["enabled"] is False
         assert asana["connectable"] is False
         assert asana["status"] == "not_connected"
@@ -213,7 +216,8 @@ class TestGrants:
         ("policy", "warned"),
         [
             (owner_only_policy([]), False),
-            (owner_and_owner_agents_policy(), True),
+            (owner_and_owner_agents_policy(), False),
+            (AddressingPolicy(), True),
             (
                 AddressingPolicy(
                     rules=[
@@ -224,7 +228,7 @@ class TestGrants:
                 True,
             ),
         ],
-        ids=["owner-alone", "owner-and-their-agents", "anyone-in-one-room"],
+        ids=["owner-alone", "owner-and-their-agents", "anyone", "anyone-in-one-room"],
     )
     async def test_the_warning_follows_who_else_can_address_the_agent(
         self, harness: Harness, policy: AddressingPolicy, warned: bool
@@ -449,6 +453,7 @@ class TestMemberRemoval:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
 
         token = _token(admin_id, "svc-admin@example.invalid", TENANT_A)
@@ -609,7 +614,7 @@ class TestYourAgents:
             },
         ]
 
-    async def test_an_agent_its_owners_agents_can_address_is_open(
+    async def test_an_agent_only_its_owners_agents_can_address_is_not_open(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -620,7 +625,7 @@ class TestYourAgents:
 
         assert response.status_code == 200, response.text
         assert [(a["agent_id"], a["addressing_open"]) for a in response.json()] == [
-            (agent_id, True)
+            (agent_id, False)
         ]
 
     async def test_a_member_with_no_agents_gets_an_empty_list(

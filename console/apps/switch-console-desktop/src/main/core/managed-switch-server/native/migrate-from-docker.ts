@@ -1,7 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   composeDown,
   composeStop,
@@ -14,6 +13,7 @@ import { classifyVersionDrift, readDeployedVersion } from '../deployed-version';
 import { dockerExecutable } from '../docker';
 import type { ServerHost } from '../host/types';
 import { crossesMatrixBoundary } from '../matrix-migration';
+import { managedSwitchVersion } from '../server-version';
 import type { NativeLayout } from './native-paths';
 import { DATABASE, MATTERMOST_DATABASE, OWNER_ROLE } from './postgres-cluster';
 import { runCommand } from './run-command';
@@ -59,15 +59,13 @@ export async function moveBlockedReason(host: ServerHost): Promise<string | null
   if (deployed.kind === 'unreadable') {
     return `Could not read which switch-core the Docker server runs (${deployed.reason}).`;
   }
-  if (
-    classifyVersionDrift(deployed.version, COMPATIBLE_SWITCH_VERSION)?.direction === 'downgrade'
-  ) {
+  if (classifyVersionDrift(deployed.version, managedSwitchVersion())?.direction === 'downgrade') {
     return (
       `The Docker server runs switch-core ${deployed.version}, newer than the ` +
-      `${COMPATIBLE_SWITCH_VERSION} this Console runs. Update Switch Console first.`
+      `${managedSwitchVersion()} this Console runs. Update Switch Console first.`
     );
   }
-  if (crossesMatrixBoundary(deployed.version, COMPATIBLE_SWITCH_VERSION)) {
+  if (crossesMatrixBoundary(deployed.version, managedSwitchVersion())) {
     return (
       `The Docker server is still on switch-core ${deployed.version}, from before rooms moved ` +
       `out of Matrix. Start it once to update it, then move it.`

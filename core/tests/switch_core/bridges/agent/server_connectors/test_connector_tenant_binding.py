@@ -21,7 +21,6 @@ import pytest
 
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
-    TaskProtocolConfig,
 )
 from switch_core.bridges.agent.server_connectors.base import DiscoveredAgent
 from switch_core.bridges.agent.server_connectors.core import ConnectorCore
@@ -140,9 +139,6 @@ async def test_registering_an_agent_binds_the_connectors_tenant() -> None:
                         pre_invocation_mediation=[],
                         post_invocation_mediation=[],
                         event_reporting=[],
-                        task_protocol=TaskProtocolConfig(
-                            can_delegate=False, can_accept=False
-                        ),
                     ),
                     tools=[],
                     models=[],

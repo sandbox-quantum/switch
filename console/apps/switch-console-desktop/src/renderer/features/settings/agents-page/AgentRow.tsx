@@ -1,11 +1,14 @@
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
-import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
+import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
 import type { AgentPayload } from '@shared/core/providers/agent-payload';
 import { asAgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { InstalledBadge, UninstalledBadge } from './agent-status-badge';
+import { ThisComputerProviderStatus } from './this-computer-provider-status';
+import { installedHere, reportedProvider } from './this-computer-status';
 
 export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: () => void }) => {
-  const isInstalled = agent.status === 'available';
+  const { data: report } = useThisComputerReport();
+  const isInstalled = installedHere(reportedProvider(report, agent.id), agent.status);
   const isClickable = !!onClick;
   const Tag = isClickable ? 'button' : 'div';
 
@@ -24,12 +27,7 @@ export const AgentRow = ({ agent, onClick }: { agent: AgentPayload; onClick?: ()
             {isInstalled ? <InstalledBadge /> : <UninstalledBadge />}
           </div>
         </div>
-        <ProviderConnectionStatus
-          providerId={asAgentProviderId(agent.id)}
-          sshHost={null}
-          dir=""
-          compact
-        />
+        <ThisComputerProviderStatus providerId={asAgentProviderId(agent.id)} compact />
       </div>
     </Tag>
   );

@@ -50,6 +50,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
+import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
@@ -1372,8 +1373,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? setup.displayName.trim()
                 : null,
             iconUrl: null,
-            // Nobody sits at a host's terminal to approve tool calls.
-            autoApprove: sshHost !== null,
+            ...NEW_AGENT_PERMISSIONS,
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
@@ -1392,8 +1392,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           // policy failure does not create a second agent.
           setSlot(i, { createdName: result.agent.name, createdSwitchAgentId: switchAgentId });
         }
-        // A new agent answers only its owner by default. The template's `anyone`
-        // must be written as the open policy; leaving the default would keep it closed.
+        // A new agent answers its owner and the owner's agents by default. The
+        // template's `anyone` must be written as the open policy, and `owner` as
+        // owner-only; leaving the default would keep either one wrong.
         if (switchAgentId && slot.entry.addressing) {
           setSlot(i, { step: 'policy' });
           await rpc.workspaces.updateAddressingPolicy({

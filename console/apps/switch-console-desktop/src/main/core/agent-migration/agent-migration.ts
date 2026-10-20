@@ -610,6 +610,7 @@ async function buildDefinition(agent: MigrationAgent) {
     name: agent.name,
     specialization: launch.specialization,
     providerDefinition: launch.definition,
+    autoMode: row.autoMode,
     autoApprove: row.autoApprove,
     directory: location.dir,
     stoppedByHand: (await listStoppedControllerAgentIds()).includes(agent.id),

@@ -46,7 +46,7 @@ export const startSchema = z.strictObject({
   input: z.strictObject({
     sessionId: id,
     cwd: z.string().min(1),
-    runtimeMode: z.enum(['approval-required', 'auto-accept-edits', 'full-access']),
+    runtimeMode: z.enum(['approval-required', 'auto-accept-edits', 'auto', 'full-access']),
     env,
     mcpServers: z.record(z.string(), mcp),
     model: z.object({ id: z.string(), options: env.optional() }).optional(),

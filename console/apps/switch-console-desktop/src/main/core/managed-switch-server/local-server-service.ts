@@ -7,7 +7,6 @@ import {
 } from '@main/core/telemetry/managed-server';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type CheckoutBuild,
@@ -73,6 +72,7 @@ import { localServerBundleRoot, localServerDir } from './paths';
 import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts, rememberPorts } from './ports';
 import { readLocalRuntime, writeLocalRuntime } from './runtime';
+import { managedSwitchVersion, serverVersionChoice, serverVersionSetting } from './server-version';
 import { readDeployedTelemetry } from './telemetry-consent';
 
 /**
@@ -93,8 +93,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export class LocalServerService {
-  private status: LocalServerStatus = {
+function initialStatus(): LocalServerStatus {
+  return {
     phase: 'stopped',
     runtime: null,
     mattermost: null,
@@ -103,7 +103,7 @@ export class LocalServerService {
     checked: false,
     upgrade: null,
     serverId: null,
-    version: COMPATIBLE_SWITCH_VERSION,
+    version: managedSwitchVersion(),
     deployedVersion: null,
     drift: null,
     checkoutBuild: null,
@@ -112,6 +112,21 @@ export class LocalServerService {
     error: null,
     failedTo: null,
   };
+}
+
+export class LocalServerService {
+  /** Made on first use rather than at construction, which happens on import:
+   * the version it carries is resolved once the launch has validated it. */
+  private currentStatus: LocalServerStatus | null = null;
+
+  private get status(): LocalServerStatus {
+    this.currentStatus ??= initialStatus();
+    return this.currentStatus;
+  }
+
+  private set status(status: LocalServerStatus) {
+    this.currentStatus = status;
+  }
 
   private busy = false;
   private startAbort: AbortController | null = null;
@@ -220,14 +235,23 @@ export class LocalServerService {
    */
   private async readCheckoutBuild(host: ServerHost): Promise<CheckoutBuild | null> {
     if (!import.meta.env.DEV) return null;
+    // SWITCH_CONSOLE_SERVER_VERSION overrides the persisted toggle for this
+    // run: `checkout` holds it on, a release version holds it off.
+    const choice = serverVersionChoice();
+    const forcedBy = serverVersionSetting(choice);
+    if (choice.kind === 'checkout') return { root: choice.root, enabled: true, forcedBy };
     const root = findCoreCheckout();
     if (!root) return null;
-    return { root, enabled: await isCheckoutBuildEnabled(host) };
+    if (choice.kind === 'release') return { root, enabled: false, forcedBy };
+    return { root, enabled: await isCheckoutBuildEnabled(host), forcedBy: null };
   }
 
-  /** The checkout the next start should build from, or null to pull the pinned
-   * released images. */
+  /** The checkout the next start should build from, or null to run the
+   * released switch-core. */
   private checkoutRootForStart(): string | null {
+    const choice = serverVersionChoice();
+    if (choice.kind === 'checkout') return choice.root;
+    if (choice.kind === 'release') return null;
     const checkout = this.status.checkoutBuild;
     return checkout?.enabled ? checkout.root : null;
   }
@@ -243,6 +267,12 @@ export class LocalServerService {
     if (!checkout) {
       throw new Error(
         'Building from a local checkout is only available in a dev build launched from a Switch checkout.'
+      );
+    }
+    if (checkout.forcedBy !== null) {
+      throw new Error(
+        `Building from this checkout is decided by ${checkout.forcedBy} for this run; ` +
+          `unset it and restart Switch Console to use the toggle.`
       );
     }
     const host: ServerHost = new LocalServerHost();
@@ -297,10 +327,10 @@ export class LocalServerService {
       const version = native
         ? versionStatusOf(
             await readNativeDeployedVersion(layout),
-            COMPATIBLE_SWITCH_VERSION,
+            managedSwitchVersion(),
             host.label
           )
-        : await readVersionStatus(host, COMPATIBLE_SWITCH_VERSION);
+        : await readVersionStatus(host, managedSwitchVersion());
       // A checkout build is deliberately not a comparable version, so the pin
       // comparison has nothing to say about it — the UI reports it as a
       // checkout build instead of as unexplained drift.
@@ -315,7 +345,7 @@ export class LocalServerService {
           upgrade: {
             state: 'failed',
             from: version.deployedVersion ?? 'an unknown version',
-            to: COMPATIBLE_SWITCH_VERSION,
+            to: managedSwitchVersion(),
             error: error instanceof Error ? error.message : String(error),
           },
         });
@@ -494,7 +524,7 @@ export class LocalServerService {
           serverId: result.serverId,
           message: null,
           error: null,
-          deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : COMPATIBLE_SWITCH_VERSION,
+          deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : managedSwitchVersion(),
           drift: null,
           upgrade: null,
           deployedTelemetry: { known: true, enabled: result.telemetryEnabled },

@@ -95,6 +95,19 @@ export type SwitchServer = {
   updatedAt: string;
 };
 
+/**
+ * Whether Switch Console runs this server on this computer. Its stack listens
+ * on loopback only, so nobody on another computer can reach it, and an
+ * invitation would hand them a link to this machine's `localhost`. A server
+ * Console runs on an SSH host is not one: other Consoles with access to that
+ * host open the same stack.
+ */
+export function runsOnThisComputer(
+  server: Pick<SwitchServer, 'managed' | 'managementKind'>
+): boolean {
+  return server.managed && server.managementKind !== 'remote';
+}
+
 export type AddServerParams = {
   name: string;
   url: string;
@@ -268,6 +281,19 @@ export type RemoteAgentSummary = {
 };
 
 /**
+ * What a rename did (`PUT /agents/{id}/name`): the agent as the server now
+ * holds it, the name it had, each chat platform that could not be updated yet
+ * (the rename stands; the platform catches up when its bridge next starts),
+ * and saved templates whose text still names the old name.
+ */
+export type AgentRenameOutcome = {
+  agent: RemoteAgentSummary;
+  oldName: string;
+  bridgeFailures: string[];
+  templatesMentioningOldName: string[];
+};
+
+/**
  * What came of giving this user's icon-less agents their generated avatar
  * (CHOO-2171).
  *
@@ -325,6 +351,25 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   /** Display names of the people in the room, via the messaging app it is
    * bridged to. Empty for an unbridged room, which has no people in it. */
   connectedUserNames: string[];
+  /** What deleting the room does to its platform channel when the person asks
+   * for it to be retired (it is kept otherwise); null when it has none.
+   * Undefined from a server that predates the field, which says nothing about
+   * the channel either way. */
+  channelOnDelete?: ChannelRetirement | null;
+};
+
+/** What deleting a room does to its platform channel when asked to retire it
+ * and all goes to plan (mirrors the gateway's `ChannelRetirement`): archived on Slack and
+ * Mattermost, deleted on Discord, left by the bot on Telegram, and kept on
+ * Teams, where Switch may not remove it. */
+export type ChannelRetirement = 'archived' | 'deleted' | 'left' | 'kept';
+
+/** What deleting a room did to its platform channel when asked to retire it
+ * (mirrors the gateway's `RetireOutcome`). `failed` means the channel is still there and someone has
+ * to remove it by hand; `reason` says why. */
+export type RetireOutcome = {
+  outcome: ChannelRetirement | 'failed';
+  reason: string | null;
 };
 
 /** The room fields Switch Console can change. Anything omitted is left alone;
@@ -892,9 +937,6 @@ export type ProvisionAgentParams = {
   name: string;
   description: string;
   providerKind: AgentProviderKind;
-  /** Register with the `auto_session` connection model: Switch Console watches the
-   * agent's rooms and auto-spawns a session on notification. Defaults to off. */
-  autoSession?: boolean;
 };
 
 /**
@@ -913,8 +955,6 @@ export type ProvisionRemoteAgentParams = {
   name: string;
   description: string;
   providerKind: AgentProviderKind;
-  /** Register with the `auto_session` connection model. Defaults to off. */
-  autoSession?: boolean;
 };
 
 /**

@@ -153,6 +153,14 @@ describe('attachConfiguredAgents', () => {
     );
   });
 
+  it('starts an attached agent on a host in auto mode with bypass off', async () => {
+    await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
+
+    expect(h.createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ autoApprove: false, autoMode: true })
+    );
+  });
+
   it('writes nothing to the working directory but a missing config file', async () => {
     // The workdir belongs to whichever install set the agent up. Any other
     // write here rejects, so this passing means attach touched none of their

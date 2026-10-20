@@ -18,6 +18,7 @@ function entry(desired: 'running' | 'stopped' = 'running'): AgentAssignment {
       advanced_config: {},
       instructions: '',
       auto_approve: false,
+      auto_mode: false,
       directory: null,
       isolation: 'shared',
     },

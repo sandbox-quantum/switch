@@ -26,8 +26,20 @@ export type AgentLaunchDefinition = {
 /**
  * How much the agent may do without asking. Maps onto each vendor's own
  * permission model inside the adapter; orchestration only ever sees this.
+ * `auto` is the vendor's own automatic review: safe actions run, risky ones
+ * still ask.
  */
-export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'full-access';
+export type RuntimeMode = 'approval-required' | 'auto-accept-edits' | 'auto' | 'full-access';
+
+/**
+ * The runtime mode an agent's two permission settings select. Bypass
+ * (`autoApprove`) wins over auto mode.
+ */
+export function runtimeModeFor(settings: { autoApprove: boolean; autoMode: boolean }): RuntimeMode {
+  if (settings.autoApprove) return 'full-access';
+  if (settings.autoMode) return 'auto';
+  return 'approval-required';
+}
 
 export interface StdioMcpServerSpec {
   transport: 'stdio';

@@ -189,7 +189,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
                 ) : (
                   <button
                     type="button"
-                    title={`Open ${agent.name}'s Connections`}
+                    title={`Open ${agent.name}'s Connectors`}
                     onClick={() => openAgentConnections(link, navigate, localAgentTabStore)}
                     className="focus-visible:ring-ring flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none"
                   >

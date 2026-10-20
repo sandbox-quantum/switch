@@ -15,6 +15,7 @@ const definition = {
   advanced_config: {},
   instructions: 'Review pull requests.',
   auto_approve: false,
+  auto_mode: false,
 };
 
 describe('buildWatcherTemplate', () => {
@@ -74,6 +75,7 @@ describe('buildWatcherTemplate', () => {
         advanced_config: {},
         instructions: '',
         auto_approve: true,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -84,6 +86,31 @@ describe('buildWatcherTemplate', () => {
     expect(template.execution).not.toHaveProperty('binaryPath');
     expect(template.execution!.context).toBe(SWITCH_SKILL_CONTEXT);
   });
+
+  it.each(PROVIDERS)(
+    'runs %s in auto mode, which bypass wins over, keeping Codex in its workspace sandbox',
+    (provider) => {
+      const build = (auto_approve: boolean) =>
+        buildWatcherTemplate({
+          agentId: 'agent-1',
+          provider,
+          definition: { ...definition, auto_approve, auto_mode: true },
+          cwd: '/work/scout',
+          credentialsPath: '/data/c.json',
+          binaryPath: null,
+        });
+      const auto = build(false);
+      expect(sharedConfigSchema.safeParse(auto).success).toBe(true);
+      expect(auto.start.input.runtimeMode).toBe('auto');
+      expect(build(true).start.input.runtimeMode).toBe('full-access');
+      if (provider === 'codex') {
+        expect(auto.execution!.codexConfig).toMatch(/^sandbox_mode = "workspace-write"\n/);
+        expect(build(true).execution!.codexConfig).toMatch(
+          /^sandbox_mode = "danger-full-access"\n/
+        );
+      }
+    }
+  );
 
   it('applies a Codex agent’s advanced configuration as Console does: model options and profile', () => {
     const advanced = {
@@ -99,6 +126,7 @@ describe('buildWatcherTemplate', () => {
         advanced_config: advanced.advancedConfig,
         instructions: 'Review pull requests.',
         auto_approve: false,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -137,6 +165,7 @@ describe('buildWatcherTemplate', () => {
         },
         instructions: 'Review pull requests.',
         auto_approve: false,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',
@@ -166,6 +195,7 @@ describe('buildWatcherTemplate', () => {
         advanced_config: { variant: 'high', temperature: 0.2 },
         instructions: '',
         auto_approve: false,
+        auto_mode: false,
       },
       cwd: '/work/scout',
       credentialsPath: '/data/c.json',

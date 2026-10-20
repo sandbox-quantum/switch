@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Annotated, Any, cast
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -40,6 +39,7 @@ from switch_core.connections.app_credentials import (
     AppValues,
     ConnectorApps,
     EffectiveCredentials,
+    github_needs_https,
 )
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.connections.loader import CATALOG
@@ -154,11 +154,7 @@ def _setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
     """Why the operator can't set this app up here, known before any vendor
     is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; Google
     accepts an http redirect for local development, GitHub does not."""
-    if (
-        spec.kind == "github_app"
-        and public_url is not None
-        and urlsplit(public_url).scheme != "https"
-    ):
+    if github_needs_https(spec.kind, public_url):
         return GITHUB_NEEDS_HTTPS
     return None
 

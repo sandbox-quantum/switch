@@ -491,6 +491,13 @@ describe('EmbeddedControllerService', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('names a server among those it runs for only once its controller is started', async () => {
+    const running = await enabled();
+    expect(await running.runningServerIds()).toEqual([SERVER]);
+    // Enrolled on disk, but nothing started in this session: no fresh report to go by.
+    expect(await service().runningServerIds()).toEqual([]);
+  });
+
   it('stops its controllers at quit with SIGTERM and does not start them again', async () => {
     const running = await enabled();
     await running.dispose();

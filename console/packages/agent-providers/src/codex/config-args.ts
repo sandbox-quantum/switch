@@ -26,7 +26,7 @@ function tomlStringTable(values: Record<string, string>): string {
  * Every server's tools are approved without asking (`default_tools_approval_mode
  * = "approve"`) except a connector's, which follow `runtimeMode`: Codex asks
  * through `mcpServer/elicitation/request` under the untrusted project mark and
- * `on-request`. In full access a connector keeps the key too, because under
+ * `on-request`, and in auto mode its automatic reviewer answers instead. In full access a connector keeps the key too, because under
  * `never` a tool call that needs approval is not allowed but failed ("MCP tool
  * call requires approval, but approval policy is never"), checked against
  * codex-cli 0.162.1.

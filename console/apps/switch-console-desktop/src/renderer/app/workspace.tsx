@@ -1,6 +1,8 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState, type ReactNode } from 'react';
+import { shouldCatchUpIntro } from '@renderer/features/onboarding/intro-catch-up';
 import { OnboardingFlow } from '@renderer/features/onboarding/onboarding-flow';
+import { OnboardingIntro } from '@renderer/features/onboarding/onboarding-intro';
 import { onboardingStore } from '@renderer/features/onboarding/onboarding-store';
 import { LeftSidebar } from '@renderer/features/sidebar/left-sidebar';
 import { BuddyIntroDialog } from '@renderer/features/switch-buddy/buddy-intro-dialog';
@@ -100,6 +102,14 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     onboardingInProgress: onboardingStore.inProgress,
     onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding,
   });
+  const catchUpIntro = shouldCatchUpIntro({
+    shape,
+    loaded: switchServersStore.loaded,
+    installIsEmpty: switchServersStore.installIsEmpty,
+    onboardingInProgress: onboardingStore.inProgress,
+    onboardingEnabled: BUILD_FEATURE_FLAGS.onboarding,
+    introSeen: onboardingStore.introSeen,
+  });
 
   switch (shape) {
     // Nothing on screen rather than a spinner: this is one or two local IPC
@@ -117,6 +127,9 @@ const Shell = observer(function Shell({ mainContent }: { mainContent: ReactNode 
     case 'onboarding':
       return <OnboardingFlow />;
     case 'workspace': {
+      // In place of the workspace rather than over it, so nothing the
+      // workspace pops up on its own — the switch-buddy pop-up — opens behind it.
+      if (catchUpIntro) return <OnboardingIntro onDone={() => onboardingStore.introPlayed()} />;
       if (!flagsReady) return null;
       // A workspace whose server can't answer stays where it was, under a
       // banner, rather than filling with errors from every call that fails.

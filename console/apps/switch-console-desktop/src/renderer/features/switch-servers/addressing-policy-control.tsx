@@ -17,11 +17,11 @@ import {
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
 import { AddressingPolicyEditor, type OptionItem } from './addressing-policy-editor';
 
-const MODE_ORDER: AddressingMode[] = ['owner', 'ownerAndAgents', 'anyone', 'custom'];
+const MODE_ORDER: AddressingMode[] = ['ownerAndAgents', 'owner', 'anyone', 'custom'];
 
 const MODE_LABELS: Record<AddressingMode, string> = {
-  owner: 'Only me (default)',
-  ownerAndAgents: 'Only me and my agents',
+  ownerAndAgents: 'Me and my agents (default)',
+  owner: 'Only me',
   anyone: 'Anyone',
   custom: 'Custom rules',
 };

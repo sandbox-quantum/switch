@@ -66,6 +66,7 @@ export type AddAgentParams = {
    * choice, and the agent is registered with the avatar its name generates. */
   iconUrl: string | null;
   autoApprove: boolean;
+  autoMode: boolean;
   /** The agent's system prompt, provider-agnostic. Rendered into whatever the
    * provider reads — a Claude Code subagent body, Codex's developer
    * instructions. Empty for an agent with none. */
@@ -397,6 +398,7 @@ async function runAddAgent(params: AddAgentParams): Promise<AddAgentResult> {
     apiEndpoint: server.url,
     workspaceId: targetWorkspace.id,
     autoApprove: params.autoApprove,
+    autoMode: params.autoMode,
     providerConfig: params.providerConfig ?? null,
   });
 

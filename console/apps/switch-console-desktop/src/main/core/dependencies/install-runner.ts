@@ -32,6 +32,15 @@ export function classifyInstallCommandFailure({
     };
   }
 
+  if (/\bENOSPC\b|no space left on device/i.test(cleanOutput)) {
+    return {
+      type: 'command-failed',
+      exitCode,
+      output: cleanOutput,
+      message: 'There is not enough free disk space. Free some space and try again.',
+    };
+  }
+
   return {
     type: 'command-failed',
     exitCode,

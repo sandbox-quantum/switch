@@ -19,6 +19,7 @@ export type AddManagedAgentParams = {
   displayName: string | null;
   /** Null means the form offered no choice: the server gives it the icon its name generates. */
   iconUrl: string | null;
+  autoMode: boolean;
   autoApprove: boolean;
   instructions: string;
   /** Null runs the provider's default model. */
@@ -105,6 +106,7 @@ export class NewManagedAgentService {
       model: input.model || null,
       advanced_config: input.advancedConfig,
       instructions: input.instructions,
+      auto_mode: input.autoMode,
       auto_approve: input.autoApprove,
       directory: input.dir,
     };

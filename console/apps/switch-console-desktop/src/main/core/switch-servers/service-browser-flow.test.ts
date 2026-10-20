@@ -44,6 +44,7 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       connectable: true,
       status: 'not_connected',
       unavailable_reason: null,
+      unavailable_code: null,
       pass_through: true,
       token_lifetime: 28_800,
       loopback_ports: ports,

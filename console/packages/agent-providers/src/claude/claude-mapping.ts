@@ -18,11 +18,14 @@ const MCP_PREFIX = 'mcp__';
  * Every mode names its permission mode, so the CLI never falls back to the
  * `defaultMode` in the person's own Claude Code settings: with `auto` there,
  * the CLI settles tool calls before `canUseTool` is asked, and connector tools
- * would run without the approval this mode promises.
+ * would run without the approval this mode promises. Switch's own `auto` asks
+ * for exactly that: the classifier settles what it judges safe, connector
+ * calls included, and only what it would ask about reaches `canUseTool`.
  */
 export const PERMISSION_MODE_BY_RUNTIME_MODE = {
   'approval-required': 'default',
   'auto-accept-edits': 'acceptEdits',
+  auto: 'auto',
   'full-access': 'bypassPermissions',
 } as const satisfies Record<RuntimeMode, PermissionMode>;
 

@@ -748,7 +748,7 @@ class _Planner:
                 continue
             join.append(j)
 
-        addressing = str(entry.get("addressing") or "owner")
+        addressing = str(entry.get("addressing") or "owner-agents")
         if addressing not in _AGENT_ADDRESSING:
             self.problem(
                 slot,
@@ -776,6 +776,9 @@ class _Planner:
                 "invalid_isolation",
                 f"isolation '{isolation}' is not shared or isolated.",
             )
+        auto_mode = interpolate(entry.get("auto_mode", True), values)
+        if not isinstance(auto_mode, bool):
+            self.problem(slot, "invalid_auto_mode", "auto_mode is not true or false.")
         auto_approve = interpolate(entry.get("auto_approve", False), values)
         if not isinstance(auto_approve, bool):
             self.problem(
@@ -829,6 +832,7 @@ class _Planner:
             model=model_text or None,
             advanced_config=dict(advanced),
             isolation=isolation,
+            auto_mode=bool(auto_mode),
             auto_approve=bool(auto_approve),
             directory=directory,
             addressing=addressing,

@@ -144,6 +144,26 @@ describe('received messages', () => {
     expect(parsed.agents[0]!.definition).not.toHaveProperty('skills');
   });
 
+  it('reads a definition without auto_mode, from a server older than the setting, as off', () => {
+    const parsed = assignmentSchema.parse({
+      revision: 1,
+      agents: [{ agent_id: 'a', revision: 1, desired_state: 'running', definition }],
+    });
+    expect(parsed.agents[0]!.definition.auto_mode).toBe(false);
+    const on = assignmentSchema.parse({
+      revision: 1,
+      agents: [
+        {
+          agent_id: 'a',
+          revision: 1,
+          desired_state: 'running',
+          definition: { ...definition, auto_mode: true },
+        },
+      ],
+    });
+    expect(on.agents[0]!.definition.auto_mode).toBe(true);
+  });
+
   it('reads an enum value it does not know as unknown', () => {
     const parsed = assignmentSchema.parse({
       revision: 1,

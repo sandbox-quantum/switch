@@ -164,6 +164,7 @@ def _app(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
+        public_url=None,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -1546,6 +1547,7 @@ class TestMemberRoutes:
             token_retention=timedelta(days=30),
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
+            public_url=None,
         )
         async with _client(app, token) as client:
             response = await client.delete(f"/tenants/{TENANT_A}/members/{target_id}")

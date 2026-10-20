@@ -58,6 +58,21 @@ class OnboardingStore {
    */
   registeredOn: { page: OnboardingPage; serverId: string } | null = null;
   /**
+   * The server was already signed in to when it was reached, so the flow went
+   * from it straight to the workspace: Back from there returns to the page
+   * that reached it, not to a sign-in form it never showed.
+   */
+  signInSkipped = false;
+  /**
+   * The user has gone past the welcome page since the flow last started.
+   *
+   * Walking back to it does not undo that: the server list may hold the server
+   * the attempt registered by then, and a welcome page that no longer counted
+   * as in progress would hand the window to the workspace — Back would leave
+   * the flow rather than walk it.
+   */
+  begun = false;
+  /**
    * The flow was opened on purpose from a dev or canary build that already has
    * servers, to walk through the first-run pages again. It keeps the flow on
    * screen from its welcome page, which a launch with servers would otherwise
@@ -65,10 +80,16 @@ class OnboardingStore {
    */
   rehearsal = false;
   /**
+   * Whether this install has ever played the intro, here or over the app. Unlike
+   * `introPending`, a rehearsal does not take it back: an install onboarded
+   * before the intro existed is offered it once over the app on this alone.
+   */
+  introSeen = localStorage.getItem(INTRO_PLAYED_KEY) !== null;
+  /**
    * The intro still to play before Welcome: on the first run of this install,
    * and again when the pages are rehearsed.
    */
-  introPending = localStorage.getItem(INTRO_PLAYED_KEY) === null;
+  introPending = !this.introSeen;
 
   constructor() {
     makeAutoObservable(this);
@@ -77,11 +98,46 @@ class OnboardingStore {
   /**
    * Whether the user has committed to setting a server up.
    *
-   * The welcome page is not in progress: it asks a question and nothing has
-   * been started, so a launch that finds servers should go straight past it.
+   * The welcome page is not in progress when the flow opens on it: it asks a
+   * question and nothing has been started, so a launch that finds servers
+   * should go straight past it. Walked back to, it still is.
    */
   get inProgress(): boolean {
-    return this.rehearsal || this.page !== 'welcome';
+    return this.rehearsal || this.begun || this.page !== 'welcome';
+  }
+
+  /**
+   * The page Back leads to from the one on screen, or null where there is
+   * none: the welcome page starts the flow, Meet switch-buddy is past the
+   * point of going back, and the create page has nothing behind it when the
+   * picker sent the user straight there.
+   */
+  get previousPage(): OnboardingPage | null {
+    switch (this.page) {
+      case 'welcome':
+        return null;
+      case 'howToRun':
+        return 'welcome';
+      case 'local':
+      case 'connect':
+        return 'howToRun';
+      case 'signIn':
+        return this.pageBeforeSignIn;
+      case 'pickWorkspace':
+      case 'meetBuddy':
+        // Meet switch-buddy draws the picker when no workspace is open, and
+        // goes back the way the picker does; once the buddy itself is on
+        // screen its page offers no Back into the flow.
+        if (this.via === 'local') return 'howToRun';
+        return this.signInSkipped ? this.pageBeforeSignIn : 'signIn';
+      case 'createWorkspace':
+        return this.pickerHasChoices ? 'pickWorkspace' : null;
+    }
+  }
+
+  /** The page that reached the server signed in to: the question for Switch Cloud, the address form otherwise. */
+  private get pageBeforeSignIn(): OnboardingPage {
+    return this.via === 'cloud' ? 'howToRun' : 'connect';
   }
 
   /** Open the first-run pages from their start, whatever the install holds. */
@@ -91,9 +147,13 @@ class OnboardingStore {
     this.introPending = true;
   }
 
-  /** The intro has played, or was skipped: Welcome is next, and it does not play again. */
+  /**
+   * The intro has played, or was skipped: what it stood in front of — Welcome,
+   * or the app — is next, and it does not play again.
+   */
   introPlayed(): void {
     localStorage.setItem(INTRO_PLAYED_KEY, new Date().toISOString());
+    this.introSeen = true;
     this.introPending = false;
   }
 
@@ -110,8 +170,18 @@ class OnboardingStore {
       this.serverWorkspaces = null;
       this.joinOfferCount = 0;
       this.registeredOn = null;
+      this.signInSkipped = false;
+    } else {
+      this.begun = true;
     }
     this.page = page;
+  }
+
+  /** Step back to the previous page, staying put where there is none. Returns the page now on screen. */
+  back(): OnboardingPage {
+    const previous = this.previousPage;
+    if (previous !== null) this.goTo(previous);
+    return this.page;
   }
 
   /**
@@ -126,10 +196,17 @@ class OnboardingStore {
     this.registeredOn = { page, serverId };
   }
 
-  connected(server: SwitchServer, via: 'external' | 'cloud'): void {
+  /**
+   * A server was added or found. Signing in to it is next, unless this Console
+   * is signed in to it already — replaying these pages against a server it
+   * knows — when the workspace is.
+   */
+  connected(server: SwitchServer, via: 'external' | 'cloud', signedIn: boolean): void {
     this.server = server;
     this.via = via;
-    this.page = 'signIn';
+    this.signInSkipped = signedIn;
+    this.begun = true;
+    this.page = signedIn ? 'pickWorkspace' : 'signIn';
   }
 
   /**
@@ -139,6 +216,8 @@ class OnboardingStore {
   startedLocally(server: SwitchServer): void {
     this.server = server;
     this.via = 'local';
+    this.signInSkipped = false;
+    this.begun = true;
     this.page = 'pickWorkspace';
   }
 
@@ -166,6 +245,8 @@ class OnboardingStore {
     this.serverWorkspaces = null;
     this.joinOfferCount = 0;
     this.registeredOn = null;
+    this.signInSkipped = false;
+    this.begun = false;
     this.rehearsal = false;
   }
 }

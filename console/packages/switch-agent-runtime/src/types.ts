@@ -61,21 +61,10 @@ export interface RoomJoinPayload {
   listening: boolean;
 }
 
-export interface TaskPayload {
-  task_id: string;
-  requester_agent_id: string;
-  performer_agent_id: string;
-  summary?: string;
-  description?: string;
-  update?: string;
-  outcome?: string | null;
-  reason?: string | null;
-}
-
 export interface AgentBridgeEvent {
   type: string;
   room_id: string;
-  payload: MessagePayload | CommandPayload | RoomJoinPayload | TaskPayload;
+  payload: MessagePayload | CommandPayload | RoomJoinPayload;
   /**
    * The event's number in the agent's own events (`s`). It is present on the push
    * transport and absent on the legacy poll. It is also absent on a message

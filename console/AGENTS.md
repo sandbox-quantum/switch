@@ -688,6 +688,26 @@ pnpm run test
   on. Because the tag is not a semver, the downgrade guard cannot run against a
   checkout build; it is skipped with a warning rather than silently.
   See `src/main/core/managed-switch-server/checkout-build.ts`.
+- Choosing the managed servers' switch-core in dev: a dev build runs the canary
+  pin (`COMPATIBLE_SWITCH_VERSION`). `SWITCH_CONSOLE_SERVER_VERSION` overrides it
+  for the run, read once by the main process at launch:
+  - a release version (`0.30.0`, `0.31.0-rc.7`) — every managed server, local
+    (native or Docker) and SSH-hosted, runs that release: native install, image
+    tags and `.env` `SWITCH_VERSION`, the downgrade guard, drift and upgrade
+    prompts all use it, and the setup page shows it. The checkout toggle is held
+    off. The bundled compose file stays the pinned one, and a version older than
+    what a stack already ran is refused by the downgrade guard as usual.
+  - `checkout` — the local server builds (Docker) or installs (native)
+    switch-core from the checkout the app was started in on every start,
+    whatever the persisted toggle says; the server page shows the toggle held on
+    by the variable. Remote managed servers keep the pin, since a remote host
+    builds nothing from this machine. The downgrade guard is skipped with a
+    warning, as for the toggle.
+  A value that is neither, or `checkout` with no checkout above the app's
+  working directory, stops the launch with an error naming the variable. Set it
+  in the launching environment (`.env.local` works too):
+  `SWITCH_CONSOLE_SERVER_VERSION=checkout pnpm run dev`. Stable and canary builds
+  ignore it. See `src/main/core/managed-switch-server/server-version.ts`.
 - Deeplinks in dev: `pnpm run dev` does **not** claim the `switchdash://` OS URL
   scheme by default — doing so hijacks the handler from the installed app and the
   registration outlives the dev process (on macOS it sticks in Launch Services),

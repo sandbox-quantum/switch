@@ -142,25 +142,43 @@ export function OnboardingSurface({
   const animated = enter && !reduced;
   return (
     <div
-      className="relative flex h-full flex-col bg-background text-foreground [-webkit-app-region:drag]"
+      className="relative flex h-full flex-col overflow-hidden bg-background text-foreground [-webkit-app-region:drag]"
       style={{ backgroundImage: ONBOARDING_BACKDROP }}
     >
-      {exit && (
-        <div className="flex justify-end px-3 pt-3 [-webkit-app-region:no-drag]">
-          <Button variant="ghost" size="sm" onClick={exit.onExit}>
+      {/* The title bar of a frameless window: the page column below opts its
+          whole height out of the drag region, so this row is what the window
+          is moved by, with or without a way out in it. */}
+      <div
+        data-slot="onboarding-titlebar"
+        className="flex h-11 shrink-0 items-center justify-end px-3 [-webkit-app-region:drag]"
+      >
+        {exit && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="[-webkit-app-region:no-drag]"
+            onClick={exit.onExit}
+          >
             {exit.label}
           </Button>
-        </div>
-      )}
+        )}
+      </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <motion.div
-          initial={animated ? { opacity: 0, y: 14 } : false}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ ...PAGE_ENTER, opacity: { duration: 0.24, ease: 'easeOut' } }}
-          className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-6 px-8 py-10 [-webkit-app-region:no-drag]"
-        >
-          {children}
-        </motion.div>
+        {/* The entrance starts the page lower than where it lands, and a page
+            that exactly fills the scroller would overflow it by that much and
+            flash a scrollbar while it rises. Clipped here, so the scroller
+            measures the page where it will rest; it still grows with a page
+            taller than the window, which scrolls as before. */}
+        <div className="flex flex-[1_0_auto] flex-col overflow-y-clip">
+          <motion.div
+            initial={animated ? { opacity: 0, y: 14 } : false}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ ...PAGE_ENTER, opacity: { duration: 0.24, ease: 'easeOut' } }}
+            className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center gap-6 px-8 py-10 [-webkit-app-region:no-drag]"
+          >
+            {children}
+          </motion.div>
+        </div>
       </div>
       {footer && (
         <motion.div

@@ -27,6 +27,7 @@ import type {
   RemoteAgentSummary,
   RemoteRoomDetail,
 } from '@shared/core/switch-servers/switch-servers';
+import { channelOnDeleteSummary } from './room-delete-wording';
 import { membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
 
@@ -37,7 +38,7 @@ function roomDetailKey(workspaceId: string, roomId: string) {
 }
 
 /** One room read from its server; `workspaceId` is null until the room list has loaded. */
-export function useRoomDetail(roomId: string) {
+function useRoomDetail(roomId: string) {
   const workspaceId = switchRoomsStore.roomWorkspaceId(roomId);
   const query = useQuery({
     queryKey: roomDetailKey(workspaceId ?? '', roomId),
@@ -135,8 +136,10 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
         <div className="space-y-0.5">
           <h3 className="text-sm font-medium text-foreground">Delete room</h3>
           <p className="text-xs text-foreground-muted">
-            Removes the room and its conversation for everyone in it
-            {room.bridgeType ? `, and its ${bridgePlatformLabel(room.bridgeType)} channel` : ''}.
+            Removes the room and its conversation for everyone in it.
+            {room.bridgeType
+              ? ` ${channelOnDeleteSummary(bridgePlatformLabel(room.bridgeType), room.channelOnDelete) ?? ''}`
+              : ''}
           </p>
         </div>
         <Button
@@ -384,7 +387,7 @@ const ParticipantsSection = observer(function ParticipantsSection({
 });
 
 /** The room's members as cards, agents first. */
-export const ParticipantList = observer(function ParticipantList({
+const ParticipantList = observer(function ParticipantList({
   workspaceId,
   room,
 }: {

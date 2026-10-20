@@ -19,7 +19,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
-from switch_core.bridges.collaboration.adapter import PlatformAdapter
+from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
     WebhookAuthenticityError,
@@ -113,10 +113,10 @@ class DummyChatAdapter(PlatformAdapter):
     async def add_users_to_channel(self, *a: Any, **k: Any) -> Any:
         return None
 
-    async def create_agent_identity(self, *a: Any, **k: Any) -> Any:
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
         return None
 
-    async def remove_agent_identity(self, *a: Any, **k: Any) -> Any:
+    async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         return None
 
     async def get_channel_agent_names(self, *a: Any, **k: Any) -> Any:

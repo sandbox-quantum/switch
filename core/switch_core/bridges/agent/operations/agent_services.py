@@ -12,6 +12,7 @@ from typing import Any
 
 from switch_core.bridges.agent.operations.agent_management import (
     permitted_to_manage,
+    refuse_managing_self,
 )
 from switch_core.bridges.agent.operations.context import get_protocol
 from switch_core.bridges.agent.operations.registry import operation
@@ -53,7 +54,8 @@ async def set_agent_service(
     wait for a yes before calling: it hands their access to another agent.
 
     Requires the "can manage agents" capability. Only your owner's own agents,
-    and only services your owner has connected (`get_my_context` lists both).
+    never yourself, and only services your owner has connected
+    (`get_my_context` lists both).
     Some services need a choice only a person can make, such as which GitHub
     repositories: when the refusal says so, link your owner to the agent's
     Connections tab (`switchdash://open/agent/<agent-id>?tab=connections`), where
@@ -79,6 +81,7 @@ async def set_agent_service(
     protocol = get_protocol()
     async with tenant_session(protocol.session_factory, permitted.tenant_id) as session:
         agent = await _owned_agent(session, permitted.owner.id, agent_name)
+        refuse_managing_self(agent.id)
         if known_agent_for(agent) is None:
             raise ValueError(
                 f"{agent.name} runs on its own runtime, not one Switch starts, so "
@@ -112,7 +115,7 @@ async def remove_agent_service(agent_name: str, service: str) -> dict[str, Any]:
 
     What was issued under the grant is revoked. Propose it and wait for a yes,
     as for `set_agent_service`. Requires the "can manage agents" capability,
-    and reaches only your owner's own agents.
+    and reaches only your owner's own agents, never yourself.
 
     Args:
         agent_name: The agent, by its name.
@@ -127,6 +130,7 @@ async def remove_agent_service(agent_name: str, service: str) -> dict[str, Any]:
     protocol = get_protocol()
     async with tenant_session(protocol.session_factory, permitted.tenant_id) as session:
         agent = await _owned_agent(session, permitted.owner.id, agent_name)
+        refuse_managing_self(agent.id)
         grant = await _CONNECTIONS.get_grant(session, agent.id, service)
         if grant is None:
             raise ValueError(f"{agent.name} has no access to {service!r} to take away.")

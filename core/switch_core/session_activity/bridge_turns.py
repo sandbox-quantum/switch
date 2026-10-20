@@ -93,7 +93,6 @@ def status_state(
     *,
     elapsed_seconds: float | None,
     interrupt_turn_id: str | None,
-    session_url: str | None,
     clock_redraws: bool,
 ) -> str:
     """What the turn's message is showing, so an unchanged redraw can be skipped.
@@ -115,7 +114,4 @@ def status_state(
         for item in view.items
         if item.kind == "tool-activity"
     )
-    return (
-        f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}"
-        f"\n{session_url or ''}"
-    )
+    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}"

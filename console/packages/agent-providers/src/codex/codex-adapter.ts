@@ -40,6 +40,7 @@ import {
   CODEX_CLIENT_NOTIFICATIONS,
   CODEX_SERVER_NOTIFICATIONS,
   CODEX_SERVER_REQUESTS,
+  type CodexApprovalsReviewer,
   type CodexAskForApproval,
   type CodexSandboxMode,
   type CodexThreadTokenUsageUpdatedNotification,
@@ -130,6 +131,8 @@ interface CodexSessionState {
 interface ThreadModeConfig {
   /** Sent with the thread; null leaves the policy to the configuration the process was started with. */
   approvalPolicy: CodexAskForApproval | null;
+  /** Who answers an approval request: the person, or Codex's own automatic review. */
+  approvalsReviewer: CodexApprovalsReviewer;
   /** `-c` overrides for the `codex app-server` process. */
   configArgs: string[];
 }
@@ -151,18 +154,25 @@ interface ThreadModeConfig {
  * long as `cwd` is spelt the same way in both places. One consequence named
  * in Codex's guide: an untrusted project does not load its own `.codex/`
  * configuration.
+ *
+ * Auto is `on-request` with Codex's automatic reviewer (`auto_review`)
+ * answering the approval requests the sandbox raises, which is why auto never
+ * runs unsandboxed (see `sandboxFor`).
  */
 function threadModeConfig(mode: RuntimeMode, cwd: string): ThreadModeConfig {
   switch (mode) {
     case 'approval-required':
       return {
         approvalPolicy: null,
+        approvalsReviewer: 'user',
         configArgs: ['-c', `projects={${tomlString(cwd)}={trust_level="untrusted"}}`],
       };
     case 'auto-accept-edits':
-      return { approvalPolicy: 'on-request', configArgs: [] };
+      return { approvalPolicy: 'on-request', approvalsReviewer: 'user', configArgs: [] };
+    case 'auto':
+      return { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', configArgs: [] };
     case 'full-access':
-      return { approvalPolicy: 'never', configArgs: [] };
+      return { approvalPolicy: 'never', approvalsReviewer: 'user', configArgs: [] };
   }
 }
 
@@ -191,6 +201,18 @@ async function configuredSandbox(codexHome: string | undefined): Promise<CodexSa
   return typeof mode === 'string' && SANDBOX_MODES.has(mode as CodexSandboxMode)
     ? (mode as CodexSandboxMode)
     : null;
+}
+
+/**
+ * The sandbox a thread runs in. Auto mode never runs unsandboxed: in
+ * `danger-full-access` nothing asks for approval, so Codex's automatic review
+ * would never see a request and auto would quietly be full access.
+ */
+function sandboxFor(
+  mode: RuntimeMode,
+  configured: CodexSandboxMode | null
+): CodexSandboxMode | null {
+  return mode === 'auto' && configured === 'danger-full-access' ? 'workspace-write' : configured;
 }
 
 function sessionStatusOf(status: CodexThreadStatusChangedNotification['status']): SessionStatus {
@@ -362,6 +384,7 @@ export class CodexAdapter implements ProviderAdapter {
     this.registerHandlers(state);
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
 
+    let sandboxWarning: string | undefined;
     try {
       const initializeParams: CodexInitializeParams = {
         clientInfo: { name: CLIENT_NAME, title: 'Switch Console', version: CLIENT_VERSION },
@@ -375,12 +398,15 @@ export class CodexAdapter implements ProviderAdapter {
       if (!account.account && account.requiresOpenaiAuth)
         throw new Error('Sign in on the execution machine with codex login.');
 
-      const sandbox = await configuredSandbox(input.env.CODEX_HOME);
+      const configured = await configuredSandbox(input.env.CODEX_HOME);
+      const sandbox = sandboxFor(input.runtimeMode, configured);
+      if (sandbox !== configured)
+        sandboxWarning = `Auto mode runs Codex in the ${sandbox} sandbox instead of the configured ${configured}: unsandboxed, nothing would reach its automatic review.`;
       const config = {
         cwd: input.cwd,
         ...(mode.approvalPolicy ? { approvalPolicy: mode.approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
-        approvalsReviewer: 'user' as const,
+        approvalsReviewer: mode.approvalsReviewer,
         ...(input.model?.id ? { model: input.model.id } : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),
       };
@@ -412,6 +438,10 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     this.emit(state, { type: 'session.started', nativeSessionId: state.threadId });
+    if (sandboxWarning) {
+      this.logger.warn(sandboxWarning, { sessionId: input.sessionId });
+      this.emit(state, { type: 'runtime.warning', message: sandboxWarning });
+    }
     this.emit(state, { type: 'session.state.changed', status: 'ready' });
     return { sessionId: input.sessionId, nativeSessionId: state.threadId, provider: PROVIDER };
   }

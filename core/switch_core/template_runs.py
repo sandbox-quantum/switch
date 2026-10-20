@@ -94,6 +94,7 @@ class NewAgentPlan:
     model: str | None
     advanced_config: dict[str, Any]
     isolation: str
+    auto_mode: bool
     auto_approve: bool
     directory: str | None
     addressing: str
@@ -449,6 +450,7 @@ class TemplateAgents:
             advanced_config=plan.advanced_config,
             instructions=plan.instructions,
             directory=directory,
+            auto_mode=plan.auto_mode,
             auto_approve=plan.auto_approve,
             isolation=plan.isolation,
             start=True,

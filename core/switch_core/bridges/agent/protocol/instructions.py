@@ -2,24 +2,20 @@
 
 Generated fresh on each connect so participants, capabilities, and room
 state are accurate. Covers: interaction-mode selection (message / targeted
-message / task), the task lifecycle, agent-status semantics (and how they
-should influence mode choice), room setup including any external channel
-bridging, and any room-specific instructions provided at room creation.
+message), agent-status semantics (and how they should influence mode
+choice), room setup including any external channel bridging, and any
+room-specific instructions provided at room creation.
 """
 
 from __future__ import annotations
 
-from switch_core.bridges.agent.protocol.types import (
-    IntegrationProfile,
-    ParticipantDescriptor,
-)
+from switch_core.bridges.agent.protocol.types import ParticipantDescriptor
 from switch_core.db.models import Agent, CollaborationBridge, Room
 
 
 def build_room_instructions(
     agent: Agent,
     room: Room,
-    profile: IntegrationProfile,
     participants: list[ParticipantDescriptor],
     bridge: CollaborationBridge | None,
     include_general: bool = True,
@@ -36,9 +32,8 @@ def build_room_instructions(
         sections.extend(
             [
                 _overview(agent, room),
-                _interaction_modes(profile),
+                _interaction_modes(),
                 _when_to_use_what(),
-                _task_protocol(profile),
                 _agent_statuses(participants),
                 _room_setup(room, bridge),
             ]
@@ -56,8 +51,7 @@ def _overview(agent: Agent, room: Room) -> str:
     ).rstrip()
 
 
-def _interaction_modes(profile: IntegrationProfile) -> str:
-    caps = profile.task_protocol
+def _interaction_modes() -> str:
     lines = [
         "## Interaction modes",
         "",
@@ -74,13 +68,6 @@ def _interaction_modes(profile: IntegrationProfile) -> str:
         "all of them need to see the message; writing `@channel` or "
         "`@everyone` into a body pages nobody.",
     ]
-    if caps.can_delegate or caps.can_accept:
-        lines.append(
-            "- **Task tools** (`delegate_task`, `accept_task`, `update_task`, "
-            "`finalise_task`, `cancel_task`, `list_tasks`) — formal tracked "
-            "work with a persistent lifecycle. Tasks survive disconnects and "
-            "are queryable later."
-        )
     return "\n".join(lines)
 
 
@@ -91,60 +78,13 @@ def _when_to_use_what() -> str:
         "should see, replies to messages addressed to you. No specific "
         "recipient expected to act.\n"
         "- **`send_targeted_message`** — when you need *a specific agent* to "
-        "see and respond, but the work is informal (a question, a nudge, a "
-        "handoff) and doesn't need lifecycle tracking. Use for things you "
-        "expect a quick answer to.\n"
-        "- **`delegate_task`** — when the work is concrete, the outcome "
-        "matters, and you'll want to check on it later. Tasks are the right "
-        "mode when (a) the performer is `session_passive` (so async work is "
-        "expected anyway), (b) you'll want to enumerate outstanding items "
-        "later, or (c) you need a recorded outcome.\n\n"
-        "**Rule of thumb:** message → conversation; targeted message → "
-        "request a synchronous response; task → request tracked work."
+        "see and act: a question, a request, a handoff. Say what you need and "
+        "what a finished answer looks like, then follow up in the room if it "
+        "matters.\n\n"
+        "**Rule of thumb:** message → conversation; targeted message → ask a "
+        "specific participant to act. Coordinate with other agents through "
+        "these two tools."
     )
-
-
-def _task_protocol(profile: IntegrationProfile) -> str:
-    caps = profile.task_protocol
-    if not (caps.can_delegate or caps.can_accept):
-        return (
-            "## Task protocol\n\n"
-            "You are not configured to delegate or accept tasks "
-            "(`task_protocol.can_delegate=false`, `can_accept=false`). "
-            "Task events from others may still appear as context."
-        )
-
-    lines = [
-        "## Task protocol",
-        "",
-        "Lifecycle: `pending` → `ongoing` → `finalised` (or `cancelled`).",
-        "",
-    ]
-    if caps.can_delegate:
-        lines += [
-            "**You can delegate** (`can_delegate=true`):",
-            "- Call `delegate_task(performer_agent_id, summary, description)`. "
-            "Task starts `pending`.",
-            "- Watch for `task_update` events (progress) and `task_finalise` "
-            "(completed with `outcome`).",
-            "- Call `cancel_task(task_id, reason)` to abandon.",
-            "",
-        ]
-    if caps.can_accept:
-        lines += [
-            "**You can accept** (`can_accept=true`):",
-            "- On `task_delegate` event: call `accept_task(task_id)` → moves "
-            "to `ongoing`.",
-            "- Optionally `update_task(task_id, update)` with progress "
-            "messages (persisted to the task).",
-            "- Call `finalise_task(task_id, outcome)` when done. `outcome` "
-            "describes success or failure in one string.",
-            "",
-        ]
-    lines.append(
-        "Use `list_tasks(role='delegated'|'assigned', status=...)` to enumerate."
-    )
-    return "\n".join(lines)
 
 
 def _agent_statuses(participants: list[ParticipantDescriptor]) -> str:
@@ -161,8 +101,7 @@ def _agent_statuses(participants: list[ParticipantDescriptor]) -> str:
         "delivery is deferred.",
         "- **`session_passive`** — connected via MCP but only reads room "
         "context on demand. **Do not** expect a synchronous response from a "
-        "targeted message. Prefer `delegate_task` so the work is tracked and "
-        "the agent picks it up when they next read context.",
+        "targeted message: it reads your message when it next reads the room.",
         "",
         "**Participants in this room:**",
         "",
@@ -174,16 +113,8 @@ def _agent_statuses(participants: list[ParticipantDescriptor]) -> str:
             if p.type == "user":
                 lines.append(f"- `{p.name}` (user)")
                 continue
-            caps = []
-            if p.can_delegate:
-                caps.append("delegate")
-            if p.can_accept:
-                caps.append("accept")
-            cap_str = f" — tasks: {', '.join(caps)}" if caps else ""
             role_str = f", room role: `{p.room_role}`" if p.room_role else ""
-            lines.append(
-                f"- `{p.name}` (agent_type: `{p.agent_type}`{role_str}){cap_str}"
-            )
+            lines.append(f"- `{p.name}` (agent_type: `{p.agent_type}`{role_str})")
     return "\n".join(lines)
 
 

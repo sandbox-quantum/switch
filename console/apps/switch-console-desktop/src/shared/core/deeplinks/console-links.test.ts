@@ -24,6 +24,12 @@ describe('parseConsoleLink', () => {
       page: 'messaging-apps/connect',
     });
     expect(ok('switchdash://open/home/')).toMatchObject({ page: 'home', server: null });
+    expect(ok('switchdash://open/server?server=http%3A%2F%2F127.0.0.1%3A3000')).toEqual({
+      page: 'server',
+      id: null,
+      tab: null,
+      server: 'http://127.0.0.1:3000',
+    });
   });
 
   it('says why a link cannot be followed', () => {
@@ -37,6 +43,7 @@ describe('parseConsoleLink', () => {
     expect(reason('switchdash://open/room/<room-id>')).toMatch(/does not say which one/);
     expect(reason('switchdash://open/agent/a-1?tab=logs')).toMatch(/no "logs" tab/);
     expect(reason('switchdash://open/home?tab=general')).toMatch(/no "general" tab/);
+    expect(reason('switchdash://open/server/srv-1')).toMatch(/no page "server\/srv-1"/);
   });
 
   it('reads back every link it writes', () => {

@@ -74,6 +74,6 @@ export type BuildFeatureFlags = {
 };
 
 export const BUILD_FEATURE_FLAGS: BuildFeatureFlags = {
-  onboarding: IS_DEV || IS_CANARY,
+  onboarding: true,
   switch_cloud: IS_DEV || IS_CANARY,
 };

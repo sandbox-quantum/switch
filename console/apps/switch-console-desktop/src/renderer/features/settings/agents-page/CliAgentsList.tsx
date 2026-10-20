@@ -1,8 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { useAgents } from '@renderer/lib/stores/use-agents';
+import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
 import { Label } from '@renderer/lib/ui/label';
 import { AgentDetailSheet } from './AgentDetailSheet';
 import { AgentRow } from './AgentRow';
+import { installedHere, reportedProvider } from './this-computer-status';
 
 const SectionLabel: React.FC<{ children: React.ReactNode; totalCount: number }> = ({
   children,
@@ -30,6 +32,7 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
 }) => {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const { data: agentPayloads } = useAgents();
+  const { data: report } = useThisComputerReport();
   const normalizedQuery = searchQuery.toLowerCase();
 
   const allAgents = useMemo(
@@ -40,9 +43,11 @@ export const CliAgentsList: React.FC<CliAgentsListProps> = ({
     [agentPayloads, normalizedQuery]
   );
 
-  const installed = useMemo(() => allAgents.filter((a) => a.status === 'available'), [allAgents]);
-
-  const uninstalled = useMemo(() => allAgents.filter((a) => a.status !== 'available'), [allAgents]);
+  const [installed, uninstalled] = useMemo(() => {
+    const isInstalled = (agent: (typeof allAgents)[number]) =>
+      installedHere(reportedProvider(report, agent.id), agent.status);
+    return [allAgents.filter(isInstalled), allAgents.filter((agent) => !isInstalled(agent))];
+  }, [allAgents, report]);
 
   const visible =
     filter === 'installed' ? installed : filter === 'uninstalled' ? uninstalled : allAgents;

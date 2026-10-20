@@ -101,6 +101,16 @@ async def management_permission() -> Permitted | str:
     return Permitted(tenant_id=require_tenant_id(), owner=owner)
 
 
+def refuse_managing_self(agent_id: str) -> None:
+    """Refuse an agent changing itself: its settings, permissions and services
+    are its owner's to change, never its own."""
+    if agent_id == get_agent_id():
+        raise PermissionError(
+            "An agent can't change its own settings, permissions or services. "
+            "Your owner changes them on your page in Switch Console."
+        )
+
+
 async def permitted_to_manage() -> Permitted:
     """The calling agent's owner, once the agent is allowed to act on the
     owner's agent management; a clear refusal otherwise."""
@@ -175,6 +185,7 @@ async def create_agent(
     advanced_config: dict[str, Any] | None = None,
     instructions: str = "",
     directory: str | None = None,
+    auto_mode: bool = True,
     auto_approve: bool = False,
     display_name: str | None = None,
     icon_url: str | None = None,
@@ -184,8 +195,9 @@ async def create_agent(
 
     Requires the "can manage agents" capability, which your owner turns on for
     you. The new agent is owned by your owner (not by you), runs on the
-    machine you name, and only your owner can address it until they say
-    otherwise. It does not get the "can manage agents" capability itself.
+    machine you name, and can be addressed by your owner and your owner's
+    other agents (you included) until they say otherwise. It does not get the
+    "can manage agents" capability itself.
     Confirm the name, machine and provider with the person asking before you
     call this: it creates a real agent on their computer.
 
@@ -215,7 +227,13 @@ async def create_agent(
             when the machine has reported where it keeps workspaces, and the
             machine makes the directory if it is missing. Any other directory
             must already exist there.
-        auto_approve: Let the agent run tools without asking for approval.
+        auto_mode: Auto mode, on by default: the provider's own automatic
+            review lets safe actions run without asking and still asks a
+            person before risky ones. Leave it on unless the person asks for
+            every action to be approved.
+        auto_approve: Bypass mode: the agent runs every tool without any
+            permission check, and this overrides `auto_mode`. Unsafe; set it
+            only when the person explicitly asks for bypass.
         display_name: A human label shown next to `name`, or null for none.
         icon_url: An https link to the agent's icon, or null for the icon
             its name generates, the same one Switch Console offers first. A
@@ -245,6 +263,7 @@ async def create_agent(
             advanced_config={} if advanced_config is None else advanced_config,
             instructions=instructions,
             directory=directory,
+            auto_mode=auto_mode,
             auto_approve=auto_approve,
             isolation="shared",
             start=start,
@@ -262,8 +281,11 @@ async def list_managed_agents() -> list[dict[str, Any]]:
 
     Returns:
         A list of managed agents, each {agent_id, name, display_name,
-        description, provider, model, advanced_config, directory, machine,
-        desired_state, actual, revision}.
+        description, provider, model, advanced_config, auto_mode,
+        auto_approve, directory, machine, desired_state, actual, revision}.
+        `auto_mode` is whether the provider's automatic review decides which
+        actions need a person's approval. `auto_approve` is bypass: it runs
+        every tool without asking anyone, whatever `auto_mode` says.
         `directory` is the working directory the definition names (null only
         when its machine has not said where it keeps workspaces).
         `machine` is {id, name, state} (null when the agent is not placed on

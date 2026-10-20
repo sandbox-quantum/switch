@@ -45,7 +45,6 @@ _PROFILE = {
     "pre_invocation_mediation": [],
     "post_invocation_mediation": [],
     "event_reporting": [],
-    "task_protocol": {"can_delegate": False, "can_accept": False},
 }
 
 

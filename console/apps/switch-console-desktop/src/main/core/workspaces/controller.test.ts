@@ -187,6 +187,39 @@ describe('disconnecting a bridge', () => {
   });
 });
 
+describe('deleting a room', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+  });
+
+  it('keeps the platform channel unless asked', async () => {
+    deleteRoom.mockResolvedValue(null);
+
+    await expect(
+      workspacesController.deleteRoom({ workspaceId: 'ws', roomId: 'r1' })
+    ).resolves.toBeNull();
+
+    expect(deleteRoom).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'r1', {
+      retireChannel: false,
+    });
+  });
+
+  it('passes on a request to retire the channel, and what became of it', async () => {
+    deleteRoom.mockResolvedValue({ outcome: 'archived', reason: null });
+
+    await expect(
+      workspacesController.deleteRoom({ workspaceId: 'ws', roomId: 'r1', retireChannel: true })
+    ).resolves.toEqual({ outcome: 'archived', reason: null });
+
+    expect(deleteRoom).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'r1', {
+      retireChannel: true,
+    });
+  });
+});
+
 describe('distributed Microsoft Teams team placement', () => {
   beforeEach(() => {
     vi.clearAllMocks();

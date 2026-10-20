@@ -16,7 +16,7 @@ import {
   managedAgentLabel,
   managedAgentState,
 } from './managed-agent-state';
-import { useManagedAgents, useOwnedMachines } from './use-managed-agents';
+import { useManagedAgents, useRunsOnThisComputer } from './use-managed-agents';
 
 /**
  * The active server's managed agents: every one the server lists, whatever
@@ -65,13 +65,10 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
   const { navigate } = useNavigate();
   const { currentView } = useWorkspaceSlots();
   const { params } = useParams('managedAgent');
-  const machines = useOwnedMachines(agent.serverId);
   const label = managedAgentLabel(agent);
   const provider = agent.definition.provider;
   const state = managedAgentState(agent);
-  const thisComputer =
-    machines.data?.find((machine) => machine.id === agent.machine?.id)?.local?.kind ===
-    'this-computer';
+  const thisComputer = useRunsOnThisComputer(agent);
   const machineDown = agent.machine !== null && agent.machine.state !== 'online';
   const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   return (

@@ -20,7 +20,7 @@ _MAX_COMMAND_DESCRIPTION = 256
 
 
 def command_menu() -> list[BotCommand]:
-    """Every visible command, hyphens spelled as underscores.
+    """Every visible command that has a handler, hyphens spelled as underscores.
 
     Telegram only accepts `[a-z0-9_]` in a registered command, so the
     hyphenated names are published in their underscore spelling —
@@ -32,5 +32,7 @@ def command_menu() -> list[BotCommand]:
             description=command.description[:_MAX_COMMAND_DESCRIPTION],
         )
         for command in COMMANDS
-        if not command.hidden and _TELEGRAM_COMMAND_RE.fullmatch(command.name)
+        if not command.hidden
+        and command.handler is not None
+        and _TELEGRAM_COMMAND_RE.fullmatch(command.name)
     ]

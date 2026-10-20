@@ -69,7 +69,6 @@ from .test_telegram_adapter import (
 
 CHANNEL = str(CHAT_ID)
 TOPIC_ID = "88"
-SESSION_URL = "https://console.example/sessions/session-demo"
 ASKER_ID = 60606
 ASKER = str(ASKER_ID)
 
@@ -90,18 +89,14 @@ def _tool(status: str) -> Item:
 
 def _running(*extra: Item) -> TurnActivity:
     """A turn mid-flight, with everything a status can draw from: a tool call
-    in progress, a duration to count and a session to link to."""
+    in progress and a duration to count."""
     items = [_tool("in-progress"), *extra]
-    return TurnActivity(
-        items, _turn("running"), elapsed_seconds=12, session_url=SESSION_URL
-    )
+    return TurnActivity(items, _turn("running"), elapsed_seconds=12)
 
 
 def _finished(*extra: Item) -> TurnActivity:
     items = [_tool("completed"), *extra]
-    return TurnActivity(
-        items, _turn("completed"), elapsed_seconds=42, session_url=SESSION_URL
-    )
+    return TurnActivity(items, _turn("completed"), elapsed_seconds=42)
 
 
 async def _card(**kwargs: Any) -> RequestCard:
@@ -193,35 +188,14 @@ async def test_a_card_prints_the_handle_it_answers_to_in_a_code_span() -> None:
     assert "`R7`" not in text
 
 
-async def test_a_console_deeplink_is_offered_as_text_rather_than_a_dead_link() -> None:
-    """Telegram renders an anchor only for the schemes it knows. A
-    `switchdash://` one is rejected outright or silently stripped of its
-    address, so the address itself is shown instead."""
+async def test_a_status_links_nowhere() -> None:
     adapter = _adapter()
 
-    await adapter.post_rich(
-        CHANNEL,
-        "my-agent",
-        _activity(session_url="switchdash://session/abc"),
-        None,
-    )
+    await adapter.post_rich(CHANNEL, "my-agent", _activity(), None)
 
     text = _posted(adapter)["text"]
-    assert "<code>switchdash://session/abc</code>" in text
     assert "<a href" not in text
-
-
-async def test_a_web_console_link_is_a_real_link() -> None:
-    adapter = _adapter()
-
-    await adapter.post_rich(
-        CHANNEL,
-        "my-agent",
-        _activity(session_url="https://switch.example/s/abc"),
-        None,
-    )
-
-    assert '<a href="https://switch.example/s/abc">' in _posted(adapter)["text"]
+    assert "Console" not in text
 
 
 # ── Naming the person who asked ──────────────────────────────────────────────
@@ -655,8 +629,8 @@ async def test_another_chat_is_not_held_back_by_this_one() -> None:
 
 async def test_a_finished_status_is_edited_to_its_final_state_and_left_there() -> None:
     """What a reader scrolling the chat wants from a turn that has ended is
-    that it ran, how long it took and where to open it. Deleting the status
-    left them with none of that."""
+    that it ran and how long it took. Deleting the status left them with
+    neither."""
     adapter = _adapter()
     ref = await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
 
@@ -665,7 +639,6 @@ async def test_a_finished_status_is_edited_to_its_final_state_and_left_there() -
     text = _edited(adapter)["text"]
     assert _bot(adapter).deletes == []
     assert "Worked for 42s" in text
-    assert f'<a href="{SESSION_URL}">' in text
 
 
 async def test_a_finished_status_in_a_forum_topic_is_kept_the_same_way() -> None:
@@ -733,23 +706,16 @@ async def test_a_finished_turn_that_still_has_a_problem_to_report_says_so() -> N
     assert "went away" in _edited(adapter)["text"]
 
 
-async def test_the_message_a_problem_gets_says_where_to_read_about_it() -> None:
-    """It draws no log of its own, so the link is the only way to the turn.
-
-    A message asking somebody to act is the one they most need to be able to
-    ask what happened from, and this one has nothing on it to expand.
-    """
+async def test_the_message_a_problem_gets_is_the_warning() -> None:
     adapter = _adapter()
 
     await adapter.post_rich(
-        CHANNEL,
-        "my-agent",
-        _ended(error_summary="The host went away.", session_url=SESSION_URL),
-        None,
+        CHANNEL, "my-agent", _ended(error_summary="The host went away."), None
     )
 
     text = _posted(adapter)["text"]
-    assert f'<a href="{SESSION_URL}">Open in Switch Console</a>' in text
+    assert "The host went away." in text
+    assert "<a href" not in text
 
 
 async def test_a_redraw_never_takes_a_publication_down() -> None:

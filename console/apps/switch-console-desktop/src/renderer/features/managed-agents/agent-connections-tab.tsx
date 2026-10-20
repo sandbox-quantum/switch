@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronRight, X } from 'lucide-react';
+import { ArrowRight, ChevronRight, X } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   CLOUD_GITHUB_GRANT_NOTES,
@@ -15,6 +15,7 @@ import { ConnectionIcon } from '@renderer/features/switch-servers/connection-ico
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -25,6 +26,7 @@ import {
   agentConnectionCards,
   connectionCardDetail,
   connectionCardStatus,
+  noConnectorsSetUp,
   ownerOnlyRequest,
   ownerOnlyWarningText,
   showsOwnerOnlyWarning,
@@ -49,18 +51,20 @@ export function useAgentServiceGrants(shown: boolean, workspaceId: string | null
 }
 
 /**
- * An agent's Connections tab, on a managed or a local agent's page: one card
+ * An agent's Connectors tab, on a managed or a local agent's page: one card
  * per service its owner has connected, and a drawer to grant or change one.
  * The drawer sits over the page rather than replacing it: picking a service
  * is a look, not a move. `cloud` is for a cloud agent, whose sessions have no
  * GitHub sign-in of their own and run on no machine of the owner's.
  */
 export function AgentConnectionsTab({
+  serverId,
   workspaceId,
   agentId,
   agentName: label,
   cloud,
 }: {
+  serverId: string;
   workspaceId: string;
   /** The agent's id in Switch. */
   agentId: string;
@@ -68,6 +72,7 @@ export function AgentConnectionsTab({
   cloud: boolean;
 }) {
   const queryClient = useQueryClient();
+  const { navigate } = useNavigate();
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -113,8 +118,8 @@ export function AgentConnectionsTab({
   const page = (children: ReactNode) => (
     <ServerPage
       width={900}
-      title="Connections"
-      description={`What ${label} may use of your own connections. Its sessions are given short-lived access for what you turn on, and nothing else.`}
+      title="Connectors"
+      description={`What ${label} may use of your own connectors.`}
     >
       {children}
     </ServerPage>
@@ -136,6 +141,8 @@ export function AgentConnectionsTab({
   const current = grants.data;
   const { cards, unconnected } = agentConnectionCards(services.data ?? [], current.grants);
   const note = unconnectedNote(unconnected);
+  // Only worth pointing at Connectors when connecting there would offer something here.
+  const noneSetUp = services.isSuccess && note !== null && noConnectorsSetUp(services.data);
   const opened = cards.find((card) => card.slug === openSlug) ?? null;
 
   return (
@@ -173,12 +180,12 @@ export function AgentConnectionsTab({
           )}
           {services.isError && (
             <p role="alert" className="text-sm text-destructive">
-              {failureText(services.error, 'Could not load your connections.')}
+              {failureText(services.error, 'Could not load your connectors.')}
             </p>
           )}
           {services.isPending ? (
             <p className="flex items-center gap-2 text-sm">
-              <Spinner /> Loading your connections…
+              <Spinner /> Loading your connectors…
             </p>
           ) : (
             cards.length > 0 && (
@@ -199,7 +206,23 @@ export function AgentConnectionsTab({
               No service on this server can be turned on for {label} yet.
             </p>
           )}
-          {note && <p className="text-sm text-foreground-muted">{note}</p>}
+          {noneSetUp ? (
+            <div className="flex items-center gap-3 rounded-lg border border-dashed border-border p-4">
+              <p className="min-w-0 flex-1 text-sm text-foreground-muted">
+                You have no connectors set up yet. Connect a service to turn it on for {label}.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate('connectors', { serverId })}
+              >
+                Set up connectors
+                <ArrowRight className="size-3.5" />
+              </Button>
+            </div>
+          ) : (
+            note && <p className="text-sm text-foreground-muted">{note}</p>
+          )}
         </>
       )}
       {opened && (

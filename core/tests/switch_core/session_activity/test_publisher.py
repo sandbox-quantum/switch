@@ -98,7 +98,6 @@ def _publisher(session_factory, bridged, listener, platform, online):
         listener=listener,
         session_factory=session_factory,
         agent_online=online,
-        gateway_public_url="https://switch.example",
     )
 
 
@@ -373,7 +372,8 @@ async def test_an_unconfirmed_card_is_disclosed_once_where_it_cannot_be_found(
         [notice] = await platform.wait_for(1)
         assert notice.call == "admin_message"
         assert "**A1**" in notice.content
-        assert "[Switch Console](switchdash://session?" in notice.content
+        assert "answer it in Switch Console instead" in notice.content
+        assert "switchdash://" not in notice.content
         assert (await _card_post(session_factory)).unconfirmed_notice_at is not None
         await service.close_approval(AGENT, SESSION, "req-1")
         await asyncio.sleep(0.5)
@@ -404,7 +404,6 @@ async def test_a_turn_is_drawn_step_by_step_in_one_message(
     assert first.thread_ref == ASKED_POST
     assert first.content.turn.status == "running"
     assert first.content.interrupt_turn_id == "turn-1"
-    assert first.content.session_url.startswith("switchdash://session?")
 
     await _step(
         service,

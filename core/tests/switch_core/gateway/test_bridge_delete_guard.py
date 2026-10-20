@@ -46,9 +46,12 @@ class _RecordingRoomService:
 
     def __init__(self) -> None:
         self.deleted: list[str] = []
+        self.retired: list[str] = []
 
-    async def delete_room(self, room_id: str) -> None:
+    async def delete_room(self, room_id: str, *, retire_channel: bool) -> None:
         self.deleted.append(room_id)
+        if retire_channel:
+            self.retired.append(room_id)
 
 
 class _RecordingLifecycle:
@@ -217,6 +220,8 @@ async def test_a_bridge_registered_by_hand_still_deletes(
 
     assert result == {"ok": True}
     assert room_service.deleted == [room_id]
+    # The bot may already have lost its access, so the channels are left.
+    assert room_service.retired == []
     assert lifecycle.removed == [bridge_id]
 
 

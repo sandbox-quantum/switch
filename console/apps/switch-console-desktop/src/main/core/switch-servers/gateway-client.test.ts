@@ -92,6 +92,7 @@ const {
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
+  deleteRoom,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -99,6 +100,7 @@ const {
   ownsOwnerAddressedAgent,
   registerKnownAgent,
   updateAgentDisplayName,
+  renameAgent,
   updateBridge,
   AgentManagementUnavailableError,
   enrollConsoleController,
@@ -946,6 +948,56 @@ describe('agent display name', () => {
   });
 });
 
+describe('renameAgent', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('PUTs the name with the display name, and reads back what the rename did', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        agent: {
+          id: 'a1',
+          name: 'meeting-scribe',
+          display_name: 'Meeting Scribe',
+          description: '',
+          connector_type: 'mcp',
+          owner_name: 'Ada',
+          known_agent_type: null,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+        old_name: 'notes-taker',
+        bridge_failures: ['slack: Slack is down'],
+        templates_mentioning_old_name: ['weekly'],
+      }) as never
+    );
+
+    const outcome = await renameAgent(SERVER, 'a1', 'meeting-scribe', 'Meeting Scribe');
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(url).toBe('https://switch.example.com/gateway/agents/a1/name');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'meeting-scribe',
+      display_name: 'Meeting Scribe',
+    });
+    expect(outcome.agent.name).toBe('meeting-scribe');
+    expect(outcome.agent.displayName).toBe('Meeting Scribe');
+    expect(outcome.oldName).toBe('notes-taker');
+    expect(outcome.bridgeFailures).toEqual(['slack: Slack is down']);
+    expect(outcome.templatesMentioningOldName).toEqual(['weekly']);
+  });
+});
+
 describe('updateBridge', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1074,6 +1126,42 @@ describe('deleteBridge', () => {
     fetchMock.mockResolvedValue(errorResponse(500, 'adapter shutdown failed') as never);
 
     await expect(deleteBridge(SERVER, 'b1')).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('deleteRoom', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the channel unless asked, leaving the request as it was', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true, channel: null }) as never);
+
+    await expect(deleteRoom(SERVER, 'r/1')).resolves.toBeNull();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r%2F1');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('asks for the channel to be retired, and reports what became of it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ ok: true, channel: { outcome: 'failed', reason: 'not in channel' } }) as never
+    );
+
+    await expect(deleteRoom(SERVER, 'r1', { retireChannel: true })).resolves.toEqual({
+      outcome: 'failed',
+      reason: 'not in channel',
+    });
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r1?retire_channel=true');
   });
 });
 
@@ -1223,7 +1311,8 @@ describe('GitHub connection transport', () => {
         connectable: true,
         status: 'needs_reauthorization',
         unavailable_reason: entry.unavailable_reason,
-        // A server that predates them says neither.
+        // A server that predates them says none of these.
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -1244,6 +1333,41 @@ describe('GitHub connection transport', () => {
     const [url] = fetchMock.mock.calls.at(-1) as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/service-connections');
   });
+  it('reads why a service cannot be used as a code, dropping one it does not know', async () => {
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: false,
+      configured: false,
+      unavailable_reason: "GitHub can't be used on this server.",
+      unavailable_code: 'needs_https',
+      status: 'not_connected',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [
+            entry,
+            { ...entry, slug: 'example', unavailable_code: 'some_later_reason' },
+            { ...entry, slug: 'jira', enabled: false, unavailable_code: 'coming_soon' },
+          ],
+        })
+      )
+    );
+    const catalog = await getConnectionCatalog(SERVER);
+    expect(
+      catalog.map((item) => [item.slug, item.unavailable_code, item.unavailable_reason])
+    ).toEqual([
+      ['github', 'needs_https', entry.unavailable_reason],
+      // A newer server's code this Console doesn't know: its reason is shown as it is.
+      ['example', null, entry.unavailable_reason],
+      ['jira', null, null],
+    ]);
+  });
   it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
@@ -1262,6 +1386,7 @@ describe('GitHub connection transport', () => {
         ...github,
         connectable: true,
         unavailable_reason: null,
+        unavailable_code: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -2928,9 +3053,9 @@ describe('agent management calls', () => {
       [
         'reported',
         [
-          { provider: 'claude', installed: true, auth: 'ok' },
-          { provider: 'codex', installed: true, auth: 'unknown' },
-          { provider: 'opencode', installed: false, auth: 'unknown' },
+          { provider: 'claude', installed: true, auth: 'ok', problem: null },
+          { provider: 'codex', installed: true, auth: 'unknown', problem: null },
+          { provider: 'opencode', installed: false, auth: 'unknown', problem: null },
         ],
       ],
       ['silent', []],
@@ -3011,6 +3136,7 @@ describe('agent management calls', () => {
             model: 'opus',
             advanced_config: { effort: 'high', maxTurns: 4, background: true, tools: ['Read'] },
             instructions: 'Be brief.',
+            auto_mode: true,
             auto_approve: true,
             directory: '/work/scout',
             isolation: 'isolated',
@@ -3060,6 +3186,7 @@ describe('agent management calls', () => {
         instructions: 'Be brief.',
         isolation: 'isolated',
         directory: '/work/scout',
+        autoMode: true,
         autoApprove: true,
         status: {
           process: 'failed',
@@ -3084,6 +3211,7 @@ describe('agent management calls', () => {
         instructions: '',
         isolation: 'shared',
         directory: null,
+        autoMode: false,
         autoApprove: false,
         status: { process: 'running', attached: true, reason: null, detail: null, directory: null },
       },
@@ -3103,6 +3231,7 @@ describe('agent management calls', () => {
         instructions: '',
         isolation: 'shared',
         directory: null,
+        autoMode: false,
         autoApprove: false,
         status: null,
       },

@@ -15,6 +15,7 @@
           "effort": "high"
         },
         "instructions": "Review pull requests in this repository.",
+        "auto_mode": true,
         "auto_approve": false,
         "directory": "/home/example/src/project",
         "isolation": "shared"

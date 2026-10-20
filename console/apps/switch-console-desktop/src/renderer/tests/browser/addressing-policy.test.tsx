@@ -116,12 +116,7 @@ describe('the chooser', () => {
     const { el } = await control(null);
 
     const labels = await openSelect(el.querySelector('button')!);
-    expect(labels).toEqual([
-      'Only me (default)',
-      'Only me and my agents',
-      'Anyone',
-      'Custom rules',
-    ]);
+    expect(labels).toEqual(['Me and my agents (default)', 'Only me', 'Anyone', 'Custom rules']);
   });
 
   it('shows the answer in the box, not the value stored behind it', async () => {
@@ -131,7 +126,7 @@ describe('the chooser', () => {
     const { el } = await control({ rules: [rule({ owner: true, owner_agents: true })] });
 
     const trigger = el.querySelector('button')!;
-    expect(trigger.textContent).toContain('Only me and my agents');
+    expect(trigger.textContent).toContain('Me and my agents');
     expect(trigger.textContent).not.toContain('ownerAndAgents');
   });
 
@@ -139,7 +134,7 @@ describe('the chooser', () => {
     const { el, emitted } = await control(null);
     await openSelect(el.querySelector('button')!);
 
-    await pickOption('Only me and my agents');
+    await pickOption('Me and my agents (default)');
 
     expect(emitted()).toEqual({
       rules: [
@@ -163,7 +158,7 @@ describe('the chooser', () => {
     });
     await openSelect(el.querySelector('button')!);
 
-    await pickOption('Only me (default)');
+    await pickOption('Only me');
 
     expect((emitted() as AddressingPolicy).rules[0].owner_agents).toBe(false);
   });

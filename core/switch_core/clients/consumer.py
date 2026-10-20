@@ -22,11 +22,6 @@ from switch_core.events import (
     CommandEvent,
     LlmCallReport,
     SwitchEvent,
-    TaskAccept,
-    TaskCancel,
-    TaskDelegate,
-    TaskFinalise,
-    TaskUpdate,
     ToolCallReport,
 )
 from switch_core.transport import (
@@ -272,11 +267,6 @@ class Consumer[ActorT: Actor[Any]]:
         "com.switch.command": (CommandEvent, "on_command"),
         "com.switch.report.tool_call": (ToolCallReport, "on_tool_call_report"),
         "com.switch.report.llm_call": (LlmCallReport, "on_llm_call_report"),
-        "com.switch.task.delegate": (TaskDelegate, "on_task_delegate"),
-        "com.switch.task.accept": (TaskAccept, "on_task_accept"),
-        "com.switch.task.update": (TaskUpdate, "on_task_update"),
-        "com.switch.task.finalise": (TaskFinalise, "on_task_finalise"),
-        "com.switch.task.cancel": (TaskCancel, "on_task_cancel"),
         "com.switch.agent.runtime_state": (
             AgentRuntimeStateEvent,
             "on_agent_runtime_state",
@@ -383,21 +373,6 @@ class Consumer[ActorT: Actor[Any]]:
         pass
 
     async def on_llm_call_report(self, room: RoomRef, event: LlmCallReport) -> None:
-        pass
-
-    async def on_task_delegate(self, room: RoomRef, event: TaskDelegate) -> None:
-        pass
-
-    async def on_task_accept(self, room: RoomRef, event: TaskAccept) -> None:
-        pass
-
-    async def on_task_update(self, room: RoomRef, event: TaskUpdate) -> None:
-        pass
-
-    async def on_task_finalise(self, room: RoomRef, event: TaskFinalise) -> None:
-        pass
-
-    async def on_task_cancel(self, room: RoomRef, event: TaskCancel) -> None:
         pass
 
     async def on_agent_runtime_state(
