@@ -311,18 +311,9 @@ function logUnreported(what: string, error: unknown): void {
 }
 
 /**
- * Report what a template made: each room as `room_created` from a template,
- * and each agent as `agent_created`, all stamped with the moment the run
- * finished.
- *
- * The run's result names what it made and little else, so what the events
- * carry that nobody declared — a room's platform, agents and instructions, the
- * provider of an agent a document run chose — is read back from the server.
- * That is work done only to describe the run, so it is done only when an event
- * could be sent, and only while the session still selects the run's workspace:
- * it never switches back to it or holds a lease, so it cannot redirect or hold
- * up whatever the person did next. What cannot be read back is logged, not
- * guessed.
+ * Report each room and agent a template made. What the run's result does not
+ * say is read back, only when an event could be sent and only while the run's
+ * workspace is still selected; what cannot be read is logged, not guessed.
  */
 async function reportTemplateMade(
   workspaceId: string,
@@ -400,11 +391,7 @@ async function reportTemplateMade(
   }
 }
 
-/**
- * Run a template call, then report what it made once the call's lease has
- * ended, without anyone waiting for the report or its failure. `made` says
- * what that was, or null for a result that made nothing — a refused run.
- */
+/** Run a template call, then report what it made (null: nothing) without waiting. */
 async function runTemplateReported<R>(
   workspaceId: string,
   run: (server: SwitchServer) => Promise<R>,
@@ -781,8 +768,7 @@ export const workspacesController = createRPCController({
     }
   ): Promise<TemplateRunResult> => {
     const { entryPoint, ...run } = body;
-    // The server chooses the agents' providers from the document's conditions,
-    // so they are read back rather than declared.
+    // The server picks providers from the document's conditions, so they are read back.
     return runTemplateReported(
       workspaceId,
       (server) => runTemplateDocument(server, run),

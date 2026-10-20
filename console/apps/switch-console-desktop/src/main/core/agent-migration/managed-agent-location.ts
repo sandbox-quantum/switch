@@ -3,14 +3,9 @@ import type { TelemetryLocationKind } from '@main/core/telemetry/events';
 import { log } from '@main/lib/logger';
 
 /**
- * Tells where managed agents on `serverId` run, as `agent_created` reports it,
- * from one read of which controller this computer is enrolled as: `local` for
- * an agent on that controller, `remote` for any other machine — an SSH host, a
- * cloud machine, someone's other computer.
- *
- * Best effort, like the platform lookups beside other reports: it only
- * describes agents that already exist, so a read that fails tells `unknown`
- * for every agent, and says so in the log, rather than failing anything.
+ * Where managed agents on `serverId` run, from one read of this computer's
+ * enrollment: `local` on its controller, `remote` elsewhere, `unknown` (logged)
+ * when the read fails.
  */
 export async function managedAgentLocator(
   serverId: string

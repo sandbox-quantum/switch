@@ -847,8 +847,7 @@ export class RemoteServerService {
           deployedVersion: managedSwitchVersion(),
           drift: null,
           upgrade: null,
-          // Read off the server just started, as at launch: what it runs with,
-          // not what was written for it.
+          // Read back off the server, not assumed from what was written.
           deployedTelemetry: await readDeployedTelemetry(host),
           notice: result.warning,
         });

@@ -67,8 +67,7 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
   trackEventAt,
   telemetryService: { canSend },
 }));
-// The provider registry is built at app startup; what is asserted below is that
-// the agent's provider reaches the event, not how an id is validated.
+// The provider registry is built at app startup, which a test does not run.
 vi.mock('@main/core/telemetry/agent-type', () => ({ agentTypeOf: (id: string) => id }));
 vi.mock('@main/core/agent-migration/managed-agent-location', () => ({ managedAgentLocator }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
@@ -487,8 +486,7 @@ describe('reporting what a template made', () => {
 
   it('does not switch back to the run’s workspace to describe it', async () => {
     requireWorkspace.mockResolvedValue(workspace('tenant-a'));
-    // The cookie names no tenant this run's workspace has, as when the person
-    // has already moved on to another workspace on the server.
+    // As when the person has already moved on to another workspace.
     getSessionCookie.mockResolvedValue('cookie-for-another-workspace');
     createRoomFromTemplate.mockResolvedValue({
       kind: 'room',

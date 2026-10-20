@@ -45,16 +45,9 @@ export type ManagedRefusal = Extract<
 >;
 
 /**
- * What a failed create means: the name taken, a refusal and why, or null for
- * a failure that is not either (the server unreachable, or a fault in it),
- * which is thrown.
- *
- * Switch answers both a taken name and a placement it will not make with a
- * 409, told apart by the reason code: a taken name is a validation error, a
- * placement refusal names what is wrong with the machine. The refusals are
- * kept apart because they mean different things to whoever reads the count —
- * a session that expired, fields Switch would not accept, and a machine that
- * cannot take the agent.
+ * What a failed create means, or null for one to rethrow. Switch answers a
+ * taken name and a refused placement both with a 409, told apart by the reason
+ * code: a taken name is a validation error.
  */
 export function managedCreateFailureOf(error: {
   kind: GatewayErrorKind;
@@ -96,15 +89,9 @@ export type NewManagedAgentDeps = {
       definition: ManagedDefinition & { isolation: 'shared' | 'isolated' };
     }
   ): Promise<ManagedCreateOutcome>;
-  /**
-   * Reports the attempt as `agent_created`, `none` for one that worked. Never
-   * awaited: describing the agent must not hold up making it.
-   */
+  /** Reports the attempt as `agent_created`; never awaited. */
   reportCreate(input: AddManagedAgentParams, failure: TelemetryAgentCreateFailure): void;
-  /**
-   * A create that threw, as a reportable reason: a sign-in the session seam
-   * found missing or expired before anything reached Switch, or else a fault.
-   */
+  /** A create that threw, as a reason: a missing sign-in, or else a fault. */
   thrownFailure(error: unknown): Extract<TelemetryAgentCreateFailure, 'unauthenticated' | 'error'>;
   log: MigrationLog;
 };
@@ -143,7 +130,6 @@ export class NewManagedAgentService {
     try {
       return await this.createAgent(input);
     } catch (error) {
-      // What is not a typed return: no sign-in, the server unreachable, or a fault.
       this.deps.reportCreate(input, this.deps.thrownFailure(error));
       throw error;
     }

@@ -24,12 +24,7 @@ export async function telemetryConsent(): Promise<boolean> {
   return (await appSettingsService.get('telemetry')).enabled;
 }
 
-/**
- * What a stack's settings say about usage data, read the same way wherever
- * they were found: whether it shares, and whether it sends to `expected`, the
- * address this build would give it. A stack whose settings name none runs on
- * its version's default, which this build has not chosen, so it is not current.
- */
+/** Whether a stack's settings share, and send to `expected`; naming no address is not current. */
 export function deployedTelemetryOf(
   read: (key: string) => string | null | undefined,
   expected: string

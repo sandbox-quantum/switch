@@ -251,8 +251,6 @@ describe('buildEnvFile', () => {
   });
 
   it('names the relay the server reports to, rather than leaving it to the server’s default', () => {
-    // A server's default is whatever its version shipped with; the app knows
-    // where it reports now, and the two must be one pipeline.
     expect(vars.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
     expect(composeYaml).toMatch(/^\s+TELEMETRY_ENDPOINT:\s*$/m);
   });

@@ -69,10 +69,7 @@ export type TelemetryAgentCreateFailure =
    */
   | 'not_configured'
   | 'agent_not_on_server'
-  /**
-   * A managed agent Switch would not place: the machine is offline, cannot run
-   * the provider, or is not the person's to use.
-   */
+  /** A managed agent Switch would not place on the machine. */
   | 'refused'
   /** A managed agent whose own fields Switch rejected: its name, description or settings. */
   | 'invalid'
@@ -479,10 +476,7 @@ export type TelemetryEventMap = {
   /**
    * A room was created on a server. `bridge_unavailable` is the failure worth
    * watching: it means the messaging platform, not the app, refused.
-   *
-   * A template run reports each room it made, read back from the server once it
-   * exists. It reports no failure: a run that fails has made no room, and how
-   * many it would have made is not known.
+   * A template run reports each room it made, and nothing when it fails.
    */
   room_created: {
     server_kind: TelemetryServerKind;

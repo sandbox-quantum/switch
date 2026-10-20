@@ -133,19 +133,10 @@ export function resolveTelemetryConfig(): TelemetryResolution {
 }
 
 /**
- * Where a Switch server running as a process on this machine sends its usage:
- * wherever this app sends its own, so a dev run pointed at a local listener
- * sees both halves. Null when that is not an http(s) URL a server could post
- * to, for the caller to fall back to the relay and say so.
- *
- * An origin, because switch-core appends the signal path itself and refuses a
- * value that already carries one. A build that sends nothing still names the
- * relay: whether the server reports is the consent gate's to decide, not this.
- *
- * Only a server on this machine follows a dev listener. A container's loopback
- * is its own and an SSH host's is another machine's, and a host other people
- * share must never be pointed at one person's listener, so those servers are
- * always given {@link TELEMETRY_RELAY_ORIGIN}.
+ * Where a server running as a process on this machine sends its usage: the
+ * origin of wherever this app sends its own (switch-core appends the path), or
+ * null when that is not an http(s) URL. Docker and SSH servers always get
+ * {@link TELEMETRY_RELAY_ORIGIN}: their loopback is not this machine's.
  */
 export function sameMachineServerTelemetryEndpointFor(
   resolution: TelemetryResolution

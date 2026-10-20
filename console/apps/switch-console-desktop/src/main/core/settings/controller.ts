@@ -64,9 +64,8 @@ export const appSettingsController = createRPCController({
    * control sits in the same rows the editors do, so the two have to be
    * comparable.
    *
-   * The usage-data setting has no Reset control. Were it reset some other way,
-   * it would return to where a new install starts — sharing, with the first-run
-   * notice asking again — and the reset is not reported as consent.
+   * The usage-data setting has no Reset control, and a reset is never reported
+   * as consent.
    */
   reset: async <T extends AppSettingsKey>(key: T): Promise<void> => {
     await appSettingsService.reset(key);

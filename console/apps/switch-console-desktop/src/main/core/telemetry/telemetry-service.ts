@@ -45,10 +45,7 @@ class TelemetryService {
     return this.trackAt(name, properties, Date.now());
   }
 
-  /**
-   * {@link track}, for something that happened at `timeMs` and is only being
-   * reported now — because what describes it had to be read first.
-   */
+  /** {@link track}, for something that happened at `timeMs`. */
   async trackAt<K extends TelemetryEventName>(
     name: K,
     properties: TelemetryEventMap[K],
@@ -79,14 +76,14 @@ class TelemetryService {
   /**
    * Whether an event sent right now would actually go anywhere.
    *
-   * The same two refusals `track` applies, asked in advance. Two kinds of
-   * caller need this. The once-per-install events spend a record that is never
-   * given back, so spending it on a send that consent then discards would
-   * retire the event for the life of the install. And a report that has to ask
-   * a server for what it describes should not make that request for an event
-   * that will be dropped. Nothing else should call it — everywhere else, asking
-   * first and sending second is two reads of a gate that can change in between,
-   * and `track` already reads it at the only moment that matters.
+   * The same two refusals `track` applies, asked in advance. Only the
+   * once-per-install events need this: they spend a record that is never given
+   * back, so spending it on a send that consent then discards would retire the
+   * event for the life of the install. A report that must ask a server for what
+   * it describes uses it too, to skip asking when nothing could be sent. Nothing
+   * else should call it — everywhere else, asking first and sending second is
+   * two reads of a gate that can change in between, and `track` already reads
+   * it at the only moment that matters.
    */
   async canSend(): Promise<boolean> {
     return resolveTelemetryConfig().enabled && (await isTelemetryAllowed());
@@ -137,11 +134,7 @@ export function trackEvent<K extends TelemetryEventName>(
   trackEventAt(name, properties, Date.now());
 }
 
-/**
- * {@link trackEvent} for something that happened at `timeMs`: a report that
- * had to read what describes it first carries the moment it describes, not the
- * moment the read came back.
- */
+/** {@link trackEvent} for something that happened at `timeMs`, reported later. */
 export function trackEventAt<K extends TelemetryEventName>(
   name: K,
   properties: TelemetryEventMap[K],

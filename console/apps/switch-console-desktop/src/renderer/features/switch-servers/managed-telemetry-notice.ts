@@ -12,12 +12,8 @@ import type { DeployedTelemetry } from '@shared/core/managed-switch-server/manag
  * A server out of step says which way, because "not sharing yet" and "still
  * sharing after you said no" are not the same news. And a server we could not
  * read says so rather than borrowing either answer — the whole point of
- * checking is that assuming was what went wrong.
- *
- * A server sharing as asked can still be sending somewhere other than the
- * address this build gives it — most often one started before Console named
- * the relay, running on its own version's default — and that is out of step
- * too: its events may be going nowhere, and a restart points it at the relay.
+ * checking is that assuming was what went wrong. A server sending somewhere
+ * other than this build's relay is out of step too.
  */
 export type ManagedTelemetryNotice =
   | { kind: 'in-step' }

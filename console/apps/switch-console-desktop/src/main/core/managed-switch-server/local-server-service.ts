@@ -529,8 +529,7 @@ export class LocalServerService {
           deployedVersion: checkoutRoot !== null ? CHECKOUT_IMAGE_TAG : managedSwitchVersion(),
           drift: null,
           upgrade: null,
-          // Read off the server just started, as at launch: what it runs with,
-          // not what was written for it.
+          // Read back off the server, not assumed from what was written.
           deployedTelemetry: ranNative
             ? await readNativeTelemetry(layout)
             : await readDeployedTelemetry(host),

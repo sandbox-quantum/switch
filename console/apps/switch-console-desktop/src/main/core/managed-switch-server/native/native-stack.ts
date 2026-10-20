@@ -583,11 +583,7 @@ export async function nativeStartedAt(layout: NativeLayout): Promise<string | nu
 
 /** What the running switch-core does about usage data, read from the
  * environment it was started with — which is what it read at boot. */
-/**
- * Where the native server sends its usage: the relay, or a dev run's local
- * listener. A listener no server could post to is set aside for the relay,
- * with a warning, rather than left to stop the server starting.
- */
+/** The relay, or a dev run's local listener unless no server could post to it. */
 export function nativeServerTelemetryEndpoint(): string {
   const endpoint = sameMachineServerTelemetryEndpointFor(resolveTelemetryConfig());
   if (endpoint !== null) return endpoint;

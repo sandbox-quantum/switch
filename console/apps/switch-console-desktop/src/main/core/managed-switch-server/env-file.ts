@@ -142,9 +142,7 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `${TELEMETRY_ENABLED_KEY}=${telemetryEnabled ? 'true' : 'false'}`,
     `TELEMETRY_ENVIRONMENT=${telemetryEnvironment}`,
     `TELEMETRY_INTERNAL=${telemetryInternal ? 'true' : 'false'}`,
-    // Named rather than left to the server's own default, which is whatever
-    // its version shipped with: the app and the server it runs report to one
-    // place, and only the app knows where that is now.
+    // Not left to the server's default, which is whatever its version shipped with.
     `${TELEMETRY_ENDPOINT_KEY}=${telemetryEndpoint}`,
     // Tells the server's agents that Switch Console runs it, so switch-buddy
     // can tell this apart from Switch Cloud and a self-hosted server.
