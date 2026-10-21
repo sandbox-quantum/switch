@@ -88,6 +88,14 @@ export class SessionPlacements {
     return this.rooms.get(sessionId) ?? null;
   }
 
+  /**
+   * Whether this session answers for this room: where its replies may go
+   * without it moving there.
+   */
+  serves(sessionId: string, roomId: string): boolean {
+    return this.roomOf(sessionId) === roomId;
+  }
+
   snapshot(): PlacementMap {
     return Object.fromEntries(this.rooms);
   }

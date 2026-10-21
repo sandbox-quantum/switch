@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
 import type { Redactions } from './redaction';
+import { POSTED_ROOM_META, ROOM_POSTING_TOOLS } from './room-posts';
 import { issueServiceToken, readServiceGrants } from './service-access';
 import { AgentServiceTokens } from './service-tokens';
 import type { AskHandler, Caller, HostAsk } from './session-channel';
@@ -181,9 +182,8 @@ export function sessionToolAnswerer(deps: {
 
   /**
    * Posts, as the session, a reply its turn left unposted. Only into the room
-   * the turn came from, and only while the session still attends it: a post
-   * goes to whichever room the session holds, and one it has moved to since
-   * did not ask.
+   * the turn came from, and only while the session still answers for it: one
+   * it has moved away from since did not ask.
    */
   const roomReply = async (
     caller: Caller,
@@ -191,7 +191,7 @@ export function sessionToolAnswerer(deps: {
     ask: Extract<HostAsk, { type: 'room-reply' }>
   ): Promise<null> => {
     const attended = deps.placements.roomOf(caller.sessionId);
-    if (attended !== ask.roomId)
+    if (!deps.placements.serves(caller.sessionId, ask.roomId))
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
       );
@@ -208,6 +208,9 @@ export function sessionToolAnswerer(deps: {
     const posted = await catalog.call(await context(caller), 'post_message', {
       body: deps.redactions.text(ask.body),
       ...(ask.threadId ? { thread_id: ask.threadId } : {}),
+      // Named only when it is not where a post goes anyway, so a server that
+      // predates naming a room is never asked to.
+      ...(attended === ask.roomId ? {} : { room_id: ask.roomId }),
     });
     if (posted.isError) throw new Error(resultText(posted));
     return null;
@@ -242,6 +245,33 @@ export function sessionToolAnswerer(deps: {
     return { instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim() };
   };
 
+  /**
+   * A post, sent to the room its turn came from when the agent named none and
+   * that room is one the session answers for other than where a post goes
+   * anyway; the result says which room it reached (`POSTED_ROOM_META`), so the
+   * session can tell whether the asking room got its answer.
+   */
+  const post = async (
+    caller: Caller,
+    catalog: SwitchToolCatalog,
+    name: string,
+    args: Record<string, unknown>,
+    originRoomId: string | undefined
+  ): Promise<ToolResult & { _meta?: Record<string, unknown> }> => {
+    const attended = deps.placements.roomOf(caller.sessionId);
+    const named = typeof args.room_id === 'string' && args.room_id ? args.room_id : null;
+    const toOrigin =
+      !named &&
+      originRoomId !== undefined &&
+      originRoomId !== attended &&
+      deps.placements.serves(caller.sessionId, originRoomId);
+    const sent = toOrigin ? { ...args, room_id: originRoomId } : args;
+    const result = await catalog.call(await context(caller), name, sent);
+    const reached = named ?? (toOrigin ? originRoomId : attended);
+    if (result.isError || !reached) return result;
+    return { ...result, _meta: { [POSTED_ROOM_META]: reached } };
+  };
+
   return async (caller, ask) => {
     if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
     const catalog = await tools();
@@ -250,6 +280,8 @@ export function sessionToolAnswerer(deps: {
     if (ask.type === 'room-instructions') return roomInstructions(caller, catalog, ask);
     const args = deps.redactions.value(ask.arguments);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
+    if (ROOM_POSTING_TOOLS.has(ask.name))
+      return post(caller, catalog, ask.name, args, ask.originRoomId);
     return catalog.call(await context(caller), ask.name, args);
   };
 }

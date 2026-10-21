@@ -18,6 +18,7 @@ import {
   roomControlRefusal,
 } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import { postFailure, postedToRoom } from './room-posts';
 import {
   planAttachments,
   roomCommand,
@@ -166,44 +167,6 @@ export function sessionBusy(
   add('reset_waiting', reset === 'holding' ? 1 : 0);
   add('room_pending', reset === 'ended' ? 0 : roomsPending);
   return { busy: reasons.length > 0, reasons };
-}
-
-/**
- * The Switch tools that put something the agent wrote in front of a room: a
- * turn that called one of them has answered. Each posts to the room the
- * session is connected to (only `send_attachment` can name another), so a
- * call counts whichever room it reached.
- */
-export const ROOM_POSTING_TOOLS = new Set([
-  'post_message',
-  'send_targeted_message',
-  'send_attachment',
-]);
-
-/** Why a post to the room was refused, when the result is one; null for anything else. */
-export function postFailure(name: string, result: unknown): string | null {
-  if (!ROOM_POSTING_TOOLS.has(name)) return null;
-  if (typeof result !== 'object' || result === null) return null;
-  const { isError, content } = result as { isError?: unknown; content?: unknown };
-  if (isError !== true) return null;
-  const text = Array.isArray(content)
-    ? content
-        .map((part) => (part as { text?: unknown }).text)
-        .filter((part): part is string => typeof part === 'string')
-        .join(' ')
-        .trim()
-    : '';
-  return text || 'Switch refused the post.';
-}
-
-/** Whether a Switch tool result is a post that landed. */
-export function postedToRoom(name: string, result: unknown): boolean {
-  if (!ROOM_POSTING_TOOLS.has(name)) return false;
-  return (
-    typeof result === 'object' &&
-    result !== null &&
-    (result as { isError?: unknown }).isError !== true
-  );
 }
 
 class TransportError extends Error {}
@@ -437,10 +400,12 @@ export async function runSharedHost(
     const hosted = host;
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
-        if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        const posted = postedToRoom(name, result);
+        if (posted) hosted.agentPostedToRoom(posted.roomId);
         const failure = postFailure(name, result);
         if (failure !== null) hosted.agentPostFailed(failure);
       }) ?? null;
+    parentChannel?.setToolOrigin(() => hosted.activeOriginRoom());
 
     options.serviceNotices.attach((message) => host!.serviceFallback(message));
 
@@ -1056,6 +1021,7 @@ export async function runSharedHost(
     if (!signal.aborted) failure ??= error;
   } finally {
     stopHearingTools?.();
+    options.parent?.setToolOrigin(() => null);
     stopped.abort();
     await reporting;
     try {

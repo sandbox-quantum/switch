@@ -34,6 +34,7 @@ from switch_core.bridges.agent.operations.context import (
     counting_reader,
     get_agent_id,
     get_protocol,
+    posting_room,
     require_connected_room,
     session_key,
     sole_connected_room,
@@ -779,30 +780,34 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, str]:
+async def post_message(
+    body: str, thread_id: str | None = None, room_id: str | None = None
+) -> dict[str, str]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
         body: The message text to send. Plain string — do not wrap in JSON or
             prefix with `@name` (use send_targeted_message for addressed
-            messages). The room is implicit: messages go to the room this
-            session is currently connected to via connect_to_room, so there
-            is no `room_id` parameter.
+            messages).
         thread_id: Optional. The `id` of a message to reply into, making this a
             threaded reply. Pass any message id from the thread (a root or a
             reply) — it is normalised to the thread root. Omit for a top-level
             message. Get ids from read_context or from a notification's
             thread_id.
+        room_id: Optional. Post into this room instead of the one you are
+            connected to, without moving: any room you are a member of.
+            Omit it — the usual case — to post where you are.
 
     Returns:
-        {"event_id": "<event id>"} for the posted message.
+        {"event_id": "<event id>", "room_id": "<room id>"} for the posted
+        message and the room it went to.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await posting_room(room_id)
 
     protocol = get_protocol()
     event_id = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
-    return {"event_id": event_id}
+    return {"event_id": event_id, "room_id": room_id}
 
 
 @operation
@@ -811,6 +816,7 @@ async def send_targeted_message(
     target_names: list[str] | None = None,
     target_roles: list[str] | None = None,
     thread_id: str | None = None,
+    room_id: str | None = None,
 ) -> dict[str, Any]:
     """Send a message addressed to specific agents/users and/or roles.
 
@@ -838,11 +844,14 @@ async def send_targeted_message(
         thread_id: Optional. The `id` of a message to reply into, making this a
             threaded reply. Pass any message id from the thread — it is
             normalised to the thread root. Omit for a top-level message.
+        room_id: Optional. Send into this room instead of the one you are
+            connected to, without moving: any room you are a member of.
 
     At least one of target_names / target_roles is required.
 
     Returns:
-        {"event_id": "<event id>", "target_statuses": {name: status}}.
+        {"event_id": "<event id>", "room_id": "<room id>",
+        "target_statuses": {name: status}}.
         `target_statuses` reports each addressed *agent*'s reachability at send
         time — for a role target, that is each of its live holders: `live`
         (will receive immediately), `awaiting_manual_poll` (must read context
@@ -867,7 +876,7 @@ async def send_targeted_message(
         platform confirmed.
     """
     agent_id = get_agent_id()
-    room_id = await require_connected_room()
+    room_id = await posting_room(room_id)
 
     protocol = get_protocol()
     result = await protocol.send_targeted_message(
@@ -880,6 +889,7 @@ async def send_targeted_message(
     )
     return {
         "event_id": result.event_id,
+        "room_id": room_id,
         "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
     }
 
