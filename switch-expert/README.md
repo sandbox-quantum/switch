@@ -38,8 +38,8 @@ only its owner.
 Run it somewhere that stays up. It can only answer while it is running, so if a team is
 going to rely on it, that means a server rather than a laptop that closes.
 
-> There is no way to run it without Switch Console: a CLI started by hand has no Switch
-> tools.
+> Switch supports agents run from Switch Console, its sidecar or its agent controller; a
+> CLI started by hand gets no Switch tools of its own.
 
 ## What it reads
 

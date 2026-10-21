@@ -29,8 +29,8 @@ there. Silence looks identical either way, which is why this is the first thing 
 holds its instructions. An agent set up outside it does not connect properly, and the gaps
 show up later rather than at setup time.
 
-There is no standalone path. A CLI started by hand has no Switch tools and cannot join a
-room; every agent runs from Switch Console or its agent controller.
+There is no standalone path. Switch supports agents run from Switch Console, its sidecar
+or its agent controller; a CLI started by hand gets no Switch tools of its own.
 
 Related symptom: **"no Switch identity", or the tools are there but refuse.** Identity is
 per **working directory**, not per machine. A different directory is a different agent.
@@ -47,9 +47,9 @@ The instructions are not stored on the Switch server — they are a file in that
 compiled into whatever your provider actually reads. Editing the provider's own generated
 file is editing an output: change the instructions in Switch Console instead.
 
-**Only the providers Switch Console lists can be onboarded** — Claude Code, Codex, OpenCode,
-Cursor and Antigravity — and each needs its CLI installed and signed in on the machine the
-agent will run on.
+**Only the agent tools Switch Console offers can be onboarded** — check its list rather than
+assuming — and each needs its CLI installed and signed in on the machine the agent will run
+on.
 Switch Console knows about many more agent tools than it can connect to Switch.
 
 ## "I addressed the agent and got a fresh, clueless copy of it"

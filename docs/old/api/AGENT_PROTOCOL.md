@@ -756,9 +756,9 @@ is what recedes.
 
 > **Superseded for distribution.** The connector plugins, their bundled
 > `.mcp.json`, the runtime's stdio binary and the `configure` skill described
-> below have all been removed. Every session is now started by Switch Console
-> or its agent controller, which serves the operation surface to the session
-> itself; a CLI started by hand has no Switch tools. The correlation argument
+> below have all been removed. Every session is now started by Switch Console,
+> its sidecar or its agent controller, which serves the operation surface to the
+> session itself; a CLI started by hand gets none of it. The correlation argument
 > below still holds for the session host.
 
 One process holds the stream and serves MCP over stdio. A tool call arrives

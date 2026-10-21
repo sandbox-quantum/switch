@@ -238,9 +238,9 @@ properly, and the person will hit the gaps later rather than sooner.
 **Do not describe the buttons.** The app is redesigned more often than you would guess. Say
 what they are doing and ask what they see on screen; do not recite a menu path from memory.
 
-**There is no standalone path.** Every agent runs from Switch Console or its agent
-controller. A CLI started by hand has no Switch tools and cannot join a room, so someone
-without Switch Console needs to install it first.
+**There is no standalone path.** Switch supports agents run from Switch Console, its
+sidecar or its agent controller; a CLI started by hand gets no Switch tools of its own.
+Someone without Switch Console needs to install it first.
 
 ## Most of it happens from the chat app — say so
 
