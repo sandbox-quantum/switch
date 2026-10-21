@@ -161,7 +161,8 @@ class TestANewProvider:
             metadata_={"known_agent_type": "newcli", "known_agent_options": {}},
         )
         assert spec.start_session_instructions(options, agent, "hub", None) == (  # type: ignore[arg-type]
-            "open **new.agent** in Switch Console and start a local session in **hub**."
+            "My operator needs to open **new.agent** in Switch Console and start a "
+            "local session in **hub**."
         )
         resolved = known_agent_for(agent)  # type: ignore[arg-type]
         assert resolved is not None

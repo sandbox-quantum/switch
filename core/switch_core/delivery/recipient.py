@@ -1140,11 +1140,11 @@ class AgentRecipient:
         useless).
 
         session_passive agents have no heartbeat, so the elsewhere/role logic
-        never applies: they fall through to the generic reply, whose wording
-        already covers pulling from an existing session or starting a new one.
-        For a session_addressable agent with a session bound to THIS room but
-        not live here (and no live session in a distinct room), the reply says
-        so and tells the operator to relaunch with live channels.
+        never applies: they fall through to the start-session reply, whose
+        wording for a passive install covers pulling from an existing session
+        or starting a new one. For a session_addressable agent with a session
+        bound to THIS room but not live here (and no live session in a distinct
+        room), the reply says so and asks for it to be restarted.
 
         A controller-backed agent is answered from its controller alone, before
         anything here could promise a session: Switch does not know where its

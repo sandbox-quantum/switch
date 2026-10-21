@@ -185,6 +185,41 @@ class ClaudeCodeKnownAgent(KnownAgent):
             ),
         )
 
+    def start_session_instructions(
+        self,
+        options: KnownAgentOptions,
+        agent: Agent,
+        room_name: str,
+        owner_handle: str | None,
+        assume_role: str | None = None,
+        other_room_names: list[str] | None = None,
+        connected_not_live: bool = False,
+    ) -> str | None:
+        assert isinstance(options, ClaudeCodeOptions)
+        if options.channels_enabled:
+            return super().start_session_instructions(
+                options,
+                agent,
+                room_name,
+                owner_handle,
+                assume_role=assume_role,
+                other_room_names=other_room_names,
+                connected_not_live=connected_not_live,
+            )
+        # A session_passive agent is never live to Switch, so this reply follows
+        # every message addressed to it, including while a session is open and
+        # simply has not pulled yet. Lead with pulling from that session, so the
+        # operator does not start a duplicate.
+        operator = f"my operator @{owner_handle}" if owner_handle else "my operator"
+        step = _console_step(self.provider.session_start, agent, room_name, assume_role)
+        return (
+            f"I read room messages asynchronously, not in real time — {operator} "
+            f"has to trigger me to pull the latest messages. They can ask a session "
+            f"I already have open to pull this room, or, if none is running, "
+            f"{step}\n\n(For me to receive messages in real time instead, sign my "
+            f"Claude Code in with an Anthropic account or API key.)"
+        )
+
 
 class GenericAgentOptions(KnownAgentOptions):
     auto_session: bool = False
@@ -246,30 +281,10 @@ class GenericKnownAgent(KnownAgent):
         )
 
 
-def _console_start_instructions(
-    start: ConsoleStart,
-    agent: Agent,
-    room_name: str,
-    owner_handle: str | None,
-    *,
-    assume_role: str | None,
-    other_room_names: list[str] | None,
-    connected_not_live: bool,
+def _console_step(
+    start: ConsoleStart, agent: Agent, room_name: str, assume_role: str | None
 ) -> str:
-    prefix = f"@{owner_handle} — " if owner_handle else ""
-    if connected_not_live:
-        opening = (
-            "I have a session connected to this room, but it isn't reporting as "
-            "live, so I'm not receiving messages. To restart it, "
-        )
-    elif other_room_names:
-        where = ", ".join(f"**{name}**" for name in other_room_names)
-        opening = (
-            f"I don't have a session connected to this room, but I do have one "
-            f"in {where} — ask me there to come here, or "
-        )
-    else:
-        opening = ""
+    """Where in Switch Console to start the session, as an imperative."""
     runtime = (
         f", enable the {start.runtime} runtime in its advanced settings,"
         if start.runtime
@@ -282,9 +297,43 @@ def _console_start_instructions(
         else ""
     )
     return (
-        f"{prefix}{opening}open **{agent.name}** in Switch Console{runtime} and "
-        f"start a local session in **{room_name}**.{role}{sign_in}"
+        f"open **{agent.name}** in Switch Console{runtime} and start a local "
+        f"session in **{room_name}**.{role}{sign_in}"
     )
+
+
+def _console_start_instructions(
+    start: ConsoleStart,
+    agent: Agent,
+    room_name: str,
+    owner_handle: str | None,
+    *,
+    assume_role: str | None,
+    other_room_names: list[str] | None,
+    connected_not_live: bool,
+) -> str:
+    step = _console_step(start, agent, room_name, assume_role)
+    # With no owner to tag, the step is addressed to "my operator": a bare
+    # imperative would read as an instruction to whoever addressed the agent,
+    # who usually cannot act on it.
+    lead = f"@{owner_handle} — " if owner_handle else ""
+    must = step if owner_handle else f"my operator needs to {step}"
+    may = step if owner_handle else f"my operator can {step}"
+    if connected_not_live:
+        message = (
+            f"{lead}I have a session connected to this room, but it isn't "
+            f"reporting as live, so I'm not receiving messages. To restart it, "
+            f"{must}"
+        )
+    elif other_room_names:
+        where = ", ".join(f"**{name}**" for name in other_room_names)
+        message = (
+            f"{lead}I don't have a session connected to this room, but I do have "
+            f"one in {where} — ask me there to come here, or {may}"
+        )
+    else:
+        message = f"{lead}{must}"
+    return message[0].upper() + message[1:]
 
 
 # Providers whose known agent is not the generic one, by `known_agent_type`.

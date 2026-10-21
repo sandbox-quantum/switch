@@ -76,29 +76,56 @@ class TestStartSessionInstructions:
     def test_points_at_switch_console_not_a_terminal(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/Users/x/aq-switch")
         msg = CLAUDE.start_session_instructions(opts, _agent({}), "hub", None)
+        # No owner to tag: the step is addressed to "my operator", not to
+        # whoever addressed the agent.
         assert msg == (
-            "open **claude-code.test** in Switch Console and start a local "
-            "session in **hub**. Sign in with `claude auth login` first if you "
-            "have not already."
+            "My operator needs to open **claude-code.test** in Switch Console and "
+            "start a local session in **hub**. Sign in with `claude auth login` "
+            "first if you have not already."
+        )
+
+    def test_a_subagent_gets_the_same_instructions(self) -> None:
+        default = CLAUDE.start_session_instructions(
+            ClaudeCodeOptions(), _agent({}), "hub", None
+        )
+        opts = ClaudeCodeOptions(repo_dir="/r", subagent_name="seo-writer")
+        assert CLAUDE.start_session_instructions(opts, _agent({}), "hub", None) == (
+            default
         )
 
     @pytest.mark.parametrize(
         "opts",
         [
-            ClaudeCodeOptions(channels_enabled=False, repo_dir="/srv/agent"),
+            ClaudeCodeOptions(channels_enabled=False),
             ClaudeCodeOptions(channels_enabled=False, auto_session=True),
-            ClaudeCodeOptions(repo_dir="/r", subagent_name="seo-writer"),
         ],
     )
-    def test_every_install_shape_gets_the_same_instructions(
+    def test_a_passive_install_is_told_to_pull_from_an_open_session_first(
         self, opts: ClaudeCodeOptions
     ) -> None:
-        default = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(), _agent({}), "hub", None
+        # Switch never sees a passive agent as live, so this follows every
+        # message addressed to it, open session or not.
+        msg = CLAUDE.start_session_instructions(opts, _agent({}), "hub", "louisa")
+        assert msg == (
+            "I read room messages asynchronously, not in real time — my operator "
+            "@louisa has to trigger me to pull the latest messages. They can ask a "
+            "session I already have open to pull this room, or, if none is "
+            "running, open **claude-code.test** in Switch Console and start a "
+            "local session in **hub**. Sign in with `claude auth login` first if "
+            "you have not already.\n\n(For me to receive messages in real time "
+            "instead, sign my Claude Code in with an Anthropic account or API key.)"
         )
-        assert CLAUDE.start_session_instructions(opts, _agent({}), "hub", None) == (
-            default
+
+    def test_a_passive_install_without_a_linked_owner_says_my_operator(self) -> None:
+        msg = CLAUDE.start_session_instructions(
+            ClaudeCodeOptions(channels_enabled=False), _agent({}), "hub", None
         )
+        assert msg is not None
+        assert msg.startswith(
+            "I read room messages asynchronously, not in real time — my operator "
+            "has to trigger me"
+        )
+        assert "@" not in msg
 
     def test_connected_not_live_opening(self) -> None:
         opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/srv/agent")
@@ -110,8 +137,8 @@ class TestStartSessionInstructions:
         # there is no session.
         assert msg.startswith(
             "I have a session connected to this room, but it isn't reporting as "
-            "live, so I'm not receiving messages. To restart it, open "
-            "**claude-code.test** in Switch Console"
+            "live, so I'm not receiving messages. To restart it, my operator "
+            "needs to open **claude-code.test** in Switch Console"
         )
 
     def test_other_room_names_are_offered_first(self) -> None:
@@ -125,7 +152,8 @@ class TestStartSessionInstructions:
         assert msg is not None
         assert msg.startswith(
             "I don't have a session connected to this room, but I do have one in "
-            "**ops**, **triage** — ask me there to come here, or open "
+            "**ops**, **triage** — ask me there to come here, or my operator can "
+            "open "
         )
 
     def test_assume_role_is_named(self) -> None:
@@ -266,9 +294,9 @@ class TestOpenCodeKnownAgent:
             opts, _agent_named("opencode.test"), "hub", None
         )
         assert msg == (
-            "open **opencode.test** in Switch Console and start a local session "
-            "in **hub**. Sign in with `opencode auth login` first if you have "
-            "not already."
+            "My operator needs to open **opencode.test** in Switch Console and "
+            "start a local session in **hub**. Sign in with `opencode auth login` "
+            "first if you have not already."
         )
 
     def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
