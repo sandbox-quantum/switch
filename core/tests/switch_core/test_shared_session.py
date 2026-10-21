@@ -16,10 +16,11 @@ from switch_core.bridges.agent.commands import (
     _session_action,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.db.models import Agent, Room
+from switch_core.db.models import TENANT_ZERO_ID, Agent, Room
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_usage_store import RoomUsageStore
 from switch_core.shared_session import Sharing, SharingRefused, sharing_marks
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_user,
@@ -311,3 +312,39 @@ class TestInviting:
 )
 def test_session_command_arguments(words: list[str], action: str | None) -> None:
     assert _session_action(words) == action
+
+
+class TestRoomUsage:
+    async def test_the_owners_agent_reads_spend_per_room_and_a_stranger_may_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        bob = await _make_user(session_factory, "bob")
+        buddy = await _register(svc, "alice-buddy", alice)
+        stranger = await _register(svc, "bob-agent", bob)
+        lead = await _register(svc, "lead", alice)
+        work = await _room(session_factory, "work", [lead])
+        async with session_factory() as session:
+            await RoomUsageStore().record(
+                session,
+                tenant_id=TENANT_ZERO_ID,
+                agent_id=lead,
+                room_id=work,
+                model="big",
+                turns=1,
+                input_tokens=10,
+                output_tokens=2,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            )
+            await session.commit()
+
+        usage = await svc.room_usage(buddy, "lead", 7)
+        assert [
+            (r["room_name"], r["turns"], r["input_tokens"]) for r in usage["rooms"]
+        ] == [("work", 1, 10)]
+        with pytest.raises(PermissionError):
+            await svc.room_usage(stranger, "lead", 7)
+        with pytest.raises(ValueError):
+            await svc.room_usage(buddy, "lead", 0)

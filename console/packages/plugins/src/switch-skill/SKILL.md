@@ -1109,6 +1109,7 @@ Every Switch tool you call in normal operation, one line each.
 - `update_agent_detail` — change an agent you own.
 - `update_shared_session` — set an agent's home room and shared-session defaults (owner or admin).
 - `set_room_session` — have a room share an agent's session, or give it its own (owner or admin).
+- `get_room_usage` — what an agent's turns spent per room per day (owner or admin).
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.

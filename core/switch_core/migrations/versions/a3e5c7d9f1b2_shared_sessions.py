@@ -15,6 +15,10 @@ And one table, `agent_session_shares`: the rooms a session answers for from
 its home room, beside the placement `agent_session_placements` records, with
 the same tenant policy.
 
+And `room_token_usage`: what each agent's turns spent per room, hourly and
+per model, so an agent answering several rooms can be costed per room. No
+foreign keys beyond the tenant, so counts outlive their room and agent.
+
 Revision ID: a3e5c7d9f1b2
 Revises: c7715ebb95c9
 Create Date: 2026-10-21 00:00:00.000000
@@ -33,7 +37,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 _POLICY = (
-    "CREATE POLICY tenant_isolation ON agent_session_shares FOR ALL "
+    "CREATE POLICY tenant_isolation ON {table} FOR ALL "
     "USING (tenant_id = (SELECT require_tenant_id())) "
     "WITH CHECK (tenant_id = (SELECT require_tenant_id()))"
 )
@@ -110,10 +114,35 @@ def upgrade() -> None:
         "ix_agent_session_shares_tenant_id", "agent_session_shares", ["tenant_id"]
     )
     op.execute("ALTER TABLE agent_session_shares ENABLE ROW LEVEL SECURITY")
-    op.execute(_POLICY)
+    op.execute(_POLICY.format(table="agent_session_shares"))
+
+    op.create_table(
+        "room_token_usage",
+        sa.Column(
+            "tenant_id",
+            sa.Text(),
+            sa.ForeignKey("tenants.id", name="fk_room_token_usage_tenant"),
+            nullable=False,
+        ),
+        sa.Column("agent_id", sa.Text(), nullable=False),
+        sa.Column("room_id", sa.Text(), nullable=False),
+        sa.Column("bucket_start", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("model", sa.Text(), nullable=False),
+        sa.Column("turns", sa.BigInteger(), nullable=False),
+        sa.Column("input_tokens", sa.BigInteger(), nullable=False),
+        sa.Column("output_tokens", sa.BigInteger(), nullable=False),
+        sa.Column("cache_read_tokens", sa.BigInteger(), nullable=False),
+        sa.Column("cache_write_tokens", sa.BigInteger(), nullable=False),
+        sa.PrimaryKeyConstraint(
+            "tenant_id", "agent_id", "room_id", "bucket_start", "model"
+        ),
+    )
+    op.execute("ALTER TABLE room_token_usage ENABLE ROW LEVEL SECURITY")
+    op.execute(_POLICY.format(table="room_token_usage"))
 
 
 def downgrade() -> None:
+    op.drop_table("room_token_usage")
     op.drop_table("agent_session_shares")
     op.drop_column("room_agents", "shared_session")
     op.drop_column("agents", "sharing_locked")

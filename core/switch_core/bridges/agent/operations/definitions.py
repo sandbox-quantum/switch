@@ -1508,6 +1508,30 @@ async def update_shared_session(
 
 
 @operation
+async def get_room_usage(agent_name: str, days: int = 7) -> dict[str, Any]:
+    """What an agent's turns spent in each room, per day.
+
+    Each turn is charged to the room whose message started it, including the
+    turns of a shared session answering several rooms (so this is how to see
+    what each room costs it). Only the agent's owner or a workspace admin may
+    read it: you need one of them as your owner.
+
+    Args:
+        agent_name: The agent's `name`.
+        days: How many days back, 1 to 90 (default 7).
+
+    Returns:
+        {agent, days, rooms: [{room_id, room_name, day, turns, input_tokens,
+        output_tokens, cache_read_tokens, cache_write_tokens}]}, newest day
+        first. `day` is a UTC date; `room_name` is null for a room since
+        deleted.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    return await protocol.room_usage(agent_id, agent_name, days)
+
+
+@operation
 async def set_room_session(
     room_id: str, agent_name: str, session: str
 ) -> dict[str, Any]:

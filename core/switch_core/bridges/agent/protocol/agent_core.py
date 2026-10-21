@@ -9,7 +9,7 @@ import secrets
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
@@ -114,6 +114,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_usage_store import RoomUsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -3290,6 +3291,51 @@ class AgentCore:
             )
             await session.commit()
             return await self._describe_sharing(session, target)
+
+    async def room_usage(
+        self, agent_id: str, target_name: str, days: int
+    ) -> dict[str, Any]:
+        """What `target_name`'s turns spent per room per day over the last
+        `days` days, on the caller's behalf. Its owner or an admin only."""
+        if not 1 <= days <= 90:
+            raise ValueError("days must be between 1 and 90")
+        async with self.session_factory() as session:
+            target = await self.agent_store.get_by_name(session, target_name)
+            if target is None:
+                raise ValueError(f"Unknown agent: {target_name}")
+            _caller, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if not owner_is_admin and (owner_id is None or owner_id != target.owner_id):
+                raise PermissionError(
+                    "Only the agent's owner or a workspace admin can read what it spent."
+                )
+            since = datetime.now(UTC) - timedelta(days=days)
+            spends = await RoomUsageStore().by_room_and_day(
+                session, tenant_id=target.tenant_id, agent_id=target.id, since=since
+            )
+            rooms = await self.room_store.get_many(
+                session, {spend.room_id for spend in spends}
+            )
+        return {
+            "agent": target.name,
+            "days": days,
+            "rooms": [
+                {
+                    "room_id": spend.room_id,
+                    "room_name": rooms[spend.room_id].name
+                    if spend.room_id in rooms
+                    else None,
+                    "day": spend.day,
+                    "turns": spend.turns,
+                    "input_tokens": spend.input_tokens,
+                    "output_tokens": spend.output_tokens,
+                    "cache_read_tokens": spend.cache_read_tokens,
+                    "cache_write_tokens": spend.cache_write_tokens,
+                }
+                for spend in spends
+            ],
+        }
 
     async def check_shares(
         self,

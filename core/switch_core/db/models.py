@@ -3912,6 +3912,40 @@ class UsageMetric(StrEnum):
     CACHE_WRITE_TOKENS = "cache_write_tokens"
 
 
+class RoomTokenUsage(TenantScoped, Base):
+    """What an agent's turns spent for each room, one row per hour and model.
+
+    Kept to see what an agent costs per room, chiefly one whose shared session
+    answers several (`switch_core.shared_session`). A turn is charged to the
+    room whose message started it, even when what it carried in its context
+    came from other rooms. No foreign keys, so a count outlives the room and
+    agent it names, as `TenantUsage` does.
+    """
+
+    __tablename__ = "room_token_usage"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "agent_id", "room_id", "bucket_start", "model"
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    turns: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    cache_write_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+
+
 class TenantUsage(TenantScoped, Base):
     """What a tenant has consumed, counted as it happens, one row per hour.
 
