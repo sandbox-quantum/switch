@@ -117,9 +117,14 @@ export function groupByRoom(
   for (const key of alwaysShow) groups.set(key, []);
   for (const session of sessions) {
     const key = sessionRoomId(session) ?? UNASSIGNED_ROOM_KEY;
-    const list = groups.get(key);
-    if (list) list.push(session);
-    else groups.set(key, [session]);
+    // A shared session is listed under its home room and under each room it
+    // answers from there.
+    const keys = [key, ...roomConnectionsStore.sharedRoomsForSession(session.data.id)];
+    for (const roomKey of new Set(keys)) {
+      const list = groups.get(roomKey);
+      if (list) list.push(session);
+      else groups.set(roomKey, [session]);
+    }
   }
   return [...groups.entries()].sort(([a], [b]) => {
     if (a === UNASSIGNED_ROOM_KEY) return 1;

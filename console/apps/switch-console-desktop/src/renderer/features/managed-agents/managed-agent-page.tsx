@@ -31,6 +31,7 @@ import {
 } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { ServiceGrantsRow } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
 import { SettingRow } from '@renderer/features/locations/components/settings-view/sections/setting-row';
+import { SharedSessionRows } from '@renderer/features/locations/components/settings-view/sections/shared-session-settings-section';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -350,6 +351,11 @@ function ManagedAgentPageContent({
                 agentId={agent.agentId}
                 agentName={agent.name}
                 showName={false}
+              />
+              <SharedSessionRows
+                workspaceId={agent.workspaceId}
+                agentId={agent.agentId}
+                agentName={null}
               />
               {serviceGrants && (
                 <ServiceGrantsRow

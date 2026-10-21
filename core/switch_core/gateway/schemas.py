@@ -414,6 +414,30 @@ class UpdateAddressingPolicyRequest(BaseModel):
     policy: AddressingPolicy | None = None
 
 
+class UpdateSharedSessionRequest(BaseModel):
+    """Change an agent's shared session (`switch_core.shared_session`).
+
+    Every field is optional; one left out stays as it is. `home_room_id`
+    names the room the shared session is based in; `clear_home` stops the
+    agent sharing a session (its rooms each get their own again)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    home_room_id: str | None = None
+    clear_home: bool = False
+    shared_by_default: bool | None = None
+    locked: bool | None = None
+
+
+class UpdateRoomSessionRequest(BaseModel):
+    """Have a room share an agent's session (`shared: true`), or give the room
+    a session of its own (`shared: false`, isolated)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    shared: bool
+
+
 class UpdateAgentCanManageAgentsRequest(BaseModel):
     """Turn an agent's "can manage agents" capability on or off."""
 

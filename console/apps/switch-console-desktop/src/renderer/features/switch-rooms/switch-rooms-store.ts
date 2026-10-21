@@ -13,6 +13,8 @@ export class SwitchRoomsStore {
   /** sessionId → connected room id. */
   private roomBySession = new Map<string, string>();
   private associatedRooms = new Map<string, string>();
+  /** Session id → the rooms it answers from its home room (its shares). */
+  private sharedRooms = new Map<string, string[]>();
   private loaded = false;
   /** Why the initial connection seed failed, when it did. Non-null means the
    * session→room mapping is incomplete and must not be read as authoritative. */
@@ -67,6 +69,19 @@ export class SwitchRoomsStore {
   rememberRooms(rooms: Record<string, string>): void {
     for (const [sessionId, roomId] of Object.entries(rooms))
       this.associatedRooms.set(sessionId, roomId);
+  }
+
+  /** The agents' shares as their watchers last reported them: shared room → session. */
+  rememberShares(shares: Record<string, string>): void {
+    const bySession = new Map<string, string[]>();
+    for (const [roomId, sessionId] of Object.entries(shares))
+      bySession.set(sessionId, [...(bySession.get(sessionId) ?? []), roomId].sort());
+    this.sharedRooms = bySession;
+  }
+
+  /** The rooms a session answers from its home room, beside the one it is in. */
+  sharedRoomsForSession(sessionId: string): string[] {
+    return this.sharedRooms.get(sessionId) ?? [];
   }
 
   associatedRoomForSession(sessionId: string): string | null {

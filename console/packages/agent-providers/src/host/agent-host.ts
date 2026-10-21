@@ -815,7 +815,9 @@ export async function runAgentHost(
       busy: busySessions(),
     });
     unbind.push(
-      placements.onChange((map) => control.report({ placements: map, busy: busySessions() })),
+      placements.onChange((map, shares) =>
+        control.report({ placements: map, shares, busy: busySessions() })
+      ),
       links.onBusy(() => control.report({ busy: busySessions() }))
     );
     let stream: AgentEventStream | null = null;

@@ -32,7 +32,7 @@ export type ShareMap = Record<string, string>;
  */
 export class SessionPlacements {
   private writing: Promise<void> = Promise.resolve();
-  private readonly listeners = new Set<(placements: PlacementMap) => void>();
+  private readonly listeners = new Set<(placements: PlacementMap, shares: ShareMap) => void>();
 
   private constructor(
     private readonly path: string,
@@ -143,7 +143,7 @@ export class SessionPlacements {
   }
 
   /** Called with the whole map after every change; the returned function stops it. */
-  onChange(listener: (placements: PlacementMap) => void): () => void {
+  onChange(listener: (placements: PlacementMap, shares: ShareMap) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -238,7 +238,8 @@ export class SessionPlacements {
 
   private changed(): void {
     const snapshot = this.snapshot();
-    for (const listener of this.listeners) listener(snapshot);
+    const shares = this.sharesSnapshot();
+    for (const listener of this.listeners) listener(snapshot, shares);
   }
 
   private apply(

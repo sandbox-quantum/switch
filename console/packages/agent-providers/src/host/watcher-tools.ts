@@ -442,6 +442,11 @@ export const watcherHealthSchema = z.object({
   /** Session id → room id, as the watcher routes now. Empty while it is not running. */
   placements: z.record(z.string(), z.string()),
   /**
+   * Shared room id → the session answering it from its home room. Absent from
+   * a watcher too old to report it.
+   */
+  shares: z.record(z.string(), z.string()).optional(),
+  /**
    * The agent's sessions whose host runs here and is mid-turn, or has not yet
    * said whether it is. Absent from a watcher too old to report it.
    */
@@ -539,6 +544,7 @@ export class WatcherControl {
     state?: WatcherState;
     detail?: string | null;
     placements?: PlacementMap;
+    shares?: Record<string, string>;
     busy?: string[];
   }): void {
     const state = change.state ?? this.current.state;
@@ -548,6 +554,11 @@ export class WatcherControl {
       detail: change.detail !== undefined ? change.detail : same ? this.current.detail : null,
       since: same ? this.current.since : new Date().toISOString(),
       placements: change.placements ? { ...change.placements } : this.current.placements,
+      ...(change.shares
+        ? { shares: { ...change.shares } }
+        : this.current.shares
+          ? { shares: this.current.shares }
+          : {}),
       ...(change.busy
         ? { busy: [...change.busy].sort() }
         : this.current.busy
@@ -558,6 +569,7 @@ export class WatcherControl {
       same &&
       next.detail === this.current.detail &&
       samePlacements(next.placements, this.current.placements) &&
+      samePlacements(next.shares ?? {}, this.current.shares ?? {}) &&
       sameList(next.busy, this.current.busy)
     )
       return;
