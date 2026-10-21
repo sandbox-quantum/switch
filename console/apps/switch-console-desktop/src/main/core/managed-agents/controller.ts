@@ -5,6 +5,7 @@ import {
   sealProviderLogin,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
+import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
 import {
@@ -30,6 +31,7 @@ import {
 } from '@main/core/switch-servers/local-provider-sign-in';
 import { withReachableServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
+import { log } from '@main/lib/logger';
 import type {
   AdvancedConfigField,
   ManagedAgentChanges,
@@ -238,11 +240,23 @@ export const managedAgentsController = createRPCController({
 
   /** Deletes the agent: its machine stops it, and it is gone from Switch.
    * One call: Switch stops managing an agent it deletes, while stopping
-   * managing it first would leave the agent behind if the delete then failed. */
-  remove: (params: { serverId: string; agentId: string }): Promise<void> =>
-    withReachableServerWorkspaceSession(params.serverId, (server) =>
+   * managing it first would leave the agent behind if the delete then failed.
+   * An agent this Console moved to managed also loses the Console row it was
+   * moved from; a failure there is left to the next automatic pass. */
+  remove: async (params: { serverId: string; agentId: string }): Promise<void> => {
+    await withReachableServerWorkspaceSession(params.serverId, (server) =>
       deleteAgent(server, params.agentId)
-    ),
+    );
+    await agentMigrationService
+      .forgetDeleted(params.serverId, params.agentId)
+      .catch((error: unknown) => {
+        log.error('Could not remove the Console agent a deleted managed agent was moved from', {
+          serverId: params.serverId,
+          agentId: params.agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  },
 });
 
 function definitionBody(changes: ManagedAgentChanges['definition']): Record<string, unknown> {

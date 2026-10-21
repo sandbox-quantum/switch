@@ -1,3 +1,5 @@
+import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { matchQuality, type SearchItem, type SearchItemKind } from '@shared/core/search';
 import type { RemoteRoomSummary, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -19,13 +21,18 @@ export function applyContextAffinity(
 }
 
 /** The indexed kinds a search covers, for the hint under a too-short query. */
-export function indexedSearchLabel(includeSessions: boolean): string {
-  return includeSessions ? 'agents, sessions and commands' : 'agents and commands';
+export function indexedSearchLabel(includeLegacy: boolean): string {
+  return includeLegacy ? 'agents, sessions and commands' : 'commands';
+}
+
+/** The kinds matched from the first character, for the same hint. */
+export function instantMatchLabel(includeLegacy: boolean): string {
+  return includeLegacy ? 'Rooms, servers and hosts' : 'Agents, rooms, servers and hosts';
 }
 
 /** The search box's placeholder, naming only what the palette will find. */
-export function paletteSearchPlaceholder(includeSessions: boolean): string {
-  return includeSessions
+export function paletteSearchPlaceholder(includeLegacy: boolean): string {
+  return includeLegacy
     ? 'Search agents, sessions, rooms, servers, actions…'
     : 'Search agents, rooms, servers, actions…';
 }
@@ -97,6 +104,26 @@ export function matchRooms(rooms: RemoteRoomSummary[], query: string): SearchIte
       return score === null ? [] : [item('room', room.id, room.name, room.description, score)];
     })
   );
+}
+
+/**
+ * Matches the active server's managed agents, by the name they are shown under
+ * and by their Switch name. These are the agents under agent management; the
+ * Console agents the index holds are the legacy ones.
+ */
+export function matchManagedAgents(agents: ManagedAgentView[], query: string): ManagedAgentView[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  return agents
+    .flatMap((agent) => {
+      const label = managedAgentLabel(agent);
+      const score = rank(label, q) ?? rank(agent.name, q);
+      return score === null ? [] : [{ agent, label, score }];
+    })
+    .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
+    .slice(0, RENDERER_RESULT_LIMIT)
+    .map(({ agent }) => agent);
 }
 
 /** Matches Switch servers. Also matches on the server's address, since a server
