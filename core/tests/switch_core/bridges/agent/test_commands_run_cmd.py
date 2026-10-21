@@ -5,8 +5,6 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
 import switch_core.bridges.agent.commands as commands
 from switch_core.bridges.agent.commands import (
     _addressed_by_first_mention,
@@ -205,11 +203,15 @@ def _fake_client(*, role_exists: bool) -> SimpleNamespace:
         sent.append(body)
 
     async def _owner_handle_in(_session, _agent, _bridge_id):  # type: ignore[no-untyped-def]
-        # No linked owner: these cover the connect command, not the mention.
+        # No linked owner: these cover the instructions, not the mention.
         return None
 
     client = SimpleNamespace(
-        agent=SimpleNamespace(id="a1", name="cc-bug-fixing"),
+        agent=SimpleNamespace(
+            id="a1",
+            name="cc-bug-fixing",
+            metadata_={"known_agent_type": "claude-code"},
+        ),
         session_factory=_session_factory,
         _resolve_room_meta=_resolve_room_meta,
         _agent_store=SimpleNamespace(get=_agent_get),
@@ -222,32 +224,8 @@ def _fake_client(*, role_exists: bool) -> SimpleNamespace:
     return client
 
 
-def _patch_known_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Spec:
-        @staticmethod
-        def start_session_instructions(
-            _options: Any,
-            _agent: Any,
-            room_name: str,
-            _owner_handle: str | None,
-            assume_role: str | None = None,
-        ) -> str:
-            prompt = f"connect to switch room {room_name}"
-            if assume_role:
-                prompt += f" and assume the role {assume_role}"
-            return f'claude "{prompt}"'
-
-    def _known_agent_for(_agent: Any) -> tuple[Any, Any]:
-        return (_Spec, object())
-
-    monkeypatch.setattr(commands, "known_agent_for", _known_agent_for)
-
-
 class TestRunCmdRolePrompt:
-    async def test_role_folded_into_prompt_when_it_exists(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _patch_known_agent(monkeypatch)
+    async def test_role_is_named_when_it_exists(self) -> None:
         client = _fake_client(role_exists=True)
         await _cmd_run_cmd(
             client,
@@ -258,17 +236,10 @@ class TestRunCmdRolePrompt:
 
         assert len(client.sent) == 1
         msg = client.sent[0]
-        # The role is part of the claude prompt itself, not a trailing note.
-        assert (
-            'claude "connect to switch room Feature Room and assume the role manager"'
-            in msg
-        )
+        assert "Then ask me to take the **manager** role." in msg
         assert "⚠️" not in msg
 
-    async def test_warns_and_omits_when_role_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _patch_known_agent(monkeypatch)
+    async def test_warns_and_omits_when_role_missing(self) -> None:
         client = _fake_client(role_exists=False)
         await _cmd_run_cmd(
             client,
@@ -278,17 +249,21 @@ class TestRunCmdRolePrompt:
         )
 
         msg = client.sent[0]
-        # Unknown role is left out of the prompt and flagged.
-        assert "assume the role" not in msg
-        assert "no role named **ghost**" in msg
+        # Unknown role is left out of the instructions and flagged.
+        assert "take the" not in msg
+        assert (
+            "there is no role named **ghost** in **Feature Room**, so I left it out"
+            in msg
+        )
 
-    async def test_no_role_arg_plain_prompt(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _patch_known_agent(monkeypatch)
+    async def test_no_role_arg_gives_the_console_instructions(self) -> None:
         client = _fake_client(role_exists=True)
         await _cmd_run_cmd(
             client, SimpleNamespace(room_id="!m"), _event("@cc-bug-fixing"), False
         )
 
-        assert client.sent == ['claude "connect to switch room Feature Room"']
+        assert client.sent == [
+            "My operator needs to open **cc-bug-fixing** in Switch Console and "
+            "start a local session in **Feature Room**. Sign in with "
+            "`claude auth login` first if you have not already."
+        ]

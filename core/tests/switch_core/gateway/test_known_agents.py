@@ -184,6 +184,45 @@ class TestStartSessionInstructions:
         assert opts.subagent_name is None
 
 
+class TestWhoTheInstructionsAddress:
+    @pytest.mark.parametrize(
+        ("kwargs", "lead"),
+        [
+            (
+                {"connected_not_live": True},
+                "@louisa — I have a session connected to this room, but it isn't "
+                "reporting as live, so I'm not receiving messages. To restart it, "
+                "open **claude-code.test**",
+            ),
+            (
+                {"other_room_names": ["ops"]},
+                "@louisa — I don't have a session connected to this room, but I do "
+                "have one in **ops** — ask me there to come here, or open "
+                "**claude-code.test**",
+            ),
+        ],
+    )
+    def test_a_tagged_owner_is_told_directly(self, kwargs: dict, lead: str) -> None:
+        msg = CLAUDE.start_session_instructions(
+            ClaudeCodeOptions(), _agent({}), "hub", "louisa", **kwargs
+        )
+        assert msg is not None
+        assert msg.startswith(lead)
+        assert "my operator" not in msg
+
+    def test_a_console_runtime_is_named_for_my_operator(self) -> None:
+        options = ANTIGRAVITY.parse_options({})
+        msg = ANTIGRAVITY.start_session_instructions(
+            options, _agent_named("antigravity.test"), "hub", None
+        )
+        assert msg == (
+            "My operator needs to open **antigravity.test** in Switch Console, "
+            "enable the Antigravity CLI runtime in its advanced settings, and "
+            "start a local session in **hub**. Sign in with `agy` first if you "
+            "have not already."
+        )
+
+
 class TestCodexKnownAgent:
     def test_registered_under_codex_key(self) -> None:
         assert isinstance(CODEX, GenericKnownAgent)
