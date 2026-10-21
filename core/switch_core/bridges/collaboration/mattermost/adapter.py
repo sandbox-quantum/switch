@@ -433,6 +433,12 @@ class MattermostAdapter(PlatformAdapter):
         self._admin_bot_driver: Driver | None = None
         self._admin_bot_id: str | None = None
 
+        # Token ids minted by *this* process, keyed by agent name and for the
+        # admin bot. Kept so stop() and remove_agent_identity() can revoke
+        # them, leaving no orphaned credentials on the Mattermost server.
+        self._bot_token_ids: dict[str, str] = {}
+        self._admin_bot_token_id: str | None = None
+
         self._seen_post_ids: OrderedDict[str, None] = OrderedDict()
         self._seen_post_ids_max = 1000
         self._seen_lock = threading.Lock()
@@ -527,9 +533,47 @@ class MattermostAdapter(PlatformAdapter):
     async def stop(self) -> None:
         for agent_name in list(self._ws_stops):
             self._close_bot_socket(agent_name)
+        await self._revoke_all_tokens()
         self._admin_driver = None
         self._bot_drivers.clear()
         logger.info("Mattermost adapter stopped")
+
+    async def _revoke_all_tokens(self) -> None:
+        """Revoke every token minted by this process so no orphaned credentials
+        remain on the Mattermost server after the bridge stops or is handed off."""
+        token_ids = list(self._bot_token_ids.values())
+        if self._admin_bot_token_id is not None:
+            token_ids.append(self._admin_bot_token_id)
+        for token_id in token_ids:
+            await self._revoke_token(token_id)
+        self._bot_token_ids.clear()
+        self._admin_bot_token_id = None
+
+    async def _revoke_token(self, token_id: str) -> None:
+        try:
+            await self._mm_api("post", "/users/tokens/revoke", {"token_id": token_id})
+        except Exception:
+            logger.warning("Failed to revoke Mattermost token %s", token_id)
+
+    async def _revoke_stale_bot_tokens(
+        self, bot_id: str, description_prefix: str
+    ) -> None:
+        """Revoke all tokens for `bot_id` whose description starts with
+        `description_prefix`. Called before minting a new token so that tokens
+        left by a previous process (e.g. after a crash) do not accumulate."""
+        try:
+            tokens: list[dict[str, Any]] = await self._mm_api(  # type: ignore[assignment]
+                "get", f"/users/{bot_id}/tokens?limit=200"
+            )
+        except Exception:
+            logger.warning(
+                "Could not list tokens for bot %s; skipping stale-token cleanup",
+                bot_id,
+            )
+            return
+        for tok in tokens:
+            if str(tok.get("description", "")).startswith(description_prefix):
+                await self._revoke_token(str(tok["id"]))
 
     def _close_bot_socket(self, agent_name: str) -> None:
         """Close an agent bot's socket and keep its thread from reconnecting.
@@ -2255,6 +2299,8 @@ class MattermostAdapter(PlatformAdapter):
             logger.info("Found Mattermost bot identity %s (quiet)", agent_name)
             return
 
+        await self._revoke_stale_bot_tokens(bot_id, "Switch bridge token for ")
+
         try:
             token_resp = await self._mm_api(
                 "post",
@@ -2262,6 +2308,7 @@ class MattermostAdapter(PlatformAdapter):
                 {"description": f"Switch bridge token for {agent_name}"},
             )
             token: str = str(token_resp["token"])
+            self._bot_token_ids[agent_name] = str(token_resp["id"])
         except Exception as e:
             logger.exception("Failed to create token for bot %s: %s", agent_name, e)
             return
@@ -2423,6 +2470,8 @@ class MattermostAdapter(PlatformAdapter):
             self._admin_bot_id = bot_id
             self._bridge_bot_ids.add(bot_id)
             return
+        await self._revoke_stale_bot_tokens(bot_id, "Switch admin bot token")
+
         try:
             token_resp = await self._mm_api(
                 "post",
@@ -2430,6 +2479,7 @@ class MattermostAdapter(PlatformAdapter):
                 {"description": "Switch admin bot token"},
             )
             token = str(token_resp["token"])
+            self._admin_bot_token_id = str(token_resp["id"])
         except Exception:
             logger.exception("Failed to create token for Switch Admin bot")
             return
@@ -2476,6 +2526,9 @@ class MattermostAdapter(PlatformAdapter):
 
     async def remove_agent_identity(self, agent: AgentIdentity) -> None:
         self._close_bot_socket(agent.name)
+        token_id = self._bot_token_ids.pop(agent.name, None)
+        if token_id is not None:
+            await self._revoke_token(token_id)
         self._agent_bots.pop(agent.name, None)
         self._bot_drivers.pop(agent.name, None)
 
