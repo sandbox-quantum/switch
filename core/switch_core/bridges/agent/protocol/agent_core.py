@@ -3337,6 +3337,19 @@ class AgentCore:
             ],
         }
 
+    async def answers_from_home(
+        self, agent_id: str, bound_rooms: set[str], room_id: str
+    ) -> bool:
+        """Whether a session bound to `bound_rooms` answers `room_id` from the
+        agent's home room: it is in the home room, and `room_id` shares the
+        agent's session."""
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None or agent.home_room_id not in bound_rooms:
+                return False
+            sharing = await shared_session.sharing_of(session, self.room_store, agent)
+        return sharing.covers(room_id)
+
     async def check_shares(
         self,
         agent_id: str,

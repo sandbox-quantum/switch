@@ -746,14 +746,19 @@ async def read_context(
             agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
         )
 
-    caller = caller_session()
-    shared = (
-        protocol.connections.shared_rooms(agent_id, caller.id)
-        if caller is not None
-        else set()
-    )
     reader = counting_reader()
-    if reader is not None and (room_id in connected or room_id in shared):
+    # A room this session answers from its home room is its own to clear, as
+    # the room it is connected to is. Decided from the agent's settings, so it
+    # holds whether the session's watcher or its agents controller placed it.
+    answers_here = (
+        reader is not None
+        and reader.is_session
+        and room_id not in connected
+        and await protocol.answers_from_home(agent_id, connected, room_id)
+    )
+    if answers_here and reader is not None:
+        await buffer.hand_counting_to(tenant_id, agent_id, reader, room_id)
+    if reader is not None and (room_id in connected or answers_here):
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
         # leaves every count alone, including this one.
