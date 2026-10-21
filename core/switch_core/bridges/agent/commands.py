@@ -568,9 +568,17 @@ async def _decide_control_command(
 
     async with client.session_factory() as session:
         agent = await client._fresh_agent(session)
-    meta = await client._resolve_room_meta(room.room_id)
-    if meta is None:
-        return ControlDecision(queued=None, answer=None)
+        meta = await client._resolve_room_meta(room.room_id)
+        if meta is None:
+            return ControlDecision(queued=None, answer=None)
+        if command in ("reset", "compact"):
+            home = await _shared_from_elsewhere(client, session, agent, meta.room_id)
+            if home is not None:
+                return say(
+                    f"**{_label(agent)}** answers this room from its shared session, "
+                    f"based in **{home}**. A {command} would clear it for every room "
+                    f"it answers, so run `!{command}` for it in **{home}** instead."
+                )
     # A session that connected to this room takes the command itself, over
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.
@@ -677,6 +685,19 @@ async def _decide_control_command(
         ),
         answer=decision.answer,
     )
+
+
+async def _shared_from_elsewhere(
+    client: AgentRecipient, session: AsyncSession, agent: Agent, room_id: str
+) -> str | None:
+    """The name of the agent's home room when `room_id` is another room
+    sharing its session, else None."""
+    if agent.home_room_id is None or agent.home_room_id == room_id:
+        return None
+    if agent.id not in await client._room_store.sharing_agent_ids(session, room_id):
+        return None
+    home = await client._room_store.get(session, agent.home_room_id)
+    return home.name if home is not None else "its home room"
 
 
 async def _dispatch_control_command(

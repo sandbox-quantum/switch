@@ -169,6 +169,29 @@ export function sessionBusy(
   return { busy: reasons.length > 0, reasons };
 }
 
+/**
+ * A room control names the session's generation and turn as `current`:
+ * Switch keeps neither, so the host puts in its own. Null for an interrupt
+ * with no turn running, which has nothing to stop, and for one from a room
+ * whose work is not what is running: a session answering several rooms stops
+ * only the asking room's turn.
+ */
+export function resolveCurrent(
+  command: Command,
+  snapshot: { session: { epoch: string }; turns: { turnId: string; status: string }[] },
+  originOf: (turnId: string) => { roomId: string | null } | null
+): Command | null {
+  const resolved =
+    command.epoch === CURRENT ? { ...command, epoch: snapshot.session.epoch } : command;
+  if (resolved.body.type !== 'turn.interrupt' || resolved.body.turnId !== CURRENT) return resolved;
+  const running = snapshot.turns.find((turn) => turn.status === 'running');
+  if (!running) return null;
+  const asking = resolved.origin?.roomId;
+  const runningFor = originOf(running.turnId)?.roomId;
+  if (asking && runningFor && asking !== runningFor) return null;
+  return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
+}
+
 class TransportError extends Error {}
 class RequestError extends Error {
   constructor(
@@ -525,21 +548,8 @@ export async function runSharedHost(
     };
 
     // ── What reaches the host ────────────────────────────────────────────────
-    /**
-     * A room control names the session's generation and turn as `current`:
-     * Switch keeps neither, so the host puts in its own. Null for an
-     * interrupt with no turn running, which has nothing to stop.
-     */
-    const current = (command: Command): Command | null => {
-      const snapshot = host!.snapshot();
-      const resolved =
-        command.epoch === CURRENT ? { ...command, epoch: snapshot.session.epoch } : command;
-      if (resolved.body.type !== 'turn.interrupt' || resolved.body.turnId !== CURRENT)
-        return resolved;
-      const running = snapshot.turns.find((turn) => turn.status === 'running');
-      if (!running) return null;
-      return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
-    };
+    const current = (command: Command): Command | null =>
+      resolveCurrent(command, host!.snapshot(), (turnId) => host!.originOf(turnId));
     // ── Rejoining the room after a room reset or compaction ─────────────────
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
@@ -695,7 +705,7 @@ export async function runSharedHost(
         return `The command is not readable: ${parsed.error.message}`;
       }
       const command = current(parsed.data);
-      if (!command) return 'There is no turn running to interrupt.';
+      if (!command) return 'There is no turn running for this room to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
         console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
         return 'The command is for another session.';
