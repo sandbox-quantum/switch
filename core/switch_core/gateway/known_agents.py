@@ -13,7 +13,6 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.providers.registry import (
     AgentProvider,
-    ConsoleStart,
     agent_provider,
     agent_providers,
 )
@@ -64,62 +63,12 @@ class KnownAgent(ABC):
     def parse_options(self, raw: dict[str, Any] | None) -> KnownAgentOptions:
         return self.options_schema.model_validate(raw or {})
 
-    def start_session_instructions(
-        self,
-        options: KnownAgentOptions,
-        agent: Agent,
-        room_name: str,
-        owner_handle: str | None,
-        assume_role: str | None = None,
-        other_room_names: list[str] | None = None,
-        connected_not_live: bool = False,
-    ) -> str | None:
-        """Return markdown telling the operator how to start a session that
-        connects this agent to the room named `room_name`. Posted
-        automatically when the agent is addressed but has no live session,
-        and on demand via `!run-cmd`.
-
-        Every session is started from Switch Console, so this says where in
-        Console to do it rather than giving a terminal command: a CLI run by
-        hand has no Switch tools.
-
-        `owner_handle` is the agent owner's account on the platform this room
-        is bridged to, @-mentioned so they are actually notified — None when
-        the agent has no owner or that owner has claimed no account there, in
-        which case the message still posts and simply says "my operator". It
-        is passed in rather than read from `options`: the right handle depends
-        on which platform the room is on, which the caller knows and a
-        per-agent setting could not.
-
-        When `assume_role` is set, the message also says to ask the started
-        session to take that role (e.g. `!run-cmd @agent @role`).
-
-        When `other_room_names` is set, the agent has no session here but does
-        have live session(s) connected to those rooms; the opening sentence
-        names them and offers asking there as an alternative.
-
-        When `connected_not_live` is set, a session is bound to THIS room but
-        is not reporting as live; the opening says so and asks for it to be
-        restarted.
-        """
-        return _console_start_instructions(
-            self.provider.session_start,
-            agent,
-            room_name,
-            owner_handle,
-            assume_role=assume_role,
-            other_room_names=other_room_names,
-            connected_not_live=connected_not_live,
-        )
-
 
 class ClaudeCodeOptions(KnownAgentOptions):
     channels_enabled: bool = True
-    """Whether the Claude Code installation can receive inbound room events as
-    live channel pushes. Defaults to True for backwards compatibility. Set to
-    False for installations that cannot (e.g. Vertex AI or other managed setups
-    without a Claude subscription); the registered profile then becomes
-    `session_passive` instead of `session_addressable`."""
+    """Whether sessions receive room events as they happen. Switch Console
+    registers every agent with this on. When False, the registered profile
+    becomes `session_passive` instead of `session_addressable`."""
 
     auto_session: bool = False
     """When True, the operator's connector (Switch Console) watches every room this
@@ -136,15 +85,16 @@ class ClaudeCodeOptions(KnownAgentOptions):
     started, same as any `session_passive` install."""
 
     repo_dir: str | None = None
-    """Absolute path to the local checkout/directory Claude Code runs from.
-    Switch Console reads it to find the agent's directory on a host, and a
-    subagent inherits it from its parent. None when the directory is unknown."""
+    """Absolute path to the directory the agent's sessions run in. Switch
+    Console sets it when the agent is onboarded. None when it is unknown."""
 
     subagent_name: str | None = None
     """When set, this agent is a Claude Code *subagent* (a `.claude/agents/*.md`
     definition) rather than a top-level Claude Code install. The value is the
-    bare Claude Code subagent identifier (its `name` frontmatter field). Leave
-    None for ordinary top-level agents."""
+    bare Claude Code subagent identifier (its `name` frontmatter field). Switch
+    Console uses it to start the session as that subagent, with the subagent's
+    own credentials, so the session authenticates to Switch as the subagent
+    rather than the parent. Leave None for ordinary top-level agents."""
 
     @field_validator("repo_dir", "subagent_name", mode="before")
     @classmethod
@@ -174,50 +124,14 @@ class ClaudeCodeKnownAgent(KnownAgent):
             pre_invocation_mediation=["tool_calls"],
             post_invocation_mediation=[],
             event_reporting=["tool_calls"],
-            # Claude Code can reset / compact / interrupt only when a session is
-            # driving it from Switch Console (which can inject keystrokes and
-            # relaunch it). A standalone `claude` session can't be controlled,
-            # so all three resolve per live session via AgentRuntimeState.
+            # Reset / compact / interrupt work only on a session that Switch
+            # Console (or its sidecar or an agents controller) is running, so
+            # all three resolve per live session via AgentRuntimeState.
             command_capabilities=CommandCapabilities(
                 reset="session_dependent",
                 compact="session_dependent",
                 interrupt="session_dependent",
             ),
-        )
-
-    def start_session_instructions(
-        self,
-        options: KnownAgentOptions,
-        agent: Agent,
-        room_name: str,
-        owner_handle: str | None,
-        assume_role: str | None = None,
-        other_room_names: list[str] | None = None,
-        connected_not_live: bool = False,
-    ) -> str | None:
-        assert isinstance(options, ClaudeCodeOptions)
-        if options.channels_enabled:
-            return super().start_session_instructions(
-                options,
-                agent,
-                room_name,
-                owner_handle,
-                assume_role=assume_role,
-                other_room_names=other_room_names,
-                connected_not_live=connected_not_live,
-            )
-        # A session_passive agent is never live to Switch, so this reply follows
-        # every message addressed to it, including while a session is open and
-        # simply has not pulled yet. Lead with pulling from that session, so the
-        # operator does not start a duplicate.
-        operator = f"my operator @{owner_handle}" if owner_handle else "my operator"
-        step = _console_step(self.provider.session_start, agent, room_name, assume_role)
-        return (
-            f"I read room messages asynchronously, not in real time — {operator} "
-            f"has to trigger me to pull the latest messages. They can ask a session "
-            f"I already have open to pull this room, or, if none is running, "
-            f"{step}\n\n(For me to receive messages in real time instead, sign my "
-            f"Claude Code in with an Anthropic account or API key.)"
         )
 
 
@@ -231,8 +145,8 @@ class GenericAgentOptions(KnownAgentOptions):
     Switch Console delivers inbound room messages into the session itself."""
 
     repo_dir: str | None = None
-    """Absolute path to the directory the agent runs from. Switch Console reads
-    it to find the agent's directory on a host. None when it is unknown."""
+    """Absolute path to the directory the agent's sessions run in. Switch
+    Console sets it when the agent is onboarded. None when it is unknown."""
 
     # No `channels_enabled`: Switch Console sends it for every provider, but
     # only Claude Code has a connector channel that could act on it.
@@ -279,61 +193,6 @@ class GenericKnownAgent(KnownAgent):
                 interrupt="session_dependent",
             ),
         )
-
-
-def _console_step(
-    start: ConsoleStart, agent: Agent, room_name: str, assume_role: str | None
-) -> str:
-    """Where in Switch Console to start the session, as an imperative."""
-    runtime = (
-        f", enable the {start.runtime} runtime in its advanced settings,"
-        if start.runtime
-        else ""
-    )
-    role = f" Then ask me to take the **{assume_role}** role." if assume_role else ""
-    sign_in = (
-        f" Sign in with `{start.sign_in_command}` first if you have not already."
-        if start.sign_in_command
-        else ""
-    )
-    return (
-        f"open **{agent.name}** in Switch Console{runtime} and start a local "
-        f"session in **{room_name}**.{role}{sign_in}"
-    )
-
-
-def _console_start_instructions(
-    start: ConsoleStart,
-    agent: Agent,
-    room_name: str,
-    owner_handle: str | None,
-    *,
-    assume_role: str | None,
-    other_room_names: list[str] | None,
-    connected_not_live: bool,
-) -> str:
-    step = _console_step(start, agent, room_name, assume_role)
-    # With no owner to tag, the step is addressed to "my operator": a bare
-    # imperative would read as an instruction to whoever addressed the agent,
-    # who usually cannot act on it.
-    lead = f"@{owner_handle} — " if owner_handle else ""
-    must = step if owner_handle else f"my operator needs to {step}"
-    may = step if owner_handle else f"my operator can {step}"
-    if connected_not_live:
-        message = (
-            f"{lead}I have a session connected to this room, but it isn't "
-            f"reporting as live, so I'm not receiving messages. To restart it, "
-            f"{must}"
-        )
-    elif other_room_names:
-        where = ", ".join(f"**{name}**" for name in other_room_names)
-        message = (
-            f"{lead}I don't have a session connected to this room, but I do have "
-            f"one in {where} — ask me there to come here, or {may}"
-        )
-    else:
-        message = f"{lead}{must}"
-    return message[0].upper() + message[1:]
 
 
 # Providers whose known agent is not the generic one, by `known_agent_type`.

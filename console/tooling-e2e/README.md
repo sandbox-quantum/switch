@@ -20,10 +20,8 @@ SWITCH_E2E=1 ../node_modules/.bin/vitest run src/loopback.integration.test.ts
 SWITCH_E2E=1 ../node_modules/.bin/vitest run src/run.integration.test.ts
 ```
 
-This package is not yet listed in `console/pnpm-workspace.yaml`, so it has no
-`node_modules` of its own and runs against the workspace root's hoisted `vitest`
-and `typescript`. Adding `- 'tooling-e2e'` to that file's `packages:` list makes
-the usual forms work instead:
+The package is listed in `console/pnpm-workspace.yaml`, so the usual forms work
+too:
 
 ```bash
 pnpm --filter @switch-console/tooling-e2e test
@@ -60,7 +58,7 @@ beside this file. Never commit one.
 | `SWITCH_E2E_MANIFEST` | no | File the setup records its agent and room in, so a second process can reuse them instead of registering its own. See "Seeding first" below. |
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | no | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | no | How long setup waits for a live session (default 2 min). |
-| `SWITCH_E2E_AGENT_TYPE` | no | `opencode` (default), `claude-code`, or `codex` — which provider's runtime is under test. Decides the agent name prefix, the Switch known-agent type, and (for `claude-code`) the extra files written into the working dir. |
+| `SWITCH_E2E_AGENT_TYPE` | no | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. Decides the agent name prefix, the Switch known-agent type, and (for `claude-code`) the extra files written into the working dir. |
 | `SWITCH_E2E_QUESTION_MODE` | no | `numbered` (default, every agent type) or `prose`; see the `question` row below. |
 
 The suite **skips, with the reason printed**, when `SWITCH_E2E` is unset, when
@@ -140,9 +138,7 @@ definition the session is launched as.
 For Codex, use `SWITCH_E2E_AGENT_TYPE=codex` and `SWITCH_E2E_QUESTION_MODE=prose`,
 with `provider_id` and `providerId` both `codex`. The normal Codex mode does
 not expose its native question tool; the prose scenario verifies the room
-round trip without claiming to test a native question card. Codex may request
-approval to read the Switch skill on first launch; answer it in Console or
-the room before the greeting proceeds.
+round trip without claiming to test a native question card.
 
 Setup finds the manifest, reuses what is in it rather than registering a second
 agent, and deletes it during teardown — so a manifest never outlives its room.

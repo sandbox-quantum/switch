@@ -274,7 +274,7 @@ class TestHasRoomBinding:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         """A bound-but-not-live session (stale heartbeat) still counts — this is
-        exactly the dev-channels-flag-missing case the warning targets."""
+        exactly the "connected but not live" case the reply describes."""
         store = AgentSessionStore()
         async with session_factory() as session:
             agent = await _make_agent(session, "stale-bound")

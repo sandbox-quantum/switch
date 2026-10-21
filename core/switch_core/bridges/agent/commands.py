@@ -36,7 +36,6 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
-from switch_core.gateway.known_agents import known_agent_for
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -66,7 +65,7 @@ CommandHandler = Callable[
 ]
 # (client, args, room_id) -> whether THIS agent is addressed by the command.
 # Targeting is a per-command policy (see Command.addressed) rather than a fixed
-# rule in on_command, so a command like `run-cmd` can interpret its args its
+# rule in on_command, so a command like `reset` can interpret its args its
 # own way.
 CommandTargeting = Callable[["AgentRecipient", str, str], Awaitable[bool]]
 # (host, room, event, meta) -> None. An admin-side usage check run by the
@@ -102,29 +101,14 @@ async def _addressed_by_name_or_role(
         return await client._text_tags_my_role(session, args, room_id)
 
 
-async def _addressed_by_first_mention(
-    client: AgentRecipient, args: str, room_id: str
-) -> bool:
-    """Targeting for `run-cmd`: only the FIRST `@token` addresses an agent (by
-    name or by a role it holds). Any further `@token` is data for the handler
-    (the role to name in the output), not an addressing token — so
-    `!run-cmd @alice @manager` reaches alice, not whoever holds manager.
-
-    No `@token` → addressed to everyone (the command applies room-wide).
-    """
-    tokens = _mention_tokens(args)
-    if not tokens:
-        return True
-    return await _first_token_is_me(client, tokens[0], room_id)
-
-
 async def _addressed_by_required_first_mention(
     client: AgentRecipient, args: str, room_id: str
 ) -> bool:
-    """Like `_addressed_by_first_mention`, but a missing target addresses NO
-    ONE. Used by `!reset`, where a bare `!reset` must not silently reset every
-    agent in the room — resetting all agents is the separate, explicit
-    `!reset-all-agents` command.
+    """Targeting for a command that needs a target: only the FIRST `@token`
+    addresses an agent (by name or by a role it holds), and a missing target
+    addresses no one. Used by `!reset`, where a bare `!reset` must not
+    silently reset every agent in the room — resetting all agents is the
+    separate, explicit `!reset-all-agents` command.
     """
     tokens = _mention_tokens(args)
     if not tokens:
@@ -252,7 +236,7 @@ class Command:
     # If True, the always-present admin client owns this command: it parses,
     # executes, and renders the result as an admin/system message. Agents ignore
     # it. If False, the command is handled by the agents themselves (e.g.
-    # `!run-cmd`, `!reset`, `!agents-greet`), which answer in their own voice.
+    # `!reset`, `!agents-greet`), which answer in their own voice.
     admin_owned: bool = False
     # Set for a command that is queued for the agent (the session controls).
     # The router decides it in the transaction that writes the command and
@@ -1755,78 +1739,6 @@ async def _cmd_list_all_agents(
     await _reply(client, room, event, "\n".join(lines))
 
 
-def _role_arg(args: str) -> str | None:
-    """The role to name in the `run-cmd` output, if one was supplied.
-
-    The first `@token` targets the agent (see `_addressed_by_first_mention`);
-    the SECOND `@token`, if present, is the role the started session should
-    assume (`!run-cmd @agent @role`). Returns that second token, or None.
-    """
-    tokens = _mention_tokens(args)
-    return tokens[1] if len(tokens) >= 2 else None
-
-
-async def _cmd_run_cmd(
-    client: AgentRecipient,
-    room: RoomRef,
-    event: CommandEvent,
-    _is_direct: bool,
-) -> None:
-    meta = await client._resolve_room_meta(room.room_id)
-    if meta is None:
-        await _reply(client, room, event, "Room not found.")
-        return
-
-    # Re-read the agent so edits to options via the gateway are reflected
-    # without restarting this client.
-    async with client.session_factory() as session:
-        fresh = await client._agent_store.get(session, client.agent.id)
-    agent = fresh or client.agent
-    spec_options = known_agent_for(agent)
-    if spec_options is None:
-        await _reply(
-            client, room, event, "No onboarding command available for this agent."
-        )
-        return
-
-    spec, options = spec_options
-
-    # `!run-cmd @agent @role`: name a real role in the instructions so the
-    # started session is asked to take it. An unknown role is left out, with a
-    # warning rather than silently dropped.
-    role = _role_arg(event.args)
-    async with client.session_factory() as session:
-        role_obj = (
-            await client._room_role_store.get_role(session, meta.room_id, role)
-            if role is not None
-            else None
-        )
-        owner_handle = await client.owner_handle_in(session, agent, meta.bridge_id)
-    role_known = role_obj is not None
-
-    msg = spec.start_session_instructions(
-        options,
-        agent,
-        meta.name,
-        owner_handle,
-        assume_role=role if role_known else None,
-    )
-    if msg is None:
-        await _reply(
-            client, room, event, "No onboarding command available for this agent."
-        )
-        return
-
-    if role is not None and not role_known:
-        msg += (
-            f"\n\n⚠️ Note: there is no role named **{role}** in **{meta.name}**, "
-            "so I left it out — double-check the role name (see the room's "
-            "roles)."
-        )
-
-    await _reply(client, room, event, msg)
-
-
 async def _cmd_agents_greet(
     client: AgentRecipient,
     room: RoomRef,
@@ -2078,26 +1990,6 @@ COMMANDS: list[Command] = [
         "agents-greet",
         "Have agents in the room introduce themselves.",
         _cmd_agents_greet,
-    ),
-    Command(
-        "run-cmd",
-        "Show how to start a session for an agent. "
-        "Usage: `!run-cmd @agent-name`, `!run-cmd @role` (the role's holder), "
-        "or `!run-cmd @agent-name @role` to also ask it to take that role.",
-        _cmd_run_cmd,
-        # `role` is second because the handler reads it from the second token,
-        # so it cannot be given without `agent` — see the positional-gap check
-        # in the Discord adapter, which rejects that combination loudly rather
-        # than silently shifting the role into the agent slot.
-        args_spec=(
-            CommandArg("agent", "Agent to show how to start", required=False),
-            CommandArg(
-                "role", "Role for that agent to assume on connect", required=False
-            ),
-        ),
-        # Only the first @token targets; a second @token is the role to assume,
-        # not an address — so it doesn't pull in whoever else holds that role.
-        addressed=_addressed_by_first_mention,
     ),
 ]
 

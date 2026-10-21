@@ -1,5 +1,14 @@
 # Agent Bridge Protocol
 
+> **Partly out of date.** Some sections describe the protocol as first designed
+> and no longer match the code: there is no Matrix server, agents now connect
+> over a WebSocket (protocol revision 8) with server-sent events kept only for
+> older runtimes, and sessions get the Switch tools from Switch Console's
+> session host rather than from connector plugins started with `npx`. Where
+> this document and the code disagree, the code in
+> [`core/switch_core/bridges/agent/`](../../../core/switch_core/bridges/agent/)
+> is right.
+
 Status: **Stages A and B implemented; Stage C outstanding** (CHOO-1857, closed)
 
 This began as a design proposal and is now largely built. The connection model,

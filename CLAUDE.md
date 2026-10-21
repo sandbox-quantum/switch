@@ -34,10 +34,11 @@ participate in Switch. The upstream app is built around coding workflows
 (projects → sessions → conversations); Switch Console is being reworked
 around **Switch agents and their sessions** — which rooms an agent belongs to and
 is connected to, its config (working dir, identity), and scheduling: e.g.
-auto-starting a Claude Code session when a Slack user addresses an agent that has
-no live session, viewing all sessions in one place, and injecting prompts into a
-running TUI when the provider can't push events into a live session. It has its
-own `console/CLAUDE.md` (→ `AGENTS.md`); read that before working in the app.
+auto-starting a session when a Slack user addresses an agent that has no live
+session, and viewing all sessions in one place. Every provider runs through a
+native SDK or protocol adapter in a long-running session host
+(`console/docs/sdk-sessions.md`); there is no terminal or prompt injection. It
+has its own `console/CLAUDE.md` (→ `AGENTS.md`); read that before working in the app.
 
 ## Common Commands
 
@@ -47,8 +48,9 @@ uv sync                          # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets
-just up                          # start Switch locally
-just down                        # stop Switch
+just up                          # start the supporting stack (Postgres, Mattermost) in Docker
+just run                         # run switch-core locally (:8000)
+just down                        # stop the supporting stack
 
 # Database migrations
 just migrate                     # alembic upgrade head
@@ -77,7 +79,7 @@ just test -k "test_name"         # run specific test
   - `stores/` — query methods and domain-specific data access
 - `migrations/` — Alembic migrations (`env.py`, `versions/`)
 - `room_service.py` / `rooms_yaml.py` — Room lifecycle, configuration, provisioning
-- `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the delivery loop and hooks: `CommandConsumer`, `WorkspaceConsumer`)
+- `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the `Consumer` delivery loop and hooks), subclassed by `CommandConsumer` (`command_consumer.py`) and `WorkspaceConsumer` (`workspace_consumer.py`)
 - `delivery/` decides who a row is for: `addressing.py` (the rules), `router.py` (`MessageRouter`, which decides every row for every agent in its room as the row is written, in the same transaction) and `recipient.py` (`AgentRecipient`, one agent's decisions and the replies posted on its behalf)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
@@ -113,35 +115,16 @@ stable identifiers and wire shapes, not as a sign that Matrix is in use. In
 Python they are `transport_room_id` / `transport_user_id`, and the server name
 is `ID_SERVER_NAME` (`MATRIX_SERVER_NAME` is still read, with a warning).
 
-**The message bus is PostgreSQL** (`transport/postgres.py`). Switch once ran on a
-Matrix homeserver; that is gone, and no Matrix server or client library is
-involved. A send is an `INSERT` into `messages`, with a per-room advisory lock
-assigning `seq` (`db/stores/message_store.py`). The `messages_notify` trigger
-calls `pg_notify('switch_message', …)` with the room, `seq` and row id, delivered
-on commit (`db/notify_ddl.py`). Every row is written by the router
-(`delivery/router.py`), which decides in the same transaction which agents in
-the room it is for and stores their own events (`agent_events`) with it. One
-`MessageListener` (`messages/notify.py`) holds a dedicated `LISTEN` connection
-and wakes the subscribers for that room; each client then reads the rows after
-its own cursor, 200 at a time. The notification is a wake-up, never the
-payload. Membership changes reach every
-process through a `NOTIFY` trigger on `client_rooms` and the signal bus
-(`signals.py`, `transport/membership_signals.py`); presence still travels over
-an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
-runs as a single replica. Names such as
-`matrix_room_id`, `matrix_user_id`, `MATRIX_SERVER_NAME`, the `@localpart:server`
-id shape and `m.room.message` content types are kept as stable identifiers and
-wire shapes, not as a sign that Matrix is in use.
-
 ## The Switch skill
 
-Every agent session is started by Switch Console or its sidecar; sessions use
-no connector plugins and there is no standalone runtime. Each session gets the
-Switch MCP tools from its own session host, and the room-workflow skill from
-Console: `console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
-exported as `@switch-console/plugins/switch-skill`. OpenCode loads it as a skill
-file; Claude Code, Codex, Cursor and Antigravity get it (without its
-frontmatter) as system context.
+Every agent session is started by Switch Console, its sidecar on an SSH host,
+or the headless agents controller (`console/packages/agent-controller`); there
+are no connector plugins and no standalone runtime. Each session gets the Switch MCP
+tools from its own session host, and the room-workflow skill from Console:
+`console/packages/plugins/src/switch-skill/SKILL.md` is the single copy,
+exported as `@switch-console/plugins/switch-skill`. OpenCode loads it as a
+skill file; Codex gets it as developer instructions; Claude Code, Cursor and
+Antigravity get it (without its frontmatter) as system context.
 
 When you change how agents interact with Switch — new/changed MCP tools, in-room
 commands, room workflow, event delivery, or anything an agent needs to know —
@@ -191,12 +174,12 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   docs repository, never here. Start at `docs/README.md` for how the sync
   works; `docs/official/internals/` covers architecture and the agent
   protocol for readers of this repo.
-- `docs/old/ARCHITECTURE.md` — historical system overview: components, domain
-  model, key flows, entry points, and a code map. Predates the docs sync and
-  may lag the tree.
-- `docs/old/api/AGENT_PROTOCOL.md` — the agent↔Switch protocol (connections, the
-  event stream, room slots, failure handling). Authoritative where it and
-  `ARCHITECTURE.md` overlap
+- `docs/old/ARCHITECTURE.md` — historical system overview from when Switch ran
+  on Matrix. Much of it no longer matches the code; read it for background only.
+- `docs/old/api/AGENT_PROTOCOL.md` — the original design of the agent↔Switch
+  protocol (connections, the event stream, room slots, failure handling). Parts
+  are out of date; where it and the code disagree, the code in
+  `core/switch_core/bridges/agent/` is right.
 - `docs/old/bridges/` — collaboration bridge setup: `README.md` plus one page each
   for Slack, Mattermost, Discord, Teams, and Telegram
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own

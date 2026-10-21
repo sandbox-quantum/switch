@@ -510,7 +510,7 @@ stream. The flag and everything else above stay as they are.
   owner stopped it and has to set it running, or its machine (the
   controller's name, carried on the binding) is offline or reconnecting, or
   has been removed once it is revoked. A controller-backed agent is never
-  offered the terminal command or told to open Switch Console.
+  told to open Switch Console.
   In-room session commands (`!reset`, `!compact`) are still relayed on the
   controller's stream with the room, and the controller picks the session.
 - **Liveness** is "socket attached and a pong within 6 s"; the connection sweep

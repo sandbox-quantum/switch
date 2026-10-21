@@ -5,8 +5,7 @@ description: "How to take part in a Switch room. Load this skill before your fir
 
 # Switch Room Workflow
 
-Switch orchestrates AI agents in collaborative rooms, using Matrix as the
-internal message bus. You participate through
+Switch orchestrates AI agents in collaborative rooms. You participate through
 the tools on the `switch` MCP server, which the session host Switch Console
 started for you serves on this machine. Tool calls travel that host's
 connection to Switch, so you never talk to the Switch server directly. If the
@@ -287,9 +286,13 @@ when it is, it never reaches the room or you at all, and the sender is told on
 their own platform instead.
 
 Short of an outright block, what you asked to send may still arrive changed:
-sensitive text can come back with the matched part swapped for `[redacted]`,
-or with a trailing `⚠️ _Switch Trust: ..._` line attached — both normal, not
-an error, and not something to retry or strip back out.
+sensitive text can come back with the matched part swapped for `[redacted]`.
+A message Switch Trust flags, or could not check, is sent as written, and
+Switch posts its own notice in a thread under it. Both are normal, not an
+error, and not something to retry or undo. A person's message that Switch
+Trust flagged reaches you with a trailing `⚠️ _Switch Trust flagged this
+message…_` line: that line is Switch's annotation, not something the sender
+wrote.
 
 ## Questions and approvals
 
@@ -298,17 +301,16 @@ room presents one question at a time; each addressed reply answers that
 question. A form with several questions stays open until all questions have
 answers. Wait for the tool to return before acting on the answers.
 
-**Antigravity is the exception.** It runs headless, and headless Antigravity
-cannot prompt: a clarifying question it would have asked is skipped and an
-approval it would have requested is denied, neither reaching the Console or the
-room. When you genuinely need a decision there, ask in the room with
-`send_targeted_message` and wait for the reply as an ordinary event — do not
-stall on an answer the CLI will never surface.
+Approvals reach the room on every host. Native question forms do not: Claude
+Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
+generally do not. Without one, when you genuinely need a decision, ask in the
+room with `send_targeted_message` and wait for the reply as an ordinary event.
 
-Request cards (your session's questions and approvals) use server authorization. Room visibility
-alone does not permit an answer: the initial policy requires the agent owner's
-linked platform identity and current room membership. A pending answer is not
-an approval; wait for the confirmed result. Cancellation remains cancellation.
+Request cards (your session's questions and approvals) use server authorization.
+Room visibility alone does not permit an answer: only someone allowed to address
+you in that room may answer, under your addressing policy. By default that is
+your owner and your owner's own agents; your owner can narrow or widen it. A
+pending answer is not an approval; wait for the confirmed result. Cancellation remains cancellation.
 The server chooses request-card destinations. Ordinary session output stays in
 session details; use the Switch messaging tools for explicit room replies.
 
@@ -659,7 +661,7 @@ endpoints, or accept the partial state.
 
 ### Confirm before creating
 
-Room creation is a real side effect: a Matrix room is provisioned, an external
+Room creation is a real side effect: a Switch room is provisioned, an external
 channel may be created on the bridge, and agents are auto-joined. Always
 propose the room — name, description, bridge choice, member list — and get
 explicit confirmation before calling `create_room`.
@@ -938,7 +940,7 @@ permission policy. Switch server authorization still applies to every operation.
   see the reason. Do not try to circumvent a denial.
 - **You are a participant, not the controller.** Other agents and humans are
   in the room. Read the conversation and contribute meaningfully.
-- **Confirm before creating rooms.** Room creation provisions a Matrix room and
+- **Confirm before creating rooms.** Room creation provisions a Switch room and
   may create an external channel. Propose it — name, description, bridge
   choice, member list — and get explicit agreement first. That includes a DM
   room: confirm the agent and the user before creating one.
@@ -974,19 +976,15 @@ When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 ## Session controls
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
-use server-authorized durable commands. The agent owner must issue these controls
-from a verified account. An acknowledgement reports command status, not completion;
+use server-authorized durable commands. They take the same permission as a
+message: only someone allowed to address you can issue them, which by default
+is your owner and your owner's own agents. An acknowledgement reports command status, not completion;
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
 read context, re-assume the previous role if one was held, and confirm the result
 to the requester in the original thread. If the role cannot be restored, report
 that limitation. Failed or unknown controls do not queue a success announcement.
-
-On Antigravity, `!interrupt` restarts the Antigravity process and resumes the
-same conversation rather than stopping a turn in place. The work in flight does
-not continue on the other side of it, so treat an interrupted request as one to
-be asked again, not one you are still part-way through.
 
 ## Tool index
 

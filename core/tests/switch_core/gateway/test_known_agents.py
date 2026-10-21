@@ -28,10 +28,6 @@ def _agent(metadata: dict | None) -> SimpleNamespace:
     return SimpleNamespace(name="claude-code.test", metadata_=metadata)
 
 
-def _agent_named(name: str) -> SimpleNamespace:
-    return SimpleNamespace(name=name, metadata_={})
-
-
 class TestBuildProfileConnectionModel:
     def test_channels_enabled_defaults_to_session_addressable(self) -> None:
         profile = CLAUDE.build_profile(ClaudeCodeOptions(channels_enabled=True))
@@ -72,157 +68,6 @@ class TestBuildProfileCommandCapabilities:
         assert caps.interrupt == "session_dependent"
 
 
-class TestStartSessionInstructions:
-    def test_points_at_switch_console_not_a_terminal(self) -> None:
-        opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/Users/x/aq-switch")
-        msg = CLAUDE.start_session_instructions(opts, _agent({}), "hub", None)
-        # No owner to tag: the step is addressed to "my operator", not to
-        # whoever addressed the agent.
-        assert msg == (
-            "My operator needs to open **claude-code.test** in Switch Console and "
-            "start a local session in **hub**. Sign in with `claude auth login` "
-            "first if you have not already."
-        )
-
-    def test_a_subagent_gets_the_same_instructions(self) -> None:
-        default = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(), _agent({}), "hub", None
-        )
-        opts = ClaudeCodeOptions(repo_dir="/r", subagent_name="seo-writer")
-        assert CLAUDE.start_session_instructions(opts, _agent({}), "hub", None) == (
-            default
-        )
-
-    @pytest.mark.parametrize(
-        "opts",
-        [
-            ClaudeCodeOptions(channels_enabled=False),
-            ClaudeCodeOptions(channels_enabled=False, auto_session=True),
-        ],
-    )
-    def test_a_passive_install_is_told_to_pull_from_an_open_session_first(
-        self, opts: ClaudeCodeOptions
-    ) -> None:
-        # Switch never sees a passive agent as live, so this follows every
-        # message addressed to it, open session or not.
-        msg = CLAUDE.start_session_instructions(opts, _agent({}), "hub", "louisa")
-        assert msg == (
-            "I read room messages asynchronously, not in real time — my operator "
-            "@louisa has to trigger me to pull the latest messages. They can ask a "
-            "session I already have open to pull this room, or, if none is "
-            "running, open **claude-code.test** in Switch Console and start a "
-            "local session in **hub**. Sign in with `claude auth login` first if "
-            "you have not already.\n\n(For me to receive messages in real time "
-            "instead, sign my Claude Code in with an Anthropic account or API key.)"
-        )
-
-    def test_a_passive_install_without_a_linked_owner_says_my_operator(self) -> None:
-        msg = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(channels_enabled=False), _agent({}), "hub", None
-        )
-        assert msg is not None
-        assert msg.startswith(
-            "I read room messages asynchronously, not in real time — my operator "
-            "has to trigger me"
-        )
-        assert "@" not in msg
-
-    def test_connected_not_live_opening(self) -> None:
-        opts = ClaudeCodeOptions(channels_enabled=True, repo_dir="/srv/agent")
-        msg = CLAUDE.start_session_instructions(
-            opts, _agent({}), "ops", None, connected_not_live=True
-        )
-        assert msg is not None
-        # Acknowledges a connected-but-not-live session rather than implying
-        # there is no session.
-        assert msg.startswith(
-            "I have a session connected to this room, but it isn't reporting as "
-            "live, so I'm not receiving messages. To restart it, my operator "
-            "needs to open **claude-code.test** in Switch Console"
-        )
-
-    def test_other_room_names_are_offered_first(self) -> None:
-        msg = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(),
-            _agent({}),
-            "hub",
-            None,
-            other_room_names=["ops", "triage"],
-        )
-        assert msg is not None
-        assert msg.startswith(
-            "I don't have a session connected to this room, but I do have one in "
-            "**ops**, **triage** — ask me there to come here, or my operator can "
-            "open "
-        )
-
-    def test_assume_role_is_named(self) -> None:
-        msg = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(), _agent({}), "hub", None, assume_role="reviewer"
-        )
-        assert msg is not None
-        assert "Then ask me to take the **reviewer** role." in msg
-
-    def test_the_owner_is_prepended_as_an_at_mention(self) -> None:
-        msg = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(), _agent({}), "hub", "louisa"
-        )
-        assert msg is not None
-        assert msg.startswith("@louisa — open **claude-code.test**")
-
-    def test_an_unlinked_owner_leaves_the_message_unmentioned(self) -> None:
-        msg = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(), _agent({}), "hub", None
-        )
-        assert msg is not None
-        assert "@" not in msg
-
-    def test_empty_string_options_normalised_to_none(self) -> None:
-        # The gateway edit form submits "" when the field is cleared.
-        opts = ClaudeCodeOptions(repo_dir="", subagent_name=" ")
-        assert opts.repo_dir is None
-        assert opts.subagent_name is None
-
-
-class TestWhoTheInstructionsAddress:
-    @pytest.mark.parametrize(
-        ("kwargs", "lead"),
-        [
-            (
-                {"connected_not_live": True},
-                "@louisa — I have a session connected to this room, but it isn't "
-                "reporting as live, so I'm not receiving messages. To restart it, "
-                "open **claude-code.test**",
-            ),
-            (
-                {"other_room_names": ["ops"]},
-                "@louisa — I don't have a session connected to this room, but I do "
-                "have one in **ops** — ask me there to come here, or open "
-                "**claude-code.test**",
-            ),
-        ],
-    )
-    def test_a_tagged_owner_is_told_directly(self, kwargs: dict, lead: str) -> None:
-        msg = CLAUDE.start_session_instructions(
-            ClaudeCodeOptions(), _agent({}), "hub", "louisa", **kwargs
-        )
-        assert msg is not None
-        assert msg.startswith(lead)
-        assert "my operator" not in msg
-
-    def test_a_console_runtime_is_named_for_my_operator(self) -> None:
-        options = ANTIGRAVITY.parse_options({})
-        msg = ANTIGRAVITY.start_session_instructions(
-            options, _agent_named("antigravity.test"), "hub", None
-        )
-        assert msg == (
-            "My operator needs to open **antigravity.test** in Switch Console, "
-            "enable the Antigravity CLI runtime in its advanced settings, and "
-            "start a local session in **hub**. Sign in with `agy` first if you "
-            "have not already."
-        )
-
-
 class TestCodexKnownAgent:
     def test_registered_under_codex_key(self) -> None:
         assert isinstance(CODEX, GenericKnownAgent)
@@ -253,17 +98,6 @@ class TestCodexKnownAgent:
         assert caps.reset == "session_dependent"
         assert caps.compact == "session_dependent"
         assert caps.interrupt == "session_dependent"
-
-    def test_start_session_instructions_point_at_switch_console(self) -> None:
-        opts = GenericAgentOptions(repo_dir="/Users/x/repo")
-        msg = CODEX.start_session_instructions(
-            opts, _agent_named("codex.test"), "hub", "louisa"
-        )
-        assert msg == (
-            "@louisa — open **codex.test** in Switch Console and start a local "
-            "session in **hub**. Sign in with `codex login` first if you have "
-            "not already."
-        )
 
     def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
         # Switch Console sends channels_enabled for every provider, so registration
@@ -326,17 +160,6 @@ class TestOpenCodeKnownAgent:
         assert caps.reset == "session_dependent"
         assert caps.compact == "session_dependent"
         assert caps.interrupt == "session_dependent"
-
-    def test_start_session_instructions_point_at_switch_console(self) -> None:
-        opts = GenericAgentOptions(repo_dir="/Users/x/repo")
-        msg = OPENCODE.start_session_instructions(
-            opts, _agent_named("opencode.test"), "hub", None
-        )
-        assert msg == (
-            "My operator needs to open **opencode.test** in Switch Console and "
-            "start a local session in **hub**. Sign in with `opencode auth login` "
-            "first if you have not already."
-        )
 
     def test_channels_enabled_is_dropped_not_offered_as_an_option(self) -> None:
         # Switch Console sends channels_enabled for every provider, so registration
@@ -447,16 +270,6 @@ class TestAntigravityKnownAgent:
             assert profile.command_capabilities.interrupt == "session_dependent"
             assert profile.pre_invocation_mediation == []
 
-    def test_onboarding_requires_console_runtime(self) -> None:
-        options = ANTIGRAVITY.parse_options({"repo_dir": " "})
-        assert options.repo_dir is None
-        agent = _agent_named("antigravity.test")
-        text = ANTIGRAVITY.start_session_instructions(options, agent, "hub", None)
-        assert "Antigravity CLI" in text
-        assert "`agy`" in text
-        assert "local session" in text
-        assert "antigravity.test" in text
-
 
 class TestCursorKnownAgent:
     def test_registry_and_profile(self) -> None:
@@ -473,14 +286,19 @@ class TestCursorKnownAgent:
             assert profile.command_capabilities.interrupt == "session_dependent"
             assert profile.pre_invocation_mediation == []
 
-    def test_onboarding_requires_console_acp(self) -> None:
-        options = CURSOR.parse_options({"repo_dir": " "})
-        assert options.repo_dir is None
-        agent = _agent_named("cursor.test")
-        text = CURSOR.start_session_instructions(options, agent, "hub", None)
-        assert "Cursor CLI ACP" in text
-        assert "local session" in text
-        assert "cursor.test" in text
+
+class TestBlankOptionsAreNormalised:
+    @pytest.mark.parametrize(
+        ("options_cls", "field"),
+        [
+            (ClaudeCodeOptions, "repo_dir"),
+            (ClaudeCodeOptions, "subagent_name"),
+            (GenericAgentOptions, "repo_dir"),
+        ],
+    )
+    def test_blank_string_becomes_none(self, options_cls: type, field: str) -> None:
+        # The gateway edit form submits "" when a field is cleared.
+        assert getattr(options_cls.model_validate({field: " "}), field) is None
 
 
 _SESSION_DEPENDENT = CommandCapabilities(

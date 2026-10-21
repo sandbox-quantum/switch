@@ -44,6 +44,26 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **The Teams command menu fits Teams' limit again.** Switch's own Teams app
+  listed thirteen commands, one more than Teams allows, once `/remove-agent`
+  joined it. Both Teams apps now offer the same twelve: `/remove-agent` is in,
+  and `/room-url` leaves the menu but still works when typed. A self-hosted
+  Teams app shows the change once its package is rebuilt with `--bump` and
+  uploaded again.
+
+#### Removed
+- **`!run-cmd`, and the terminal command in offline replies.** A CLI started
+  with that command got none of the Switch tools, so it never brought the agent
+  online. The reply for an agent that is offline or not live now says what's
+  wrong and who has to act, with no start command to paste. Where the owner
+  starts it from Switch Console, the reply names the room to connect it to and
+  the provider's sign-in command, for when Console says it is signed out. An
+  always_on agent says its connector is down, whatever provider it registered
+  through. Slack apps that list `/run-cmd` in their manifest keep showing it,
+  answering "Unknown command", until an admin deletes it; Discord and Telegram
+  drop it from their command lists by themselves (#730).
+
 ### [0.31.0] - 2026-10-20
 
 #### Added

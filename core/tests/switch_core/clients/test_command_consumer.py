@@ -415,9 +415,9 @@ class TestAdminCommandDispatch:
         assert sent[0]["body"].startswith("**Available commands:**")
 
     async def test_agent_owned_command_is_ignored(self) -> None:
-        # run-cmd is agent-owned — the admin client must not respond to it.
+        # agents-greet is agent-owned — the admin client must not respond to it.
         host, sent = _command_host()
-        await dispatch_admin_command(host, _room(), _cmd_event("run-cmd", "@agent"))
+        await dispatch_admin_command(host, _room(), _cmd_event("agents-greet"))
         assert sent == []
 
     async def test_unknown_command_gets_a_notice(self) -> None:

@@ -103,19 +103,20 @@ def test_round_trips_at_a_range_of_sizes(size: int) -> None:
     assert _rejoin(chunks) == body
 
 
-def test_help_output_now_fits() -> None:
+def test_help_shaped_output_over_the_cap_splits() -> None:
     # The concrete regression: `!help` / `/help` renders every command and
     # overshot Discord's cap, so the send was rejected and the user saw
-    # nothing at all.
+    # nothing at all. Today's list fits in one message, so the command lines
+    # are repeated to keep a help-shaped body over the cap.
     lines = ["**Available commands:**"]
     for command in COMMANDS:
         if command.hidden:
             continue
         lines.append(f"- `!{command.name}` — {command.description}")
-    body = "\n".join(lines)
+    body = "\n".join(lines + lines[1:])
 
     assert len(body) > MAX_MESSAGE
     chunks = chunk_message(body)
-    assert len(chunks) == 2
+    assert len(chunks) >= 2
     assert all(len(c) <= MAX_MESSAGE for c in chunks)
     assert _rejoin(chunks) == body
