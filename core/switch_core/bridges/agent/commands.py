@@ -50,6 +50,14 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
+from switch_core.shared_session import (
+    SharingMark,
+    SharingRefused,
+    set_home_room,
+    set_room_shared,
+    sharing_marks,
+    sharing_of,
+)
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -820,15 +828,47 @@ async def _cmd_list_room_agents(
             await _reply(client, room, event, "No agents in this room.")
             return
 
+        agents = [
+            agent
+            for agent_id in agent_ids
+            if (agent := await client._agent_store.get(session, agent_id)) is not None
+        ]
+        marks = sharing_marks(
+            agents,
+            await client._room_store.sharing_agent_ids(session, meta.room_id),
+            meta.room_id,
+        )
+        homes = await client._room_store.get_many(
+            session,
+            {
+                a.home_room_id
+                for a in agents
+                if a.home_room_id is not None and marks.get(a.id) == "shared"
+            },
+        )
         lines = ["**Agents in this room:**"]
-        for agent_id in agent_ids:
-            agent = await client._agent_store.get(session, agent_id)
-            if agent:
-                desc = f" — {agent.description}" if agent.description else ""
-                label = agent_label_with_identifier(agent.display_name, agent.name)
-                lines.append(f"- **{label}**{desc}")
+        for agent in agents:
+            desc = f" — {agent.description}" if agent.description else ""
+            label = agent_label_with_identifier(agent.display_name, agent.name)
+            lines.append(f"- **{label}**{desc}{_sharing_note(agent, marks, homes)}")
 
     await _reply(client, room, event, "\n".join(lines))
+
+
+def _sharing_note(
+    agent: Agent, marks: dict[str, SharingMark], homes: dict[str, Room]
+) -> str:
+    """The `!list-agents` suffix that shows an agent answers here from its
+    shared session."""
+    mark = marks.get(agent.id)
+    if mark == "home":
+        return " · shared session, based here"
+    if mark == "shared":
+        home = homes.get(agent.home_room_id or "")
+        return (
+            f" · shared session, based in **{home.name if home else 'another room'}**"
+        )
+    return ""
 
 
 _FOLLOW_THE_CONVERSATION_OFF = (
@@ -1354,6 +1394,121 @@ async def _may_remove_agent(
     return False
 
 
+# ── Shared sessions ───────────────────────────────────────────────────────────
+
+_SESSION_USAGE = (
+    "Usage: `!session @agent` shows which rooms share its session. Its owner or "
+    "a workspace admin can change that: `!session @agent shared` has this room "
+    "share it, `!session @agent isolated` gives this room its own session, "
+    "`!session @agent home` bases the shared session in this room, and "
+    "`!session @agent home off` stops it sharing."
+)
+
+
+def _session_action(words: list[str]) -> str | None:
+    """The change `!session` asks for, "" for none, or None when unreadable."""
+    match words:
+        case []:
+            return ""
+        case ["shared" | "isolated" | "home" as word]:
+            return word
+        case ["home", "off"]:
+            return "home off"
+    return None
+
+
+async def _cmd_session(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    host = cast("CommandConsumer", client)
+    meta = await host._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(host, room, event, "Room not found.")
+        return
+    tokens = _mention_tokens(event.args)
+    action = _session_action(
+        [w.lower() for w in (event.args or "").split() if not w.startswith("@")]
+    )
+    if not tokens or action is None:
+        await _reply(host, room, event, _SESSION_USAGE)
+        return
+
+    async with tenant_session(host.session_factory, host.tenant_id) as session:
+        target = await _room_agent_by_name_or_alias(
+            client, session, meta.room_id, tokens[0]
+        )
+        if target is None:
+            await _reply(
+                host,
+                room,
+                event,
+                f"No agent named `{tokens[0]}` in this room. Run `!list-agents`.",
+            )
+            return
+        if action:
+            authority = await _manage_authority(
+                host, session, event, target, action="change which rooms share"
+            )
+            if authority.refusal is not None:
+                await _reply(host, room, event, authority.refusal)
+                return
+            try:
+                if action in ("shared", "isolated"):
+                    await set_room_shared(
+                        session,
+                        host._room_store,
+                        target,
+                        meta.room_id,
+                        action == "shared",
+                    )
+                else:
+                    await set_home_room(
+                        session,
+                        host._room_store,
+                        host._agent_store,
+                        target,
+                        meta.room_id if action == "home" else None,
+                    )
+            except SharingRefused as exc:
+                await _reply(host, room, event, str(exc))
+                return
+            await session.commit()
+            await session.refresh(target)
+        body = await _describe_sharing_for_room(host, session, target, meta.room_id)
+    await _reply(host, room, event, body)
+
+
+async def _describe_sharing_for_room(
+    host: CommandConsumer, session: AsyncSession, agent: Agent, room_id: str
+) -> str:
+    sharing = await sharing_of(session, host._room_store, agent)
+    label = f"**{_label(agent)}**"
+    if not sharing.active:
+        lines = [f"{label} has no shared session: each room it's in has its own."]
+    else:
+        home_id = sharing.home_room_id or ""
+        rooms = await host._room_store.get_many(
+            session, {*sharing.other_room_ids, home_id}
+        )
+
+        def name(rid: str) -> str:
+            here = " (this room)" if rid == room_id else ""
+            found = rooms.get(rid)
+            return f"**{found.name if found else rid}**{here}"
+
+        lines = [f"{label} has one shared session, based in {name(home_id)}."]
+        if sharing.other_room_ids:
+            others = ", ".join(name(r) for r in sharing.other_room_ids)
+            lines.append(f"It also answers from there in {others}.")
+        if not sharing.covers(room_id):
+            lines.append("This room is isolated: it has its own session.")
+    if sharing.locked:
+        lines.append("It's locked: every room it's in shares its session.")
+    elif sharing.shared_by_default:
+        lines.append("Rooms it's added to share its session by default.")
+    return "\n".join(lines)
+
+
 # ── Rename and delete ─────────────────────────────────────────────────────────
 
 
@@ -1379,7 +1534,12 @@ class _Authority:
 
 
 async def _manage_authority(
-    host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
+    host: CommandConsumer,
+    session: AsyncSession,
+    event: CommandEvent,
+    agent: Agent,
+    *,
+    action: str = "rename or delete",
 ) -> _Authority:
     """Whether this command's sender may rename or delete `agent`.
 
@@ -1398,7 +1558,7 @@ async def _manage_authority(
     if external is None:
         return _Authority(
             None,
-            "Only a person can rename or delete an agent, from their own chat account.",
+            f"Only a person can {action} an agent, from their own chat account.",
         )
     claimants = await host._external_user_store.claimant_ids(session, external.id)
     if not claimants:
@@ -1423,7 +1583,7 @@ async def _manage_authority(
         ):
             return _Authority(user.id, None)
     return _Authority(
-        None, "Only the agent's owner or a workspace admin can rename or delete it."
+        None, f"Only the agent's owner or a workspace admin can {action} it."
     )
 
 
@@ -2144,6 +2304,23 @@ COMMANDS: list[Command] = [
         _cmd_remove_agent,
         args_spec=(
             CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "session",
+        "Show which rooms share an agent's session, or change it (owner or "
+        "admin). Usage: `!session @agent [shared|isolated|home|home off]`.",
+        _cmd_session,
+        args_spec=(
+            CommandArg("agent", "The agent", required=True),
+            CommandArg(
+                "mode",
+                "shared (this room shares its session), isolated (its own "
+                "session here), home (base the shared session here) or home off",
+                required=False,
+                free_text=True,
+            ),
         ),
         admin_owned=True,
     ),

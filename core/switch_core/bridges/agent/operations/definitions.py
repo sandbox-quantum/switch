@@ -403,6 +403,7 @@ async def connect_to_room(
                 "status": p.status.value if p.status is not None else None,
                 "room_role": p.room_role,
                 "alias": p.alias,
+                "shared_session": p.shared_session,
             }
             for p in participants
         ],
@@ -752,8 +753,11 @@ async def list_participants() -> list[dict[str, Any]]:
         connect_to_room first.
 
     Returns:
-        List of {id, name, type, status, alias} dicts for each participant.
-        `status` and `alias` are null when unset.
+        List of {id, name, type, status, alias, shared_session} dicts for
+        each participant. `status` and `alias` are null when unset.
+        `shared_session` is "home" for an agent whose shared session is based
+        in this room, "shared" for one answering here from its home room, and
+        null for the room's own session as usual.
     """
     get_agent_id()
     room_id = await require_connected_room()
@@ -768,6 +772,7 @@ async def list_participants() -> list[dict[str, Any]]:
             "type": p.type,
             "status": p.status.value if p.status is not None else None,
             "alias": p.alias,
+            "shared_session": p.shared_session,
         }
         for p in participants
     ]
@@ -1386,7 +1391,10 @@ async def list_bridges() -> list[dict[str, Any]]:
 
 @operation
 async def invite_agent_to_room(
-    room_id: str, agent_name: str, include_subagents: bool = False
+    room_id: str,
+    agent_name: str,
+    include_subagents: bool = False,
+    session: str | None = None,
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
 
@@ -1396,6 +1404,11 @@ async def invite_agent_to_room(
         include_subagents: When true, also add the invited agent's subagents
             (child agents — e.g. a Claude Code agent's registered
             `.claude/agents` subagents).
+        session: For an agent with a shared session (see
+            `update_shared_session`): "shared" has this room share it,
+            "isolated" gives the room its own session of the agent. Omit it to
+            follow the agent's default. Choosing needs the agent's owner or a
+            workspace admin behind you, and a locked agent cannot be isolated.
 
     Returns:
         {"ok": true} on success.
@@ -1403,9 +1416,96 @@ async def invite_agent_to_room(
     agent_id = get_agent_id()
     protocol = get_protocol()
     await protocol.invite_agent_to_room(
-        agent_id, room_id, agent_name, include_subagents=include_subagents
+        agent_id,
+        room_id,
+        agent_name,
+        include_subagents=include_subagents,
+        shared=None if session is None else _shared_choice(session),
     )
     return {"ok": True}
+
+
+def _shared_choice(session: str) -> bool:
+    if session not in ("shared", "isolated"):
+        raise ValueError('session must be "shared" or "isolated"')
+    return session == "shared"
+
+
+@operation
+async def update_shared_session(
+    agent_name: str,
+    home_room_id: str | None = None,
+    shared_by_default: bool | None = None,
+    locked: bool | None = None,
+) -> dict[str, Any]:
+    """Change whether, and from where, an agent answers across rooms with one
+    shared session.
+
+    An agent with a shared session has one session, based in its home room,
+    that answers mentions in every room sharing it: a mention there reaches
+    that session instead of starting a new one, and the reply goes back to the
+    room that asked. Its other rooms are isolated: each gets its own session,
+    as for any agent. Use `set_room_session` to switch one room.
+
+    Only the agent's owner or a workspace admin may change this: you need one
+    of them as your owner. Omit a field to leave it unchanged.
+
+    Args:
+        agent_name: The agent's `name`.
+        home_room_id: The room its shared session is based in; it must be in
+            that room, which then shares it. "" stops it sharing, and its rooms
+            each get their own session again.
+        shared_by_default: Whether a room it is added to shares its session
+            unless whoever adds it chooses isolated.
+        locked: For an agent built to work across rooms: every room it is in
+            shares its session, and none can be isolated. Locking shares all
+            its current rooms.
+
+    Returns:
+        {shared, home_room: {id, name} | null, rooms: [{id, name}],
+        shared_by_default, locked}. `rooms` are the rooms sharing it other
+        than home.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    return await protocol.update_shared_session(
+        agent_id,
+        agent_name,
+        home_room_id=home_room_id or None,
+        clear_home=home_room_id == "",
+        shared_by_default=shared_by_default,
+        locked=locked,
+    )
+
+
+@operation
+async def set_room_session(
+    room_id: str, agent_name: str, session: str
+) -> dict[str, Any]:
+    """Have a room share an agent's session, or give it its own.
+
+    In a shared room, a mention reaches the agent's shared session in its home
+    room. In an isolated room it gets its own session, focused on that room,
+    and nothing said there reaches the shared one. See
+    `update_shared_session`.
+
+    Only the agent's owner or a workspace admin may change this: you need one
+    of them as your owner. A locked agent cannot be isolated anywhere, and its
+    home room cannot be isolated until its home moves.
+
+    Args:
+        room_id: The Switch room id; the agent must be in it.
+        agent_name: The agent's `name`.
+        session: "shared" or "isolated".
+
+    Returns:
+        The agent's settings, as `update_shared_session` returns them.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    return await protocol.set_room_session(
+        agent_id, room_id, agent_name, _shared_choice(session)
+    )
 
 
 @operation

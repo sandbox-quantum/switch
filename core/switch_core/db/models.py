@@ -914,6 +914,22 @@ class Agent(TenantScoped, Base):
     can_manage_agents: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Shared session (CHOO-3725): one session of the agent, based in its home
+    # room, answers in every room that shares it. NULL means the agent shares
+    # no session: each room gets its own, as for any agent. Which of its other
+    # rooms share it is `room_agents.shared_session`; see
+    # `switch_core.shared_session`.
+    home_room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Whether a room the agent is added to shares its session unless the person
+    # adding it chooses isolated.
+    shared_by_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    # An agent built to work across rooms: every room it is in shares its
+    # session, and no room can be made isolated.
+    sharing_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -1051,6 +1067,15 @@ room_agents = Table(
     # Room-scoped alias: `@<alias>` addresses this agent in this room exactly
     # like its real name. Null when the agent has no alias here.
     Column("alias", Text, nullable=True),
+    # Whether this room shares the agent's session (CHOO-3725): a mention here
+    # reaches its shared session in its home room. Only meaningful while the
+    # agent has a home room; see `switch_core.shared_session`.
+    Column(
+        "shared_session",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
     ForeignKeyConstraint(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
