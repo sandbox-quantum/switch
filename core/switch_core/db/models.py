@@ -3295,6 +3295,46 @@ class AgentSessionPlacement(TenantScoped, Base):
     connection_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class AgentSessionShare(TenantScoped, Base):
+    """A room one of an agent's sessions answers for from its home room: a
+    shared room of an agent with a shared session (`switch_core.shared_session`).
+
+    The session's own placement is its home room, in `agent_session_placements`;
+    each row here adds one room it also covers. A room is covered once per
+    agent, by a placement or a share, never both. The share belongs to the
+    connection that placed the session and goes with that connection's row.
+    """
+
+    __tablename__ = "agent_session_shares"
+    __table_args__ = (
+        Index("ix_agent_session_shares_tenant_id", "tenant_id"),
+        Index("ix_agent_session_shares_connection_id", "connection_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_session_shares_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_session_shares_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "connection_id"],
+            ["agent_connections.tenant_id", "agent_connections.id"],
+            name="fk_agent_session_shares_connection",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class AgentSessionCommandRelay(TenantScoped, Base):
     """A session command waiting for the process that can deliver it.
 

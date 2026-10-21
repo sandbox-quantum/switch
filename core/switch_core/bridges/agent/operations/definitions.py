@@ -348,7 +348,20 @@ async def connect_to_room(
     caller = caller_session()
     displaced_session_id = None
     evicted_connection_id = None
-    if not controller_backed:
+    sharer = protocol.connections.share_holder(agent_id, room.id)
+    if sharer is not None and (caller is None or caller.id != sharer):
+        # The room shares this agent's session, which answers it from the
+        # home room: a second session here would answer as the same agent.
+        raise ValueError(
+            f"Room {room.name} shares this agent's session, which answers it "
+            "from its home room, so another session can't connect to it. To "
+            "give the room a session of its own, its owner or a workspace "
+            "admin can isolate it first (`!session @agent isolated` there)."
+        )
+    # The shared session itself already answers for the room, and moving its
+    # placement here would take it out of its home room: nothing moves.
+    already_answering = sharer is not None
+    if not controller_backed and not already_answering:
         async with protocol.connections.slots(agent_id):
             # Routing is where events actually go, so moving it on a bind that
             # then fails would send them somewhere the session is not — and the
@@ -733,8 +746,14 @@ async def read_context(
             agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
         )
 
+    caller = caller_session()
+    shared = (
+        protocol.connections.shared_rooms(agent_id, caller.id)
+        if caller is not None
+        else set()
+    )
     reader = counting_reader()
-    if reader is not None and room_id in connected:
+    if reader is not None and (room_id in connected or room_id in shared):
         # Catching up is the whole point of the unread count, so doing it
         # clears this room — and only this room. A read of somewhere else
         # leaves every count alone, including this one.

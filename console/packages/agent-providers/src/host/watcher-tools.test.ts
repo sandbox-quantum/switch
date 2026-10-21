@@ -432,3 +432,28 @@ it('says which room a post reached, and sends it where the agent named', async (
   });
   expect(refused).not.toHaveProperty('_meta');
 });
+
+it('leaves a shared session at home when it connects to a room it shares', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  await placements.place('lead', 'home');
+  await placements.share('lead', 'work');
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements,
+    publish: async () => {},
+    redactions: new Redactions(),
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'connected' }] });
+
+  await answer(await caller(base, 'lead'), {
+    type: 'tool',
+    name: 'connect_to_room',
+    arguments: { room_id: 'work' },
+  });
+
+  expect(placements.roomOf('lead')).toBe('home');
+  expect(placements.sessionIn('work')).toBe('lead');
+});

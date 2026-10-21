@@ -112,11 +112,16 @@ export function sessionToolAnswerer(deps: {
     const roomId = args.room_id;
     const ctx = await context(caller);
     if (typeof roomId !== 'string' || !roomId) return catalog.call(ctx, 'connect_to_room', args);
+    // A room this session already answers from its home room: Switch connects
+    // nothing, and the session stays placed at home.
+    if (deps.placements.sharerOf(roomId) === caller.sessionId)
+      return catalog.call(ctx, 'connect_to_room', args);
     const before = deps.placements.snapshot();
+    const beforeShares = deps.placements.sharesSnapshot();
     const { displaced } = await deps.placements.place(caller.sessionId, roomId);
     const result = await catalog.call(ctx, 'connect_to_room', args);
     if (result.isError) {
-      await deps.placements.restore(before);
+      await deps.placements.restore(before, beforeShares);
       return result;
     }
     let notTaken: string | null = null;

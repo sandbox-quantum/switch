@@ -1562,8 +1562,12 @@ async def connection_placements(
     (any more: the room was deleted, or the agent taken out) is left out and
     named in `refused`; the rest are placed. A watcher stating the whole set
     each time would otherwise have every placement refused, again and again,
-    for one room that has gone. A session id longer than `MAX_ID_LENGTH`
-    characters refuses the request whole and changes nothing.
+    for one room that has gone. A share (a room the session answers from
+    its home room, `switch_core.shared_session`) is left out and named the
+    same way, with `share: true`, when the agent is not in the room, its
+    settings do not share the room, or the session is not in the home room.
+    A session id longer than `MAX_ID_LENGTH` characters refuses the request
+    whole and changes nothing.
     """
     if agent_id != agent.id:
         raise HTTPException(
@@ -1579,7 +1583,8 @@ async def connection_placements(
     conn = await _admitted_connection(protocol, agent, req)
 
     refused: dict[str, str] = {}
-    for room_id in sorted(set(req.placements.values())):
+    shared_rooms = {room for rooms in req.shares.values() for room in rooms}
+    for room_id in sorted(set(req.placements.values()) | shared_rooms):
         try:
             await protocol.require_room_member(agent.id, room_id)
         except (ValueError, PermissionError) as exc:
@@ -1589,13 +1594,34 @@ async def connection_placements(
         for session_id, room_id in req.placements.items()
         if room_id not in refused
     }
+    # A share is left out and named back the way a placement is, never the
+    # whole set refused: a room the agent left, one its settings no longer
+    # share, or a session no longer in the home room would otherwise leave
+    # every session of the agent unplaced, every time the set is stated.
+    refused_shares = (
+        await protocol.check_shares(agent.id, placements, req.shares)
+        if req.shares
+        else {}
+    )
+    for session_id, rooms in req.shares.items():
+        for room_id in rooms:
+            if room_id in refused:
+                refused_shares[(session_id, room_id)] = refused[room_id]
+    shares = {
+        session_id: kept
+        for session_id, rooms in req.shares.items()
+        if (kept := [r for r in rooms if (session_id, r) not in refused_shares])
+    }
 
     async with protocol.connections.slots(agent.id):
         async with protocol.connections.recorded(agent.id):
             conn = _current_connection(protocol, agent, req)
             before = protocol.connections.connection_placements(conn)
+            before_shares = protocol.connections.connection_shares(conn)
             try:
-                released = protocol.connections.replace_placements(conn, placements)
+                released = protocol.connections.replace_placements(
+                    conn, placements, shares
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1605,6 +1631,15 @@ async def connection_placements(
         # overwritten by this one.
         for session_id, room_id in placements.items():
             if before.get(session_id) != room_id:
+                await protocol.event_buffer.hand_counting_to(
+                    agent.tenant_id,
+                    agent.id,
+                    Reader(id=session_id, is_session=True),
+                    room_id,
+                )
+        # A shared room's count is the shared session's, as a placed room's is.
+        for session_id, rooms in shares.items():
+            for room_id in set(rooms) - set(before_shares.get(session_id, [])):
                 await protocol.event_buffer.hand_counting_to(
                     agent.tenant_id,
                     agent.id,
@@ -1625,6 +1660,7 @@ async def connection_placements(
     return {
         "ok": True,
         "placements": protocol.connections.connection_placements(conn),
+        "shares": protocol.connections.connection_shares(conn),
         "rooms": sorted(conn.rooms),
         "released": [
             {
@@ -1638,6 +1674,15 @@ async def connection_placements(
             {"session_id": session_id, "room_id": room_id, "reason": refused[room_id]}
             for session_id, room_id in req.placements.items()
             if room_id in refused
+        ]
+        + [
+            {
+                "session_id": session_id,
+                "room_id": room_id,
+                "reason": reason,
+                "share": True,
+            }
+            for (session_id, room_id), reason in sorted(refused_shares.items())
         ],
     }
 
