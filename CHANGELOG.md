@@ -44,6 +44,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **The Teams command menu fits Teams' limit again.** Switch's own Teams app
+  listed thirteen commands, one more than Teams allows, once `/remove-agent`
+  joined it. Both Teams apps now offer the same twelve: `/remove-agent` is in,
+  and `/room-url` leaves the menu but still works when typed. A self-hosted
+  Teams app shows the change once its package is rebuilt with `--bump` and
+  uploaded again.
+
 #### Removed
 - **`!run-cmd`, and the terminal command in offline replies.** A CLI started
   with that command got none of the Switch tools, so it never brought the agent
