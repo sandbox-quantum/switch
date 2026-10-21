@@ -90,7 +90,7 @@ describe('searchService', () => {
 
       const result = searchService.search({
         query: 'reviewer',
-        includeSessions: true,
+        includeLegacy: true,
         context: { locationId: 'loc-1', sessionId: 'session-1' },
       });
 
@@ -104,10 +104,10 @@ describe('searchService', () => {
     it('returns the same results with a session context as without one', () => {
       searchService.initialize();
 
-      const withoutContext = searchService.search({ query: 'reviewer', includeSessions: true });
+      const withoutContext = searchService.search({ query: 'reviewer', includeLegacy: true });
       const withContext = searchService.search({
         query: 'reviewer',
-        includeSessions: true,
+        includeLegacy: true,
         context: { locationId: 'loc-1', sessionId: 'session-1' },
       });
 
@@ -115,29 +115,30 @@ describe('searchService', () => {
     });
   });
 
-  // Under agent management Console's own sessions are the legacy way agents
-  // run, and the palette leaves them out.
-  describe('without sessions', () => {
-    it('matches agents but not sessions', () => {
+  // Under agent management Console's own agents and sessions are the legacy
+  // way agents run, and the palette leaves them out.
+  describe('without legacy agents and sessions', () => {
+    it('matches neither agents nor sessions', () => {
       searchService.initialize();
 
-      const result = searchService.search({ query: 'reviewer', includeSessions: false });
+      const result = searchService.search({ query: 'reviewer', includeLegacy: false });
 
-      expect(result.status).toBe('ok');
-      expect(result.items.map((i) => [i.kind, i.title])).toEqual([['agent', 'reviewer-bot']]);
+      expect(result).toEqual({ items: [], status: 'ok' });
     });
 
     it('still matches commands', () => {
       searchService.initialize();
-      const withSessions = searchService.search({ query: 'settings', includeSessions: true });
+      const withLegacy = searchService.search({ query: 'settings', includeLegacy: true });
 
-      const result = searchService.search({ query: 'settings', includeSessions: false });
+      const result = searchService.search({ query: 'settings', includeLegacy: false });
 
       expect(result.items.some((i) => i.kind === 'command')).toBe(true);
-      expect(result.items).toEqual(withSessions.items.filter((i) => i.kind !== 'session'));
+      expect(result.items).toEqual(
+        withLegacy.items.filter((i) => i.kind !== 'session' && i.kind !== 'agent')
+      );
     });
 
-    it('fills the result cap with other kinds rather than dropped sessions', () => {
+    it('fills the result cap with other kinds rather than dropped agents and sessions', () => {
       searchService.initialize();
       for (let i = 0; i < 40; i++) {
         fixture.sqlite
@@ -146,22 +147,28 @@ describe('searchService', () => {
              VALUES ('session', ?, 'loc-1', NULL, ?, '')`
           )
           .run(`s-${i}`, `crowded ${i}`);
+        agentEvents._emit(
+          'agent:created',
+          agentRecord({ id: `agent-crowded-${i}`, name: `crowded-bot-${i}`, locationId: 'loc-1' }),
+          'unknown'
+        );
       }
-      agentEvents._emit(
-        'agent:created',
-        agentRecord({ id: 'agent-crowded', name: 'crowded-bot', locationId: 'loc-1' }),
-        'unknown'
-      );
+      fixture.sqlite
+        .prepare(
+          `INSERT INTO search_index(item_type, item_id, location_id, session_id, title, keywords)
+           VALUES ('command', 'crowded.command', NULL, NULL, 'Crowded command', '')`
+        )
+        .run();
 
-      const result = searchService.search({ query: 'crowded', includeSessions: false });
+      const result = searchService.search({ query: 'crowded', includeLegacy: false });
 
-      expect(result.items.map((i) => i.title)).toEqual(['crowded-bot']);
+      expect(result.items.map((i) => i.title)).toEqual(['Crowded command']);
     });
 
     it('offers no recent sessions for an empty query', () => {
       searchService.initialize();
 
-      expect(searchService.search({ query: '', includeSessions: false })).toEqual({
+      expect(searchService.search({ query: '', includeLegacy: false })).toEqual({
         items: [],
         status: 'recents',
       });
@@ -170,7 +177,7 @@ describe('searchService', () => {
     it('offers no recent sessions for a query too short to search', () => {
       searchService.initialize();
 
-      expect(searchService.search({ query: 'ab', includeSessions: false })).toEqual({
+      expect(searchService.search({ query: 'ab', includeLegacy: false })).toEqual({
         items: [],
         status: 'query-too-short',
       });
@@ -181,7 +188,7 @@ describe('searchService', () => {
     it('backfills existing agents so they are findable by name', () => {
       searchService.initialize();
 
-      const result = searchService.search({ query: 'reviewer-bot', includeSessions: true });
+      const result = searchService.search({ query: 'reviewer-bot', includeLegacy: true });
 
       expect(result.status).toBe('ok');
       const agentHits = result.items.filter((i) => i.kind === 'agent');
@@ -192,14 +199,14 @@ describe('searchService', () => {
     it('finds an agent by its provider, which is indexed as a keyword', () => {
       searchService.initialize();
 
-      const result = searchService.search({ query: 'codex', includeSessions: true });
+      const result = searchService.search({ query: 'codex', includeLegacy: true });
 
       expect(titles(result.items.filter((i) => i.kind === 'agent'))).toEqual(['migration-bot']);
     });
 
     it('indexes an agent created after startup', () => {
       searchService.initialize();
-      expect(searchService.search({ query: 'newcomer', includeSessions: true }).items).toHaveLength(
+      expect(searchService.search({ query: 'newcomer', includeLegacy: true }).items).toHaveLength(
         0
       );
 
@@ -210,7 +217,7 @@ describe('searchService', () => {
       );
 
       expect(
-        titles(searchService.search({ query: 'newcomer', includeSessions: true }).items)
+        titles(searchService.search({ query: 'newcomer', includeLegacy: true }).items)
       ).toEqual(['newcomer-bot']);
     });
 
@@ -225,10 +232,10 @@ describe('searchService', () => {
       );
 
       expect(
-        searchService.search({ query: 'reviewer-bot', includeSessions: true }).items
+        searchService.search({ query: 'reviewer-bot', includeLegacy: true }).items
       ).toHaveLength(0);
       expect(
-        titles(searchService.search({ query: 'auditor-bot', includeSessions: true }).items)
+        titles(searchService.search({ query: 'auditor-bot', includeLegacy: true }).items)
       ).toEqual(['auditor-bot']);
     });
 
@@ -247,7 +254,7 @@ describe('searchService', () => {
       }
 
       expect(
-        searchService.search({ query: 'reviewer-bot', includeSessions: true }).items
+        searchService.search({ query: 'reviewer-bot', includeLegacy: true }).items
       ).toHaveLength(1);
     });
 
@@ -257,14 +264,14 @@ describe('searchService', () => {
       agentEvents._emit('agent:deleted', 'agent-1');
 
       expect(
-        searchService.search({ query: 'reviewer-bot', includeSessions: true }).items
+        searchService.search({ query: 'reviewer-bot', includeLegacy: true }).items
       ).toHaveLength(0);
     });
 
     it('carries the location so the palette can navigate to it', () => {
       searchService.initialize();
 
-      const [hit] = searchService.search({ query: 'migration-bot', includeSessions: true }).items;
+      const [hit] = searchService.search({ query: 'migration-bot', includeLegacy: true }).items;
 
       expect(hit).toMatchObject({ kind: 'agent', locationId: 'loc-2' });
     });
@@ -274,7 +281,7 @@ describe('searchService', () => {
     it('reports an empty query as recents rather than as matches', () => {
       searchService.initialize();
 
-      const result = searchService.search({ query: '', includeSessions: true });
+      const result = searchService.search({ query: '', includeLegacy: true });
 
       expect(result.status).toBe('recents');
       expect(titles(result.items)).toEqual(['Fix the reviewer crash']);
@@ -285,7 +292,7 @@ describe('searchService', () => {
     it('reports a query with no usable term as query-too-short', () => {
       searchService.initialize();
 
-      const result = searchService.search({ query: 'ab', includeSessions: true });
+      const result = searchService.search({ query: 'ab', includeLegacy: true });
 
       expect(result.status).toBe('query-too-short');
       expect(result.items.every((i) => i.kind === 'session')).toBe(true);
@@ -294,7 +301,7 @@ describe('searchService', () => {
     it('treats a multi-word query of short terms as too short, not as a match', () => {
       searchService.initialize();
 
-      expect(searchService.search({ query: 'ab cd', includeSessions: true }).status).toBe(
+      expect(searchService.search({ query: 'ab cd', includeLegacy: true }).status).toBe(
         'query-too-short'
       );
     });
@@ -302,7 +309,7 @@ describe('searchService', () => {
     it('reports a usable query as ok', () => {
       searchService.initialize();
 
-      expect(searchService.search({ query: 'reviewer', includeSessions: true }).status).toBe('ok');
+      expect(searchService.search({ query: 'reviewer', includeLegacy: true }).status).toBe('ok');
     });
 
     it('distinguishes a failed search from an empty one', () => {
@@ -312,7 +319,7 @@ describe('searchService', () => {
         throw broken;
       });
 
-      const result = searchService.search({ query: 'reviewer', includeSessions: true });
+      const result = searchService.search({ query: 'reviewer', includeLegacy: true });
 
       expect(result.status).toBe('failed');
       expect(result.items).toEqual([]);
@@ -324,7 +331,7 @@ describe('searchService', () => {
     it('does not match every row of a kind by typing that kind name', () => {
       searchService.initialize();
 
-      const result = searchService.search({ query: 'session', includeSessions: true });
+      const result = searchService.search({ query: 'session', includeLegacy: true });
 
       expect(result.items.filter((i) => i.kind === 'session')).toHaveLength(0);
     });
@@ -332,10 +339,11 @@ describe('searchService', () => {
     it('matches mid-word, so a term inside a compound name is still found', () => {
       searchService.initialize();
 
-      expect(titles(searchService.search({ query: 'iewer', includeSessions: true }).items)).toEqual(
-        ['Fix the reviewer crash', 'reviewer-bot']
-      );
-      expect(titles(searchService.search({ query: 'rat', includeSessions: true }).items)).toEqual([
+      expect(titles(searchService.search({ query: 'iewer', includeLegacy: true }).items)).toEqual([
+        'Fix the reviewer crash',
+        'reviewer-bot',
+      ]);
+      expect(titles(searchService.search({ query: 'rat', includeLegacy: true }).items)).toEqual([
         'migration-bot',
       ]);
     });
@@ -360,9 +368,9 @@ describe('searchService', () => {
         );
       }
 
-      expect(
-        titles(searchService.search({ query: 'test-tt', includeSessions: true }).items)
-      ).toEqual(['test-tt']);
+      expect(titles(searchService.search({ query: 'test-tt', includeLegacy: true }).items)).toEqual(
+        ['test-tt']
+      );
     });
 
     // The short term still has to be present, it just cannot be asked of the
@@ -376,14 +384,14 @@ describe('searchService', () => {
       );
 
       expect(
-        titles(searchService.search({ query: 'reviewer cc', includeSessions: true }).items)
+        titles(searchService.search({ query: 'reviewer cc', includeLegacy: true }).items)
       ).toEqual(['reviewer cc']);
     });
 
     it('matches a word after a separator, so a suffixed name is still findable', () => {
       searchService.initialize();
 
-      expect(titles(searchService.search({ query: 'bot', includeSessions: true }).items)).toEqual([
+      expect(titles(searchService.search({ query: 'bot', includeLegacy: true }).items)).toEqual([
         'migration-bot',
         'reviewer-bot',
       ]);
@@ -398,7 +406,7 @@ describe('searchService', () => {
       );
 
       // 'codex' is agent-2's provider (a keyword) and agent-4's name.
-      const items = searchService.search({ query: 'codex', includeSessions: true }).items;
+      const items = searchService.search({ query: 'codex', includeLegacy: true }).items;
 
       expect(items.map((i) => i.title)).toEqual(['codex-runner', 'migration-bot']);
     });
@@ -407,7 +415,7 @@ describe('searchService', () => {
       searchService.initialize();
 
       expect(
-        titles(searchService.search({ query: 'reviewer', includeSessions: true }).items)
+        titles(searchService.search({ query: 'reviewer', includeLegacy: true }).items)
       ).toEqual(['Fix the reviewer crash', 'reviewer-bot']);
     });
 
@@ -418,11 +426,9 @@ describe('searchService', () => {
       searchService.initialize();
 
       expect(
-        searchService.search({ query: 'switch-console repo', includeSessions: true }).items
+        searchService.search({ query: 'switch-console repo', includeLegacy: true }).items
       ).toEqual([]);
-      expect(searchService.search({ query: 'other repo', includeSessions: true }).items).toEqual(
-        []
-      );
+      expect(searchService.search({ query: 'other repo', includeLegacy: true }).items).toEqual([]);
     });
   });
 });

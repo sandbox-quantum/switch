@@ -1098,6 +1098,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         yamlText: room?.coreYaml ?? null,
         inputs: room?.inputs ?? {},
         templateName: loaded.name,
+        entryPoint: 'template',
       });
     } catch (e) {
       for (const { i } of pending) setSlot(i, { status: 'failed', step: null });
@@ -1250,6 +1251,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         inputs,
         filled,
         templateName: loaded.name,
+        entryPoint: 'template',
       });
     } catch (e) {
       for (const { i } of pending) setSlot(i, { status: 'failed', step: null });
@@ -1377,7 +1379,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
-            entryPoint: 'server_page',
+            entryPoint: 'template',
             // Only a single-agent template can be loaded again for this
             // agent's instructions; a team template has no one entry to offer.
             templateOrigin: loaded.singular ? loaded.origin : null,

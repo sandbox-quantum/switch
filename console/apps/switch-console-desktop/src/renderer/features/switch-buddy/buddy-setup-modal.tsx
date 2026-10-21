@@ -23,7 +23,12 @@ export function BuddySetupModal({
         <DialogTitle>Connect an AI provider to switch-buddy</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
-        <ProviderSetup serverId={serverId} workspaceId={workspaceId} onCreated={onSuccess} />
+        <ProviderSetup
+          serverId={serverId}
+          workspaceId={workspaceId}
+          entryPoint="switch_buddy"
+          onCreated={onSuccess}
+        />
       </DialogContentArea>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>

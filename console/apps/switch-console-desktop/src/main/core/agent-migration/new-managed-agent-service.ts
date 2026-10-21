@@ -1,4 +1,6 @@
 import type { AdvancedConfig } from '@switch-console/plugins/agents';
+import type { GatewayErrorKind } from '@main/core/switch-servers/gateway-client';
+import type { TelemetryAgentCreateFailure } from '@main/core/telemetry/events';
 import type { NewAgentMachine } from '@shared/core/agent-migration/agent-migration';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -36,11 +38,38 @@ export type AddManagedAgentResult =
   | { kind: 'name-conflict' }
   | { kind: 'error'; message: string };
 
+/** Why Switch refused a managed agent, as `agent_created` reports it. */
+export type ManagedRefusal = Extract<
+  TelemetryAgentCreateFailure,
+  'unauthenticated' | 'invalid' | 'refused'
+>;
+
+/**
+ * What a failed create means, or null for one to rethrow. Switch answers a
+ * taken name and a refused placement both with a 409, told apart by the reason
+ * code: a taken name is a validation error.
+ */
+export function managedCreateFailureOf(error: {
+  kind: GatewayErrorKind;
+  status: number | undefined;
+  /** The management API's reason code, when the response carried one. */
+  code: string | null;
+}): 'name-conflict' | ManagedRefusal | null {
+  if (error.status === undefined || error.status >= 500) return null;
+  if (error.kind === 'unauthorized') return 'unauthenticated';
+  if (error.status === 409) {
+    return error.code === 'validation_error' || error.code === null ? 'name-conflict' : 'refused';
+  }
+  if (error.code === 'validation_error' || error.code === 'definition_invalid') return 'invalid';
+  if (error.code === null && (error.status === 400 || error.status === 422)) return 'invalid';
+  return 'refused';
+}
+
 export type ManagedCreateOutcome =
   | { kind: 'created'; switchAgentId: string }
   | { kind: 'name-conflict' }
   /** Switch refused the agent or its placement, in its own words. */
-  | { kind: 'refused'; message: string };
+  | { kind: 'refused'; message: string; reason: ManagedRefusal };
 
 export type NewManagedAgentDeps = {
   /** The workspace the server's agents belong to. */
@@ -60,6 +89,10 @@ export type NewManagedAgentDeps = {
       definition: ManagedDefinition & { isolation: 'shared' | 'isolated' };
     }
   ): Promise<ManagedCreateOutcome>;
+  /** Reports the attempt as `agent_created`; never awaited. */
+  reportCreate(input: AddManagedAgentParams, failure: TelemetryAgentCreateFailure): void;
+  /** A create that threw, as a reason: a missing sign-in, or else a fault. */
+  thrownFailure(error: unknown): Extract<TelemetryAgentCreateFailure, 'unauthenticated' | 'error'>;
   log: MigrationLog;
 };
 
@@ -94,11 +127,22 @@ export class NewManagedAgentService {
    * refuses it in its own words.
    */
   async add(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
+    try {
+      return await this.createAgent(input);
+    } catch (error) {
+      this.deps.reportCreate(input, this.deps.thrownFailure(error));
+      throw error;
+    }
+  }
+
+  private async createAgent(input: AddManagedAgentParams): Promise<AddManagedAgentResult> {
     const workspaceId = await this.deps.workspaceFor(input.serverId);
 
     try {
       assertInstructionsFit(input.instructions);
     } catch (error) {
+      // The same mistake Switch would refuse as an invalid field, caught first.
+      this.deps.reportCreate(input, 'invalid');
       return { kind: 'error', message: message(error) };
     }
     const definition: ManagedDefinition = {
@@ -120,12 +164,19 @@ export class NewManagedAgentService {
       desired_state: 'running',
       definition: { ...definition, isolation: input.isolation },
     });
-    if (created.kind === 'name-conflict') return { kind: 'name-conflict' };
-    if (created.kind === 'refused') return { kind: 'error', message: created.message };
+    if (created.kind === 'name-conflict') {
+      this.deps.reportCreate(input, 'name_conflict');
+      return { kind: 'name-conflict' };
+    }
+    if (created.kind === 'refused') {
+      this.deps.reportCreate(input, created.reason);
+      return { kind: 'error', message: created.message };
+    }
     this.deps.log.info('Created a managed agent', {
       switchAgentId: created.switchAgentId,
       controllerId: input.machineId,
     });
+    this.deps.reportCreate(input, 'none');
     return {
       kind: 'created',
       serverId: input.serverId,

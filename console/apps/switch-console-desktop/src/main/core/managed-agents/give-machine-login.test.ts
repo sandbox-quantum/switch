@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   readLocalProviderSignIn: vi.fn(),
 }));
 
+vi.mock('@main/core/agent-migration/agent-migration', () => ({ agentMigrationService: {} }));
+vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
   embeddedControllerService: {},
 }));

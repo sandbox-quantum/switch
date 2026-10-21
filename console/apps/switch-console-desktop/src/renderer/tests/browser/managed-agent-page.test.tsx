@@ -189,8 +189,7 @@ it('lays out the agent the way a Console agent’s page does', () => {
   expect(text).toContain('on laptop');
   expect(text).toContain('Writes PRDs');
   expect(container.querySelector('textarea')?.value).toBe('Be brief.');
-  for (const heading of ['General', 'Sessions'])
-    expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain(heading);
+  expect([...container.querySelectorAll('h2')].map((h) => h.textContent)).toContain('General');
   for (const row of [
     'Auto mode',
     'Bypass permissions',

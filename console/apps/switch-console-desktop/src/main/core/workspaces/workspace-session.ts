@@ -189,6 +189,25 @@ export async function withWorkspaceSession<T>(
 }
 
 /**
+ * Run `fn` only if the session already selects `workspaceId`, without switching
+ * or taking a lease; null otherwise. A switch can land mid-call, so use it only
+ * for reads by id, which fail rather than answer for another workspace.
+ */
+export async function withWorkspaceIfSelected<T>(
+  workspaceId: string,
+  fn: (server: SwitchServer) => Promise<T>
+): Promise<T | null> {
+  const workspace = await requireAddressableWorkspace(workspaceId);
+  const server = await requireServer(workspace.serverId);
+  if (hostUnreachable(server)) return null;
+  if (workspace.tenantId !== null) {
+    const cookie = await getSessionCookie(server.id);
+    if (!cookie || decodeJwtTenantId(cookie) !== workspace.tenantId) return null;
+  }
+  return fn(server);
+}
+
+/**
  * {@link withWorkspaceSession}, refusing to touch the gateway while the host
  * the server is managed on is unreachable (CHOO-1780).
  *

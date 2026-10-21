@@ -354,6 +354,16 @@ export class AgentMigrationService {
     });
   }
 
+  /**
+   * Removes the Console agents linked to a Switch agent just deleted on its
+   * server, rather than leaving them under Legacy until a pass finds it gone.
+   */
+  async forgetDeleted(serverId: string, switchAgentId: string): Promise<void> {
+    for (const agent of await this.deps.agents.list())
+      if (agent.serverId === serverId && agent.switchAgentId === switchAgentId)
+        await this.forgetGone(agent, `gone:${agent.id}`, this.deps.now());
+  }
+
   /** Why each agent the last automatic passes could not move did not, by agent. */
   migrationProblems(): MigrationProblem[] {
     return [...this.problems.values()];
@@ -441,6 +451,10 @@ export class AgentMigrationService {
       if (await this.isManaged(agent)) {
         this.leftAlone.delete(agent.id);
         this.unasked.delete(agent.id);
+        if (await this.deletedOnServer(agent, now)) {
+          await this.forgetGone(agent, `gone:${agent.id}`, now);
+          continue;
+        }
         candidates.push(agent);
         continue;
       }
@@ -466,21 +480,7 @@ export class AgentMigrationService {
       if (eligibility.gone) {
         // Deleted on its server: there is nothing to move it to and no way back,
         // and listing it here (and under Legacy) only keeps asking about it.
-        this.deps.log.warn('Removing an agent its server no longer has', {
-          agentId: agent.id,
-          switchAgentId: agent.switchAgentId,
-        });
-        try {
-          await this.deps.agents.forget(agent.id);
-        } catch (error) {
-          this.deps.log.error('Could not remove an agent its server no longer has', {
-            agentId: agent.id,
-            error: message(error),
-          });
-          this.backOff(`ask:${agent.id}`, now);
-        }
-        this.leftAlone.delete(agent.id);
-        this.problems.delete(agent.id);
+        await this.forgetGone(agent, `ask:${agent.id}`, now);
         continue;
       }
       if (!eligibility.management || !eligibility.ownedByMe) {
@@ -921,6 +921,50 @@ export class AgentMigrationService {
 
   private async isManaged(agent: MigrationAgent): Promise<boolean> {
     return (await this.deps.store.forIdentity(agent.id, agent.switchAgentId)) !== null;
+  }
+
+  /**
+   * Whether a moved agent's server has deleted it, asked at most once every
+   * `healIntervalMs`. Deleting a managed agent deletes it on its server only,
+   * so the Console row it was moved from would otherwise stay, under Legacy.
+   */
+  private async deletedOnServer(agent: MigrationAgent, now: number): Promise<boolean> {
+    const key = `gone:${agent.id}`;
+    if (!agent.workspaceId || !agent.switchAgentId) return false;
+    if (this.operations.has(agent.id) || !this.due(key, now)) return false;
+    let eligibility: Awaited<ReturnType<MigrationManagementPort['eligibility']>>;
+    try {
+      eligibility = await this.deps.management.eligibility(agent.workspaceId, agent.switchAgentId);
+    } catch (error) {
+      this.deps.log.warn('Switch could not be asked whether a moved agent still exists', {
+        agentId: agent.id,
+        error: message(error),
+      });
+      this.backOff(key, now);
+      return false;
+    }
+    if (eligibility.gone) return true;
+    this.backOff(key, now, this.deps.healIntervalMs);
+    return false;
+  }
+
+  private async forgetGone(agent: MigrationAgent, retryKey: string, now: number): Promise<void> {
+    this.deps.log.warn('Removing an agent its server no longer has', {
+      agentId: agent.id,
+      switchAgentId: agent.switchAgentId,
+    });
+    try {
+      await this.deps.agents.forget(agent.id);
+      this.retryAt.delete(retryKey);
+    } catch (error) {
+      this.deps.log.error('Could not remove an agent its server no longer has', {
+        agentId: agent.id,
+        error: message(error),
+      });
+      this.backOff(retryKey, now);
+    }
+    this.leftAlone.delete(agent.id);
+    this.problems.delete(agent.id);
   }
 
   // ── State ──────────────────────────────────────────────────────────────────

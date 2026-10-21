@@ -1828,6 +1828,18 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.40.1] - 2026-10-21
+
+#### Added
+- **Managed agents and template-made rooms are reported, and managed servers
+  point at the current relay** (#963).
+
+#### Fixed
+- **Search under agent management shows managed agents, not legacy ones**
+  (#975).
+- **Deleting a managed agent removes the Console agent it was moved from**
+  (#974).
+
 ### [0.40.0] - 2026-10-20
 
 #### Added
