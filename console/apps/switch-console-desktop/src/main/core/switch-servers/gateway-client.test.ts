@@ -3327,10 +3327,20 @@ describe('agent management calls', () => {
 
   it('reads and changes an agent’s shared session, and a room’s place in it', async () => {
     fetchMock.mockImplementation(async () =>
-      respond(200, { home_room_id: 'hub', shared_by_default: true, sharing_locked: false })
+      respond(200, {
+        home_room_id: 'hub',
+        shared_by_default: true,
+        sharing_locked: false,
+        rooms: [
+          { room_id: 'hub', shared_session: 'home' },
+          { room_id: 'work', shared_session: 'shared' },
+          { room_id: 'side', shared_session: null },
+        ],
+      })
     );
     expect(await fetchSharedSession(SERVER, 'agent-1')).toEqual({
       homeRoomId: 'hub',
+      sharedRoomIds: ['work'],
       sharedByDefault: true,
       locked: false,
     });

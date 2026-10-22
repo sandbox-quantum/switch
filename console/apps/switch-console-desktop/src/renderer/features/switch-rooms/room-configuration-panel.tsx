@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ExternalLink, FileText, Link2, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { chatMembersQueryKey, workspaceRosterQuery } from '@renderer/features/chats/chat-people';
@@ -7,6 +7,7 @@ import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actio
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { sharedSessionKey } from '@renderer/features/locations/components/settings-view/sections/shared-session-settings-section';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
@@ -53,6 +54,7 @@ import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
+import { roomSharingLabel } from './room-sharing-label';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -225,6 +227,7 @@ const ChatParticipantsSection = observer(function ChatParticipantsSection({
 
       <ParticipantList
         workspaceId={workspaceId}
+        roomId={roomId}
         agentIds={agentIds}
         agentNames={new Map(chat.agents.map((agent) => [agent.id, chatAgentLabel(agent)]))}
         people={people.map((person) => ({
@@ -867,6 +870,7 @@ const ParticipantsSection = observer(function ParticipantsSection({
 
       <ParticipantList
         workspaceId={workspaceId}
+        roomId={room.id}
         agentIds={room.agentIds}
         agentNames={new Map()}
         people={room.connectedUserNames.map((name) => ({
@@ -894,12 +898,15 @@ type ManageParticipants = {
 /** The room's members as cards, agents first. `agentNames` names agents the caller already knows. */
 const ParticipantList = observer(function ParticipantList({
   workspaceId,
+  roomId,
   agentIds,
   agentNames,
   people,
   manage,
 }: {
   workspaceId: string | null;
+  /** The room the cards are for, for how each agent shares its session there. */
+  roomId: string;
   agentIds: string[];
   agentNames: Map<string, string>;
   people: Person[];
@@ -922,6 +929,11 @@ const ParticipantList = observer(function ParticipantList({
           detail={agentKindFor(agentId, workspaceId, remoteById)}
           removing={manage?.removing === agentId}
           onRemove={manage && (() => manage.removeAgent(agentId))}
+          extra={
+            workspaceId && (
+              <AgentSharingLine workspaceId={workspaceId} agentId={agentId} roomId={roomId} />
+            )
+          }
         />
       ))}
       {people.map((person) => (
@@ -958,12 +970,15 @@ function ParticipantCard({
   detail,
   removing,
   onRemove,
+  extra,
 }: {
   mark: React.ReactNode;
   name: string;
   detail: string;
   removing: boolean;
   onRemove: (() => void) | null;
+  /** A further line under the detail, such as how the agent shares its session. */
+  extra?: React.ReactNode;
 }) {
   return (
     <div className="flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] px-3.5 py-3">
@@ -971,6 +986,7 @@ function ParticipantCard({
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-medium text-foreground">{name}</span>
         <span className="truncate text-xs text-foreground-muted">{detail}</span>
+        {extra}
       </div>
       {onRemove && (
         <Button
@@ -1101,6 +1117,38 @@ function AddParticipantPanel({
     </div>
   );
 }
+
+/**
+ * Where an agent's shared session is based and how many rooms it answers, when
+ * it answers this room from one. Nothing for an agent with no shared session,
+ * or a room with a session of its own.
+ */
+const AgentSharingLine = observer(function AgentSharingLine({
+  workspaceId,
+  agentId,
+  roomId,
+}: {
+  workspaceId: string;
+  agentId: string;
+  roomId: string;
+}) {
+  const { data: sharing } = useQuery({
+    queryKey: sharedSessionKey(workspaceId, agentId),
+    queryFn: () => rpc.workspaces.getSharedSession({ workspaceId, agentId }),
+  });
+  const label = roomSharingLabel(
+    sharing,
+    roomId,
+    (id) => switchRoomsStore.roomSummaryById(id)?.name ?? 'another room'
+  );
+  if (!label) return null;
+  return (
+    <span className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted" title={label}>
+      <Link2 className="size-3 shrink-0" aria-hidden />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+});
 
 /**
  * Search this computer's agents and put one in the room.

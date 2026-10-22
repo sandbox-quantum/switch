@@ -418,6 +418,8 @@ export type RemoteAgentRoom = {
  */
 export type AgentSharedSession = {
   homeRoomId: string | null;
+  /** The rooms other than home that share the session. */
+  sharedRoomIds: string[];
   sharedByDefault: boolean;
   locked: boolean;
 };

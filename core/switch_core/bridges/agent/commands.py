@@ -579,9 +579,9 @@ async def _decide_control_command(
             effect = "clear" if command == "reset" else "condense"
             return say(
                 f"**{_label(agent)}** answers this room from its shared session, "
-                f"based in **{home}**. A {command} would {effect} its memory for "
-                f"every room it answers, so run `!{command}` for it in **{home}** "
-                "instead."
+                f"based in **{home}**.\n"
+                f"A {command} would {effect} its memory for every room it "
+                f"answers, so run `!{command}` for it in **{home}** instead."
             )
         if home is not None and command == "interrupt":
             # The session's host stops a turn only when it is this room's, and
@@ -1431,12 +1431,17 @@ async def _may_remove_agent(
 
 # ── Shared sessions ───────────────────────────────────────────────────────────
 
-_SESSION_USAGE = (
-    "Usage: `!session @agent` shows which rooms share its session. Its owner or "
-    "a workspace admin can change that: `!session @agent shared` has this room "
-    "share it, `!session @agent isolated` gives this room its own session, "
-    "`!session @agent home` bases the shared session in this room, and "
-    "`!session @agent home off` stops it sharing."
+_SESSION_USAGE = "\n".join(
+    (
+        "Usage:",
+        "- `!session @agent`: show which rooms share its session",
+        "",
+        "The agent's owner or a workspace admin can change that:",
+        "- `!session @agent shared`: this room shares its session",
+        "- `!session @agent isolated`: this room gets its own session",
+        "- `!session @agent home`: base the shared session in this room",
+        "- `!session @agent home off`: stop sharing",
+    )
 )
 
 
@@ -1541,10 +1546,13 @@ async def _describe_sharing_for_room(
 
         lines = [f"{label} has one shared session, based in {name(home_id)}."]
         if sharing.other_room_ids:
-            others = ", ".join(name(r) for r in sharing.other_room_ids)
-            lines.append(f"It also answers from there in {others}.")
+            lines.append("Other rooms it answers from there:")
+            lines.extend(f"- {name(r)}" for r in sharing.other_room_ids)
         if not sharing.covers(room_id):
+            lines.append("")
             lines.append("This room is isolated: it has its own session.")
+    if sharing.locked or sharing.shared_by_default:
+        lines.append("")
     if sharing.locked:
         lines.append("It's locked: every room it's in shares its session.")
     elif sharing.shared_by_default:

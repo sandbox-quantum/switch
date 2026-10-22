@@ -1304,8 +1304,8 @@ export async function fetchAgentRooms(
 }
 
 /**
- * An agent's shared session, from `GET /agents/{id}`: its home room and the
- * defaults for rooms it joins. A server from before shared sessions reports
+ * An agent's shared session, from `GET /agents/{id}`: its home room, the
+ * other rooms sharing it, and the defaults for rooms it joins. A server from before shared sessions reports
  * none.
  */
 export async function fetchSharedSession(
@@ -1319,9 +1319,16 @@ export async function fetchSharedSession(
     home_room_id?: string | null;
     shared_by_default?: boolean;
     sharing_locked?: boolean;
+    rooms?: { room_id?: string; shared_session?: string | null }[];
   };
+  const homeRoomId = json.home_room_id ?? null;
   return {
-    homeRoomId: json.home_room_id ?? null,
+    homeRoomId,
+    sharedRoomIds: homeRoomId
+      ? (json.rooms ?? [])
+          .filter((r) => r.shared_session === 'shared' && typeof r.room_id === 'string')
+          .map((r) => r.room_id as string)
+      : [],
     sharedByDefault: json.shared_by_default === true,
     locked: json.sharing_locked === true,
   };
