@@ -106,6 +106,15 @@ const GITHUB: ServiceGrant = {
 const answering = (status: number, body: unknown) =>
   vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status }));
 
+const byPath = (answers: Record<string, [number, unknown]>) =>
+  vi.fn<typeof fetch>(async (input) => {
+    const url = String(input);
+    const match = Object.keys(answers).find((path) => url.endsWith(path));
+    if (!match) throw new Error(`unexpected request to ${url}`);
+    const [status, body] = answers[match];
+    return new Response(JSON.stringify(body), { status });
+  });
+
 describe('readServiceGrants', () => {
   it('reads the grants through the agent’s Switch endpoint, as the agent', async () => {
     const fetchImpl = answering(200, { grants: [GITHUB] });
@@ -115,8 +124,35 @@ describe('readServiceGrants', () => {
     expect(init?.headers).toEqual({ Authorization: 'Bearer agent-key' });
   });
 
-  it('takes a Switch without the route as granting nothing', async () => {
-    expect(await readServiceGrants(SWITCH, answering(404, { detail: 'Not Found' }))).toEqual([]);
+  it('takes a Switch without service connections as granting nothing', async () => {
+    const before = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404 })
+    );
+    expect(await readServiceGrants(SWITCH, before)).toEqual([]);
+    expect(before.mock.calls[1][0]).toBe('https://switch.example.test/api/agents/feature-flags');
+    const flagOff = byPath({
+      'service-grants': [404, { detail: 'Not Found' }],
+      'feature-flags': [200, { flags: [{ key: 'service_connections', enabled: false }] }],
+    });
+    expect(await readServiceGrants(SWITCH, flagOff)).toEqual([]);
+  });
+
+  it('raises a 404 from a Switch with service connections on', async () => {
+    const relayed = byPath({
+      'service-grants': [404, { detail: 'The agents controller does not relay this.' }],
+      'feature-flags': [200, { flags: [{ key: 'service_connections', enabled: true }] }],
+    });
+    await expect(readServiceGrants(SWITCH, relayed)).rejects.toThrow(
+      /service connections on but answered 404.*does not relay/
+    );
+  });
+
+  it('raises a 404 it cannot explain because the flags are refused', async () => {
+    const refused = byPath({
+      'service-grants': [404, { detail: 'Not Found' }],
+      'feature-flags': [503, {}],
+    });
+    await expect(readServiceGrants(SWITCH, refused)).rejects.toThrow('HTTP 503');
   });
 
   it('says when Switch refuses or cannot be reached', async () => {
