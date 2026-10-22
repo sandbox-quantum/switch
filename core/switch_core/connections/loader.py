@@ -661,8 +661,6 @@ class ConnectionDefinition(BaseModel):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
         if self.token is not None and self.token.kind != "pass_through":
             raise ValueError("the oauth adapter passes the owner's token through")
-        if self.tools is not None and self.tools.mode != "pass_through":
-            raise ValueError("an oauth entry's tools pass through until classified")
         if self.access is not None and any(
             level is not None and level.scopes is None
             for level in (self.access.read, self.access.write)

@@ -1,7 +1,73 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Work with Bitbucket repositories and pull requests.
-enabled: false
+description: Read and update Bitbucket Cloud repositories and pull requests, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Bitbucket Cloud is covered by Atlassian's official MCP server with dynamic
+    # registration. It requires an Atlassian organization-linked workspace.
+    registration: dynamic
+    # Returns to Console listener on a registered loopback port.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian MCP access tokens live 8 hours; agents ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: bitbucket, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - write:bitbucket:agent-interface
+tools:
+  mode: listed
+  read:
+    - listBitbucketWorkspaces
+    - getBitbucketWorkspace
+    - listBitbucketRepositories
+    - getBitbucketRepository
+    - getBitbucketRepoDefaultReviewers
+    - getBitbucketRepoFileContent
+    - getBitbucketRepoBranch
+    - getBitbucketRepoCommit
+    - listBitbucketRepoCommitReports
+    - listBitbucketRepoPullRequests
+    - getBitbucketRepoPullRequest
+    - getBitbucketRepoPullRequestDiff
+    - listBitbucketRepoPullRequestComments
+    - listBitbucketRepoPullRequestTasks
+  write:
+    - createBitbucketRepoBranch
+    - createBitbucketRepoCommit
+    - createBitbucketRepoPullRequest
+    - updateBitbucketRepoPullRequest
+    - mergeBitbucketRepoPullRequest
+    - approveBitbucketRepoPullRequest
+    - requestChangesOnBitbucketRepoPullRequest
+    - addBitbucketRepoPullRequestComment
+    - resolveBitbucketRepoPullRequestComment
+    - reopenBitbucketRepoPullRequestComment
+    - createBitbucketRepoPullRequestTask
+    - setBitbucketRepoPullRequestTaskState

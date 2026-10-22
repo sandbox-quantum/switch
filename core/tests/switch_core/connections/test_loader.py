@@ -13,7 +13,6 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "gitlab",
-    "bitbucket",
     "microsoft-365",
     "new-relic",
     "notion",
@@ -29,11 +28,13 @@ def test_shipped_catalog_enables_github_atlassian_datadog_and_google_workspace()
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "atlassian",
+        "bitbucket",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "atlassian",
+        "bitbucket",
         "datadog",
         "github",
         "google-workspace",
@@ -41,6 +42,7 @@ def test_shipped_catalog_enables_github_atlassian_datadog_and_google_workspace()
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["bitbucket"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -167,6 +169,48 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_bitbucket_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["bitbucket"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bitbucket", "https://mcp.atlassian.com/v2/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    identity = ["read:me", "read:account", "email", "offline_access"]
+    bitbucket_read = ["read:bitbucket:agent-interface"]
+    assert definition.access.read.scopes == identity + bitbucket_read
+    assert definition.access.write.scopes == [
+        *identity,
+        *bitbucket_read,
+        "write:bitbucket:agent-interface",
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.atlassian.com/me"
+    assert definition.tools is not None and definition.tools.mode == "listed"
+    assert "listBitbucketRepositories" in (definition.tools.read or [])
+    assert "createBitbucketRepoPullRequest" in (definition.tools.write or [])
+    assert "listBitbucketRepositories" in definition.level_tools("read")
+    assert "createBitbucketRepoPullRequest" not in definition.level_tools("read")
+    assert "createBitbucketRepoPullRequest" in definition.level_tools("write")
+    assert "listBitbucketRepositories" in definition.level_tools("write")
 
 
 @pytest.fixture
@@ -526,8 +570,8 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         ("kind: pass_through", "kind: minted", "passes the owner's token through"),
         (
             "tools: { mode: pass_through }",
-            "tools: { mode: listed, read: [], write: [] }",
-            "pass through until classified",
+            "tools: { mode: listed, read: [foo], write: [foo] }",
+            "both read and write",
         ),
         (
             "tools: { mode: pass_through }",

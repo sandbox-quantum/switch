@@ -44,6 +44,11 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Bitbucket connector.** Connect Bitbucket Cloud from Switch Console to let
+  agents read and update repositories and pull requests through Atlassian's
+  official remote MCP server.
+
 #### Fixed
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`

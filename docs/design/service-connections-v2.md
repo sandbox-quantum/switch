@@ -455,6 +455,22 @@ To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
+## Bitbucket
+
+Bitbucket Cloud repositories and pull requests through Atlassian's official
+remote MCP server (`https://mcp.atlassian.com/v2/mcp`).
+
+- Uses Atlassian dynamic client registration, connecting through Switch Console
+  on loopback ports 39231 to 39235.
+- Scopes ask for `read:bitbucket:agent-interface` (read) and
+  `write:bitbucket:agent-interface` (write) beside identity scopes (`read:me`,
+  `read:account`, `email`, `offline_access`).
+- Requires an Atlassian organization-linked Bitbucket workspace.
+- Access tokens live 8 hours; refresh tokens rotate.
+
+To connect: Settings, Connections in Switch Console, then Bitbucket. Nothing
+needs configuring on the server.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP
