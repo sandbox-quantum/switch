@@ -85,7 +85,7 @@ export class ChatsStore {
       // A first load that failed while the server was down is not retried by anything else.
       if (state !== 'live') return;
       if (this.userId === null || this.listError) void this.connect(serverId);
-      this.timelines.reloadFailed(serverId);
+      this.timelines.reload(serverId);
     });
     events.onReset(({ serverId }) => this.reset(serverId));
   }

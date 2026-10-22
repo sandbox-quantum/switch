@@ -22,6 +22,9 @@ import {
 import type { ChatMessage } from '@shared/core/chats/chats';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
+const warn = vi.hoisted(() => vi.fn());
+vi.mock('@renderer/utils/logger', () => ({ log: { warn } }));
+
 let clock = 0;
 function row(
   turnId: string,
@@ -812,6 +815,35 @@ describe('AgentActivities', () => {
     ]);
     expect(asked).toEqual([['t1']]);
     expect(activity.toolDetails.get(tool.itemId)).toEqual(tool);
+    activities.release(activity);
+  });
+
+  it('shows a failed reasoning read once, warning once, until a read succeeds', async () => {
+    let fail = true;
+    const { api } = fakeApi([]);
+    api.resolve = async () => ({
+      kind: 'session',
+      target: 'local',
+      hostAgentKey: 'console-a',
+      sessionId: 's1',
+    });
+    api.reasoning = async () => {
+      if (fail) throw new Error('Host unreachable');
+      return { epoch: 'e1', turns: [] };
+    };
+    const activities = new AgentActivities(api, memoryStorage());
+    const activity = activities.acquire('server', null, 'room-1', 'agent-a');
+    await vi.waitFor(() => expect(activity.target?.kind).toBe('session'));
+    const turns = [{ ...turnOf([], 'running'), turnId: 't1' }];
+    warn.mockClear();
+    await activity.readReasoning(turns);
+    await activity.readReasoning(turns);
+    expect(activity.reasoningError).not.toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    fail = false;
+    await activity.readReasoning(turns);
+    expect(activity.reasoningError).toBeNull();
     activities.release(activity);
   });
 });

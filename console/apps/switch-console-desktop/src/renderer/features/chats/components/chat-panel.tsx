@@ -139,7 +139,7 @@ export const ChatPanel = observer(function ChatPanel({
           className="flex items-center justify-between gap-3 bg-background-1 px-5 py-2 text-sm"
         >
           <span>{timeline.loadError}</span>
-          <Button size="sm" variant="outline" onClick={() => void timeline.load()}>
+          <Button size="sm" variant="outline" onClick={() => timeline.retryLoad()}>
             Try again
           </Button>
         </div>
@@ -220,7 +220,9 @@ const ActivityUnavailable = observer(function ActivityUnavailable({
   const feedDown = activities.length > 0 && agentActivities.feedDown.has(serverId);
   const tooOld = agentActivities.feedDown.get(serverId) === SERVER_TOO_OLD_FOR_ACTIVITY;
   const notes = activities.flatMap((activity) =>
-    [activity.feedError, activity.resolveError].filter((note) => note !== null)
+    [activity.feedError, activity.resolveError, activity.reasoningError].filter(
+      (note) => note !== null
+    )
   );
   const unique = [...new Set(notes)].filter(
     (note) => !(feedDown && tooOld && note === SERVER_TOO_OLD_FOR_ACTIVITY)

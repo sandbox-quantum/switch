@@ -191,6 +191,43 @@ describe('ChatsStore', () => {
     expect(timeline.accessLost).toBe(false);
   });
 
+  it('catches an open timeline up to the feed once it is live', async () => {
+    let page = [message('r1', 1)];
+    const messages = vi.fn(async () => ({ messages: page, headSeq: page.length, hasMore: false }));
+    const { store, live } = setup(async () => [summary('r1', 1)], { messages });
+    await store.connect('s1');
+    const timeline = store.timelines.get('s1', 'r1');
+    await timeline.load();
+
+    // Posted before the feed took its cursor: the feed will never deliver it.
+    page = [message('r1', 1), message('r1', 2)];
+    live();
+    await vi.waitFor(() => expect(timeline.messages.map((m) => m.seq)).toEqual([1, 2]));
+  });
+
+  it('loads again when the feed goes live during a first load', async () => {
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const messages = vi.fn(async () => {
+      if (calls++ === 0) {
+        await first;
+        return { messages: [message('r1', 1)], headSeq: 1, hasMore: false };
+      }
+      return { messages: [message('r1', 1), message('r1', 2)], headSeq: 2, hasMore: false };
+    });
+    const { store, live } = setup(async () => [summary('r1', 2)], { messages });
+    await store.connect('s1');
+    const timeline = store.timelines.get('s1', 'r1');
+    const loading = timeline.load();
+    live();
+    release();
+    await loading;
+    await vi.waitFor(() => expect(timeline.messages.map((m) => m.seq)).toEqual([1, 2]));
+  });
+
   it('revokes a chat unlisted earlier once access is lost', async () => {
     const { store } = setup(async () => [summary('r1', 1)]);
     await store.connect('s1');
@@ -237,6 +274,21 @@ describe('ChatsStore', () => {
     expect(store.chat('r1')?.name).toBe('r1');
     expect(store.listError).toBeNull();
     expect(timeline.loadError).toBeNull();
+  });
+
+  it('lists again and clears the error when retried on the same server', async () => {
+    let up = false;
+    const { store, api } = setup(async () =>
+      up ? [summary('r1', 1)] : Promise.reject(new Error('Could not reach the server'))
+    );
+    await store.connect('s1');
+    expect(store.listError).not.toBeNull();
+
+    up = true;
+    await store.connect('s1');
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(store.listError).toBeNull();
+    expect(store.chat('r1')?.name).toBe('r1');
   });
 
   it('reads a chat once the person is let into it after a refused first load', async () => {

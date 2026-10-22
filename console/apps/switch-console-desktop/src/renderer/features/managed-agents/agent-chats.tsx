@@ -170,7 +170,17 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           onSelect={(chosen) => setParams({ section: chosen })}
         />
         <Section title="Direct chats" addLabel="New chat" onAdd={() => void newChat()}>
-          {chatsStore.listError && <Note>{chatsStore.listError}</Note>}
+          {ownServer && chatsStore.listError && (
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-2 px-2 py-1 text-xs text-foreground-muted"
+            >
+              <span>{chatsStore.listError}</span>
+              <Button size="sm" variant="outline" onClick={() => void chatsStore.connect(serverId)}>
+                Try again
+              </Button>
+            </div>
+          )}
           {direct.map((chat) => (
             <ChatRow
               key={chat.roomId}
@@ -180,7 +190,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               onOpen={() => open(chat.roomId)}
             />
           ))}
-          {direct.length === 0 && <Note>No direct chats yet.</Note>}
+          {direct.length === 0 && !chatsStore.listError && <Note>No direct chats yet.</Note>}
         </Section>
         <Section
           title="Rooms"

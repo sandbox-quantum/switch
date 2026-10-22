@@ -186,7 +186,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   return (
     <div className="flex flex-col">
       {timeline.hasMore && (
-        <div className={cn('flex justify-center', spacing())}>
+        <div className={cn('flex justify-center [overflow-anchor:none]', spacing())}>
           <Button
             size="sm"
             variant="ghost"

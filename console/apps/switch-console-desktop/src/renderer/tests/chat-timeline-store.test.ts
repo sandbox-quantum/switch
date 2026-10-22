@@ -194,4 +194,102 @@ describe('ChatTimeline', () => {
     expect(timeline.notMember).toBe(true);
     expect(timeline.loadError).toBeNull();
   });
+
+  it('pages back to what it holds when loading again, so a gap is not skipped', async () => {
+    let head = 3;
+    const { value } = api({
+      messages: async (_room, before, limit) => {
+        const top = Math.min(before ?? head + 1, head + 1);
+        const from = Math.max(1, top - limit);
+        const seqs = Array.from({ length: top - from }, (_, i) => from + i);
+        return { messages: seqs.map((seq) => message(seq)), headSeq: head, hasMore: from > 1 };
+      },
+    });
+    const timeline = new ChatTimeline('room-1', value);
+    await timeline.load();
+    head = 130;
+    await timeline.load();
+    expect(timeline.messages.map((m) => m.seq)).toEqual(
+      Array.from({ length: 130 }, (_, i) => i + 1)
+    );
+    expect(timeline.hasMore).toBe(false);
+  });
+
+  it('retries a failed load of earlier messages, not the newest page, and clears the error', async () => {
+    let fail = false;
+    const asked: (number | null)[] = [];
+    const { value } = api({
+      messages: async (_room, before) => {
+        asked.push(before);
+        if (fail) throw networkError();
+        return before === null
+          ? { messages: [message(51), message(52)], headSeq: 52, hasMore: true }
+          : { messages: [message(50)], headSeq: 52, hasMore: false };
+      },
+    });
+    const timeline = new ChatTimeline('room-1', value);
+    await timeline.load();
+    fail = true;
+    await timeline.loadOlder();
+    expect(timeline.loadError).not.toBeNull();
+
+    fail = false;
+    timeline.retryLoad();
+    await vi.waitFor(() => expect(timeline.messages.map((m) => m.seq)).toEqual([50, 51, 52]));
+    expect(asked).toEqual([null, 51, 51]);
+    expect(timeline.loadError).toBeNull();
+  });
+
+  it('loads again when asked during a load, picking up what was posted in between', async () => {
+    let head = 1;
+    let release!: () => void;
+    const first = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { value } = api({
+      messages: async () => {
+        const seqs = Array.from({ length: head }, (_, i) => i + 1);
+        if (calls++ === 0) await first;
+        return { messages: seqs.map((seq) => message(seq)), headSeq: head, hasMore: false };
+      },
+    });
+    const timeline = new ChatTimeline('room-1', value);
+    const loading = timeline.load();
+    head = 2;
+    void timeline.load();
+    release();
+    await loading;
+    await vi.waitFor(() => expect(timeline.messages.map((m) => m.seq)).toEqual([1, 2]));
+    expect(calls).toBe(2);
+  });
+
+  it('catches up from the history it completed, not from a live message after a failed catch-up', async () => {
+    let head = 3;
+    let failOlder = false;
+    const { value } = api({
+      messages: async (_room, before, limit) => {
+        if (before !== null && failOlder) throw networkError();
+        const top = Math.min(before ?? head + 1, head + 1);
+        const from = Math.max(1, top - limit);
+        const seqs = Array.from({ length: top - from }, (_, i) => from + i);
+        return { messages: seqs.map((seq) => message(seq)), headSeq: head, hasMore: from > 1 };
+      },
+    });
+    const timeline = new ChatTimeline('room-1', value);
+    await timeline.load();
+    head = 130;
+    failOlder = true;
+    await timeline.load();
+    expect(timeline.loadError).not.toBeNull();
+
+    head = 131;
+    timeline.apply(message(131));
+    failOlder = false;
+    await timeline.load();
+    expect(timeline.messages.map((m) => m.seq)).toEqual(
+      Array.from({ length: 131 }, (_, i) => i + 1)
+    );
+    expect(timeline.loadError).toBeNull();
+  });
 });

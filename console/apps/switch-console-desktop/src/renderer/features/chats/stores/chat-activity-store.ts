@@ -1,5 +1,6 @@
 import { makeAutoObservable, observable, reaction, runInAction } from 'mobx';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { log } from '@renderer/utils/logger';
 import type {
   ChatActivityItem,
   ChatActivityTarget,
@@ -79,6 +80,8 @@ export class AgentActivity {
   resolveError: string | null = null;
   /** Why the room's activity snapshot could not be read; null once it has been. */
   feedError: string | null = null;
+  /** Why the host's reasoning could not be read; null once a read succeeds. */
+  reasoningError: string | null = null;
   readonly items = observable.map<string, ChatActivityItem>({}, { deep: false });
   readonly approvals = observable.map<string, ChatApproval>({}, { deep: false });
   controls: ControlRequest[] = [];
@@ -291,8 +294,24 @@ export class AgentActivity {
       .filter((turn) => turn.sessionId === target.sessionId)
       .map((turn) => turn.turnId);
     if (!turnIds.length) return;
-    const list = await this.api.reasoning(target.hostAgentKey, target.sessionId, turnIds);
+    let list: ReasoningList | null;
+    try {
+      list = await this.api.reasoning(target.hostAgentKey, target.sessionId, turnIds);
+    } catch (error) {
+      const message = failureText(error, "The agent's reasoning could not be read.");
+      if (this.reasoningError === null)
+        log.warn('Could not read agent reasoning from its host; retrying while it works', {
+          agentId: this.agentId,
+          sessionId: target.sessionId,
+          error: message,
+        });
+      runInAction(() => {
+        this.reasoningError = message;
+      });
+      return;
+    }
     runInAction(() => {
+      this.reasoningError = null;
       if (!list) return;
       for (const turn of list.turns) this.reasoning.set(turn.turnId, turn);
       for (const turn of list.tools ?? [])

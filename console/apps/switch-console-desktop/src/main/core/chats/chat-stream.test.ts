@@ -96,7 +96,7 @@ function harness(lists: ChatSummary[][], unauthorized = false) {
     timer.cancelled = true;
     timer.fn();
   };
-  return { deps, states, messages, removed, summaries, opened, feeds, fireRetry };
+  return { deps, states, messages, removed, summaries, opened, feeds, timers, fireRetry };
 }
 
 describe('sseFrames', () => {
@@ -163,6 +163,34 @@ describe('ChatStream', () => {
     await vi.waitFor(() => expect(stream.state.state).toBe('live'));
     expect(h.messages.map((each) => each.seq)).toEqual([6, 7, 8]);
     expect(stream.cursor('room-a')).toBe(8);
+    stream.stop();
+  });
+
+  it('reconnects at once when started or resynced while waiting to retry, and stops cleanly', async () => {
+    const h = harness([[summary('room-a', 1)]]);
+    const stream = new ChatStream(h.deps);
+    stream.start();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(1));
+    h.feeds[0]!.end();
+    await vi.waitFor(() => expect(stream.state.state).toBe('offline'));
+
+    stream.start();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(2));
+    expect(h.timers.filter((each) => each.ms < 60_000).every((each) => each.cancelled)).toBe(true);
+
+    h.feeds[1]!.end();
+    await vi.waitFor(() => expect(stream.state.state).toBe('offline'));
+    stream.resync();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(3));
+
+    h.feeds[2]!.end();
+    await vi.waitFor(() => expect(stream.state.state).toBe('offline'));
+    stream.stop();
+    expect(() => h.fireRetry()).toThrow('No retry is waiting.');
+    // The stopped loop has ended, so a later start runs a fresh one.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    stream.start();
+    await vi.waitFor(() => expect(h.feeds).toHaveLength(4));
     stream.stop();
   });
 

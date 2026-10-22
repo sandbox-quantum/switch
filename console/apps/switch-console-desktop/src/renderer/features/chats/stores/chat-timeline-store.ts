@@ -81,6 +81,12 @@ export class ChatTimeline {
   loaded = false;
   loading = false;
   loadError: string | null = null;
+  /** The failure in {@link loadError} was loading earlier messages, not the newest. */
+  olderFailed = false;
+  /** A load was asked for while another was in flight; it runs once that one ends. */
+  private reloadQueued = false;
+  /** History is held without gaps through this sequence: the newest a successful load read. */
+  private completeThrough: number | null = null;
   /** The person is not a member of the room. */
   notMember = false;
   /** The person was a member and lost access while the chat was known. */
@@ -113,14 +119,31 @@ export class ChatTimeline {
   }
 
   async load(): Promise<void> {
-    if (this.loading) return;
+    if (this.loading) {
+      this.reloadQueued = true;
+      return;
+    }
     this.loading = true;
     this.loadError = null;
+    this.olderFailed = false;
+    const held = this.completeThrough;
     try {
-      const page = await this.api.messages(this.roomId, null, PAGE_SIZE);
+      let page = await this.api.messages(this.roomId, null, PAGE_SIZE);
+      const fetched = [...page.messages];
+      const newest = page.messages.length
+        ? Math.max(...page.messages.map((message) => message.seq))
+        : held;
+      // Page back to the history already complete, so a gap since the last load is not skipped.
+      let oldest = Math.min(...page.messages.map((message) => message.seq));
+      while (held !== null && page.hasMore && page.messages.length && oldest > held) {
+        page = await this.api.messages(this.roomId, oldest, PAGE_SIZE);
+        fetched.push(...page.messages);
+        oldest = Math.min(oldest, ...page.messages.map((message) => message.seq));
+      }
       runInAction(() => {
-        for (const message of page.messages) this.apply(message);
+        for (const message of fetched) this.apply(message);
         if (!this.loaded) this.hasMore = page.hasMore;
+        this.completeThrough = newest;
         this.loaded = true;
         this.notMember = false;
       });
@@ -134,6 +157,10 @@ export class ChatTimeline {
       runInAction(() => {
         this.loading = false;
       });
+      if (this.reloadQueued) {
+        this.reloadQueued = false;
+        void this.load();
+      }
     }
   }
 
@@ -146,16 +173,28 @@ export class ChatTimeline {
       runInAction(() => {
         for (const message of page.messages) this.apply(message);
         this.hasMore = page.hasMore;
+        this.loadError = null;
+        this.olderFailed = false;
       });
     } catch (error) {
       runInAction(() => {
         this.loadError = chatFailure(error).message;
+        this.olderFailed = true;
       });
     } finally {
       runInAction(() => {
         this.loading = false;
       });
+      if (this.reloadQueued) {
+        this.reloadQueued = false;
+        void this.load();
+      }
     }
+  }
+
+  /** Ask again for what last failed to load. */
+  retryLoad(): void {
+    void (this.olderFailed ? this.loadOlder() : this.load());
   }
 
   /** Send a message; returns its request id. */
@@ -207,6 +246,7 @@ export class ChatTimeline {
   revoke(): void {
     this.accessLost = true;
     this.messages = [];
+    this.completeThrough = null;
     this.pending = [];
   }
 
@@ -323,10 +363,14 @@ export class ChatTimelines {
     return this.timelines.get(`${serverId}\u0000${roomId}`);
   }
 
-  /** Load again each of the server's timelines whose last load failed. */
-  reloadFailed(serverId: string): void {
+  /** Load again each of the server's timelines that loaded, is loading or failed to, catching up to the live feed. */
+  reload(serverId: string): void {
     for (const [key, timeline] of this.timelines)
-      if (key.startsWith(`${serverId}\u0000`) && timeline.loadError) void timeline.load();
+      if (
+        key.startsWith(`${serverId}\u0000`) &&
+        (timeline.loaded || timeline.loading || timeline.loadError)
+      )
+        void timeline.load();
   }
 
   /** Forget everything held for a server: signed out, or the tenant changed. */
