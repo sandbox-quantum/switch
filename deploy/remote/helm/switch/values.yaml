@@ -102,7 +102,7 @@ ingress:
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
-#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagement.enabled),
+#      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
@@ -137,8 +137,8 @@ secrets:
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
-  # Signs agent controllers' access tokens (required when
-  # switchCore.agentManagement.enabled), at least 32 characters. Kept apart from
+  # Signs agent controllers' access tokens (required with "agent_management" in
+  # switchCore.featureFlags.enabled), at least 32 characters. Kept apart from
   # secretKeys so rotating either never invalidates the other. Generate one
   # with: openssl rand -hex 32
   controllerTokenSecret: ""
