@@ -330,6 +330,10 @@ def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> C
             room["aliases"] = {
                 agent_name(k, key): v for k, v in room["aliases"].items()
             }
+        if isinstance(room.get("sessions"), dict):
+            room["sessions"] = {
+                agent_name(k, key): v for k, v in room["sessions"].items()
+            }
         return room
 
     out: dict[str, Any] = {"version": 1}

@@ -247,3 +247,25 @@ def test_an_existing_room_left_out_is_refused():
             machines=MACHINES,
         )
     assert {p.code for p in e.value.problems} == {"input_missing"}
+
+
+def test_a_room_names_its_shared_sessions_by_agent_key():
+    doc_text = """\
+version: 2
+resources:
+  lead:
+    type: agent
+    display_name: Lead
+    instructions: Coordinate.
+    provider: claude
+    machine: m1
+    directory: /work/lead
+  hub:
+    type: room
+    name: Hub
+    agents: [lead]
+    sessions: { lead: home }
+"""
+    compiled = compile_v2(doc_text, {}, {"$creator": "ada"})
+    doc = yaml.safe_load(compiled.document)
+    assert doc["room"]["sessions"] == {"lead": "home"}
