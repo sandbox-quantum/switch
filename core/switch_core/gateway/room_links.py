@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal, can
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import User
 from switch_core.db.stores.room_store import RoomStore
@@ -28,6 +29,24 @@ from switch_core.gateway.schemas import (
 router = APIRouter()
 
 
+async def _linked_room_details(
+    session: AsyncSession,
+    room_store: RoomStore,
+    rows: list[dict[str, Any]],
+    user: User,
+    is_admin: bool,
+) -> list[LinkedRoomDetail]:
+    """The rows as details, each saying whether `user` may read its target."""
+    targets = await room_store.get_many(session, {r["target_room_id"] for r in rows})
+    principal = Principal(user.id, is_admin)
+    details = []
+    for row in rows:
+        target = targets.get(row["target_room_id"])
+        readable = target is not None and can(principal, "read", target)
+        details.append(LinkedRoomDetail(**row, can_read=readable))
+    return details
+
+
 @router.get("/linked-rooms/graph")
 async def get_room_link_graph(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -49,7 +68,7 @@ async def list_linked_rooms(
 ) -> list[LinkedRoomDetail]:
     await require_room_access(session, room_store, room_id, user, "read", is_admin)
     rows = await resource_service.list_linked_rooms_for_room(session, room_id)
-    return [LinkedRoomDetail(**row) for row in rows]
+    return await _linked_room_details(session, room_store, rows, user, is_admin)
 
 
 @router.get("/rooms/{room_id}/linked-rooms/inbound")
@@ -89,7 +108,8 @@ async def create_linked_room(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
-    return LinkedRoomDetail(**row)
+    [detail] = await _linked_room_details(session, room_store, [row], user, is_admin)
+    return detail
 
 
 @router.delete("/rooms/{room_id}/linked-rooms/{target_room_id}", status_code=204)

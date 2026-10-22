@@ -1263,6 +1263,9 @@ class LinkedRoomDetail(BaseModel):
     target_room_name: str
     target_room_description: str
     label: str
+    # Whether the caller may open the linked room. A room can link to one its
+    # readers cannot see, and the Gateway shows that one without a link.
+    can_read: bool = False
 
 
 class InboundLinkedRoomDetail(BaseModel):

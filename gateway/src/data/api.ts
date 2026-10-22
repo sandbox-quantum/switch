@@ -1593,6 +1593,9 @@ export interface LinkedRoomDetail {
   target_room_name: string;
   target_room_description: string;
   label: string;
+  // Whether the caller may open the linked room; a room can link to one its
+  // readers cannot see.
+  can_read: boolean;
 }
 
 export interface InboundLinkedRoomDetail {
