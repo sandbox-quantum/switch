@@ -1347,6 +1347,13 @@ export async function createUser(
   return (await res.json()) as UserInfo;
 }
 
+// Deployment operator only. Deletes the whole account, as the person
+// deleting it themselves would; the server refuses its own administrator
+// account and the caller's own.
+export async function deleteUser(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
+}
+
 // ── Resources (References & Documents) ─────────────────────────────────────
 
 export interface ReferenceTypeInfo {

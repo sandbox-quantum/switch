@@ -44,6 +44,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **The server's administrator can delete someone's account.** The Users page
+  has a Delete action (`DELETE /users/{id}`) that removes the account in every
+  workspace, with the same refusals as deleting your own. Administrator
+  accounts and your own account are refused, and every attempt is recorded in
+  the server audit log with its outcome.
+
 #### Fixed
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`
