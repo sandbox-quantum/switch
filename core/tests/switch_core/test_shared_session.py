@@ -171,6 +171,23 @@ class TestJoiningARoom:
         assert await _home(session_factory, lead) is None
 
 
+class TestDeletingTheHomeRoom:
+    async def test_stops_the_agent_sharing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        lead = await _register(svc, "lead", alice)
+        hub = await _room(session_factory, "hub", [lead])
+        await _set(session_factory, lead, home_room_id=hub)
+
+        async with session_factory() as session:
+            await RoomStore().delete(session, hub)
+            await session.commit()
+
+        assert await _home(session_factory, lead) is None
+
+
 class TestChangingTheSettings:
     async def _setup(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -323,6 +323,11 @@ class RoomStore:
 
     async def delete(self, session: AsyncSession, room_id: str) -> None:
         await session.execute(delete(ClientRoom).where(ClientRoom.room_id == room_id))
+        # An agent whose shared session was based here shares none now: its
+        # other rooms get sessions of their own until someone picks a new home.
+        await session.execute(
+            update(Agent).where(Agent.home_room_id == room_id).values(home_room_id=None)
+        )
         room = await session.get(Room, room_id)
         if room:
             await session.delete(room)
