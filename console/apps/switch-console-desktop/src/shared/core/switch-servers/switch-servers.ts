@@ -394,6 +394,30 @@ export type RemoteAgentRoom = {
   status: string;
   /** The room-scoped role the agent currently holds, or null. */
   roomRole: string | null;
+  /**
+   * How the agent's shared session covers this room: `home` (it is based
+   * here), `shared` (this room shares it) or null (the room's own session).
+   * Absent from a server that predates shared sessions.
+   */
+  sharedSession?: 'home' | 'shared' | null;
+};
+
+/**
+ * An agent's shared session: one session, based in its home room, answering
+ * every room that shares it. `homeRoomId` null means it shares none.
+ */
+export type AgentSharedSession = {
+  homeRoomId: string | null;
+  sharedByDefault: boolean;
+  locked: boolean;
+};
+
+/** A change to an agent's shared session; a field left out stays as it is. */
+export type AgentSharedSessionChange = {
+  /** The new home room; null stops the agent sharing a session. */
+  homeRoomId?: string | null;
+  sharedByDefault?: boolean;
+  locked?: boolean;
 };
 
 /** A room group on a server (mirrors the gateway `RoomGroupDetail`). Used to

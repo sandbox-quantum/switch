@@ -223,6 +223,15 @@ it("carries a host's question up to the watcher answering for its agent, and the
     { type: 'tool', name: 'post_message', arguments: { body: 'hi' } }
   );
 
+  // A turn from a room names it on the calls it makes.
+  host.setToolOrigin(() => 'asking-room');
+  await host.ask({ type: 'tool', name: 'post_message', arguments: { body: 'hi' } });
+  expect(handler).toHaveBeenLastCalledWith(
+    { ...IDENTITY, root: 'root' },
+    { type: 'tool', name: 'post_message', arguments: { body: 'hi' }, originRoomId: 'asking-room' }
+  );
+  host.setToolOrigin(() => null);
+
   handler.mockRejectedValueOnce(new Error('Switch refused'));
   await expect(host.ask({ type: 'tools' })).rejects.toThrow('Switch refused');
 

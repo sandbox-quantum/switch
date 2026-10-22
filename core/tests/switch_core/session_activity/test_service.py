@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import ApprovalRequest, TenantUsage
+from switch_core.db.models import TENANT_ZERO_ID, ApprovalRequest, TenantUsage
+from switch_core.db.stores.room_usage_store import RoomUsageStore
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -191,6 +192,41 @@ async def test_a_turns_tokens_are_counted_once_when_it_first_ends(
         ("output_tokens", "big", 1),
         ("output_tokens", "small", 1),
     ]
+
+
+async def test_a_turns_spend_is_charged_to_the_room_that_started_it(
+    service, session_factory
+):
+    """So an agent answering several rooms from one session can be costed per
+    room; a turn no room started is charged to none."""
+    async with session_factory() as db, db.begin():
+        hub = await make_room(db, member=AGENT)
+        work = await make_room(db, member=AGENT)
+
+    def turn(turn_id, room, revision, status, usage=()):
+        return {**_turn(turn_id, revision, status, usage), "room_id": room}
+
+    spent = [_spend("small", 7), _spend("big", 10)]
+    await service.report_item(AGENT, SESSION, **turn("t1", work, 1, "running"))
+    await service.report_item(AGENT, SESSION, **turn("t1", work, 2, "completed", spent))
+    await service.report_item(AGENT, SESSION, **turn("t1", work, 3, "completed", spent))
+    await service.report_item(
+        AGENT, SESSION, **turn("t2", hub, 1, "completed", [_spend("big", 3)])
+    )
+    await service.report_item(AGENT, SESSION, **turn("t3", hub, 1, "error"))
+    await service.report_item(
+        AGENT, SESSION, **_turn("t4", 1, "completed", [_spend("big", 100)])
+    )
+
+    async with session_factory() as db:
+        spends = await RoomUsageStore().by_room_and_day(
+            db,
+            tenant_id=TENANT_ZERO_ID,
+            agent_id=AGENT,
+            since=datetime(2000, 1, 1, tzinfo=UTC),
+        )
+    by_room = {spend.room_id: (spend.turns, spend.input_tokens) for spend in spends}
+    assert by_room == {work: (1, 17), hub: (2, 3)}
 
 
 async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):

@@ -145,6 +145,19 @@ def sole_connected_room(rooms: set[str]) -> str:
     return next(iter(rooms))
 
 
+async def posting_room(room_id: str | None) -> str:
+    """The room a post goes to: `room_id` when the caller named one it is a
+    member of, else the room it is connected to.
+
+    Naming a room lets a session answer somewhere without moving there, which
+    is how a shared session replies in the room a message came from.
+    """
+    if room_id is None:
+        return await require_connected_room()
+    await get_protocol().require_room_member(get_agent_id(), room_id)
+    return room_id
+
+
 async def connected_room() -> str | None:
     """The room this caller is bound to, or None when there is not exactly one.
 

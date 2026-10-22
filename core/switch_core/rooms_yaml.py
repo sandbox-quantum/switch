@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -39,7 +40,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
+from switch_core import shared_session
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
+from switch_core.authz import Principal, require_manage
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
@@ -431,6 +434,10 @@ class RoomSpec(BaseModel):
     docs: list[DocSpec] = []
     # Agent name to the alias it can be addressed by in this room.
     aliases: dict[str, str] | None = None
+    # Agent name to how this room stands in its shared session
+    # (`switch_core.shared_session`): `home` bases the agent's shared session
+    # here, `shared` has this room share it, `isolated` gives the room its own.
+    sessions: dict[str, Literal["home", "shared", "isolated"]] | None = None
     # Used only for a room inside a group's ``rooms:`` list, where each room
     # has its own kickoff. A single-room document puts ``kickoff:`` at the
     # top level, next to ``room:``.
@@ -998,6 +1005,12 @@ class RoomYamlService:
         ``template_name`` is what the room's run is listed under.
         """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
+        outside = sorted(set(spec.sessions or {}) - set(spec.agents))
+        if outside:
+            raise ValueError(
+                f"sessions names {', '.join(outside)}, which the room's agents "
+                "do not include"
+            )
         if spec.users and bridge_id is None:
             raise ValueError(
                 "Cannot attach users to a room with no bridge "
@@ -1043,6 +1056,14 @@ class RoomYamlService:
         created_doc_ids = await self._create_inline_docs(
             room_id, spec.docs, user_id=user_id, failures=failures
         )
+        # Before the kickoff, so the message reaches the session it is meant for.
+        await self._apply_sessions(
+            room_id,
+            spec.sessions or {},
+            user_id=user_id,
+            is_admin=is_admin,
+            failures=failures,
+        )
 
         if kickoff:
             # The room exists at this point. A kickoff failure is recorded on
@@ -1069,6 +1090,40 @@ class RoomYamlService:
             role_names=[r.name for r in spec.roles],
             failed_attachments=failures,
         )
+
+    async def _apply_sessions(
+        self,
+        room_id: str,
+        sessions: Mapping[str, str],
+        *,
+        user_id: str,
+        is_admin: bool,
+        failures: list[dict[str, Any]],
+    ) -> None:
+        """Set how the new room stands in each named agent's shared session.
+
+        Only the agent's owner or an admin may; a refusal, like any other
+        setting that cannot be made, is recorded on the result rather than
+        undoing a room that already exists.
+        """
+        for agent_name, mode in sessions.items():
+            try:
+                async with self._session_factory() as session:
+                    agent = await self._agent_store.get_by_name(session, agent_name)
+                    if agent is None:
+                        raise ValueError(f"unknown agent {agent_name}")
+                    require_manage(Principal(user_id, is_admin), agent.owner_id)
+                    if mode == "home":
+                        await shared_session.set_home_room(
+                            session, self._room_store, self._agent_store, agent, room_id
+                        )
+                    else:
+                        await shared_session.set_room_shared(
+                            session, self._room_store, agent, room_id, mode == "shared"
+                        )
+                    await session.commit()
+            except (ValueError, PermissionError) as e:
+                failures.append({"kind": "session", "id": agent_name, "error": str(e)})
 
     async def provision_group(
         self,
@@ -1408,6 +1463,25 @@ class RoomYamlService:
 
     # ── Export ────────────────────────────────────────────────────────────
 
+    async def _export_sessions(
+        self, session: AsyncSession, room_id: str, id_to_name: dict[str, str]
+    ) -> dict[str, str]:
+        """How the room stands in each of its agents' shared sessions, for the
+        agents that have one: home, shared, or isolated."""
+        agents = [
+            agent
+            for aid in id_to_name
+            if (agent := await self._agent_store.get(session, aid)) is not None
+            and agent.home_room_id is not None
+        ]
+        marks = shared_session.sharing_marks(
+            agents, await self._room_store.sharing_agent_ids(session, room_id), room_id
+        )
+        return {
+            agent.name: marks.get(agent.id, "isolated")
+            for agent in sorted(agents, key=lambda a: a.name)
+        }
+
     async def export(
         self,
         room_id: str,
@@ -1467,6 +1541,9 @@ class RoomYamlService:
                         for aid, alias in alias_map.items()
                         if aid in id_to_name
                     }
+                sessions = await self._export_sessions(session, room.id, id_to_name)
+                if sessions:
+                    data["sessions"] = sessions
 
             if users and room.bridge_id:
                 client_ids = await self._room_store.get_client_ids(session, room.id)

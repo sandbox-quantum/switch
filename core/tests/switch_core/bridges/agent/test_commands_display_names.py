@@ -40,7 +40,11 @@ def _agent(
     description: str = "",
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        id=agent_id, name=name, display_name=display_name, description=description
+        id=agent_id,
+        name=name,
+        display_name=display_name,
+        description=description,
+        home_room_id=None,
     )
 
 
@@ -87,6 +91,12 @@ def _build_client(
     async def _get_agent_ids(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(by_id)
 
+    async def _sharing_agent_ids(_session, _room_id):  # type: ignore[no-untyped-def]
+        return set()
+
+    async def _get_many(_session, _room_ids):  # type: ignore[no-untyped-def]
+        return {}
+
     async def _agent_get(_session, agent_id):  # type: ignore[no-untyped-def]
         return by_id.get(agent_id)
 
@@ -112,7 +122,11 @@ def _build_client(
         _resolve_room_meta=_resolve_room_meta,
         reply_command=_reply_command,
         _frontend_base_url=None,
-        _room_store=SimpleNamespace(get_agent_ids=_get_agent_ids),
+        _room_store=SimpleNamespace(
+            get_agent_ids=_get_agent_ids,
+            sharing_agent_ids=_sharing_agent_ids,
+            get_many=_get_many,
+        ),
         _agent_store=SimpleNamespace(get=_agent_get, get_all=_get_all),
         _room_role_store=SimpleNamespace(
             list_roles=_list_roles, live_holders_for_room=_live_holders_for_room

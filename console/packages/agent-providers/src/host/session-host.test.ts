@@ -1397,6 +1397,28 @@ it('leaves a room turn alone when the agent posted to the room during it', async
   });
 });
 
+it('still answers the asking room when the agent posted only somewhere else', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('elsewhere', null));
+  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(host.activeOriginRoom()).toBe('room');
+  host.agentPostedToRoom('another-room');
+  emit({
+    type: 'turn.completed',
+    turnId: 'elsewhere',
+    outcome: 'error',
+    message: 'boom',
+    usage: [],
+  });
+  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: null,
+    body: 'I finished without replying. The turn failed: boom',
+  });
+});
+
 it('tells the room a failed turn with nothing to show failed, and why', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);

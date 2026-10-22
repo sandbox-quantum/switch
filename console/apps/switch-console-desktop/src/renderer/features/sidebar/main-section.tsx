@@ -127,10 +127,13 @@ export function RoomListRow({
   room,
   isActive,
   onOpen,
+  mark = null,
 }: {
   room: Pick<RemoteRoomSummary, 'name' | 'bridgeType' | 'bridgeDisplayName'>;
   isActive: boolean;
   onOpen: () => void;
+  /** A short word after the name, such as how the room shares a session. */
+  mark?: string | null;
 }) {
   return (
     <SidebarMenuRow
@@ -146,6 +149,7 @@ export function RoomListRow({
         <DoorOpen className="size-[17px] shrink-0 text-[var(--fg-icon)]" />
       )}
       <span className="min-w-0 flex-1 truncate">{room.name}</span>
+      {mark && <span className="shrink-0 text-[11px] text-[var(--fg-dim)]">{mark}</span>}
     </SidebarMenuRow>
   );
 }

@@ -1555,20 +1555,28 @@ async def connection_placements(
         )
     conn = await _admitted_connection(protocol, agent, req)
 
-    for room_id in sorted(set(req.placements.values())):
+    shared_rooms = {room for rooms in req.shares.values() for room in rooms}
+    for room_id in sorted(set(req.placements.values()) | shared_rooms):
         try:
             await protocol.require_room_member(agent.id, room_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if req.shares:
+        refusal = await protocol.check_shares(agent.id, req.placements, req.shares)
+        if refusal is not None:
+            raise HTTPException(status_code=400, detail=refusal)
 
     async with protocol.connections.slots(agent.id):
         async with protocol.connections.recorded(agent.id):
             conn = _current_connection(protocol, agent, req)
             before = protocol.connections.connection_placements(conn)
+            before_shares = protocol.connections.connection_shares(conn)
             try:
-                released = protocol.connections.replace_placements(conn, req.placements)
+                released = protocol.connections.replace_placements(
+                    conn, req.placements, req.shares
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1578,6 +1586,15 @@ async def connection_placements(
         # overwritten by this one.
         for session_id, room_id in req.placements.items():
             if before.get(session_id) != room_id:
+                await protocol.event_buffer.hand_counting_to(
+                    agent.tenant_id,
+                    agent.id,
+                    Reader(id=session_id, is_session=True),
+                    room_id,
+                )
+        # A shared room's count is the shared session's, as a placed room's is.
+        for session_id, rooms in req.shares.items():
+            for room_id in set(rooms) - set(before_shares.get(session_id, [])):
                 await protocol.event_buffer.hand_counting_to(
                     agent.tenant_id,
                     agent.id,
@@ -1598,6 +1615,7 @@ async def connection_placements(
     return {
         "ok": True,
         "placements": protocol.connections.connection_placements(conn),
+        "shares": protocol.connections.connection_shares(conn),
         "rooms": sorted(conn.rooms),
         "released": [
             {

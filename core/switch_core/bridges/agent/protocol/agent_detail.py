@@ -41,6 +41,7 @@ from switch_core.gateway.schemas import (
     AgentSummary,
     AgentToolSummary,
 )
+from switch_core.shared_session import sharing_of
 
 
 class AgentOptionsNotEditable(Exception):
@@ -217,6 +218,7 @@ async def assemble_agent_detail(
     room_roles = await room_role_store.agent_room_roles(
         session, agent.id, room_ids, live_connection_ids
     )
+    sharing = await sharing_of(session, room_store, agent)
     memberships = [
         AgentRoomMembership(
             room_id=room.id,
@@ -224,6 +226,7 @@ async def assemble_agent_detail(
             archived=room.archived_at is not None,
             status=statuses[room.id][agent.id].value,
             room_role=room_roles.get(room.id),
+            shared_session=sharing.mark(room.id),
         )
         for room in rooms
     ]
@@ -310,6 +313,9 @@ async def assemble_agent_detail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
         can_manage_agents=agent.can_manage_agents,
+        home_room_id=sharing.home_room_id,
+        shared_by_default=sharing.shared_by_default,
+        sharing_locked=sharing.locked,
         integration_profile=agent.integration_profile
         if isinstance(agent.integration_profile, dict)
         else {},

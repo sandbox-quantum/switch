@@ -42,7 +42,7 @@ const AgentSessions = observer(function AgentSessions({
 }) {
   return (
     <>
-      {groupByRoom(sessions).map(([roomKey, roomSessions]) => {
+      {groupByRoom(sessions, [], { withShares: false }).map(([roomKey, roomSessions]) => {
         // Sessions with no room sit directly under the agent, no room header.
         if (roomKey === UNASSIGNED_ROOM_KEY) {
           return roomSessions.map((session) => (

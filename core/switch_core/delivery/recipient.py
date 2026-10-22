@@ -1496,12 +1496,31 @@ class AgentRecipient:
             # agent accounts for. Not mere coverage: an `all`-scope watcher
             # covering this room is not a session that can answer.
             return True
+        elif await self._answered_from_home(session, agent, room_id):
+            return True
 
         heartbeat_room = None if connection_model == "always_on" else room_id
         live = await self._agent_session_store.get_live_agent_ids(
             session, [self.agent.id], heartbeat_room
         )
         return self.agent.id in live
+
+    async def _answered_from_home(
+        self, session: AsyncSession, agent: Agent, room_id: str
+    ) -> bool:
+        """Whether a message in `room_id` reaches the agent's shared session:
+        the room shares it and a session is in the home room. The watcher
+        records the share only once it routes the room's first message there,
+        so the settings decide, or that first message would be answered with
+        "starting a session" while the home session takes it."""
+        home = agent.home_room_id
+        if home is None or home == room_id:
+            return False
+        if self.agent.id not in agents_present_in(
+            [self.agent.id], home, self._connections
+        ):
+            return False
+        return agent.id in await self._room_store.sharing_agent_ids(session, room_id)
 
     async def _is_direct_room(self, transport_room_id: str) -> bool:
         meta = await self._resolve_room_meta(transport_room_id)

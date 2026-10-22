@@ -30,6 +30,13 @@ class _Protocol:
     def __init__(self, event_buffer: EventBuffer) -> None:
         self.connections = AgentConnectionRegistry()
         self.event_buffer = event_buffer
+        # What `check_shares` answers: None lets every share through.
+        self.share_refusal: str | None = None
+
+    async def check_shares(
+        self, agent_id: str, placements: dict[str, str], shares: dict[str, list[str]]
+    ) -> str | None:
+        return self.share_refusal
 
     async def require_room_member(self, agent_id: str, room_id: str) -> None:
         if room_id == FOREIGN_ROOM:
@@ -63,6 +70,7 @@ async def _place(
     conn: AgentConnection,
     placements: dict[str, str],
     *,
+    shares: dict[str, list[str]] | None = None,
     path_agent: str = AGENT_ID,
     caller: str = AGENT_ID,
     generation: int | None = None,
@@ -72,6 +80,7 @@ async def _place(
         ConnectionPlacementsRequest(
             connection_id=conn.id,
             placements=placements,
+            shares=shares or {},
             generation=conn.stream_generation if generation is None else generation,
         ),
         agent=_Agent(caller),  # type: ignore[arg-type]
@@ -92,6 +101,7 @@ async def test_placements_replace_what_the_connection_had(
     assert result == {
         "ok": True,
         "placements": {"session-1": ROOM_B},
+        "shares": {},
         "rooms": [ROOM_B],
         "released": [],
     }
@@ -218,3 +228,93 @@ async def test_a_displaced_client_cannot_rewrite_the_holders_placements(
     assert refused.value.status_code == 409
     assert refused.value.detail["code"] == "taken_over"  # type: ignore[index]
     assert protocol.connections.connection_placements(conn) == {"session-1": ROOM_A}
+
+
+HOME = "room-home"
+
+
+@pytest.mark.asyncio
+async def test_a_home_session_answers_for_its_shared_rooms(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
+    conn = _open(protocol, "watcher")
+
+    result = await _place(
+        protocol, conn, {"lead": HOME}, shares={"lead": [ROOM_A, ROOM_B]}
+    )
+
+    assert result["placements"] == {"lead": HOME}
+    assert result["shares"] == {"lead": [ROOM_A, ROOM_B]}
+    assert result["rooms"] == sorted([HOME, ROOM_A, ROOM_B])
+    registry = protocol.connections
+    assert registry.session_in_room(AGENT_ID, ROOM_A) == "lead"
+    assert registry.session_room(AGENT_ID, "lead") == HOME
+    assert registry.placed_rooms(AGENT_ID) == {HOME, ROOM_A, ROOM_B}
+    assert registry.shared_rooms(AGENT_ID, "lead") == {ROOM_A, ROOM_B}
+
+    # Restated without a share: the room is no longer answered for.
+    result = await _place(protocol, conn, {"lead": HOME}, shares={"lead": [ROOM_A]})
+    assert result["rooms"] == sorted([HOME, ROOM_A])
+    assert registry.session_in_room(AGENT_ID, ROOM_B) is None
+
+    # The home session gone, its shares go with it.
+    await _place(protocol, conn, {})
+    assert registry.placed_rooms(AGENT_ID) == set()
+
+
+@pytest.mark.asyncio
+async def test_shares_the_settings_do_not_allow_refuse_the_whole_request(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
+    conn = _open(protocol, "watcher")
+    await _place(protocol, conn, {"lead": HOME})
+    protocol.share_refusal = "room(s) room-a do not share this agent's session"
+
+    with pytest.raises(HTTPException) as refused:
+        await _place(protocol, conn, {"lead": HOME}, shares={"lead": [ROOM_A]})
+
+    assert refused.value.status_code == 400
+    assert protocol.connections.session_in_room(AGENT_ID, ROOM_A) is None
+
+
+@pytest.mark.asyncio
+async def test_a_room_placed_and_shared_at_once_is_refused(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
+    conn = _open(protocol, "watcher")
+
+    with pytest.raises(HTTPException) as refused:
+        await _place(
+            protocol, conn, {"lead": HOME, "other": ROOM_A}, shares={"lead": [ROOM_A]}
+        )
+
+    assert refused.value.status_code == 400
+    assert protocol.connections.placements(AGENT_ID) == {}
+
+
+@pytest.mark.asyncio
+async def test_sharing_a_room_takes_it_from_the_session_placed_there(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
+    theirs = _open(protocol, "theirs")
+    mine = _open(protocol, "mine")
+    await _place(protocol, theirs, {"isolated": ROOM_A})
+
+    result = await _place(protocol, mine, {"lead": HOME}, shares={"lead": [ROOM_A]})
+
+    assert result["released"] == [
+        {"connection_id": "theirs", "room_id": ROOM_A, "session_id": "isolated"}
+    ]
+    assert protocol.connections.session_in_room(AGENT_ID, ROOM_A) == "lead"
+
+    # And a session placed in a shared room takes it back.
+    result = await _place(protocol, theirs, {"isolated": ROOM_A})
+    assert result["released"] == [
+        {"connection_id": "mine", "room_id": ROOM_A, "session_id": "lead"}
+    ]
+    assert protocol.connections.session_in_room(AGENT_ID, ROOM_A) == "isolated"
+    assert protocol.connections.shared_rooms(AGENT_ID, "lead") == set()

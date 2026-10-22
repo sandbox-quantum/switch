@@ -71,6 +71,9 @@ import {
   setWorkspaceService,
   removeServiceGrant,
   updateCanManageAgents,
+  fetchSharedSession,
+  updateSharedSession,
+  updateRoomSession,
   updateAgentDescription,
   updateAgentDisplayName,
   renameAgent,
@@ -116,6 +119,8 @@ import type {
   AgentRenameOutcome,
   AddTeamsTeamResult,
   AgentIconBackfill,
+  AgentSharedSession,
+  AgentSharedSessionChange,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
   ChatClaim,
@@ -1153,6 +1158,36 @@ export const workspacesController = createRPCController({
   }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateCanManageAgents(server, params.agentId, params.enabled)
+    ),
+
+  /** The agent's shared session: its home room and defaults. */
+  getSharedSession: (params: {
+    workspaceId: string;
+    agentId: string;
+  }): Promise<AgentSharedSession> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchSharedSession(server, params.agentId)
+    ),
+
+  /** Change the agent's shared session; owner or admin only. */
+  updateSharedSession: (params: {
+    workspaceId: string;
+    agentId: string;
+    change: AgentSharedSessionChange;
+  }): Promise<void> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateSharedSession(server, params.agentId, params.change)
+    ),
+
+  /** Have a room share the agent's session, or give it its own; owner or admin only. */
+  updateRoomSession: (params: {
+    workspaceId: string;
+    agentId: string;
+    roomId: string;
+    shared: boolean;
+  }): Promise<void> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSession(server, params.agentId, params.roomId, params.shared)
     ),
 
   /** Give this user's icon-less agents the avatar their name generates. Runs

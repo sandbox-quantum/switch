@@ -134,6 +134,11 @@ class ConnectionPlacementsRequest(BaseModel):
     #: Session id to the Switch room id it is working in. Rooms are distinct;
     #: a session the connection placed before and omits here is unplaced.
     placements: dict[str, str]
+    #: Session id to the rooms it also answers for from its home room, for an
+    #: agent with a shared session (`switch_core.shared_session`). Each session
+    #: named must be placed in the agent's home room, and each room must share
+    #: its session. Distinct from each other and from every placed room.
+    shares: dict[str, list[str]] = {}
     #: The incarnation the caller believes it holds, fenced as on subscribe.
     generation: int | None = None
 

@@ -312,6 +312,9 @@ class AgentRoomMembership(BaseModel):
     archived: bool
     status: str
     room_role: str | None
+    # How the agent's shared session covers this room: "home" (based here),
+    # "shared" (this room shares it) or null (the room's own session).
+    shared_session: Literal["home", "shared"] | None = None
 
 
 class AgentSessionDetail(BaseModel):
@@ -346,6 +349,12 @@ class AgentDetail(AgentSummary):
     # owner's machines and managed agents, create managed agents on them).
     # Only the owner changes it; it matters only where agent management runs.
     can_manage_agents: bool
+    # Shared session (`switch_core.shared_session`): the room it is based in
+    # (null when the agent shares none), whether rooms it is added to share it
+    # by default, and whether every room it is in must.
+    home_room_id: str | None = None
+    shared_by_default: bool = False
+    sharing_locked: bool = False
     integration_profile: dict[str, Any]
     tools: list[AgentToolSummary]
     models: list[AgentModelSummary]
@@ -360,6 +369,30 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateSharedSessionRequest(BaseModel):
+    """Change an agent's shared session (`switch_core.shared_session`).
+
+    Every field is optional; one left out stays as it is. `home_room_id`
+    names the room the shared session is based in; `clear_home` stops the
+    agent sharing a session (its rooms each get their own again)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    home_room_id: str | None = None
+    clear_home: bool = False
+    shared_by_default: bool | None = None
+    locked: bool | None = None
+
+
+class UpdateRoomSessionRequest(BaseModel):
+    """Have a room share an agent's session (`shared: true`), or give the room
+    a session of its own (`shared: false`, isolated)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    shared: bool
 
 
 class UpdateAgentCanManageAgentsRequest(BaseModel):

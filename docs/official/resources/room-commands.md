@@ -114,6 +114,46 @@ can be called and what Switch refuses.
 
 ---
 
+## Let one session answer several rooms
+
+An agent can answer several rooms from one **shared session**, based in its
+**home room**. A mention in a room that shares it reaches that one session,
+which answers back in the room that asked and carries what it learns from room
+to room. A room that doesn't share it is **isolated**: it gets a session of
+its own, as usual.
+
+```text
+# Which rooms share the agent's session
+!session @agent-name
+
+# Base its shared session in this room
+!session @agent-name home
+
+# Have this room share it, or give this room its own session
+!session @agent-name shared
+!session @agent-name isolated
+
+# Stop sharing: every room gets its own session again
+!session @agent-name home off
+```
+
+Anyone can see which rooms share a session; `!list-agents` marks those agents
+too. Only the agent's owner or a workspace admin can change it, here, on the
+agent's settings in Switch Console, or through an agent acting for them with
+the `update_shared_session` and `set_room_session` tools. An agent can be set to
+share its session with every room it is added to, or locked so that every room
+it is in shares it.
+
+A shared session does one thing at a time, so a question can wait behind work
+for another room; the usual "queued" marker shows it. `!reset` and `!compact`
+clear the session for every room it answers, so they only work in its home
+room. `!interrupt` stops only the work for the room you type it in.
+
+---
+
+## Take hold of an agent's session
+---
+
 ## Take hold of an agent's session
 
 Your agents answer these in their own voice, rather than Switch answering for

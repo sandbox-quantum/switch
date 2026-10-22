@@ -52,6 +52,13 @@ class _Protocol:
         self.calls: list[tuple[str, str]] = []
         self.members: set[str] = {CONNECTED_ROOM, OTHER_ROOM}
         self.while_in_flight: list[Callable[[], Awaitable[None]]] = []
+        # Rooms answered from the home room by a session bound there.
+        self.shared_from_home: set[str] = set()
+
+    async def answers_from_home(
+        self, agent_id: str, bound_rooms: set[str], room_id: str
+    ) -> bool:
+        return CONNECTED_ROOM in bound_rooms and room_id in self.shared_from_home
 
     async def read_context(
         self, agent_id: str, room_id: str, **kwargs: Any
@@ -376,3 +383,37 @@ async def test_a_failed_read_catches_up_on_nothing(
         await read_context()
 
     assert await _unread(protocol, CONNECTED_ROOM) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_shared_session_reading_a_room_it_answers_clears_that_room(
+    protocol: _Protocol,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A room sharing the agent's session is the home session's to clear,
+    whoever held its count before, and with no share recorded for it (an
+    agents controller places sessions without telling Switch)."""
+    protocol.shared_from_home = {OTHER_ROOM}
+    buffer = protocol.event_buffer
+    await buffer.hand_counting_to(
+        TENANT_ZERO_ID, AGENT, Reader(id="old-isolated", is_session=True), OTHER_ROOM
+    )
+    said = None
+    for index in range(3):
+        said = await say(session_factory, OTHER_ROOM, f"chatter {index}")
+    assert said is not None
+    token = set_call_context(
+        CallContext(
+            agent_id=AGENT,
+            session_key=CONN,
+            session=CallerSession(
+                id="lead", host_id="host", epoch="epoch", room_id=CONNECTED_ROOM
+            ),
+        )
+    )
+    try:
+        await read_context(room_id=OTHER_ROOM)
+    finally:
+        reset_call_context(token)
+
+    assert (await buffer.unread(TENANT_ZERO_ID, AGENT, OTHER_ROOM, said.seq)).count == 0

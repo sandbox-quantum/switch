@@ -31,15 +31,31 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
   // Another of the agent's sessions has taken this room, so its messages go
   // there. A session nobody has displaced is not detached, whether or not it
   // ever connected itself: its room's messages still come to it.
+  // A room sharing the agent's session is answered from its home room by
+  // that session: reconnecting here means giving the room its own first.
+  const sharer = roomId ? query.data?.shares?.[roomId] : undefined;
+  const sharedFromHome = !!sharer && sharer !== sessionId;
   const owner = roomId
-    ? Object.entries(placements).find(
-        ([other, room]) => other !== sessionId && room === roomId
-      )?.[0]
+    ? sharedFromHome
+      ? sharer
+      : Object.entries(placements).find(
+          ([other, room]) => other !== sessionId && room === roomId
+        )?.[0]
     : undefined;
   const detached = !!owner && placements[sessionId] !== roomId;
   const mutation = useMutation({
     mutationFn: async (_expectedOwner: string | null) => {
       if (!roomId) throw new Error('Refresh the room connection before reconnecting.');
+      if (sharedFromHome) {
+        if (!agent?.workspaceId || !agent.switchAgentId)
+          throw new Error('This agent is not linked to Switch, so its room cannot be isolated.');
+        await rpc.workspaces.updateRoomSession({
+          workspaceId: agent.workspaceId,
+          agentId: agent.switchAgentId,
+          roomId,
+          shared: false,
+        });
+      }
       return rpc.sdkHost.placeSession(agentId, sessionId, roomId);
     },
     retry: false,
@@ -111,17 +127,25 @@ export const SessionRoomConnection = observer(function SessionRoomConnection({
           <p>This conversation is saved here, but it is not receiving this room's messages.</p>
           {confirmOwner !== undefined ? (
             <>
-              <p>
-                Another session receives this agent's messages in this room. Reconnecting will move
-                delivery here. Both conversations and work already running will be preserved.
-              </p>
+              {sharedFromHome ? (
+                <p>
+                  This room shares the agent's session, which answers it from its home room.
+                  Reconnecting gives the room its own session again: this one. Both conversations
+                  and work already running will be preserved.
+                </p>
+              ) : (
+                <p>
+                  Another session receives this agent's messages in this room. Reconnecting will
+                  move delivery here. Both conversations and work already running will be preserved.
+                </p>
+              )}
               <div className="flex gap-2">
                 <Button
                   size="sm"
                   disabled={mutation.isPending}
                   onClick={() => mutation.mutate(confirmOwner)}
                 >
-                  Confirm reconnect
+                  {sharedFromHome ? 'Give this room its own session' : 'Confirm reconnect'}
                 </Button>
                 <Button
                   size="sm"

@@ -123,10 +123,15 @@ class _TenantRecordingRoomStore(RoomStore):
         agent_ids: list[str],
         *,
         join_event_listeners: set[str] | None = None,
+        shared: dict[str, bool] | None = None,
     ) -> None:
         await self._note("add_agents", session)
         await super().add_agents(
-            session, room_id, agent_ids, join_event_listeners=join_event_listeners
+            session,
+            room_id,
+            agent_ids,
+            join_event_listeners=join_event_listeners,
+            shared=shared,
         )
 
     async def set_archived(

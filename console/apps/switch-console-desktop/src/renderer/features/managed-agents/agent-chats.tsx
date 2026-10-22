@@ -6,6 +6,10 @@ import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
 import { ChatRow } from '@renderer/features/chats/components/chat-row';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import {
+  SharedRoomMenu,
+  sharedSessionMark,
+} from '@renderer/features/managed-agents/shared-room-menu';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
@@ -188,19 +192,31 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           onAdd={() => showModal('createRoomModal', { serverId })}
         >
           {roomsError && <Note>{roomsError}</Note>}
-          {rooms.map((room) => (
-            <RoomListRow
-              key={room.roomId}
-              room={{
-                name: switchRoomsStore.roomNameById(room.roomId) ?? room.roomName,
-                bridgeType: switchRoomsStore.roomBridgeTypeById(room.roomId),
-                bridgeDisplayName:
-                  switchRoomsStore.roomSummaryById(room.roomId)?.bridgeDisplayName ?? null,
-              }}
-              isActive={room.roomId === shownRoom}
-              onOpen={() => setParams({ room: room.roomId, section: undefined })}
-            />
-          ))}
+          {rooms.map((room) => {
+            const mark = agentRooms?.find((r) => r.roomId === room.roomId)?.sharedSession;
+            return (
+              <SharedRoomMenu
+                key={room.roomId}
+                workspaceId={workspaceId}
+                agentId={agentId}
+                roomId={room.roomId}
+                mark={mark}
+                hasHome={agentRooms?.some((r) => r.sharedSession === 'home') ?? false}
+              >
+                <RoomListRow
+                  room={{
+                    name: switchRoomsStore.roomNameById(room.roomId) ?? room.roomName,
+                    bridgeType: switchRoomsStore.roomBridgeTypeById(room.roomId),
+                    bridgeDisplayName:
+                      switchRoomsStore.roomSummaryById(room.roomId)?.bridgeDisplayName ?? null,
+                  }}
+                  isActive={room.roomId === shownRoom}
+                  onOpen={() => setParams({ room: room.roomId, section: undefined })}
+                  mark={sharedSessionMark(mark)}
+                />
+              </SharedRoomMenu>
+            );
+          })}
           {!agentRooms && !roomsError && <Note>Loading…</Note>}
           {agentRooms && rooms.length === 0 && <Note>Not in any room yet.</Note>}
         </Section>

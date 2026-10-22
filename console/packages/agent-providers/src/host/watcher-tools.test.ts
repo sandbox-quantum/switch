@@ -219,3 +219,76 @@ it('posts a session’s room reply only into the room it still attends', async (
     answer(session, { type: 'room-reply', roomId: 'elsewhere', threadId: null, body: 'Nope' })
   ).rejects.toThrow('refused');
 });
+
+it('says which room a post reached, and sends it where the agent named', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  await placements.place('session', 'room');
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements,
+    publish: async () => {},
+    redactions: new Redactions(),
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'posted' }] });
+  const session = await caller(base, 'session');
+
+  // A turn from a room the session does not answer for: the post goes where
+  // posts go, and says so.
+  const plain = await answer(session, {
+    type: 'tool',
+    name: 'post_message',
+    arguments: { body: 'hi' },
+    originRoomId: 'elsewhere',
+  });
+  expect(calls.connect).toHaveBeenLastCalledWith('session', 'post_message', { body: 'hi' });
+  expect(plain).toMatchObject({ _meta: { 'switch/room_id': 'room' } });
+
+  const named = await answer(session, {
+    type: 'tool',
+    name: 'send_targeted_message',
+    arguments: { body: 'hi', target_names: ['ada'], room_id: 'other' },
+    originRoomId: 'room',
+  });
+  expect(calls.connect).toHaveBeenLastCalledWith('session', 'send_targeted_message', {
+    body: 'hi',
+    target_names: ['ada'],
+    room_id: 'other',
+  });
+  expect(named).toMatchObject({ _meta: { 'switch/room_id': 'other' } });
+
+  calls.connect.mockResolvedValue({ isError: true, content: [{ type: 'text', text: 'no' }] });
+  const refused = await answer(session, {
+    type: 'tool',
+    name: 'post_message',
+    arguments: { body: 'hi' },
+  });
+  expect(refused).not.toHaveProperty('_meta');
+});
+
+it('leaves a shared session at home when it connects to a room it shares', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  await placements.place('lead', 'home');
+  await placements.share('lead', 'work');
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements,
+    publish: async () => {},
+    redactions: new Redactions(),
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'connected' }] });
+
+  await answer(await caller(base, 'lead'), {
+    type: 'tool',
+    name: 'connect_to_room',
+    arguments: { room_id: 'work' },
+  });
+
+  expect(placements.roomOf('lead')).toBe('home');
+  expect(placements.sessionIn('work')).toBe('lead');
+});

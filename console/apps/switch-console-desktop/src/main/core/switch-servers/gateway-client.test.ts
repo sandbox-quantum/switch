@@ -116,6 +116,9 @@ const {
   fetchMachineOperation,
   fetchAgentManagementAccess,
   updateCanManageAgents,
+  updateSharedSession,
+  updateRoomSession,
+  fetchSharedSession,
   updateManagedAgent,
   fetchAvatarSettings,
   fetchAgentIconChoices,
@@ -3087,6 +3090,33 @@ describe('agent management calls', () => {
     expect(url).toBe('https://switch.example.com/gateway/agents/agent-1/can-manage-agents');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(String(init.body))).toEqual({ enabled: true });
+  });
+
+  it('reads and changes an agent’s shared session, and a room’s place in it', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(200, { home_room_id: 'hub', shared_by_default: true, sharing_locked: false })
+    );
+    expect(await fetchSharedSession(SERVER, 'agent-1')).toEqual({
+      homeRoomId: 'hub',
+      sharedByDefault: true,
+      locked: false,
+    });
+
+    fetchMock.mockImplementation(async () => respond(200, {}));
+    await updateSharedSession(SERVER, 'agent-1', { homeRoomId: 'hub', locked: true });
+    let [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/agents/agent-1/shared-session');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ home_room_id: 'hub', locked: true });
+
+    await updateSharedSession(SERVER, 'agent-1', { homeRoomId: null });
+    [, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ clear_home: true });
+
+    await updateRoomSession(SERVER, 'agent-1', 'work', false);
+    [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe('https://switch.example.com/gateway/agents/agent-1/rooms/work/session');
+    expect(JSON.parse(String(init.body))).toEqual({ shared: false });
   });
 
   it('changes a managed agent’s settings over the server’s copy, keeping fields it does not know', async () => {

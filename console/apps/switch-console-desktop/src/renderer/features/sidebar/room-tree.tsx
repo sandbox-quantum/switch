@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { Fragment } from 'react';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
+import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -174,6 +175,10 @@ export const RoomTree = observer(function RoomTree() {
                 const sessionsHere = roomSessions.filter(
                   (session) => bySession.get(session.data.id)?.agent.id === entry.agent.id
                 );
+                // The agent's shared session answering this room supersedes any
+                // session the room had of its own.
+                const sharer = roomConnectionsStore.sharerOfRoom(roomKey);
+                const sharedHere = sessionsHere.some((session) => session.data.id === sharer);
                 const agentExpanded = sidebarStore.isGroupExpanded(
                   roomAgentGroupKey(roomKey, entry.agent.id)
                 );
@@ -192,6 +197,8 @@ export const RoomTree = observer(function RoomTree() {
                           locationId={entry.agent.locationId}
                           sessionId={session.data.id}
                           depth={2}
+                          roomKey={roomKey}
+                          superseded={sharedHere && session.data.id !== sharer}
                         />
                       ))}
                   </Fragment>

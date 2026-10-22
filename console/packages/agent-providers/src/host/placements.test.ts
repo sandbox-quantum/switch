@@ -108,3 +108,39 @@ it('tells its listeners the whole map after every change', async () => {
   await placements.place('one', 'room-c');
   expect(seen).toEqual([{ one: 'room-a' }, { two: 'room-a' }, {}, { one: 'room-b' }, {}]);
 });
+
+it('lets a session in its home room answer shared rooms too, one session per room', async () => {
+  const at = await root();
+  const placements = await SessionPlacements.open(at, () => []);
+  await placements.place('lead', 'home');
+  await placements.place('isolated', 'work');
+
+  // Sharing a room takes it from the session placed there.
+  expect(await placements.share('lead', 'work')).toEqual({ displaced: 'isolated' });
+  await placements.share('lead', 'other');
+  expect(placements.sessionIn('work')).toBe('lead');
+  expect(placements.placedIn('work')).toBeNull();
+  expect(placements.serves('lead', 'work')).toBe(true);
+  expect(placements.roomOf('lead')).toBe('home');
+  expect(placements.roomOf('isolated')).toBeNull();
+  expect(placements.sharesBySession()).toEqual({ lead: ['other', 'work'] });
+
+  // Written down, and read back by the next watcher.
+  const again = await SessionPlacements.open(at, () => []);
+  expect(again.sessionIn('work')).toBe('lead');
+
+  // A room lost to another connection, or unshared, is no longer answered.
+  expect(await placements.roomLost('other')).toBe('lead');
+  expect(await placements.unshare('work')).toBe('lead');
+  expect(placements.sessionIn('work')).toBeNull();
+
+  // A session placed in a shared room takes it; the home session leaving
+  // its home takes its shares with it.
+  await placements.share('lead', 'work');
+  await placements.place('isolated', 'work');
+  expect(placements.sessionIn('work')).toBe('isolated');
+  await placements.share('lead', 'other');
+  await placements.place('lead', 'elsewhere');
+  expect(placements.sessionIn('other')).toBeNull();
+  await expect(placements.share('nobody', 'room')).rejects.toThrow('placed in no room');
+});

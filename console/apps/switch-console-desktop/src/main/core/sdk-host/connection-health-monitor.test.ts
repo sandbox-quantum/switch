@@ -96,6 +96,20 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it('reports the rooms a shared session answers from its home room', async () => {
+  const watcher = localWatcher(health({ placements: { lead: 'home' }, shares: { work: 'lead' } }));
+  const { monitor } = monitorWith({
+    linkedAgents: async () => [agent('local')],
+    local: () => watcher,
+  });
+
+  expect(await monitor.snapshot('server')).toEqual({
+    agents: [{ agentId: 'local', state: 'connected', detail: null }],
+    placements: { lead: 'home' },
+    shares: { work: 'lead' },
+  });
+});
+
 it('reads a local agent from its watcher in Console and pushes each change', async () => {
   const watcher = localWatcher(health({ placements: { 'session-1': 'room-1' } }));
   const { monitor, pushed } = monitorWith({

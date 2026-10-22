@@ -2282,3 +2282,88 @@ async def test_export_parameterize_round_trip(env):
 
     reparsed_default, _ = _svc(env).parse(parameterized)
     assert reparsed_default.name == "Capture me"
+
+
+@pytest.mark.asyncio
+async def test_sessions_set_up_a_shared_session_and_export_back(env):
+    """A template can base an agent's shared session in one room and have
+    another share it; capturing the room writes the setting back out."""
+    svc = _svc(env)
+    spec = _group(
+        env,
+        """\
+group:
+  name: "Lead and work"
+rooms:
+  - name: "hub"
+    description: "d"
+    agents: ["claude-code.alice"]
+    sessions:
+      claude-code.alice: home
+  - name: "work"
+    description: "d"
+    agents: ["claude-code.alice", "claude-code.bob"]
+    sessions:
+      claude-code.alice: shared
+""",
+    )
+    async with env["session_factory"]() as session:
+        alice = (await AgentStore().get_by_names(session, ["claude-code.alice"]))[0]
+        alice.owner_id = env["user_id"]
+        await session.commit()
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    hub, work = (r.room_id for r in result.rooms)
+    assert [r.failed_attachments for r in result.rooms] == [[], []]
+
+    async with env["session_factory"]() as session:
+        alice = (await AgentStore().get_by_names(session, ["claude-code.alice"]))[0]
+        assert alice.home_room_id == hub
+        assert set(await RoomStore().shared_room_ids(session, alice.id)) == {hub, work}
+
+    exported = yaml.safe_load(await svc.export(work))
+    assert exported["room"]["sessions"] == {"claude-code.alice": "shared"}
+    exported = yaml.safe_load(await svc.export(hub))
+    assert exported["room"]["sessions"] == {"claude-code.alice": "home"}
+
+
+@pytest.mark.asyncio
+async def test_sessions_must_name_agents_in_the_room(env):
+    svc = _svc(env)
+    spec = _group(
+        env,
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+    agents: ["claude-code.alice"]
+    sessions:
+      claude-code.bob: shared
+""",
+    )
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    assert result.errors and "sessions names claude-code.bob" in str(result.errors)
+
+
+@pytest.mark.asyncio
+async def test_sessions_for_an_agent_the_runner_does_not_own_are_reported(env):
+    """Only the agent's owner or an admin may set its shared session; the room
+    is still created and the refusal is on the result."""
+    svc = _svc(env)
+    spec = _group(
+        env,
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+    agents: ["claude-code.bob"]
+    sessions:
+      claude-code.bob: home
+""",
+    )
+    result = await svc.provision_group(spec, user_id=env["user_id"], is_admin=False)
+    [room] = result.rooms
+    assert [f["kind"] for f in room.failed_attachments] == ["session"]

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core import shared_session
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import (
     InvalidIconUrl,
@@ -32,7 +33,7 @@ from switch_core.bridges.agent.protocol.types import (
 )
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
-from switch_core.db.models import User, require_tenant_id
+from switch_core.db.models import Agent, User, require_tenant_id
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -68,6 +69,8 @@ from switch_core.gateway.schemas import (
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
     UpdateAgentOptionsRequest,
+    UpdateRoomSessionRequest,
+    UpdateSharedSessionRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
 
@@ -776,6 +779,108 @@ async def update_can_manage_agents(
         user.name,
     )
 
+    return await assemble_agent_detail(
+        session,
+        agent=agent,
+        agent_store=agent_store,
+        room_store=room_store,
+        user_store=user_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+
+
+async def _sharing_target(
+    agent_id: str,
+    session: AsyncSession,
+    agent_store: AgentStore,
+    user: User,
+    is_admin: bool,
+) -> Agent:
+    """The agent whose shared session the user may change: its owner or an
+    admin only (`switch_core.shared_session`)."""
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=shared_session.NOT_PERMITTED)
+    return agent
+
+
+@router.put("/{agent_id}/shared-session")
+async def update_shared_session(
+    agent_id: str,
+    req: UpdateSharedSessionRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentDetail:
+    """Set an agent's home room and shared-session defaults. Owner or admin."""
+    agent = await _sharing_target(agent_id, session, agent_store, user, is_admin)
+    try:
+        await shared_session.set_sharing_defaults(
+            session,
+            room_store,
+            agent_store,
+            agent,
+            shared_by_default=req.shared_by_default,
+            locked=req.locked,
+        )
+        if req.clear_home:
+            await shared_session.set_home_room(
+                session, room_store, agent_store, agent, None
+            )
+        elif req.home_room_id is not None:
+            await shared_session.set_home_room(
+                session, room_store, agent_store, agent, req.home_room_id
+            )
+    except shared_session.SharingRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
+    await session.refresh(agent)
+    logger.info("Updated shared session for agent %s by user %s", agent.name, user.name)
+    return await assemble_agent_detail(
+        session,
+        agent=agent,
+        agent_store=agent_store,
+        room_store=room_store,
+        user_store=user_store,
+        agent_session_store=protocol.agent_session_store,
+        room_role_store=protocol.room_role_store,
+        connections=protocol.connections,
+    )
+
+
+@router.put("/{agent_id}/rooms/{room_id}/session")
+async def update_room_session(
+    agent_id: str,
+    room_id: str,
+    req: UpdateRoomSessionRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentDetail:
+    """Have a room share the agent's session, or isolate it. Owner or admin."""
+    agent = await _sharing_target(agent_id, session, agent_store, user, is_admin)
+    try:
+        await shared_session.set_room_shared(
+            session, room_store, agent, room_id, req.shared
+        )
+    except shared_session.SharingRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
+    await session.refresh(agent)
     return await assemble_agent_detail(
         session,
         agent=agent,
