@@ -44,6 +44,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Only the owner or a workspace admin can change a reference's, reference
+  type's or package's visibility.** This tightens permissions: before, anyone
+  with write access could, so on a publicly writable resource any member could
+  make it private and lock everyone else out of it and the rooms that use it.
+  Editing its other fields still needs only write access, as it does for rooms.
+
 #### Fixed
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`

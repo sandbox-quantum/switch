@@ -12,6 +12,7 @@ from switch_core.authz import (
     owns_tenant,
     require,
     require_manage,
+    require_visibility_change,
     validate_visibility_pair,
 )
 
@@ -170,3 +171,28 @@ class TestValidateVisibilityPair:
     def test_rejects_invalid_enum(self, read: str, write: str) -> None:
         with pytest.raises(ValueError, match="expected public|private"):
             validate_visibility_pair(read, write)
+
+
+class TestRequireVisibilityChange:
+    """Changing who may see or edit a resource is its owner's or an admin's,
+    like a room's; write access alone does not reach it."""
+
+    def _open(self) -> SimpleNamespace:
+        return _resource(
+            owner_id="u-owner", read_visibility="public", write_visibility="public"
+        )
+
+    def test_a_writer_may_not_change_visibility(self) -> None:
+        with pytest.raises(PermissionError, match="owner or a workspace admin"):
+            require_visibility_change(ALICE, self._open(), "private", None, "reference")
+        with pytest.raises(PermissionError):
+            require_visibility_change(ALICE, self._open(), None, "private", "package")
+
+    def test_a_writer_may_send_the_current_visibility_back(self) -> None:
+        require_visibility_change(ALICE, self._open(), "public", "public", "reference")
+        require_visibility_change(ALICE, self._open(), None, None, "reference")
+
+    def test_the_owner_and_an_admin_may_change_it(self) -> None:
+        owner = Principal("u-owner", False)
+        require_visibility_change(owner, self._open(), "private", "private", "package")
+        require_visibility_change(ADMIN, self._open(), "private", "private", "package")

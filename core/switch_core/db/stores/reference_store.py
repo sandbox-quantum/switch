@@ -25,6 +25,19 @@ class ReferenceStore:
     async def get(self, session: AsyncSession, reference_id: str) -> Reference | None:
         return await session.get(Reference, reference_id)
 
+    async def get_for_update(
+        self, session: AsyncSession, reference_id: str
+    ) -> Reference | None:
+        """Load the row locked until the transaction ends, for a caller that
+        checks it and then writes it.
+
+        ``populate_existing`` refreshes a copy already in the session, so the
+        check sees the committed row rather than an earlier read of it.
+        """
+        return await session.get(
+            Reference, reference_id, with_for_update=True, populate_existing=True
+        )
+
     async def list_for_user(
         self, session: AsyncSession, user_id: str
     ) -> list[Reference]:
