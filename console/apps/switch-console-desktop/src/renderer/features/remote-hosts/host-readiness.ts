@@ -79,6 +79,19 @@ export function stepsNeedingObservation(
 }
 
 /**
+ * Whether the gate should still say "checking".
+ *
+ * True while a probe is in flight, and before the first probe for this host and
+ * agent type has been attempted. Once it has been attempted, steps that are
+ * still unobserved no longer count: a probe that failed, or that came back
+ * without an answer for a step, tells us nothing, and the gate stays open
+ * rather than spinning on a question it will not ask again.
+ */
+export function isProbing(inFlight: boolean, needsProbe: boolean, attempted: boolean): boolean {
+  return inFlight || (needsProbe && !attempted);
+}
+
+/**
  * The gate's decision, as a pure function.
  *
  * `status` is the agent-type-aware verdict, so passing the status for the type
