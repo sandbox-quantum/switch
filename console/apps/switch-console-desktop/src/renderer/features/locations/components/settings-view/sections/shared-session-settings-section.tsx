@@ -1,26 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { observer } from 'mobx-react-lite';
+import { SectionLabel } from '@renderer/features/locations/components/main-panel/agent-page-section';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@renderer/lib/ui/select';
 import { Switch } from '@renderer/lib/ui/switch';
 import { log } from '@renderer/utils/logger';
 import type { AgentSharedSessionChange } from '@shared/core/switch-servers/switch-servers';
+import { HomeRoomPicker } from './home-room-picker';
+import { homeRoomOptions } from './home-room-rank';
 import { SettingRow } from './setting-row';
-
-/** The select's value for "no home room": the agent shares no session. */
-const NOT_SHARED = '__not_shared__';
 
 /**
  * Per-Switch-agent shared session: one session, based in a home room, that
  * answers every room sharing it instead of each room starting its own. Shown
- * for Switch-linked agents; the settings live on the server, and only the
- * agent's owner or a workspace admin may change them.
+ * for Switch-linked agents as a section of its own; the settings live on the
+ * server, and only the agent's owner or a workspace admin may change them.
  */
 export function SharedSessionSettingsSection({
   locationId,
@@ -61,7 +56,7 @@ export const sharedSessionKey = (workspaceId: string, agentId: string) => [
   agentId,
 ];
 
-export function SharedSessionRows({
+export const SharedSessionRows = observer(function SharedSessionRows({
   workspaceId,
   agentId,
   agentName,
@@ -88,84 +83,72 @@ export function SharedSessionRows({
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: key });
       void queryClient.invalidateQueries({ queryKey: ['agent-rooms', workspaceId, agentId] });
+      void switchRoomsStore.fetchAgentRooms(workspaceId, agentId, { force: true });
     },
   });
 
   if (!sharing) return null;
-  const prefix = agentName ? `${agentName}: ` : '';
-  const live = (rooms ?? []).filter((room) => !room.archived);
-  const homeName = live.find((room) => room.roomId === sharing.homeRoomId)?.roomName;
+  const { suggested, all } = homeRoomOptions(rooms ?? [], (roomId) =>
+    switchRoomsStore.roomSummaryById(roomId)
+  );
+  const off = !sharing.homeRoomId;
 
   return (
-    <>
-      <SettingRow
-        title={`${prefix}Shared session`}
-        info={{
-          label: 'More info about shared sessions',
-          content:
-            'With a home room, the agent answers every room that shares its session from one session based there, so it carries what it learns between rooms. Rooms that do not share it get a session of their own, as usual.',
-        }}
-        description="The room the agent's shared session is based in."
-        control={
-          <Select
-            value={sharing.homeRoomId ?? NOT_SHARED}
-            disabled={mutation.isPending}
-            onValueChange={(next) =>
-              mutation.mutate({ homeRoomId: next === NOT_SHARED || !next ? null : next })
-            }
-          >
-            <SelectTrigger className="shrink-0" aria-label="Home room">
-              <SelectValue>
-                {sharing.homeRoomId ? (homeName ?? 'Home room') : 'Not shared'}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={NOT_SHARED}>Not shared</SelectItem>
-              {live.map((room) => (
-                <SelectItem key={room.roomId} value={room.roomId}>
-                  {room.roomName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        }
-      >
-        {mutation.error && (
-          <span className="text-xs text-destructive">
-            {failureText(mutation.error, "Could not change this agent's shared session.")}
-          </span>
-        )}
-      </SettingRow>
-      {sharing.homeRoomId && (
-        <>
-          <SettingRow
-            title={`${prefix}Share with new rooms`}
-            info={null}
-            description="Rooms the agent is added to share its session unless whoever adds it chooses otherwise."
-            control={
-              <Switch
-                aria-label="Share with new rooms"
-                checked={sharing.sharedByDefault}
-                disabled={mutation.isPending}
-                onCheckedChange={(checked) => mutation.mutate({ sharedByDefault: checked })}
-              />
-            }
-          />
-          <SettingRow
-            title={`${prefix}Always shared`}
-            info={null}
-            description="Every room the agent is in shares its session, and none can be given its own."
-            control={
-              <Switch
-                aria-label="Always shared"
-                checked={sharing.locked}
-                disabled={mutation.isPending}
-                onCheckedChange={(checked) => mutation.mutate({ locked: checked })}
-              />
-            }
-          />
-        </>
-      )}
-    </>
+    <section className="flex flex-col gap-3" aria-label="Shared session">
+      <SectionLabel>{agentName ? `${agentName}: shared session` : 'Shared session'}</SectionLabel>
+      <p className="text-sm text-foreground-muted">
+        Answer several rooms from one session, based in a home room, so the agent carries what it
+        learns from room to room. Rooms that don't share it get a session of their own, as usual.
+      </p>
+      <fieldset className="flex flex-col gap-6 rounded-lg border border-border p-4">
+        <legend className="sr-only">Shared session settings</legend>
+        <SettingRow
+          title="Home room"
+          info={null}
+          description="Where the shared session is based. Pick one to start sharing."
+          control={
+            <HomeRoomPicker
+              value={sharing.homeRoomId}
+              suggested={suggested}
+              all={all}
+              disabled={mutation.isPending}
+              onChange={(homeRoomId) => mutation.mutate({ homeRoomId })}
+            />
+          }
+        >
+          {mutation.error && (
+            <span className="text-xs text-destructive">
+              {failureText(mutation.error, "Could not change this agent's shared session.")}
+            </span>
+          )}
+        </SettingRow>
+        <SettingRow
+          title="Share with new rooms"
+          info={null}
+          description="Rooms the agent is added to share its session, unless whoever adds it chooses otherwise."
+          control={
+            <Switch
+              aria-label="Share with new rooms"
+              checked={sharing.sharedByDefault}
+              disabled={off || mutation.isPending}
+              onCheckedChange={(checked) => mutation.mutate({ sharedByDefault: checked })}
+            />
+          }
+        />
+        <SettingRow
+          title="Always shared"
+          info={null}
+          description="Every room the agent is in shares its session, and none can be given its own."
+          control={
+            <Switch
+              aria-label="Always shared"
+              checked={sharing.locked}
+              disabled={off || mutation.isPending}
+              onCheckedChange={(checked) => mutation.mutate({ locked: checked })}
+            />
+          }
+        />
+      </fieldset>
+    </section>
   );
-}
+});

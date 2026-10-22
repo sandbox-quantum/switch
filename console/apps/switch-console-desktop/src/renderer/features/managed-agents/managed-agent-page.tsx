@@ -352,11 +352,6 @@ function ManagedAgentPageContent({
                 agentName={agent.name}
                 showName={false}
               />
-              <SharedSessionRows
-                workspaceId={agent.workspaceId}
-                agentId={agent.agentId}
-                agentName={null}
-              />
               {serviceGrants && (
                 <ServiceGrantsRow
                   serverId={agent.serverId}
@@ -419,6 +414,11 @@ function ManagedAgentPageContent({
                 />
               )}
             </section>
+            <SharedSessionRows
+              workspaceId={agent.workspaceId}
+              agentId={agent.agentId}
+              agentName={null}
+            />
             <div className="flex flex-col gap-2">
               <AdvancedConfigDisclosure
                 fields={fields}

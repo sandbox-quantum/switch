@@ -55,11 +55,11 @@ export const SettingsPanel = observer(function SettingsPanel() {
         <PermissionSettingsSection locationId={locationId} agentId={agentId} />
         <AddressingPolicySettingsSection locationId={locationId} agentId={agentId} />
         <CanManageAgentsSettingsSection locationId={locationId} agentId={agentId} />
-        <SharedSessionSettingsSection locationId={locationId} agentId={agentId} />
         {tabs === null && (
           <ServiceGrantsSettingsSection locationId={locationId} agentId={agentId} />
         )}
       </section>
+      <SharedSessionSettingsSection locationId={locationId} agentId={agentId} />
       <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );
