@@ -1829,6 +1829,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **The local Switch server starts on Intel Macs without Homebrew.**
+  cryptography publishes no wheel for Intel Macs, so the Intel build of
+  Console compiled its own against the build machine's Homebrew OpenSSL, and
+  on a Mac without Homebrew the server failed to start with `Library not
+  loaded: /usr/local/opt/openssl@3/lib/libssl.3.dylib`. The bundled
+  cryptography now carries its own OpenSSL, as cryptography's wheels for Apple
+  silicon do, and a macOS build fails if anything in the local server links a
+  library that is neither macOS's nor shipped with it.
+
 ### [0.40.1] - 2026-10-21
 
 #### Added
