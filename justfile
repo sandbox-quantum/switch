@@ -110,6 +110,39 @@ local-cloud-user email name password:
       -d "$(jq -n --arg e '{{ email }}' --arg n '{{ name }}' --arg p '{{ password }}' '{email: $e, name: $n, password: $p}')" \
       http://localhost:8000/gateway/users | jq .
 
+# Each run is someone who has never used Switch: a new Console data folder, so
+# the first-run pages start from the welcome page, and a new address to create
+# the account with. Needs GATEWAY_SIGNUP_ENABLED=true in .env, and
+# GATEWAY_SIGNUP_MODE=open for the account to start with no workspace. Set
+# LOCAL_CLOUD_URL when the local Cloud is not on http://localhost:8000.
+# Start Switch Console as a brand-new person against `just local-cloud`
+local-cloud-fresh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url="${LOCAL_CLOUD_URL:-http://localhost:8000}"
+    auth="$(curl -fsS "$url/gateway/auth/config")" || {
+      echo "✋ Nothing answers at $url. Start it with 'just local-cloud'." >&2
+      exit 1
+    }
+    if [ "$(jq -r .signup_enabled <<<"$auth")" != "true" ]; then
+      echo "✋ Sign-up is off on the local Cloud. Set GATEWAY_SIGNUP_ENABLED=true in .env" >&2
+      echo "   and GATEWAY_SIGNUP_MODE=open, then restart 'just local-cloud'." >&2
+      exit 1
+    fi
+    mode="$(jq -r .signup_mode <<<"$auth")"
+    if [ "$mode" != "open" ]; then
+      echo "⚠️  GATEWAY_SIGNUP_MODE is $mode: new accounts join the admin's workspace" >&2
+      echo "   rather than starting with none. Set it to open for a first-ever run." >&2
+    fi
+    run="$(date +%Y%m%d-%H%M%S)"
+    names=(ada grace alan katherine linus margaret barbara dennis edsger frances)
+    name="${names[RANDOM % ${#names[@]}]}"
+    # A domain of its own per run: no workspace is open to it, so the account
+    # starts with nothing, and the name before the @ is what greets you.
+    echo "Create an account on the sign-in page as: ${name}@run-${run}.test (any password)"
+    echo "Console data: switchdash-fresh-${run}, under the system's app-data folder"
+    cd console && SWITCH_CLOUD_URL="$url" SWITCH_CONSOLE_USER_DATA_DIR="switchdash-fresh-${run}" pnpm dev
+
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
 # right config per file (core/, the sub-projects that carry their own, and

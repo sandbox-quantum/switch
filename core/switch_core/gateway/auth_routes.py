@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -88,6 +89,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MACHINE_OWNER_STOPPED = "Your cloud machine is stopped. Start it in Switch Console."
+NO_WORKSPACE_YET = (
+    "You have no workspace yet. A cloud machine starts once you create or join one."
+)
 
 
 def _gateway_declaration() -> ServerDeclaration:
@@ -226,19 +230,26 @@ async def signup(
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
 ) -> SignupResponse:
-    """Open self sign-up: a new member of tenant zero, signed in, machine warming.
+    """Open self sign-up: a new account, signed in.
 
-    No caller exists yet to take a tenant from, so the account lands in tenant
-    zero by name, exactly as an OIDC first sign-in does. The cloud machine is
-    claimed after the account is committed and failing to claim one never
-    fails the sign-up: the response says why instead.
+    Where it lands is `gateway_signup_mode`'s decision, as for an OIDC first
+    sign-in. Under "default_tenant" it joins tenant zero, named here since no
+    caller exists yet to take a tenant from, and its cloud machine starts
+    warming; failing to claim one never fails the sign-up, the response says
+    why instead. Under "open" it joins nothing and is sent to onboarding to
+    create a workspace or accept an invitation, so there is no workspace yet
+    for a machine to serve.
     """
     if not config.gateway_signup_open:
         raise HTTPException(
             status_code=403, detail="Sign-up is disabled on this server"
         )
 
-    with tenant_scope(TENANT_ZERO_ID):
+    join_tenant = config.gateway_signup_mode == "default_tenant"
+    scope: AbstractContextManager[None] = (
+        tenant_scope(TENANT_ZERO_ID) if join_tenant else nullcontext()
+    )
+    with scope:
         # Checked before the hash so a refusal stays cheap, and again under the
         # lock after it; neither the lock nor a connection is held across bcrypt.
         await _refuse_signup(session, user_store, req.email, config)
@@ -258,7 +269,11 @@ async def signup(
         )
         try:
             async with session.begin_nested():
-                await user_store.create(session, user)
+                if join_tenant:
+                    await user_store.create(session, user)
+                else:
+                    session.add(user)
+                    await session.flush()
         except IntegrityError:
             await session.rollback()
             raise HTTPException(
@@ -272,10 +287,15 @@ async def signup(
             user,
             config.keyring,
             config.gateway_cookie_secure,
-            TENANT_ZERO_ID,
+            TENANT_ZERO_ID if join_tenant else None,
         )
         signed_in = _session_response(user)
-        machine = await _prewarm(session, session_factory, user.id, config, settings)
+        if join_tenant:
+            machine = await _prewarm(
+                session, session_factory, user.id, config, settings
+            )
+        else:
+            machine = SignupMachine(status="unavailable", reason=NO_WORKSPACE_YET)
     return SignupResponse(**signed_in.model_dump(), machine=machine)
 
 

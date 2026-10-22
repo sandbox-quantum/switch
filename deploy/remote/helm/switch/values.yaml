@@ -332,7 +332,9 @@ switchCore:
   cookieSecure: true
   # Allow email+password self sign-up on the gateway login page. Takes effect
   # only while signup.mode is default_tenant, where a new account joins the
-  # deployment's one pre-existing workspace.
+  # deployment's one pre-existing workspace, or open, where it joins none and
+  # its owner creates one. Never while oidc is enabled: sign-up does not verify
+  # the address, and an OIDC sign-in links to an existing account by address.
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
