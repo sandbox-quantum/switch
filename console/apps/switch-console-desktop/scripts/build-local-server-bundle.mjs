@@ -382,11 +382,14 @@ execFileSync(python, ['-c', 'import ssl, sqlite3, ctypes, asyncio, venv, zlib'],
 });
 
 // Prove nothing in the bundle loads a library a clean Mac lacks: every one it
-// links is the system's own or ships beside it. A library built against the
-// build machine's Homebrew passes every other check here and fails only on a
-// user's Mac, at the first import.
+// links is the system's own or ships beside it, and so is every run path an
+// `@rpath` library is looked up in. A library built against the build
+// machine's Homebrew passes every other check here and fails only on a user's
+// Mac, at the first import.
 if (process.platform === 'darwin') {
   const MACHO_MAGICS = new Set([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe]);
+  const SYSTEM = /^(\/usr\/lib\/|\/System\/Library\/)/;
+  const BESIDE = /^@(loader_path|executable_path)(\/|$)/;
   const outside = [];
   for (const entry of await readdir(stage, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile()) continue;
@@ -396,12 +399,14 @@ if (process.platform === 'darwin') {
     const { bytesRead } = await handle.read(magic, 0, 4, 0);
     await handle.close();
     if (bytesRead < 4 || !MACHO_MAGICS.has(magic.readUInt32BE(0))) continue;
-    for (const library of linkedLibraries(file)) {
-      if (
-        !/^(\/usr\/lib\/|\/System\/Library\/|@(rpath|loader_path|executable_path)\/)/.test(library)
-      ) {
-        outside.push(`${path.relative(stage, file)} -> ${library}`);
-      }
+    const { libraries, rpaths } = loadPaths(file);
+    for (const library of libraries) {
+      if (SYSTEM.test(library) || BESIDE.test(library) || library.startsWith('@rpath/')) continue;
+      outside.push(`${path.relative(stage, file)} -> ${library}`);
+    }
+    for (const rpath of rpaths) {
+      if (SYSTEM.test(rpath) || BESIDE.test(rpath)) continue;
+      outside.push(`${path.relative(stage, file)} -> run path ${rpath}`);
     }
   }
   if (outside.length > 0) {
@@ -411,20 +416,31 @@ if (process.platform === 'darwin') {
   }
 }
 
-/** The libraries a Mach-O file loads, from its load commands. */
-function linkedLibraries(file) {
-  const libraries = [];
-  let loads = false;
-  for (const line of execFileSync('otool', ['-l', file], { encoding: 'utf8' }).split('\n')) {
+/**
+ * The libraries a Mach-O file loads and the run paths `@rpath` resolves
+ * against, from the load commands of every architecture in it: otool alone
+ * reads only the slice for the machine running it, which need not be the one
+ * a user's Mac loads.
+ */
+function loadPaths(file) {
+  const libraries = new Set();
+  const rpaths = new Set();
+  let into = null;
+  const commands = execFileSync('otool', ['-arch', 'all', '-l', file], { encoding: 'utf8' });
+  for (const line of commands.split('\n')) {
     const command = line.match(/^\s*cmd (\S+)/);
     if (command) {
-      loads = /^LC_(LOAD|LOAD_WEAK|REEXPORT|LAZY_LOAD|LOAD_UPWARD)_DYLIB$/.test(command[1]);
+      if (/^LC_(LOAD|LOAD_WEAK|REEXPORT|LAZY_LOAD|LOAD_UPWARD)_DYLIB$/.test(command[1])) {
+        into = libraries;
+      } else {
+        into = command[1] === 'LC_RPATH' ? rpaths : null;
+      }
       continue;
     }
-    const name = loads && line.match(/^\s*name (.+) \(offset \d+\)$/);
-    if (name) libraries.push(name[1]);
+    const value = into && line.match(/^\s*(?:name|path) (.+) \(offset \d+\)$/);
+    if (value) into.add(value[1]);
   }
-  return libraries;
+  return { libraries, rpaths };
 }
 
 const manifest = { ...wanted, builtAt: new Date().toISOString() };
