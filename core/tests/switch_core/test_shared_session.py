@@ -188,7 +188,25 @@ class TestDeletingTheHomeRoom:
         assert await _home(session_factory, lead) is None
 
 
-class TestChangingTheSettings:
+class TestArchivingTheHomeRoom:
+    async def test_stops_the_agent_sharing_and_cannot_be_chosen_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        buddy = await _register(svc, "alice-buddy", alice)
+        lead = await _register(svc, "lead", alice)
+        hub = await _room(session_factory, "hub", [lead])
+        await _set(session_factory, lead, home_room_id=hub)
+
+        async with session_factory() as session:
+            await RoomStore().set_archived(session, hub, True)
+            await session.commit()
+        assert await _home(session_factory, lead) is None
+
+        with pytest.raises(SharingRefused, match="archived"):
+            await svc.update_shared_session(buddy, "lead", home_room_id=hub)
+
     async def _setup(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> tuple[AgentCore, str, str, str, str]:

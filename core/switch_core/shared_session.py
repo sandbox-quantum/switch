@@ -139,6 +139,12 @@ async def set_home_room(
                 f"{agent.name} isn't in that room. Add it to the room before "
                 "making it its home room."
             )
+        room = await room_store.get(session, room_id)
+        if room is not None and room.archived_at is not None:
+            raise SharingRefused(
+                "That room is archived. Unarchive it, or pick another room, "
+                "to make it the home room."
+            )
         await room_store.set_shared(session, room_id, agent.id, True)
     await agent_store.update(session, agent.id, home_room_id=room_id)
 

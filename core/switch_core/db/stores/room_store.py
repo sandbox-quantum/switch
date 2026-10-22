@@ -898,6 +898,15 @@ class RoomStore:
             raise ValueError(f"Room not found: {room_id}")
         if archived:
             room.archived_at = datetime.now(UTC)  # type: ignore[assignment]
+            # Nobody uses an archived room, so a shared session based there
+            # would answer from nowhere: its agents stop sharing, and their
+            # rooms get sessions of their own until someone picks a new home.
+            # Unarchiving does not restore it.
+            await session.execute(
+                update(Agent)
+                .where(Agent.home_room_id == room_id)
+                .values(home_room_id=None)
+            )
         else:
             room.archived_at = None
         await session.flush()
