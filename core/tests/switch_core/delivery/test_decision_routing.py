@@ -551,7 +551,7 @@ class TestWhatTheAgentIsGiven:
         ]
         assert await room.reached(reply) == {"helper"}
 
-    async def test_the_channel_follow_up_carries_on_after_a_routed_answer(
+    async def test_the_next_channel_message_after_a_routed_answer_is_asked_again(
         self, room: Journey, service: DecisionService
     ) -> None:
         service.pick = "helper"
@@ -559,11 +559,11 @@ class TestWhatTheAgentIsGiven:
         await room.post("helper", "It failed on the migration", at=20)
         service.pick = None
 
-        follow_up = await room.say("alice", "can you rerun it?", at=30)
+        aside = await room.say("alice", "sara, are you joining standup today?", at=30)
 
         assert await room.reached(question) == {"helper"}
-        assert await room.reached(follow_up) == {"helper"}
-        assert len(service.requests) == 1
+        assert await room.reached(aside) == set()
+        assert len(service.requests) == 2
 
 
 class TestTheRoutedPayload:
