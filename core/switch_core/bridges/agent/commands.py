@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import random
 import uuid
@@ -571,14 +572,25 @@ async def _decide_control_command(
         meta = await client._resolve_room_meta(room.room_id)
         if meta is None:
             return ControlDecision(queued=None, answer=None)
-        if command in ("reset", "compact"):
-            home = await _shared_from_elsewhere(client, session, agent, meta.room_id)
-            if home is not None:
-                return say(
-                    f"**{_label(agent)}** answers this room from its shared session, "
-                    f"based in **{home}**. A {command} would clear it for every room "
-                    f"it answers, so run `!{command}` for it in **{home}** instead."
-                )
+        home = await _shared_from_elsewhere(client, session, agent, meta.room_id)
+        if home is not None and command in ("reset", "compact"):
+            effect = "clear" if command == "reset" else "condense"
+            return say(
+                f"**{_label(agent)}** answers this room from its shared session, "
+                f"based in **{home}**. A {command} would {effect} its memory for "
+                f"every room it answers, so run `!{command}` for it in **{home}** "
+                "instead."
+            )
+        if home is not None and command == "interrupt":
+            # The session's host stops a turn only when it is this room's, and
+            # nothing here knows which room its running turn is for.
+            texts = dataclasses.replace(
+                texts,
+                ack=(
+                    "Asked to stop any work for this room. Work for its other "
+                    "rooms carries on."
+                ),
+            )
     # A session that connected to this room takes the command itself, over
     # its agent's controller. Nothing is queued: with no controller to relay
     # it to, the room is told so.

@@ -587,3 +587,7 @@ async def test_an_interrupt_from_a_room_sharing_the_session_is_relayed(
     assert len(relayed) == 1
     assert relayed[0]["sessionId"] == "lead"
     assert relayed[0]["origin"]["roomId"] == "room-1"
+    # It does not claim to have stopped work another room asked for.
+    assert reply.bodies == [
+        "Asked to stop any work for this room. Work for its other rooms carries on."
+    ]
