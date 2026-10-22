@@ -109,6 +109,11 @@ _ALLOWED_MODULES = {
     # `tenants_of_cloud_machine`, and each one's row on the machine is then
     # read with that workspace bound.
     "switch_core.db.stores.hosted_machine_store",
+    # Deleting an account also clears the workspaces the person was removed
+    # from, where nothing binds them any more: enumerate the tenants, then
+    # look for their rows in each under its own policy, the same fan-out as
+    # the boot work.
+    "switch_core.accounts.deletion",
     # Enumerating tenants at boot, and starting one bridge or one connector by
     # id from a context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
