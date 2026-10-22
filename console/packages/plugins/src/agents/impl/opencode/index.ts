@@ -25,18 +25,31 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  *
  * macOS and Windows keep the plain global install: their default prefixes are
  * user-writable, and changing them would strand anyone who already has it.
+ *
+ * The `opencode` binary is published by two npm packages, `opencode-ai` and
+ * `@opencode/cli`. Uninstall removes both: npm exits 0 for a package that is not
+ * installed, so naming only one leaves a binary from the other in place.
  */
+const OPENCODE_NPM_PACKAGES = 'opencode-ai @opencode/cli';
+
 const OPENCODE_HOST_DEPENDENCY = (() => {
   const base = npmDependency({ id: 'opencode', package: 'opencode-ai' });
+  const withFullUninstall = (options: NonNullable<typeof base.installCommands>['macos']) =>
+    options?.map((option) =>
+      option.method === 'npm'
+        ? { ...option, uninstallCommand: `npm uninstall -g ${OPENCODE_NPM_PACKAGES}` }
+        : option
+    );
   return {
     ...base,
     installCommands: {
-      ...base.installCommands,
+      macos: withFullUninstall(base.installCommands?.macos),
+      windows: withFullUninstall(base.installCommands?.windows),
       linux: [
         {
           method: 'npm' as const,
           command: 'npm install -g --prefix "$HOME/.local" opencode-ai',
-          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+          uninstallCommand: `npm uninstall -g --prefix "$HOME/.local" ${OPENCODE_NPM_PACKAGES}`,
           recommended: true,
         },
       ],

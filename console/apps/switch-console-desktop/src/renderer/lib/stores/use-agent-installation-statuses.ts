@@ -13,6 +13,7 @@ import type {
 } from '@shared/core/providers/agent-payload';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { agentInstallationStatusUpdatedChannel } from '@shared/events/appEvents';
+import { cliActionFailure } from './cli-action-outcome';
 import { AGENTS_METADATA_QUERY_KEY, useAgents } from './use-agents';
 import { recheckThisComputer } from './use-this-computer-report';
 
@@ -202,6 +203,7 @@ export type HostDependencyInstallation = {
   uninstallingMethod: InstallMethod | undefined;
   install(method: InstallMethod): Promise<void>;
   update(method?: InstallMethod): Promise<void>;
+  /** Rejects when the uninstall failed, including when the binary is still present after it. */
   uninstall(method?: InstallMethod): Promise<void>;
   setUsed(selection: HostDependencySelection): Promise<void>;
   refresh(): Promise<void>;
@@ -299,8 +301,18 @@ export function useAgentInstallationStatus(
 
   const uninstall = useCallback(
     (method?: InstallMethod) =>
-      new Promise<void>((resolve) => {
-        uninstallMutate({ id: id as AgentProviderId, method }, { onSettled: () => resolve() });
+      new Promise<void>((resolve, reject) => {
+        uninstallMutate(
+          { id: id as AgentProviderId, method },
+          {
+            onSuccess: (result) => {
+              const failure = cliActionFailure(result);
+              if (failure) reject(failure);
+              else resolve();
+            },
+            onError: reject,
+          }
+        );
       }),
     [uninstallMutate, id]
   );

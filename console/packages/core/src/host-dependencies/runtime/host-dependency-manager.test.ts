@@ -667,6 +667,32 @@ describe('HostDependencyManager uninstall', () => {
     if (result.success) expect(result.data.status).toBe('missing');
   });
 
+  it('reports still-present when the uninstall command exits 0 but the binary remains', async () => {
+    const runInstallCommand = vi.fn(async () => ok<void>());
+    const stillThereCtx = makeCtx(async (command, args = []) => {
+      if (command === 'which' && args.includes('codex')) {
+        return { stdout: '/opt/homebrew/bin/codex\n', stderr: '' };
+      }
+      if (command === 'realpath') {
+        return { stdout: `${args[0]}\n`, stderr: '' };
+      }
+      if (command === '/opt/homebrew/bin/codex') {
+        return { stdout: 'codex 2.0.11\n', stderr: '' };
+      }
+      throw new Error('missing');
+    });
+    const manager = new HostDependencyManager(stillThereCtx, {
+      dependencies: UNINSTALL_DEPENDENCIES,
+      runInstallCommand,
+      installMethodDetector: npmDetector,
+    });
+
+    const result = await manager.uninstall('codex-pm', 'npm');
+
+    expect(runInstallCommand).toHaveBeenCalledWith('npm uninstall -g @openai/codex');
+    expect(result).toEqual({ success: false, error: { type: 'still-present', id: 'codex-pm' } });
+  });
+
   it('returns runner error when the uninstall command fails', async () => {
     const runInstallCommand = vi.fn(async () =>
       err({

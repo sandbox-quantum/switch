@@ -36,3 +36,17 @@ describe('opencode host dependency', () => {
     expect(hostDependency.binaryNames).toEqual(['opencode']);
   });
 });
+
+describe('opencode uninstall', () => {
+  // A global `@opencode/cli` install provides the same `opencode` binary as
+  // `opencode-ai`. `npm uninstall -g opencode-ai` exits 0 without touching it.
+  it.each(['macos', 'linux', 'windows'] as const)(
+    'removes both npm packages that ship the binary on %s',
+    (platform) => {
+      const uninstall = firstOption(platform).uninstallCommand ?? '';
+      expect(uninstall).toMatch(/^npm uninstall -g /);
+      expect(uninstall).toContain('opencode-ai');
+      expect(uninstall).toContain('@opencode/cli');
+    }
+  );
+});

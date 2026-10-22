@@ -863,6 +863,9 @@ export class HostDependencyManager {
     this.onExecutableInvalidated.emit({ id });
 
     if (state.status === 'available') {
+      this.logger.warn(
+        `[HostDependencyManager] ${id} is still installed at ${String(state.path)} after uninstalling`
+      );
       return err({ type: 'still-present', id });
     }
 
