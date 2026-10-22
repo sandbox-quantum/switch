@@ -1240,16 +1240,28 @@ export async function runAgentHost(
      * when it was addressed should still get one.
      */
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
+      const home = await sharedRooms.homeFor(event.roomId);
       const sharer = placements.sharerOf(event.roomId);
       if (sharer) {
         // Still shared, and from the room that session is in? A room isolated
         // since, or a home moved, gets the ordinary treatment below.
-        const home = await sharedRooms.homeFor(event.roomId);
         if (home === null || placements.roomOf(sharer) !== home) {
           await placements.unshare(event.roomId);
           publishQuietly();
           console.warn(
             `Room ${event.roomId} no longer shares session ${sharer}'s home room, so it is answered on its own.`
+          );
+        }
+      }
+      if (home !== null) {
+        // A room shared again keeps the session it had while isolated until
+        // its next message: that session gives the room up to the home one.
+        const own = placements.placedIn(event.roomId);
+        if (own && own !== placements.placedIn(home)) {
+          await placements.unplace(own);
+          publishQuietly();
+          console.warn(
+            `Room ${event.roomId} shares this agent's session again, so session ${own} no longer answers it; the session in room ${home} does.`
           );
         }
       }
@@ -1268,7 +1280,6 @@ export async function runAgentHost(
       }
       // A room sharing the agent's session is answered from its home room:
       // by the session there, or by a new one placed there.
-      const home = await sharedRooms.homeFor(event.roomId);
       if (home !== null) {
         const homeSession = placements.placedIn(home);
         const owner = homeSession ? await sessionConfig(homeSession) : null;

@@ -2808,3 +2808,62 @@ it('starts the home session for a message in a shared room when none is running'
     await run;
   }
 });
+
+it('hands a room shared again from the session it had while isolated to the home one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-reshare-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const sharing = { home: 'home', shared: [] as string[] };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const name = String(url).split('/ops/')[1] ?? '';
+    if (name === 'get_agent_detail')
+      return new Response(
+        JSON.stringify({
+          result: {
+            home_room_id: sharing.home,
+            rooms: [
+              { room_id: 'home', shared_session: 'home' },
+              ...sharing.shared.map((room_id) => ({ room_id, shared_session: 'shared' })),
+            ],
+          },
+        })
+      );
+    return new Response(JSON.stringify({ result: { event_id: 'posted' } }));
+  });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] });
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'home'));
+    await eventually(() => settled(root));
+    const lead = placementsOf(published).home!;
+    // Isolated: work gets a session of its own.
+    await streams[0]!.onEvent!(addressed(2, 'work'));
+    await eventually(() => settled(root));
+    const own = placementsOf(published).work!;
+    expect(own).not.toBe(lead);
+
+    // Shared again (after the cached settings expire): the home session answers.
+    sharing.shared = ['work'];
+    vi.setSystemTime(Date.now() + 60_000);
+    await streams[0]!.onEvent!(addressed(3, 'work'));
+    await eventually(() => settled(root));
+    expect(placementsOf(published)).toEqual({ home: lead });
+    expect(publishedShares.at(-1)).toEqual({ [lead]: ['work'] });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
