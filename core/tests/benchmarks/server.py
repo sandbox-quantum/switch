@@ -542,6 +542,7 @@ async def _serve(
             agent_store=session_env.agent_store,
             room_role_store=session_env.room_role_store,
         ),
+        decisions=None,
     )
 
     provisioning: Provisioning = PostgresProvisioning(
