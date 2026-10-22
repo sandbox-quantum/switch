@@ -134,7 +134,18 @@ export function useAgentInstallationStatuses(connectionId?: string) {
     mutationKey: opKey('uninstall', connectionId),
     mutationFn: ({ id, method }) =>
       rpc.providers.uninstall(id, connectionId, method) as Promise<unknown>,
-    onSuccess: invalidate,
+    onSuccess: (result, vars) => {
+      invalidate();
+      const name = nameOf(vars.id);
+      if ((result as { success: boolean }).success) {
+        toast({ title: `${name} successfully uninstalled` });
+      } else {
+        toast({ title: `Failed to uninstall ${name}`, variant: 'destructive' });
+      }
+    },
+    onError: (_, vars) => {
+      toast({ title: `Failed to uninstall ${nameOf(vars.id)}`, variant: 'destructive' });
+    },
   });
 
   const setUsedMutation = useMutation<
