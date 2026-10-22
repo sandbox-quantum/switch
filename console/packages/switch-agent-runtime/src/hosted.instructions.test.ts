@@ -52,3 +52,12 @@ it('tells the session how its events arrive', () => {
   expect(managed).not.toContain('PostToolUse');
   expect(managed).not.toContain('<channel');
 });
+
+it('tells the session a message Switch routed to it may not be its to answer', () => {
+  const line = runtimeInstructions()
+    .split('\n')
+    .find((text) => text.includes('!auto-route on'));
+  expect(line, 'routed messages are not described').toBeDefined();
+  expect(line).toContain('without tagging anyone');
+  expect(line).toContain('stay silent');
+});

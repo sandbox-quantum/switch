@@ -41,6 +41,8 @@ export interface MessagePayload {
    * server from before `owner` merged into `admin` may still send `owner`,
    * which means `admin`. */
   sender_role?: 'admin' | 'member' | 'owner' | null;
+  /** True when nobody was tagged and Switch's decision service picked this agent to answer. */
+  routed?: boolean;
 }
 
 export interface CommandPayload {
