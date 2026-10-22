@@ -9,13 +9,13 @@ describe('roomSharingLabel', () => {
 
   it('says the session is based here, in the home room', () => {
     expect(roomSharingLabel(sharing, 'hub', name)).toBe(
-      'Shared session, based here · answers 3 rooms'
+      'Shared session, based here · 3 rooms'
     );
   });
 
   it('names the home room from a room that shares it', () => {
     expect(roomSharingLabel(sharing, 'a', name)).toBe(
-      'Shared session, based in switch-dev · answers 3 rooms'
+      'Shared session, based in switch-dev · 3 rooms'
     );
   });
 
@@ -27,7 +27,7 @@ describe('roomSharingLabel', () => {
 
   it('counts one room when only home shares it', () => {
     expect(roomSharingLabel({ homeRoomId: 'hub', sharedRoomIds: [] }, 'hub', name)).toBe(
-      'Shared session, based here · answers 1 room'
+      'Shared session, based here · 1 room'
     );
   });
 });

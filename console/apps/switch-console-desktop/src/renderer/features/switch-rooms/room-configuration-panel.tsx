@@ -1143,9 +1143,9 @@ const AgentSharingLine = observer(function AgentSharingLine({
   );
   if (!label) return null;
   return (
-    <span className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted" title={label}>
-      <Link2 className="size-3 shrink-0" aria-hidden />
-      <span className="truncate">{label}</span>
+    <span className="flex min-w-0 items-start gap-1 text-xs text-foreground-muted">
+      <Link2 className="mt-0.5 size-3 shrink-0" aria-hidden />
+      <span>{label}</span>
     </span>
   );
 });
