@@ -79,6 +79,12 @@ export class SwitchRoomsStore {
     this.sharedRooms = bySession;
   }
 
+  /** The session answering this room from its home room, or null. */
+  sharerOfRoom(roomId: string): string | null {
+    for (const [sessionId, rooms] of this.sharedRooms) if (rooms.includes(roomId)) return sessionId;
+    return null;
+  }
+
   /** The rooms a session answers from its home room, beside the one it is in. */
   sharedRoomsForSession(sessionId: string): string[] {
     return this.sharedRooms.get(sessionId) ?? [];

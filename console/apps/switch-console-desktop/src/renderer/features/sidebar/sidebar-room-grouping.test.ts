@@ -70,4 +70,14 @@ describe('groupByRoom', () => {
     ]);
     sharedRoomsForSession.mockImplementation(() => []);
   });
+
+  it('lists a shared session only under its home room where the agent is the subject', () => {
+    associatedRoomForSession.mockImplementation(() => 'home');
+    sharedRoomsForSession.mockImplementation(() => ['work']);
+
+    expect(groupByRoom([session('lead')], [], { withShares: false }).map(([key]) => key)).toEqual([
+      'home',
+    ]);
+    sharedRoomsForSession.mockImplementation(() => []);
+  });
 });

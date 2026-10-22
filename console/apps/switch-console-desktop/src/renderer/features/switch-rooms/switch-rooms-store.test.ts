@@ -69,6 +69,8 @@ describe('shared sessions', () => {
     store.rememberShares({ work: 'lead', ops: 'lead', other: 'second' });
     expect(store.sharedRoomsForSession('lead')).toEqual(['ops', 'work']);
     expect(store.sharedRoomsForSession('second')).toEqual(['other']);
+    expect(store.sharerOfRoom('work')).toBe('lead');
+    expect(store.sharerOfRoom('home')).toBeNull();
     store.rememberShares({});
     expect(store.sharedRoomsForSession('lead')).toEqual([]);
   });
