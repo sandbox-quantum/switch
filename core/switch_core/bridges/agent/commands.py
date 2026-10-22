@@ -1445,6 +1445,10 @@ _SESSION_USAGE = "\n".join(
 )
 
 
+# How many of an agent's shared rooms `!session` names before "and N more".
+_SHARED_ROOMS_LISTED = 10
+
+
 def _session_action(words: list[str]) -> str | None:
     """The change `!session` asks for, "" for none, or None when unreadable."""
     match words:
@@ -1546,8 +1550,16 @@ async def _describe_sharing_for_room(
 
         lines = [f"{label} has one shared session, based in {name(home_id)}."]
         if sharing.other_room_ids:
-            lines.append("Other rooms it answers from there:")
-            lines.extend(f"- {name(r)}" for r in sharing.other_room_ids)
+
+            def order(rid: str) -> tuple[bool, str]:
+                found = rooms.get(rid)
+                return (rid != room_id, (found.name if found else rid).lower())
+
+            others = sorted(sharing.other_room_ids, key=order)
+            lines.append(f"Other rooms it answers from there ({len(others)}):")
+            lines.extend(f"- {name(r)}" for r in others[:_SHARED_ROOMS_LISTED])
+            if len(others) > _SHARED_ROOMS_LISTED:
+                lines.append(f"- and {len(others) - _SHARED_ROOMS_LISTED} more")
         if not sharing.covers(room_id):
             lines.append("")
             lines.append("This room is isolated: it has its own session.")

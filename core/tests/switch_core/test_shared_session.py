@@ -317,6 +317,36 @@ class TestArchivingTheHomeRoom:
         assert "**work** (this room)" in body
         assert "share its session by default" in body
 
+    async def test_session_command_lists_rooms_by_name_and_stops_at_ten(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc, buddy, lead, hub, work = await self._setup(session_factory)
+        await svc.update_shared_session(buddy, "lead", home_room_id=hub)
+        await svc.set_room_session(buddy, work, "lead", True)
+        for n in range(12):
+            room = await _room(session_factory, f"room-{n:02}", [lead])
+            await svc.set_room_session(buddy, room, "lead", True)
+
+        async with session_factory() as session:
+            agent = await session.get(Agent, lead)
+            assert agent is not None
+            body = await _describe_sharing_for_room(
+                SimpleNamespace(_room_store=RoomStore()),  # type: ignore[arg-type]
+                session,
+                agent,
+                work,
+            )
+        lines = body.splitlines()
+        assert lines[1] == "Other rooms it answers from there (13):"
+        # This room first, then by name; ten named, the rest counted.
+        assert lines[2:5] == [
+            "- **work** (this room)",
+            "- **room-00**",
+            "- **room-01**",
+        ]
+        assert lines[11] == "- **room-08**"
+        assert lines[12] == "- and 3 more"
+
 
 class TestInviting:
     async def test_choosing_needs_the_owner_or_an_admin(
