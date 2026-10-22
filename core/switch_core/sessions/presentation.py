@@ -91,13 +91,15 @@ async def request_card_recipient(
     a post the asker is waiting on; a card needs whoever may answer, and on
     the default policy only the owner may.
 
-    The owner comes first, then whoever asked, each only when `may_answer`
+    Whoever asked comes first, then the owner, each only when `may_answer`
     (given their room identity) admits them, which is the check an answer is
-    put through. Exactly one person or nobody: a policy that admits the whole
-    room is not a reason to page the whole room. A person is named by the
-    account they hold on this bridge and in this room, so somebody with no
-    account here is not named at all. An owner may hold several such accounts
-    and a policy may admit only one of them, so each is tried in turn.
+    put through. The asker is the one waiting on the card, so when they may
+    answer it they are named even if the owner may too. Exactly one person or
+    nobody: a policy that admits the whole room is not a reason to page the
+    whole room. A person is named by the account they hold on this bridge and
+    in this room, so somebody with no account here (an agent, for one) is not
+    named at all. An owner may hold several such accounts and a policy may
+    admit only one of them, so each is tried in turn.
     """
     members = (
         select(ExternalUser.external_user_id, Client.transport_user_id)
@@ -105,11 +107,23 @@ async def request_card_recipient(
         .join(ClientRoom, ClientRoom.client_id == ExternalUser.client_id)
         .where(ExternalUser.bridge_id == bridge_id, ClientRoom.room_id == room_id)
     )
-    owner_accounts: list[Row[tuple[str, str]]] = []
+    refused: str | None = None
+    if actor_id is not None:
+        asker = (
+            await db.execute(
+                members.where(Client.transport_user_id == actor_id)
+                .order_by(ExternalUser.id)
+                .limit(1)
+            )
+        ).first()
+        if asker is not None:
+            if await may_answer(actor_id):
+                return str(asker.external_user_id)
+            refused = actor_id
     if agent.owner_id is None:
         logger.info("Agent %s has no owner to name on its request card.", agent.name)
     else:
-        owner_accounts = list(
+        owner_accounts: list[Row[tuple[str, str]]] = list(
             (
                 await db.execute(
                     members.join(
@@ -130,6 +144,8 @@ async def request_card_recipient(
                 bridge_id,
             )
         for owner in owner_accounts:
+            if owner.transport_user_id == refused:
+                continue
             if await may_answer(owner.transport_user_id):
                 return str(owner.external_user_id)
         if owner_accounts:
@@ -139,21 +155,9 @@ async def request_card_recipient(
                 agent.name,
                 room_id,
             )
-    if actor_id is not None and all(
-        owner.transport_user_id != actor_id for owner in owner_accounts
-    ):
-        asker = (
-            await db.execute(
-                members.where(Client.transport_user_id == actor_id)
-                .order_by(ExternalUser.id)
-                .limit(1)
-            )
-        ).first()
-        if asker is not None and await may_answer(actor_id):
-            return str(asker.external_user_id)
     logger.info(
-        "Request card of agent %s in room %s names nobody: neither its owner "
-        "nor whoever asked has an account here that may answer it.",
+        "Request card of agent %s in room %s names nobody: neither whoever "
+        "asked nor its owner has an account here that may answer it.",
         agent.name,
         room_id,
     )

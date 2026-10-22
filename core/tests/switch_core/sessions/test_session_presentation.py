@@ -207,11 +207,11 @@ class MayAnswer:
         return sender in self.admitted
 
 
-async def test_a_threaded_card_names_the_owner_who_may_answer_it():
-    """On the default policy only the owner may answer, so the owner is named
-    even though somebody else asked: naming the asker pings a person who
-    cannot press anything on the card."""
-    db = _found(OWNER_ACCOUNT)
+async def test_a_threaded_card_names_the_owner_when_the_asker_may_not_answer():
+    """On the default policy only the owner may answer, so the asker is
+    checked, refused, and the owner is named: naming the asker would ping a
+    person who cannot press anything on the card."""
+    db = _found(ASKER_ACCOUNT, OWNER_ACCOUNT)
     may_answer = MayAnswer("@owner:switch")
 
     assert (
@@ -225,9 +225,34 @@ async def test_a_threaded_card_names_the_owner_who_may_answer_it():
         )
         == "UOWNER"
     )
-    assert may_answer.asked == ["@owner:switch"]
-    query = _sql(db, 0)
+    assert may_answer.asked == ["@asker:switch", "@owner:switch"]
+    query = _sql(db, 1)
     assert "external_user_claims.user_id = 'owner'" in query
+    assert "external_users.bridge_id = 'bridge'" in query
+    assert "client_rooms.room_id = 'room'" in query
+    assert db.execute.call_count == 2
+
+
+async def test_an_asker_who_may_answer_is_named_before_the_owner():
+    """The asker is the one waiting on the card, so when the policy lets them
+    answer they are named, and the owner is not looked up at all."""
+    db = _found(ASKER_ACCOUNT, OWNER_ACCOUNT)
+    may_answer = MayAnswer("@asker:switch", "@owner:switch")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        == "UASKER"
+    )
+    assert may_answer.asked == ["@asker:switch"]
+    query = _sql(db, 0)
+    assert "clients.matrix_user_id = '@asker:switch'" in query
     assert "external_users.bridge_id = 'bridge'" in query
     assert "client_rooms.room_id = 'room'" in query
     assert db.execute.call_count == 1
@@ -239,7 +264,7 @@ async def test_an_owner_is_named_by_the_one_linked_account_that_may_answer():
     other = SimpleNamespace(
         external_user_id="UOWNER_OLD", transport_user_id="@owner-old:switch"
     )
-    db = _found([other, OWNER_ACCOUNT])
+    db = _found(None, [other, OWNER_ACCOUNT])
     may_answer = MayAnswer("@owner:switch")
 
     assert (
@@ -254,11 +279,11 @@ async def test_an_owner_is_named_by_the_one_linked_account_that_may_answer():
         == "UOWNER"
     )
     assert may_answer.asked == ["@owner-old:switch", "@owner:switch"]
-    assert db.execute.call_count == 1
+    assert db.execute.call_count == 2
 
 
 async def test_an_asker_who_is_the_owner_is_not_asked_twice():
-    db = _found([OWNER_ACCOUNT])
+    db = _found(OWNER_ACCOUNT, [OWNER_ACCOUNT])
     may_answer = MayAnswer()
 
     assert (
@@ -273,7 +298,7 @@ async def test_an_asker_who_is_the_owner_is_not_asked_twice():
         is None
     )
     assert may_answer.asked == ["@owner:switch"]
-    assert db.execute.call_count == 1
+    assert db.execute.call_count == 2
 
 
 async def test_an_owner_with_no_account_here_is_not_named(caplog):
@@ -295,78 +320,22 @@ async def test_an_owner_with_no_account_here_is_not_named(caplog):
     assert "names nobody" in caplog.text
 
 
-async def test_an_asker_is_named_only_when_they_may_answer():
-    """An open policy admits the asker, who is named when the owner cannot be."""
-    agent = SimpleNamespace(name="agent", owner_id="owner")
+async def test_an_asker_who_may_not_answer_is_not_named():
+    db = _found(ASKER_ACCOUNT, None)
+    may_answer = MayAnswer()
 
-    admitted = MayAnswer("@asker:switch")
-    assert (
-        await request_card_recipient(
-            _found(None, ASKER_ACCOUNT),
-            bridge_id="bridge",
-            room_id="room",
-            actor_id="@asker:switch",
-            agent=agent,
-            may_answer=admitted,
-        )
-        == "UASKER"
-    )
-    assert admitted.asked == ["@asker:switch"]
-
-    db = _found(None, ASKER_ACCOUNT)
     assert (
         await request_card_recipient(
             db,
             bridge_id="bridge",
             room_id="room",
             actor_id="@asker:switch",
-            agent=agent,
-            may_answer=MayAnswer(),
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
         )
         is None
     )
-    query = _sql(db, 1)
-    assert "clients.matrix_user_id = '@asker:switch'" in query
-    assert "external_users.bridge_id = 'bridge'" in query
-    assert "client_rooms.room_id = 'room'" in query
-
-
-async def test_a_policy_open_to_everyone_still_names_one_person():
-    """Everybody may answer, so the owner is named and nobody else is."""
-    db = _found(OWNER_ACCOUNT, ASKER_ACCOUNT)
-    may_answer = MayAnswer("@owner:switch", "@asker:switch")
-
-    assert (
-        await request_card_recipient(
-            db,
-            bridge_id="bridge",
-            room_id="room",
-            actor_id="@asker:switch",
-            agent=SimpleNamespace(name="agent", owner_id="owner"),
-            may_answer=may_answer,
-        )
-        == "UOWNER"
-    )
-    assert may_answer.asked == ["@owner:switch"]
-    assert db.execute.call_count == 1
-
-
-async def test_an_owner_who_may_not_answer_gives_way_to_an_asker_who_may():
-    db = _found(OWNER_ACCOUNT, ASKER_ACCOUNT)
-    may_answer = MayAnswer("@asker:switch")
-
-    assert (
-        await request_card_recipient(
-            db,
-            bridge_id="bridge",
-            room_id="room",
-            actor_id="@asker:switch",
-            agent=SimpleNamespace(name="agent", owner_id="owner"),
-            may_answer=may_answer,
-        )
-        == "UASKER"
-    )
-    assert may_answer.asked == ["@owner:switch", "@asker:switch"]
+    assert may_answer.asked == ["@asker:switch"]
 
 
 async def test_an_ownerless_agent_with_no_known_asker_names_nobody(caplog):

@@ -49,8 +49,8 @@ version of their own to them without also giving them a release of their own.
   it.** Approval and question cards go into the thread of the turn that raised
   them, and on Slack they used to mention nobody there, so an owner who was not
   in the thread was never told and the agent waited. A card in a thread now
-  mentions the agent's owner when the agent's addressing policy lets them
-  answer, otherwise the person who asked if they may answer, otherwise nobody.
+  mentions the person who asked when the agent's addressing policy lets them
+  answer, otherwise the agent's owner if they may answer, otherwise nobody.
   It never mentions more than one person, even when the policy lets anyone
   answer. Cards at the top of a channel mention whoever asked, as before.
 - **The template guide agents read now covers a room's `roles:`,
