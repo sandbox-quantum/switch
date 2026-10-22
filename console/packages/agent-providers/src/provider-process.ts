@@ -53,12 +53,17 @@ export function execProvider(
   options: ExecFileOptions
 ): Promise<{ stdout: string; stderr: string }> {
   const target = resolved(command, args, options.env);
-  return promisify(execFile)(target.command, target.args, {
+  const run = promisify(execFile)(target.command, target.args, {
     ...options,
     encoding: 'utf8',
     windowsHide: true,
     windowsVerbatimArguments: target.windowsVerbatimArguments,
-  }) as Promise<{ stdout: string; stderr: string }>;
+  });
+  // Nothing is ever written to it, and a CLI that reads stdin when it is not
+  // a terminal (`claude -p` does) would otherwise wait for an end that never
+  // comes: closed, it reads nothing and goes on at once.
+  run.child.stdin?.end();
+  return run as Promise<{ stdout: string; stderr: string }>;
 }
 
 /**

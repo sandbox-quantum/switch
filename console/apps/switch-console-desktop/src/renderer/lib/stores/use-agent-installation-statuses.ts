@@ -134,7 +134,10 @@ export function useAgentInstallationStatuses(connectionId?: string) {
     mutationKey: opKey('uninstall', connectionId),
     mutationFn: ({ id, method }) =>
       rpc.providers.uninstall(id, connectionId, method) as Promise<unknown>,
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      if (!connectionId) void recheckThisComputer(queryClient);
+    },
   });
 
   const setUsedMutation = useMutation<
