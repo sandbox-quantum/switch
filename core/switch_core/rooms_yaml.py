@@ -1179,6 +1179,7 @@ class RoomYamlService:
                     if agent is None:
                         raise ValueError(f"unknown agent {agent_name}")
                     require_manage(Principal(user_id, is_admin), agent.owner_id)
+                    home_before = agent.home_room_id
                     if mode == "home":
                         await shared_session.set_home_room(
                             session, self._room_store, self._agent_store, agent, room_id
@@ -1188,6 +1189,19 @@ class RoomYamlService:
                             session, self._room_store, agent, room_id, mode == "shared"
                         )
                     await session.commit()
+                if mode == "home":
+                    shared_session.report_home_change(
+                        getattr(self._rooms, "telemetry", None),
+                        home_before,
+                        room_id,
+                        "template",
+                    )
+                else:
+                    shared_session.report_room_change(
+                        getattr(self._rooms, "telemetry", None),
+                        mode == "shared",
+                        "template",
+                    )
             except (ValueError, PermissionError) as e:
                 failures.append({"kind": "session", "id": agent_name, "error": str(e)})
 

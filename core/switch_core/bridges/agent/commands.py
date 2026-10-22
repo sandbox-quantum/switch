@@ -54,6 +54,8 @@ from switch_core.platform_access import administers_on_record
 from switch_core.shared_session import (
     SharingMark,
     SharingRefused,
+    report_home_change,
+    report_room_change,
     set_home_room,
     set_room_shared,
     sharing_marks,
@@ -1485,6 +1487,7 @@ async def _cmd_session(
             if authority.refusal is not None:
                 await _reply(host, room, event, authority.refusal)
                 return
+            home_before = target.home_room_id
             try:
                 if action in ("shared", "isolated"):
                     await set_room_shared(
@@ -1507,6 +1510,13 @@ async def _cmd_session(
                 return
             await session.commit()
             await session.refresh(target)
+            telemetry = getattr(host._room_service, "telemetry", None)
+            if action in ("shared", "isolated"):
+                report_room_change(telemetry, action == "shared", "command")
+            else:
+                report_home_change(
+                    telemetry, home_before, target.home_room_id, "command"
+                )
         body = await _describe_sharing_for_room(host, session, target, meta.room_id)
     await _reply(host, room, event, body)
 

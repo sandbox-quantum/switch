@@ -223,6 +223,12 @@ class RoomService:
             except Exception:
                 logger.exception("Room listener failed for room %s", room_id)
 
+    @property
+    def telemetry(self) -> TelemetryService | None:
+        """Where room changes are reported, for callers that change a room's
+        settings outside this service."""
+        return self._telemetry
+
     def on_room_agents_changed(
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:

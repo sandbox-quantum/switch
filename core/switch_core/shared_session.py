@@ -33,7 +33,11 @@ if TYPE_CHECKING:
     from switch_core.db.models import Agent
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.room_store import RoomStore
+    from switch_core.telemetry import TelemetryService
 
+
+# The surface a change came through, as telemetry reports it.
+Via = Literal["command", "agent_tool", "console", "template"]
 
 # How an agent's session stands in one room, for showing people which agents
 # share one: the room it is based in, another room sharing it, or neither.
@@ -216,3 +220,26 @@ def describe_sharing(sharing: Sharing, room_names: dict[str, str]) -> dict[str, 
         "shared_by_default": sharing.shared_by_default,
         "locked": sharing.locked,
     }
+
+
+def report_home_change(
+    telemetry: TelemetryService | None, before: str | None, after: str | None, via: Via
+) -> None:
+    """Report an agent's home room being set, moved or cleared."""
+    if before == after:
+        return
+    from switch_core.telemetry import emit_safely
+
+    home = "cleared" if after is None else ("set" if before is None else "moved")
+    emit_safely(telemetry, "shared_session_home_changed", {"home": home, "via": via})
+
+
+def report_room_change(
+    telemetry: TelemetryService | None, shared: bool, via: Via
+) -> None:
+    """Report a room being switched between sharing a session and its own."""
+    from switch_core.telemetry import emit_safely
+
+    emit_safely(
+        telemetry, "shared_session_room_changed", {"shared": shared, "via": via}
+    )

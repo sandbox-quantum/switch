@@ -383,3 +383,37 @@ class TestRoomUsage:
             await svc.room_usage(stranger, "lead", 7)
         with pytest.raises(ValueError):
             await svc.room_usage(buddy, "lead", 0)
+
+
+class TestReporting:
+    async def test_changes_are_reported_with_the_surface_they_came_through(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        from switch_core.telemetry.catalogue import validate
+
+        events: list[tuple[str, dict[str, object]]] = []
+
+        class _Telemetry:
+            def emit(self, event: str, **properties: object) -> None:
+                validate(event, properties)
+                events.append((event, properties))
+
+        svc = _service(session_factory)
+        alice = await _make_user(session_factory, "alice")
+        buddy = await _register(svc, "alice-buddy", alice)
+        lead = await _register(svc, "lead", alice)
+        hub = await _room(session_factory, "hub", [lead])
+        work = await _room(session_factory, "work", [lead])
+        svc.telemetry = _Telemetry()  # type: ignore[attr-defined,assignment]
+
+        await svc.update_shared_session(buddy, "lead", home_room_id=hub)
+        await svc.update_shared_session(buddy, "lead", home_room_id=work)
+        await svc.set_room_session(buddy, hub, "lead", False)
+        await svc.update_shared_session(buddy, "lead", clear_home=True)
+
+        assert events == [
+            ("shared_session_home_changed", {"home": "set", "via": "agent_tool"}),
+            ("shared_session_home_changed", {"home": "moved", "via": "agent_tool"}),
+            ("shared_session_room_changed", {"shared": False, "via": "agent_tool"}),
+            ("shared_session_home_changed", {"home": "cleared", "via": "agent_tool"}),
+        ]

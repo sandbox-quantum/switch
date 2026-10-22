@@ -825,6 +825,7 @@ async def update_shared_session(
 ) -> AgentDetail:
     """Set an agent's home room and shared-session defaults. Owner or admin."""
     agent = await _sharing_target(agent_id, session, agent_store, user, is_admin)
+    home_before = agent.home_room_id
     try:
         await shared_session.set_sharing_defaults(
             session,
@@ -846,6 +847,12 @@ async def update_shared_session(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await session.commit()
     await session.refresh(agent)
+    shared_session.report_home_change(
+        getattr(protocol, "telemetry", None),
+        home_before,
+        agent.home_room_id,
+        "console",
+    )
     logger.info("Updated shared session for agent %s by user %s", agent.name, user.name)
     return await assemble_agent_detail(
         session,
@@ -881,6 +888,9 @@ async def update_room_session(
     except shared_session.SharingRefused as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await session.commit()
+    shared_session.report_room_change(
+        getattr(protocol, "telemetry", None), req.shared, "console"
+    )
     await session.refresh(agent)
     return await assemble_agent_detail(
         session,

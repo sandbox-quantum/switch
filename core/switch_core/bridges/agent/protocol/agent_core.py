@@ -3256,6 +3256,7 @@ class AgentCore:
             if target is None:
                 raise ValueError(f"Unknown agent: {target_name}")
             await self._require_sharing_authority(session, agent_id, target)
+            home_before = target.home_room_id
             await shared_session.set_sharing_defaults(
                 session,
                 self.room_store,
@@ -3274,6 +3275,9 @@ class AgentCore:
                 )
             await session.commit()
             await session.refresh(target)
+            shared_session.report_home_change(
+                self.telemetry, home_before, target.home_room_id, "agent_tool"
+            )
             return await self._describe_sharing(session, target)
 
     async def set_room_session(
@@ -3290,6 +3294,7 @@ class AgentCore:
                 session, self.room_store, target, room_id, value
             )
             await session.commit()
+            shared_session.report_room_change(self.telemetry, value, "agent_tool")
             return await self._describe_sharing(session, target)
 
     async def room_usage(
