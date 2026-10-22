@@ -1838,12 +1838,13 @@ version of their own to them without also giving them a release of their own.
   switch.** Console checked for Docker once, when the page opened, so Docker
   Desktop started afterwards left the switch greyed out until you left the
   page and came back. The server page and the local setup page now check again
-  every few seconds until Docker answers (#1021).
+  every few seconds until Docker answers, and a server that started without
+  Docker shows the switch off and ready to turn on (#1021).
 - **A local Mattermost shows up as soon as it is ready.** When the Mattermost
   beside a local server finished setting up, pages already open kept showing no
   Mattermost and asked you to link an account until the server was restarted.
-  They now refresh the messaging apps, linked accounts and rooms the moment it
-  is up (#1021).
+  They now refresh the messaging apps and linked accounts the moment it is up
+  (#1021).
 
 ### [0.40.1] - 2026-10-21
 

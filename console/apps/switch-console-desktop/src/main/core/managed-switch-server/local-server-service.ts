@@ -194,7 +194,7 @@ export class LocalServerService {
     const layout = nativeLayout(localServerDir());
     this.mattermostRun++;
     if (!enabled) {
-      this.setStatus({ mattermostState: null, notice: null });
+      this.setStatus({ mattermostState: 'off', notice: null });
       await stopMattermost(layout, false);
       return;
     }
@@ -537,7 +537,7 @@ export class LocalServerService {
               ? `Could not move this server off Docker, so it is still running on Docker: ` +
                 `${moveFailure} Its data is safe; Switch Console tries again at the next start.`
               : result.warning,
-          mattermostState: bringUpMattermost ? 'starting' : null,
+          mattermostState: bringUpMattermost ? 'starting' : ranNative ? 'off' : null,
         });
         if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
         if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);

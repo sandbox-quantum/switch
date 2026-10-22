@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
+import type {
+  DockerAvailability,
+  LocalServerStatus,
+} from '@shared/core/managed-switch-server/managed-switch-server';
 
 /**
  * The server page and the setup page both wait on Docker: the Mattermost
@@ -92,6 +95,39 @@ describe('watching for Docker', () => {
     stopSetupPage();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(detectDocker).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the Mattermost switch off, and free to turn on, when Docker comes up after the start', async () => {
+    detectDocker.mockResolvedValue(DOWN);
+    const store = new LocalServerStore();
+    // Never chosen, and the start found no Docker, so it went without.
+    store.status = {
+      phase: 'running',
+      mattermost: null,
+      mattermostState: 'off',
+    } as LocalServerStatus;
+    const stop = store.watchDocker();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.mattermost).toBe(false);
+
+    detectDocker.mockResolvedValue(UP);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(store.docker?.available).toBe(true);
+    expect(store.mattermost).toBe(false);
+    stop();
+  });
+
+  it('still shows a never-chosen Mattermost on where Console has not seen the start', () => {
+    const store = new LocalServerStore();
+    // Console relaunched beside a server that kept running: nothing seen yet.
+    store.status = {
+      phase: 'running',
+      mattermost: null,
+      mattermostState: null,
+    } as LocalServerStatus;
+    store.docker = UP;
+    expect(store.mattermost).toBe(true);
   });
 
   it('shares a slow check rather than piling more on top of it', async () => {
