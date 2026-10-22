@@ -661,10 +661,11 @@ class SwitchConfig(BaseSettings):
     teams_app_notification_private_key: str | None = None
     teams_app_notification_previous_private_key: str | None = None
     # Where the app's privacy statement and terms of use live. Every Teams app
-    # package has to name both, and they are shown to the admin approving it,
-    # so they are the deployment's to state rather than a placeholder of ours.
-    teams_app_privacy_url: str | None = None
-    teams_app_terms_url: str | None = None
+    # package has to name both, and they are shown to the admin approving it.
+    # They default to the published Switch legal pages; a deployment with its
+    # own overrides them.
+    teams_app_privacy_url: str = "https://docs.switchagents.ai/legal/privacy-policy"
+    teams_app_terms_url: str = "https://docs.switchagents.ai/legal/terms"
     # The name the app goes by in Teams. Every environment registers an app of
     # its own, and an organisation approving more than one — ours, testing
     # them — would otherwise see several apps of the same name.
@@ -1528,7 +1529,10 @@ class SwitchConfig(BaseSettings):
             "TEAMS_APP_PRIVACY_URL": self.teams_app_privacy_url,
             "TEAMS_APP_TERMS_URL": self.teams_app_terms_url,
         }
-        if not any(settings.values()):
+        # The privacy and terms pages have defaults, so they alone do not say
+        # a distributed Teams app is meant to be configured.
+        defaulted = ("TEAMS_APP_PRIVACY_URL", "TEAMS_APP_TERMS_URL")
+        if not any(v for k, v in settings.items() if k not in defaulted):
             return self
 
         missing = [
