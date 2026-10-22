@@ -65,7 +65,7 @@ describe('provider logins handed to an agent host', () => {
     const vertex = { ...login, kind: 'vertex' as const, credential: vertexCredentialFixture() };
     expect(providerLoginEnvironment('/root', vertex)).toEqual({
       CLAUDE_CODE_USE_VERTEX: '1',
-      ANTHROPIC_VERTEX_PROJECT_ID: 'cg-vertexai',
+      ANTHROPIC_VERTEX_PROJECT_ID: 'acme-ai',
       CLOUD_ML_REGION: 'global',
       GOOGLE_APPLICATION_CREDENTIALS: join('/root', 'provider-home', 'google-credentials.json'),
       ANTHROPIC_API_KEY: '',

@@ -128,7 +128,7 @@ it('writes a Vertex AI login’s Google credential under the root, and signs Cla
   const path = join(root, 'provider-home', 'google-credentials.json');
   expect(env).toEqual({
     CLAUDE_CODE_USE_VERTEX: '1',
-    ANTHROPIC_VERTEX_PROJECT_ID: 'cg-vertexai',
+    ANTHROPIC_VERTEX_PROJECT_ID: 'acme-ai',
     CLOUD_ML_REGION: 'global',
     GOOGLE_APPLICATION_CREDENTIALS: path,
   });

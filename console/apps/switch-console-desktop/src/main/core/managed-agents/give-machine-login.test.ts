@@ -128,7 +128,7 @@ describe('giving a machine a provider login', () => {
     const give = (
       credentials: { from: 'key'; json: string } | { from: 'this-computer' },
       provider: 'claude' | 'codex' = 'claude',
-      project = 'cg-vertexai'
+      project = 'acme-ai'
     ) =>
       managedAgentsController.giveMachineLogin({
         serverId: 'server-1',
@@ -149,7 +149,7 @@ describe('giving a machine a provider login', () => {
       expect(JSON.stringify(mocks.giveMachineLogin.mock.calls[0]![3])).not.toContain('PRIVATE KEY');
       expect(given()).toEqual({
         v: 1,
-        project: 'cg-vertexai',
+        project: 'acme-ai',
         region: 'global',
         credentials: SERVICE_ACCOUNT_KEY_FIXTURE,
       });
