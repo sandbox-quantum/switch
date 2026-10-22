@@ -51,6 +51,7 @@ class AuditAction(StrEnum):
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+    OWNERSHIP_TRANSFERRED = "ownership.transferred"
 
 
 class ServerAuditAction(StrEnum):

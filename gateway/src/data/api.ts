@@ -1226,6 +1226,36 @@ export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
 }
 
+export type OwnershipKind =
+  | "agent"
+  | "room"
+  | "package"
+  | "reference"
+  | "reference_type"
+  | "document"
+  | "template";
+
+export interface OwnershipTransferResult {
+  kind: OwnershipKind;
+  id: string;
+  owner_id: string;
+  // An agent's API key is re-issued to its new owner, who has to reconnect it.
+  agent_key_reissued: boolean;
+}
+
+// The current owner or a workspace admin, to a current member of the workspace.
+export async function transferOwnership(
+  kind: OwnershipKind,
+  id: string,
+  newOwnerId: string,
+): Promise<OwnershipTransferResult> {
+  return jsonRequest<OwnershipTransferResult>("/ownership/transfer", "POST", {
+    kind,
+    id,
+    new_owner_id: newOwnerId,
+  });
+}
+
 export async function updateMemberRole(
   tenantId: string,
   userId: string,

@@ -1008,6 +1008,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Every close reports, whichever of the five paths did it — and only for a
     # connection the handler saw start.
     connections.set_close_listener(protocol.sessions.on_close)
+    connections.set_ended_elsewhere_listener(protocol.api_key_cache.invalidate_agent)
 
     # ── Server-side connector lifecycle ─────────────────────────────────────
     connector_lifecycle = ServerSideConnectorLifecycleService(
