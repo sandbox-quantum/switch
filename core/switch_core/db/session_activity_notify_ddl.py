@@ -10,7 +10,8 @@ capped just under 8000 bytes, so a request too large to fit is announced by key
 alone and the subscriber reads that one row.
 
 A turn step's announcement carries only the turn it belongs to
-(`agent_id`, `session_id`, `turn_id`). Its subscriber, a bridge, redraws the
+(`agent_id`, `session_id`, `turn_id`) and its room (`room_id`, null for a step
+outside any room). Its subscriber, a bridge, redraws the
 whole turn from its rows on every change anyway, and a step's text is too
 large to ride along often enough to be worth the branch.
 
@@ -42,6 +43,7 @@ BEGIN
             'tenant_id', NEW.tenant_id,
             'agent_id', NEW.agent_id,
             'session_id', NEW.session_id,
+            'room_id', NEW.room_id,
             'key', body->>'turn_id'
         );
         payload := jsonb_build_object('table', TG_TABLE_NAME, 'key', key)::text;
@@ -50,6 +52,7 @@ BEGIN
             'tenant_id', NEW.tenant_id,
             'agent_id', NEW.agent_id,
             'session_id', NEW.session_id,
+            'room_id', NEW.room_id,
             'key', body->>'request_id'
         );
         payload := jsonb_build_object('table', TG_TABLE_NAME, 'row', body)::text;

@@ -11,6 +11,7 @@ Refusals are `ChatError`s, answered as `{"detail": {"code", "message"}}`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -55,7 +56,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.agent_sessions import ApprovalRequestView
 from switch_core.gateway.auth import get_current_user
-from switch_core.session_activity.listener import Change
+from switch_core.session_activity.listener import Change, RoomSubscription
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,10 @@ RECHECK_SECONDS = 30.0
 _CATCH_UP_PAGE = 200
 # Revisions one activity stream remembers before forgetting them all.
 _ACTIVITY_SENT_MAX = 10_000
+# Activity stream wake-ups that are not a change: reload everything, or
+# re-read the caller's rooms.
+_RESYNC = object()
+_MEMBERSHIPS = object()
 MAX_PAGE = 200
 
 
@@ -300,6 +305,7 @@ async def chat_activity_stream(
             tenant_id,
             user,
             ping_seconds=PING_SECONDS,
+            recheck_seconds=RECHECK_SECONDS,
             queue_max=ACTIVITY_QUEUE_MAX,
         ),
         media_type="text/event-stream",
@@ -708,62 +714,103 @@ async def chat_activity_events(
     user: User,
     *,
     ping_seconds: float,
+    recheck_seconds: float,
     queue_max: int,
 ) -> AsyncIterator[bytes]:
     """Turn steps and approval requests of the rooms the caller may read, as SSE.
 
     Says `ready` once subscribed, so a snapshot fetched after it misses
-    nothing. Readability is checked on every change, so leaving a room stops
-    its frames at once. `resync` means changes may have been missed (the
-    listener reconnected, or this connection fell behind): reload snapshots.
+    nothing. Only changes in the caller's rooms wake the stream; the rooms are
+    re-read when the caller's chats change, on a resync and every
+    `recheck_seconds`. Readability is still checked on every change, so
+    leaving a room stops its frames at once. `resync` means changes may have
+    been missed (the listener reconnected, this connection fell behind, or the
+    caller joined a room): reload snapshots.
     """
-    queue: asyncio.Queue[Change | None] = asyncio.Queue(maxsize=queue_max)
+    queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_max)
 
     def resync() -> None:
         while not queue.empty():
             queue.get_nowait()
-        queue.put_nowait(None)
+        queue.put_nowait(_RESYNC)
 
-    async def on_change(change: Change) -> None:
+    def put(item: object) -> None:
         try:
-            queue.put_nowait(change)
+            queue.put_nowait(item)
         except asyncio.QueueFull:
             resync()
+
+    async def on_change(change: Change) -> None:
+        put(change)
 
     async def on_resync() -> None:
         resync()
 
-    unsubscribe = service.activity_listener.subscribe(tenant_id, on_change, on_resync)
+    def on_memberships() -> None:
+        put(_MEMBERSHIPS)
+
+    service.watch_memberships(tenant_id, user.id, on_memberships)
+    subscription: RoomSubscription | None = None
     # Per-connection, so a turn reread on every change resends only moved steps.
     sent: dict[tuple[str, str, str, str], int] = {}
     try:
         await service.sync_owned_rooms(tenant_id, user.id)
+        rooms = await _readable_room_ids(service, tenant_id, user)
+        if rooms is None:
+            return
+        subscription = service.activity_listener.subscribe_rooms(
+            tenant_id, rooms, on_change, on_resync
+        )
         yield _frame("ready", {})
+        now = time.monotonic()
+        next_ping = now + ping_seconds
+        next_recheck = now + recheck_seconds
         while True:
-            try:
-                change = await asyncio.wait_for(queue.get(), timeout=ping_seconds)
-            except TimeoutError:
-                async with tenant_session(
-                    service.session_factory, tenant_id
-                ) as session:
-                    if not await service.has_tenant_role(session, tenant_id, user.id):
-                        return
+            timeout = max(0.0, min(next_ping, next_recheck) - time.monotonic())
+            item: object = None
+            with contextlib.suppress(TimeoutError):
+                item = await asyncio.wait_for(queue.get(), timeout=timeout)
+            now = time.monotonic()
+            if now >= next_ping:
+                next_ping = now + ping_seconds
                 yield b": ping\n\n"
-                continue
-            if change is None:
-                sent.clear()
-                yield _frame("resync", {})
-                continue
-            if len(sent) > _ACTIVITY_SENT_MAX:
-                # Forgetting only resends steps the client already holds.
-                sent.clear()
-            frames = await _activity_frames(service, tenant_id, user, change, sent)
-            if frames is None:
-                return
-            for frame in frames:
-                yield frame
+            recheck = now >= next_recheck
+            if recheck:
+                next_recheck = now + recheck_seconds
+            if recheck or item is _RESYNC or item is _MEMBERSHIPS:
+                current = await _readable_room_ids(service, tenant_id, user)
+                if current is None:
+                    return
+                subscription.set_rooms(current)
+                added = current - rooms
+                rooms = current
+                if item is _RESYNC or added:
+                    sent.clear()
+                    yield _frame("resync", {})
+            if isinstance(item, Change):
+                if len(sent) > _ACTIVITY_SENT_MAX:
+                    # Forgetting only resends steps the client already holds.
+                    sent.clear()
+                frames = await _activity_frames(service, tenant_id, user, item, sent)
+                if frames is None:
+                    return
+                for frame in frames:
+                    yield frame
     finally:
-        unsubscribe()
+        if subscription is not None:
+            subscription.close()
+        service.unwatch_memberships(tenant_id, user.id, on_memberships)
+
+
+async def _readable_room_ids(
+    service: ChatService, tenant_id: str, user: User
+) -> set[str] | None:
+    """The rooms the caller may read now; None once the caller has no tenant
+    role, which ends the stream."""
+    async with tenant_session(service.session_factory, tenant_id) as session:
+        if not await service.has_tenant_role(session, tenant_id, user.id):
+            return None
+        return {room.id for room in await service.readable_rooms(session, user.id)}
 
 
 async def _activity_frames(
