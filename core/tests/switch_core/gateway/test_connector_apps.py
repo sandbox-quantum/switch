@@ -298,7 +298,10 @@ class TestOnlyTheOperator:
         assert apps["github"]["redirect_uri"] == (
             f"{PUBLIC}/gateway/provider-connections/github/callback"
         )
-        assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
+        assert [entry["slug"] for entry in body["registered"]] == [
+            "atlassian",
+            "stripe",
+        ]
 
     async def test_an_unknown_service_is_not_found(
         self, world: World, operator

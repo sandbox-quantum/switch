@@ -38,6 +38,7 @@ const MARK_COLOR: Record<string, string> = {
   box: 'text-[#0061D5] emdark:text-foreground',
   datadog: 'text-[#632CA6] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
+  stripe: 'text-[#635BFF] emdark:text-foreground',
 };
 
 export function hasConnectionIcon(slug: string): boolean {

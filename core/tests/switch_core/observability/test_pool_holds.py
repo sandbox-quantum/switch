@@ -8,6 +8,7 @@ a reconnect storm needs before anyone can fix it.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator
 from types import SimpleNamespace
 
@@ -31,7 +32,7 @@ from switch_core.observability.pool import (
 
 # Code compiled under a switch_core path, so the borrower lookup takes it for
 # ours: the test module itself is deliberately not counted as a caller.
-_FAKE_FILE = "/srv/switch/core/switch_core/rooms/fake_borrower.py"
+_FAKE_FILE = f"{os.sep}srv{os.sep}switch{os.sep}core{os.sep}switch_core{os.sep}rooms{os.sep}fake_borrower.py"
 
 
 @pytest.fixture

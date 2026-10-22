@@ -166,7 +166,14 @@ def _resident_bytes() -> int | None:
         pages = int(fields[1])
     except ValueError:
         return None
-    return pages * os.sysconf("SC_PAGE_SIZE")
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return None
+    try:
+        page_size = int(sysconf("SC_PAGE_SIZE"))
+    except (ValueError, OSError):
+        return None
+    return pages * page_size
 
 
 def _open_descriptors() -> int | None:

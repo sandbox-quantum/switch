@@ -1,0 +1,35 @@
+slug: stripe
+name: Stripe
+category: Payments
+description: Query payments, customers and subscriptions, as you. Test-mode is recommended.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Stripe supports dynamic client registration; Core registers one itself.
+    registration: dynamic
+    # Switch Console receives the sign-in redirect on loopback.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.stripe.com/v1/account
+    account_id: id
+    label: email
+# Stripe's MCP access tokens live 1 hour (3,600 s) with rotating refresh tokens;
+# agents ask again hourly. Administrators can enable or disable MCP access in the
+# Stripe Dashboard (Settings > Team and security > MCP and CLI access).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: stripe, url: "https://mcp.stripe.com" }
+access:
+  # Stripe MCP authorization provides the unified 'mcp' scope. Payments are sensitive,
+  # so access defaults to read-only. Test-mode is recommended.
+  read:
+    scopes:
+      - mcp
+tools: { mode: pass_through }

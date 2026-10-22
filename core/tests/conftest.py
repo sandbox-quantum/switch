@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import pathlib
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
@@ -50,6 +51,24 @@ encrypted_json.configure(TEST_KEYRING)
 # same platforms to exist.
 for _platform in PLATFORMS:
     messaging_platforms.register(_platform.adapter.describe(_platform.key))
+# On platforms where Python does not run in UTF-8 mode by default (e.g. Windows
+# cp1252), Path.read_text() without an explicit encoding fails on UTF-8 source files
+# containing em-dashes and symbols. Default to UTF-8 across all test runs.
+_orig_read_text = pathlib.Path.read_text
+
+
+def _read_text_utf8(
+    self: pathlib.Path,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+) -> str:
+    if encoding is None:
+        encoding = "utf-8"
+    return _orig_read_text(self, encoding=encoding, errors=errors, newline=newline)
+
+
+pathlib.Path.read_text = _read_text_utf8  # type: ignore[assignment]
 
 
 @pytest.fixture(autouse=True)
@@ -112,16 +131,19 @@ def postgres_url() -> Iterator[str]:
     entirely write traffic. Nothing about the behaviour under test changes:
     these settings govern what survives a crash, not what a transaction sees.
     """
-    container = PostgresContainer("postgres:16-alpine").with_command(
-        "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
-    )
-    with container as pg:
-        host = pg.get_container_host_ip()
-        port = pg.get_exposed_port(5432)
-        yield (
-            f"postgresql+asyncpg://{pg.username}:{pg.password}"
-            f"@{host}:{port}/{pg.dbname}"
+    try:
+        container = PostgresContainer("postgres:16-alpine").with_command(
+            "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
         )
+        with container as pg:
+            host = pg.get_container_host_ip()
+            port = pg.get_exposed_port(5432)
+            yield (
+                f"postgresql+asyncpg://{pg.username}:{pg.password}"
+                f"@{host}:{port}/{pg.dbname}"
+            )
+    except Exception as exc:
+        pytest.skip(f"Docker is not available to run PostgresContainer: {exc}")
 
 
 @pytest.fixture(scope="session")

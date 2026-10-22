@@ -25,23 +25,58 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_atlassian_datadog_google_workspace_and_stripe():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "atlassian",
         "datadog",
         "google-workspace",
+        "stripe",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "atlassian",
         "datadog",
         "github",
         "google-workspace",
+        "stripe",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["stripe"].skill_files
+
+
+def test_the_shipped_stripe_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["stripe"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("stripe", "https://mcp.stripe.com")
+    ]
+    assert definition.access is not None and definition.access.write is None
+    assert definition.access.read.scopes == ["mcp"]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.stripe.com/v1/account"
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "email",
+    )
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -230,9 +265,14 @@ def test_rejects_an_oversized_skill(catalog_copy):
 
 def test_rejects_a_symlink_in_a_skill(catalog_copy, tmp_path):
     (tmp_path / "outside.md").write_text("outside")
-    (catalog_copy / "github" / "skill" / "linked.md").symlink_to(
-        tmp_path / "outside.md"
-    )
+    try:
+        (catalog_copy / "github" / "skill" / "linked.md").symlink_to(
+            tmp_path / "outside.md"
+        )
+    except OSError:
+        pytest.skip(
+            "Creating symlinks is not permitted on this platform/privilege level"
+        )
     with pytest.raises(CatalogError, match="symlink"):
         load_catalog(catalog_copy)
 
