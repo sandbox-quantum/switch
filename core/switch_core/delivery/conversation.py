@@ -10,11 +10,11 @@ three rules extend it, each decided from the room's history:
   person tagged most recently (all of them, when one message tagged several,
   until one answers).
 - **Channel follow-up.** A top-level message reaches the agent the sender is
-  in an unbroken exchange with: the sender addressed the agent (or, in a room
-  routing by decision, the decision service gave the agent the sender's
-  message), the agent has answered since, nobody else has posted in between,
-  the agent's last answer is within the window, and no gap between messages
-  is longer than it.
+  in an unbroken exchange with: the sender addressed the agent, the agent has
+  answered since, nobody else has posted in between, the agent's last answer
+  is within the window, and no gap between messages is longer than it. A
+  message the decision service gave an agent doesn't count as addressing it,
+  so the next untagged message in a room routing by decision is decided again.
 - **Main agent.** In a room whose main agent is set (`!assign-agent`), every
   message reaches it.
 
@@ -49,8 +49,6 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
-
 from switch_core.clients.admin_messages import (
     ADMIN_MARKER,
     AUTO_REPLY_FLAG,
@@ -58,7 +56,6 @@ from switch_core.clients.admin_messages import (
     SENDER_IS_APP_MARKER,
 )
 from switch_core.clients.mentions import NAME_CHAR
-from switch_core.db.models import AgentEventRow
 from switch_core.delivery.addressing import IncomingMessage
 
 if TYPE_CHECKING:
@@ -304,7 +301,6 @@ class RoomConversation:
         self._thread_rows: list[Message] | None = None
         self._channel_rows: list[Message] | None = None
         self._agent_names: set[str] | None = None
-        self._routed: dict[str, set[str | None]] = {}
 
     async def decide(
         self, session: AsyncSession, *, agent: Agent, agent_user_id: str
@@ -429,31 +425,6 @@ class RoomConversation:
             message=_as_incoming(row),
         )
 
-    async def _routed_to(
-        self, session: AsyncSession, *, agent: Agent, row: Message
-    ) -> bool:
-        """Whether the decision service gave `row` to `agent`, which in a room
-        routing by decision counts as the sender addressing it: the agent was
-        given the person's message as if it had been tagged. Read once per
-        agent, for the channel messages the walk reads."""
-        if not self._auto_route_on:
-            return False
-        if agent.id not in self._routed:
-            rows = await self._channel(session)
-            self._routed[agent.id] = set(
-                (
-                    await session.scalars(
-                        select(AgentEventRow.message_key).where(
-                            AgentEventRow.agent_id == agent.id,
-                            AgentEventRow.room_id == self._room_id,
-                            AgentEventRow.room_seq.in_([r.seq for r in rows]),
-                            AgentEventRow.payload["payload"]["routed"].as_boolean(),
-                        )
-                    )
-                ).all()
-            )
-        return row.transport_event_id in self._routed[agent.id]
-
     async def _thread_follow_up(
         self,
         session: AsyncSession,
@@ -560,7 +531,7 @@ class RoomConversation:
                 return ConversationDecision(None, "no recent exchange with this agent")
             if await self._addressed_agent(
                 session, agent=agent, agent_user_id=agent_user_id, row=row
-            ) or await self._routed_to(session, agent=agent, row=row):
+            ):
                 if agent_answered:
                     return ConversationDecision(
                         ConversationRoute.CHANNEL_FOLLOW_UP,

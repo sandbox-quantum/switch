@@ -23,8 +23,8 @@ order of its messages:
    call: still in the room, its policy and budget still letting the sender
    through. Then the person's own message is stored as the agent's own event,
    addressed and marked `routed`, under the message's key and place in the
-   room, as if the agent had been tagged; so the channel follow-up carries on
-   after the agent answers.
+   room. It doesn't count as the person addressing the agent, so the person's
+   next untagged message is decided again rather than followed up.
 
 Nobody receives the message when the service names nobody, when it cannot be
 asked (a timeout, a connection error, an error response or a malformed one:
