@@ -54,7 +54,7 @@ version of their own to them without also giving them a release of their own.
 - **switch-buddy no longer says the Mattermost switch waits for a server
   restart.** Turning it on starts Mattermost straight away on a running local
   server, but switch-buddy's instructions still said it took effect at the next
-  start, which sent people to restart the server for nothing.
+  start, which sent people to restart the server for nothing (#1021).
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`
   joined it. Both Teams apps now offer the same twelve: `/remove-agent` is in,
@@ -1838,12 +1838,12 @@ version of their own to them without also giving them a release of their own.
   switch.** Console checked for Docker once, when the page opened, so Docker
   Desktop started afterwards left the switch greyed out until you left the
   page and came back. The server page and the local setup page now check again
-  every few seconds until Docker answers.
+  every few seconds until Docker answers (#1021).
 - **A local Mattermost shows up as soon as it is ready.** When the Mattermost
   beside a local server finished setting up, pages already open kept showing no
   Mattermost and asked you to link an account until the server was restarted.
   They now refresh the messaging apps, linked accounts and rooms the moment it
-  is up.
+  is up (#1021).
 
 ### [0.40.1] - 2026-10-21
 
