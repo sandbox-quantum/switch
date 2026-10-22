@@ -89,14 +89,21 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
+from switch_core.db.stores.room_store import (
+    auto_route_on_in,
+    follow_ups_enabled_in,
+    main_agent_in,
+)
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
     ConversationRules,
+    RoomConversation,
+    is_small_talk,
     may_follow,
 )
+from switch_core.delivery.decision import decision_request
 from switch_core.delivery.recipient import (
     NOTHING,
     AgentRecipient,
@@ -130,6 +137,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.budget_store import BudgetStanding, BudgetStore
     from switch_core.db.stores.client_store import ClientStore
     from switch_core.db.stores.message_store import MessageStore
+    from switch_core.decision.client import DecisionClient
     from switch_core.transport.port import MessageTransport
 
 logger = logging.getLogger(__name__)
@@ -300,6 +308,7 @@ class RoomReads:
                 agent_count=agent_count,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
+                auto_route_on=auto_route_on_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
                 console_chat="chat_operation_id" in (room.metadata_ or {}),
             ),
@@ -520,6 +529,10 @@ class _Plan:
     # The agent whose arrival this row is, when it is one.
     arrival: AgentRecipient | None = None
     group: _GroupStep | None = None
+    # A message no rule delivered, which the decision service is asked about
+    # once it has committed (`delivery/decision.py`): the room's conversation
+    # as the rules read it for the message.
+    undecided: RoomConversation | None = None
 
 
 class Routed:
@@ -583,16 +596,39 @@ class Routed:
             )
         if self._deadline_in is not None:
             router.flush_groups_after(reads.tenant_id, self._deadline_in)
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]] = []
+        work: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         row = self._row
         for recipient, delivery in plan.deliveries:
             if delivery.after is not None:
-                work.append((recipient, _bind(recipient, delivery.after, row)))
+                work.append(
+                    (_owed_by(recipient), _bind(recipient, delivery.after, row))
+                )
         if plan.arrival is not None:
             arrival = plan.arrival
-            work.append((arrival, _bind(arrival, lambda _row: arrival.greet(), row)))
+            work.append(
+                (
+                    _owed_by(arrival),
+                    _bind(arrival, lambda _row: arrival.greet(), row),
+                )
+            )
+        if plan.undecided is not None:
+            assert isinstance(row, InboundMessage)
+            tenant_id, room_id = reads.tenant_id, reads.room_id
+            conversation = plan.undecided
+            work.append(
+                (
+                    f"Asking the decision service about message {row.event_id}",
+                    lambda: router.route_undecided(
+                        tenant_id, room_id, conversation, row
+                    ),
+                )
+            )
         if work:
             router.after_commit(reads.tenant_id, reads.room_id, work)
+
+
+def _owed_by(recipient: AgentRecipient) -> str:
+    return f"A reply owed by agent {recipient.agent.name}"
 
 
 def _bind(
@@ -687,7 +723,8 @@ class _Unwritten:
 
 
 class _AfterCommit:
-    """The replies and reports routed rows owe, run once each row's
+    """The replies and reports routed rows owe, and the questions they leave
+    for the decision service (`delivery/decision.py`), run once each row's
     transaction has committed.
 
     Off the writer's path, as the consumers it replaced ran them: whoever
@@ -709,11 +746,12 @@ class _AfterCommit:
         self,
         tenant_id: str,
         room_id: str,
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]],
+        work: list[tuple[str, Callable[[], Awaitable[None]]]],
     ) -> None:
+        """Queue `work` for the room: what each piece is, for the log should
+        it fail, and the piece itself."""
         queue = self._queues.setdefault(room_id, deque())
-        for recipient, run in work:
-            queue.append((recipient.agent.name, run))
+        queue.extend(work)
         if room_id not in self._runners:
             self._runners[room_id] = asyncio.get_running_loop().create_task(
                 self._drain(tenant_id, room_id), context=contextvars.Context()
@@ -724,7 +762,7 @@ class _AfterCommit:
         try:
             with tenant_scope(tenant_id), log_context(room_id=room_id):
                 while queue:
-                    agent_name, run = queue.popleft()
+                    what, run = queue.popleft()
                     try:
                         await run()
                     except asyncio.CancelledError:
@@ -732,9 +770,9 @@ class _AfterCommit:
                     except Exception:
                         metrics().increment(ROUTING_FAILURES, {"stage": "after_commit"})
                         logger.error(
-                            "A reply owed by agent %s in room %s could not be "
-                            "posted; the message it answers was delivered",
-                            agent_name,
+                            "%s in room %s failed; the row it follows is written "
+                            "and its own events are stored",
+                            what,
                             room_id,
                             exc_info=True,
                         )
@@ -760,10 +798,15 @@ class MessageRouter:
         client_store: ClientStore,
         budget_store: BudgetStore,
         conversation: ConversationRules,
+        decisions: DecisionClient | None,
     ) -> None:
+        """`decisions` is the decision service, None when this server does
+        not route by decision: the `decision_routing` flag is off or no
+        endpoint is configured."""
         self.services = services
         self._messages = message_store
         self._conversation = conversation
+        self._decisions = decisions
         self._client_store = client_store
         self._budget_store = budget_store
         self._transports: Callable[[Actor[ClientConfig]], MessageTransport] | None = (
@@ -1110,7 +1153,11 @@ class MessageRouter:
         """The agents a message that names nobody reaches anyway, by the rules
         in `delivery/conversation.py`. Most chatter is settled by `may_follow`
         without a read; past it, what the rules read is read once for the
-        room and shared by every agent's decision."""
+        room and shared by every agent's decision.
+
+        A message they deliver to nobody is marked undecided, for the decision
+        service to be asked about once it has committed, when the room has
+        automatic routing on (`_asks_for_a_decision`)."""
         rules = self._conversation
         meta = reads.meta
         message = ConversationMessage(
@@ -1133,6 +1180,7 @@ class MessageRouter:
             channel_type=meta.channel_type,
             follow_ups_enabled=meta.follow_ups_enabled,
             main_agent_id=meta.main_agent_id,
+            auto_route_on=self._auto_routes(meta),
             message=message,
         )
         deliveries: list[tuple[AgentRecipient, Delivery]] = []
@@ -1145,7 +1193,151 @@ class MessageRouter:
             delivery = await recipient.decide_follow_up(session, event, decision)
             if delivery.own_event is not None:
                 deliveries.append((recipient, delivery))
+        if not deliveries and await self._asks_for_a_decision(
+            session, meta, conversation
+        ):
+            return _Plan(undecided=conversation)
         return _Plan(deliveries=deliveries)
+
+    def _auto_routes(self, meta: RoomMeta) -> bool:
+        """Whether messages in the room go to the decision service: the room
+        turned it on, and this server can ask one."""
+        return meta.auto_route_on and self._decisions is not None
+
+    async def _asks_for_a_decision(
+        self, session: AsyncSession, meta: RoomMeta, conversation: RoomConversation
+    ) -> bool:
+        """Whether a message that has passed `may_follow` and that no rule
+        delivered is one to ask the decision service about: in a room routing
+        by decision, a person's message with text that is not small talk."""
+        body = conversation.message.body
+        return (
+            self._auto_routes(meta)
+            and bool(body.strip())
+            and not is_small_talk(body)
+            and await conversation.from_a_person(session)
+        )
+
+    async def route_undecided(
+        self,
+        tenant_id: str,
+        room_id: str,
+        conversation: RoomConversation,
+        row: InboundMessage,
+    ) -> None:
+        """Ask the decision service who answers `row`, a message no rule
+        delivered, and deliver it to the agent it names
+        (`delivery/decision.py`). Run once the row has committed, in the
+        room's after-commit queue."""
+        decisions = self._decisions
+        assert decisions is not None
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            now = await self._reads_now(session, tenant_id, room_id)
+            room = await session.get(Room, room_id)
+            if now is None or room is None:
+                return
+            candidates = [
+                recipient
+                for recipient in self._others(now, row)
+                if await recipient.admits(session, row)
+            ]
+            if not candidates:
+                logger.info(
+                    "Decision routing: room=%s message=%s no agent here may "
+                    "answer the sender; the decision service is not asked",
+                    room_id,
+                    row.event_id,
+                )
+                return
+            request = await decision_request(
+                session,
+                room=room,
+                members=now.members,
+                roles=await now.role_names(session),
+                conversation=conversation,
+                message=row,
+                candidates=candidates,
+            )
+        answer = await decisions.decide(request, room_id=room_id)
+        if answer is None:
+            return
+        logger.info(
+            "Decision routing: room=%s message=%s candidates=%d choice=%s "
+            "model_choice=%s confidence=%s threshold=%s latency_ms=%s model=%s",
+            room_id,
+            row.event_id,
+            len(candidates),
+            answer.agent or "nobody",
+            answer.model_choice,
+            answer.confidence,
+            answer.threshold,
+            answer.latency_ms,
+            answer.model,
+        )
+        if answer.agent is None:
+            return
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            now = await self._reads_now(session, tenant_id, room_id)
+            chosen = next(
+                (
+                    recipient
+                    for recipient in (self._others(now, row) if now else [])
+                    if recipient.agent.name == answer.agent
+                ),
+                None,
+            )
+            if chosen is None:
+                logger.info(
+                    "Decision routing: room=%s message=%s agent=%s outcome="
+                    "dropped_not_member reason=the agent left the room before "
+                    "the message could be delivered",
+                    room_id,
+                    row.event_id,
+                    answer.agent,
+                )
+                return
+            delivery = await chosen.decide_routed(session, row)
+        if delivery.own_event is None:
+            return
+        own = delivery.own_event(row)
+        await self.services.event_buffer.enqueue(
+            tenant_id,
+            chosen.agent.id,
+            room_id,
+            own.event,
+            room_seq=own.room_seq,
+            message_key=own.message_key,
+        )
+        logger.info(
+            "Decision routing: room=%s message=%s agent=%s outcome=delivered",
+            room_id,
+            row.event_id,
+            chosen.agent.name,
+        )
+        if delivery.after is not None:
+            await chosen.actor.connect()
+            await delivery.after(row)
+
+    async def _reads_now(
+        self, session: AsyncSession, tenant_id: str, room_id: str
+    ) -> RoomReads | None:
+        """The room and its agent members as they are now."""
+        return await RoomReads.load(
+            session,
+            services=self.services,
+            client_store=self._client_store,
+            budget_store=self._budget_store,
+            tenant_id=tenant_id,
+            room_id=room_id,
+        )
+
+    def _others(self, reads: RoomReads, row: InboundMessage) -> list[AgentRecipient]:
+        """The room's agents, other than whoever wrote `row`."""
+        return [
+            self._recipient(reads, member)
+            for member in reads.members
+            if member.transport_user_id != row.sender
+        ]
 
     async def _decide_file(
         self,
@@ -1635,7 +1827,7 @@ class MessageRouter:
         self,
         tenant_id: str,
         room_id: str,
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]],
+        work: list[tuple[str, Callable[[], Awaitable[None]]]],
     ) -> None:
         self._after.add(tenant_id, room_id, work)
 

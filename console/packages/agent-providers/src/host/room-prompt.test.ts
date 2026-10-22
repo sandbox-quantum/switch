@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { REPLY_REMINDER, roomCommand, roomCommandId, roomMessageSchema } from './room-prompt';
+import {
+  REPLY_REMINDER,
+  ROUTED_NOTE,
+  roomCommand,
+  roomCommandId,
+  roomMessageSchema,
+} from './room-prompt';
 
 describe('a room command', () => {
   const event = {
@@ -65,5 +71,37 @@ describe('a room command', () => {
     const fromMember = { ...event, payload: { ...event.payload, sender_role: 'member' } };
     expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
     expect(text(event)).toContain('[Switch] Owner addressed you');
+  });
+
+  it('says a message was addressed to the agent, and nothing about routing', () => {
+    const said = text(event);
+    expect(said).toContain(
+      '[Switch] Owner addressed you in room !room:example.test (message_id $m, thread_id none):'
+    );
+    expect(said).not.toContain('without tagging anyone');
+    expect(said).not.toContain(ROUTED_NOTE);
+  });
+
+  it('says Switch picked the agent for a message nobody tagged, and that it may stay silent', () => {
+    const routed = {
+      ...event,
+      payload: { ...event.payload, routed: true, thread_id: '$root', sender_role: 'member' },
+    };
+    const said = text(routed);
+    expect(said).toContain(
+      '[Switch] Owner (workspace member) posted in room !room:example.test without tagging anyone, and Switch picked you to answer (message_id $m, thread_id $root):'
+    );
+    expect(said).not.toContain('addressed you');
+    expect(said).toContain(ROUTED_NOTE);
+    expect(ROUTED_NOTE).toContain('stay silent');
+    // Told after the message, so the sender's text cannot sit between the two.
+    expect(said.indexOf(ROUTED_NOTE)).toBeGreaterThan(said.indexOf('END SWITCH MESSAGE'));
+    expect(said.endsWith(REPLY_REMINDER)).toBe(true);
+  });
+
+  it('reads a payload without the field as not routed', () => {
+    expect(roomMessageSchema.parse(event).payload.routed).toBeUndefined();
+    const fromOldServer = { ...event, payload: { ...event.payload, routed: null } };
+    expect(text(fromOldServer)).toContain('[Switch] Owner addressed you');
   });
 });

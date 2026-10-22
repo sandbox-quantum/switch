@@ -39,6 +39,8 @@ export interface MessagePayload {
   opening_message?: string | null;
   /** The sending person's role in the workspace when the message arrived. */
   sender_role?: 'owner' | 'admin' | 'member' | null;
+  /** True when nobody was tagged and Switch's decision service picked this agent to answer. */
+  routed?: boolean;
 }
 
 export interface CommandPayload {

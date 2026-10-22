@@ -75,6 +75,8 @@ class CommandConsumer(Consumer[SystemActor]):
         deletion_requests: AgentDeletionRequests,
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
+        decision_routing_enabled: bool,
+        decision_endpoint_configured: bool,
     ) -> None:
         super().__init__(actor=actor)
         self._agent_store = agent_store
@@ -96,6 +98,10 @@ class CommandConsumer(Consumer[SystemActor]):
         # Whether `!follow-ups` and `!assign-agent` mean anything here: with
         # the feature flag off they say so rather than claim a change.
         self._follow_the_conversation_enabled = follow_the_conversation_enabled
+        # Whether `!auto-route` means anything here: the feature flag, and a
+        # decision service to ask.
+        self._decision_routing_enabled = decision_routing_enabled
+        self._decision_endpoint_configured = decision_endpoint_configured
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )

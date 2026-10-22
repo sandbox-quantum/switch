@@ -243,6 +243,10 @@ class MessagePayload(BaseModel):
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.
     switch_notice: str | None = None
+    # True when the message tagged nobody and the decision service picked
+    # this agent to answer it (`delivery/decision.py`). Such a message is
+    # always addressed, so every host wakes for it.
+    routed: bool = False
 
 
 class CommandPayload(BaseModel):

@@ -137,6 +137,8 @@ async def _process(
         connections=AgentConnectionRegistry(),
         frontend_base_url=None,
         follow_the_conversation_enabled=False,
+        decision_routing_enabled=False,
+        decision_endpoint_configured=False,
     )
     lease = process_lease_on(session_factory)
     ownership = Ownership(

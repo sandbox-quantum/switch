@@ -11,4 +11,12 @@ describe('switch skill', () => {
     expect(SWITCH_SKILL_CONTEXT.startsWith('# Switch Room Workflow\n')).toBe(true);
     expect(SWITCH_SKILL_FILE.endsWith(SWITCH_SKILL_CONTEXT)).toBe(true);
   });
+
+  it('describes messages Switch routes to the agent, and the room command behind them', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('without tagging anyone, and Switch picked you to answer');
+    expect(text).toContain('`!auto-route on`');
+    expect(text).toContain('`!auto-route off`');
+    expect(text).toMatch(/not really yours to answer.*stay silent/);
+  });
 });

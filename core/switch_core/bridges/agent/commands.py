@@ -891,6 +891,70 @@ async def _cmd_follow_ups(
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
 
 
+_AUTO_ROUTE_FLAG_OFF = (
+    "Automatic routing isn't switched on for this Switch server, so "
+    "`!auto-route` has no effect here. Agents only get messages that mention "
+    "them, follow-ups, or every message when they are the room's assigned agent."
+)
+_AUTO_ROUTE_NO_ENDPOINT = (
+    "This Switch server has no decision service configured, so `!auto-route` "
+    "has no effect here and nothing was changed. Whoever runs the server sets "
+    "it up with `DECISION_ENDPOINT_URL`."
+)
+_AUTO_ROUTE_ON = (
+    "Automatic routing is **on** in this room. When a message tags nobody and "
+    "no follow-up or assigned agent picks it up, Switch asks a decision service "
+    "which agent should answer and sends the message to that agent, or to "
+    "nobody. Replies in a thread are decided the same way, rather than going to "
+    "the agent that spoke there last. Turn it off with `!auto-route off`."
+)
+_AUTO_ROUTE_OFF = (
+    "Automatic routing is **off** in this room. A message that tags nobody "
+    "reaches an agent only as a follow-up or through an assigned agent. Turn it "
+    "on with `!auto-route on`."
+)
+
+
+async def _cmd_auto_route(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    host = cast("CommandConsumer", client)
+    if not host._decision_routing_enabled:
+        await _reply(client, room, event, _AUTO_ROUTE_FLAG_OFF)
+        return
+    if not host._decision_endpoint_configured:
+        await _reply(client, room, event, _AUTO_ROUTE_NO_ENDPOINT)
+        return
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    choice = event.args.strip().lower()
+    if choice not in ("", "on", "off"):
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!auto-route on`, `!auto-route off`, or `!auto-route` to see "
+            "which it is.",
+        )
+        return
+
+    async with client.session_factory() as session:
+        if choice:
+            await client._room_store.set_auto_route_on(
+                session, meta.room_id, choice == "on"
+            )
+            await session.commit()
+        on = await client._room_store.auto_route_on(session, meta.room_id)
+
+    await _reply(client, room, event, _AUTO_ROUTE_ON if on else _AUTO_ROUTE_OFF)
+
+
 async def _cmd_assign_agent(
     client: AgentRecipient,
     room: RoomRef,
@@ -2072,6 +2136,15 @@ COMMANDS: list[Command] = [
         "thread, or the next message after an agent's answer, reaches it without "
         "an @. Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
         _cmd_follow_ups,
+        args_spec=(CommandArg("state", "on or off", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "auto-route",
+        "Let Switch pick the agent to answer messages that tag nobody, using a "
+        "decision service. Usage: `!auto-route on`, `!auto-route off`, or "
+        "`!auto-route`.",
+        _cmd_auto_route,
         args_spec=(CommandArg("state", "on or off", required=False),),
         admin_owned=True,
     ),

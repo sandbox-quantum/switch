@@ -44,6 +44,9 @@ LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
+# `!auto-route on`: messages no rule delivers are sent to the decision
+# service. Absent by default, so automatic routing is off.
+AUTO_ROUTE_ON_KEY = "auto_route_on"
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
@@ -55,6 +58,11 @@ def main_agent_in(metadata: dict | None) -> str | None:
     """The main agent a room's metadata names, if any."""
     value = (metadata or {}).get(MAIN_AGENT_KEY)
     return value if isinstance(value, str) else None
+
+
+def auto_route_on_in(metadata: dict | None) -> bool:
+    """Whether a room's metadata turns automatic routing on."""
+    return (metadata or {}).get(AUTO_ROUTE_ON_KEY) is True
 
 
 @dataclass(frozen=True)
@@ -105,6 +113,23 @@ class RoomStore:
         """Set (or clear, with None) the room's main agent. Raises ValueError
         for a room that does not exist."""
         await self._set_metadata_key(session, room_id, MAIN_AGENT_KEY, agent_id)
+
+    async def auto_route_on(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether automatic routing is on in this room (`!auto-route`), off
+        unless someone turned it on."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return False
+        return auto_route_on_in(room.metadata_)
+
+    async def set_auto_route_on(
+        self, session: AsyncSession, room_id: str, on: bool
+    ) -> None:
+        """Turn automatic routing on or off for a room. Raises ValueError for
+        a room that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, AUTO_ROUTE_ON_KEY, True if on else None
+        )
 
     async def _set_metadata_key(
         self, session: AsyncSession, room_id: str, key: str, value: object

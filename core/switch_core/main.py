@@ -169,6 +169,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.decision.setup import build_decision_client
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import GROUP_SWEEP_SECONDS, MessageRouter
@@ -786,6 +787,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(session_factory, config)
 
+    # ── Decision routing (off unless the decision_routing flag is on) ────────
+    decision = build_decision_client(config)
+
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -871,6 +875,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             agent_store=agent_store,
             room_role_store=room_role_store,
         ),
+        decisions=decision[0] if decision is not None else None,
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)
@@ -1007,6 +1012,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         connections=connections,
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
+        decision_routing_enabled=config.decision_routing_enabled,
+        decision_endpoint_configured=config.decision_endpoint_url is not None,
     )
 
     # ── Agent management (off unless the agent_management flag is on) ─────────
@@ -1465,6 +1472,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 await protocol.sessions.aclose()
                 await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
                 await trust_http.aclose()
+                if decision is not None:
+                    await decision[1].aclose()
                 await observability.aclose()
                 # So a probe during teardown gets a 503 rather than the last
                 # cached answer, which may still say ready.

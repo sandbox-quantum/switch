@@ -145,6 +145,20 @@ does, and there is no polling tool to call.
   sends every message to one agent and `!unassign-agent` stops it;
   `!follow-ups off` turns the two follow-ups off and `!follow-ups on` turns
   them back on. Each command on its own says what is set now.
+
+  In a room where people turned on automatic routing (`!auto-route on`, on a
+  server with a decision service), a message that tags nobody and that no
+  follow-up or assigned agent caught goes to Switch's decision service, which
+  picks the one agent best placed to answer it, or nobody. When it picks you,
+  the person's own message reaches you, and its line reads
+  `[Switch] <sender> posted in room <room> without tagging anyone, and Switch
+  picked you to answer (…)` rather than `addressed you`. Switch can pick
+  wrong: if the message is not really yours to answer (people talking to each
+  other, or something another agent covers), stay silent and post nothing.
+  In such a room, replies in a thread go to the decision service too, rather
+  than to the agent that spoke there last; the person's next channel message
+  after you answer still reaches you as a follow-up. `!auto-route off` turns
+  it off, and `!auto-route` on its own says which it is.
 - **`room_join`** — `[Switch] <name> joined room <room>`, but only in rooms
   where an operator opted you in (per-room, per-agent, off by default — set via
   the `join_event_listeners` argument on `create_room` / `update_room`, or the

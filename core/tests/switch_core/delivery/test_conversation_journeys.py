@@ -22,6 +22,7 @@ from sqlalchemy import ColumnElement, func, select, update
 from switch_core.addressing import owner_only_policy
 from switch_core.bridges.agent.commands import (
     _cmd_assign_agent,
+    _cmd_auto_route,
     _cmd_follow_ups,
     _cmd_unassign_agent,
 )
@@ -33,6 +34,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.decision.client import DecisionClient
 from switch_core.delivery.conversation import ConversationSettings
 from switch_core.transport import RoomRef
 from tests.routing import Process, process_on
@@ -48,9 +50,15 @@ class Journey:
     time so the gaps between them are the ones the test gives.
     """
 
-    def __init__(self, world: World, settings: ConversationSettings) -> None:
+    def __init__(
+        self,
+        world: World,
+        settings: ConversationSettings,
+        decisions: DecisionClient | None = None,
+    ) -> None:
         self.world = world
         self.settings = settings
+        self.decisions = decisions
         self.process: Process
         self.room: Room
         self.clients: dict[str, Client] = {}
@@ -59,7 +67,11 @@ class Journey:
 
     async def start(self) -> Journey:
         world = self.world
-        self.process = process_on(world.session_factory, conversation=self.settings)
+        self.process = process_on(
+            world.session_factory,
+            conversation=self.settings,
+            decisions=self.decisions,
+        )
         async with world.session_factory() as session:
             room = await RoomStore().get(session, world.room_id)
             assert room is not None
@@ -159,6 +171,8 @@ class Journey:
             client_store=ClientStore(),
             _connections=SimpleNamespace(live_connection_ids=lambda: set()),
             _follow_the_conversation_enabled=True,
+            _decision_routing_enabled=self.decisions is not None,
+            _decision_endpoint_configured=self.decisions is not None,
         )
 
     async def command(self, who: str, command: str, args: str, *, at: float) -> str:
@@ -167,6 +181,7 @@ class Journey:
             "assign-agent": _cmd_assign_agent,
             "unassign-agent": _cmd_unassign_agent,
             "follow-ups": _cmd_follow_ups,
+            "auto-route": _cmd_auto_route,
         }
         event = SimpleNamespace(
             command=command, args=args, thread_id=None, user_id=self.world.mxid(who)

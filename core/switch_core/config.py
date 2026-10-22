@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
     GROUP_CHATS,
     HOSTED_AGENTS,
@@ -239,6 +240,22 @@ class SwitchConfig(BaseSettings):
     # How long after an agent's answer a person's next channel message still
     # counts as a follow-up to it.
     follow_the_conversation_window_seconds: int = Field(default=300, ge=1, le=3600)
+
+    # Decision routing (feature flag `decision_routing`): the decision service
+    # Switch asks who should answer a message no rule delivered to anyone
+    # (`POST {DECISION_ENDPOINT_URL}`). With no endpoint, `!auto-route` says so
+    # and no message is ever sent anywhere. The key, when set, is sent as a
+    # bearer token.
+    decision_endpoint_url: str | None = None
+    decision_api_key: str | None = None
+    decision_timeout_seconds: float = 5.0
+
+    @field_validator("decision_endpoint_url", "decision_api_key", mode="before")
+    @classmethod
+    def _blank_decision_setting_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     # Gateway admin seed
     gateway_admin_email: str
@@ -1249,6 +1266,32 @@ class SwitchConfig(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_decision_routing(self) -> "SwitchConfig":
+        if self.decision_endpoint_url is not None and urlsplit(
+            self.decision_endpoint_url
+        ).scheme not in ("http", "https"):
+            raise ValueError(
+                "DECISION_ENDPOINT_URL must be an http or https URL, got "
+                f"{self.decision_endpoint_url!r}."
+            )
+        if self.decision_timeout_seconds <= 0:
+            raise ValueError(
+                "DECISION_TIMEOUT_SECONDS must be positive, got "
+                f"{self.decision_timeout_seconds!r}."
+            )
+        if (
+            self.feature_flags[DECISION_ROUTING]
+            and not self.feature_flags[FOLLOW_THE_CONVERSATION]
+        ):
+            raise ValueError(
+                f"The {DECISION_ROUTING!r} feature flag needs "
+                f"{FOLLOW_THE_CONVERSATION!r} in FEATURE_FLAGS_ENABLED as well: "
+                "it asks about the messages the follow-the-conversation rules "
+                "leave with nobody."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_oauth_audience(self) -> "SwitchConfig":
         if self.oauth_issuer_url and not self.oauth_audience:
             raise ValueError(
@@ -1304,6 +1347,10 @@ class SwitchConfig(BaseSettings):
     @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
+
+    @property
+    def decision_routing_enabled(self) -> bool:
+        return self.feature_flags[DECISION_ROUTING]
 
     @property
     def agent_chats_enabled(self) -> bool:
