@@ -224,7 +224,9 @@ attending without giving up the one you are.
 - Membership is the boundary, and Switch enforces it: reading a room you do not
   belong to is refused. `list_rooms` is the set you may read.
 - It clears nothing. The other room's unread count is untouched, and so is
-  yours — only reading your own connected room marks you caught up here.
+  yours — only reading your own connected room marks you caught up here. The
+  exception is a room that shares your session (you answer it from your home
+  room): reading it there clears its count, as reading your own room does.
 
 ## Interaction modes
 
