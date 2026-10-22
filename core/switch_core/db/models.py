@@ -3367,8 +3367,10 @@ class ApprovalRequestPost(TenantScoped, Base):
     types to answer in words; both resolve back to the request through this
     row, so neither names the session. `external_post_id` is null until the
     platform confirms the post. `removed_at` is set once an answered card has
-    been taken off a platform that removes them, and `unconfirmed_notice_at`
-    once the channel has been told a card's delivery could not be confirmed.
+    been taken off a platform that removes them, `unconfirmed_notice_at`
+    once the channel has been told a card's delivery could not be confirmed,
+    and `thread_notice_at` once the thread of the turn that asked has been told
+    how a card at the channel root was settled.
     """
 
     __tablename__ = "approval_request_posts"
@@ -3412,6 +3414,9 @@ class ApprovalRequestPost(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     unconfirmed_notice_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    thread_notice_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(

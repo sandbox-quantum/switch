@@ -11,8 +11,11 @@ costs one redraw rather than one per step, and a request answered before its
 card was posted is posted already answered — or, if it is no longer open, not
 at all.
 
-**Requests** (approvals and questions). The card lives in
-`approval_request_posts`: `token` rides in the controls and `handle` (`A<n>`)
+**Requests** (approvals and questions). A card is posted at the channel root,
+not in the thread of the turn that asked: work has stopped until someone acts,
+and whoever has to act is usually reading somewhere else. Once it is settled,
+that thread is told how, so the conversation that was blocked shows what
+unblocked it. The card lives in `approval_request_posts`: `token` rides in the controls and `handle` (`A<n>`)
 is what a person types. The reservation is committed before the platform call,
 with `external_post_id` null, so a process that dies mid-post leaves a card
 marked unconfirmed rather than one posted twice; the card is then searched for
@@ -54,7 +57,6 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentFailed,
     RichContentThrottled,
     RichContentWedged,
-    ThreadUnavailable,
     TurnActivity,
 )
 from switch_core.db.models import (
@@ -561,9 +563,7 @@ class AgentSessionActivityPublisher:
             online = self._agent_online(agent_id)
             asking = post is None and row.state == "open"
             recipient = (
-                await self._recipient(
-                    db, row.room_id, target.agent, turn_row, target.thread_ref
-                )
+                await self._recipient(db, row.room_id, target.agent, turn_row, None)
                 if asking
                 else None
             )
@@ -578,7 +578,6 @@ class AgentSessionActivityPublisher:
             await self._post_card(
                 row,
                 target,
-                asked_at_root=_asked_at_root(turn_row),
                 unavailable_reason=unavailable,
                 notify_external_id=recipient,
                 notify_unreachable=recipient is None
@@ -591,6 +590,10 @@ class AgentSessionActivityPublisher:
             if recovered is None:
                 return
             post = recovered
+        if row.state != "open":
+            await self._tell_thread(
+                row, post, target, answered_here=responder is not None
+            )
         if getattr(self._adapter, "removes_answered_cards", False) and decided(
             approval_request(row, decided_by)
         ):
@@ -611,7 +614,6 @@ class AgentSessionActivityPublisher:
         row: ApprovalRequest,
         target: _Target,
         *,
-        asked_at_root: bool,
         unavailable_reason: str | None,
         notify_external_id: str | None,
         notify_unreachable: bool,
@@ -628,28 +630,10 @@ class AgentSessionActivityPublisher:
             notify_external_id=notify_external_id,
             notify_unreachable=notify_unreachable,
         )
-        thread_ref = target.thread_ref
         try:
-            try:
-                ref = await self._adapter.post_rich(
-                    target.channel_id, target.agent_name, card, thread_ref
-                )
-            except ThreadUnavailable as missing:
-                if not asked_at_root:
-                    # Asked in a thread the platform no longer has: the channel
-                    # root is people who were never in that conversation.
-                    raise
-                logger.warning(
-                    "No thread for request %s in channel %s (%s); posting its "
-                    "card at the channel root, where it was asked.",
-                    row.request_id,
-                    target.channel_id,
-                    missing,
-                )
-                thread_ref = None
-                ref = await self._adapter.post_rich(
-                    target.channel_id, target.agent_name, card, None
-                )
+            ref = await self._adapter.post_rich(
+                target.channel_id, target.agent_name, card, None
+            )
         except RichContentFailed:
             await self._release(post)
             raise
@@ -672,7 +656,6 @@ class AgentSessionActivityPublisher:
                 )
                 return
             stored.external_post_id = ref
-            stored.thread_ref = thread_ref
         logger.info(
             "Posted card %s for request %s of session %s in channel %s",
             post.handle,
@@ -680,6 +663,65 @@ class AgentSessionActivityPublisher:
             row.session_id,
             target.channel_id,
         )
+
+    async def _tell_thread(
+        self,
+        row: ApprovalRequest,
+        post: ApprovalRequestPost,
+        target: _Target,
+        *,
+        answered_here: bool,
+    ) -> None:
+        """Say once, in the thread of the turn that asked, how its card was settled.
+
+        Nothing to say where the turn has no thread, or where the card is in
+        that thread already. The row is stamped before the message is sent, as
+        for the unconfirmed notice: saying it twice is the worse mistake.
+        """
+        if (
+            target.thread_ref is None
+            or post.thread_ref == target.thread_ref
+            or post.thread_notice_at is not None
+        ):
+            return
+        if target.channel_id != post.external_channel_id:
+            # The thread ref is a post in the room's current channel, not in
+            # the one the card went to.
+            logger.warning(
+                "Not telling the thread how request %s was settled: its card is "
+                "in channel %s, but the room is now bridged to channel %s.",
+                post.handle,
+                post.external_channel_id,
+                target.channel_id,
+            )
+            return
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            stored = await self._card_posts.get(
+                db,
+                self._bridge_id,
+                post.agent_id,
+                post.session_id,
+                post.request_id,
+                for_update=True,
+            )
+            if stored is None or stored.thread_notice_at is not None:
+                return
+            stored.thread_notice_at = datetime.now(UTC)
+        post.thread_notice_at = stored.thread_notice_at
+        sent = await self._adapter.admin_message(
+            post.external_channel_id,
+            _settled_note(row, post.handle, answered_here=answered_here),
+            target.thread_ref,
+        )
+        if sent is None:
+            logger.error(
+                "Could not tell the thread %s in channel %s how request %s was "
+                "settled. The card in the channel shows it; this is not "
+                "attempted again.",
+                target.thread_ref,
+                post.external_channel_id,
+                post.handle,
+            )
 
     async def _refresh_card(
         self,
@@ -804,7 +846,7 @@ class AgentSessionActivityPublisher:
                     handle=f"{HANDLE_PREFIX}{start + 1 + attempt}",
                     external_channel_id=target.channel_id,
                     external_post_id=None,
-                    thread_ref=target.thread_ref,
+                    thread_ref=None,
                 )
                 try:
                     async with db.begin_nested():
@@ -1461,13 +1503,22 @@ class AgentSessionActivityPublisher:
         return view, await self._running_turn(db, post.agent_id, post.session_id)
 
 
-def _asked_at_root(turn_row: AgentSessionActivityItem | None) -> bool:
-    """Whether the turn a request belongs to was asked at the channel root.
+def _settled_note(row: ApprovalRequest, handle: str, *, answered_here: bool) -> str:
+    """One line for the asking thread on how its request, carded at the root, went.
 
-    Only then may its card go to the root when its thread cannot be found. A
-    request whose turn is not recorded says nothing about where it was asked,
-    and is treated as the root, as it always was without that record.
+    "In the channel" only when it was answered from this bridge; an answer from
+    Console or anywhere else is not one the channel saw.
     """
-    if turn_row is None or turn_row.message_id is None:
-        return True
-    return turn_row.thread_id in (None, turn_row.message_id)
+    asked = f"Request **{handle}** ({row.title})"
+    if row.state == "answered":
+        answered = f"{asked} was answered{' in the channel' if answered_here else ''}"
+        label = next(
+            (option["label"] for option in row.options if option["id"] == row.answer),
+            None,
+        )
+        if row.kind == "approval" and label is not None:
+            return f"{answered}: **{label}**."
+        return f"{answered}."
+    if row.state == "expired":
+        return f"{asked} expired without an answer."
+    return f"{asked} was closed without an answer."

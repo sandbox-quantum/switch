@@ -5,14 +5,16 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
 from switch_core.db.models import (
+    ApprovalRequest,
     ApprovalRequestPost,
     BridgeMessageMap,
+    Room,
     TurnStatusPost,
 )
 from switch_core.session_activity import publisher as publisher_module
@@ -295,13 +297,135 @@ async def test_a_request_outside_the_bridge_is_not_posted(
     assert platform.drawn == []
 
 
-async def test_a_card_goes_into_the_thread_it_answers(
+async def test_a_card_goes_to_the_channel_root_not_the_thread_that_asked(
     service, publisher, platform, bridged, session_factory
 ):
     await _open(service, bridged.room_id, thread_id=ASKED)
     [posted] = await platform.wait_for(1)
-    assert posted.thread_ref == ASKED_POST
-    assert (await _card_post(session_factory)).thread_ref == ASKED_POST
+    assert posted.call == "post_rich"
+    assert posted.thread_ref is None
+    assert (await _card_post(session_factory)).thread_ref is None
+
+
+async def test_the_thread_that_asked_is_told_once_how_its_card_was_settled(
+    service, publisher, platform, bridged, people, session_factory
+):
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_for(1)
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
+    )
+    await platform.wait_until(lambda: len(platform.of("admin_message")) == 1)
+    [note] = platform.of("admin_message")
+    assert note.thread_ref == ASKED_POST
+    # The owner answered from another bridge, so not "in the channel".
+    assert (
+        note.content == "Request **A1** (Run `rm -rf build`?) was answered: **Allow**."
+    )
+    assert (await _card_post(session_factory)).thread_notice_at is not None
+
+    publisher._enqueue(("approval", AGENT, SESSION, "req-1"))
+    await asyncio.sleep(0.5)
+    assert len(platform.of("admin_message")) == 1
+
+
+async def test_a_card_left_in_a_channel_the_room_has_moved_from_tells_no_thread(
+    service, publisher, platform, bridged, people, session_factory
+):
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_for(1)
+    async with session_factory() as db, db.begin():
+        room = await db.get(Room, bridged.room_id)
+        assert room is not None
+        room.external_channel_id = "C-moved"
+        await db.execute(
+            update(BridgeMessageMap)
+            .where(BridgeMessageMap.transport_event_id == ASKED)
+            .values(external_channel_id="C-moved")
+        )
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("allow"),
+        answerer=PlatformPerson(people.owner),
+    )
+    await platform.wait_until(lambda: len(platform.of("update_rich")) == 1)
+    await asyncio.sleep(0.3)
+    assert platform.of("admin_message") == []
+    assert (await _card_post(session_factory)).thread_notice_at is None
+
+
+def _settled(**values) -> ApprovalRequest:
+    row = ApprovalRequest(
+        title="Run `make`?",
+        kind="approval",
+        state="answered",
+        options=[{"id": "allow", "label": "Allow", "decision": "accept"}],
+        answer="allow",
+    )
+    for name, value in values.items():
+        setattr(row, name, value)
+    return row
+
+
+@pytest.mark.parametrize(
+    ("row", "answered_here", "note"),
+    [
+        (
+            _settled(),
+            True,
+            "Request **A1** (Run `make`?) was answered in the channel: **Allow**.",
+        ),
+        (_settled(), False, "Request **A1** (Run `make`?) was answered: **Allow**."),
+        (
+            _settled(answer="gone"),
+            True,
+            "Request **A1** (Run `make`?) was answered in the channel.",
+        ),
+        (_settled(answer=None), False, "Request **A1** (Run `make`?) was answered."),
+        (
+            _settled(kind="questions", options=[]),
+            False,
+            "Request **A1** (Run `make`?) was answered.",
+        ),
+        (
+            _settled(state="expired", answer=None),
+            False,
+            "Request **A1** (Run `make`?) expired without an answer.",
+        ),
+        (
+            _settled(state="closed", answer=None),
+            False,
+            "Request **A1** (Run `make`?) was closed without an answer.",
+        ),
+    ],
+)
+def test_a_settled_note_says_only_what_it_knows(row, answered_here, note):
+    assert (
+        publisher_module._settled_note(row, "A1", answered_here=answered_here) == note
+    )
+
+
+async def test_a_card_for_a_turn_without_a_thread_tells_no_thread(
+    service, publisher, platform, bridged, people
+):
+    await _open(service, bridged.room_id)
+    await platform.wait_for(1)
+    await service.answer_approval(
+        AGENT,
+        SESSION,
+        "req-1",
+        answer=pick("deny"),
+        answerer=PlatformPerson(people.owner),
+    )
+    await platform.wait_until(lambda: len(platform.of("update_rich")) == 1)
+    await asyncio.sleep(0.3)
+    assert platform.of("admin_message") == []
 
 
 async def test_a_refused_post_releases_its_handle(
