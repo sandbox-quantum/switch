@@ -41,6 +41,7 @@ export type PendingSend = {
   requestId: string;
   body: string;
   threadRootId: string | null;
+  mentionAgentIds: string[];
   files: PendingFile[];
   state: 'sending' | 'failed' | 'conflict';
   error: string | null;
@@ -53,11 +54,19 @@ export type PendingSend = {
 export type SendInput = {
   body: string;
   threadRootId: string | null;
+  /** The agents picked as mentions; the server adds `@name` for any the body does not name. */
+  mentionAgentIds: string[];
   files: ChatFile[];
 };
 
 export type TimelineApi = {
   messages: (roomId: string, beforeSeq: number | null, limit: number) => Promise<ChatMessagesPage>;
+  threadMessages: (
+    roomId: string,
+    rootId: string,
+    beforeSeq: number | null,
+    limit: number
+  ) => Promise<ChatMessage[]>;
   upload: (
     roomId: string,
     file: { uploadId: string; name: string; mimeType: string; data: string }
@@ -69,6 +78,7 @@ export type TimelineApi = {
       body: string;
       threadRootId: string | null;
       uploadIds: string[];
+      mentionAgentIds?: string[];
     }
   ) => Promise<ChatMessage[]>;
   newId: () => string;
@@ -85,6 +95,8 @@ export class ChatTimeline {
   notMember = false;
   /** The person was a member and lost access while the chat was known. */
   accessLost = false;
+  /** Thread reply counts by root message id, tracked from live events even if root not loaded. */
+  threadReplyCounts = new Map<string, number>();
 
   constructor(
     readonly roomId: string,
@@ -101,6 +113,28 @@ export class ChatTimeline {
     return this.messages.find((message) => message.messageId === messageId);
   }
 
+  /** Thread reply count: server baseline + distinct live replies since, or null if root not loaded. */
+  threadReplyCount(rootId: string): number | null {
+    const root = this.byId(rootId);
+    if (!root) return null;
+    const serverCount = root.threadReplyCount ?? 0;
+    const lastReplySeq = root.threadLastReplySeq ?? -1;
+    const newReplies = this.messages.filter(
+      (msg) => msg.threadRootId === rootId && msg.seq > lastReplySeq
+    );
+    const uniqueNewReplies = new Set(newReplies.map((m) => m.messageId)).size;
+    return serverCount + uniqueNewReplies;
+  }
+
+  /** Load thread messages for a root. */
+  async loadThread(rootId: string, beforeSeq: number | null = null): Promise<ChatMessage[]> {
+    try {
+      return await this.api.threadMessages(this.roomId, rootId, beforeSeq, PAGE_SIZE);
+    } catch (error) {
+      throw chatFailure(error);
+    }
+  }
+
   /** Merge a message from the room: by sequence, once, retiring the send it echoes. */
   apply(message: ChatMessage): void {
     if (message.roomId !== this.roomId) return;
@@ -110,6 +144,10 @@ export class ChatTimeline {
     const at = this.messages.findIndex((each) => each.seq > message.seq);
     if (at === -1) this.messages.push(message);
     else this.messages.splice(at, 0, message);
+    if (message.threadRootId) {
+      const current = this.threadReplyCounts.get(message.threadRootId) ?? 0;
+      this.threadReplyCounts.set(message.threadRootId, current + 1);
+    }
   }
 
   async load(): Promise<void> {
@@ -164,6 +202,7 @@ export class ChatTimeline {
       requestId: this.api.newId(),
       body: input.body,
       threadRootId: input.threadRootId,
+      mentionAgentIds: input.mentionAgentIds,
       files: input.files.map((file) => ({
         id: this.api.newId(),
         uploadId: this.api.newId(),
@@ -278,6 +317,8 @@ export class ChatTimeline {
         requestId,
         body: send.body,
         threadRootId: send.threadRootId,
+        // A copy: IPC cannot clone a MobX array.
+        mentionAgentIds: [...send.mentionAgentIds],
         uploadIds: send.files.map((file) => file.uploadId),
       });
       runInAction(() => {

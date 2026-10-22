@@ -23,6 +23,8 @@ export const chatsStore = new ChatsStore(
     timeline: (serverId) => ({
       messages: (roomId, beforeSeq, limit) =>
         rpc.chats.messages({ serverId, roomId, beforeSeq, limit }),
+      threadMessages: (roomId, rootId, beforeSeq, limit) =>
+        rpc.chats.threadMessages({ serverId, roomId, rootId, beforeSeq, limit }),
       upload: (roomId, file) => rpc.chats.upload({ serverId, roomId, ...file }),
       send: (roomId, input) => rpc.chats.send({ serverId, roomId, ...input }),
       newId: () => crypto.randomUUID(),

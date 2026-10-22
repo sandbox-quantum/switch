@@ -346,7 +346,6 @@ async def test_a_create_names_its_agents_one_way(chats: _Harness) -> None:
     helper = await chats.agent("helper", owner=chats.alice)
     for body in (
         {"requestId": "c1"},
-        {"requestId": "c2", "agentIds": []},
         {"requestId": "c3", "agentId": helper.id, "agentIds": [helper.id]},
     ):
         response = await chats.client.post(
@@ -885,7 +884,8 @@ async def test_unlisted_room_still_delivers_messages_to_invited_member(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
+    assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -911,7 +911,8 @@ async def test_unlisted_then_revoked_room_emits_access_removal(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
+    assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -944,7 +945,7 @@ async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -968,7 +969,7 @@ async def test_the_periodic_recheck_announces_a_chat_that_regains_an_agent(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
     async with chats.factory() as session:
         await session.execute(

@@ -1,13 +1,23 @@
 import { ChevronDown, Minimize2, Plus, RotateCcw, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useRef, useState } from 'react';
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from 'react';
 import { reportBuddyMessage } from '@renderer/features/switch-buddy/buddy-telemetry';
+import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { isEditableTarget } from '@renderer/lib/hooks/use-arrow-key-navigation';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Button } from '@renderer/lib/ui/button';
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@renderer/lib/ui/popover';
+import { cn } from '@renderer/utils/utils';
 import { type ChatAgent, type ChatMessage, chatAgentLabel } from '@shared/core/chats/chats';
 import { snippetOf } from '../chat-threads';
+import {
+  filterMentionAgents,
+  mentionAgentIds,
+  mentionQuery,
+  mentionSegments,
+  mentionTokens,
+  tokenToRemove,
+} from '../mentions';
 import { isInterruptAck } from '../stop-rows';
 import type { AgentActivity, ControlRequest } from '../stores/chat-activity-store';
 import type { ChatFile, ChatTimeline } from '../stores/chat-timeline-store';
@@ -19,6 +29,7 @@ import {
   PromptInputSubmit,
   PromptInputTextarea,
 } from '../ui/prompt-input';
+import { MentionMark } from './mention-mark';
 
 async function toBase64(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -135,6 +146,7 @@ export const ChatComposer = observer(function ChatComposer({
   serverId,
   timeline,
   agents,
+  groupName,
   activity,
   replyTo,
   onClearReply,
@@ -143,6 +155,8 @@ export const ChatComposer = observer(function ChatComposer({
   serverId: string;
   timeline: ChatTimeline;
   agents: ChatAgent[];
+  /** The chat's name when it is a group, which is who a message goes to; null in a direct chat. */
+  groupName: string | null;
   activity: AgentActivity | null;
   replyTo: ChatMessage | null;
   onClearReply: () => void;
@@ -158,6 +172,17 @@ export const ChatComposer = observer(function ChatComposer({
   const [contextOpen, setContextOpen] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const backdrop = useRef<HTMLDivElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  /** Where the `@` of a suggestion list Esc closed sits, so it stays closed for that `@`. */
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const tokens = mentionTokens(draft, agents);
+  const query = agents.length ? mentionQuery(draft, caret) : null;
+  const suggestions = query ? filterMentionAgents(agents, query.query) : [];
+  const suggesting = query !== null && query.start !== dismissedAt && suggestions.length > 0;
+  const activeIndex = Math.min(mentionIndex, suggestions.length - 1);
+  const listId = `mentions-${timeline.roomId}`;
   useEffect(() => {
     const roomId = timeline.roomId;
     const focus = () => requestAnimationFrame(() => input.current?.focus());
@@ -187,12 +212,61 @@ export const ChatComposer = observer(function ChatComposer({
     return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
   const agent = agents[0] ?? null;
+  const recipient = groupName ?? (agent ? chatAgentLabel(agent) : 'the agent');
   const stopActivity = activity?.runningTurn ? activity : null;
 
   const addFiles = (list: File[]) => {
     if (!list.length) return;
     setFiles((current) => [...current, ...list.map((file) => ({ id: crypto.randomUUID(), file }))]);
     input.current?.focus();
+  };
+
+  const pick = (picked: ChatAgent) => {
+    const textarea = input.current;
+    if (!textarea || !query) return;
+    textarea.focus();
+    textarea.setSelectionRange(query.start, caret);
+    // insertText keeps the native undo stack; a controlled-value write would wipe it.
+    if (!document.execCommand('insertText', false, `@${picked.name} `)) {
+      const next = `${draft.slice(0, query.start)}@${picked.name} ${draft.slice(caret)}`;
+      setDraft(next);
+      setCaret(query.start + picked.name.length + 2);
+    }
+    setMentionIndex(0);
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (suggesting) {
+      const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+      if (step) {
+        event.preventDefault();
+        setMentionIndex((activeIndex + step + suggestions.length) % suggestions.length);
+        return;
+      }
+      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault();
+        pick(suggestions[activeIndex]!);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setDismissedAt(query.start);
+        return;
+      }
+    }
+    const textarea = event.currentTarget;
+    if (
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      textarea.selectionStart === textarea.selectionEnd &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey
+    ) {
+      const token = tokenToRemove(tokens, textarea.selectionStart, event.key);
+      // Select the mention and let the key delete the selection: one native, undoable edit.
+      if (token) textarea.setSelectionRange(token.start, token.end);
+    }
   };
 
   const send = () => {
@@ -206,6 +280,7 @@ export const ChatComposer = observer(function ChatComposer({
     timeline.send({
       body,
       threadRootId: replyTo?.messageId ?? null,
+      mentionAgentIds: mentionAgentIds(mentionTokens(body, agents)),
       files: files.map(({ file }) => chatFile(file)),
     });
     void chatTitler.sent(serverId, timeline.roomId, body);
@@ -284,17 +359,95 @@ export const ChatComposer = observer(function ChatComposer({
                 event.target.value = '';
               }}
             />
-            <PromptInputTextarea
-              ref={input}
-              className="min-h-0 px-1 py-1.5"
-              aria-label={`Message ${agent ? chatAgentLabel(agent) : 'the agent'}`}
-              placeholder={disabled ?? `Message ${agent ? chatAgentLabel(agent) : 'the agent'}...`}
-              value={draft}
-              disabled={disabled !== null}
-              onChange={(event) => {
-                setDraft(event.target.value);
-              }}
-            />
+            <div className="relative min-w-0 flex-1">
+              {suggesting && (
+                <div
+                  id={listId}
+                  role="listbox"
+                  aria-label="Mention an agent"
+                  className="absolute bottom-full left-0 z-50 mb-3 flex max-h-60 w-72 flex-col overflow-y-auto rounded-md border bg-background-quaternary p-1 text-sm shadow-sm"
+                >
+                  {suggestions.map((each, index) => (
+                    <div
+                      key={each.id}
+                      id={`${listId}-${each.id}`}
+                      role="option"
+                      aria-selected={index === activeIndex}
+                      className={cn(
+                        'flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5',
+                        index === activeIndex && 'bg-background-2'
+                      )}
+                      onMouseEnter={() => setMentionIndex(index)}
+                      // Keep focus (and the caret) in the textarea.
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => pick(each)}
+                    >
+                      <AgentAvatar
+                        name={each.name}
+                        iconUrl={each.iconUrl}
+                        serverId={serverId}
+                        size={20}
+                      />
+                      <span className="truncate">{chatAgentLabel(each)}</span>
+                      {each.alias && (
+                        <span className="truncate text-xs text-foreground-muted">
+                          @{each.alias}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div
+                ref={backdrop}
+                aria-hidden
+                className="pointer-events-none absolute inset-0 overflow-y-auto px-1 py-1.5 text-sm break-words whitespace-pre-wrap text-transparent"
+              >
+                {mentionSegments(draft, tokens).map((segment, index) =>
+                  segment.agentId ? (
+                    <MentionMark
+                      key={index}
+                      agent={agents.find((each) => each.id === segment.agentId) ?? null}
+                      serverId={serverId}
+                      className="text-transparent"
+                    >
+                      {segment.text}
+                    </MentionMark>
+                  ) : (
+                    <span key={index}>{segment.text}</span>
+                  )
+                )}
+                {/* A trailing newline only takes a line once something follows it. */}
+                {'\u200b'}
+              </div>
+              <PromptInputTextarea
+                ref={input}
+                className="relative block min-h-0 px-1 py-1.5"
+                aria-label={`Message ${recipient}`}
+                placeholder={disabled ?? `Message ${recipient}...`}
+                value={draft}
+                disabled={disabled !== null}
+                role={agents.length ? 'combobox' : undefined}
+                aria-autocomplete={agents.length ? 'list' : undefined}
+                aria-expanded={agents.length ? suggesting : undefined}
+                aria-controls={suggesting ? listId : undefined}
+                aria-activedescendant={
+                  suggesting ? `${listId}-${suggestions[activeIndex]!.id}` : undefined
+                }
+                onKeyDown={onKeyDown}
+                onChange={(event) => {
+                  setDraft(event.target.value);
+                  setCaret(event.target.selectionStart);
+                  setMentionIndex(0);
+                  if (!mentionQuery(event.target.value, event.target.selectionStart))
+                    setDismissedAt(null);
+                }}
+                onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+                onScroll={(event) => {
+                  if (backdrop.current) backdrop.current.scrollTop = event.currentTarget.scrollTop;
+                }}
+              />
+            </div>
             <PromptInputSubmit
               status={status}
               className="h-8 min-w-8"

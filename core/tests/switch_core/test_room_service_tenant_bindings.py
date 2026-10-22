@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -142,6 +143,11 @@ class _FakeProvisioning:
     def __init__(self, *, fail_for: set[str] | None = None) -> None:
         self.invited: list[tuple[str, str]] = []
         self._fail_for = fail_for or set()
+
+    async def record_join(
+        self, session: object, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        raise NotImplementedError
 
     async def invite_to_room(
         self, transport_room_id: str, transport_user_id: str

@@ -177,6 +177,7 @@ export const ChatPanel = observer(function ChatPanel({
         serverId={serverId}
         timeline={timeline}
         agents={chat?.agents ?? []}
+        groupName={chat && chat.channelType !== 'direct' ? chat.name : null}
         activity={activities[0] ?? null}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}

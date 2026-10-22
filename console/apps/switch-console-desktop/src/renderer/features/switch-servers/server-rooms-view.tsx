@@ -1,4 +1,4 @@
-import { ChevronDown, DoorOpen, MessageSquare, Plus } from 'lucide-react';
+import { ChevronDown, DoorOpen, MessagesSquare, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -9,7 +9,6 @@ import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
@@ -18,14 +17,12 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
+import { groupByMessagingApp, type RoomGroup } from './rooms-by-messaging-app';
 import { ServerPage, ServerTableEmpty } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { useReadableRoomsInWorkspace } from './use-listed-rooms';
-
-/** Group key for a room with no messaging app behind it. */
-const UNBRIDGED = '';
 
 function useServerId(): string {
   return useParams('serverRooms').params.serverId;
@@ -124,51 +121,6 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   );
 });
 
-type RoomGroup = {
-  key: string;
-  label: string;
-  bridgeType: string | null;
-  rooms: RemoteRoomSummary[];
-};
-
-/**
- * Rooms under the messaging app they are reachable in.
- *
- * Which app a room is in is the thing people scan this page for — it decides
- * where a conversation actually happens — so it is the heading rather than a
- * column. Grouped by the bridge's own display name, because a server can have
- * two of the same platform (two Slack workspaces) and calling both "Slack"
- * would merge two different places into one list. Rooms in no app sort last:
- * they are the exception, and leading with them buries the rest.
- */
-function groupByMessagingApp(rooms: RemoteRoomSummary[]): RoomGroup[] {
-  const groups = new Map<string, RoomGroup>();
-  for (const room of rooms) {
-    const key = room.bridgeType ? (room.bridgeDisplayName ?? room.bridgeType) : UNBRIDGED;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.rooms.push(room);
-      continue;
-    }
-    groups.set(key, {
-      key,
-      label: room.bridgeType
-        ? (room.bridgeDisplayName ?? bridgePlatformLabel(room.bridgeType))
-        : 'No messaging app',
-      bridgeType: room.bridgeType ?? null,
-      rooms: [room],
-    });
-  }
-  for (const group of groups.values()) {
-    group.rooms.sort((a, b) => a.name.localeCompare(b.name));
-  }
-  return [...groups.values()].sort((a, b) => {
-    if (a.key === UNBRIDGED) return 1;
-    if (b.key === UNBRIDGED) return -1;
-    return a.label.localeCompare(b.label);
-  });
-}
-
 /**
  * How many rooms a messaging app shows before the rest are folded away.
  *
@@ -221,7 +173,7 @@ const MessagingAppGroup = observer(function MessagingAppGroup({
         {hasBridgeIcon(group.bridgeType) ? (
           <BridgeIcon bridgeType={group.bridgeType} size={16} />
         ) : (
-          <MessageSquare className="size-4 text-foreground-muted" />
+          <MessagesSquare className="size-4 text-foreground-muted" />
         )}
         <span className="truncate text-sm font-medium text-foreground">{group.label}</span>
         <span className="shrink-0 text-xs text-foreground-muted">

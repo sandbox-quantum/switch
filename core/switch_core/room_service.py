@@ -957,7 +957,10 @@ class RoomService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
+        with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
     ) -> None:
+        """`with_agents` runs in the transaction that records the agents, so
+        what it writes commits with them or not at all."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1007,6 +1010,8 @@ class RoomService:
                         aid for aid in new_agent_ids if aid in listeners
                     },
                 )
+                if with_agents is not None:
+                    await with_agents(session)
                 await session.commit()
 
             await self._invite_clients(room.transport_room_id, agent_clients)

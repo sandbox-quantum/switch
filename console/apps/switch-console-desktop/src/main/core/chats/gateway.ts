@@ -14,6 +14,8 @@ import {
   type ChatMessage,
   type ChatMessagesPage,
   chatMessagesPageSchema,
+  type ChatThreadMessagesPage,
+  chatThreadMessagesPageSchema,
   chatCreatedSchema,
   chatErrorBodySchema,
   chatListSchema,
@@ -22,6 +24,12 @@ import {
   chatSummarySchema,
   type ChatUpload,
   chatUploadSchema,
+  chatAgentAddedSchema,
+  type ChatMember,
+  chatMemberListSchema,
+  type WorkspaceMember,
+  workspaceMemberSchema,
+  agentCandidatesSchema,
 } from '@shared/core/chats/chats';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -104,21 +112,30 @@ export async function listChats(server: SwitchServer): Promise<ChatSummary[]> {
 
 /**
  * One agent goes as `agentId`, which every server with chats accepts; only a
- * chat with several needs `agentIds`.
+ * chat with several needs `agentIds`. Zero agents allowed; memberUserIds optional.
  */
 export async function createChat(
   server: SwitchServer,
-  input: { agentIds: string[]; name: string | null; requestId: string; greeting: string | null }
+  input: {
+    agentIds?: string[];
+    memberUserIds?: string[];
+    name: string | null;
+    requestId: string;
+    greeting: string | null;
+    /** `group` makes a group even of one agent and nobody else. */
+    kind?: 'group';
+  }
 ): Promise<ChatSummary> {
+  const agentIds = input.agentIds ?? [];
   const body: Record<string, string | string[]> = {
-    ...(input.agentIds.length === 1
-      ? { agentId: input.agentIds[0] }
-      : { agentIds: input.agentIds }),
     requestId: input.requestId,
   };
+  if (agentIds.length === 1) body.agentId = agentIds[0];
+  else body.agentIds = agentIds;
+  if (input.memberUserIds) body.memberUserIds = input.memberUserIds;
   if (input.name) body.name = input.name;
-  // What its one agent says as it joins, in place of its usual line.
   if (input.greeting !== null) body.greeting = input.greeting;
+  if (input.kind) body.kind = input.kind;
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }
 
@@ -132,6 +149,75 @@ export async function fetchChatMessages(
   return json(server, `${room(roomId)}/messages?${query}`, chatMessagesPageSchema);
 }
 
+export async function addChatAgent(
+  server: SwitchServer,
+  roomId: string,
+  agentId: string
+): Promise<ChatSummary> {
+  return (
+    await json(server, `${room(roomId)}/agents`, chatAgentAddedSchema, {
+      method: 'POST',
+      body: { agentId },
+    })
+  ).chat;
+}
+
+export async function removeChatAgent(
+  server: SwitchServer,
+  roomId: string,
+  agentId: string
+): Promise<void> {
+  await call(server, `${room(roomId)}/agents/${encodeURIComponent(agentId)}`, { method: 'DELETE' });
+}
+
+export async function listChatMembers(server: SwitchServer, roomId: string): Promise<ChatMember[]> {
+  return (await json(server, `${room(roomId)}/members`, chatMemberListSchema)).members;
+}
+
+export async function addChatMember(
+  server: SwitchServer,
+  roomId: string,
+  userId: string
+): Promise<ChatMember[]> {
+  return (
+    await json(server, `${room(roomId)}/members`, chatMemberListSchema, {
+      method: 'POST',
+      body: { userId },
+    })
+  ).members;
+}
+
+export async function removeChatMember(
+  server: SwitchServer,
+  roomId: string,
+  userId: string
+): Promise<void> {
+  await call(server, `${room(roomId)}/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
+/** The workspace's roster, the people a chat can be opened to. */
+export async function listWorkspaceMembers(
+  server: SwitchServer,
+  tenantId: string
+): Promise<WorkspaceMember[]> {
+  return json(
+    server,
+    `/tenants/${encodeURIComponent(tenantId)}/members`,
+    workspaceMemberSchema.array()
+  );
+}
+
+/** The ids of the agents the viewer may add to a new chat (`roomId` null) or to that chat. */
+export async function listAgentCandidates(
+  server: SwitchServer,
+  roomId: string | null
+): Promise<string[]> {
+  const query = roomId === null ? '' : `?roomId=${encodeURIComponent(roomId)}`;
+  return (await json(server, `/chats/agent-candidates${query}`, agentCandidatesSchema)).agentIds;
+}
+
 export async function sendChatMessage(
   server: SwitchServer,
   roomId: string,
@@ -140,6 +226,7 @@ export async function sendChatMessage(
     body: string;
     threadRootId: string | null;
     uploadIds: string[];
+    mentionAgentIds?: string[];
   }
 ): Promise<ChatMessage[]> {
   return (
@@ -148,6 +235,21 @@ export async function sendChatMessage(
       body: input,
     })
   ).messages;
+}
+
+export async function fetchThreadMessages(
+  server: SwitchServer,
+  roomId: string,
+  rootId: string,
+  page: { beforeSeq: number | null; limit: number }
+): Promise<ChatThreadMessagesPage> {
+  const query = new URLSearchParams({ limit: String(page.limit) });
+  if (page.beforeSeq !== null) query.set('beforeSeq', String(page.beforeSeq));
+  return json(
+    server,
+    `${room(roomId)}/threads/${encodeURIComponent(rootId)}/messages?${query}`,
+    chatThreadMessagesPageSchema
+  );
 }
 
 /** The room's turn steps and approval requests, as Switch stores them. */

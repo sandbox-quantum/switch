@@ -13,6 +13,9 @@ export const chatAgentSchema = z.object({
   displayName: z.string().nullable(),
   iconUrl: z.string().nullable(),
   provider: z.string().nullable(),
+  alias: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  ownedByViewer: z.boolean(),
 });
 export type ChatAgent = z.infer<typeof chatAgentSchema>;
 
@@ -26,6 +29,9 @@ export const chatSummarySchema = z.object({
   canManage: z.boolean(),
   /** The viewer owns one of the agents, which keeps them in the room: they cannot leave it. */
   ownsAgent: z.boolean().default(false),
+  /** The people in the chat, by user id, sorted. */
+  memberUserIds: z.array(z.string()),
+  memberCount: z.number().int(),
   lastMessage: z
     .object({
       seq: z.number().int(),
@@ -67,6 +73,9 @@ export const chatMessageSchema = z.object({
   threadRootId: z.string().nullable(),
   attachments: z.array(chatAttachmentSchema),
   clientTxn: z.string().nullable(),
+  namedAgentIds: z.array(z.string()),
+  threadReplyCount: z.number().int(),
+  threadLastReplySeq: z.number().int().nullable(),
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
@@ -78,7 +87,39 @@ export const chatMessagesPageSchema = z.object({
   hasMore: z.boolean(),
 });
 export type ChatMessagesPage = z.infer<typeof chatMessagesPageSchema>;
+export const chatThreadMessagesPageSchema = z.object({
+  messages: z.array(chatMessageSchema),
+  headSeq: z.number().int(),
+  hasMore: z.boolean(),
+});
+export type ChatThreadMessagesPage = z.infer<typeof chatThreadMessagesPageSchema>;
 export const chatSentSchema = z.object({ messages: z.array(chatMessageSchema) });
+export const chatAgentAddedSchema = z.object({ chat: chatSummarySchema });
+export const chatMemberSchema = z.object({
+  userId: z.string(),
+  name: z.string(),
+  isOwner: z.boolean(),
+});
+export type ChatMember = z.infer<typeof chatMemberSchema>;
+export const chatMemberListSchema = z.object({ members: z.array(chatMemberSchema) });
+/** A person in the workspace, from its roster, who could be added to a chat. */
+export const workspaceMemberSchema = z
+  .object({
+    user_id: z.string(),
+    name: z.string(),
+    email: z.string().nullish(),
+    // Older servers do not report it; they have no way to mark one.
+    service_account: z.boolean().optional(),
+  })
+  .transform(({ user_id, name, email, service_account }) => ({
+    userId: user_id,
+    name,
+    email: email || null,
+    serviceAccount: service_account ?? false,
+  }));
+export type WorkspaceMember = z.infer<typeof workspaceMemberSchema>;
+/** The agents the viewer may add to a new chat, or to one they manage. */
+export const agentCandidatesSchema = z.object({ agentIds: z.array(z.string()) });
 export const chatUploadSchema = z.object({
   uploadId: z.string(),
   uri: z.string(),
@@ -116,6 +157,7 @@ export type ChatSendInput = {
   body: string;
   threadRootId: string | null;
   uploadIds: string[];
+  mentionAgentIds?: string[];
 };
 
 export type ChatUploadInput = {

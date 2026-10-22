@@ -1,12 +1,25 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
-import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
+import {
+  isConsoleDirectChatSummary,
+  isConsoleGroupChatSummary,
+} from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { appState } from '@renderer/lib/stores/app-state';
 import { consoleChatRoute } from './console-chat-route';
 import { chatsStore } from './stores/chats';
+
+/**
+ * Whether the room page shows a room as a Console chat: a group chat, or a
+ * chat just lost, whose panel says so rather than falling back to the room's
+ * messaging app.
+ */
+export function opensAsConsoleChat(roomId: string): boolean {
+  const chat = chatsStore.chat(roomId);
+  return chat ? isConsoleGroupChatSummary(chat) : chatsStore.removed.has(roomId);
+}
 
 /**
  * On the room page, with agent_chats on: a 1-1 Console chat is not a room, so

@@ -1,4 +1,5 @@
 import { ChevronRight, DoorOpen, ExternalLink, MoreVertical, Plus, Trash2 } from 'lucide-react';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { openRoomChannel } from '@renderer/features/switch-rooms/room-links';
 import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
@@ -25,7 +26,7 @@ export function sessionRoomId(session: SessionStore): string | null {
 
 export function roomLabel(roomKey: string): string {
   if (roomKey === UNASSIGNED_ROOM_KEY) return 'Unassigned';
-  return switchRoomsStore.roomNameById(roomKey) ?? `Room ${roomKey.slice(0, 8)}`;
+  return roomName(roomKey) ?? `Room ${roomKey.slice(0, 8)}`;
 }
 
 /**
@@ -39,7 +40,12 @@ export function roomLabel(roomKey: string): string {
  */
 export function isRoomNameKnown(roomKey: string): boolean {
   if (roomKey === UNASSIGNED_ROOM_KEY) return true;
-  return switchRoomsStore.roomNameById(roomKey) !== null;
+  return roomName(roomKey) !== null;
+}
+
+/** From the room list, else from the chats list, which holds the chats you were invited to. */
+function roomName(roomKey: string): string | null {
+  return switchRoomsStore.roomNameById(roomKey) ?? chatsStore.chat(roomKey)?.name ?? null;
 }
 
 /**

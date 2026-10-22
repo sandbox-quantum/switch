@@ -1,3 +1,4 @@
+import { isObservableArray } from 'mobx';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ChatTimeline,
@@ -20,6 +21,9 @@ function message(seq: number, extra: Partial<ChatMessage> = {}): ChatMessage {
     threadRootId: null,
     attachments: [],
     clientTxn: null,
+    namedAgentIds: [],
+    threadReplyCount: 0,
+    threadLastReplySeq: null,
     ...extra,
   };
 }
@@ -44,6 +48,7 @@ function api(overrides: Partial<TimelineApi> = {}) {
   const calls = { send: [] as Parameters<TimelineApi['send']>[1][], upload: [] as string[] };
   const value: TimelineApi = {
     messages: async () => ({ messages: [], headSeq: 0, hasMore: false }),
+    threadMessages: async () => [],
     upload: async (_room, file) => {
       calls.upload.push(file.uploadId);
       return {
@@ -73,6 +78,7 @@ const file = (name: string): ChatFile => ({
 const input = (files: ChatFile[] = []) => ({
   body: 'hello',
   threadRootId: null,
+  mentionAgentIds: [],
   files,
 });
 
@@ -94,6 +100,28 @@ describe('ChatTimeline', () => {
     expect(timeline.pending[0]).toMatchObject({ requestId, state: 'sending' });
     await vi.waitFor(() => expect(timeline.pending).toHaveLength(0));
     expect(timeline.messages.map((each) => each.clientTxn)).toEqual([`${requestId}:0`]);
+  });
+
+  it('sends the picked mentions with the message, and again on retry', async () => {
+    let fail = true;
+    const { value, calls } = api();
+    const send = value.send;
+    value.send = async (room, body) => {
+      if (fail) {
+        fail = false;
+        calls.send.push(body);
+        throw networkError();
+      }
+      return send(room, body);
+    };
+    const timeline = new ChatTimeline('room-1', value);
+    const requestId = timeline.send({ ...input(), body: '@agent-two hi', mentionAgentIds: ['a2'] });
+    await vi.waitFor(() => expect(timeline.pending[0]?.state).toBe('failed'));
+    timeline.retry(requestId);
+    await vi.waitFor(() => expect(timeline.pending).toHaveLength(0));
+    expect(calls.send.map((each) => each.mentionAgentIds)).toEqual([['a2'], ['a2']]);
+    // What crosses IPC must be structured-cloneable.
+    expect(isObservableArray(calls.send[1]!.mentionAgentIds)).toBe(false);
   });
 
   it('reconciles on the feed echo before the send answers', async () => {

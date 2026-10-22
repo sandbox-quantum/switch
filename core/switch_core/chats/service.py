@@ -37,6 +37,7 @@ from sqlalchemy import (
     exists,
     false,
     func,
+    or_,
     select,
     update,
 )
@@ -46,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.authz import administers_tenant
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
+from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
@@ -579,7 +581,8 @@ class ChatService:
         return list(result.scalars().all())
 
     async def stream_rooms(self, session: AsyncSession, user_id: str) -> list[Room]:
-        """The caller's member rooms that are chats: unarchived, with an agent."""
+        """The caller's member rooms that are chats: unarchived, and either
+        holding an agent or started in Switch Console (which may have none)."""
         client = await self.member_client(session, user_id)
         if client is None:
             return []
@@ -589,7 +592,10 @@ class ChatService:
             .where(
                 ClientRoom.client_id == client.id,
                 Room.archived_at.is_(None),
-                exists().where(room_agents.c.room_id == Room.id),
+                or_(
+                    exists().where(room_agents.c.room_id == Room.id),
+                    Room.metadata_.has_key("chat_operation_id"),
+                ),
             )
             .order_by(Room.created_at)
         )
@@ -668,9 +674,19 @@ class ChatService:
     ) -> tuple[list[Message], int, bool]:
         """Messages before `before_seq` (newest first, returned oldest first),
         the room's head position, and whether older messages remain."""
-        query = select(Message).where(
-            Message.room_id == room_id, Message.event_type.in_(SHOWN_EVENT_TYPES)
+        return await self._paged(
+            session, room_id, Message.room_id == room_id, before_seq, limit
         )
+
+    async def _paged(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        where: ColumnElement[bool],
+        before_seq: int | None,
+        limit: int,
+    ) -> tuple[list[Message], int, bool]:
+        query = select(Message).where(where, Message.event_type.in_(SHOWN_EVENT_TYPES))
         if before_seq is not None:
             query = query.where(Message.seq < before_seq)
         rows = list(
@@ -682,6 +698,32 @@ class ChatService:
         rows = rows[:limit]
         rows.reverse()
         return rows, await self._message_store.head_seq(session, room_id), has_more
+
+    async def thread_page(
+        self,
+        session: AsyncSession,
+        room: Room,
+        root_id: str,
+        before_seq: int | None,
+        limit: int,
+    ) -> tuple[list[Message], int, bool]:
+        """`page` for the replies in one thread of this room, the root not
+        among them. A reply's id names its thread's root."""
+        found = await self._message_store.list_by_transport_event_ids(
+            session, room.id, [root_id]
+        )
+        if not found:
+            raise ChatError(
+                404, "THREAD_NOT_FOUND", "That message is not in this chat."
+            )
+        root = found[0].thread_root_event_id or found[0].transport_event_id
+        return await self._paged(
+            session,
+            room.id,
+            and_(Message.room_id == room.id, Message.thread_root_event_id == root),
+            before_seq,
+            limit,
+        )
 
     async def head_seq(self, session: AsyncSession, room_id: str) -> int:
         return await self._message_store.head_seq(session, room_id)
@@ -735,25 +777,64 @@ class ChatService:
                 room.transport_room_id, client.transport_user_id
             )
 
+    async def _require_tenant_member(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> User:
+        user = await self._user_store.get(session, user_id)
+        if user is None or not await self.has_tenant_role(session, tenant_id, user_id):
+            raise ChatError(
+                422,
+                "NOT_A_TENANT_MEMBER",
+                "That person is not a member of this workspace.",
+            )
+        if is_bootstrap_owner(user):
+            raise ChatError(422, "NOT_A_PERSON", "That account can't join chats.")
+        return user
+
+    async def _make_group(self, session: AsyncSession, room: Room) -> None:
+        """Turn a Switch Console direct chat into a group, for good.
+
+        Written in the transaction that adds the person or agent, with the
+        room row locked, so no message routes as direct once the room has
+        them and a failed add leaves the chat as it was. A bridged room's
+        type is its platform's and is never touched.
+        """
+        if room.channel_type != "direct" or "chat_operation_id" not in (
+            room.metadata_ or {}
+        ):
+            return
+        await session.execute(
+            update(Room)
+            .where(Room.id == room.id, Room.channel_type == "direct")
+            .values(channel_type="channel_private")
+        )
+        room.channel_type = "channel_private"
+
     async def add_member(
         self, tenant_id: str, actor: User, room_id: str, target_user_id: str
     ) -> Room:
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._room(session, tenant_id, room_id)
             await self._require_manager(session, tenant_id, actor, room)
-            target = await self._user_store.get(session, target_user_id)
-            if target is None or not await self.has_tenant_role(
+            target = await self._require_tenant_member(
                 session, tenant_id, target_user_id
-            ):
-                raise ChatError(
-                    422,
-                    "NOT_A_TENANT_MEMBER",
-                    "That person is not a member of this workspace.",
-                )
+            )
         client = await self.member_actor(tenant_id, target)
-        await self._join(tenant_id, room, client)
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room = await self._locked_room(session, room.id)
+            # The creator is the direct chat's own person; anyone else makes a group.
+            if target_user_id not in (room.created_by, room.owner_id):
+                await self._make_group(session, room)
+            with tenant_scope(tenant_id):
+                joined = await self._provisioning.record_join(
+                    session, room.transport_room_id, client.transport_user_id
+                )
+            await session.commit()
+        joined()
         await self._make_lasting(tenant_id, target_user_id, room.id)
-        self._memberships_changed(tenant_id, [target_user_id])
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            member_ids = [member.id for member, _ in await self.members(session, room)]
+        self._memberships_changed(tenant_id, member_ids)
         return room
 
     async def remove_member(
@@ -792,7 +873,68 @@ class ChatService:
                 room.transport_room_id, client.transport_user_id
             )
         await self._make_lasting(tenant_id, target_user_id, room.id)
-        self._memberships_changed(tenant_id, [target_user_id])
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            member_ids = [member.id for member, _ in await self.members(session, room)]
+        self._memberships_changed(tenant_id, [target_user_id, *member_ids])
+
+    async def add_agent(
+        self, tenant_id: str, actor: User, room_id: str, agent_id: str
+    ) -> Room:
+        """Manager only, and only an agent the manager may use in this room.
+        Already in is success. A second agent makes a direct chat a group."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room = await self._room(session, tenant_id, room_id)
+            await self._require_manager(session, tenant_id, actor, room)
+            await self._require_may_use_agent(
+                session,
+                tenant_id,
+                actor,
+                agent_id,
+                room_id=room.id,
+                group_id=room.group_id,
+            )
+            if agent_id in await self._room_store.get_agent_ids(session, room.id):
+                return room
+        await self._room_service.add_agents_to_room(
+            room.id,
+            agent_ids=[agent_id],
+            with_agents=lambda session: self._group_if_several_agents(session, room),
+        )
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            return await self._room(session, tenant_id, room_id)
+
+    async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
+        """The room row, locked against another membership change until this
+        transaction ends. `FOR NO KEY UPDATE`, which the key-share lock an
+        insert referencing the room takes does not conflict with."""
+        locked = await session.scalar(
+            select(Room)
+            .where(Room.id == room_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        assert locked is not None
+        return locked
+
+    async def _group_if_several_agents(self, session: AsyncSession, room: Room) -> None:
+        """`_make_group` once the room holds more than one agent, in the
+        transaction that added the agent. The room row is locked before counting, so a
+        concurrent add counts this one's agent once this one commits."""
+        locked = await self._locked_room(session, room.id)
+        if len(await self._room_store.get_agent_ids(session, room.id)) > 1:
+            await self._make_group(session, locked)
+
+    async def remove_agent(
+        self, tenant_id: str, actor: User, room_id: str, agent_id: str
+    ) -> None:
+        """Manager only, with no check on using the agent, so an unwanted
+        agent can always be taken out. Already gone is success."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            room = await self._room(session, tenant_id, room_id)
+            await self._require_manager(session, tenant_id, actor, room)
+            if agent_id not in await self._room_store.get_agent_ids(session, room.id):
+                return
+        await self._room_service.remove_agents_from_room(room.id, [agent_id])
 
     async def archive(self, tenant_id: str, user: User, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -884,29 +1026,54 @@ class ChatService:
         return claimed is not None
 
     async def _require_may_use_agent(
-        self, session: AsyncSession, tenant_id: str, user: User, agent_id: str
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        user: User,
+        agent_id: str,
+        *,
+        room_id: str,
+        group_id: str | None,
     ) -> Agent:
-        """The agent, if the user may address it themselves.
+        """The agent, if the user may address it themselves in `room_id`.
 
-        The rule the platform applies when it speaks for a person, asked
-        before the room exists: a rule naming particular rooms admits nobody
-        into a new one, and no claimed platform account is consulted.
+        The rule the platform applies when it speaks for a person. Asked
+        before a new room exists, `room_id` is "": a rule naming particular
+        rooms admits nobody into a new one. No claimed platform account is
+        consulted.
         """
         agent = await self._agent_store.get(session, agent_id)
         if agent is None or agent.tenant_id != tenant_id:
             raise ChatError(404, "AGENT_NOT_FOUND", "Agent not found.")
-        if not allows_on_behalf_of(
-            parse_policy(agent.addressing_policy),
-            room_id="",
-            group_id=None,
-            user_id=user.id,
-            external_user_ids=[],
-            owner_user_id=agent.owner_id,
-        ):
+        if not _may_use(agent, user, room_id=room_id, group_id=group_id):
             raise ChatError(
-                403, "AGENT_NOT_ALLOWED", "You may not start a chat with this agent."
+                403, "AGENT_NOT_ALLOWED", "You may not chat with this agent here."
             )
         return agent
+
+    async def agent_candidates(
+        self, session: AsyncSession, tenant_id: str, user: User, room_id: str | None
+    ) -> list[str]:
+        """The ids of the agents the user could add: to a new chat when
+        `room_id` is None, else to that room, which they must manage, less
+        the agents already in it. The rule `_require_may_use_agent` applies."""
+        target_room_id, group_id, present = "", None, set[str]()
+        if room_id is not None:
+            room = await self._room(session, tenant_id, room_id)
+            await self._require_manager(session, tenant_id, user, room)
+            target_room_id, group_id = room.id, room.group_id
+            present = set(await self._room_store.get_agent_ids(session, room.id))
+        agents = (
+            await session.execute(
+                select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.name)
+            )
+        ).scalars()
+        return [
+            agent.id
+            for agent in agents
+            if agent.id not in present
+            and _may_use(agent, user, room_id=target_room_id, group_id=group_id)
+        ]
 
     def _operation_id(self, tenant_id: str, user_id: str, request_id: str) -> str:
         return str(uuid.uuid5(_CHATS_NAMESPACE, f"{tenant_id}:{user_id}:{request_id}"))
@@ -917,15 +1084,20 @@ class ChatService:
         user: User,
         *,
         agent_ids: list[str],
+        member_user_ids: list[str],
         name: str | None,
         request_id: str,
         greeting: str | None,
+        kind: Literal["group"] | None,
     ) -> Room:
-        """A private room with the agents, owned by and joined by the user.
+        """A private room with the agents and members, owned by and joined by
+        the user.
 
-        One agent makes a direct room, which addresses it without a mention.
-        Several make a private channel, where a message names the agent it is
-        for. Every agent must be one the user may address.
+        One agent and no other member makes a direct room, which addresses
+        the agent without a mention, unless `kind` asks for a group. Anything
+        else is a group (a private channel), where a message names the agents
+        it is for. Every agent must
+        be one the user may address; every member a member of the workspace.
 
         Retrying with the same request id finishes whatever an earlier attempt
         left undone: the room is found by the operation id stamped on it, and
@@ -935,14 +1107,14 @@ class ChatService:
         one-liner: its first words, written for it (switch-buddy's welcome).
         Only for a direct chat with one of the user's own agents.
         """
-        if not agent_ids:
-            raise ChatError(422, "AGENTS_REQUIRED", "A chat needs at least one agent.")
+        member_user_ids = sorted(set(member_user_ids) - {user.id})
+        direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
         if greeting is not None:
-            if len(agent_ids) != 1:
+            if len(agent_ids) != 1 or kind == "group":
                 raise ChatError(
                     422,
                     "GREETING_NEEDS_ONE_AGENT",
-                    "Only a chat with one agent opens with its greeting.",
+                    "Only a direct chat with one agent opens with its greeting.",
                 )
             if not greeting.strip():
                 raise ChatError(422, "EMPTY_MESSAGE", "The greeting is empty.")
@@ -952,13 +1124,19 @@ class ChatService:
                     "GREETING_TOO_LONG",
                     f"A greeting is at most {GREETING_MAX_CHARS} characters.",
                 )
-        payload_hash = _hash(
+        request: dict[str, object] = (
             {"agentId": agent_ids[0], "name": name}
             if len(agent_ids) == 1 and greeting is None
             else {"agentId": agent_ids[0], "name": name, "greeting": greeting}
             if len(agent_ids) == 1
             else {"agentIds": agent_ids, "name": name}
         )
+        if member_user_ids:
+            request["memberUserIds"] = member_user_ids
+        # Only when given, so a request without it hashes as it always has.
+        if kind is not None:
+            request["kind"] = kind
+        payload_hash = _hash(request)
         async with self._lock("create", tenant_id, user.id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 operation = await self._operation(session, user.id, request_id)
@@ -971,9 +1149,13 @@ class ChatService:
                         return room
                 agents = [
                     await self._require_may_use_agent(
-                        session, tenant_id, user, agent_id
+                        session, tenant_id, user, agent_id, room_id="", group_id=None
                     )
                     for agent_id in agent_ids
+                ]
+                members = [
+                    await self._require_tenant_member(session, tenant_id, member_id)
+                    for member_id in member_user_ids
                 ]
                 if greeting is not None and agents[0].owner_id != user.id:
                     raise ChatError(
@@ -1002,16 +1184,21 @@ class ChatService:
                     )
                 ).scalar_one_or_none()
             if found is None:
+                names = ", ".join(
+                    [agent.name for agent in agents]
+                    + [member.name for member in members]
+                )
                 try:
                     created = await self._room_service.create_room(
                         RoomCreateConfig(
                             name=name or "New Chat",
-                            description="Switch Console chat with "
-                            + ", ".join(agent.name for agent in agents),
-                            agent_ids=[agent.id for agent in agents],
-                            channel_type=(
-                                "direct" if len(agents) == 1 else "channel_private"
+                            description=(
+                                f"Switch Console chat with {names}"
+                                if names
+                                else "Switch Console chat"
                             ),
+                            agent_ids=[agent.id for agent in agents],
+                            channel_type="direct" if direct else "channel_private",
                             internal_only=True,
                             created_by=user.id,
                             owner_id=user.id,
@@ -1033,9 +1220,10 @@ class ChatService:
             else:
                 room = found
                 await self._room_service.reconcile_room(room)
-            client = await self.member_actor(tenant_id, user)
-            await self._join(tenant_id, room, client)
-            await self._make_lasting(tenant_id, user.id, room.id)
+            for joiner in [user, *members]:
+                client = await self.member_actor(tenant_id, joiner)
+                await self._join(tenant_id, room, client)
+                await self._make_lasting(tenant_id, joiner.id, room.id)
             async with tenant_session(self.session_factory, tenant_id) as session:
                 await session.execute(
                     update(ChatOperation)
@@ -1047,7 +1235,7 @@ class ChatService:
                     .values(state="done", room_id=room.id, result={"roomId": room.id})
                 )
                 await session.commit()
-        self._memberships_changed(tenant_id, [user.id])
+        self._memberships_changed(tenant_id, [user.id, *member_user_ids])
         if len(agents) == 1:
             self._start_session(agents[0].id, room.id)
         return room
@@ -1134,6 +1322,7 @@ class ChatService:
         thread_root_id: str | None,
         upload_ids: list[str],
         mention_agent_id: str | None,
+        mention_agent_ids: list[str],
     ) -> tuple[Room, list[Message]]:
         """Post the user's message, every part of it in one transaction.
 
@@ -1141,16 +1330,23 @@ class ChatService:
         writing rows: each part, and the operation marked done, commit
         together or not at all. A retry after a failure before the commit
         posts it once; one after the commit answers the parts already posted.
+
+        The agents the message is for are `mention_agent_ids` together with
+        `mention_agent_id`, the one earlier clients send, as a set.
         """
-        payload_hash = _hash(
-            {
-                "roomId": room_id,
-                "body": body,
-                "threadRootId": thread_root_id,
-                "uploadIds": upload_ids,
-                "mentionAgentId": mention_agent_id,
-            }
-        )
+        mentions = sorted(set(mention_agent_ids))
+        request: dict[str, object] = {
+            "roomId": room_id,
+            "body": body,
+            "threadRootId": thread_root_id,
+            "uploadIds": upload_ids,
+            "mentionAgentId": mention_agent_id,
+        }
+        if mentions:
+            request["mentionAgentIds"] = mentions
+        payload_hash = _hash(request)
+        if mention_agent_id is not None:
+            mentions = sorted({*mentions, mention_agent_id})
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, client = await self.require_member(session, tenant_id, user, room_id)
             operation = await self._operation(session, user.id, request_id)
@@ -1165,8 +1361,8 @@ class ChatService:
                 for upload_id in upload_ids
             ]
             root = await self._thread_root(session, room, thread_root_id)
-            if mention_agent_id is not None:
-                body = await self._with_mention(session, room, mention_agent_id, body)
+            if mentions:
+                body = await self._with_mentions(session, room, mentions, body)
 
             if not await self._claim(
                 session,
@@ -1420,16 +1616,41 @@ class ChatService:
             )
         return found[0].thread_root_event_id or found[0].transport_event_id
 
-    async def _with_mention(
-        self, session: AsyncSession, room: Room, agent_id: str, body: str
+    async def _with_mentions(
+        self, session: AsyncSession, room: Room, agent_ids: list[str], body: str
     ) -> str:
-        if agent_id not in await self._room_store.get_agent_ids(session, room.id):
+        """`body` led by an `@name` for each agent it does not already name by
+        name or room alias, so every agent decides it was addressed by the
+        same rule a typed mention meets."""
+        in_room = set(await self._room_store.get_agent_ids(session, room.id))
+        if any(agent_id not in in_room for agent_id in agent_ids):
             raise ChatError(422, "AGENT_NOT_IN_CHAT", "That agent is not in this chat.")
-        agent = await self._agent_store.get(session, agent_id)
-        assert agent is not None
-        if mention_regex(agent.name).search(strip_emphasis(body)) is not None:
+        aliases = await self._room_store.list_aliases(session, room.id)
+        text = strip_emphasis(body)
+        missing: list[str] = []
+        for agent_id in agent_ids:
+            agent = await self._agent_store.get(session, agent_id)
+            assert agent is not None
+            spoken = [agent.name, *([aliases[agent_id]] if agent_id in aliases else [])]
+            if all(mention_regex(name).search(text) is None for name in spoken):
+                missing.append(agent.name)
+        prefix = " ".join(f"@{name}" for name in sorted(missing))
+        if not prefix:
             return body
-        return f"@{agent.name} {body}" if body else f"@{agent.name}"
+        return f"{prefix} {body}" if body else prefix
+
+
+def _may_use(agent: Agent, user: User, *, room_id: str, group_id: str | None) -> bool:
+    """Whether `user` may address `agent` themselves in `room_id` ("" for a
+    room not made yet), with no claimed platform account consulted."""
+    return allows_on_behalf_of(
+        parse_policy(agent.addressing_policy),
+        room_id=room_id,
+        group_id=group_id,
+        user_id=user.id,
+        external_user_ids=[],
+        owner_user_id=agent.owner_id,
+    )
 
 
 def _owns_agent_in_room(user_id: str) -> ColumnElement[bool]:

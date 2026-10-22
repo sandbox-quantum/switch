@@ -20,9 +20,22 @@ function summary(roomId: string, seq: number): ChatSummary {
     channelType: 'direct',
     bridgeType: null,
     channelName: null,
-    agents: [{ id: 'a1', name: 'ada', displayName: null, iconUrl: null, provider: null }],
+    agents: [
+      {
+        id: 'a1',
+        name: 'ada',
+        displayName: null,
+        iconUrl: null,
+        provider: null,
+        alias: null,
+        ownerName: null,
+        ownedByViewer: false,
+      },
+    ],
     canManage: true,
     ownsAgent: false,
+    memberUserIds: [],
+    memberCount: 0,
     lastMessage: { seq, sentAt: '2026-01-01T00:00:00Z', preview: 'hi', senderName: 'Ada' },
   };
 }
@@ -40,6 +53,9 @@ function message(roomId: string, seq: number): ChatMessage {
     threadRootId: null,
     attachments: [],
     clientTxn: null,
+    namedAgentIds: [],
+    threadReplyCount: 0,
+    threadLastReplySeq: null,
   };
 }
 
@@ -248,5 +264,48 @@ describe('ChatsStore', () => {
     store.upsert(summary('r1', 1));
     expect(timeline.notMember).toBe(false);
     expect(timeline.loaded).toBe(false);
+  });
+});
+
+/** A viewer's store whose feed the test drives, already connected to `s1`. */
+async function viewer() {
+  let onSummary: Parameters<ChatsEvents['onSummary']>[0] = () => {};
+  const events: ChatsEvents = {
+    onMessage: () => () => {},
+    onSummary: (cb) => {
+      onSummary = cb;
+      return () => {};
+    },
+    onRemoved: () => () => {},
+    onState: () => () => {},
+    onReset: () => () => {},
+  };
+  const group = { ...summary('g', 1), channelType: 'channel_private' as const };
+  const store = new ChatsStore(
+    {
+      connect: async () => ({ state: 'live', detail: null }),
+      disconnect: async () => {},
+      list: async () => [group],
+      identity: async () => ({ userId: 'u', tenantId: 't' }),
+      timeline: () => ({}) as TimelineApi,
+      archive: async () => {},
+      delete: async () => {},
+    },
+    events
+  );
+  await store.connect('s1');
+  return { store, push: (chat: ChatSummary) => onSummary({ serverId: 's1', chat }), group };
+}
+
+describe('ChatsStore membership', () => {
+  it('keeps both of two quick agent removals and a feed update in between', async () => {
+    const { store, push, group } = await viewer();
+    const a = (id: string) => ({ ...group.agents[0], id });
+    push({ ...group, agents: [a('a1'), a('a2'), a('a3')] });
+    store.dropAgent('g', 'a1');
+    push({ ...group, name: 'renamed', agents: [a('a2'), a('a3')] });
+    store.dropAgent('g', 'a2');
+    expect(store.chat('g')?.agents.map((agent) => agent.id)).toEqual(['a3']);
+    expect(store.chat('g')?.name).toBe('renamed');
   });
 });

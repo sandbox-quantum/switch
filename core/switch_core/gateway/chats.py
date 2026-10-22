@@ -1,7 +1,8 @@
 """`/chats`: Switch Console's view of the rooms a person is a member of.
 
 Every route except creating a chat requires the caller's membership of the
-room (`ChatService.require_member`); adding a member requires managing it.
+room (`ChatService.require_member`); adding a member or adding or removing
+an agent requires managing it.
 With `agent_chats` on, owning an agent in a chat one started keeps one a
 member of it (`sync_owned_rooms`), so the list, the event stream and the room
 routes bring that up to date first.
@@ -16,7 +17,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -91,16 +92,21 @@ class ChatEnvelope(CamelModel):
 
 
 class CreateChatRequest(CamelModel):
-    """`agentIds` names the chat's agents; `agentId` is the one-agent form
-    earlier clients send. Exactly one of the two is given."""
+    """`agentIds` names the chat's agents, none or more; `agentId` is the
+    one-agent form earlier clients send. Exactly one of the two is given.
+    `memberUserIds` are the other people to add."""
 
     agent_id: str | None = None
     agent_ids: list[str] | None = None
+    member_user_ids: list[str] = []
     name: str | None = None
     request_id: str
     # What the agent says as it joins, instead of its usual line; older
     # clients send none.
     greeting: str | None = None
+    # "group" makes a group even of one agent and nobody else, which would
+    # otherwise be a direct chat; older clients send none.
+    kind: Literal["group"] | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -125,6 +131,7 @@ class SendRequest(CamelModel):
     thread_root_id: str | None = None
     upload_ids: list[str] = []
     mention_agent_id: str | None = None
+    mention_agent_ids: list[str] = []
 
 
 class ControlRequest(CamelModel):
@@ -158,6 +165,10 @@ class MemberList(CamelModel):
 
 class AddMemberRequest(CamelModel):
     user_id: str
+
+
+class AddAgentRequest(CamelModel):
+    agent_id: str
 
 
 class ActivityItemView(CamelModel):
@@ -258,9 +269,11 @@ async def create_chat(
         tenant_id,
         user,
         agent_ids=req.chosen_agents(),
+        member_user_ids=req.member_user_ids,
         name=req.name,
         request_id=req.request_id,
         greeting=req.greeting,
+        kind=req.kind,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(
@@ -287,6 +300,25 @@ async def chat_events_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
     )
+
+
+class AgentCandidates(CamelModel):
+    agent_ids: list[str]
+
+
+@router.get("/agent-candidates", response_model=AgentCandidates)
+async def agent_candidates(
+    user: CurrentUser,
+    service: Service,
+    room_id: Annotated[str | None, Query(alias="roomId")] = None,
+) -> AgentCandidates:
+    """The agents the caller could add to a new chat, or with `roomId` to
+    that chat, which they must manage."""
+    tenant_id = require_tenant_id()
+    async with tenant_session(service.session_factory, tenant_id) as session:
+        return AgentCandidates(
+            agent_ids=await service.agent_candidates(session, tenant_id, user, room_id)
+        )
 
 
 @router.get("/activity/events")
@@ -342,6 +374,29 @@ async def list_messages(
         )
 
 
+@router.get("/{room_id}/threads/{root_id}/messages", response_model=MessagePage)
+async def list_thread_messages(
+    room_id: str,
+    root_id: str,
+    user: CurrentUser,
+    service: Service,
+    before_seq: Annotated[int | None, Query(alias="beforeSeq")] = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = 50,
+) -> MessagePage:
+    """The thread's replies, paged like `/messages`; the root is not one."""
+    tenant_id = require_tenant_id()
+    async with tenant_session(service.session_factory, tenant_id) as session:
+        room, _ = await service.require_member(session, tenant_id, user, room_id)
+        rows, head_seq, has_more = await service.thread_page(
+            session, room, root_id, before_seq, limit
+        )
+        return MessagePage(
+            messages=await chat_messages(session, room, rows),
+            head_seq=head_seq,
+            has_more=has_more,
+        )
+
+
 @router.post("/{room_id}/attachments", response_model=StagedUploadResponse)
 async def upload_attachment(
     room_id: str,
@@ -383,6 +438,7 @@ async def send_message(
         thread_root_id=req.thread_root_id,
         upload_ids=req.upload_ids,
         mention_agent_id=req.mention_agent_id,
+        mention_agent_ids=req.mention_agent_ids,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return SentMessages(messages=await chat_messages(session, room, posted))
@@ -458,6 +514,27 @@ async def remove_member(
     room_id: str, member_user_id: str, user: CurrentUser, service: Service
 ) -> Response:
     await service.remove_member(require_tenant_id(), user, room_id, member_user_id)
+    return Response(status_code=204)
+
+
+@router.post("/{room_id}/agents", response_model=ChatEnvelope)
+async def add_agent(
+    room_id: str, req: AddAgentRequest, user: CurrentUser, service: Service
+) -> ChatEnvelope:
+    """Manager only, and only an agent the manager may use in this room."""
+    tenant_id = require_tenant_id()
+    room = await service.add_agent(tenant_id, user, room_id, req.agent_id)
+    async with tenant_session(service.session_factory, tenant_id) as session:
+        return ChatEnvelope(
+            chat=await _summary(service, session, tenant_id, user, room)
+        )
+
+
+@router.delete("/{room_id}/agents/{agent_id}", status_code=204)
+async def remove_agent(
+    room_id: str, agent_id: str, user: CurrentUser, service: Service
+) -> Response:
+    await service.remove_agent(require_tenant_id(), user, room_id, agent_id)
     return Response(status_code=204)
 
 

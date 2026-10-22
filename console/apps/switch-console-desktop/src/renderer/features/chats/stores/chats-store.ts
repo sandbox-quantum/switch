@@ -233,6 +233,16 @@ export class ChatsStore {
     void this.connect(serverId);
   }
 
+  /** Drops an agent the server removed from the chat as it stands now, not as it stood when the removal was asked for. */
+  dropAgent(roomId: string, agentId: string): void {
+    const chat = this.chats.get(roomId);
+    if (chat)
+      this.chats.set(roomId, {
+        ...chat,
+        agents: chat.agents.filter((agent) => agent.id !== agentId),
+      });
+  }
+
   /** The chats an agent is in, newest activity first. */
   chatsOfAgent(agentId: string): ChatSummary[] {
     return [...this.chats.values()]
