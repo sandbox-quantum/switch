@@ -21,6 +21,7 @@ from switch_core.trust.client import (
     TrustFinding,
     check_message,
     trust_annotation,
+    trust_is_active,
 )
 
 
@@ -402,3 +403,32 @@ def test_trust_annotation_is_none_for_ok_blocked_and_redacted():
     for outcome in ("ok", "blocked", "redacted"):
         result = TrustCheckResult(outcome=outcome, policy_id=None, policy_name=None)
         assert trust_annotation(result) is None
+
+
+@pytest.mark.asyncio
+async def test_is_active_follows_the_settings_row() -> None:
+    complete = _FakeRow(
+        endpoint="https://trust.example", policy_id="pol_1", api_key_encrypted="enc:k"
+    )
+    no_key = _FakeRow(
+        endpoint="https://trust.example", policy_id="pol_1", api_key_encrypted=None
+    )
+    assert await _dynamic_client(complete, _unreachable).is_active() is True
+    assert await _dynamic_client(no_key, _unreachable).is_active() is False
+    assert await _dynamic_client(None, _unreachable).is_active() is False
+    assert await NullTrustClient().is_active() is False
+
+
+class _UnreadableSettingsClient:
+    async def is_active(self) -> bool:
+        raise GuardrailsCheckError("database unavailable")
+
+    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+        raise AssertionError("not called")
+
+
+@pytest.mark.asyncio
+async def test_trust_is_active_checks_anyway_when_settings_cannot_be_read() -> None:
+    # Failing towards checking: each check then fails open with its visible
+    # "could not check" note, instead of the message skipping Switch Trust.
+    assert await trust_is_active(_UnreadableSettingsClient()) is True  # type: ignore[arg-type]

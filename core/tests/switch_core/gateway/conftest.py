@@ -50,6 +50,7 @@ from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import Change
 from switch_core.signals import SignalBus
 from switch_core.transport.invites import InviteBus
+from switch_core.trust.client import NullTrustClient
 from tests.conftest import TEST_KEYRING
 from tests.routing import router_on
 from tests.switch_core.gateway.agent_route_harness import add_agent
@@ -256,6 +257,7 @@ def _chat_service(
         media_max_bytes=1024,
         agent_chats_enabled=True,
         connections=connections,
+        trust_client=NullTrustClient(),
     )
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service

@@ -1126,6 +1126,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
         connections=connections,
+        trust_client=trust_client,
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
