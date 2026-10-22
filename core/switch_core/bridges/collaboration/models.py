@@ -23,6 +23,15 @@ channel Switch has no permission to touch, which somebody removes on the
 platform itself.
 """
 
+PrivateNoticeDelivery = Literal["ephemeral", "direct_message", "in_channel"]
+"""How a bridge says something to one person about a message they posted.
+
+`ephemeral` is shown in the channel to that person alone; `direct_message`
+goes to a private chat between them and the bot; `in_channel` is a platform
+where a bot can do neither unprompted, so the notice is posted where everyone
+in the channel sees it.
+"""
+
 
 class RetireOutcome(BaseModel):
     """What happened to a room's platform channel when the room was deleted.

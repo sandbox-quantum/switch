@@ -67,6 +67,12 @@ class _FakeHumanActor:
 
 
 class _FakeAdapter:
+    """A platform with no private route, so every notice is posted in the
+    channel, where these tests read it."""
+
+    platform_name = "Fake"
+    private_notice_delivery = "in_channel"
+
     def __init__(self) -> None:
         self.admin_messages: list[tuple[str, str]] = []
 

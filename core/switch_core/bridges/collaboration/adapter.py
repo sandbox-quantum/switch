@@ -40,6 +40,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
     WebhookDeliveryUnsupported,
 )
@@ -592,6 +593,15 @@ class PlatformAdapter(ABC):
     #: say what this adapter's `retire_channel` actually does. `kept` here
     #: because the base leaves the channel alone.
     channel_on_delete: ClassVar[ChannelRetirement] = "kept"
+
+    #: How `notify_privately` reaches one person about their own message.
+    #:
+    #: A Switch Trust notice about what a person posted (blocked, redacted,
+    #: flagged, not fully checked) is theirs alone, and posting it in the
+    #: channel tells everyone there what they tried to say. `in_channel` here
+    #: because the base has no private route: the caller posts the notice in
+    #: the channel instead and logs a warning saying so.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "in_channel"
 
     def __init__(self) -> None:
         # Whether this process holds the bridge: see
@@ -1984,6 +1994,32 @@ class PlatformAdapter(ABC):
                 e,
                 text,
             )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """Say `content` to `user_id` alone, about a message they posted in
+        `channel_id`, the way `private_notice_delivery` declares.
+
+        `content` is Switch Markdown, rendered here as `admin_message` renders
+        its body. `thread_root_id` is where the message sits, for a notice
+        shown in the channel; `channel_name` names the channel in a notice
+        that arrives somewhere else, so the reader can tell which message it
+        is about.
+
+        Raises when the notice cannot be delivered privately, so the caller
+        can post it in the channel instead and say so. The base has no private
+        route and is never called for one: `private_notice_delivery` is
+        `in_channel` here."""
+        raise NotImplementedError(
+            f"{self.platform_name} has no way to say something to one person privately"
+        )
 
     def set_agent_presentation_resolver(
         self, resolver: Callable[[str], Awaitable[AgentPresentation | None]]

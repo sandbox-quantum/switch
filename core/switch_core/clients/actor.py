@@ -465,8 +465,10 @@ class SystemActor(Actor[ClientConfig]):
         message_type: AdminMessageType,
         thread_root_id: str | None,
         mentions: list[str] | None = None,
-    ) -> None:
-        await self.send_message(
+    ) -> str | None:
+        """Post an admin notice. Returns its event id, or None when the
+        transport refused it (logged by `send_message`)."""
+        return await self.send_message(
             room_id,
             body,
             format="markdown",

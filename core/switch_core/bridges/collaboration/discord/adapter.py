@@ -59,6 +59,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -556,6 +557,10 @@ class DiscordAdapter(PlatformAdapter):
     # nobody.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@everyone"
+    #: Discord shows a bot's message to one member of a channel only in answer
+    #: to an interaction, and a posted message is not one, so a notice about
+    #: it goes to them as a direct message from the bot.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "direct_message"
 
     # The status is the turn's one post, so the clock rides along with the next
     # real change rather than rewriting a message somebody is reading. See the
@@ -1095,6 +1100,27 @@ class DiscordAdapter(PlatformAdapter):
                 part, suppress_embeds=True, allowed_mentions=NO_MASS_MENTIONS
             ),
             where=f"channel {channel_id}",
+        )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """A direct message from the bot, naming the channel the message was
+        posted in. Discord refuses it when the person does not accept direct
+        messages from members of the server, and that refusal is raised."""
+        client = self._require_client()
+        user = client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+        await user.send(
+            f"About your message in <#{channel_id}>:\n"
+            f"{self.translate_outbound(content)}",
+            suppress_embeds=True,
+            allowed_mentions=NO_MASS_MENTIONS,
         )
 
     async def update_message(

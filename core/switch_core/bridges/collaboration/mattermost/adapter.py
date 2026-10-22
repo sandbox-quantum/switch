@@ -69,6 +69,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -350,6 +351,9 @@ class MattermostAdapter(PlatformAdapter):
     #: carried over: it is the one that reaches the person who can do something.
     notifies_only_by_mention: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "@channel"
+    #: `POST /posts/ephemeral`, made as the admin the bridge connects as: the
+    #: endpoint needs `create_post_ephemeral`, which a system admin holds.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
 
     #: The status is the turn's one post, not a line beside it, so the clock
     #: advancing is not on its own worth rewriting what a reader is reading.
@@ -824,6 +828,33 @@ class MattermostAdapter(PlatformAdapter):
             notices.append(text)
             return
         await super().tell_actor(channel_id, actor_ref, actor_name, thread_ref, text)
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral post: shown in the channel, in the message's thread,
+        to the person who posted it and to nobody else, and gone on reload."""
+        loop = self._main_loop
+        driver = self._admin_driver
+        if loop is None or driver is None:
+            raise RuntimeError("Mattermost is not connected")
+        post: dict[str, Any] = {
+            "channel_id": channel_id,
+            "message": self.translate_outbound(content),
+        }
+        if thread_root_id is not None:
+            post["root_id"] = thread_root_id
+        await loop.run_in_executor(
+            None,
+            driver.posts.create_ephemeral_post,
+            {"user_id": user_id, "post": post},
+        )
 
     # ── Messaging ────────────────────────────────────────────────────────────
 

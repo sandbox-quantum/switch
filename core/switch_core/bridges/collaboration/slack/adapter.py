@@ -51,6 +51,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     OutboundAttachment,
+    PrivateNoticeDelivery,
     RetireOutcome,
 )
 from switch_core.bridges.collaboration.session.renderers.slack import (
@@ -459,6 +460,8 @@ class SlackAdapter(PlatformAdapter):
     draws_session_activity: ClassVar[bool] = True
     separate_attention_slot: ClassVar[bool] = True
     channel_mention: ClassVar[str | None] = "<!channel>"
+    #: `chat.postEphemeral`: in the channel, to one member alone.
+    private_notice_delivery: ClassVar[PrivateNoticeDelivery] = "ephemeral"
     #: Cheap on a stream in a way it never was on an edit. An append is rate
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
@@ -1747,6 +1750,26 @@ class SlackAdapter(PlatformAdapter):
                 e,
                 text,
             )
+
+    async def notify_privately(
+        self,
+        *,
+        channel_id: str,
+        channel_name: str | None,
+        user_id: str,
+        content: str,
+        thread_root_id: str | None,
+    ) -> None:
+        """An ephemeral message: shown in the channel, in the message's
+        thread, to the person who posted it and to nobody else."""
+        if not self._web_client:
+            raise RuntimeError("Slack client not connected")
+        await self._web_client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text=self.translate_outbound(content),
+            thread_ts=self._thread_ts_of(thread_root_id),
+        )
 
     def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto

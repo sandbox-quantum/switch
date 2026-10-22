@@ -60,8 +60,10 @@ from switch_core.bridges.agent.protocol.types import (
     RoomDetailDescriptor,
     RoomWideMentionStatus,
     SendTargetedResult,
+    SentMessage,
     ToolCallReport,
     ToolSpec,
+    TrustFeedback,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
     REGISTRATION_KEY_TYPES,
@@ -242,6 +244,38 @@ def _coalesce_attachment_groups(
         ]
         absorbed.update(row.id for _, row in parts[1:])
     return [row for row in rows if row.id not in absorbed], merged
+
+
+def _trust_feedback(
+    verdict: TrustOutcome | None,
+    delivered: str | None,
+    alert: tuple[str, TrustOutcome] | None,
+    notice_error: str | None,
+) -> TrustFeedback | None:
+    """What to tell an agent Switch Trust did to the text it sent, or None
+    when it let the text through unflagged.
+
+    `verdict` is Switch Trust's outcome for the text (None when it was not
+    checked), `alert` the notice due under the message, if any, and
+    `notice_error` why that notice was not posted (None once it was). A
+    redaction can leave the words as they were, so it is told from the
+    verdict rather than from the delivered text differing from the sent."""
+    note = alert[0] if alert is not None and notice_error is None else None
+    if verdict == "redacted":
+        return TrustFeedback(
+            outcome="redacted",
+            delivered=delivered,
+            note=note,
+            notice_error=notice_error,
+        )
+    if alert is None:
+        return None
+    return TrustFeedback(
+        outcome="alerted" if alert[1] == "alerted" else "errored",
+        delivered=None,
+        note=note,
+        notice_error=notice_error,
+    )
 
 
 def _elided_root(root_id: str) -> dict[str, Any]:
@@ -1709,7 +1743,7 @@ class AgentCore:
         content: str,
         thread_root_id: str | None,
         client: AgentActor,
-    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
+    ) -> tuple[str, tuple[str, TrustOutcome] | None, TrustOutcome]:
         """Check agent-authored content against Switch Trust before it is
         sent. Returns the content to actually send — unchanged or redacted —
         and, on an ALERTED/ERRORED verdict, an (annotation, outcome) pair for
@@ -1717,7 +1751,8 @@ class AgentCore:
         sent (`_post_trust_alert_notice`, threaded under that send's own
         event_id rather than under this call's pre-send `thread_root_id`, so
         the notice reads as a reply to the flagged message, not to whatever
-        thread the agent happened to be posting in). Raises
+        thread the agent happened to be posting in), then the verdict itself,
+        which the caller reports back to the agent (`_trust_feedback`). Raises
         `GuardrailBlockedError` on a BLOCKED verdict, or on a REDACTED verdict
         Switch Trust gave us nothing to redact with — sending the original
         content then would be indistinguishable from not checking at all —
@@ -1740,7 +1775,7 @@ class AgentCore:
         check: TrustCheckResult,
         thread_root_id: str | None,
         client: AgentActor,
-    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
+    ) -> tuple[str, tuple[str, TrustOutcome] | None, TrustOutcome]:
         """`_enforce_trust` for a check already made, so a caller can run it
         alongside others (`send_media` checks a caption and its files at
         once)."""
@@ -1753,7 +1788,7 @@ class AgentCore:
             content = check.redacted_content
         annotation = trust_annotation(check)
         pending_alert = (annotation, check.outcome) if annotation is not None else None
-        return content, pending_alert
+        return content, pending_alert, check.outcome
 
     async def _post_trust_blocked_notice(
         self, room: RoomDescriptor, thread_root_id: str | None, client: AgentActor
@@ -1790,13 +1825,18 @@ class AgentCore:
         reply_to_event_id: str,
         annotation: str,
         outcome: TrustOutcome,
-    ) -> None:
+    ) -> str | None:
         """Tell the room a response was flagged (or could not be fully
         checked), as its own notice threaded under the flagged reply's own
         event id — not the pre-send thread the agent happened to be posting
         in — rather than appended to the reply itself. Mirrors how
         `CollaborationCore._post_trust_notice` threads an ALERTED/ERRORED
-        human-authored message under the message that triggered it."""
+        human-authored message under the message that triggered it.
+
+        Returns None once the notice is posted, or why it was not (logged as
+        a WARNING), for the sender's `TrustFeedback.notice_error`. A notice
+        that fails does not fail the send: the message is already in the
+        room."""
         admin = next(
             (
                 c
@@ -1812,14 +1852,14 @@ class AgentCore:
                 room.id,
                 outcome,
             )
-            return
+            return "no admin client is running to post it"
         message_type = (
             AdminMessageType.TRUST_ALERTED
             if outcome == "alerted"
             else AdminMessageType.TRUST_ERRORED
         )
         try:
-            await admin.send_admin(
+            event_id = await admin.send_admin(
                 room.transport_room_id,
                 annotation,
                 message_type=message_type,
@@ -1831,6 +1871,15 @@ class AgentCore:
                 room.id,
                 exc_info=True,
             )
+            return "posting it failed"
+        if event_id is None:
+            logger.warning(
+                "Could not post a Switch Trust alert notice in %s: the "
+                "transport refused it",
+                room.id,
+            )
+            return "posting it failed"
+        return None
 
     async def _post_role_change_notice(
         self, agent_id: str, transport_room_id: str, action: str
@@ -1869,8 +1918,10 @@ class AgentCore:
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
-    ) -> str:
-        """Send a message to a room. Returns event_id.
+    ) -> SentMessage:
+        """Send a message to a room. Returns its event_id and, when Switch
+        Trust redacted or flagged it, what it did (`TrustFeedback`), so the
+        agent learns its words changed.
 
         When thread_id is set the message is posted as a reply in that thread
         (the id is normalised to the thread root). `extra_content` carries
@@ -1893,12 +1944,12 @@ class AgentCore:
             thread_root_id = await self._resolve_thread_root(
                 client, room.transport_room_id, thread_id
             )
-        content, pending_alert = await self._enforce_trust(
+        delivered, pending_alert, verdict = await self._enforce_trust(
             room, content, thread_root_id, client
         )
         event_id = await client.send_message(
             room.transport_room_id,
-            content,
+            delivered,
             thread_root_id=thread_root_id,
             extra_content=extra_content,
             metered=True,
@@ -1910,9 +1961,12 @@ class AgentCore:
             event_id,
             room.transport_room_id,
         )
+        notice_error: str | None = None
         if pending_alert is not None:
             annotation, outcome = pending_alert
-            await self._post_trust_alert_notice(room, event_id, annotation, outcome)
+            notice_error = await self._post_trust_alert_notice(
+                room, event_id, annotation, outcome
+            )
         # The agent has replied, so clear any typing indicator raised when the
         # inbound message arrived. The message itself is already delivered, so a
         # failure here is degraded-but-functional, not a reason to fail the send.
@@ -1922,7 +1976,10 @@ class AgentCore:
             logger.warning(
                 "Failed to clear typing indicator for room %s", room_id, exc_info=True
             )
-        return event_id
+        return SentMessage(
+            event_id=event_id,
+            trust=_trust_feedback(verdict, delivered, pending_alert, notice_error),
+        )
 
     async def send_media(
         self,
@@ -1953,7 +2010,9 @@ class AgentCore:
 
         Raises GuardrailBlockedError if Switch Trust blocks the caption or any
         file's text; a notice is posted to the room and nothing is sent. A
-        file Switch Trust cannot read is sent with a notice saying so.
+        file Switch Trust cannot read is sent with a notice saying so. When it
+        redacted the caption or noted anything, the result also carries
+        `trust` (`TrustFeedback.to_result`).
         """
         if not files:
             raise ValueError("no attachments provided")
@@ -1984,6 +2043,7 @@ class AgentCore:
         # through the text it carries (`trust/attachments.py`), all before
         # anything is uploaded, so a refusal leaves nothing in the room.
         caption_text = caption if caption and caption.strip() else None
+        caption_verdict: TrustOutcome | None = None
         trust_notes: list[str] = []
         file_notes: tuple[str, ...] = ()
         flagged = False
@@ -2001,7 +2061,11 @@ class AgentCore:
                     ),
                     files_check_task,
                 )
-                caption_text, pending_alert = await self._apply_trust_check(
+                (
+                    caption_text,
+                    pending_alert,
+                    caption_verdict,
+                ) = await self._apply_trust_check(
                     room, caption_text, caption_check, thread_root_id, client
                 )
                 if pending_alert is not None:
@@ -2027,6 +2091,12 @@ class AgentCore:
         total = len(files)
         group_id = str(uuid.uuid4()) if total > 1 else None
         posted: list[dict[str, str]] = []
+        media_alert: tuple[str, TrustOutcome] | None = (
+            ("\n".join(trust_notes), "alerted" if flagged else "errored")
+            if trust_notes
+            else None
+        )
+        notice_error: str | None = None
         try:
             for index, (data, filename, mimetype) in enumerate(files):
                 media_uri = await client.upload_media(data, mimetype, filename)
@@ -2055,12 +2125,9 @@ class AgentCore:
         finally:
             # Also told as a notice to the room's people, even when a later
             # file failed to send after the first was posted.
-            if trust_notes and posted:
-                await self._post_trust_alert_notice(
-                    room,
-                    posted[0]["event_id"],
-                    "\n".join(trust_notes),
-                    "alerted" if flagged else "errored",
+            if media_alert is not None and posted:
+                notice_error = await self._post_trust_alert_notice(
+                    room, posted[0]["event_id"], *media_alert
                 )
         try:
             await self._set_typing(agent_id, room, False)
@@ -2068,11 +2135,17 @@ class AgentCore:
             logger.warning(
                 "Failed to clear typing indicator for room %s", room_id, exc_info=True
             )
-        return {
+        result: dict[str, object] = {
             "event_id": posted[0]["event_id"],
             "mxc": posted[0]["mxc"],
             "attachments": posted,
         }
+        feedback = _trust_feedback(
+            caption_verdict, caption_text, media_alert, notice_error
+        )
+        if feedback is not None:
+            result["trust"] = feedback.to_result()
+        return result
 
     async def _can_address(
         self,
@@ -2254,7 +2327,7 @@ class AgentCore:
         mention_tokens += [f"@{name}" for name in target_names]
         mention_tokens += [f"@{role}" for role in roles]
         body = f"{' '.join(mention_tokens)} {content}"
-        event_id = await self.send_message(
+        sent = await self.send_message(
             agent_id,
             room_id,
             body,
@@ -2287,7 +2360,9 @@ class AgentCore:
             target_statuses[ROOM_WIDE_TARGET] = self._room_wide_mention_status(
                 room_id, room_row.bridge_id if room_row is not None else None
             )
-        return SendTargetedResult(event_id=event_id, target_statuses=target_statuses)
+        return SendTargetedResult(
+            event_id=sent.event_id, target_statuses=target_statuses, trust=sent.trust
+        )
 
     async def _refuse_room_wide_mention_collisions(
         self, room_id: str, participants: list[ParticipantDescriptor]
@@ -2394,7 +2469,9 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
-        detail, pending_alert = await self._enforce_trust(room, detail, None, client)
+        detail, pending_alert, _verdict = await self._enforce_trust(
+            room, detail, None, client
+        )
         event_id = await client.send_message(
             room.transport_room_id, f"*{detail}*", format="markdown", metered=True
         )

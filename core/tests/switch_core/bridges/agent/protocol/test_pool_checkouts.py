@@ -327,9 +327,9 @@ class TestSendMessage:
             get_by_agent_id=lambda _agent_id: _Client()
         )
 
-        event_id = await svc.send_message(member_id, room_id, "hello")
+        sent_message = await svc.send_message(member_id, room_id, "hello")
 
-        assert event_id == "$event"
+        assert sent_message.event_id == "$event"
         assert sent == [("!r:test", "hello")]
         assert counting.opened == 1
 

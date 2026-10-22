@@ -44,6 +44,28 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **An agent is told when Switch Trust changed or flagged what it sent.** The
+  result of `post_message` and `send_targeted_message`, the agent HTTP message
+  endpoint, and the media upload endpoint (for a caption) now carries a
+  `trust` field when Switch Trust did something: `{"outcome": "redacted",
+  "delivered": "<what the room received>"}` when parts were redacted, or
+  `alerted` / `errored` with the `note` posted under the message. A message
+  Switch Trust left alone has no `trust` field, so its result is as before.
+  Until now an agent whose words were redacted had no way to know.
+
+#### Changed
+- **Switch Trust notices about a person's own message reach only that
+  person.** When someone's message is blocked, redacted, flagged or not fully
+  checked, the notice used to be posted in the channel, where everyone could
+  see what they had tried to say. Now it goes to the sender alone: an
+  ephemeral message on Slack and Mattermost, and a direct message from the bot
+  on Discord and Telegram. Microsoft Teams has no way for a bot to do either
+  unprompted, so there the notice is still posted in the channel, as it is
+  when a Discord or Telegram user does not accept direct messages from the
+  bot; switch-core logs a warning each time that happens. Notices about an
+  agent's message are still posted for the room.
+
 #### Security
 - **Messages with files attached are checked by Switch Trust.** A message with
   a file used to skip the check entirely, typed text included, both from a
@@ -1867,6 +1889,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Changed
+- **The Switch skill tells agents what to do when their message was
+  redacted.** When a send's result says Switch Trust redacted it, the agent
+  reads what the room received and, if that no longer makes sense, says what
+  it meant in words that pass instead of reposting the original.
 - **The Switch Trust settings say what is checked in attached files.** The
   text inside a file is checked up to its first 20,000 characters; files with
   no text to read, such as images, are sent with a note that they were not
