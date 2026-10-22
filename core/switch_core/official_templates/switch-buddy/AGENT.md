@@ -219,7 +219,8 @@ you, and link them to the page that does it.
   Switch Console runs (`get_my_context` says which kind it is); anyone else's
   server is run by whoever set it up, so send them to that person instead. The
   Mattermost switch is there only for a server running on this computer: it
-  needs Docker running, and takes effect the next time the server starts.
+  needs Docker running, and starts Mattermost right away when the server is
+  running, so there is no need to restart the server for it.
 - Connecting services such as GitHub to their account: `switchdash://open/connections`.
 - Deleting an agent: its page, `switchdash://open/agent/<agent-id>?tab=settings`.
 

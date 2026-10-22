@@ -34,6 +34,12 @@ const MAX_LOG_LINES = 400;
 const LOG_FLUSH_MS = 100;
 
 /**
+ * How often Docker is looked for again while a page waits on it. Nothing tells
+ * Switch Console when Docker Desktop has finished starting, so it asks.
+ */
+const DOCKER_RECHECK_MS = 5_000;
+
+/**
  * Renderer store for local-server mode. Mirrors the main-process supervisor's
  * status (streamed over `localServerStatusChannel`) and exposes the lifecycle
  * actions. On a successful start/reset it refreshes the servers store so the
@@ -57,9 +63,21 @@ export class LocalServerStore {
    *  defeat the batching it exists for. */
   /* internal */ pendingLines: string[] = [];
   /* internal */ flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** How many open pages are waiting on Docker; see {@link watchDocker}. */
+  /* internal */ dockerWatchers = 0;
+  /* internal */ dockerTimer: ReturnType<typeof setInterval> | null = null;
+  /** The check in flight, which a second caller shares rather than starting
+   *  another: `docker version` can take seconds while the daemon comes up. */
+  /* internal */ dockerCheck: Promise<void> | null = null;
 
   constructor() {
-    makeAutoObservable(this, { pendingLines: false, flushTimer: false });
+    makeAutoObservable(this, {
+      pendingLines: false,
+      flushTimer: false,
+      dockerWatchers: false,
+      dockerTimer: false,
+      dockerCheck: false,
+    });
   }
 
   /** Headline and detail as one string, for the modals that have a single slot. */
@@ -182,7 +200,14 @@ export class LocalServerStore {
     this.flushLines();
   }
 
-  async checkDocker(): Promise<void> {
+  checkDocker(): Promise<void> {
+    this.dockerCheck ??= this.readDocker().finally(() => {
+      this.dockerCheck = null;
+    });
+    return this.dockerCheck;
+  }
+
+  private async readDocker(): Promise<void> {
     try {
       const docker = await rpc.localSwitchServer.detectDocker();
       runInAction(() => {
@@ -193,7 +218,31 @@ export class LocalServerStore {
     }
   }
 
-  /** Turn Mattermost on or off for a native server; applies at the next start. */
+  /**
+   * Check for Docker now, then again every few seconds for as long as it is
+   * not available, until every page that asked has stopped watching. Docker
+   * started with the page open is then noticed, rather than the page keeping
+   * the answer it got when it opened. Returns the function that stops this
+   * page watching, for its effect's cleanup.
+   */
+  watchDocker(): () => void {
+    this.dockerWatchers += 1;
+    void this.checkDocker();
+    this.dockerTimer ??= setInterval(() => {
+      if (!this.docker?.available) void this.checkDocker();
+    }, DOCKER_RECHECK_MS);
+    let watching = true;
+    return () => {
+      if (!watching) return;
+      watching = false;
+      this.dockerWatchers -= 1;
+      if (this.dockerWatchers > 0 || this.dockerTimer === null) return;
+      clearInterval(this.dockerTimer);
+      this.dockerTimer = null;
+    };
+  }
+
+  /** Turn Mattermost on or off for a native server; a running one applies it now. */
   async setMattermost(enabled: boolean): Promise<void> {
     try {
       await rpc.localSwitchServer.setMattermost(enabled);

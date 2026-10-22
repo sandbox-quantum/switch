@@ -154,9 +154,11 @@ const ManagedServerPage = observer(function ManagedServerPage({
       void remoteServerStore.loadRegister(sshHost);
       // Someone else may have started or removed a stack shown as stopped.
       void remoteServerStore.refresh(sshHost);
-    } else {
-      void localServerStore.checkDocker();
+      return undefined;
     }
+    // The Mattermost switch waits on Docker, which people often start only
+    // after opening this page to find the switch greyed out.
+    return localServerStore.watchDocker();
   }, [sshHost]);
 
   const state = managedServerState(server) ?? null;

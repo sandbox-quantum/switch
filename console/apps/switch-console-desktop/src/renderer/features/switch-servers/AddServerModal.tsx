@@ -513,7 +513,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
 
   useEffect(() => {
     void store.init();
-    void store.checkDocker();
+    return store.watchDocker();
   }, [store]);
 
   const registeredId = store.status?.serverId ?? null;

@@ -6,6 +6,7 @@ import { Workspace } from './app/workspace';
 import { ConsoleLinkListener } from './features/deeplinks/console-link-listener';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
 import { BridgePlatformsLoader } from './features/switch-servers/bridge-platforms-loader';
+import { LocalMattermostListener } from './features/switch-servers/local-mattermost-listener';
 import { TelemetryConsentGate } from './features/telemetry/TelemetryConsentGate';
 import { WorkspaceLayoutContextProvider } from './lib/layout/layout-provider';
 import { WorkspaceViewProvider } from './lib/layout/provider';
@@ -25,6 +26,7 @@ function AppContent() {
           <SessionDeeplinkListener />
           <ConsoleLinkListener />
           <BridgePlatformsLoader />
+          <LocalMattermostListener />
           <RightSidebarProvider>
             <ThemeProvider>
               <ModalRenderer />
