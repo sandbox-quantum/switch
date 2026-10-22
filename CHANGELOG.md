@@ -53,6 +53,12 @@ version of their own to them without also giving them a release of their own.
   answer, otherwise the person who asked if they may answer, otherwise nobody.
   It never mentions more than one person, even when the policy lets anyone
   answer. Cards at the top of a channel mention whoever asked, as before.
+- **The template guide agents read now covers a room's `roles:`,
+  `references:` and `docs:`.** All three already worked in a room resource
+  and appear when a room is captured, but the guide stopped at `aliases:`, so
+  an agent writing a template did not know they existed or what shape they
+  take. It now gives each one's fields, a sentence on what it does, and a
+  short example.
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`
   joined it. Both Teams apps now offer the same twelve: `/remove-agent` is in,
@@ -75,41 +81,30 @@ version of their own to them without also giving them a release of their own.
 ### [0.31.0] - 2026-10-20
 
 #### Added
-- **switch-core can run as multiple replicas.** The multi-pod stack lets more
-  than one switch-core replica serve a deployment: membership and signals cross
-  pods, agent events are read from Postgres rather than an in-memory buffer so
-  any replica serves them, and cross-replica idempotency ids keep a retried
-  write from being applied twice (#886, #815, #858).
 - **One address per Switch server.** A deployment is reached at a single address
-  instead of separate gateway and API hosts, simplifying ingress and the public
-  URL configuration (#753).
-- **Agents can follow a conversation without being `@`-mentioned.** An agent can
-  be set to pick up messages in a thread it is part of without being tagged each
-  time (#869).
-- **Templates create managed agents through agent management** (#851).
-- **Event-loop stall probe.** switch-core measures event-loop stalls with a
-  100 ms probe and reports them, so a blocked loop is visible (#713).
+  instead of separate gateway and API hosts (#753).
+- **Agents can follow a conversation without being `@`-mentioned.** A person's
+  untagged reply in a thread, their next message in an exchange with an agent,
+  or any message in a room with an assigned agent reaches that agent. It is off
+  unless `follow_the_conversation` is among the enabled feature flags
+  (`switchCore.featureFlags.enabled`); people control it per room with
+  `!follow-ups on|off`, `!assign-agent` and `!unassign-agent` (#869).
+- **Template version 2.** A template can start with `version: 2` and describe
+  its agents and rooms as `resources:`, each with a `type:`, that refer to each
+  other by key. An entry can be made conditional with `if:`, and `{key.name}`
+  fills in another resource's name. Templates without `version: 2` keep working
+  as before (#851).
+- **Official templates.** Switch ships templates every workspace sees, listed
+  first, with ids starting `official:`. They can be run but not edited or
+  deleted. The Switch expert, which used to be bundled in Switch Console, is
+  now one of them (#851).
+- **Event-loop stall probe.** switch-core checks for event-loop stalls every
+  100 ms and reports them, so a blocked loop shows up (#713).
 - **The server's operator sets up connector apps from the dashboard.** A
-  Connectors page, beside Users and for the operator alone, sets up the
-  GitHub App and Google Workspace's OAuth client (and any static client the
-  catalog adds) with no restart. Each save is checked with the vendor first,
-  and stored, encrypted, only if the vendor accepts it; GitHub's App name is
-  read from GitHub. A secret or private key can be rotated without
-  disconnecting anyone; switching to a different app says first how many
-  people in how many workspaces must reconnect. The variables that set them
-  today (`GITHUB_APP_CONFIG_PATH` and `GITHUB_APP_PRIVATE_KEY_PATH`,
-  `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`) keep working and win over a saved
-  app, and **Copy into Switch** moves one into the dashboard with nothing
-  retyped. Changes are recorded in a new server-wide audit log
-  (`server_audit_events`). Members of a server without an app are told to ask
-  whoever runs it to add it under Connectors; `GET /service-connections`
-  gains `server_setup_needed`. The page and its routes are there only with
-  the `service_connections` flag on, like the rest of service connections;
-  without it the page says what to turn on. A connection made under an app since removed
-  can still be disconnected; the disconnect then says Switch could not revoke
-  the sign-in and where to revoke it. A change reaches every switch-core
-  replica within seconds, and one that missed it within half a minute. See
-  `docs/old/github-app-setup.md` and `docs/old/google-workspace-setup.md`.
+  Connectors page lets you set up your GitHub App and Google Workspace's OAuth
+  client with no restart. Changes are recorded in a new server-wide audit log
+  (`server_audit_events`). To use this you need the `service_connections` flag
+  on.
 - **A connection knows the app it signed in through.** A connection made
   through an app the operator has since replaced shows as needing
   reconnection, and an agent asking for its token is told to reconnect
@@ -117,28 +112,14 @@ version of their own to them without also giving them a release of their own.
   app was replaced is asked to start again. Connections made before this
   release are unaffected.
 - **Confluence through the Atlassian connection.** Connecting Atlassian now
-  also asks for Confluence's read, search and (for writing) write scopes, so a
-  granted agent reaches Confluence pages beside Jira issues. People who
-  connected before connect again to consent to them; until then Atlassian
-  shows no Confluence tools. Rovo search and Teamwork Graph, which spend the
-  organization's Rovo credits on every call, are still not asked for; four
-  Confluence write tools (infographics and apps on a page) spend 15-30 credits
-  a request, and the skill tells agents to use them only when asked.
+  also asks for Confluence's read, search and write scopes, so a granted agent
+  reaches Confluence pages as well as Jira. People who connected before must
+  connect again to get Confluence.
 - **Operators can keep names away from outside avatar services.** An agent with
-  no icon of its own is drawn by api.dicebear.com with its name as the seed, and
-  a person relayed from another platform by ui-avatars.com with their name in the
-  URL. Chat clients load those images, so the services see the name and each
-  reader's address. With `THIRD_PARTY_AVATARS_ENABLED=false` (Helm:
-  `switchCore.thirdPartyAvatars.enabled`), no bridge sends such a URL, icons
-  already stored on those services included, and each platform shows its own
-  default: Slack the app's icon, Discord its default avatar, Teams no image,
-  while a Mattermost bot keeps the image it already has. People and agents
-  without an icon of their own then share that default. New managed agents get
-  no generated icon, and an agent created or registered with an icon on those
-  services gets none. Setting one later is refused with the reason, rather than
-  stored to never show. `GET /agents/icon-choices` offers none and says why, and
-  `GET /agents/avatar-settings` tells Switch Console the setting. The default is
-  unchanged. A server Switch Console runs for you always uses the default.
+  no icon of its own is drawn by api.dicebear.com with its name as the seed.
+  With `THIRD_PARTY_AVATARS_ENABLED=false` (Helm
+  `switchCore.thirdPartyAvatars.enabled`), no names are sent to outside avatar
+  services and each platform shows its own default icon.
 - **The Helm chart can take the invitation SMTP username from its Secret.**
   Some relays issue usernames that are credentials in their own right (an
   Amazon SES SMTP username is an access key id). With
@@ -146,40 +127,40 @@ version of their own to them without also giving them a release of their own.
   `secrets.gatewaySmtpUsername`, or from `GATEWAY_SMTP_USERNAME` in
   `secrets.existingSecret`, instead of `switchCore.smtp.username`. Setting
   both is refused at render time.
-- **Agents controllers update to the release Core names.** With
-  `CONTROLLER_RELEASE_VERSION`, `CONTROLLER_RELEASE_URL` and
-  `CONTROLLER_RELEASE_SHA256` (Helm `switchCore.controllerRelease`; all three or
-  none, refused at startup and at render otherwise), the status answer carries
-  `controller_release: {version, url, sha256}` (null for a Switch Console
-  controller, which updates with Console), and a controller on another
-  version fetches that package, checks its SHA-256 and installs it once idle.
-  `GET /gateway/management/controllers` shows each controller's `release`
-  (`{wanted, running, current}`, null when none is named), and its status keeps
-  the `update` the controller reports. A Switch release now also
-  publishes the controller at its version as `switch-agent-controller-v<version>`,
-  and its chart names that package; a release candidate and a dev build of main
-  do the same as a prerelease, so the controllers of a deployment running an RC,
-  and the dev environment's, follow it. A controller
-  run as a service installs a release beside the one it runs and keeps the one
-  before. Roll back by pointing the values at the previous release.
-- **Workspace admins can switch each service off for their workspace.** With
-  the `service_connections` flag on, `GET /gateway/workspace/services` lists
-  every connectable service with whether the workspace has it on, who last
-  changed it and when, and how many members are connected and agents granted;
-  `PUT /gateway/workspace/services/{service}` with `{"enabled": false}` switches
-  it off (workspace admins and owners, audited). Off, nobody in the workspace
-  can start a sign-in, paste a key, connect, grant or be issued a token for it,
-  and the refusal says who can turn it back on and where. A running session
-  loses the service within half a minute: its grants list leaves it out, and
-  its host restarts it without the service. A token already handed out may be
-  used until then, except GitHub's, which is revoked before the switch
-  answers. Grants are kept, so switching it on again needs no re-grant. A
-  service with no setting is on, so an upgraded server behaves as before. The
-  service list now says `workspace_enabled` for each service, and
-  `GET /gateway/service-connections/{service}/agents` lists the caller's own
-  agents with whether each holds a grant and whether others can address it.
+- **Agent controllers update themselves to the release Switch names.** Set
+  `switchCore.controllerRelease` (version, URL and SHA-256, all three or none)
+  and any controller running another version downloads that release, checks
+  it and installs it once it is idle. Every Switch release now publishes a
+  matching controller package, release candidates included, so controllers
+  follow the server they belong to. To roll back, point the values at the
+  previous release. Switch Console's own controller still updates with Console.
+- **Workspace admins can turn a service off for their workspace.** With the
+  `service_connections` flag on, an admin can switch off a service such as
+  GitHub or Google Workspace. While it is off, nobody in the workspace can
+  connect it, grant it to an agent or get a token for it, and running sessions
+  lose it within half a minute (GitHub tokens are revoked straight away).
+  Grants are kept, so turning it back on needs no re-grant. Services are on
+  by default, so an upgraded server behaves as before.
 
 #### Changed
+- **Upgrading from 0.30 or earlier: two things now work the other way round.**
+  - **switch-core can run as multiple replicas.** Before 0.31.0 the chart
+    refused any `switchCore.replicaCount` above 1. Now any replica can serve
+    any agent, each bridge and connector is held by one replica at a time, and
+    if a replica goes away another picks up its work. With more than one
+    replica an upgrade rolls a pod at a time instead of taking the server down.
+    Agent events now live in Postgres rather than one process's memory, so a
+    restart no longer loses what was queued (#886, #815, #858).
+  - **Running a template creates agents.** Before 0.31.0, `run_template`
+    created rooms only, and `agents=` filled every agent slot with an agent you
+    already had. Now a run creates each agent the template describes, as a
+    managed agent on the machine the entry names (this needs agent management
+    and the "can manage agents" permission). `agents=` now means "use this
+    existing agent instead of creating one", and only for an entry that says
+    `allow_existing: true`. Every agent entry also needs `provider`,
+    `machine` (or `location`) and `directory`, so a template written for 0.30
+    gets warnings and won't save until you add them or save with
+    `bypass_warnings=true` (#851).
 - **A caller repeating a refused request is answered with 429 from memory,**
   rather than re-doing the refused work each time (#750).
 - **Console links work on chat platforms.** A `switchdash://open/...` link an
@@ -2039,6 +2020,14 @@ version of their own to them without also giving them a release of their own.
   turns sharing off for everyone at your next start, while a "yes" leaves it as
   it is — on stays on, off stays off — unless none of them has used the server
   in the last 14 days. The note now says so.
+
+### [0.39.1] - 2026-10-13
+
+#### Fixed
+- **Support the gateway and API on different hosts when connecting a
+  service.** Some deployments serve the Switch dashboard and its API from
+  separate addresses. Console now accepts either of your server's own
+  addresses, over HTTPS.
 
 ### [0.39.0] - 2026-10-12
 
