@@ -18,8 +18,10 @@ ahead would strand something nobody else could reach:
 - an active messaging app installed in a workspace nobody else is in, which
   would keep receiving messages for no one.
 
-A workspace the person is alone in is left empty rather than deleted: the
-schema cannot delete a workspace yet.
+A workspace the person is alone in is deleted once it is empty
+(`workspace_deletion.py`). Rooms they created stay, so a workspace with any
+room left, or anything else that refuses its deletion, is left empty instead,
+for the operator to see.
 
 A workspace the person has left, or been removed from, can still hold rows
 that name them: removing a member deletes their keys and connections but not
@@ -40,6 +42,11 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from sqlalchemy import Select, case, delete, exists, func, or_, select, update
 
+from switch_core.accounts.workspace_deletion import (
+    WorkspaceDeletionRefused,
+    delete_workspace,
+)
+from switch_core.accounts.workspace_deletion import refusal as workspace_refusal
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -192,6 +199,15 @@ def _reference_type_heir(slug: str, user_id: str) -> Select[tuple[str]]:
     )
 
 
+class TenantClients(Protocol):
+    """Stops the clients the server runs for a deleted workspace, here and in
+    every other process. The client lifecycle's."""
+
+    async def reconcile_tenant(self, tenant_id: str) -> None: ...
+
+    def announce(self, tenant_id: str) -> None: ...
+
+
 class ControllerRevoker(Protocol):
     """Revokes a machine, as removing it in Switch Console does. Agent
     management's, handed over by the wiring: core does not import it."""
@@ -240,6 +256,7 @@ class AccountDeletion:
     agents: AgentStore
     api_keys: ApiKeyStore
     templates: TemplateStore
+    clients: TenantClients
     admin_email: str
 
     async def with_former_workspaces(
@@ -479,6 +496,52 @@ class AccountDeletion:
                     tenant_id,
                     warning,
                 )
+
+        if workspace.role != FORMER_MEMBER and successor is None:
+            await self._close_if_empty(user_id, tenant_id, actor_id)
+
+    async def _close_if_empty(
+        self, user_id: str, tenant_id: str, actor_id: str
+    ) -> None:
+        """Delete a workspace the person leaves with nobody in it, once its
+        tokens are revoked; leave it, saying why, when anything is left.
+        Leaving it is never a reason to fail the account's deletion: the
+        person has already left it, committed."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            members = await self.users.list_tenant_members(session)
+            if members:
+                return
+            reason = await workspace_refusal(session, tenant_id, user_id)
+            if reason is not None:
+                logger.info(
+                    "Workspace %s is left empty, not deleted, with user %s: %s",
+                    tenant_id,
+                    user_id,
+                    reason,
+                )
+                return
+            try:
+                key_hashes = await delete_workspace(
+                    session, tenant_id, user_id, actor_id
+                )
+            except WorkspaceDeletionRefused as refused:
+                # Something arrived since the check above.
+                await session.rollback()
+                logger.warning(
+                    "Workspace %s is left empty, not deleted, with user %s: %s",
+                    tenant_id,
+                    user_id,
+                    refused,
+                )
+                return
+            await session.commit()
+        for key_hash in key_hashes:
+            self.protocol.api_key_cache.invalidate(key_hash)
+        await self.clients.reconcile_tenant(tenant_id)
+        self.clients.announce(tenant_id)
+        logger.info(
+            "Deleted workspace %s, emptied by deleting user %s", tenant_id, user_id
+        )
 
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
         """Who takes over what the workspace still needs from this person: an

@@ -59,6 +59,15 @@ version of their own to them without also giving them a release of their own.
   client is refused; any other agent gets a new API key that only the new
   owner can see, so it has to be reconnected. Chats and room documents are not
   transferable.
+- **Workspace owners can delete an empty workspace.** Workspace settings has a
+  Delete workspace action that asks for the workspace's name
+  (`DELETE /tenants/{id}`). It is refused, with what is left by kind and count,
+  until the workspace has no rooms (archived ones included), agents, packages,
+  references, reference types, documents, templates, room groups, messaging or
+  service connections, machines, connectors, skills or other members. Its audit
+  history is kept, and the deletion is recorded in the server audit log. The
+  server's default workspace can't be deleted. Deleting your account now also
+  deletes a workspace you leave empty.
 
 #### Fixed
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app

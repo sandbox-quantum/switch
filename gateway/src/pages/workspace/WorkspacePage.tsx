@@ -1,6 +1,7 @@
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useAuth } from "../../data/AuthContext";
 import { ownsTenant } from "../../data/sessionState";
+import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
 import InvitationsSection from "./InvitationsSection";
 import MembersSection from "./MembersSection";
 
@@ -35,6 +36,10 @@ export default function WorkspacePage() {
           <Alert severity="info">
             Ask a workspace owner or admin to invite someone.
           </Alert>
+        )}
+        {/* An owner membership, not the operator's bypass: the server checks the same. */}
+        {tenant.role === "owner" && (
+          <DeleteWorkspaceSection tenantId={tenant.id} tenantName={tenant.name} />
         )}
       </Stack>
     </Box>
