@@ -59,6 +59,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -310,6 +311,51 @@ class MattermostAdapter(PlatformAdapter):
     # admin. Mattermost sends every event to every open socket, so a socket
     # in each process would hand each process every post.
     keeps_quiet_unless_listening: ClassVar[bool] = True
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Sign in as the admin user and find the team, as `start` will.
+
+        `url` has been through the outbound policy before this is called, so
+        the credentials are only sent where Switch may connect.
+        """
+        config = MattermostConnectionConfig.model_validate(connection_config)
+        driver = cls(config=config)._create_driver(
+            login_id=config.admin_user, password=config.admin_password
+        )
+        try:
+            await asyncio.to_thread(driver.login)
+        except NoAccessTokenProvided as exc:
+            raise BridgeCredentialError(
+                f"Mattermost refused the sign-in for {config.admin_user}: {exc}. "
+                "Check admin_user and admin_password."
+            ) from exc
+        except sync_requests.RequestException as exc:
+            raise BridgeCredentialError(
+                f"Could not sign in to Mattermost at {config.url} to check the "
+                f"credentials: {exc}"
+            ) from exc
+        try:
+            await asyncio.to_thread(driver.teams.get_team_by_name, config.team_name)
+        except (ResourceNotFound, NotEnoughPermissions) as exc:
+            raise BridgeCredentialError(
+                f"{config.admin_user} signed in, but Mattermost has no team "
+                f"named {config.team_name!r} it can see: {exc}"
+            ) from exc
+        except sync_requests.RequestException as exc:
+            raise BridgeCredentialError(
+                f"Could not look up the Mattermost team {config.team_name!r}: {exc}"
+            ) from exc
+        finally:
+            try:
+                await asyncio.to_thread(driver.logout)
+            except sync_requests.RequestException:
+                logger.warning(
+                    "Could not sign out the Mattermost session opened to check "
+                    "%s's credentials; it lasts until the server expires it",
+                    config.admin_user,
+                    exc_info=True,
+                )
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:

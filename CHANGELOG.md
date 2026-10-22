@@ -1848,6 +1848,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Replace a messaging app's token without disconnecting it.** When a bot
+  token is rotated or leaked, a workspace admin can paste the new one from the
+  connection's menu on the server page. The connection restarts with it and
+  keeps its rooms. Offered on connections to your own bot, not on ones that
+  came from installing Switch's app.
+
 ### [0.40.1] - 2026-10-21
 
 #### Added

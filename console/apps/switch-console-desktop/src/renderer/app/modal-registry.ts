@@ -32,6 +32,7 @@ import { DeleteAccountModal } from '@renderer/features/switch-servers/delete-acc
 import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServerModal';
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
+import { ReplaceTokenModal } from '@renderer/features/switch-servers/ReplaceTokenModal';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
@@ -123,6 +124,10 @@ export const modalRegistry = {
   }),
   bundledChatSignInModal: createModal(BundledChatSignInModal, { size: 'sm' }),
   disconnectMessagingAppModal: createModal(DisconnectMessagingAppModal, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
+  replaceTokenModal: createModal(ReplaceTokenModal, {
     size: 'sm',
     dismissOnOutsideClick: false,
   }),

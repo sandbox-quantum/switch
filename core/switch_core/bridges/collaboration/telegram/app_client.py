@@ -23,6 +23,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 import telegram
+from telegram.error import InvalidToken
 
 from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.install import MessagingInstallError
@@ -69,6 +70,26 @@ def bot_id_of(token: str) -> str:
     if not separator or not bot_id.isdigit():
         raise ValueError("a Telegram bot token is shaped <bot id>:<secret>")
     return bot_id
+
+
+async def initialize_bot(initialize: Awaitable[None]) -> None:
+    """Await a bot's `initialize`, refusing a bad token without repeating it.
+
+    python-telegram-bot reports a token Telegram turned down as an
+    `InvalidToken` whose message quotes the token, and the bridge's start logs
+    that with its traceback. The replacement keeps the type, so it is still
+    classified as an authentication failure, and is raised outside the handler
+    so the original is not attached to it as context either.
+    """
+    try:
+        await initialize
+        return
+    except InvalidToken:
+        pass
+    raise InvalidToken(
+        "Telegram rejected the bot token. Copy it again from BotFather "
+        "(/mybots -> the bot -> API Token)."
+    )
 
 
 def bot_resource(bot_id: str) -> str:
@@ -139,7 +160,7 @@ class TelegramAppClient:
         the URL, the secret and the update types always match this build's
         config — rotating the secret is a redeploy, not a manual call.
         """
-        await self._bot.initialize()
+        await initialize_bot(self._bot.initialize())
         me = await self._bot.get_me()
         if not me.username:
             raise MessagingInstallError(

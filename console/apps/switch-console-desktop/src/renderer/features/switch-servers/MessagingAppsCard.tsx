@@ -1,9 +1,10 @@
-import { useQueryClient, useQuery } from '@tanstack/react-query';
+import { useQueries, useQueryClient, useQuery } from '@tanstack/react-query';
 import {
   CircleAlert,
   Copy,
   ExternalLink,
   Info,
+  Key,
   KeyRound,
   Link2,
   MessageSquare,
@@ -40,6 +41,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
 import { LinkAccountPrompts } from './link-account-prompts';
 import { orderBridges } from './messaging-apps-order';
@@ -49,6 +51,7 @@ import {
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
 } from './messaging-apps-warning';
+import { mayReplaceToken, offersTokenReplacement, tokenFields } from './replace-token';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
 import { useMyIdentities } from './use-my-identities';
@@ -95,6 +98,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const queryClient = useQueryClient();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
+  const showReplaceToken = useShowModal('replaceTokenModal');
   const showConnectChat = useShowModal('connectChatModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const isAdmin = administersWorkspaceInScope(serverId);
@@ -157,6 +161,33 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       });
     }
   }, [ownerAgentsError, workspaceId]);
+
+  // Which connections can take a new token: each platform's secret fields come
+  // from its schema, and a connection is asked about its install only once it
+  // has some, since an install is what marks one on Switch's own app.
+  const typesQuery = useQuery({
+    queryKey: bridgeTypesQueryKey(workspaceId),
+    queryFn: () => fetchBridgeTypes(workspaceId as string),
+    enabled: workspaceId !== null && isAdmin,
+  });
+  const tokenFieldsOf = (bridge: RemoteBridge) =>
+    tokenFields(typesQuery.data?.find((t) => t.key === bridge.type)?.fields ?? []);
+  const tokenCandidates = isAdmin
+    ? bridges.filter((bridge) => mayReplaceToken(bridge, tokenFieldsOf(bridge)))
+    : [];
+  const installStates = useQueries({
+    queries: tokenCandidates.map((bridge) => ({
+      queryKey: ['bridge-install-state', workspaceId, bridge.id],
+      queryFn: () =>
+        rpc.workspaces.bridgeInstallState({
+          workspaceId: workspaceId as string,
+          bridgeId: bridge.id,
+        }),
+      enabled: workspaceId !== null,
+    })),
+  });
+  const installStateOf = (bridge: RemoteBridge) =>
+    installStates[tokenCandidates.findIndex((b) => b.id === bridge.id)]?.data;
 
   const unrecognisedIn = unrecognisedMessagingApps({
     bridges,
@@ -314,6 +345,23 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                         })
                     : null
                 }
+                onReplaceToken={
+                  workspaceId !== null &&
+                  offersTokenReplacement(bridge, tokenFieldsOf(bridge), installStateOf(bridge))
+                    ? () =>
+                        showReplaceToken({
+                          workspaceId,
+                          bridgeId: bridge.id,
+                          bridgeDisplayName: bridge.displayName,
+                          bridgeType: bridge.type,
+                          fields: tokenFieldsOf(bridge),
+                          onSuccess: () =>
+                            void queryClient.invalidateQueries({
+                              queryKey: ['remote-bridges', workspaceId],
+                            }),
+                        })
+                    : null
+                }
                 onDisconnect={() => {
                   if (workspaceId === null) return;
                   showDisconnectMessagingApp({
@@ -367,7 +415,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * has exactly one thing worth doing to it, and burying that is what would make
  * the row's warning unactionable. Everything else — changing or dropping the
  * account, channel creation, the bundled chat's credentials, opening the app,
- * disconnecting it — is in the menu.
+ * replacing its token, disconnecting it — is in the menu.
  */
 export function MessagingAppRow({
   workspaceId,
@@ -381,6 +429,7 @@ export function MessagingAppRow({
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
+  onReplaceToken,
   onDisconnect,
 }: {
   /** Null while this install has not resolved the server's workspace; the
@@ -400,6 +449,8 @@ export function MessagingAppRow({
   /** Set on a connection whose chats are connected one at a time, for a user
    *  the server lets add one — members too, unlike every other change here. */
   onConnectChat: (() => void) | null;
+  /** Set on a connection to the workspace's own bot, for an admin. */
+  onReplaceToken: (() => void) | null;
   onDisconnect: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
@@ -675,6 +726,12 @@ export function MessagingAppRow({
             {isAdmin && (
               <>
                 <DropdownMenuSeparator />
+                {onReplaceToken !== null && (
+                  <DropdownMenuItem onClick={onReplaceToken}>
+                    <Key className="size-4" />
+                    Replace token…
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem variant="destructive" onClick={onDisconnect}>
                   <Trash2 className="size-4" />
                   Disconnect app…

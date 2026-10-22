@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Literal
 
+import aiohttp
 import discord
 from discord.http import Route
 from pydantic import ConfigDict, Field, model_validator
@@ -50,6 +51,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -531,6 +533,37 @@ class DiscordAdapter(PlatformAdapter):
         if connection_config.get("event_delivery") == "shared":
             return (DISCORD_GATEWAY, DISCORD_GATEWAY_KEY)
         return None
+
+    @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Log in with the bot token, which fetches the bot's own user.
+
+        A bridge on the distributed app holds no token of its own; the
+        deployment's is checked when its shared connection opens.
+        """
+        config = DiscordConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared":
+            return
+        assert config.bot_token is not None  # guaranteed by the validator
+        client = discord.Client(intents=discord.Intents.none())
+        try:
+            await client.login(config.bot_token)
+        except discord.LoginFailure as exc:
+            raise BridgeCredentialError(
+                "Discord rejected the bot token. Copy it again from the "
+                "Developer Portal (your application -> Bot -> Reset Token)."
+            ) from exc
+        except discord.HTTPException as exc:
+            raise BridgeCredentialError(
+                f"Discord did not accept the bot token: {exc}"
+            ) from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise BridgeCredentialError(
+                f"Could not reach Discord to check the bot token: "
+                f"{exc or type(exc).__name__}. Try again."
+            ) from exc
+        finally:
+            await client.close()
 
     @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
