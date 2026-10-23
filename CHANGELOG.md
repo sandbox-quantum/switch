@@ -104,6 +104,12 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **The agent event stream and `POST /connection/beat`.** Agents connect over
+  the WebSocket at `/agents/{id}/connection/ws`, which Switch Console has used
+  since 0.39.0. A client still asking for the Server-Sent Events stream is
+  refused with 410 `transport_removed` and told to update, and agent-protocol
+  `accepts` rises to 8, so Consoles 0.38.2 and older can no longer connect
+  their agents (#673).
 
 ### [0.31.0] - 2026-10-20
 
@@ -1878,6 +1884,12 @@ version of their own to them without also giving them a release of their own.
   starting Docker meanwhile left the setup skipping Mattermost until you went
   back. It now checks again every few seconds, and when Console regains focus,
   while Docker isn't answering.
+
+#### Removed
+- **The fallback to the agent event stream.** The agent runtime connects only
+  over the WebSocket, so it can no longer reach a Switch server older than the
+  socket (agent-protocol 7 and older), and it stops sending its own heartbeat
+  requests (#673).
 
 ### [0.40.1] - 2026-10-21
 

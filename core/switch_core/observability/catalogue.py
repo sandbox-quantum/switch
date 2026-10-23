@@ -461,11 +461,9 @@ AGENT_BUFFER_SCAN_DURATION = _spec(
     "operation",
     bounds=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 100.0),
 )
-# `reason` is from a fixed set the refusal sites choose. `transport_removed` is
+# `reason` is from a fixed set the refusal sites choose: `transport_removed` is
 # a client still asking for the retired event stream, the one way to see old
-# clients that never manage to connect at all. Nothing sends it while the event
-# stream is kept for its compatibility window; it is kept here for the release
-# that removes the stream, when it starts firing again.
+# clients that never manage to connect at all.
 AGENT_CONNECTIONS_REFUSED = _spec(
     "switch.agent.connections_refused",
     "sum",
@@ -501,18 +499,16 @@ AGENT_CONNECTIONS_OPENED = _spec(
 # ── Agents and clients ───────────────────────────────────────────────────────
 # `client` is the declared artifact when the registry knows the name, else
 # `other` or `unknown`. Never the declared version: the client chooses it.
-# `transport` is `websocket`, `sse` (an old client on the event stream, kept
-# for a compatibility window that ends when this stays at zero), `detached`
-# (the stream dropped, and the connection waits out its heartbeat window), or
-# `controller` (run by an agent controller, on that controller's connection).
+# `transport` is `websocket`, `detached` (the stream dropped, and the
+# connection waits out its heartbeat window), or `controller` (run by an
+# agent controller, on that controller's connection).
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
     "gauge",
     "{agent}",
-    "Agents holding a live protocol connection, by transport (websocket, sse, "
-    "detached, controller) and client. An agent connected more than one way counts once "
-    "under each, so summing across the attributes can exceed the number of "
-    "agents.",
+    "Agents holding a live protocol connection, by transport and client. An "
+    "agent connected more than one way counts once under each, so summing "
+    "across the attributes can exceed the number of agents.",
     "transport",
     "client",
 )

@@ -1,9 +1,9 @@
-"""Opening an agent connection, and the /events endpoint.
+"""Opening an agent connection, and what is left of the /events endpoint.
 
-The WebSocket and the event stream both open through `_open_connection`,
-which these drive directly: validation, protocol ranges, declarations, room
-claims and session reporting. `/events` with `Accept: text/event-stream` opens
-the event stream an old client still asks for; anything else long polls.
+The connection opens over the WebSocket through `_open_connection`, which
+these drive directly: validation, protocol ranges, declarations, room claims
+and session reporting. `/events` itself is now only the long poll, and a
+request for the old Server-Sent Events stream is refused with what to do.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from starlette.responses import StreamingResponse
 
 from switch_core.bridges.agent.api import session_reporter
 from switch_core.bridges.agent.api.handlers import (
@@ -100,7 +99,6 @@ async def _call(protocol: _Protocol, **kw: Any) -> Any:
         "agent_id": AGENT_ID,
         "agent": _agent(),
         "protocol": protocol,
-        "config": None,
         "timeout": 0,
         "accept": None,
         "connection_id": None,
@@ -150,33 +148,24 @@ async def test_without_the_sse_accept_header_it_long_polls(
     assert resp.status_code == 204
 
 
-async def test_with_the_sse_accept_header_it_opens_the_event_stream(
+async def test_asking_for_the_old_stream_is_refused_with_a_remedy(
     db_buffer: EventBuffer,
 ) -> None:
-    """How a runtime built before the WebSocket connects, kept for a
-    compatibility window."""
+    """An old runtime is told to update, not left retrying a stream that is
+    gone."""
     protocol = _Protocol(db_buffer)
-    resp = await poll_events(
-        agent_id=AGENT_ID,
-        agent=_agent(),
-        protocol=protocol,  # type: ignore[arg-type]
-        config=None,  # type: ignore[arg-type]
-        accept="text/event-stream",
-        connection_id="c1",
-        scope="all",
-    )
+    with pytest.raises(HTTPException) as excinfo:
+        await poll_events(
+            agent_id=AGENT_ID,
+            agent=_agent(),
+            protocol=protocol,  # type: ignore[arg-type]
+            accept="text/event-stream",
+        )
 
-    assert isinstance(resp, StreamingResponse)
-    assert resp.media_type == "text/event-stream"
-    # Buffering proxies would defeat the point of a push channel.
-    assert resp.headers["x-accel-buffering"] == "no"
-    assert resp.headers["connection"] == "keep-alive"
+    assert excinfo.value.status_code == 410
+    assert excinfo.value.detail["code"] == "transport_removed"  # type: ignore[index]
+    assert "connection/ws" in excinfo.value.detail["message"]  # type: ignore[index]
     assert not protocol.polled
-
-    conn = protocol.connections.get("c1")
-    assert conn is not None
-    assert conn.scope == "all"
-    assert conn.stream_transport == "sse"
 
 
 async def test_opening_registers_the_connection(db_buffer: EventBuffer) -> None:
@@ -188,7 +177,6 @@ async def test_opening_registers_the_connection(db_buffer: EventBuffer) -> None:
     assert protocol.connections.get("c1") is conn
     assert conn.scope == "all"
     assert conn.stream_attached
-    assert conn.stream_transport == "websocket"
 
 
 async def test_streaming_without_a_connection_id_is_refused(
@@ -209,14 +197,7 @@ async def test_streaming_with_an_over_long_connection_id_is_refused(
     which Postgres caps at 8000 bytes, so one this long cannot be opened."""
     protocol = _Protocol(db_buffer)
     with pytest.raises(HTTPException) as excinfo:
-        await poll_events(
-            agent_id=AGENT_ID,
-            agent=_agent(),
-            protocol=protocol,  # type: ignore[arg-type]
-            config=None,  # type: ignore[arg-type]
-            accept="text/event-stream",
-            connection_id="c" * 7900,
-        )
+        await _call(protocol, accept="text/event-stream", connection_id="c" * 7900)
 
     assert excinfo.value.status_code == 400
     assert "connection_id" in excinfo.value.detail
@@ -380,7 +361,6 @@ async def _start(
     *,
     start_from: str = "head",
     start_at: str | None = None,
-    last_event_id: str | None = None,
     reads_conversation: bool = False,
 ) -> tuple[Position, int | None]:
     return await _resolve_start_position(
@@ -388,7 +368,6 @@ async def _start(
         _agent(),
         start_at=start_at,
         start_from=start_from,
-        last_event_id=last_event_id,
         reads_conversation=reads_conversation,
     )
 
@@ -405,14 +384,6 @@ async def test_head_means_only_what_happens_next(db_buffer: EventBuffer) -> None
     seq = await _keep(protocol)
     assert await _start(protocol) == ({OWN_EVENTS: seq}, None)
     assert await _start(protocol, start_at="head") == ({OWN_EVENTS: seq}, None)
-
-
-async def test_last_event_id_wins_over_start_from(db_buffer: EventBuffer) -> None:
-    protocol = _Protocol(db_buffer)
-    assert await _start(protocol, start_from="head", last_event_id="42") == (
-        {OWN_EVENTS: 42},
-        None,
-    )
 
 
 async def test_explicit_start_from_is_honoured(db_buffer: EventBuffer) -> None:
@@ -557,30 +528,36 @@ async def test_reconnect_during_bookkeeping_cannot_detach_the_new_stream(
             await release.wait()
 
     async def open_stream() -> Any:
-        return await poll_events(
-            agent_id=AGENT_ID,
+        _conn, frames = await _open_connection(
             agent=_agent(),
             protocol=protocol,  # type: ignore[arg-type]
             config=None,  # type: ignore[arg-type]
-            accept="text/event-stream",
             connection_id="c1",
+            scope="single",
+            event_filter="all",
+            start_from="head",
+            spawn_capable=False,
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            rooms=None,
+            expected_generation=None,
         )
+        return frames
 
     monkeypatch.setattr(protocol, "record_client_declaration", record)
     first = asyncio.create_task(open_stream())
     await entered.wait()
     newer = await open_stream()
-    await anext(newer.body_iterator)
+    await anext(newer)
     release.set()
     older = await first
-    frames = [frame async for frame in older.body_iterator]
+    frames = [frame async for frame in older]
     assert frames == []
     conn = protocol.connections.get("c1")
     assert conn is not None
     assert protocol.connections.beat(
         AGENT_ID, "c1", conn.stream_generation
     ).stream_attached
-    await newer.body_iterator.aclose()
+    await newer.aclose()
 
 
 class _RecordingSink:

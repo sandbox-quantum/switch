@@ -25,13 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.api.handlers import (
-    connection_beat,
     connection_placements,
     connection_subscribe,
 )
 from switch_core.bridges.agent.api.operations import resolve_caller
 from switch_core.bridges.agent.api.schemas import (
-    ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionSubscribeRequest,
 )
@@ -580,28 +578,6 @@ class TestServedAnywhere:
             )
         assert claimant == "conn-2"
 
-    async def test_an_old_clients_beat_on_the_other_process_reaches_the_holder(
-        self, processes: tuple[Process, Process]
-    ) -> None:
-        a, b = processes
-        conn = await _open(a)
-        conn.last_beat = time.monotonic() - 4
-        stale = conn.last_beat
-
-        with tenant_scope(TENANT_ZERO_ID):
-            answer = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=conn.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=b.protocol,
-            )
-
-        assert answer["ok"] is True
-        await _eventually(lambda: conn.last_beat > stale)
-        assert conn.beats == 1
-
     async def test_a_session_command_relayed_on_the_other_process_reaches_the_watcher(
         self, processes: tuple[Process, Process]
     ) -> None:
@@ -629,17 +605,6 @@ class TestTakeover:
         await _eventually(lambda: loser.closure is not None)
         assert loser.closure is not None
         assert loser.closure.code == "taken_over"
-        # The loser's late beat on the process it was on is refused as taken
-        # over, on the recorded row rather than on that process's memory.
-        with tenant_scope(TENANT_ZERO_ID), pytest.raises(HTTPException) as refused:
-            await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(connection_id=CONN, generation=held),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
-        assert refused.value.status_code == 409
-        assert refused.value.detail["code"] == "taken_over"
         # And its reattach naming what it held is refused without moving
         # anything, wherever it lands.
         with pytest.raises(SupersededReattachError):
@@ -708,18 +673,8 @@ class TestTakeover:
             agent=_Agent(),  # type: ignore[arg-type]
             protocol=a.protocol,
         )
-        with tenant_scope(TENANT_ZERO_ID):
-            beat = await connection_beat(
-                AGENT,
-                ConnectionBeatRequest(
-                    connection_id=CONN, generation=second.stream_generation
-                ),
-                agent=_Agent(),  # type: ignore[arg-type]
-                protocol=a.protocol,
-            )
 
         assert answer["placements"] == {"session-1": ROOM}
-        assert beat["ok"] is True
         assert first.closure is not None
         assert first.closure.code == "taken_over"
         assert second.closure is None
