@@ -16,6 +16,9 @@ import { HostedSession, type RoomReply, unpostedReply } from './session-host';
 function waitFor<T>(check: () => T | Promise<T>): Promise<T> {
   return vi.waitFor(check, { timeout: 10_000 });
 }
+// A test makes several of those waits, so it gets longer than any one of them:
+// a slow machine then fails on what it waited for, not on the clock.
+vi.setConfig({ testTimeout: 30_000 });
 
 const roots: string[] = [];
 const hosts: HostedSession[] = [];
