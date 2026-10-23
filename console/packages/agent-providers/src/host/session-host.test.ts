@@ -6,25 +6,34 @@ import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
+import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, type RoomReply, unpostedReply } from './session-host';
 
-/**
- * `vi.waitFor` with room for a slow disk: every step here is a journal write
- * flushed to disk, and Windows runners take well over the default second.
- */
-function waitFor<T>(check: () => T | Promise<T>): Promise<T> {
-  return vi.waitFor(check, { timeout: 10_000 });
-}
-// A test makes several of those waits, so it gets longer than any one of them:
-// a slow machine then fails on what it waited for, not on the clock.
+// Every step here is a journal write flushed to disk, and Windows runners take
+// many times longer over that. The waits have no deadline of their own (see
+// `until`), so this is the one clock: long enough for a slow disk, short
+// enough that a host that never gets there still fails.
 vi.setConfig({ testTimeout: 30_000 });
+
+/** A host that tells `until` each time it calls its provider or publishes an event. */
+async function startHost(
+  ...[root, config, adapter]: Parameters<typeof HostedSession.start>
+): Promise<HostedSession> {
+  const host = await HostedSession.start(root, config, announcing(adapter));
+  host.onPublished(changed);
+  return host;
+}
 
 const roots: string[] = [];
 const hosts: HostedSession[] = [];
 afterEach(async () => {
-  for (const host of hosts.splice(0)) await host.shutdown();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  try {
+    for (const host of hosts.splice(0)) await host.shutdown();
+    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  } finally {
+    abandonWaits();
+  }
 });
 function setup(provider: Session['provider']) {
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
@@ -122,9 +131,9 @@ async function start(provider: Session['provider']) {
   const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
   roots.push(root);
   const fixture = setup(provider);
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root, host };
 }
 it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
@@ -135,13 +144,13 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     expect((await host.command(command)).status).toBe('applied');
     await host.command(structuredClone(command));
     await host.command(message('second'));
-    await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(1));
     await expect(
       host.command({ ...command, body: { ...command.body, text: 'Changed' } } as Command)
     ).rejects.toThrow('IDEMPOTENCY_CONFLICT');
     await host.shutdown();
     const recovered = setup(provider);
-    const next = await HostedSession.start(root, recovered.config, recovered.adapter);
+    const next = await startHost(root, recovered.config, recovered.adapter);
     hosts.push(next);
     expect(recovered.adapter.startSession).toHaveBeenCalledWith(
       expect.objectContaining({ resume: { nativeSessionId: 'native' } })
@@ -156,10 +165,10 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
 it('keeps an explicitly stopped session stopped across restart', async () => {
   const { root, host } = await start('claude');
   await host.command({ ...message('stop'), body: { type: 'session.stop' } });
-  await waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  await until(() => expect(host.snapshot().session.status).toBe('stopped'));
   await host.shutdown();
   const fixture = setup('claude');
-  const recovered = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const recovered = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(recovered);
   expect(recovered.snapshot().session.status).toBe('stopped');
   expect(fixture.adapter.startSession).not.toHaveBeenCalled();
@@ -175,7 +184,7 @@ it('keeps a failed callback outcome unknown and never retries the answer', async
     title: 'Write file',
     options: [{ decision: 'accept', label: 'Allow once' }],
   });
-  await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
   vi.mocked(adapter.respondToRequest).mockRejectedValueOnce(new Error('Provider exited'));
   const answer: Command = {
     ...message('answer'),
@@ -214,9 +223,9 @@ it('settles unanswered questions when the provider exits', async () => {
       },
     ],
   });
-  await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
   emit({ type: 'session.exited', reason: 'Disconnected' });
-  await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('closed'));
+  await until(() => expect(host.snapshot().requests[0]?.state).toBe('closed'));
   expect(host.snapshot().session.pendingRequestIds).toEqual([]);
 });
 it('rejects oversized input before persisting or dispatching a turn', async () => {
@@ -243,7 +252,7 @@ it.each(['accept', 'decline', 'cancel'] as const)(
       title: 'Write file',
       options: [{ decision, label: decision }],
     });
-    await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+    await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
     const answer: Command = {
       ...message('answer'),
       body: {
@@ -293,7 +302,7 @@ it('rejects host publication claims before dispatching a command', async () => {
 it('records uncertain interrupt delivery and never sends it twice', async () => {
   const { host, adapter } = await start('codex');
   await host.command(message('turn'));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   vi.mocked(adapter.interruptTurn).mockRejectedValue(new Error('Connection lost after send'));
   const interrupt: Command = {
     ...message('interrupt'),
@@ -327,7 +336,7 @@ it('keeps a stop with uncertain cleanup stopped on recovery', async () => {
   expect(adapter.stopSession).toHaveBeenCalledOnce();
   await host.shutdown();
   const recovered = setup('codex');
-  const resumed = await HostedSession.start(root, recovered.config, recovered.adapter);
+  const resumed = await startHost(root, recovered.config, recovered.adapter);
   hosts.push(resumed);
   expect(resumed.snapshot().session.status).toBe('stopped');
   expect(recovered.adapter.startSession).not.toHaveBeenCalled();
@@ -337,7 +346,7 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   const { host, adapter, emit } = await start('codex');
   await host.command(message('active'));
   await host.command(message('queued'));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
     emit({ type: 'turn.completed', turnId: 'active', outcome: 'interrupted', usage: [] });
     emit({ type: 'session.exited', reason: 'Stopped' });
@@ -345,7 +354,7 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect((await host.command({ ...message('stop'), body: { type: 'session.stop' } })).status).toBe(
     'applied'
   );
-  await waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  await until(() => expect(host.snapshot().session.status).toBe('stopped'));
   expect(host.snapshot().turns.map((turn) => turn.status)).toEqual(['interrupted', 'interrupted']);
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });
@@ -356,17 +365,18 @@ it('knows what a turn spent from the moment it reads as ended, and after a resta
     { model: 'big', inputTokens: 10, outputTokens: 2, cacheReadTokens: 300, cacheWriteTokens: 0 },
   ];
   await host.command(message('spender'));
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
-  const seenWhenEnded: unknown[] = [];
-  host.onPublished((event) => {
-    if (event.body.type === 'turn.upsert' && event.body.status === 'completed')
-      seenWhenEnded.push(host.usageOf(event.body.turnId));
-  });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  const seenWhenEnded = new Promise((resolve) =>
+    host.onPublished((event) => {
+      if (event.body.type === 'turn.upsert' && event.body.status === 'completed')
+        resolve(host.usageOf(event.body.turnId));
+    })
+  );
   emit({ type: 'turn.completed', turnId: 'spender', outcome: 'completed', usage: spent });
-  await waitFor(() => expect(seenWhenEnded).toEqual([spent]));
+  expect(await seenWhenEnded).toEqual(spent);
   await host.shutdown();
   const next = setup('claude');
-  const recovered = await HostedSession.start(root, next.config, next.adapter);
+  const recovered = await startHost(root, next.config, next.adapter);
   hosts.push(recovered);
   expect(recovered.usageOf('spender')).toEqual(spent);
   expect(recovered.usageOf('never-ran')).toEqual([]);
@@ -375,15 +385,15 @@ it('knows what a turn spent from the moment it reads as ended, and after a resta
 it('resets into a new epoch and native conversation while retaining history', async () => {
   const { host, adapter, emit, root } = await start('claude');
   await host.command(message('old-turn'));
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
   // Completed only after the provider reported the turn started, or its late
   // start would put the turn back to running.
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({ type: 'turn.completed', turnId: 'old-turn', outcome: 'completed', usage: [] });
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   // The turn reads completed a moment before the session reads ready again,
   // and a reset is refused until it does.
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   vi.mocked(adapter.startSession).mockImplementationOnce(async () => {
     emit({ type: 'session.state.changed', status: 'ready' });
     return { provider: 'claude', sessionId: 'session', nativeSessionId: 'fresh-native' };
@@ -398,7 +408,7 @@ it('resets into a new epoch and native conversation while retaining history', as
   await expect(host.command(message('stale'))).rejects.toThrow('STALE_EPOCH');
   await host.shutdown();
   const next = setup('claude');
-  hosts.push(await HostedSession.start(root, next.config, next.adapter));
+  hosts.push(await startHost(root, next.config, next.adapter));
   expect(next.adapter.startSession).toHaveBeenCalledWith(
     expect.objectContaining({
       resume: { nativeSessionId: 'fresh-native' },
@@ -418,7 +428,7 @@ it('rejects reset with queued work or a pending native request', async () => {
     title: 'Run command',
     options: [{ decision: 'accept', label: 'Allow' }],
   });
-  await waitFor(() => expect(host.snapshot().requests).toHaveLength(1));
+  await until(() => expect(host.snapshot().requests).toHaveLength(1));
   await expect(
     host.command({ ...message('reset'), body: { type: 'session.reset' } })
   ).rejects.toThrow('SESSION_BUSY');
@@ -441,7 +451,7 @@ async function undecided(nativeRecorded: boolean) {
   );
   const next = setup('claude');
   const config = { ...next.config, stageAttachments: async () => [] };
-  const resumed = await HostedSession.start(root, config, next.adapter);
+  const resumed = await startHost(root, config, next.adapter);
   hosts.push(resumed);
   return { ...next, root, host: resumed };
 }
@@ -499,7 +509,7 @@ it('starts a fresh conversation when the user decides an uncertain reset', async
   expect(adapter.stopSession).not.toHaveBeenCalled();
   expect(adapter.startSession).toHaveBeenCalledOnce();
   expect(vi.mocked(adapter.startSession).mock.calls[0][0].resume).toBeUndefined();
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   expect(host.resetDecisionPending).toBe(false);
   expect(host.snapshot().session.capabilities.attachmentMimeTypes.length).toBeGreaterThan(0);
   expect(host.status('interrupted-reset')).toMatchObject({
@@ -524,7 +534,7 @@ it('stops an undecided session without touching an unstarted provider', async ()
   expect(host.snapshot().session.status).toBe('stopped');
   await host.shutdown();
   const next = setup('claude');
-  const resumed = await HostedSession.start(root, next.config, next.adapter);
+  const resumed = await startHost(root, next.config, next.adapter);
   hosts.push(resumed);
   expect(resumed.snapshot().session.status).toBe('stopped');
   expect(next.adapter.startSession).not.toHaveBeenCalled();
@@ -534,13 +544,13 @@ it('resumes an ordinary interrupted session without a reset decision', async () 
   const { host, root } = await start('claude');
   await host.shutdown();
   const next = setup('claude');
-  const resumed = await HostedSession.start(root, next.config, next.adapter);
+  const resumed = await startHost(root, next.config, next.adapter);
   hosts.push(resumed);
   expect(next.adapter.startSession).toHaveBeenCalledWith(
     expect.objectContaining({ resume: { nativeSessionId: 'native' } })
   );
   expect(resumed.resetDecisionPending).toBe(false);
-  await waitFor(() => expect(resumed.snapshot().session.status).toBe('ready'));
+  await until(() => expect(resumed.snapshot().session.status).toBe('ready'));
 });
 
 it('starts a new conversation on its own when the saved one is gone and never answered', async () => {
@@ -550,12 +560,12 @@ it('starts a new conversation on its own when the saved one is gone and never an
   vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
     new ProviderConversationUnavailableError('claude', 'session', 'No saved conversation')
   );
-  const restarted = await HostedSession.start(root, next.config, next.adapter);
+  const restarted = await startHost(root, next.config, next.adapter);
   hosts.push(restarted);
   expect(restarted.resetDecisionPending).toBe(false);
   expect(next.adapter.startSession).toHaveBeenCalledTimes(2);
   expect(vi.mocked(next.adapter.startSession).mock.calls[1][0].resume).toBeUndefined();
-  await waitFor(() =>
+  await until(() =>
     expect(restarted.replay(0).events.map((e) => e.body)).toContainEqual(
       expect.objectContaining({ code: 'CONVERSATION_STARTED_FRESH' })
     )
@@ -570,9 +580,9 @@ it('validates native model choices and persists a confirmed choice across restar
     { id: 'model-a', label: 'Model A', options: { effort: ['low', 'high'] } },
   ]);
   fixture.adapter.setModel = vi.fn(async () => {});
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
+  await until(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
   expect(host.snapshot().session.capabilities.modelChange).toBe(true);
   const command: Command = {
     ...message('model'),
@@ -598,7 +608,7 @@ it('validates native model choices and persists a confirmed choice across restar
   expect(host.snapshot().session.model).toEqual({ id: 'model-a', options: { effort: 'high' } });
   await host.shutdown();
   const recovered = setup('claude');
-  hosts.push(await HostedSession.start(root, recovered.config, recovered.adapter));
+  hosts.push(await startHost(root, recovered.config, recovered.adapter));
   expect(recovered.adapter.startSession).toHaveBeenCalledWith(
     expect.objectContaining({
       model: { id: 'model-a', options: { effort: 'high' } },
@@ -618,14 +628,14 @@ it('lists a catalog too large for a session event without its overflow, and keep
   }));
   fixture.adapter.listModels = vi.fn(async () => catalog);
   fixture.adapter.setModel = vi.fn(async () => {});
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
+  await until(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
   const listed = host.snapshot().session.models!;
   expect(listed.length).toBeLessThan(catalog.length);
   expect(listed.every((model) => Object.keys(model.options).length === 0)).toBe(true);
   // The notice follows the session record it explains.
-  await vi.waitFor(() =>
+  await until(() =>
     expect(host.replay(0).events.map((e) => e.body)).toContainEqual(
       expect.objectContaining({ code: 'MODEL_CATALOG_TRUNCATED' })
     )
@@ -646,9 +656,9 @@ it('leaves a lost model acknowledgement unknown and does not retry it', async ()
   fixture.adapter.setModel = vi.fn(async () => {
     throw new Error('Acknowledgement lost');
   });
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
+  await until(() => expect(host.snapshot().session.models?.length).toBeGreaterThan(0));
   const command: Command = {
     ...message('model'),
     body: { type: 'session.model.set', modelId: 'model-a', options: {} },
@@ -670,12 +680,12 @@ it('waits for native compaction and keeps history without sending a summarizatio
         finish = resolve;
       })
   );
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.capabilities.compact).toBe(true));
+  await until(() => expect(host.snapshot().session.capabilities.compact).toBe(true));
   const command: Command = { ...message('compact'), body: { type: 'session.compact' } };
   const applied = host.command(command);
-  await waitFor(() => expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1));
+  await until(() => expect(fixture.adapter.compactSession).toHaveBeenCalledTimes(1));
   expect(host.status('compact').status).toBe('accepted');
   expect(host.snapshot().session.status).toBe('running');
   expect(
@@ -700,21 +710,21 @@ it('publishes context usage when a turn ends and clears it on reset', async () =
   roots.push(root);
   const fixture = setup('claude');
   fixture.adapter.contextUsage = vi.fn(async () => ({ usedTokens: 134000, windowTokens: 0 }));
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   expect(host.snapshot().session.context).toBeUndefined();
   await host.command(message('turn'));
-  await waitFor(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  await until(() => expect(fixture.adapter.sendTurn).toHaveBeenCalledTimes(1));
   fixture.emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
-  await waitFor(() =>
+  await until(() =>
     expect(host.snapshot().session.context).toMatchObject({
       usedTokens: 134000,
       windowTokens: null,
     })
   );
   await host.command({ ...message('reset'), body: { type: 'session.reset' } });
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   expect(host.snapshot().session.context).toBeNull();
 });
 
@@ -728,8 +738,8 @@ it('stages attachments before dispatch and never executes after shutdown during 
   const root = await mkdtemp(join(tmpdir(), 'sdk-stage-stop-'));
   roots.push(root);
   const stageAttachments = vi.fn(() => transfer.promise);
-  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
-  await waitFor(() =>
+  const host = await startHost(root, { ...config, stageAttachments }, adapter);
+  await until(() =>
     expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
   );
   const command = message('with-file');
@@ -754,8 +764,8 @@ it('delivers staged execution paths once and keeps durable attachment metadata',
   roots.push(root);
   const staged = [{ path: '/execution-host/note.txt', mimeType: 'text/plain' }];
   const stageAttachments = vi.fn(async () => staged);
-  const host = await HostedSession.start(root, { ...config, stageAttachments }, adapter);
-  await waitFor(() =>
+  const host = await startHost(root, { ...config, stageAttachments }, adapter);
+  await until(() =>
     expect(host.snapshot().session.capabilities.attachmentMimeTypes).toContain('text/plain')
   );
   hosts.push(host);
@@ -783,7 +793,7 @@ it('updates attachment support after a confirmed native model change', async () 
   adapter.setModel = vi.fn(async () => {});
   const root = await mkdtemp(join(tmpdir(), 'sdk-model-images-'));
   roots.push(root);
-  const host = await HostedSession.start(
+  const host = await startHost(
     root,
     {
       ...config,
@@ -793,7 +803,7 @@ it('updates attachment support after a confirmed native model change', async () 
     adapter
   );
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.capabilities.modelChange).toBe(true));
+  await until(() => expect(host.snapshot().session.capabilities.modelChange).toBe(true));
   expect(host.snapshot().session.capabilities.attachmentMimeTypes).not.toContain('image/png');
   const image = message('image');
   if (image.body.type !== 'message.send') throw new Error('Expected message');
@@ -812,7 +822,7 @@ it('updates attachment support after a confirmed native model change', async () 
 it('rejects unsupported native compaction without faulting the session', async () => {
   const root = await mkdtemp(join(tmpdir(), 'unsupported-compact-'));
   const { adapter, config } = setup('claude');
-  const host = await HostedSession.start(root, config, adapter);
+  const host = await startHost(root, config, adapter);
   try {
     await expect(
       host.command({ ...message('unsupported-compact'), body: { type: 'session.compact' } })
@@ -828,19 +838,19 @@ it('requires an explicit fresh reset when the provider cannot resume the saved c
   const { host, adapter, emit, root } = await start('codex');
   // The provider has answered, so the lost conversation held something.
   await host.command(message('answered'));
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
   // Completed only after the provider reported the turn started, or its late
   // start would put the turn back to running.
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({ type: 'turn.completed', turnId: 'answered', outcome: 'completed', usage: [] });
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   await host.shutdown();
   const next = setup('codex');
   vi.mocked(next.adapter.startSession).mockRejectedValueOnce(
     new ProviderConversationUnavailableError('codex', 'session', 'Saved conversation unavailable')
   );
-  const recovered = await HostedSession.start(root, next.config, next.adapter);
+  const recovered = await startHost(root, next.config, next.adapter);
   hosts.push(recovered);
   expect(recovered.resetDecisionPending).toBe(true);
   expect(recovered.snapshot().session.status).toBe('error');
@@ -870,9 +880,7 @@ it('does not present authentication or transport failures as a missing conversat
   await host.shutdown();
   const next = setup('codex');
   vi.mocked(next.adapter.startSession).mockRejectedValueOnce(new Error('Authentication failed'));
-  await expect(HostedSession.start(root, next.config, next.adapter)).rejects.toThrow(
-    'Authentication failed'
-  );
+  await expect(startHost(root, next.config, next.adapter)).rejects.toThrow('Authentication failed');
 });
 
 it('resumes a stopped native conversation only once per explicit operation without replaying work', async () => {
@@ -882,11 +890,7 @@ it('resumes a stopped native conversation only once per explicit operation witho
   await host.shutdown();
   const fixture = setup('claude');
   const resumeOperationId = randomUUID();
-  const resumed = await HostedSession.start(
-    root,
-    { ...fixture.config, resumeOperationId },
-    fixture.adapter
-  );
+  const resumed = await startHost(root, { ...fixture.config, resumeOperationId }, fixture.adapter);
   hosts.push(resumed);
   expect(fixture.adapter.startSession).toHaveBeenCalledWith(
     expect.objectContaining({ resume: { nativeSessionId: 'native' } })
@@ -901,11 +905,7 @@ it('resumes a stopped native conversation only once per explicit operation witho
   });
   await resumed.shutdown();
   const again = setup('claude');
-  const stopped = await HostedSession.start(
-    root,
-    { ...again.config, resumeOperationId },
-    again.adapter
-  );
+  const stopped = await startHost(root, { ...again.config, resumeOperationId }, again.adapter);
   hosts.push(stopped);
   expect(stopped.snapshot().session.status).toBe('stopped');
   expect(again.adapter.startSession).not.toHaveBeenCalled();
@@ -924,7 +924,7 @@ it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
           resolveModels = resolve;
         })
     );
-    const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+    const host = await startHost(root, fixture.config, fixture.adapter);
     hosts.push(host);
     expect(host.snapshot().session.status).toBe('ready');
     expect(fixture.adapter.listModels).toHaveBeenCalledOnce();
@@ -945,16 +945,14 @@ it('overlaps authentication with startup but waits for authentication before ret
       })
   );
   let returned = false;
-  const starting = HostedSession.start(
-    root,
-    { ...fixture.config, authenticate },
-    fixture.adapter
-  ).then((host) => {
-    returned = true;
-    hosts.push(host);
-    return host;
-  });
-  await waitFor(() => expect(fixture.adapter.startSession).toHaveBeenCalledOnce());
+  const starting = startHost(root, { ...fixture.config, authenticate }, fixture.adapter).then(
+    (host) => {
+      returned = true;
+      hosts.push(host);
+      return host;
+    }
+  );
+  await until(() => expect(fixture.adapter.startSession).toHaveBeenCalledOnce());
   expect(authenticate).toHaveBeenCalledOnce();
   expect(returned).toBe(false);
   authenticated();
@@ -966,7 +964,7 @@ it('cleans up the started provider when authentication fails', async () => {
   roots.push(root);
   const fixture = setup('claude');
   await expect(
-    HostedSession.start(
+    startHost(
       root,
       {
         ...fixture.config,
@@ -988,9 +986,9 @@ it('reports model discovery failures without losing the usable session', async (
   fixture.adapter.listModels = vi.fn(async () => {
     throw new Error('Model service unavailable');
   });
-  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  const host = await startHost(root, fixture.config, fixture.adapter);
   hosts.push(host);
-  await waitFor(() =>
+  await until(() =>
     expect(
       host
         .replay(0)
@@ -1057,7 +1055,7 @@ async function openApproval(
       { decision: 'decline', label: 'Deny' },
     ],
   });
-  await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
 }
 
 it('applies an answer Switch recorded for an approval, once', async () => {
@@ -1169,7 +1167,7 @@ async function openQuestions(
       },
     ],
   });
-  await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
 }
 
 it('answers questions with what Switch recorded for them', async () => {
@@ -1266,16 +1264,14 @@ it('starts a conversation on recovery when the first start never opened one', as
   roots.push(root);
   const failing = setup('cursor');
   vi.mocked(failing.adapter.startSession).mockRejectedValueOnce(new Error('Invalid params'));
-  await expect(HostedSession.start(root, failing.config, failing.adapter)).rejects.toThrow(
-    'Invalid params'
-  );
+  await expect(startHost(root, failing.config, failing.adapter)).rejects.toThrow('Invalid params');
   const recovered = setup('cursor');
-  const host = await HostedSession.start(root, recovered.config, recovered.adapter);
+  const host = await startHost(root, recovered.config, recovered.adapter);
   hosts.push(host);
   expect(recovered.adapter.startSession).toHaveBeenCalledWith(
     expect.not.objectContaining({ resume: expect.anything() })
   );
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
 });
 
 function roomMessage(commandId: string, threadId: string | null): Command {
@@ -1299,13 +1295,9 @@ async function startReplying(
   const dir = root ?? (await mkdtemp(join(tmpdir(), 'sdk-host-test-')));
   if (!root) roots.push(dir);
   const fixture = setup('cursor');
-  const host = await HostedSession.start(
-    dir,
-    { ...fixture.config, replyToRoom: reply },
-    fixture.adapter
-  );
+  const host = await startHost(dir, { ...fixture.config, replyToRoom: reply }, fixture.adapter);
   hosts.push(host);
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root: dir, host };
 }
 
@@ -1334,10 +1326,10 @@ it('posts nothing for a room turn that finished without posting', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, root, adapter } = await startReplying(reply);
   await host.command(roomMessage('turn', 'thread'));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   said(emit, 'turn', 'last', 'Not answering this one.');
   emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await host.barrier();
   expect(reply).not.toHaveBeenCalled();
   expect(await roomReplyRecords(root)).toEqual([]);
@@ -1347,7 +1339,7 @@ it('tells the room once, in its thread, that a turn failed without posting', asy
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, root, adapter } = await startReplying(reply);
   await host.command(roomMessage('turn', 'thread'));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({
     type: 'turn.completed',
     turnId: 'turn',
@@ -1355,7 +1347,7 @@ it('tells the room once, in its thread, that a turn failed without posting', asy
     message: 'Upgrade your plan to continue',
     usage: [],
   });
-  await waitFor(() =>
+  await until(() =>
     expect(host.snapshot().notices.map((notice) => notice.code)).toContain('ROOM_REPLY_POSTED')
   );
   expect(reply).toHaveBeenCalledExactlyOnceWith({
@@ -1377,14 +1369,14 @@ it('leaves a room turn alone when the agent posted to the room during it', async
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
   await host.command(roomMessage('posted', null));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   host.agentPostedToRoom();
   said(emit, 'posted', 'done', 'Posted the answer.');
   emit({ type: 'turn.completed', turnId: 'posted', outcome: 'completed', usage: [] });
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   // A post counts for the turn it was made in, not the next one.
   await host.command(roomMessage('silent', null));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
   emit({
     type: 'turn.completed',
     turnId: 'silent',
@@ -1392,7 +1384,7 @@ it('leaves a room turn alone when the agent posted to the room during it', async
     message: 'boom',
     usage: [],
   });
-  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  await until(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply).toHaveBeenCalledWith({
     roomId: 'room',
     threadId: null,
@@ -1404,7 +1396,7 @@ it('tells the room a failed turn with nothing to show failed, and why', async ()
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
   await host.command(roomMessage('failed', 'thread'));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({
     type: 'turn.completed',
     turnId: 'failed',
@@ -1412,7 +1404,7 @@ it('tells the room a failed turn with nothing to show failed, and why', async ()
     message: 'Not signed in.',
     usage: [],
   });
-  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  await until(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply).toHaveBeenCalledWith({
     roomId: 'room',
     threadId: 'thread',
@@ -1425,7 +1417,7 @@ it('tells the room a turn that never reached the provider failed', async () => {
   const { host, adapter } = await startReplying(reply);
   vi.mocked(adapter.sendTurn).mockRejectedValueOnce(new Error('quota exhausted'));
   await host.command(roomMessage('unsent', null));
-  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  await until(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply.mock.calls[0]![0].body).toBe(
     'I finished without replying. The turn failed: Error: quota exhausted'
   );
@@ -1435,10 +1427,10 @@ it('posts nothing for a turn no room message started', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
   await host.command(message('console'));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   said(emit, 'console', 'answer', 'Here you go.');
   emit({ type: 'turn.completed', turnId: 'console', outcome: 'completed', usage: [] });
-  await waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await host.barrier();
   expect(reply).not.toHaveBeenCalled();
 });
@@ -1447,13 +1439,13 @@ it('posts nothing for a room turn the host stopped', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
   await host.command(roomMessage('cut', null));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
     emit({ type: 'turn.completed', turnId: 'cut', outcome: 'interrupted', usage: [] });
     emit({ type: 'session.exited', reason: 'Stopped' });
   });
   await host.command({ ...message('stop'), body: { type: 'session.stop' } });
-  await waitFor(() => expect(host.snapshot().session.status).toBe('stopped'));
+  await until(() => expect(host.snapshot().session.status).toBe('stopped'));
   expect(reply).not.toHaveBeenCalled();
 });
 
@@ -1464,16 +1456,16 @@ it('keeps the session working when the room reply cannot be posted', async () =>
   });
   const { host, emit, adapter } = await startReplying(reply);
   await host.command(roomMessage('first', null));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   emit({ type: 'turn.completed', turnId: 'first', outcome: 'error', message: 'boom', usage: [] });
-  await waitFor(() =>
+  await until(() =>
     expect(host.snapshot().notices.map((notice) => notice.code)).toContain('ROOM_REPLY_FAILED')
   );
   expect(
     warn.mock.calls.some(([line]) => String(line).includes('Switch refused post_message'))
   ).toBe(true);
   expect((await host.command(message('second'))).status).toBe('applied');
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
   expect(host.snapshot().session.status).toBe('ready');
   warn.mockRestore();
 });
@@ -1496,7 +1488,7 @@ async function runTurn(provider: 'codex' | 'claude', withReasoning: boolean) {
   const published: unknown[] = [];
   host.onPublished((event) => published.push(event.body));
   await host.command(message('turn'));
-  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
   const secret = 'PRIVATE REASONING TEXT';
   if (withReasoning) {
     if (provider === 'codex') {
@@ -1526,7 +1518,7 @@ async function runTurn(provider: 'codex' | 'claude', withReasoning: boolean) {
     item: { id: 'a1', type: 'assistant_message', status: 'completed', title: 'Done', text: 'Done' },
   });
   emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
-  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await host.barrier();
   const journal = await readFile(join(root, 'events.jsonl'), 'utf8');
   const snapshot = host.snapshot();
@@ -1582,7 +1574,7 @@ it('keeps tool input and output off the event stream, the journal and the snapsh
   const published: unknown[] = [];
   host.onPublished((event) => published.push(event.body));
   await host.command(message('turn'));
-  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
   const input = { file_path: '/repo/PRIVATE-INPUT.ts' };
   const tool = { id: 't1', type: 'tool_call', title: 'Read', toolName: 'Read', payload: input };
   emit({ type: 'item.started', turnId: 'turn', item: { ...tool, status: 'in_progress' } });
@@ -1592,7 +1584,7 @@ it('keeps tool input and output off the event stream, the journal and the snapsh
     item: { ...tool, status: 'completed', text: 'PRIVATE OUTPUT' },
   });
   emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
-  await vi.waitFor(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
   await host.barrier();
   const journal = await readFile(join(root, 'events.jsonl'), 'utf8');
   for (const text of [journal, JSON.stringify(published), JSON.stringify(host.snapshot())]) {
@@ -1613,7 +1605,7 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
   const fixture = setup('claude');
   const asked: string[] = [];
   const notices = new ServiceNotices();
-  const host = await HostedSession.start(
+  const host = await startHost(
     root,
     {
       ...fixture.config,
@@ -1628,7 +1620,7 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
   notices.attach((message) => host.serviceFallback(message));
   const published: Array<{ type: string; message?: string; request?: { requestId: string } }> = [];
   host.onPublished((event) => published.push(event.body as (typeof published)[number]));
-  await waitFor(() => expect(host.snapshot().session.status).toBe('ready'));
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   await host.command(message('turn'));
   const connectorRequest = (requestId: string) => ({
     type: 'request.opened' as const,
@@ -1649,7 +1641,7 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
   });
   fixture.emit(connectorRequest('search'));
   fixture.emit(connectorRequest('add_comment'));
-  await waitFor(() => expect(host.snapshot().requests).toHaveLength(3));
+  await until(() => expect(host.snapshot().requests).toHaveLength(3));
   await host.barrier();
   expect(asked).toEqual(['atlassian', 'atlassian']);
 
