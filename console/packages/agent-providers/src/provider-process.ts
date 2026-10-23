@@ -87,17 +87,20 @@ export async function findOnPath(name: string, path: string | undefined): Promis
 }
 
 /**
- * Ends a provider process. On Windows the child may be the `cmd.exe` a
- * `.cmd` CLI runs under, and killing it alone would leave the CLI running,
- * so the whole tree goes; there is no gentler signal to send there.
+ * Ends a provider process and any process tree descended from it.
+ *
+ * On Windows the child may be `cmd.exe` running a `.cmd` CLI shim, and on
+ * macOS / Linux the child may be a shell wrapper or launch sub-processes.
+ * Signalling only `child.pid` leaves descendant processes orphaned, so the
+ * entire process tree is stopped with `signal`.
  */
 export function stopProvider(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (process.platform !== 'win32' || !child.pid) {
+  if (!child.pid) {
     child.kill(signal);
     return;
   }
   const pid = child.pid;
-  killProcessTree(pid).catch((error: unknown) => {
+  killProcessTree(pid, signal).catch((error: unknown) => {
     console.error(`Could not stop the provider process (pid ${pid}): ${String(error)}`);
     child.kill(signal);
   });

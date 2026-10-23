@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { ProviderUnavailableError } from '../adapter';
+import { killProcessTree } from '../host/process-fence';
 import { spawnProvider, stopProvider } from '../provider-process';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
@@ -60,11 +61,10 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
   const password = randomBytes(24).toString('base64url');
   const port = await findFreePort();
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
+  let child: ChildProcess | undefined;
 
-  const child = spawnProvider(
-    input.binaryPath,
-    ['serve', '--hostname=127.0.0.1', `--port=${port}`],
-    {
+  try {
+    child = spawnProvider(input.binaryPath, ['serve', '--hostname=127.0.0.1', `--port=${port}`], {
       cwd: input.cwd,
       env: {
         ...input.env,
@@ -72,10 +72,10 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
         OPENCODE_SERVER_PASSWORD: password,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
-    }
-  );
+      detached: process.platform !== 'win32',
+    });
 
-  try {
+    const activeChild = child;
     const url = await new Promise<string>((resolve, reject) => {
       let output = '';
       let settled = false;
@@ -87,7 +87,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
       };
       const timer = setTimeout(() => {
         finish(() => {
-          stopProvider(child, 'SIGKILL');
+          stopProvider(activeChild, 'SIGKILL');
           reject(
             new ProviderUnavailableError(
               'opencode',
@@ -97,7 +97,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
         });
       }, input.startupTimeoutMs);
 
-      child.stdout?.on('data', (chunk: Buffer) => {
+      activeChild.stdout?.on('data', (chunk: Buffer) => {
         output = (output + chunk.toString()).slice(-8000);
         for (const line of output.split('\n')) {
           if (!line.startsWith(READY_PREFIX)) continue;
@@ -107,15 +107,15 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
           return;
         }
       });
-      child.stderr?.on('data', (chunk: Buffer) => {
+      activeChild.stderr?.on('data', (chunk: Buffer) => {
         output = (output + chunk.toString()).slice(-8000);
       });
-      child.on('error', (error) => {
+      activeChild.on('error', (error) => {
         finish(() =>
           reject(new ProviderUnavailableError('opencode', 'could not spawn', { cause: error }))
         );
       });
-      child.on('exit', (code) => {
+      activeChild.on('exit', (code) => {
         finish(() =>
           reject(
             new ProviderUnavailableError(
@@ -131,7 +131,11 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
     await waitForHealth(url, authorization, input.startupTimeoutMs);
     return { url, authorization, process: child, configHome };
   } catch (error) {
-    await stopOpencodeServer({ process: child, configHome });
+    if (child) {
+      await stopOpencodeServer({ process: child, configHome });
+    } else {
+      await rm(configHome, { recursive: true, force: true });
+    }
     throw error;
   }
 }
@@ -140,24 +144,32 @@ export async function stopOpencodeServer(
   server: Pick<OpencodeServerHandle, 'process' | 'configHome'>
 ): Promise<void> {
   const child = server.process;
-  if (child.pid && child.exitCode === null && child.signalCode === null) {
-    await new Promise<void>((resolve, reject) => {
-      const kill = setTimeout(() => stopProvider(child, 'SIGKILL'), 2000);
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error('OpenCode process did not exit after termination.'));
-      }, 5000);
-      const cleanup = () => {
-        clearTimeout(kill);
-        clearTimeout(timeout);
-        child.removeListener('exit', exited);
-      };
-      const exited = () => {
-        cleanup();
-        resolve();
-      };
-      child.once('exit', exited);
-      stopProvider(child, 'SIGTERM');
+  const pid = child.pid;
+  if (pid) {
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve, reject) => {
+        const kill = setTimeout(() => stopProvider(child, 'SIGKILL'), 2000);
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error('OpenCode process did not exit after termination.'));
+        }, 5000);
+        const cleanup = () => {
+          clearTimeout(kill);
+          clearTimeout(timeout);
+          child.removeListener('exit', exited);
+        };
+        const exited = () => {
+          cleanup();
+          resolve();
+        };
+        child.once('exit', exited);
+        stopProvider(child, 'SIGTERM');
+      });
+    }
+    // Even if the root process exited (e.g. a wrapper script), ensure any
+    // spawned descendants in its tree or process group are terminated.
+    await killProcessTree(pid).catch((error: unknown) => {
+      console.error(`Could not stop OpenCode process tree (pid ${pid}): ${String(error)}`);
     });
   }
   await rm(server.configHome, { recursive: true, force: true });
