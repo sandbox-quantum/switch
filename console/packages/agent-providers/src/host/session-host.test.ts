@@ -9,6 +9,8 @@ import type { ProviderRuntimeEvent } from '../events';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, type RoomReply, unpostedReply } from './session-host';
 
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * `vi.waitFor` with room for a slow disk: every step here is a journal write
  * flushed to disk, and Windows runners take well over the default second.
