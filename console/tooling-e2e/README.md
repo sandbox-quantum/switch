@@ -1,78 +1,525 @@
 # `@switch-console/tooling-e2e`
 
-An end-to-end harness that sends **real messages through a real Switch server and
-a real Mattermost bridge** to exercise Switch Console's provider-backed sessions.
+End-to-end tests for Switch: **real messages through a real Switch server**, and
+through a real Mattermost bridge where a scenario crosses one. One package,
+four lanes:
 
-It plays the human: it registers a throwaway agent, creates a room (and with it a
-Mattermost channel), posts `@agent …` into that channel, and waits for the
-agent's bot to post back. Nothing here talks to Switch Console directly — if a
-scenario passes, an operator doing the same thing by hand would have seen the
-same result.
+- **The fast lane** needs no provider, no Switch Console and no LLM key. The
+  harness plays every participant over plain HTTP: it registers throwaway
+  agents, creates rooms, posts as agents and as a Mattermost human, and asserts
+  on what arrives. It carries no secrets a fork lacks, so it can gate pull
+  requests.
+- **The provider lane** needs a real agent session (Switch Console or its
+  sidecar) attending the room, and checks what that session does: answering,
+  asking a question, asking for approval, being interrupted.
+- **The browser lane** drives the gateway UI in headless Chromium against the
+  same server: signing in, every page in the navigation rail, a room opened
+  from the list, signing out. A page that renders but is broken (an uncaught
+  error, a request the server failed, an error banner) fails it.
+- **The agentic lane** runs the provider lane's real session, but the
+  conversations come from scenario files: a model plays the human, and another
+  model grades the result against a rubric. Adding a scenario is adding a
+  file. See "The agentic lane" below.
 
-Every artefact it creates is prefixed `e2e-` and removed on teardown.
+Nothing here talks to Switch Console directly. If a scenario passes, an operator
+doing the same thing by hand would have seen the same result.
 
 ## Running it
 
-```bash
-# from console/tooling-e2e
-SWITCH_E2E=1 ../node_modules/.bin/vitest run          # everything
-SWITCH_E2E=1 ../node_modules/.bin/vitest run src/loopback.integration.test.ts
-SWITCH_E2E=1 ../node_modules/.bin/vitest run src/run.integration.test.ts
-```
-
-The package is listed in `console/pnpm-workspace.yaml`, so the usual forms work
-too:
+The fast lane against a throwaway stack built from this checkout (fresh
+Postgres and Mattermost, migrations, switch-core on the host), torn down
+afterwards. Needs Docker, `uv`, `jq`, and your local stack stopped:
 
 ```bash
-pnpm --filter @switch-console/tooling-e2e test
-pnpm --filter @switch-console/tooling-e2e cleanup
+just e2e-fast                       # from the repo root
+just e2e-fast --keep                # leave the stack running afterwards
+just e2e-fast -- -t mattermost      # arguments after -- go to vitest
 ```
 
-Housekeeping after an interrupted run — deletes every `e2e-*` agent and room on
-the Switch server and archives every `e2e-*` Mattermost channel, and nothing
-else:
+`just e2e-browser` does the same for the browser lane. It also builds the
+gateway UI from `gateway/` and serves it on :4173 with `vite preview`, whose
+proxy sends `/gateway` requests to the server as nginx does in a deployment.
+On first run Playwright installs its Chromium.
+
+Its log, JUnit report and the stack's per-run secrets go to `build/e2e/ephemeral/`.
+The repository's own `.env` is never read or written.
+
+Against a stack you already have, set the configuration below and run vitest
+from this directory:
 
 ```bash
-SWITCH_E2E=1 node --experimental-strip-types src/cleanup.ts
+SWITCH_E2E_LANE=fast pnpm test
+SWITCH_E2E_LANE=provider pnpm test
+SWITCH_E2E_LANE=browser SWITCH_GATEWAY_UI_URL=http://localhost:5173 pnpm test   # just gateway-dev
 ```
 
-Typecheck: `../node_modules/.bin/tsc --noEmit -p tsconfig.json`.
+With `SWITCH_E2E_LANE` unset every end-to-end scenario is skipped, which is
+what `pnpm -r test` and PR CI see. The unit tests (configuration, the read-only
+guard, naming, scenario headers) run either way.
+
+Housekeeping after an interrupted run deletes every agent and room on the
+Switch server, and archives every Mattermost channel, that is named the way the
+harness names things (`e2e-<six-character run id><scope letter>-<role>`) and is
+older than the age you give, and nothing else. A name that merely starts with
+`e2e-` is not enough: people name their own test agents and rooms that way on a
+shared deployment. The age floor is what lets a scheduled wipe of a
+deployed environment run while a suite is in progress; make it longer than the
+longest run. `0` takes everything, which is only right when nothing else is
+running against the server:
+
+```bash
+SWITCH_E2E_LANE=fast pnpm cleanup --older-than 120
+```
+
+Typecheck: `pnpm typecheck`.
+
+## Layout
+
+| Path | What it holds |
+| --- | --- |
+| `src/core/` | Configuration, run naming, the read-only guard, scenario headers and admission, lane resolution |
+| `src/clients/` | The Switch and Mattermost HTTP clients |
+| `src/fixtures/` | Throwaway agents and rooms for a scenario, the bridge-readiness probe, teardown |
+| `src/fast/` | Fast-lane scenarios, one file per area, listed in `index.ts` |
+| `src/provider/` | The provider lane: Console credential files, the shared agent and channel, the scenarios, `seed.ts` |
+| `src/browser/` | The browser lane: the gateway UI driver (`gateway-ui.ts`) and the scenarios, listed in `index.ts` |
+| `src/agentic/` | The agentic lane: scenario files' format, the driver and judge, model calls, spend |
+| `agentic/` | The agentic scenarios, one YAML file each |
+| `scripts/ephemeral-stack.sh` | The throwaway-stack runner behind `just e2e-fast`, `just e2e-provider` and `just e2e-browser` |
+| `scripts/scan-artifacts.sh` | Fails if a run's output holds one of the secrets the run used |
+| `src/ci-summary.ts` | The CI run summary, read from the JUnit report |
+| `src/gate/` | The coverage gate |
+| `surface/server-surface.json` | The server's operations and gateway routes, generated by `just e2e-surface` |
+| `surface/exemptions.json` | What no scenario covers, each entry with its reason, and the backlog |
+
+## Scenarios and their headers
+
+Every scenario, in any lane, carries a header:
+
+```ts
+{
+  id: 'addressed-delivery',                 // kebab-case, unique across every lane
+  covers: ['POST /agents/{agent_id}/message', 'list_rooms'],
+  lane: 'fast',                             // 'fast', 'provider' or 'browser'
+  environments: ['ephemeral', 'local', 'dev', 'staging'],
+  owner: 'platform',                        // a team or role, never a person
+  requires: ['mattermost'],                 // what must be configured
+}
+```
+
+`covers` names agent operations from the registry
+(`core/switch_core/bridges/agent/operations/definitions.py`) and HTTP routes
+as `METHOD /path/{param}`, with the server's own parameter names. It is what a
+coverage gate reads, without running anything. Headers are validated by a unit
+test, so a malformed one fails `pnpm test`.
+
+A scenario runs when its lane is the one asked for, the target environment is
+in `environments`, and its `requires` are configured. Otherwise it shows as
+**skipped, with the reason**, never as passed. Under `SWITCH_E2E_STRICT=1` (how
+`just e2e-fast` and CI run) a missing prerequisite, missing configuration or an
+unreachable server **fails** the run instead, so a job that ran nothing cannot
+go green. The one exception is an environment that deploys no Mattermost on
+purpose and says so with `SWITCH_E2E_NO_MATTERMOST=1`: its Mattermost
+scenarios skip even under strict mode, and the reason names the setting.
+
+A scenario that changes server-global state (a feature flag, say) lists only
+`ephemeral`. One that writes anything never lists `prod`.
+
+### Fast lane
+
+Plain code. A scenario gets fixtures that create agents and rooms under names
+unique to the run and the scenario, and removes them afterwards whether it
+passed or not. A teardown that leaves something behind fails the scenario.
+
+| Scenario | What it drives | Needs |
+| --- | --- | --- |
+| `addressed-delivery` | One agent addresses another in a room with no bridge; the recipient's notification carries the room, the sender and the addressed flag. | — |
+| `unaddressed-history` | Five unaddressed messages arrive in the recipient's room history in the order sent, and none of them as a notification. | — |
+| `operations-front-door` | The operations registry over HTTP: it lists the operations, `list_rooms` returns the room, `read_context` returns a message posted in it. | — |
+| `mattermost-roundtrip` | A room on the Mattermost bridge: an addressed post from the human reaches the agent, and the agent's reply appears as its bot. | Mattermost |
+| `agent-identity` | Renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
+
+If `mattermost-roundtrip` passes and a provider-lane scenario fails, the fault
+is in the agent session, not in Switch, the bridge or the harness.
+
+### Browser lane
+
+Each scenario gets a fresh browser context, signed out. What it needs in the
+server it creates over HTTP through the same fixtures as the fast lane. Beyond
+its own assertions, a scenario fails on anything that went wrong on its pages:
+an uncaught page error, a console error, a `/gateway` request the server
+answered with a 5xx (or any 4xx once signed in), or an error banner. A
+request is blamed on the page that made it, and one the browser cancelled
+itself (the page moved on mid-request) is not a problem. A page counts as
+loaded once no `/gateway` request has been in flight for half a second; one
+still waiting after 15 s is a problem too. A failed scenario's last page is
+saved under `screenshots/` in the output directory.
+
+| Scenario | What it drives |
+| --- | --- |
+| `gateway-sign-in` | The login form signs the admin in, and the app opens on the rooms list. |
+| `gateway-every-page` | Every link in the navigation rail opens its page without an error. It follows the rail, so a page added there is visited without this changing. |
+| `gateway-room-from-list` | A room made over the API is listed, and its page opens from the list. |
+| `gateway-create-room` | The new-room form makes a room with an agent and no bridge, and opens it; the server has it as asked. |
+| `gateway-sign-out` | Signing out returns to the login form, and the app stays there. |
+
+None runs against `prod`: a page may write on load, and the browser goes
+around the clients' read-only guard.
+
+## Naming, isolation and the read-only guard
+
+Everything the harness creates is named `e2e-<runId><scope>-<role>`: the run,
+a letter per scenario, then what the thing is for (`e2e-k3x9q2a-snd`). Names go
+through one helper, so no scenario builds a raw name, and the helper refuses a
+name too long for a Mattermost bot username (22 characters) rather than letting
+bot creation fail quietly on the bridge.
+
+The harness's agents are created owner-only, like every agent, and the
+fixtures open their addressing through the gateway: their senders are other
+throwaway agents and an unclaimed Mattermost user, whose messages would
+otherwise be refused rather than delivered.
+
+With `SWITCH_E2E_ENVIRONMENT=prod` the clients refuse every request but reads
+and logging in before it leaves the process, so a wrong base URL fails a test
+rather than writing to production.
 
 ## Configuration
 
 Values come from the process environment, falling back to a **gitignored `.env`**
-beside this file. Never commit one.
+beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `SWITCH_E2E` | yes | Must be `1`. Without it the whole suite skips. |
+| `SWITCH_E2E_LANE` | to run anything | `fast`, `provider` or `browser`. Unset, every end-to-end scenario skips. |
+| `SWITCH_E2E_ENVIRONMENT` | yes | `ephemeral`, `local`, `dev`, `staging` or `prod`. Decides which scenarios run, and makes `prod` read-only. |
 | `SWITCH_API_URL` | yes | Switch origin — serves both `/agents/…` and `/gateway/…`. |
 | `SWITCH_GATEWAY_ADMIN_EMAIL` | yes | Gateway admin account. |
 | `SWITCH_GATEWAY_ADMIN_PASSWORD` | yes | Its password. |
-| `SWITCH_AGENT_REGISTRATION_TOKEN` | yes | Registration API key; mints the throwaway agent. |
-| `MATTERMOST_URL` | yes | Mattermost origin. |
-| `MATTERMOST_TOKEN` | yes | Personal access token of the **human** the harness posts as. |
-| `MATTERMOST_TEAM` | yes | Team **slug** (e.g. `switch`), not its display name. |
-| `SWITCH_E2E_AGENT_DIR` | no | Working directory of the session under test. When set, the agent's credentials are written into it (see below) and it is sent to Switch as the agent's `repo_dir`. |
-| `SWITCH_E2E_KEEP` | no | `1` leaves the agent, room and channel behind for inspection. |
-| `SWITCH_E2E_MANIFEST` | no | File the setup records its agent and room in, so a second process can reuse them instead of registering its own. See "Seeding first" below. |
-| `SWITCH_E2E_REPLY_TIMEOUT_MS` | no | How long a scenario waits for the agent (default 5 min). |
-| `SWITCH_E2E_SESSION_TIMEOUT_MS` | no | How long setup waits for a live session (default 2 min). |
-| `SWITCH_E2E_AGENT_TYPE` | no | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. Decides the agent name prefix, the Switch known-agent type, and (for `claude-code`) the extra files written into the working dir. |
-| `SWITCH_E2E_QUESTION_MODE` | no | `numbered` (default, every agent type) or `prose`; see the `question` row below. |
+| `SWITCH_AGENT_REGISTRATION_TOKEN` | yes | Registration API key; mints the throwaway agents. |
+| `MATTERMOST_URL` | for Mattermost scenarios | Mattermost origin. |
+| `MATTERMOST_TOKEN` | for Mattermost scenarios | Token of the **human** the harness posts as (a personal access token, or a login session token). |
+| `MATTERMOST_TEAM` | for Mattermost scenarios | Team **slug** (e.g. `switch`), not its display name. |
+| `SWITCH_E2E_STRICT` | no | `1` turns every "cannot run" into a failure. CI sets it. |
+| `SWITCH_E2E_NO_MATTERMOST` | no | `1` declares that the environment deploys no Mattermost, so its Mattermost scenarios skip even under strict mode. Refused alongside `MATTERMOST_*`. |
+| `SWITCH_E2E_KEEP` | no | `1` leaves agents, rooms and channels behind for inspection. |
+| `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
+| `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
+| `SWITCH_GATEWAY_UI_URL` | browser lane | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` sets it. |
+| `SWITCH_E2E_OUTPUT_DIR` | no | Where the browser lane saves screenshots of failed pages. The stack script sets it. |
+| `SWITCH_E2E_DRIVER_MODEL` | agentic lane | Exact model id that plays the human, e.g. `claude-sonnet-5`. |
+| `SWITCH_E2E_JUDGE_MODEL` | agentic lane | Exact model id that grades the conversation. |
+| `SWITCH_E2E_AGENTIC_BUDGET_USD` | agentic lane | What one run may spend, driver, judge and agent together. The run stops once it is reached. |
+| `SWITCH_E2E_AGENT_DIR` | provider lane | Working directory of the session under test. When set, the agent's credentials are written into it (see below) and it is sent to Switch as the agent's `repo_dir`. |
+| `SWITCH_E2E_MANIFEST` | provider lane | File the setup records its agent and room in, so a second process can reuse them. See "Seeding first". |
+| `SWITCH_E2E_REPLY_TIMEOUT_MS` | provider lane | How long a scenario waits for the agent (default 5 min). |
+| `SWITCH_E2E_SESSION_TIMEOUT_MS` | provider lane | How long setup waits for a live session (default 2 min). |
+| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. |
+| `SWITCH_E2E_QUESTION_MODE` | provider lane | `numbered` (default) or `prose`; see the `question` row below. |
+| `SWITCH_E2E_CONTROLLER_ID` | provider lane | An agent controller to run the agent on. `just e2e-provider` sets it. Unset, a Switch Console session is expected instead. |
+| `SWITCH_E2E_PROVIDER_ENV_FILE` | `just e2e-provider`, `just e2e-agentic` | A file of provider keys, handed to the controller as `--env-file`, and to the agentic lane's driver and judge. Leave it unset to use the CLI's own sign-in. |
 
-The suite **skips, with the reason printed**, when `SWITCH_E2E` is unset, when
-configuration is missing (it names every missing variable at once), or when
-Switch or Mattermost is unreachable. A skip always means "this machine is not set
-up", never "the thing under test is broken".
+Mattermost is all or nothing: none of its three variables means "no Mattermost
+here"; some of them is reported as a mistake.
 
-## What must be running
+# The provider lane
 
-`loopback.integration.test.ts` needs nothing but the stack: it plays both the
-human and the agent, and proves the harness's own plumbing.
+The provider lane needs Mattermost and something that runs a real session for
+the agent it registers. There are two ways to provide one.
 
-`run.integration.test.ts` needs a **Switch Console session for the agent it just
-registered**. Setup polls the agent's status in the room and refuses to run the
+## On a headless agent controller (`just e2e-provider`)
+
+The unattended way, and the one CI will use. `just e2e-provider` does
+everything `just e2e-fast` does, and also:
+
+1. turns on `agent_management` and sets `CONTROLLER_TOKEN_SECRET` for the stack;
+2. builds `console/packages` and starts the agent controller
+   (`console/packages/agent-controller`) on the host. Its credential comes from
+   `POST /gateway/management/controllers` and goes in on stdin, never to disk.
+   The lane does not start until the controller has connected to Switch; if it
+   exits or never connects, the run stops there and prints the controller log;
+3. runs the provider lane with `SWITCH_E2E_CONTROLLER_ID` set. Setup creates the
+   agent on the controller as the admin (`POST /gateway/management/agents`,
+   `auto_approve: false`), retrying only while the server answers that the
+   controller is offline or has not reported the provider installed and signed
+   in. Any other refusal fails setup at once. Setup writes no Switch Console
+   files.
+
+```bash
+SWITCH_E2E_AGENT_TYPE=claude-code just e2e-provider
+SWITCH_E2E_PROVIDER_ENV_FILE=~/e2e-keys.env just e2e-provider   # an API key instead of a signed-in CLI
+```
+
+The provider CLI (`claude`, `opencode`, …) must be installed and signed in for
+the user running it, or its key must be in the file `SWITCH_E2E_PROVIDER_ENV_FILE`
+names, which the controller gets as `--env-file`. Sessions only inherit the
+variables on the allow-list in
+`console/packages/agent-providers/src/host/agent-env.ts`. `node
+console/packages/agent-controller/dist/cli.mjs doctor` shows what the controller
+sees. A run spends real model calls.
+
+Two things differ from a Console session:
+- **The agent's own key stops working.** While a controller acts for an agent,
+  the server refuses requests made with the agent's own key. So the
+  bridge-readiness probe reads the room through a silent second agent, the
+  *witness*, and teardown deletes agents by name as the admin.
+- **`live` comes early.** Switch reports the agent `live` as soon as the
+  controller is connected, before any session exists. The first scenario
+  therefore absorbs the session's start-up time.
+
+The controller's log goes to `build/e2e/ephemeral/controller.log`.
+
+## The agentic lane
+
+`just e2e-agentic` sets up what `just e2e-provider` does (one agent on a
+headless controller, one Mattermost channel), then plays each file in
+`agentic/` against it:
+
+```yaml
+id: summarise-the-channel        # kebab-case, the file's own name
+owner: platform
+covers: [read_context, post_message]
+persona: |                       # who the driver plays
+  A team member back from a day off, catching up.
+goal: |                          # what they want; the driver stops once they have it
+  Learn what was decided about the weekly sync and who is doing what next.
+room:                            # the scenario's own room (optional; see below)
+  instructions: |
+    Every reply ends with the line "-- weekly-sync".
+setup_messages:                  # posted first, not addressed to the agent (optional)
+  - Should we move the weekly sync to Thursday afternoons?
+opening: Just got back. What was decided above about the weekly sync?
+max_turns: 2                     # human messages, the opening included (1 to 6)
+facts:                           # what the replies must show, checked in code (at least one)
+  - id: names-the-day
+    turn: any                    # first, last, any or every agent reply
+    matches: wednesday           # a regular expression, case-insensitive
+  - id: invents-no-other-day
+    turn: every
+    not_matches: monday|tuesday|friday
+rubric:                          # what the judge checks, each on its own
+  - id: names-the-decision
+    criterion: The agent says the sync moves to Wednesday at 10:00.
+```
+
+With no `room:`, a scenario runs in the lane's shared room. With one, it gets
+a room of its own, provisioned through the gateway's `POST /rooms/from-yaml`
+from the same document an agent's `create_room_from_yaml` takes. A scenario
+may set `description`, `instructions`, `roles` and `docs`; the harness names
+the room and picks its bridge and members (the agent, the bridge's witness
+bot, the human). The room is removed afterwards. Its text may not contain a
+`{name}` placeholder: the server fills those in a room document and cannot
+escape one, so the agent would read something other than what the facts and
+the judge are checked against.
+
+A fact's pattern is matched anywhere in a reply, so give it word boundaries
+(`\bten\b`, not `ten`, which matches "often"), and prefer `any` to `last`
+where the agent may answer in an earlier reply than the final one.
+
+The delivery check matches each driver message to a room message of its own,
+in order, after folding spacing and quote style; a leading mention is allowed.
+
+- **The driver** is a model playing the human. After each reply it writes the
+  next message from the persona, the goal and the conversation so far, or
+  stops once the goal is met. The opening is sent as written, so every run
+  starts the same way.
+- **The agent** answers in its real session. A reply is finished when Switch's
+  status card for the turn says the turn ended.
+- **The judge** is a second model. It reads the transcript, including the
+  setup messages, and grades each rubric criterion with a reason. It never
+  sees the persona, so it grades what was said, not what was meant.
+
+What fails a scenario is what can be decided without a model: the agent did
+not reply, its turn ended in an error, a message the driver wrote is missing
+from the room's history, a fact does not hold, the server logged an error, or
+the run reached its spending limit. **The judge's verdicts do not fail a
+scenario**, and the judge is not asked at all once one of those checks has
+failed: a grade of a conversation that went wrong mechanically says nothing.
+The verdicts are printed per criterion and written, with the transcript, the
+facts and the spend, to `agentic/<id>.json` in the output directory. A model's
+grade is evidence to read until it has a record of agreeing with people.
+
+The report also names each model and the version of its prompt
+(`DRIVER_VERSION`, `JUDGE_VERSION` in `src/agentic/roles.ts`), so verdicts
+are compared only between runs that asked the same question. A unit test pins
+a hash of each prompt: changing one fails it until the version goes up and the
+hash is updated.
+
+Both models are named by exact id, and an answer from any other model is
+refused rather than counted. Their calls go through the Claude Code CLI with
+its own system prompt, tools, MCP servers and settings all switched off, from
+an empty directory, so a developer's setup cannot leak in.
+
+**Spend** is measured, not estimated from a guess:
+
+- the driver and judge calls report their own cost;
+- the agent's session is priced from the tokens Switch records for it per
+  model (`GET /gateway/tenants/{tenant_id}/usage`), at the list prices in
+  `src/agentic/spend.ts`. A model with no price there stops the run rather
+  than counting as free.
+
+The run stops before any call that would start beyond
+`SWITCH_E2E_AGENTIC_BUDGET_USD`, and its last test fails if the total went
+over. CI pins the models and a $2 limit in `e2e.yml`.
+
+What a run costs, measured over four runs of the three scenarios here with
+Sonnet 5 in every role: $0.21 to $0.33 a run, about $0.08 a scenario. The
+agent's session is nearly nine tenths of it ($0.045 to $0.21 a scenario,
+most where it calls tools); the driver and judge together are about $0.01 a
+scenario.
+
+## Server health and errors
+
+A scenario can pass every assertion while the server logs an error and carries
+on: an event loop that catches one bad event, say. Two checks catch that.
+
+- **Readiness.** `GET /health/ready` must answer 200 before a lane runs. Not
+  ready means the lane cannot run: it skips, or fails under
+  `SWITCH_E2E_STRICT=1`. Each lane's last test asks again, so a run that
+  leaves the server unready fails.
+- **No errors logged.** With `SWITCH_E2E_SERVER_LOG` set, the harness reads the
+  server's JSON log as the lane runs. Each read starts where the previous one
+  stopped, and a line the server is still writing waits for the next read.
+  - A scenario fails if anything in the lines written while it ran is at error
+    level or above.
+  - Whatever is logged outside the scenarios also counts: during setup,
+    between scenarios (late background work, say), and in the 1.5 s after the
+    last one. It fails the lane's last test, "the server logged no errors
+    outside the scenarios". The provider lane reads once more after its
+    teardown, and fails the run if that teardown made the server log an error.
+  - Output that bypassed logging counts when it reads as a failure: a
+    traceback, an exception a thread died of, a fatal interpreter error, or a
+    task destroyed while pending. Anything else that is not a JSON record (a
+    dependency's warning, a stray print) does not.
+  - Each harness request carries `X-Request-Id: e2e-<run><scope>-<n>`, which
+    the server stamps on every line it logs while serving the request. Each
+    error is reported as coming from this scenario's request, another request,
+    or background work. That holds wherever the error lands, so a late one
+    still names the scenario that caused it.
+
+  The stack script starts switch-core with `LOG_FORMAT=json` and sets the
+  variable. Against a deployed environment the log is in its log backend, so
+  the check is off, and the run's header says so.
+
+## Coverage gate
+
+The coverage gate catches functionality that ships without an end-to-end
+scenario. Every agent operation and every gateway route the server has must be
+covered by a scenario header (`covers`) or listed in `surface/exemptions.json`.
+The gate is an ordinary unit test (`src/gate/coverage.test.ts`), so it runs
+on every PR with no server.
+
+- **Where the surface comes from.** The gate reads a committed snapshot of the
+  server: `surface/server-surface.json`, written by `just e2e-surface`
+  (`scripts/e2e_surface.py`). It lists:
+  - every declared agent operation, gated groups included. One definition
+    serves both MCP and the HTTP front door, so this is the agent surface
+    whichever door an agent uses;
+  - every gateway route, with every feature flag on. Each one records what it
+    authenticates with (`session`, `operator-token` for the hosted controller's
+    machine routes, or `none`) and which feature flags it is mounted behind.
+
+  Every setting the script builds the app with is pinned in the script, so a
+  developer's `.env` cannot change the snapshot. Agent management's routes are
+  mounted through the same function `Management.install` uses.
+
+  The backend CI job runs the script with `--check`, so a route added without
+  regenerating fails there. Once the snapshot is regenerated, the gate fails
+  until the new route is accounted for.
+- **What counts as covered.** An entry in some scenario's `covers`. Every
+  operation name and route is checked against the snapshot, so a renamed route
+  or a typo fails as a stale claim. The one exception is agent-bridge routes
+  (`/agents/…`), which are not snapshotted yet and are taken on trust.
+- **`exemptions.json`** has three lists:
+  - `exempt`: deliberately not covered end to end, each with its reason (it
+    needs a real third-party sign-in, say).
+  - `unauthenticated`: every route that takes no credential, each with the
+    reason that is right. A route that loses its session check shows up as
+    `none` and fails until someone says why that is fine.
+  - `backlog`: what no scenario covered when the gate landed. It only shrinks.
+    When a scenario starts covering an entry, the gate fails until the entry is
+    removed. Never add to it: a new route needs a scenario or an `exempt` entry
+    with its reason.
+- **Checks derived from the snapshot.** They count nothing towards coverage,
+  but they apply to every new route automatically. Routes left out of the
+  OpenAPI document are probed like any other, and routes behind a feature flag
+  the deployment has off are skipped: the snapshot names each route's flags,
+  and `GET /gateway/feature-flags` says which are on.
+  - Every `session` route answers 401 to a request carrying no credential,
+    and answers as the API, not with an HTML page. Where the gateway's single
+    page app and the API share a host, the app's page comes back for any
+    path nothing else routes, so a route that went missing would otherwise
+    pass as "a page".
+  - A plain member of one workspace is refused another workspace's rooms and
+    agents. The lane makes a second workspace with a room and an agent, then
+    calls every `session` route whose path parameters it can fill
+    (`tenant_id`, `room_id`, `agent_id`, `agent_name`) with that workspace's
+    values. 403 or 404 passes; 2xx, 3xx, 5xx or an HTML page fails. Other 4xx
+    answers (mostly a body the probe did not send) are listed as
+    inconclusive. Reads go first, then writes, then deletes, so a write or
+    delete that leaked cannot turn the probes after it into 404s. The prober
+    is not the harness admin: a deployment admin may cross workspaces by
+    design. The room and the agent are removed afterwards, but workspaces
+    and users cannot be deleted, so this runs only on `ephemeral`.
+
+## In CI
+
+`.github/workflows/e2e.yml` defines a run: one lane on a throwaway stack built
+from the checkout. Other workflows call it, and it can also be dispatched by
+hand.
+
+| When | Lane | Environment | Required check |
+| --- | --- | --- | --- |
+| Every PR, and every push to main (`pr-ci.yml`) | fast | ephemeral | yes |
+| After a merge to main (`e2e-scheduled.yml`) | provider | ephemeral | no |
+| Nightly (`e2e-scheduled.yml`) | provider | ephemeral | no |
+| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic | ephemeral | no |
+| By hand (`e2e.yml`, dispatch) | any | ephemeral | no |
+
+- **Secrets.** An ephemeral fast run generates every secret it uses on the
+  runner, so it works the same on a fork PR. Every other run reads its secrets
+  from the GitHub Environment `e2e-provider`, which holds `ANTHROPIC_API_KEY`
+  and whose protection rules decide which refs may use it: `main`, and the
+  release tags (`switch-v*`).
+- **Artifacts.** The output directory is uploaded only after it passes two
+  scans. The first (`scan-artifacts.sh`) looks for the exact secret values the
+  run used: the ones it was configured with, plus every credential the server
+  issued the harness during the run (agent API keys, gateway sessions). The
+  harness records the issued ones in `SWITCH_E2E_SECRETS_FILE`. The second is
+  gitleaks. A file the first scan cannot read fails it. On an ephemeral stack, the env file, the controller's state and
+  the agent's directory live outside the output directory, so the output holds
+  only logs and the JUnit report.
+- **Reporting.** Each run writes a scenario table to the job summary. Reports
+  go to the webhook in the repository secret `E2E_NOTIFY_WEBHOOK_URL`:
+  - one summary each night;
+  - a report when the provider lane fails after a merge;
+  - a report for every release tag, pass or fail.
+
+## Against a deployed environment
+
+Runs against the shared deployments are driven from the deployment
+configuration, not from this repository's CI: it knows which commit each
+environment runs, checks this harness out at that commit, and holds the
+environment's addresses and credentials. To run a lane there:
+
+```bash
+SWITCH_E2E_LANE=fast SWITCH_E2E_ENVIRONMENT=dev SWITCH_E2E_STRICT=1 \
+SWITCH_API_URL=… SWITCH_GATEWAY_ADMIN_EMAIL=… SWITCH_GATEWAY_ADMIN_PASSWORD=… \
+SWITCH_AGENT_REGISTRATION_TOKEN=… SWITCH_E2E_SECRETS_FILE=… pnpm test
+```
+
+- Give either the three `MATTERMOST_*` variables or `SWITCH_E2E_NO_MATTERMOST=1`.
+- The browser lane also needs `SWITCH_GATEWAY_UI_URL`.
+- Run one lane at a time per environment and never cancel a run: a cancelled
+  run leaves its agents and rooms behind. After each run,
+  `pnpm cleanup --older-than 180` removes what interrupted runs left.
+- Scan the output for the run's secrets before keeping it: the configured
+  ones, and every credential listed in `SWITCH_E2E_SECRETS_FILE`
+  (`scripts/scan-artifacts.sh` takes them on stdin).
+
+## With a Switch Console session
+
+The provider lane can also run against a **Switch Console session for the agent
+it just registered**. Setup polls the agent's status in the room and refuses to run the
 scenarios until Switch reports it `live` (a session is attending the room) or
 `dormant` (an auto-session watcher is running and will spawn one on demand) —
 otherwise you get four identical timeouts instead of one clear message.
@@ -114,19 +561,19 @@ database, and it reads that database at launch. So the agent has to exist before
 the console starts, and the console has to be up before the first scenario
 posts — three steps, in three processes.
 
-`src/seed.ts` is the first of them. It does exactly what `beforeAll` does —
+`src/provider/seed.ts` is the first of them. It does exactly what `beforeAll` does —
 register the agent, create the room and channel, write the credentials — and
 records the result in `SWITCH_E2E_MANIFEST`, above all the agent's API key,
 which registration returns exactly once:
 
 ```bash
-SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
-  node --experimental-strip-types src/seed.ts
+SWITCH_E2E_LANE=provider SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
+  node --experimental-strip-types src/provider/seed.ts
 # add the agent to the console's database, pointed at that working directory,
 # with provider_config {"version":"2","providerId":"opencode","values":{}};
 # start Switch Console
-SWITCH_E2E=1 SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
-  ../node_modules/.bin/vitest run src/run.integration.test.ts
+SWITCH_E2E_LANE=provider SWITCH_E2E_MANIFEST=/tmp/e2e.json SWITCH_E2E_AGENT_DIR=/tmp/e2e-work \
+  pnpm test src/provider
 ```
 
 For Claude Code, add `SWITCH_E2E_AGENT_TYPE=claude-code` to both commands and
@@ -142,14 +589,17 @@ round trip without claiming to test a native question card.
 
 Setup finds the manifest, reuses what is in it rather than registering a second
 agent, and deletes it during teardown — so a manifest never outlives its room.
+A manifest missing a field this version records (one written by an older
+harness, say) fails setup with instructions to clean up and seed again, rather
+than being half-used.
 
-## The scenarios
+## The provider scenarios
 
 | Scenario | What it drives | Passes when |
 | --- | --- | --- |
 | `greet` | An addressed message reaches a session and its answer comes back. | The bot posts `SWITCH_E2E_OK`. |
 | `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after the answer. |
-| `approval` | A tool call the session is not pre-authorised to make. | The bot surfaces an approval prompt, `@agent 1` allows it, the bot replies `done`. |
+| `approval` | A tool call the session is not pre-authorised to make. | The bot posts an approval card, answering it with `<handle> 1` allows the call, the bot replies `done`. |
 | `interrupt` | `!interrupt @agent-name` cancels a running local shell command after its start marker is verified. | No completion marker appears after the command’s 90-second lifetime (observed for 95 seconds). Requires `SWITCH_E2E_AGENT_DIR` on this machine. |
 
 `question` is the one a one-shot reply cannot fake: it only passes if the session
@@ -157,9 +607,10 @@ is still alive and still connected when the second message arrives.
 
 It has two modes, because the relay it exercises needs a native ask-the-user
 tool and not every provider offers one. In `numbered` mode the agent must use
-that tool, the console relays it into the room as a numbered list, and the
-answer goes back as `@agent 2` — the numbering is what proves the relay path was
-taken. In `prose` mode the agent asks in an ordinary message and is answered
+that tool, and Switch relays it into the room as a request card numbering the
+options (`… request \`A1\` … 2. green …`). The answer goes back as `A1 2`, a
+plain message naming the card's handle, and the card is what proves the relay
+path was taken. In `prose` mode the agent asks in an ordinary message and is answered
 with `@agent green`; the two-turn round trip is still proved, the relay is not.
 Every agent type defaults to `numbered` — both providers offer the tool — and
 `prose` is an explicit override for a provider or CLI version that does not.
@@ -198,6 +649,10 @@ POST   /gateway/rooms                     {name, description, bridge_id, agent_n
                                              Mattermost channel and adds the bot
 DELETE /gateway/rooms/{id}
 DELETE /gateway/agents/by-name/{name}      (admin teardown, no agent key needed)
+POST   /gateway/management/agents          {"name","description","controller_id","desired_state":"running","definition"}
+       -> {"agent_id":"…","name":"…",…}; 409 {"error":{"code":"controller_offline"|"provider_not_installed"|"provider_login_missing",…}} until the controller is ready
+PUT    /gateway/agents/{id}/addressing-policy  {"policy": null} -> anyone may address it
+POST   /gateway/rooms with internal_only: true and no bridge_id -> a room with no channel
 ```
 
 ### Switch agent bridge
@@ -218,6 +673,10 @@ GET  /agents/{id}/rooms/{room}/history?limit=     -> {"events":[{sender,sender_n
 POST /agents/{id}/message                         {"room_id":"…","content":"…"}
      -> {"ok":true,"event_id":"$…"}
 POST /agents/{id}/watch/heartbeat                 the auto_session "I am watching" beat
+GET  /agents/{id}/ops                             -> {"operations": {<name>: {…}, …}}  the registry, keyed by name
+POST /agents/{id}/ops/{operation}                 body = the operation's arguments
+     -> {"result": …}. Operations that act on "the room you are connected to"
+        need a live connection; those taking the room as an argument do not.
 DELETE /agents/{id}                               agent's own key only, not the registration token
 ```
 
@@ -255,8 +714,8 @@ GET    /api/v4/channels/{id}/posts?since=<ms>   -> {order:[…newest first…], 
   `!interrupt` addresses nobody and the admin bot says so. `!interrupt-all-agents`
   is the room-wide form. The same shape applies to `!reset` and `!compact`.
 - Agent names must be valid Mattermost usernames — lowercase, 3–22 characters,
-  `[a-z0-9._-]` — because they become bot usernames. `e2e-opencode-` plus a
-  6-character run id fits.
+  `[a-z0-9._-]` — because they become bot usernames. The naming helper
+  (`src/core/run.ts`) enforces it.
 
 ## Two traps this harness works around
 
@@ -283,7 +742,7 @@ turn.
 Switch posts its "I'm not online in this room" onboarding notice **as the agent's
 own bot account**, not as the Switch Admin bot. Any scenario that accepts "some
 post from the bot" therefore passes with no session running at all. Those phrases
-are listed in `NO_SESSION_MARKERS` (`src/scenarios.ts`), never count as a match,
+are listed in `NO_SESSION_MARKERS` (`src/provider/scenarios.ts`), never count as a match,
 and are reported as "no live Switch Console session" rather than as a timeout.
 Keep that list in step with the wording in
 `core/switch_core/gateway/known_agents.py` and

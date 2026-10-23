@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-from switch_core.addressing import AddressingPolicy
+from switch_core.addressing import AddressingKind, AddressingPolicy
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -328,7 +328,7 @@ class AgentSessionDetail(BaseModel):
 
     `lifecycle` is `heartbeat` or `explicit` for an `agent_sessions` row,
     `connection` for an agent's own live connection, and `controller` for a
-    controller-backed agent's session, which its agents controller (a machine)
+    controller-backed agent's session, which its agent controller (a machine)
     runs; `controller_id` names that controller, and is null otherwise.
     """
 
@@ -352,6 +352,39 @@ class AgentDetail(AgentSummary):
     rooms: list[AgentRoomMembership]
     sessions: list[AgentSessionDetail]
     children: list[AgentSummary]
+
+
+class NamedEntry(BaseModel):
+    """An id a policy names, with the name a person would know it by.
+
+    `name` is null when the id no longer resolves to anything (a deleted
+    room, an agent or a chat account that is gone)."""
+
+    id: str
+    name: str | None
+
+
+class AddressingRuleView(BaseModel):
+    """One addressing rule with its ids resolved to names. Each dimension is
+    "*" (any) or the entries it lists; an empty list matches nobody."""
+
+    rooms: Literal["*"] | list[NamedEntry]
+    room_groups: Literal["*"] | list[NamedEntry]
+    users: Literal["*"] | list[NamedEntry]
+    agents: Literal["*"] | list[NamedEntry]
+    owner: bool
+    owner_agents: bool
+    platform: bool
+
+
+class AgentAddressing(BaseModel):
+    """Who may address an agent, as an agent reads it about itself.
+
+    `rules` is null when the reader is not the agent itself: another agent
+    sees which kind of policy it is, not who it names."""
+
+    policy: AddressingKind
+    rules: list[AddressingRuleView] | None
 
 
 class UpdateAddressingPolicyRequest(BaseModel):

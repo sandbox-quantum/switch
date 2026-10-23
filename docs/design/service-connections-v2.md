@@ -40,7 +40,8 @@ auth:
     # authorization_params: { access_type: offline }   # also sent with every
     #   authorization; only keys Core does not set itself (access_type,
     #   include_granted_scopes)
-    revocation_discovered: true   # or revocation_url: https://…
+    revocation_discovered: true   # or revocation_url: https://…; with neither,
+                                  # remove_access: where people remove Switch
   identity:                   # GET with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
     account_id: account_id
@@ -222,7 +223,7 @@ reads `.zip` too on Windows) and installs it under
 `~/.local/state/switch/tools/<binary>/<sha256>/`, once per machine. Upgrading a
 tool is a catalog change; a machine without a build is told so when the tool
 is called. What each install found (installed, failed, no build here) is kept
-in that folder's `status.json`, and the agents controller reports it with `git`
+in that folder's `status.json`, and the agent controller reports it with `git`
 and `gh` in its status (`ok`, `missing` or `unsupported`).
 
 Pinning the build in the catalog means Core names a binary that session hosts
@@ -437,7 +438,9 @@ settings:
   Atlassian matches the loopback port exactly, hence the five fixed ports.
 - Consenting to Jira's scopes alone fails after Accept unless the request also
   carries the identity scopes, `offline_access` and `prompt=consent`. Atlassian
-  enforces the result: a read-only sign-in hides the write tools.
+  reflects the result: a read-only sign-in still lists `executeWrite` and
+  `executeDestructive`, but `discover` returns no write operations and
+  `getAccessibleAtlassianResources` reports each product as read-only.
 - Access tokens live 8 hours; refresh tokens rotate.
 - The default server lists a few tools, `discover`, and `executeRead`,
   `executeWrite` and `executeDestructive`; those pass through unchanged.
@@ -454,6 +457,65 @@ settings:
 To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
+## Airtable
+
+Built from sign-in runs against free Airtable accounts; the operator's setup
+is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
+
+- Each server's operator registers an Airtable OAuth integration and saves it
+  under Connector apps, or names it in `AIRTABLE_CLIENT_CONFIG_PATH`. The
+  browser comes back to Core's own callback, as Google's does, so the server
+  needs `GATEWAY_PUBLIC_URL` and nothing listens on people's computers; a
+  loopback redirect would work on any server, but the operator chose the
+  https callback. The Connector apps entry lists the callback and the scopes
+  the integration must tick, and is checked with a made-up code and verifier
+  sent to the callback: Airtable
+  answers `invalid_grant` for the right client ID and secret, `invalid_client`
+  otherwise, and compares the redirect only with a real code, so the first
+  connection confirms it. Airtable offers dynamic registration, but
+  files the registered client under the Builder Hub of the first person to
+  authorize it. There it stays limited to development, so Airtable refuses
+  everyone else ("cannot be used outside of development"), and deleting it
+  leaves Core with a client Airtable refuses on its own consent page, where
+  Core never sees the error. An integration the operator owns and publishes
+  (support email, privacy policy, terms of service) avoids both.
+- The endpoints are discovered from the MCP server, whose 401 names its
+  metadata, which lists `client_secret_basic` and `none` as the token
+  endpoint's methods. An integration with a secret must send it as HTTP
+  Basic: in the body Airtable refuses it, even when right (`invalid_client`).
+  The adapter sends a secret as Basic wherever the metadata lists Basic and
+  not `client_secret_post`, and in the body everywhere else, Google included.
+  Airtable asks for the PKCE verifier before it looks at the client.
+- Airtable's consent screen chooses bases, interfaces and workspaces, not
+  scopes: a person cannot leave the write scopes out, at sign-in or later. So
+  every connection is granted the write level, and what an agent reaches is
+  narrowed on Airtable's side, by the bases shared and the person's base role.
+- Not asked for: `schema.bases:write`. Without it Airtable refuses creating or
+  changing tables and fields, though its server lists those tools anyway.
+  `data.records:write` includes deleting records.
+- Access tokens live 60 minutes, and no `offline_access` is needed for a
+  refresh token. Each refresh returns a new refresh token and ends the
+  previous access token at once, so a host still holding it is refused once
+  and asks again. whoami (`api.airtable.com/v0/meta/whoami`) accepts the MCP
+  server's token; it returns no email without a scope the server does not
+  offer, so a connection is named by its account id.
+- Airtable has no revocation endpoint. Each sign-in is its own grant there,
+  and the integration reaches every base any of a person's grants shared, so
+  a sign-in Switch drops (a disconnect, a reconnect, one a switched-off
+  workspace refuses) still works and widens the next. Its entry's
+  `remove_access`, which an OAuth entry without revocation must have, tells
+  the person to revoke it under Integrations, Third-party integrations.
+- `list_secrets` is account-wide and returns each automation secret's id, name
+  and creation time, never its value.
+- On Enterprise plans an admin may allowlist third-party clients by client id:
+  the operator's integration has one, the same for everyone on the server. Not
+  tried: no Enterprise account was at hand.
+
+To connect: Settings, Connections in Switch Console, then Airtable. To roll
+back, add `airtable` to `DISABLED_SERVICES`, remove its client under
+Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
 
 ## Google Workspace
 

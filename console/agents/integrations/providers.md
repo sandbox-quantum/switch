@@ -30,9 +30,9 @@ reported explicitly rather than replaced with synthetic prompts.
 ## Changing providers
 
 The plugin and runtime registrations must name the same providers; Console and
-the agents controller refuse to start otherwise. The shared environment
+the agent controller refuse to start otherwise. The shared environment
 allowlist is `packages/agent-providers/src/host/agent-env.ts`, plus each
-runtime's `inheritEnv`, used by Console and the headless agents controller.
+runtime's `inheritEnv`, used by Console and the headless agent controller.
 Keep MCP helpers shared when retained providers import them. Model catalogues
 come from the provider on the execution host. Test both local and SSH setup;
 credentials and native configuration belong to that host.

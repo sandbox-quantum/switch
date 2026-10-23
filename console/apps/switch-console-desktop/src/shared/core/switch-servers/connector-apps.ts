@@ -2,7 +2,8 @@ import { z } from 'zod';
 
 /**
  * The apps the server's operator sets up for connectors to sign in through:
- * GitHub's App and the OAuth clients registered at a vendor (Google's). One
+ * GitHub's App and the OAuth clients registered at a vendor (Google's,
+ * Airtable's). One
  * app serves every workspace on the server, so every route behind these is
  * the operator's alone. No answer carries a secret: a client secret shows its
  * last four characters, a private key its fingerprint.
@@ -43,6 +44,16 @@ export const connectorAppSchema = z.object({
   load_error: z.string().nullable(),
   /** Where the vendor sends people back to Switch; null without a public URL it accepts. */
   redirect_uri: z.string().nullable(),
+  /**
+   * Every address to register at the vendor: Core's own callback, or one per
+   * port of Switch Console's listener. A server older than this sends only
+   * `redirect_uri`; read both through `redirectUris`.
+   */
+  redirect_uris: z.array(z.string()).optional(),
+  /** Whether the vendor sends people back to the server, so it needs a public URL. */
+  needs_public_url: z.boolean().default(true),
+  /** The scopes a sign-in asks for, where the vendor's app must list them. */
+  scopes: z.array(z.string()).default([]),
   /** Why it can't be set up here, before any vendor is asked. */
   setup_blocked: z.string().nullable(),
   install_url: z.string().nullable(),
@@ -54,6 +65,11 @@ export const connectorAppSchema = z.object({
   stale_connections: z.number().int(),
 });
 export type ConnectorApp = z.infer<typeof connectorAppSchema>;
+
+export function redirectUris(app: Pick<ConnectorApp, 'redirect_uri' | 'redirect_uris'>): string[] {
+  if (app.redirect_uris !== undefined) return app.redirect_uris;
+  return app.redirect_uri === null ? [] : [app.redirect_uri];
+}
 
 /** `GET /connector-apps`. A service whose client Core registers itself is not the operator's to set up. */
 export const connectorAppsSchema = z.object({
@@ -67,6 +83,8 @@ export const connectorAppCheckSchema = z.object({
   ok: z.boolean(),
   message: z.string(),
   field: connectorAppFieldSchema.nullable(),
+  /** What the check could not see, for the operator to confirm themselves. */
+  note: z.string().nullable().default(null),
 });
 export type ConnectorAppCheck = z.infer<typeof connectorAppCheckSchema>;
 
@@ -76,6 +94,11 @@ export const connectorAppCheckResultSchema = z.object({
   checks: z.array(connectorAppCheckSchema),
 });
 export type ConnectorAppCheckResult = z.infer<typeof connectorAppCheckResultSchema>;
+
+/** `PUT /connector-apps/{service}`: the saved app, and what its check said. */
+export const savedConnectorAppSchema = connectorAppSchema.extend({
+  checks: z.array(connectorAppCheckSchema).default([]),
+});
 
 /** Who is connected through an app, or would have to reconnect if another replaced it. */
 export const connectorAppImpactSchema = z.object({
@@ -106,7 +129,12 @@ export type SaveConnectorAppInput = {
  * other failure is thrown.
  */
 export type SaveConnectorAppResult =
-  | { kind: 'saved'; app: ConnectorApp }
+  | {
+      kind: 'saved';
+      app: ConnectorApp;
+      /** What the vendor said when Switch checked the app it saved; none from an older server. */
+      checks: ConnectorAppCheck[];
+    }
   | {
       kind: 'refused';
       message: string;

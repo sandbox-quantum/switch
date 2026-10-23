@@ -202,6 +202,54 @@ async def test_a_public_client_ignores_the_secret_it_was_given_anyway(
     assert renewed.access_token in vendor.live_access
 
 
+@pytest.mark.parametrize(
+    ("registered", "listed", "in_body"),
+    [
+        ("client_secret_basic", ["client_secret_post", "client_secret_basic"], False),
+        ("client_secret_post", ["client_secret_basic"], True),
+    ],
+)
+async def test_a_client_registered_with_a_secret_sends_it_as_registered(
+    session_factory,
+    vendor,
+    registered: str,
+    listed: list[str],
+    in_body: bool,
+) -> None:
+    vendor.register_as = registered
+    vendor.metadata["token_endpoint_auth_methods_supported"] = listed
+    adapter = _adapter(_client(session_factory, vendor), vendor)
+    signed_in = await _sign_in(adapter, vendor, REDIRECT)
+    renewed = await adapter.refresh(signed_in.secret)
+    assert renewed.access_token in vendor.live_access
+    assert [("client_secret" in form) for form in vendor.token_requests] == [
+        in_body,
+        in_body,
+    ]
+
+
+async def test_a_registration_naming_no_method_means_basic(
+    session_factory, vendor
+) -> None:
+    vendor.register_as = "client_secret_basic"
+    vendor.answer_names_method = False
+    adapter = _adapter(_client(session_factory, vendor), vendor)
+    signed_in = await _sign_in(adapter, vendor, REDIRECT)
+    assert signed_in.secret.access_token in vendor.live_access
+    [exchange] = vendor.token_requests
+    assert "client_secret" not in exchange
+
+
+async def test_a_client_registered_for_another_method_is_refused(
+    session_factory, vendor
+) -> None:
+    vendor.register_as = "private_key_jwt"
+    adapter = _adapter(_client(session_factory, vendor), vendor)
+    with pytest.raises(ServiceAdapterError, match="private_key_jwt"):
+        await adapter.client_id()
+    assert await _rows(session_factory) == []
+
+
 async def test_the_runtime_role_registers_outside_any_tenant(
     rls_harness: RLSHarness, vendor
 ) -> None:

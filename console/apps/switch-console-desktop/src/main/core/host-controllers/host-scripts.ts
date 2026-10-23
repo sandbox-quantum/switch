@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * The scripts Console runs with `node -e` on an SSH host to install, run and
- * remove the headless agents controller there. They are plain CommonJS for
+ * remove the headless agent controller there. They are plain CommonJS for
  * whatever Node the host has: the check that it is new enough is one of them.
  *
  * Paths starting `~/` are the host's home. Every script takes one argument,

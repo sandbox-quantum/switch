@@ -1,0 +1,176 @@
+name: E2E
+
+# The one definition of an end-to-end run: a lane of console/tooling-e2e on a
+# throwaway stack built from this checkout. Called by pr-ci.yml (the fast lane,
+# on every PR) and by e2e-scheduled.yml (the provider lane after each merge and
+# nightly), and dispatchable by hand.
+#
+#   lane         fast      provider-free scenarios over plain HTTP
+#                provider  real agent sessions on a headless agent controller
+#                agentic   the provider lane's setup, driven by scenario files: a
+#                          model plays the human, another judges the result
+#                browser   the gateway UI in headless Chromium, built from this
+#                          checkout
+#
+# Runs against the deployed environments are not here: they live with the
+# deployment configuration, which checks out this harness at the commit the
+# environment runs and drives it with SWITCH_E2E_ENVIRONMENT set.
+#
+# Fork safety: an ephemeral fast run generates every secret it uses on the
+# runner and reads no repository or environment secret, so it runs the same
+# from a fork PR's read-only token. Everything that needs a secret enters a
+# GitHub Environment, whose protection rules decide which refs may run it:
+#
+#   e2e-provider  secret ANTHROPIC_API_KEY, for the controller's Claude Code
+#                 (and the agentic lane's driver and judge); open to main and
+#                 to the release tags, switch-v*
+#
+# Runs are strict (SWITCH_E2E_STRICT=1): a scenario that cannot run fails
+# rather than skips.
+#
+# Artifacts are uploaded only after the output has been scanned for the run's
+# own secret values and by gitleaks. A scan that fails or does not run means
+# nothing is uploaded.
+
+on:
+  workflow_call:
+    inputs:
+      lane:
+        type: string
+        required: true
+      agent_type:
+        description: Provider for the provider lane
+        type: string
+        required: true
+    outputs:
+      summary:
+        description: One line counting the lane's scenarios by outcome
+        value: ${{ jobs.run.outputs.summary }}
+  workflow_dispatch:
+    inputs:
+      lane:
+        type: choice
+        options: [fast, provider, browser, agentic]
+        default: fast
+      agent_type:
+        description: Provider for the provider lane
+        type: choice
+        options: [claude-code]
+        default: claude-code
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.lane }} lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
+    outputs:
+      summary: ${{ steps.summary.outputs.line }}
+    defaults:
+      run:
+        # Named explicitly for -o pipefail, which the implicit default lacks:
+        # without it a failed suite piped through tee would pass.
+        shell: bash
+    env:
+      OUT: ${{ github.workspace }}/build/e2e/out
+      LANE: ${{ inputs.lane }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check the inputs
+        env:
+          AGENT_TYPE: ${{ inputs.agent_type }}
+        run: |
+          case "$LANE" in fast|provider|browser|agentic) ;; *) echo "::error::Unknown lane '$LANE'."; exit 1 ;; esac
+          case "$LANE" in provider|agentic) REAL_SESSION=1 ;; *) REAL_SESSION=0 ;; esac
+          if [ "$REAL_SESSION" = 1 ] && [ "$AGENT_TYPE" != claude-code ]; then
+            echo "::error::CI has credentials for claude-code only, not '$AGENT_TYPE'."; exit 1
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.5.3
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: console
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        if: ${{ inputs.lane == 'browser' }}
+        working-directory: console/tooling-e2e
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Install Claude Code
+        if: ${{ inputs.lane == 'provider' || inputs.lane == 'agentic' }}
+        run: npm install -g @anthropic-ai/claude-code@2.1.302
+
+      # Into the controller's environment through --env-file; never into $OUT.
+      - name: Write the provider key file
+        if: ${{ inputs.lane == 'provider' || inputs.lane == 'agentic' }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::The e2e-provider environment has no ANTHROPIC_API_KEY secret."; exit 1
+          fi
+          umask 077
+          printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY" >"$RUNNER_TEMP/provider.env"
+          echo "SWITCH_E2E_PROVIDER_ENV_FILE=$RUNNER_TEMP/provider.env" >>"$GITHUB_ENV"
+
+      - name: Run the lane on a throwaway stack
+        env:
+          SWITCH_E2E_LANE: ${{ inputs.lane }}
+          SWITCH_E2E_AGENT_TYPE: ${{ inputs.agent_type }}
+          E2E_OUT: ${{ env.OUT }}
+          # The agentic lane's models, by exact id, and what one run may spend
+          # (driver, judge and agent together). Pinned here, so changing them
+          # is a reviewed change; a model the key cannot use fails the run.
+          SWITCH_E2E_DRIVER_MODEL: claude-sonnet-5
+          SWITCH_E2E_JUDGE_MODEL: claude-sonnet-5
+          SWITCH_E2E_AGENTIC_BUDGET_USD: '2'
+        run: console/tooling-e2e/scripts/ephemeral-stack.sh
+
+      - name: Summarise the run
+        id: summary
+        if: ${{ always() }}
+        run: |
+          node --experimental-strip-types console/tooling-e2e/src/ci-summary.ts \
+            "$OUT/junit.xml" "$LANE" "$LANE lane" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Scan the output for secrets
+        id: scan
+        if: ${{ always() }}
+        run: |
+          [ -d "$OUT" ] || { echo "No output to scan."; exit 1; }
+          # The stack script scans for the secrets it generated, the provider
+          # key file and every credential the server issued the harness, and
+          # leaves this file only when none turned up.
+          [ -e "$OUT/.secret-scan-passed" ] || { echo "::error::The stack's own secret scan did not pass."; exit 1; }
+          docker run --rm -v "$OUT:/out:ro" zricethezav/gitleaks:v8.30.1 dir /out --redact --no-banner
+
+      - name: Upload the output
+        if: ${{ always() && steps.scan.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-${{ inputs.lane }}
+          path: ${{ env.OUT }}
+          include-hidden-files: true
+          retention-days: 14

@@ -504,7 +504,7 @@ AGENT_CONNECTIONS_OPENED = _spec(
 # `transport` is `websocket`, `sse` (an old client on the event stream, kept
 # for a compatibility window that ends when this stays at zero), `detached`
 # (the stream dropped, and the connection waits out its heartbeat window), or
-# `controller` (run by an agents controller, on that controller's connection).
+# `controller` (run by an agent controller, on that controller's connection).
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
     "gauge",

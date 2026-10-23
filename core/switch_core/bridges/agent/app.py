@@ -51,6 +51,45 @@ from switch_core.trust.client import TrustClient
 logger = logging.getLogger(__name__)
 
 
+def http_error_level(status_code: int) -> int:
+    """How loudly to log a refused request.
+
+    A 4xx is the caller's mistake (an argument the tool does not take, a room
+    it is not in): the server worked, so it is a warning. A 5xx is the
+    server's own failure and an error.
+    """
+    return logging.ERROR if status_code >= 500 else logging.WARNING
+
+
+async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
+    if exc.status_code >= 400:
+        logger.log(
+            http_error_level(exc.status_code),
+            "%s %s → %d: %s",
+            request.method,
+            request.url.path,
+            exc.status_code,
+            exc.detail,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+
+async def log_validation_errors(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    logger.warning(
+        "%s %s → 422 validation: errors=%s body=%r",
+        request.method,
+        request.url.path,
+        exc.errors(),
+        exc.body,
+    )
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 def create_agent_bridge_app(
     *,
     agent_store: AgentStore,
@@ -118,34 +157,8 @@ def create_agent_bridge_app(
 
     app = FastAPI(title="Switch Agent Bridge API")
 
-    @app.exception_handler(HTTPException)
-    async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONResponse:
-        if exc.status_code >= 400:
-            logger.error(
-                "%s %s → %d: %s",
-                request.method,
-                request.url.path,
-                exc.status_code,
-                exc.detail,
-            )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": exc.detail},
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def log_validation_errors(
-        request: Request, exc: RequestValidationError
-    ) -> JSONResponse:
-        logger.error(
-            "%s %s → 422 validation: errors=%s body=%r",
-            request.method,
-            request.url.path,
-            exc.errors(),
-            exc.body,
-        )
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
-
+    app.add_exception_handler(HTTPException, log_http_exceptions)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, log_validation_errors)  # type: ignore[arg-type]
     app.add_exception_handler(SessionError, session_error_response)
     app.include_router(activity_router, tags=["session activity"])
     app.include_router(api_router, prefix="/agents", tags=["api"])

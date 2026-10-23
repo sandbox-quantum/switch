@@ -29,11 +29,13 @@ mcp:
     - { name: atlassian, url: "https://mcp.atlassian.com/v2/mcp" }
 access:
   # The identity scopes are needed for consent; search:jira carries JQL search
-  # and search:confluence CQL search. Atlassian hides the write tools from a
-  # read-only sign-in. Not asked for: Rovo's cross-product search
-  # (search:rovo) and Teamwork Graph (read:all:twg), whose every call spends
-  # the organization's Rovo credits. Four Confluence write tools (infographics
-  # and apps on a page) spend them too, 15-30 credits a request.
+  # and search:confluence CQL search. A read-only sign-in still lists
+  # executeWrite and executeDestructive; Atlassian leaves write operations out
+  # of discover and reports the products read-only. Not asked for: Rovo's
+  # cross-product search (search:rovo) and Teamwork Graph (read:all:twg),
+  # whose every call spends the organization's Rovo credits. Four Confluence
+  # write tools (infographics and apps on a page) spend them too, 15-30
+  # credits a request.
   read:
     scopes:
       - read:me

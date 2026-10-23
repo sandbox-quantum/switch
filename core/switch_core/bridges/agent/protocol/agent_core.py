@@ -41,7 +41,9 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentProfileUpdate,
+    agent_facing_summary,
     assemble_agent_detail,
+    describe_addressing,
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -167,7 +169,7 @@ if TYPE_CHECKING:
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
-    from switch_core.gateway.schemas import AgentDetail
+    from switch_core.gateway.schemas import AgentAddressing, AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
     from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -2960,8 +2962,9 @@ class AgentCore:
         into that room's run (see `agent_runs`), and is refused if the run is
         paused or stopped or the agent is already creating a room.
 
-        `group_name`, when given, files the room under an existing room group;
-        it is resolved to a group id here (agents work in names, not ids)."""
+        `group_name`, when given, files the room under an existing room group.
+        It may be a path, a bare name or an id, and is resolved to a group id
+        here (see `_resolve_group_name`)."""
         from switch_core.room_service import (
             LinkedRoomSpec,
             RoleSpec,
@@ -3032,24 +3035,15 @@ class AgentCore:
     async def _resolve_group_name(
         self, session: AsyncSession, group_name: str | None
     ) -> str | None:
-        """Resolve a room-group name to its id. Returns None for no group.
+        """Resolve what an agent passed as a group (a path such as
+        "Fraud/Incidents", a bare name, or an id) to its id. Returns None for
+        no group.
 
-        Raises ValueError if the name is unknown or ambiguous (group names are
-        not unique across the tree)."""
+        Raises ValueError if it is unknown or ambiguous; an ambiguous bare name
+        lists each match by path (see `RoomGroupStore.resolve`)."""
         if group_name is None:
             return None
-        result = await session.execute(
-            select(RoomGroup).where(RoomGroup.name == group_name)
-        )
-        matches = result.scalars().all()
-        if not matches:
-            raise ValueError(f"No room group named '{group_name}'")
-        if len(matches) > 1:
-            raise ValueError(
-                f"Multiple room groups named '{group_name}'; ask the user which "
-                "one to use"
-            )
-        return matches[0].id
+        return await self.room_group_store.resolve(session, group_name)
 
     async def _group_labels(
         self, session: AsyncSession, group_id: str | None
@@ -3861,9 +3855,10 @@ class AgentCore:
         parent_group_name: str | None,
     ) -> dict[str, Any]:
         """Create a room group, optionally nested under an existing parent
-        (resolved by name). Returns the new group's detail dict.
+        (a path, bare name or id). Returns the new group's detail dict.
 
-        Raises ValueError if `parent_group_name` is unknown or ambiguous.
+        Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
+        the parent already has a group with this name.
         """
         async with self.session_factory() as session:
             parent_group_id = await self._resolve_group_name(session, parent_group_name)
@@ -3951,7 +3946,7 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [s.model_dump() for s in summaries]
+        return [agent_facing_summary(s) for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str
@@ -3974,6 +3969,23 @@ class AgentCore:
                 agent_session_store=self.agent_session_store,
                 room_role_store=self.room_role_store,
                 connections=self.connections,
+            )
+
+    async def get_agent_addressing(
+        self, agent_id: str, target_agent_id: str
+    ) -> AgentAddressing:
+        """Who may address `target_agent_id`, as `agent_id` may see it: the
+        rules with their names when an agent reads its own, the policy's kind
+        alone otherwise.
+
+        Raises ValueError if the target agent does not exist.
+        """
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, target_agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            return await describe_addressing(
+                session, agent=agent, with_rules=agent_id == target_agent_id
             )
 
     async def require_same_owner(self, agent_id: str, target_agent_id: str) -> None:

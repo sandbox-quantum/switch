@@ -57,9 +57,10 @@ export class LocalServerStore {
    *  defeat the batching it exists for. */
   /* internal */ pendingLines: string[] = [];
   /* internal */ flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /* internal */ dockerCheck: Promise<void> | null = null;
 
   constructor() {
-    makeAutoObservable(this, { pendingLines: false, flushTimer: false });
+    makeAutoObservable(this, { pendingLines: false, flushTimer: false, dockerCheck: false });
   }
 
   /** Headline and detail as one string, for the modals that have a single slot. */
@@ -182,7 +183,18 @@ export class LocalServerStore {
     this.flushLines();
   }
 
-  async checkDocker(): Promise<void> {
+  /**
+   * One Docker check at a time: the setup step asks on open, on a timer and on
+   * window focus, and a slow older answer must not overwrite a newer one.
+   */
+  checkDocker(): Promise<void> {
+    this.dockerCheck ??= this.detectDocker().finally(() => {
+      this.dockerCheck = null;
+    });
+    return this.dockerCheck;
+  }
+
+  private async detectDocker(): Promise<void> {
     try {
       const docker = await rpc.localSwitchServer.detectDocker();
       runInAction(() => {

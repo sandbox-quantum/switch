@@ -198,6 +198,9 @@ const CONNECTOR_APP = {
   unreadable: false,
   load_error: null,
   redirect_uri: 'https://switch.example.com/gateway/provider-connections/github/callback',
+  redirect_uris: ['https://switch.example.com/gateway/provider-connections/github/callback'],
+  needs_public_url: true,
+  scopes: [],
   setup_blocked: null,
   install_url: 'https://github.com/apps/switch-example/installations/new',
   updated_by_name: 'Ada',
@@ -1545,6 +1548,22 @@ describe('GitHub connection transport', () => {
     expect(await saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })).toEqual({
       kind: 'saved',
       app: CONNECTOR_APP,
+      checks: [],
+    });
+    const passed = {
+      name: 'client',
+      ok: true,
+      message: 'GitHub accepts this client secret.',
+      field: null,
+      note: 'Connect once to confirm.',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...CONNECTOR_APP, checks: [passed] }))
+    );
+    expect(await saveConnectorApp(SERVER, 'github', { client_id: 'Iv1', replace: false })).toEqual({
+      kind: 'saved',
+      app: CONNECTOR_APP,
+      checks: [passed],
     });
     const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/connector-apps/github');
@@ -1556,6 +1575,7 @@ describe('GitHub connection transport', () => {
       ok: false,
       message: 'GitHub refused the secret.',
       field: 'client_secret',
+      note: null,
     };
     fetchMock.mockResolvedValueOnce(
       new Response(

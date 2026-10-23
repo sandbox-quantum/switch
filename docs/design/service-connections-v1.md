@@ -621,7 +621,7 @@ vendor's HTTP side is faked.
 
 ## Rollout
 
-Deploy Core, then update Console and the agents controllers (cloud machines
+Deploy Core, then update Console and the agent controllers (cloud machines
 included), then drop `provider_connections` in the next release.
 
 ## Operating a self-hosted Core with GitHub

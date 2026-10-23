@@ -119,6 +119,8 @@ existing agent may stand in for it.
                value: {urls: [...]}}]
   docs: [{name, description, instructions, content}]
   aliases: {agent key or name: alias}   # @alias addresses it in this room
+  packages: [{id: package id} or {name: package name}]   # packages that
+                                 # exist, attached as they are
   kickoff: text                  # posted once the room exists
   group: <group key>             # when the template has a group
 
@@ -152,7 +154,8 @@ references by id:
 
 Without bridge the room goes on the server's default messaging app; users
 needs one (make them depend on it: [{if: "{bridge}", value: [...]},
-{value: []}]). Several rooms go in one group.
+{value: []}]). Several rooms go in one group. packages must be ones the
+deployer can attach by hand; a missing or ambiguous one stops the run.
 
 ## A group (type: group)
 

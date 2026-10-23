@@ -44,7 +44,96 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Templates carry packages.** A room in a template takes `packages:`, a list
+  of packages that already exist, by `id` or by `name`, attached when the room
+  is created. The person running the template must be able to attach each one
+  by hand; a package that is missing, ambiguous or not theirs stops the run
+  before the room exists. A template never creates or changes a package.
+  Capturing a room (`GET /rooms/{id}/yaml`) now lists its packages by `id`,
+  so a room built again from its capture gets them back (#910).
+- **An agent can read its own addressing policy.** `get_agent_detail` now
+  returns `addressing`: the kind of policy (`owner_only`,
+  `owner_and_owner_agents`, `anyone` or `custom`) and, when an agent looks
+  itself up, its rules with the people, agents and rooms they name. So an
+  agent can tell someone who may answer its questions and approvals instead
+  of guessing. Another agent sees only the kind.
+- **The Airtable connection.** A person connects Airtable from Switch Console,
+  choosing at Airtable's consent screen which bases and workspaces to share,
+  and a granted agent reads and updates records and comments in them, as that
+  person, through Airtable's MCP server. Each server's operator registers and
+  publishes an Airtable OAuth integration and saves it under Connector apps,
+  or names it in `AIRTABLE_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.airtableClientSecret`); see `docs/old/airtable-setup.md`.
+  Without it, Airtable is listed as not set up. Like Google Workspace, it
+  needs `GATEWAY_PUBLIC_URL`: Airtable sends people back to the server's own
+  callback. On a server without one, both are listed as unavailable
+  (`needs_public_url`), saying why, rather than failing when someone
+  connects.
+  Airtable offers no read-only sign-in, so every connection can write;
+  changing tables and fields is not asked for, and Airtable refuses it.
+  Airtable cannot revoke a sign-in, and an integration reaches the bases of
+  every grant a person gave it, so a sign-in Switch stops using still works
+  and widens their next connection. Disconnecting or reconnecting says so and
+  where in Airtable to remove it, as any OAuth service without revocation now
+  does rather than reporting a failed revoke.
+- **Connector apps set up Airtable.** An app's entry in `GET /connector-apps`
+  gains `redirect_uris` (every address to register), `needs_public_url` and
+  `scopes`. The dashboard's Connectors page walks Airtable's Builder Hub, with
+  its redirect URL to copy and the scopes to tick, and saves only once the
+  operator confirms the integration's support details are set: no check can
+  see whether it is published, so a passing one says so. Saving an app
+  answers with its checks too, so the page can show them. A passing Google
+  Workspace check now says it can't see the redirect URI either: Google
+  compares it only when someone signs in.
+
+#### Changed
+- **Following the conversation is described the same way everywhere, and the
+  chart can turn it on.** The feature added in 0.31.0 is off unless
+  `follow_the_conversation` is among the enabled feature flags
+  (`FEATURE_FLAGS_ENABLED`, or `switchCore.featureFlags.enabled` in the Helm
+  chart). The Switch skill and the agent runtime's instructions no longer tell
+  agents that a message without their name can never reach them: a person's
+  follow-up can, while other agents' chatter still does not. The chart lists
+  the flag and, while it is on, sets `FOLLOW_THE_CONVERSATION_WINDOW_SECONDS`
+  from `switchCore.followTheConversation.windowSeconds` (default 300).
+- **Agents name room groups by path.** `create_room` and `create_room_group`
+  take a group as a path such as `Fraud/Incidents` (the top-level group, then
+  each child), so two groups called `Incidents` under different parents no
+  longer break every agent request that names one. A bare name still works
+  when only one group has it; when several do, the error lists each match by
+  its path so the agent can retry with the right one, and an unknown path
+  names the first part that was not found. A group id is accepted too.
+- **Room group names are unique among siblings.** Creating, renaming or moving
+  a group next to one with the same name (ignoring case) is refused with an
+  error naming the existing group, from the dashboard, the API and agents
+  alike. The same name under different parents is still fine. Deleting a
+  group whose subgroup would move up next to a namesake is refused too, and
+  the dashboard now shows why. Names can no longer contain `/` or be blank.
+  Existing duplicates are left as they are and can be reached by id.
+
 #### Fixed
+- **Agents no longer read offline while their replica shuts down.** With several
+  replicas, a stopping replica released its lease before its 5 s drain, so for
+  up to about 6 s the other replicas counted its connected agents as gone: `@role`
+  mentions did not reach the holder, rooms got false "offline" notices, and stop
+  and reset commands were refused. It now drains first and closes its sockets
+  as it releases.
+- **A request card posted in a thread now mentions the person who can answer
+  it.** Approval and question cards go into the thread of the turn that raised
+  them, and on Slack they used to mention nobody there, so an owner who was not
+  in the thread was never told and the agent waited. A card in a thread now
+  mentions the person who asked when the agent's addressing policy lets them
+  answer, otherwise the agent's owner if they may answer, otherwise nobody.
+  It never mentions more than one person, even when the policy lets anyone
+  answer. Cards at the top of a channel mention whoever asked, as before.
+- **`!list-references` and `!list-documents` include what packages bring.**
+  They listed only what was attached to the room directly, so a room whose
+  references all came from a package answered "No references in this room."
+  while its agents were sent them. Items from attached packages now follow
+  the direct ones, each marked with the package it comes from (for example
+  `(github, via Payments service context)`); an item attached both ways is
+  listed once, as direct (#911).
 - **The template guide agents read now covers a room's `roles:`,
   `references:` and `docs:`.** All three already worked in a room resource
   and appear when a room is captured, but the guide stopped at `aliases:`, so
@@ -1829,6 +1918,28 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Airtable's logo on the Connections grid.**
+- **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
+  Builder Hub with the redirect URL to copy and the scopes to tick, and asks
+  the operator to confirm the integration's support details are set, which no
+  check can see. A server that does not send `redirect_uris`,
+  `needs_public_url` and `scopes` is read as before.
+- **Saving a connector app shows what its check said.** After Check and save
+  or an updated secret, the app's page opens with the vendor's answer and any
+  note, as Check it works shows them.
+- **Connectors says why Airtable or Google Workspace can't be connected on a
+  server without a public address**: the operator is told to set
+  `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
+
+#### Changed
+- **One name for the controller.** Console, the Gateway and the docs say
+  "agent controller" everywhere, matching the `switch-agent-controller`
+  package, instead of a mix of "agent controller" and "agents controller".
+  The delete dialog on a server's page now calls it "this Switch server that
+  Console runs" rather than a "managed server", which read like "managed
+  agent"; it was the only place Console showed that name.
+
 #### Fixed
 - **The local Switch server starts on Intel Macs without Homebrew.**
   cryptography publishes no wheel for Intel Macs, so the Intel build of
@@ -1838,6 +1949,15 @@ version of their own to them without also giving them a release of their own.
   cryptography now carries its own OpenSSL, as cryptography's wheels for Apple
   silicon do, and a macOS build fails if anything in the local server links a
   library that is neither macOS's nor shipped with it.
+- **Setting up a server notices Docker once it starts.** "Set up a server on
+  this computer" checked for Docker only when the step opened, so installing or
+  starting Docker meanwhile left the setup skipping Mattermost until you went
+  back. It now checks again every few seconds, and when Console regains focus,
+  while Docker isn't answering.
+- **Agents say who can answer their questions and approvals.** The Switch
+  skill said a request card needed the owner's linked identity and room
+  membership. Its addressing policy decides, and agents now read theirs with
+  `get_agent_detail` and name the people who can answer.
 
 ### [0.40.1] - 2026-10-21
 

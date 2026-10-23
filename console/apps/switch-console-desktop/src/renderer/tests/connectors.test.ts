@@ -155,6 +155,28 @@ describe('what each person is told about a connector that cannot be used', () =>
     unavailable_code: 'needs_https',
   });
 
+  it('tells the operator to set the public address, and everyone else whom to ask', () => {
+    const airtable = entry({
+      slug: 'airtable',
+      name: 'Airtable',
+      connectable: false,
+      unavailable_reason: "Airtable can't be connected on this server.",
+      unavailable_code: 'needs_public_url',
+    });
+    expect(connectorCardState(airtable, OPERATOR).detail).toBe(
+      "Airtable sends people back to this server's public address. Set GATEWAY_PUBLIC_URL, then restart Switch."
+    );
+    for (const viewer of [ADMIN, MEMBER])
+      expect(connectorCardState(airtable, viewer)).toEqual({
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail:
+          "Airtable needs the server's public address. Ask whoever runs your Switch server to set it.",
+        tone: 'muted',
+        fix: null,
+      });
+  });
+
   it('offers the operator to set up an app that is not set up', () => {
     expect(connectorCardState(notSetUp, OPERATOR)).toEqual({
       kind: 'needs_setup',

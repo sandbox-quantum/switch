@@ -38,7 +38,7 @@ vi.mock('@main/core/agents/write-remote-switch-settings', () => ({
 }));
 vi.mock('@main/core/agents/write-switch-settings', () => ({ writeSwitchSettings: vi.fn() }));
 vi.mock('@main/core/app/service', () => ({ appService: { openExternal: vi.fn() } }));
-// Holds the embedded agents controllers, and through them electron and the secrets store.
+// Holds the embedded agent controllers, and through them electron and the secrets store.
 vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
   embeddedControllerService: { forgetServer: vi.fn(), followServerApiUrl },
 }));

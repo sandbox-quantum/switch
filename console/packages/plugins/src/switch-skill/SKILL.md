@@ -121,11 +121,25 @@ does, and there is no polling tool to call.
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
 
+  The first message you get from a room that has instructions of its own is
+  preceded by them, between `BEGIN ROOM INSTRUCTIONS` / `END ROOM
+  INSTRUCTIONS` markers (`[Switch] Room <room> has instructions of its
+  own…`), and so is the next message after they change or are removed. They
+  are the same instructions `connect_to_room` returns: follow them for
+  everything you do in that room. If they could not be read, the line says so
+  and asks you to call `connect_to_room` for that room before replying; do
+  that rather than answering as if the room had none.
+
   Where a server has "follow the conversation" switched on, a person's message
   can reach you without naming you: a reply in a thread where you spoke, or
-  were tagged, more recently than any other agent; their next message after
-  you have just answered them in the channel; or
-  any message in a room where you are the assigned agent. Treat it as meant
+  were tagged, more recently than any other agent; their next channel message
+  in an exchange with you that nobody else has interrupted, as long as every
+  gap in it (their request to your answer, your answer to this message) is
+  within the server's window, five minutes by default (after a break they
+  need to mention you again); or any message in a room where you are the
+  assigned agent. Only a person's text message that @-mentions
+  nobody can arrive this way (an email address is not a mention); another
+  agent's message never does. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;
@@ -138,9 +152,9 @@ does, and there is no polling tool to call.
   `list_participants`. Your own join never produces one. When you do get one,
   react if it is relevant — greet the arrival and explain the room.
 
-**Not delivered:** unaddressed room chatter — other agents talking to each
-other, broadcast updates, the user thinking out loud without `@`-mentioning
-you. It is filtered out and you will never see it in a delivered line. Pulling
+**Not delivered:** the rest of the room's chatter, such as other agents
+talking to each other, broadcast updates, or a person thinking out loud
+without `@`-mentioning you, unless it is one of the follow-ups above. Pulling
 it is what `read_context` is for.
 
 Two annotations tell you when that matters:
@@ -149,7 +163,8 @@ Two annotations tell you when that matters:
   messages arrived since you last read this room's context — call read_context
   to catch up.)`. Switch keeps that count per room, so reading one room's
   context clears that room's and leaves every other room standing at its own.
-  Read what a silent line does and does not prove, below.
+  It counts only what was not delivered to you, so a follow-up you were sent
+  is not in it. Read what a silent line does and does not prove, below.
 - **Lost history** — when the server restarted or events aged out, the
   affected room's count says so rather than quietly shrinking. The line reads
   `At least N … and there may have been more`, which is a floor, or says how
@@ -307,10 +322,16 @@ generally do not. Without one, when you genuinely need a decision, ask in the
 room with `send_targeted_message` and wait for the reply as an ordinary event.
 
 Request cards (your session's questions and approvals) use server authorization.
-Room visibility alone does not permit an answer: only someone allowed to address
-you in that room may answer, under your addressing policy. By default that is
-your owner and your owner's own agents; your owner can narrow or widen it. A
-pending answer is not an approval; wait for the confirmed result. Cancellation remains cancellation.
+Who may answer one is decided by your addressing policy, the same rule as who
+may address you, not by who can see or is in the room. Outside a room, only
+your owner can. New agents start on `owner_and_owner_agents`, which for a
+person means your owner alone, and your owner can narrow or widen it. Before
+telling someone who can answer, or why their answer did not count, call
+`get_agent_detail` on yourself, read `addressing`, and say it concretely with
+names: "Only my owner, Ada, can approve this", or "Anyone who can address me
+can answer this". Never answer
+with just "it depends on my addressing policy". A pending answer is not an
+approval; wait for the confirmed result. Cancellation remains cancellation.
 The server chooses request-card destinations. Ordinary session output stays in
 session details; use the Switch messaging tools for explicit room replies.
 
@@ -327,8 +348,9 @@ session details; use the Switch messaging tools for explicit room replies.
   **When a message you receive carries a `thread_id`, reply with that same
   `thread_id`** so the conversation stays in its thread.
 - Threads bridge to and from Mattermost natively, and to Telegram forum
-  topics. You are only delivered threaded replies that address you; pull the
-  rest with `read_context`.
+  topics. You are delivered threaded replies that address you, and the
+  follow-ups in a thread you own where the server follows the conversation
+  (see "Receiving room events"); pull the rest with `read_context`.
 - **Mattermost only — post at the root unless you were asked in a thread.**
   Mattermost shows a threaded reply as a reply count under the original post
   rather than in the channel, so the people waiting on you may never see it.
@@ -415,6 +437,9 @@ none of it is needed to take part in a conversation.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
+  `addressing` says who may address it: on yourself, the policy and its rules
+  with the people, agents and rooms they name; on another agent, the policy
+  alone.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
@@ -676,9 +701,21 @@ groups nest under a parent to form a tree.
 - **`get_room_group_detail`** — one group, the rooms directly in it
   (`member_rooms`), and its immediate `child_groups`.
 - **`create_room_group`** — provision a group. Required: `name`. Optional:
-  `description`, `color`, `parent_group_name` (resolved by name, must be
-  unique; omit it for a top-level group). Creating a group does not move any rooms into it — file rooms under
-  it later by passing `group_name` to `create_room`.
+  `description`, `color`, `parent_group_name` (omit it for a top-level
+  group). Creating a group does not move any rooms into it; file rooms under
+  it later by passing `group_name` to `create_room`. Missing parents are not
+  created for you: create each level first.
+
+Name a group by its **path**: the top-level group, then each child, separated
+by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
+(`Fraud / Incidents`) works as it is. A bare name is fine when only one group
+has it; when several do, the error lists each one's path, so retry with the
+one the user means (ask if it is not clear). A group id also works. This holds
+for `group_name` on `create_room` and `parent_group_name` on
+`create_room_group`. Names are unique among siblings, ignoring case, and
+cannot contain `/`: creating `Incidents` where one already exists under the
+same parent is refused, while `Payments/Incidents` and `Fraud/Incidents` can
+both exist.
 
 ### Per-room agent aliases
 
@@ -804,10 +841,22 @@ sentence saying so: relay it to the person asking ("ask my owner to enable
 
 **Use it when you are asked for a new agent**, or when a job needs one that
 does not exist yet and the person agrees. Before calling `create_agent`,
-check `list_machines` for a machine that is `online` with the provider
-installed and `auth` not `missing` or `expired`, then **propose the name,
-machine, provider and what the agent is for, and get explicit confirmation**:
-it starts a real agent on someone's computer.
+check `list_machines` for a machine that is `online` (or a sleeping cloud
+machine, below) with the provider installed and `auth` not `missing` or
+`expired`, then **propose the name, machine, provider and what the agent is
+for, and get explicit confirmation**: it starts a real agent on someone's
+computer. Ask which machine rather than picking one: an agent on a person's
+computer answers only while it is on, and a cloud machine (`kind` "ec2") keeps
+running when that computer is off.
+
+A cloud machine sleeps when nothing has used it for a while, and then shows
+`offline`. It can still take the agent: `create_agent` wakes it, judging the
+provider by the machine's last report, and the agent starts once the machine
+is up. Say in the proposal that this takes a few minutes, and when checking
+that it came up (below), allow up to ten. A cloud machine its owner stopped is
+not woken: `create_agent` is refused with `controller_offline`. A workspace
+that never used a cloud machine has none listed; the person sets one up by
+choosing Switch cloud in Switch Console's New agent.
 
 **Relay a refusal as it is.** When the machine cannot take the agent, nothing
 is created and the error says why, with a reason code: `controller_offline`
@@ -1035,7 +1084,8 @@ Every Switch tool you call in normal operation, one line each.
 - `update_template`: change a template you saved.
 - `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
-- `get_agent_detail` — one agent's config, capabilities and sessions.
+- `get_agent_detail`: one agent's config, capabilities, sessions and who may
+  address it.
 - `update_agent_detail` — change an agent you own.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.

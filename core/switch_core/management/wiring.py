@@ -89,7 +89,7 @@ class Management:
             session_factory=self.session_factory,
         )
         agent_bridge_app.include_router(controller_router)
-        gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
+        mount_gateway_routes(gateway_app)
         protocol.set_agent_removal_listener(self.agent_removed)
         protocol.set_agent_rename_listener(self.agent_renamed)
         enable_agent_management(self.agent_operations)
@@ -210,6 +210,16 @@ def build_management(
         lease=lease,
         ledger=ledger,
     )
+
+
+def mount_gateway_routes(gateway_app: FastAPI) -> None:
+    """Every route agent management adds to the gateway.
+
+    The one place they are mounted: `Management.install` calls it, and so does
+    the end-to-end surface snapshot (`scripts/e2e_surface.py`), which is how a
+    route added here reaches the coverage gate.
+    """
+    gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
 
 
 def create_management(

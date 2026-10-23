@@ -223,6 +223,8 @@ export default memo(function NavRail() {
       <Divider sx={{ my: 1.5, width: 29 }} />
 
       <Stack
+        component="nav"
+        aria-label="Main"
         sx={{
           width: "100%",
           alignItems: "center",

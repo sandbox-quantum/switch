@@ -74,7 +74,7 @@ export type MachineProvider = {
 };
 
 /**
- * This computer's providers as its agents controller last reported them to a
+ * This computer's providers as its agent controller last reported them to a
  * server: what Switch goes by when it creates an agent here, so what every
  * screen about this computer's providers shows when there is one.
  */

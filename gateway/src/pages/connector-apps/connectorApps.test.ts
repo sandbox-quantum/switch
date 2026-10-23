@@ -5,9 +5,12 @@ import {
   audienceText,
   cardOrder,
   cardState,
+  changeBlocked,
   configuredSentence,
+  confirmBeforeCheck,
   menuActions,
   menuLabel,
+  missingPublicUrl,
   moveChecklist,
   peopleIn,
   primaryAction,
@@ -248,7 +251,7 @@ describe("wording", () => {
       "https://console.cloud.google.com/apis/library",
     ]);
     expect(steps[1]!.text).toMatch(/app name .* support email/);
-    expect(steps[4]!.copy).toBe(NONE.redirect_uri);
+    expect(steps[4]!.copy).toEqual([NONE.redirect_uri]);
     expect(steps[5]!.text).toBe(
       "Enable the Google Drive, Docs, Sheets, Slides and Calendar APIs for the project.",
     );
@@ -258,7 +261,7 @@ describe("wording", () => {
     const steps = setupInstructions(GITHUB, "internal", PUBLIC_URL);
     expect(steps[0]!.link).toEqual({ label: "Open GitHub", href: "https://github.com/settings/apps/new" });
     expect(steps.slice(1).every((s) => s.link === null)).toBe(true);
-    expect(steps.map((s) => s.copy).filter((c) => c !== null)).toEqual([PUBLIC_URL, GITHUB.redirect_uri]);
+    expect(steps.flatMap((s) => s.copy)).toEqual([PUBLIC_URL, GITHUB.redirect_uri]);
     const texts = steps.map((s) => s.text);
     expect(texts[1]).toMatch(/^Set the Homepage URL/);
     expect(texts[2]).toMatch(/^Set the Callback URL/);
@@ -275,6 +278,84 @@ describe("wording", () => {
       ...setupInstructions(GITHUB, "internal", PUBLIC_URL),
     ].flatMap((s) => (s.link ? [s.link.href] : []));
     expect(links.every((href) => /^https:\/\/(console\.cloud\.google\.com|github\.com)\//.test(href))).toBe(true);
+    const airtable = setupInstructions(AIRTABLE, "internal", null).flatMap((s) => (s.link ? [s.link.href] : []));
+    expect(airtable.every((href) => href.startsWith("https://airtable.com/"))).toBe(true);
+  });
+});
+
+const LOOPBACK_REDIRECTS = [39231, 39232, 39233, 39234, 39235].map(
+  (port) => `http://127.0.0.1:${port}/switch-services/callback`,
+);
+
+const AIRTABLE_CALLBACK = `${PUBLIC_URL}/gateway/service-connections/airtable/flows/callback`;
+
+const AIRTABLE = app({
+  slug: "airtable",
+  name: "Airtable",
+  source: "none",
+  client_id: null,
+  saved_client_id: null,
+  configuration_variables: ["AIRTABLE_CLIENT_CONFIG_PATH"],
+  secrets: { client_secret: { set: false, last4: null } },
+  redirect_uri: AIRTABLE_CALLBACK,
+  redirect_uris: [AIRTABLE_CALLBACK],
+  needs_public_url: true,
+  scopes: ["data.records:read", "data.records:write"],
+  connected_members: 0,
+  workspaces: 0,
+});
+
+/** An app whose sign-ins return to Switch Console, on one of several ports. */
+const LOOPBACK = app({
+  ...AIRTABLE,
+  slug: "example",
+  name: "Example",
+  redirect_uri: LOOPBACK_REDIRECTS[0]!,
+  redirect_uris: LOOPBACK_REDIRECTS,
+  needs_public_url: false,
+});
+
+describe("Airtable, and an app that sends people back to Switch Console", () => {
+  it("walks Airtable's Builder Hub, with its redirect to paste and the scopes to tick", () => {
+    const steps = setupInstructions(AIRTABLE, "internal", null);
+    expect(steps[0]!.link).toEqual({ label: "Open Builder Hub", href: "https://airtable.com/create/oauth" });
+    expect(steps[0]!.text).toMatch(/account your organization owns/);
+    expect(steps.flatMap((s) => s.copy)).toEqual([AIRTABLE_CALLBACK]);
+    expect(new Set(steps.map((s) => s.text)).size).toBe(steps.length);
+    const texts = steps.map((s) => s.text);
+    expect(steps.find((s) => s.text === "Under Scopes, tick exactly these:")?.items).toEqual(["data.records:read, data.records:write"]);
+    expect(steps.filter((s) => s.copy.length > 0)).toHaveLength(1);
+    expect(texts.at(-1)).toMatch(/support email, privacy policy URL and terms of service URL/);
+  });
+
+  it("asks the operator to confirm what no check can see: that the integration is published", () => {
+    expect(confirmBeforeCheck(AIRTABLE)?.label).toBe("I've filled in its support details in Builder Hub.");
+    expect(confirmBeforeCheck(AIRTABLE)?.why).toMatch(
+      /privacy policy URL and terms of service URL\. Until all three are set, only the integration's owner can connect/
+    );
+    expect(confirmBeforeCheck(NONE)).toBeNull();
+  });
+
+  it("an app that sends people back to Switch Console needs no public URL, and raises no banner", () => {
+    expect(changeBlocked(LOOPBACK, null)).toBe(false);
+    expect(changeBlocked(NONE, null)).toBe(true);
+    expect(missingPublicUrl([LOOPBACK], null)).toBe(false);
+    expect(missingPublicUrl([LOOPBACK, NONE], null)).toBe(true);
+    expect(missingPublicUrl([LOOPBACK, NONE], PUBLIC_URL)).toBe(false);
+    expect(changeBlocked(AIRTABLE, null)).toBe(true);
+  });
+
+  it("names Airtable's Helm value when moving off configuration", () => {
+    const steps = moveChecklist(app({ ...AIRTABLE, source: "configuration" }));
+    expect(steps[1]!.text).toBe(
+      "Remove AIRTABLE_CLIENT_CONFIG_PATH from the server's configuration. For Helm, that is switchCore.airtableClientSecret.",
+    );
+  });
+
+  it("lists every redirect for another vendor that has several", () => {
+    const steps = setupInstructions(LOOPBACK, "internal", null);
+    expect(steps[0]!.text).toBe("Register an OAuth client for Switch at Example, with these redirect URIs:");
+    expect(steps.flatMap((s) => s.copy)).toEqual(LOOPBACK_REDIRECTS);
   });
 });
 

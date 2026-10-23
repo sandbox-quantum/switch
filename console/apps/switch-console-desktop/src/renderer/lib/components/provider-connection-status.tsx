@@ -1,8 +1,27 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, type QueryClient } from '@tanstack/react-query';
 import { Check, CheckCircle2, CircleAlert, Copy, Loader2, RefreshCw } from 'lucide-react';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
 import { getProvider, type AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+
+function providerReadinessQueryKey(
+  providerId: AgentProviderId,
+  sshHost: string | null,
+  dir: string
+) {
+  return ['provider-readiness', providerId, sshHost, dir] as const;
+}
+
+/**
+ * Ask every provider's sign-in on one SSH host again: its setup changed, so an
+ * answer read before — "CLI not installed", "Switch is not set up there" —
+ * would otherwise stand for as long as it is cached.
+ */
+export function invalidateHostProviderReadiness(queryClient: QueryClient, sshHost: string) {
+  return queryClient.invalidateQueries({
+    predicate: ({ queryKey }) => queryKey[0] === 'provider-readiness' && queryKey[2] === sshHost,
+  });
+}
 
 /**
  * Whether a provider's CLI is installed and signed in on a machine. One check
@@ -17,7 +36,7 @@ export function useProviderReadiness(
   enabled: boolean
 ) {
   return useQuery({
-    queryKey: ['provider-readiness', providerId, sshHost, dir],
+    queryKey: providerReadinessQueryKey(providerId, sshHost, dir),
     queryFn: () => rpc.agents.providerReadiness({ providerId, sshHost, dir }),
     // Signing in is not something that changes minute to minute, and this is
     // rendered once per provider tile and once per agent row — so a short
@@ -75,13 +94,29 @@ export function ProviderConnectionStatus({
                 ? 'Backend connected'
                 : 'Signed in'
               : 'Sign-in not verified';
+  const reason =
+    checking || ready
+      ? null
+      : query.error
+        ? 'Could not reach this host. Check the connection and try again.'
+        : data?.status === 'unauthenticated'
+          ? 'Sign in to use this provider.'
+          : (data?.message ?? null);
+  // Only a CLI that answered "signed out" (or "no backend") is fixed by its
+  // login command. An unknown status means the check itself could not run,
+  // and the reason says what to do instead.
+  const loginMayHelp = data?.status === 'unauthenticated' || data?.status === 'unconfigured';
   const Icon = checking ? Loader2 : ready ? CheckCircle2 : CircleAlert;
   const tone = checking || ready ? 'text-foreground-muted' : 'text-foreground-warning';
   if (compact)
     return (
-      <span className={`inline-flex items-center gap-1.5 text-xs ${tone}`}>
+      <span
+        className={`inline-flex items-center gap-1.5 text-xs ${tone}`}
+        title={reason ?? undefined}
+      >
         <Icon className={`size-3.5 ${checking ? 'animate-spin' : ''}`} />
         {headline}
+        {reason && <span className="sr-only">: {reason}</span>}
       </span>
     );
   return (
@@ -107,16 +142,8 @@ export function ProviderConnectionStatus({
         {sshHost ? `On ${sshHost}` : 'On this computer'}
         {data?.installed === true ? ' · CLI installed' : ''}
       </p>
-      {!checking && !ready && (
-        <p className="mt-2 text-foreground-muted">
-          {query.error
-            ? 'Could not reach this host. Check the connection and try again.'
-            : data?.status === 'unauthenticated'
-              ? 'Sign in to use this provider.'
-              : data?.message}
-        </p>
-      )}
-      {!checking && data?.installed && !ready && provider && (
+      {reason && <p className="mt-2 text-foreground-muted">{reason}</p>}
+      {!checking && data?.installed && loginMayHelp && provider && (
         <div className="mt-2 space-y-1">
           <p>Run in a terminal {sshHost ? `on ${sshHost}` : 'on this computer'}, then Recheck:</p>
           <div className="flex items-center gap-2 rounded bg-background px-2 py-1">

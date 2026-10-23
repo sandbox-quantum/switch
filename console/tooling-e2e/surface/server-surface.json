@@ -1,0 +1,1408 @@
+{
+  "_generated": "by scripts/e2e_surface.py; do not edit. Run `just e2e-surface`.",
+  "operations": [
+    "add_users_to_room",
+    "archive_room",
+    "assume_role",
+    "attach_reference_to_room",
+    "connect_to_room",
+    "create_agent",
+    "create_reference",
+    "create_room",
+    "create_room_document",
+    "create_room_from_yaml",
+    "create_room_group",
+    "define_role",
+    "delete_role",
+    "delete_room_document",
+    "delete_template",
+    "edit_role",
+    "get_advanced_config",
+    "get_agent_detail",
+    "get_my_context",
+    "get_role_detail",
+    "get_room_detail",
+    "get_room_group_detail",
+    "get_template",
+    "get_template_guide",
+    "invite_agent_to_room",
+    "link_rooms",
+    "list_agents",
+    "list_all_references",
+    "list_all_rooms",
+    "list_bridges",
+    "list_linked_rooms",
+    "list_machines",
+    "list_managed_agents",
+    "list_participants",
+    "list_reference_types",
+    "list_references",
+    "list_roles",
+    "list_room_groups",
+    "list_rooms",
+    "list_templates",
+    "load_internal_documents",
+    "post_message",
+    "read_context",
+    "release_role",
+    "remove_agent_from_room",
+    "remove_agent_service",
+    "request_agent_deletion",
+    "run_template",
+    "save_template",
+    "send_targeted_message",
+    "set_agent_service",
+    "unarchive_room",
+    "unlink_rooms",
+    "update_agent_detail",
+    "update_room",
+    "update_room_document",
+    "update_template"
+  ],
+  "gatewayRoutes": [
+    {
+      "route": "DELETE /gateway/agents/by-name/{agent_name}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/agents/{agent_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/agents/{agent_id}/service-grants/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/api-keys/{key_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/auth/me",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/chats/{room_id}/hidden",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/chats/{room_id}/members/{member_user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/collaborations/{bridge_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/collaborations/{bridge_id}/teams/{team_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/connector-apps/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/connectors/{connector_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/management/agents/{agent_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/management/controllers/{controller_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/management/controllers/{controller_id}/provider-logins/{provider}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/messaging-apps/installs/{install_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/packages/{package_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/packages/{package_id}/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/packages/{package_id}/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/provider-connections/github",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/provider-connections/github/flows/{flow_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/references/reference-types/{type}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/room-groups/{group_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/agents/{agent_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/linked-rooms/{target_room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/packages/{package_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/rooms/{room_id}/roles/{name}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/service-connections/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/service-connections/{service}/flows/{flow_id}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "DELETE /gateway/templates/{template_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/tenants/{tenant_id}/budgets/{budget_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/tenants/{tenant_id}/invitations/{invitation_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/tenants/{tenant_id}/join-domains/{domain}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/tenants/{tenant_id}/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "DELETE /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agent-sessions/approvals",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agents/avatar-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agents/icon-choices",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agents/known-types",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agents/{agent_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/agents/{agent_id}/service-grants",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/api-keys",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/api-keys/{key_id}/reveal",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/config",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/me",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/me/identities",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/oidc/callback",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/oidc/login",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/auth/session",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/activity/events",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/events",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/{room_id}/activity",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/{room_id}/media",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/{room_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/{room_id}/messages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations/setup/slack",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations/types",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations/{bridge_id}/directory",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations/{bridge_id}/teams",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations/{bridge_id}/teams-package",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/collaborations/{bridge_id}/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/connector-apps",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/connector-apps/{service}/impact",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/connectors",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/connectors/types",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/connectors/{connector_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/docs",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/docs/oauth2-redirect",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/documents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/documents/{document_id}/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/ecosystem/graph",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/feature-flags",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/hosted-controller/machines",
+      "auth": "operator-token",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/hosted-machines",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/hosted-machines/{machine_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/invitations/mine",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/joinable-tenants",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/linked-rooms/graph",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/management/advanced-config",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/management/agents",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "GET /gateway/management/agents/{agent_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "GET /gateway/management/controllers",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "GET /gateway/management/controllers/{controller_id}/provider-logins",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "GET /gateway/management/operations",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "GET /gateway/management/providers",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/messaging-apps",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/messaging-apps/installs",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/openapi.json",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/packages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/packages/{package_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/packages/{package_id}/documents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/packages/{package_id}/references",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/packages/{package_id}/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/provider-connections/catalog",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/provider-connections/github",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/provider-connections/github/authorize",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/provider-connections/github/callback",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/provider-connections/github/flows/{flow_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/redoc",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/references",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/references/reference-types",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/references/reference-types/owned",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/references/{reference_id}/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/room-groups",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/template-schema",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/documents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/linked-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/linked-rooms/inbound",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/packages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/references",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/roles",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/rooms/{room_id}/yaml",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/service-connections",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/service-connections/{service}/agents",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/service-connections/{service}/flows/authorize",
+      "auth": "none",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/service-connections/{service}/flows/callback",
+      "auth": "none",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/service-connections/{service}/flows/{flow_id}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "GET /gateway/template-runs",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/templates",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/templates/{template_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/templates/{template_id}/content",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/current",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/audit-events",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/budgets",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/invitations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/join-domains",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/tenants/{tenant_id}/usage",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/version",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/workspace/services",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PATCH /gateway/agents/{agent_id}/options",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/collaborations/{bridge_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/management/agents/{agent_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "PATCH /gateway/management/controllers/{controller_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "PATCH /gateway/packages/{package_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/references/reference-types/{type}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/room-groups/{group_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/rooms/{room_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/rooms/{room_id}/agents/{agent_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/rooms/{room_id}/roles/{name}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/templates/{template_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PATCH /gateway/tenants/{tenant_id}/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/register",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/register-known-bulk",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/agents/register-other",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/api-keys",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/login",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/logout",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/oidc/exchange",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/refresh",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/signup",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/attachments",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/controls",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/messages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/warm",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/collaborations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/collaborations/setup/slack/check",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/collaborations/{bridge_id}/default",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/collaborations/{bridge_id}/identities",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/collaborations/{bridge_id}/teams/{team_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/connector-apps/{service}/check",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/connector-apps/{service}/import",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/connectors",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/documents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/hosted-controller/machines/{machine_id}/observation",
+      "auth": "operator-token",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/hosted-controller/machines/{machine_id}/prepare",
+      "auth": "operator-token",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/hosted-machines/ensure",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/hosted-machines/{machine_id}/lifecycle",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/invitations/accept",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/invitations/mine/accept",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/joinable-tenants/{tenant_id}/join",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/management/agents",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "POST /gateway/management/controllers",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "POST /gateway/management/enrollment-codes",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "POST /gateway/management/operations",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "POST /gateway/messaging-apps/{platform}/claim",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/messaging-apps/{platform}/install",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/packages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/packages/{package_id}/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/packages/{package_id}/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/provider-connections/github/flows",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/provider-connections/github/flows/{flow_id}/complete",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/references",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/references/reference-types",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/room-groups",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/bulk-archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/bulk-delete",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/from-template",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/from-template-document",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/from-yaml",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/agents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/documents/{document_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/linked-rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/packages/{package_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/references/{reference_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/roles",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/unarchive",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/rooms/{room_id}/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/service-connections/{service}/flows",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/service-connections/{service}/flows/{flow_id}/complete",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "POST /gateway/template-runs/{root_room_id}/continue",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/template-runs/{root_room_id}/stop",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/templates",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/templates/validate",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/budgets",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/invitations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/join-domains",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/tenants/{tenant_id}/switch",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/addressing-policy",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/can-manage-agents",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/description",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/display-name",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/icon",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/name",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/service-grants/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PUT /gateway/auth/me/password",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/chats/{room_id}/hidden",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/connector-apps/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PUT /gateway/management/agents/{agent_id}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "PUT /gateway/management/controllers/{controller_id}/provider-logins/{provider}",
+      "auth": "session",
+      "flags": [
+        "agent_management"
+      ]
+    },
+    {
+      "route": "PUT /gateway/room-groups/{group_id}/rooms",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/group",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/observe",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/protection",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/service-connections/{service}/key",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
+      "route": "PUT /gateway/tenants/{tenant_id}/budgets/{budget_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/trust-settings",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/workspace/services/{service}",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    }
+  ]
+}

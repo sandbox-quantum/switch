@@ -89,15 +89,63 @@ const bob = (overrides: Partial<LockClaim> = {}) =>
     ...overrides,
   });
 
-/** No renewals unless a test asks for them, so expiry can be watched. */
-const QUIET: LockTiming = {
-  ttlSeconds: 2,
+/**
+ * A lease that outlasts any test, for tests that need the lock to stay held
+ * while they act on it. Each step here starts a container, so a short lease
+ * can lapse between two of them on a slow machine.
+ */
+const HELD: LockTiming = {
+  ttlSeconds: 600,
   renewEveryMs: 60_000,
   maxHoldSeconds: 600,
   pollEveryMs: 200,
 };
 
+/** No renewals unless a test asks for them, so expiry can be watched. */
+const LAPSING: LockTiming = { ...HELD, ttlSeconds: 2 };
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** `promise`, and whether it has settled yet. */
+function settles<T>(promise: Promise<T>): { promise: Promise<T>; settled: () => boolean } {
+  let settled = false;
+  const tracked = promise.finally(() => {
+    settled = true;
+  });
+  return { promise: tracked, settled: () => settled };
+}
+
+/**
+ * Holds the state mutex from a container of its own until released, so a test
+ * can show a script waiting for it however long containers take to start.
+ */
+async function holdStateMutex(
+  host: StackStateHost,
+  project: string
+): Promise<{ release: () => Promise<void> }> {
+  await writeStateVolume(host, 'true', '', []);
+  const holding = run('docker', [
+    'run',
+    '--rm',
+    '--volume',
+    `${project}_${STACK_STATE_VOLUME_SUFFIX}:/state`,
+    '--entrypoint',
+    'sh',
+    STACK_HELPER_IMAGE,
+    '-c',
+    'exec 9>/state/.mutex; flock 9; touch /state/held; ' +
+      'while [ ! -f /state/release ]; do sleep 0.1; done; rm /state/held /state/release',
+  ]);
+  while ((await readStateVolume(host, '[ -f /state/held ] && echo held; true')) !== 'held\n') {
+    await sleep(100);
+  }
+  return {
+    release: async () => {
+      await runStateScript(host, 'touch /state/release', []);
+      await holding;
+    },
+  };
+}
 
 describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   let host: StackStateHost;
@@ -116,7 +164,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
     );
   });
 
-  async function take(c: LockClaim, timing: LockTiming = QUIET): Promise<ServerLease> {
+  async function take(c: LockClaim, timing: LockTiming = HELD): Promise<ServerLease> {
     const lease = await acquireServerLock(host, c, { mode: 'refuse', timing });
     leases.push(lease);
     return lease;
@@ -153,7 +201,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
     const onWaiting = vi.fn();
     const waiting = acquireServerLock(host, bob(), {
       mode: 'wait',
-      timing: QUIET,
+      timing: HELD,
       signal: new AbortController().signal,
       onWaiting,
     });
@@ -166,7 +214,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('can be taken over once its holder stops renewing it', async () => {
-    await take(claim());
+    await take(claim(), LAPSING);
 
     await sleep(2500);
 
@@ -174,7 +222,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('goes to exactly one of two Consoles taking over the same lapsed lease', async () => {
-    await take(claim());
+    await take(claim(), LAPSING);
     await sleep(2500);
 
     const results = await Promise.allSettled([
@@ -186,15 +234,17 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('stays held past its lease while its holder renews it', async () => {
-    await take(claim(), { ...QUIET, renewEveryMs: 500 });
+    // Long enough a lease that a renewal always lands inside it, even when
+    // starting each renewal's container is slow.
+    await take(claim(), { ...HELD, ttlSeconds: 5, renewEveryMs: 500 });
 
-    await sleep(3000);
+    await sleep(6500);
 
     await expect(take(bob())).rejects.toBeInstanceOf(ServerBusyError);
   }, 60_000);
 
   it('cannot be renewed past the longest hold, and then goes to whoever asks', async () => {
-    const alice = await take(claim(), { ...QUIET, renewEveryMs: 500, maxHoldSeconds: 3 });
+    const alice = await take(claim(), { ...LAPSING, renewEveryMs: 500, maxHoldSeconds: 3 });
 
     await sleep(4000);
 
@@ -203,7 +253,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('is not released by a holder that lost it, and knows it was lost', async () => {
-    const alice = await take(claim());
+    const alice = await take(claim(), LAPSING);
     await sleep(2500);
     await take(bob());
 
@@ -257,27 +307,16 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('is only taken under the state mutex', async () => {
-    await writeStateVolume(host, 'true', '', []);
-    const holding = run('docker', [
-      'run',
-      '--rm',
-      '--volume',
-      `${project}_${STACK_STATE_VOLUME_SUFFIX}:/state`,
-      '--entrypoint',
-      'sh',
-      STACK_HELPER_IMAGE,
-      '-c',
-      'exec 9>/state/.mutex; flock 9; touch /state/held; sleep 3; rm /state/held',
-    ]);
-    while ((await readStateVolume(host, '[ -f /state/held ] && echo held; true')) !== 'held\n') {
-      await sleep(100);
+    const holder = await holdStateMutex(host, project);
+
+    const taking = settles(take(claim()));
+    try {
+      await sleep(1500);
+      expect(taking.settled()).toBe(false);
+    } finally {
+      await holder.release();
     }
-
-    const started = Date.now();
-    await take(claim());
-
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
-    await holding;
+    await taking.promise;
   }, 60_000);
 
   it('is not taken when its file cannot be written, so nobody else takes it too', async () => {
@@ -300,7 +339,7 @@ describe.skipIf(!DOCKER)('the server lock, against a real state volume', () => {
   }, 60_000);
 
   it('lets only its holder publish or withdraw the settings', async () => {
-    const alice = await take(claim());
+    const alice = await take(claim(), LAPSING);
     await sleep(2500);
     const bobs = await take(bob());
 
@@ -329,31 +368,22 @@ describe.skipIf(!DOCKER)('the state mutex, against a real state volume', () => {
 
   it('makes a record wait while another script holds the mutex', async () => {
     // Container start-up jitter dwarfs a trim, so racing real records rarely
-    // shows anything; holding the mutex for a known time does.
-    await writeStateVolume(host, 'true', '', []);
-    const holding = run('docker', [
-      'run',
-      '--rm',
-      '--volume',
-      `${project}_${STACK_STATE_VOLUME_SUFFIX}:/state`,
-      '--entrypoint',
-      'sh',
-      STACK_HELPER_IMAGE,
-      '-c',
-      'exec 9>/state/.mutex; flock 9; touch /state/held; sleep 3; rm /state/held',
-    ]);
-    while ((await readStateVolume(host, '[ -f /state/held ] && echo held; true')) !== 'held\n') {
-      await sleep(100);
+    // shows anything; holding the mutex until told to let go does.
+    const holder = await holdStateMutex(host, project);
+
+    const recording = settles(
+      writeStateVolume(host, RECORD_SCRIPT, '{"entry":1}\n{"line":1}\n', [
+        'dddddddd-0000-4000-8000-000000000001',
+        'act',
+      ])
+    );
+    try {
+      await sleep(1500);
+      expect(recording.settled()).toBe(false);
+    } finally {
+      await holder.release();
     }
-
-    const started = Date.now();
-    await writeStateVolume(host, RECORD_SCRIPT, '{"entry":1}\n{"line":1}\n', [
-      'dddddddd-0000-4000-8000-000000000001',
-      'act',
-    ]);
-
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+    await recording.promise;
     expect(await readStateVolume(host, '[ -f /state/held ] && echo held; true')).toBe('');
-    await holding;
   }, 60_000);
 });

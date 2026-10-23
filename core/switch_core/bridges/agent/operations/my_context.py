@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from switch_core import messaging_platforms
-from switch_core.addressing import owner_and_owner_agents_policy, owner_only_policy
+from switch_core.addressing import policy_kind
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.operations.context import get_agent_id, get_protocol
 from switch_core.bridges.agent.operations.registry import operation
@@ -215,7 +215,7 @@ async def get_my_context() -> dict[str, Any]:
                 "id": agent.id,
                 "name": agent.name,
                 "display_name": agent.display_name,
-                "who_can_talk": _who_can_talk(agent),
+                "who_can_talk": policy_kind(agent.addressing_policy),
                 "can_manage_agents": agent.can_manage_agents,
                 "services": grants[agent.id],
                 "managed": (
@@ -300,14 +300,3 @@ def _services(
             }
         )
     return entries
-
-
-def _who_can_talk(agent: Agent) -> str:
-    policy = agent.addressing_policy
-    if policy is None:
-        return "anyone"
-    if policy == owner_only_policy([]).model_dump():
-        return "owner_only"
-    if policy == owner_and_owner_agents_policy().model_dump():
-        return "owner_and_owner_agents"
-    return "custom"

@@ -55,6 +55,7 @@ from switch_core.connections.app_credentials import (
     app_kind,
     cannot_work_here,
     github_needs_https,
+    needs_public_url,
     not_set_up,
 )
 from switch_core.connections.loader import (
@@ -145,6 +146,9 @@ UnavailableCode = Literal[
     "switched_off",
     # Its app can't be set up on this server: GitHub's needs an https address.
     "needs_https",
+    # Its sign-ins return only to the server's own callback, and the server
+    # has no public address (`GATEWAY_PUBLIC_URL`).
+    "needs_public_url",
     # Its app is the operator's to set up, under Connector apps, and isn't.
     "app_not_set_up",
     # Nothing on this server connects it, and nothing the operator saves would.
@@ -1153,6 +1157,13 @@ class ServiceBroker:
         reason = self._disabled.get(service)
         if reason is not None:
             return Unavailable("switched_off", reason)
+        oauth = entry.definition.auth.oauth
+        if (
+            oauth is not None
+            and self._public_url is None
+            and "loopback" not in oauth.redirect
+        ):
+            return Unavailable("needs_public_url", needs_public_url(name))
         adapter = self._adapters.get(service)
         if adapter is None:
             kind = app_kind(entry.definition)
@@ -1557,6 +1568,10 @@ class ServiceBroker:
         if definition.adapter == "api_key":
             return None
         name = definition.name
+        unrevoked = (
+            f"Switch could not revoke the sign-in {name} just issued. Remove "
+            f"Switch from your {name} account's connected apps."
+        )
         adapter = self._adapters.get(service)
         try:
             if adapter is None:
@@ -1565,18 +1580,17 @@ class ServiceBroker:
                 )
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
                 await adapter.revoke_connection(secret)
-        except ConnectionNotRevocable:
-            return None
+        except ConnectionNotRevocable as error:
+            # The vendor offers no revocation: nothing failed, but the
+            # sign-in lives on until the person removes it there.
+            return str(error)
         except Exception as error:
             logger.error(
                 "%s unkept sign-in revocation failed: error_type=%s",
                 service,
                 type(error).__name__,
             )
-            return (
-                f"Switch could not revoke the sign-in {name} just issued. Remove "
-                f"Switch from your {name} account's connected apps."
-            )
+            return unrevoked
         return None
 
     async def check_key(self, service: str, fields: dict[str, str]) -> CheckedKey:

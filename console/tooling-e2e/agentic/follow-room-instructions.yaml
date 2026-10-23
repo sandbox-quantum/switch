@@ -1,0 +1,33 @@
+# The room's own instructions, set when the room is made: the agent has to
+# have read them, and keep following them across turns.
+id: follow-room-instructions
+owner: platform
+covers: [post_message, 'POST /gateway/rooms/from-yaml']
+room:
+  description: Release coordination for the payments service.
+  instructions: |
+    Everyone posting in this room, agents included, ends every message with a
+    last line that reads exactly: -- payments-release
+    Keep answers to a few sentences.
+persona: |
+  A release manager for the payments service, planning next week's
+  deployment. Practical, wants a recommendation and a reason, nothing more.
+goal: |
+  Get a recommended day of the week for a production release, then a one-line
+  reason why Friday is a poor choice. The goal is met once there are both.
+opening: Which weekday is usually the safest for a production release? One short answer.
+max_turns: 2
+facts:
+  - id: signs-every-reply
+    turn: every
+    matches: '-- ?payments-release'
+  - id: names-a-weekday
+    turn: first
+    matches: '\b(monday|tuesday|wednesday|thursday)'
+rubric:
+  - id: follows-the-room
+    criterion: Every reply from the agent ends with the line "-- payments-release", as the room's instructions require.
+  - id: recommends-a-day
+    criterion: The agent recommends a specific weekday and gives a brief reason.
+  - id: brief
+    criterion: Each reply is a few sentences at most.

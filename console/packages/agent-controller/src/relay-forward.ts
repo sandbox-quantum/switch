@@ -93,12 +93,12 @@ export class UpstreamForwarder implements Forwarder {
       } catch (error) {
         if (isRevoked(error)) {
           this.deps.auth.revoked();
-          return refuse(res, 401, 'This agents controller has been revoked.');
+          return refuse(res, 401, 'This agent controller has been revoked.');
         }
         return refuse(
           res,
           502,
-          `The agents controller could not get an access token from Switch: ${errorMessage(error)}`
+          `The agent controller could not get an access token from Switch: ${errorMessage(error)}`
         );
       }
       let upstream: IncomingMessage;
@@ -118,7 +118,7 @@ export class UpstreamForwarder implements Forwarder {
         return refuse(
           res,
           502,
-          `The agents controller could not reach Switch: ${errorMessage(error)}`
+          `The agent controller could not reach Switch: ${errorMessage(error)}`
         );
       }
       if (upstream.statusCode === 401) {

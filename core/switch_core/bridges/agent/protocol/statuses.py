@@ -196,7 +196,7 @@ async def agent_statuses_by_room(
 def controller_statuses(
     agents: list[Agent], connections: AgentConnectionRegistry
 ) -> dict[str, AgentStatus]:
-    """Presence for agents run by an agents controller.
+    """Presence for agents run by an agent controller.
 
     Switch knows only whether such an agent is connected, not where its
     sessions are: whatever its `connection_model`, it is LIVE while its

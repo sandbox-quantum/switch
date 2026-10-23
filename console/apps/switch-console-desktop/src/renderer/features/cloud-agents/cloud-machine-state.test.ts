@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
-import { machinePresentation } from './cloud-machine-state';
+import { isMachineAsleep, machinePresentation } from './cloud-machine-state';
 
 const sleepingMachine: CloudMachine = {
   machine_id: '3f1c2b4a-0000-4000-8000-000000000001',
@@ -274,5 +274,17 @@ describe('machinePresentation actions', () => {
     ],
   ])('%s', (_name, input, actions) => {
     expect(present(input).actions).toEqual(actions);
+  });
+});
+
+describe('isMachineAsleep', () => {
+  it.each([
+    ['sleeping stopped', machine({}), true],
+    ['error while sleeping', machine({ state: 'error', error_code: 'x' }), false],
+    ['retained while sleeping', machine({ desired_state: 'retained' }), false],
+    ['being deleted while sleeping', machine({ state: 'deleting' }), false],
+    ['running', machine(running), false],
+  ])('%s', (_name, input, asleep) => {
+    expect(isMachineAsleep(input, NOW)).toBe(asleep);
   });
 });
