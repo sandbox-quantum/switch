@@ -1911,9 +1911,10 @@ version of their own to them without also giving them a release of their own.
 - **Starting Docker with the server page open now enables the Mattermost
   switch.** The server page checked for Docker only when it opened, so Docker
   Desktop started afterwards left the switch greyed out until you left the
-  page and came back. It now checks again the way the setup step does, and a
-  server that started without Docker shows the switch off and ready to turn on
-  (#1021).
+  page and came back. It now checks again the way the setup step does. A
+  running server whose Mattermost was left out or failed to start, because
+  Docker was off, shows the switch off, so turning it on brings Mattermost up
+  without a restart (#1021).
 - **A local Mattermost shows up as soon as it is ready.** When the Mattermost
   beside a local server finished setting up, pages already open kept showing no
   Mattermost and asked you to link an account until the server was restarted.

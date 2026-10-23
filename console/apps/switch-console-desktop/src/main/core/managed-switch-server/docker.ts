@@ -93,9 +93,9 @@ export function classifyDockerError(error: unknown): {
 }
 
 /**
- * The last line logged about Docker being unusable. The server page asks every
- * few seconds while Docker is down, and a line each time a failure changes
- * says as much as a line on every check.
+ * The last line logged about Docker being unusable. A page waiting on Docker
+ * asks every few seconds while it is down, and a line each time a failure
+ * changes says as much as a line on every check.
  */
 let lastUnavailableLog: string | null = null;
 

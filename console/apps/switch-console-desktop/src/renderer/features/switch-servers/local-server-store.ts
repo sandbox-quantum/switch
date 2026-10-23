@@ -114,15 +114,21 @@ export class LocalServerStore {
     return this.runtime === 'native';
   }
 
-  /** Whether Mattermost is turned on for a native server. */
+  /**
+   * Whether Mattermost is on for a native server: for a running one, whether
+   * it is up or coming up, where that is known; otherwise whether the next
+   * start runs it. A running server going without it (left out at start, or
+   * failed to come up) reads off, so turning the switch on brings it up rather
+   * than a click on a switch already on turning it off.
+   */
   get mattermost(): boolean {
-    const chosen = this.status?.mattermost ?? null;
-    if (chosen !== null) return chosen;
-    // Never chosen means on wherever Docker can run it, which each start
-    // decides. A server that started without Docker is going without
-    // Mattermost, even once Docker is up, until it is turned on.
-    if (this.isRunning && this.mattermostState === 'off') return false;
-    return this.docker?.available ?? false;
+    if (this.isRunning) {
+      const state = this.mattermostState;
+      if (state === 'off' || state === 'failed') return false;
+      if (state === 'starting' || state === 'running') return true;
+    }
+    // Never chosen means on wherever Docker can run it.
+    return this.status?.mattermost ?? this.docker?.available ?? false;
   }
 
   /** How the Mattermost beside a native server is doing, when known. */
