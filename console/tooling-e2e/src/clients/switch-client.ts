@@ -47,6 +47,7 @@ export interface ManagedAgentDefinition {
   provider: string;
   model: string | null;
   instructions: string;
+  auto_mode: boolean;
   auto_approve: boolean;
   directory: string | null;
 }
