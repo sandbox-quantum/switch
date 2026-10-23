@@ -203,10 +203,13 @@ class MetricPayload:
 
 
 def _number_data_point(
-    point: NumberPoint, start_nanos: int, end_nanos: int
+    point: NumberPoint,
+    start_nanos: int,
+    end_nanos: int,
+    extra: Mapping[str, AttributeValue],
 ) -> dict[str, Any]:
     return {
-        "attributes": otlp_attributes(point.attributes),
+        "attributes": otlp_attributes({**point.attributes, **extra}),
         "startTimeUnixNano": str(start_nanos),
         "timeUnixNano": str(end_nanos),
         # `asDouble`, not `asInt`: int64 is a JSON string, which invites a
@@ -216,10 +219,13 @@ def _number_data_point(
 
 
 def _histogram_data_point(
-    point: HistogramPoint, start_nanos: int, end_nanos: int
+    point: HistogramPoint,
+    start_nanos: int,
+    end_nanos: int,
+    extra: Mapping[str, AttributeValue],
 ) -> dict[str, Any]:
     return {
-        "attributes": otlp_attributes(point.attributes),
+        "attributes": otlp_attributes({**point.attributes, **extra}),
         "startTimeUnixNano": str(start_nanos),
         "timeUnixNano": str(end_nanos),
         # fixed64 on the wire, so strings in JSON.
@@ -231,7 +237,10 @@ def _histogram_data_point(
 
 
 def _encode_metric(
-    metric: MetricPayload, start_nanos: int, end_nanos: int
+    metric: MetricPayload,
+    start_nanos: int,
+    end_nanos: int,
+    extra: Mapping[str, AttributeValue],
 ) -> dict[str, Any]:
     encoded: dict[str, Any] = {
         "name": metric.name,
@@ -243,7 +252,7 @@ def _encode_metric(
         encoded["gauge"] = {
             "dataPoints": [
                 {
-                    "attributes": otlp_attributes(point.attributes),
+                    "attributes": otlp_attributes({**point.attributes, **extra}),
                     "timeUnixNano": str(end_nanos),
                     "asDouble": point.value,
                 }
@@ -253,7 +262,7 @@ def _encode_metric(
     elif metric.kind == "sum":
         encoded["sum"] = {
             "dataPoints": [
-                _number_data_point(point, start_nanos, end_nanos)
+                _number_data_point(point, start_nanos, end_nanos, extra)
                 for point in metric.numbers
             ],
             "aggregationTemporality": AGGREGATION_TEMPORALITY_DELTA,
@@ -262,7 +271,7 @@ def _encode_metric(
     elif metric.kind == "histogram":
         encoded["histogram"] = {
             "dataPoints": [
-                _histogram_data_point(point, start_nanos, end_nanos)
+                _histogram_data_point(point, start_nanos, end_nanos, extra)
                 for point in metric.histograms
             ],
             "aggregationTemporality": AGGREGATION_TEMPORALITY_DELTA,
@@ -278,7 +287,16 @@ def build_metrics_payload(
     start_nanos: int,
     end_nanos: int,
 ) -> dict[str, Any]:
-    """One export interval's metrics as a single OTLP request body."""
+    """One export interval's metrics as a single OTLP request body.
+
+    Every point also carries the process as `process_id`. The resource says
+    so too (`service.instance.id`), but Datadog does not make resource
+    attributes tags, so without it the pods of one deployment write the same
+    series and each gauge shows whichever pod reported last.
+    """
+    extra: dict[str, AttributeValue] = (
+        {"process_id": resource.instance_id} if resource.instance_id else {}
+    )
     return {
         "resourceMetrics": [
             {
@@ -294,7 +312,7 @@ def build_metrics_payload(
                             ),
                         },
                         "metrics": [
-                            _encode_metric(metric, start_nanos, end_nanos)
+                            _encode_metric(metric, start_nanos, end_nanos, extra)
                             for metric in metrics
                         ],
                     }
