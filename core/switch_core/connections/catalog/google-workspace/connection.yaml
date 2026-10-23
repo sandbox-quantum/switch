@@ -15,6 +15,10 @@ auth:
     registration: static
     client_settings: GOOGLE_WORKSPACE
     redirect: [core]
+    # Google refuses a made-up code before it compares the redirect URI, so a
+    # client missing Switch's passes the check and fails the first sign-in.
+    unchecked: >-
+      Switch can't check the redirect URI. Connect once to confirm.
     authorization_url: https://accounts.google.com/o/oauth2/v2/auth
     token_url: https://oauth2.googleapis.com/token
     revocation_url: https://oauth2.googleapis.com/revoke

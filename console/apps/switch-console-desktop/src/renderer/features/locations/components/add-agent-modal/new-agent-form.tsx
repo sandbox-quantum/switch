@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Cloud, Monitor, Server } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isMachineAsleep } from '@renderer/features/cloud-agents/cloud-machine-state';
 import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationManagerStore } from '@renderer/features/locations/stores/location-selectors';
@@ -148,6 +149,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
   const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
   const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
+  // A sleeping machine is not listed as a machine of its own, so the Switch
+  // cloud entry says it is there: choosing it wakes it.
+  const cloudAsleep =
+    Array.isArray(cloudMachines.data) &&
+    cloudMachines.data.some((machine) => isMachineAsleep(machine, Date.now()));
   const isCloudRun = runHost === 'cloud';
   // Why the form moved off Switch cloud by itself, said under the picker.
   const [cloudFallback, setCloudFallback] = useState<string | null>(null);
@@ -792,7 +798,9 @@ export const NewAgentForm = observer(function NewAgentForm({
                   <span className="flex-1">Switch cloud</span>
                   <span className="text-xs text-foreground-muted">
                     {cloudAvailable
-                      ? 'preview'
+                      ? cloudAsleep
+                        ? 'asleep, wakes when chosen'
+                        : 'preview'
                       : cloudNotSetUp
                         ? 'not set up on this server'
                         : 'checking…'}

@@ -203,6 +203,12 @@ switchCore:
   # GitHub can be connected but not granted.
   githubAppPrivateKeyPath: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
+  # Airtable OAuth integration for the Airtable connection, registered in
+  # Airtable's Builder Hub with the redirect URL
+  # https://<public URL>/gateway/service-connections/airtable/flows/callback.
+  # Without it, Airtable shows as not set up.
+  airtableClientSecret: ""
+  # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
   # as its redirect URI. Without it or one saved under Connectors, Google

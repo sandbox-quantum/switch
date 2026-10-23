@@ -6,6 +6,7 @@ import { useConnectorApps } from "../../data/hooks";
 import ConnectorAppCard from "./ConnectorAppCard";
 import {
   cardOrder,
+  missingPublicUrl,
   ONLY_THE_OPERATOR,
   PUBLIC_URL_BANNER,
   sentBackTo,
@@ -46,7 +47,7 @@ function ConnectorAppsList() {
     );
   if (data === null) return heading;
 
-  const missingUrl = data.public_url === null;
+  const missingUrl = missingPublicUrl(data.apps, data.public_url);
   return (
     <>
       {heading}

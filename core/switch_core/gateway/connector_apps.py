@@ -43,7 +43,8 @@ from switch_core.connections.app_credentials import (
 )
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.connections.loader import CATALOG
-from switch_core.connections.oauth_clients import core_callback
+from switch_core.connections.oauth_clients import redirect_uris
+from switch_core.connections.registry import every_scope
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     ServiceAppCredential,
@@ -165,19 +166,39 @@ def _refuse_while_blocked(spec: AppSpec, public_url: str | None) -> None:
         raise HTTPException(409, blocked)
 
 
-def _redirect(
-    spec: AppSpec, effective: EffectiveCredentials, public_url: str | None
-) -> str | None:
-    """Where the vendor sends people back to Switch, for the operator to register."""
+def _redirects(
+    apps: ConnectorApps, spec: AppSpec, effective: EffectiveCredentials
+) -> list[str]:
+    """Every address the vendor sends people back to Switch at, for the
+    operator to register: Core's own callback, which needs the public URL,
+    or Switch Console's listener on loopback, which does not."""
+    public_url = apps.public_url
     if spec.kind == "github_app":
         if effective.github_app is not None:
-            return effective.github_app.connections.callback
+            return [effective.github_app.connections.callback]
         return (
-            None
+            []
             if public_url is None or _setup_blocked(spec, public_url) is not None
-            else public_url.rstrip("/") + GITHUB_CALLBACK_PATH
+            else [public_url.rstrip("/") + GITHUB_CALLBACK_PATH]
         )
-    return None if public_url is None else core_callback(public_url, spec.service)
+    oauth = apps.definition(spec.service).auth.oauth
+    assert oauth is not None
+    return redirect_uris(spec.service, oauth.redirect, public_url, oauth.loopback_ports)
+
+
+def _needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:
+    if spec.kind == "github_app":
+        return True
+    oauth = apps.definition(spec.service).auth.oauth
+    assert oauth is not None
+    return "core" in oauth.redirect
+
+
+def _scopes(apps: ConnectorApps, spec: AppSpec) -> list[str]:
+    """What a sign-in asks for, for a vendor whose app lists its scopes."""
+    if spec.kind == "github_app":
+        return []
+    return every_scope(apps.definition(spec.service))
 
 
 def _secret_views(
@@ -236,6 +257,7 @@ async def _entry(
         user = await session.get(User, row.updated_by)
         updated_by = None if user is None else user.name
     slug = None if shown is None else shown.settings.get("slug")
+    redirects = _redirects(apps, spec, effective)
     return {
         "slug": spec.service,
         "name": spec.name,
@@ -258,7 +280,11 @@ async def _entry(
         "saved_ignored": effective.saved_ignored,
         "unreadable": effective.unreadable,
         "load_error": effective.load_error,
-        "redirect_uri": _redirect(spec, effective, apps.public_url),
+        # The first of `redirect_uris`, for Consoles that read only one.
+        "redirect_uri": next(iter(redirects), None),
+        "redirect_uris": redirects,
+        "needs_public_url": _needs_public_url(apps, spec),
+        "scopes": _scopes(apps, spec),
         "setup_blocked": _setup_blocked(spec, apps.public_url),
         "install_url": (
             f"https://github.com/apps/{slug}/installations/new"
@@ -319,14 +345,15 @@ def _checks_body(result: CheckResult) -> list[dict[str, Any]]:
             "ok": check.ok,
             "message": check.message,
             "field": check.field,
+            "note": check.note,
         }
         for check in result.checks
     ]
 
 
 async def _check(apps: ConnectorApps, spec: AppSpec, values: AppValues) -> CheckResult:
-    public_url = apps.public_url
-    if public_url is None:
+    redirects = _redirects(apps, spec, apps.effective(spec.service))
+    if not redirects:
         raise HTTPException(
             409,
             "Set GATEWAY_PUBLIC_URL first: the vendor needs to know where to send "
@@ -338,7 +365,7 @@ async def _check(apps: ConnectorApps, spec: AppSpec, values: AppValues) -> Check
             spec,
             apps.definition(spec.service),
             values,
-            core_callback(public_url, spec.service),
+            redirects[0],
         )
     except VendorUnreachableError as error:
         raise HTTPException(503, str(error)) from None
@@ -496,7 +523,11 @@ async def save_connector_app(
         admin.id,
         details["fields_changed"],
     )
-    return await _entry(session, session_factory, apps, spec)
+    # What the vendor said, notes included, for the page to show as a check's.
+    return {
+        **await _entry(session, session_factory, apps, spec),
+        "checks": _checks_body(result),
+    }
 
 
 @router.post("/{service}/import")

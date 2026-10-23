@@ -58,6 +58,34 @@ version of their own to them without also giving them a release of their own.
   itself up, its rules with the people, agents and rooms they name. So an
   agent can tell someone who may answer its questions and approvals instead
   of guessing. Another agent sees only the kind.
+- **The Airtable connection.** A person connects Airtable from Switch Console,
+  choosing at Airtable's consent screen which bases and workspaces to share,
+  and a granted agent reads and updates records and comments in them, as that
+  person, through Airtable's MCP server. Each server's operator registers and
+  publishes an Airtable OAuth integration and saves it under Connector apps,
+  or names it in `AIRTABLE_CLIENT_CONFIG_PATH` (Helm:
+  `switchCore.airtableClientSecret`); see `docs/old/airtable-setup.md`.
+  Without it, Airtable is listed as not set up. Like Google Workspace, it
+  needs `GATEWAY_PUBLIC_URL`: Airtable sends people back to the server's own
+  callback. On a server without one, both are listed as unavailable
+  (`needs_public_url`), saying why, rather than failing when someone
+  connects.
+  Airtable offers no read-only sign-in, so every connection can write;
+  changing tables and fields is not asked for, and Airtable refuses it.
+  Airtable cannot revoke a sign-in, and an integration reaches the bases of
+  every grant a person gave it, so a sign-in Switch stops using still works
+  and widens their next connection. Disconnecting or reconnecting says so and
+  where in Airtable to remove it, as any OAuth service without revocation now
+  does rather than reporting a failed revoke.
+- **Connector apps set up Airtable.** An app's entry in `GET /connector-apps`
+  gains `redirect_uris` (every address to register), `needs_public_url` and
+  `scopes`. The dashboard's Connectors page walks Airtable's Builder Hub, with
+  its redirect URL to copy and the scopes to tick, and saves only once the
+  operator confirms the integration's support details are set: no check can
+  see whether it is published, so a passing one says so. Saving an app
+  answers with its checks too, so the page can show them. A passing Google
+  Workspace check now says it can't see the redirect URI either: Google
+  compares it only when someone signs in.
 
 #### Changed
 - **Following the conversation is described the same way everywhere, and the
@@ -1894,6 +1922,20 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **Airtable's logo on the Connections grid.**
+- **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
+  Builder Hub with the redirect URL to copy and the scopes to tick, and asks
+  the operator to confirm the integration's support details are set, which no
+  check can see. A server that does not send `redirect_uris`,
+  `needs_public_url` and `scopes` is read as before.
+- **Saving a connector app shows what its check said.** After Check and save
+  or an updated secret, the app's page opens with the vendor's answer and any
+  note, as Check it works shows them.
+- **Connectors says why Airtable or Google Workspace can't be connected on a
+  server without a public address**: the operator is told to set
+  `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
+
 #### Changed
 - **One name for the controller.** Console, the Gateway and the docs say
   "agent controller" everywhere, matching the `switch-agent-controller`
@@ -1903,6 +1945,14 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **The local Switch server starts on Intel Macs without Homebrew.**
+  cryptography publishes no wheel for Intel Macs, so the Intel build of
+  Console compiled its own against the build machine's Homebrew OpenSSL, and
+  on a Mac without Homebrew the server failed to start with `Library not
+  loaded: /usr/local/opt/openssl@3/lib/libssl.3.dylib`. The bundled
+  cryptography now carries its own OpenSSL, as cryptography's wheels for Apple
+  silicon do, and a macOS build fails if anything in the local server links a
+  library that is neither macOS's nor shipped with it.
 - **Setting up a server notices Docker once it starts.** "Set up a server on
   this computer" checked for Docker only when the step opened, so installing or
   starting Docker meanwhile left the setup skipping Mattermost until you went

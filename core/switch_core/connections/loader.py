@@ -73,7 +73,14 @@ class OAuthClient(BaseModel):
     `authorization_url` and `token_url`, both are discovered from the MCP
     server's metadata. `revocation_url` is where a disconnect revokes the
     sign-in, where the vendor has one; `revocation_discovered` revokes at the
-    authorization server's advertised revocation endpoint instead.
+    authorization server's advertised revocation endpoint instead. A vendor
+    with neither needs `remove_access`: where the person removes Switch
+    themselves, and what the sign-in does until they do, said whenever Switch
+    drops one it cannot revoke.
+
+    `unchecked`: what a static client's operator must see to themselves,
+    because asking the vendor about the client cannot show it; said with every
+    check that passes.
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
@@ -104,6 +111,8 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    remove_access: str | None = Field(default=None, min_length=1, max_length=400)
+    unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
@@ -138,6 +147,17 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
+            )
+        if self.unchecked is not None and self.registration != "static":
+            raise ValueError("unchecked is for a static client, which is checked")
+        if (
+            self.revocation_url is None
+            and not self.revocation_discovered
+            and self.remove_access is None
+        ):
+            raise ValueError(
+                "a vendor Switch cannot revoke a sign-in at needs remove_access: "
+                "where people remove Switch themselves"
             )
         return self
 

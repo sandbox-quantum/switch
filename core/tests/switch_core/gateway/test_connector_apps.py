@@ -8,6 +8,7 @@ characters.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import secrets
@@ -64,6 +65,9 @@ PUBLIC = "https://switch.example.com"
 HTTP_PUBLIC = "http://switch.example.com"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
+AIRTABLE = "airtable"
+AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
+AIRTABLE_SECRET = "example-airtable-secret-0000"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
 
@@ -113,12 +117,74 @@ class FakeGitHub:
         return httpx.Response(404)
 
 
+class FakeAirtable:
+    """Airtable's side: its MCP server names the authorization server, whose
+    token endpoint, as Airtable's was seen to, wants a PKCE verifier before
+    anything else, takes the secret only as HTTP Basic, and compares the
+    redirect only with a real code."""
+
+    MCP = "https://mcp.airtable.com/mcp"
+    RESOURCE = "https://mcp.airtable.com/.well-known/oauth-protected-resource/mcp"
+    ISSUER = "https://airtable.com/oauth2/v1"
+
+    def __init__(self) -> None:
+        self.client_id = STATIC_CLIENT_ID
+        self.client_secret = AIRTABLE_SECRET
+        self.token_requests: list[dict[str, str]] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        url = f"{request.url.scheme}://{request.url.host}{request.url.path}"
+        if url == self.MCP:
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": f'Bearer resource_metadata="{self.RESOURCE}"'
+                },
+            )
+        if url == self.RESOURCE:
+            return httpx.Response(
+                200, json={"resource": self.MCP, "authorization_servers": [self.ISSUER]}
+            )
+        if (
+            url
+            == "https://airtable.com/.well-known/oauth-authorization-server/oauth2/v1"
+        ):
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": self.ISSUER,
+                    "authorization_endpoint": f"{self.ISSUER}/authorize",
+                    "token_endpoint": f"{self.ISSUER}/token",
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": [
+                        "client_secret_basic",
+                        "none",
+                    ],
+                },
+            )
+        if url == f"{self.ISSUER}/token":
+            form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+            self.token_requests.append(form)
+            if "code_verifier" not in form:
+                return httpx.Response(400, json={"error": "invalid_request"})
+            pair = f"{self.client_id}:{self.client_secret}".encode()
+            if (
+                request.headers.get("authorization")
+                != f"Basic {base64.b64encode(pair).decode()}"
+                or "client_secret" in form
+            ):
+                return httpx.Response(401, json={"error": "invalid_client"})
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(404)
+
+
 class World:
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], public_url: str
+        self, session_factory: async_sessionmaker[AsyncSession], public_url: str | None
     ) -> None:
         self.google = FakeGoogle()
         self.github = FakeGitHub()
+        self.airtable = FakeAirtable()
         self.unreachable = False
         self.vendor_calls: list[str] = []
         self.public_url = public_url
@@ -133,6 +199,8 @@ class World:
             raise httpx.ConnectError("unreachable", request=request)
         if request.url.host in ("api.github.com", "github.com"):
             return self.github.handle(request)
+        if request.url.host in ("mcp.airtable.com", "airtable.com"):
+            return self.airtable.handle(request)
         return self.google.handle(request)
 
     async def install(self, environ: dict[str, str] | None = None) -> ConnectorApps:
@@ -252,6 +320,12 @@ async def http_world(session_factory) -> World:
 
 
 @pytest.fixture
+async def local_world(session_factory) -> World:
+    """A server with no public address, as a local one runs."""
+    return World(session_factory, None)
+
+
+@pytest.fixture
 async def operator(session_factory) -> User:
     return await _user(session_factory, "operator", role="admin")
 
@@ -290,14 +364,30 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE}
         assert apps[GOOGLE]["source"] == "none"
-        assert apps[GOOGLE]["redirect_uri"] == (
-            f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
-        )
-        assert apps["github"]["redirect_uri"] == (
-            f"{PUBLIC}/gateway/provider-connections/github/callback"
-        )
+        google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
+        assert apps[GOOGLE]["redirect_uri"] == google
+        assert apps[GOOGLE]["redirect_uris"] == [google]
+        assert apps[GOOGLE]["needs_public_url"] is True
+        github = f"{PUBLIC}/gateway/provider-connections/github/callback"
+        assert apps["github"]["redirect_uri"] == github
+        assert apps["github"]["redirect_uris"] == [github]
+        assert apps["github"]["needs_public_url"] is True
+        assert apps["github"]["scopes"] == []
+        # Airtable comes back to Core's own callback, as Google does, and its
+        # integration lists the scopes a sign-in may ask for.
+        assert apps[AIRTABLE]["redirect_uris"] == [AIRTABLE_CALLBACK]
+        assert apps[AIRTABLE]["redirect_uri"] == AIRTABLE_CALLBACK
+        assert apps[AIRTABLE]["needs_public_url"] is True
+        assert apps[AIRTABLE]["scopes"] == [
+            "data.records:read",
+            "schema.bases:read",
+            "data.recordComments:read",
+            "workspacesAndBases:read",
+            "data.records:write",
+            "data.recordComments:write",
+        ]
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
     async def test_an_unknown_service_is_not_found(
@@ -619,6 +709,66 @@ class TestGitHubNeedsHttps:
         assert len(await _rows(session_factory)) == 1
 
 
+class TestAirtable:
+    async def test_airtable_is_checked_on_its_server_callback(
+        self, world: World, operator, session_factory
+    ) -> None:
+        await world.install()
+        async with world.harness.client() as client:
+            cookies = cookies_for(operator)
+            saved = await client.put(
+                f"{APPS}/{AIRTABLE}",
+                json=_google_body(client_secret=AIRTABLE_SECRET),
+                cookies=cookies,
+            )
+            checked = await client.post(f"{APPS}/{AIRTABLE}/check", cookies=cookies)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["source"] == "saved"
+        # Saving answers what the check said, as checking it again does.
+        assert saved.json()["checks"] == checked.json()["checks"]
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["ok"] is True
+        [check] = checked.json()["checks"]
+        assert check["message"] == "Airtable accepts this client ID and secret."
+        assert check["note"].startswith("Switch can't check the redirect URL")
+        # The check is a code exchange on the redirect the integration lists.
+        assert [form["redirect_uri"] for form in world.airtable.token_requests] == [
+            AIRTABLE_CALLBACK
+        ] * 2
+        assert len(await _rows(session_factory)) == 1
+
+    async def test_airtable_needs_the_public_url_as_google_does(
+        self, local_world: World, operator, session_factory
+    ) -> None:
+        await local_world.install()
+        async with local_world.harness.client() as client:
+            refused = await client.put(
+                f"{APPS}/{AIRTABLE}",
+                json=_google_body(client_secret=AIRTABLE_SECRET),
+                cookies=cookies_for(operator),
+            )
+            listed = await client.get(APPS, cookies=cookies_for(operator))
+        assert refused.status_code == 409
+        assert "GATEWAY_PUBLIC_URL" in refused.json()["detail"]
+        apps = {entry["slug"]: entry for entry in listed.json()["apps"]}
+        assert apps[AIRTABLE]["redirect_uris"] == []
+        assert await _rows(session_factory) == []
+
+    async def test_a_wrong_airtable_secret_is_refused_and_not_stored(
+        self, world: World, operator, session_factory
+    ) -> None:
+        await world.install()
+        async with world.harness.client() as client:
+            refused = await client.put(
+                f"{APPS}/{AIRTABLE}",
+                json=_google_body(client_secret="example-wrong-secret-0000"),
+                cookies=cookies_for(operator),
+            )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["field"] == "client_secret"
+        assert await _rows(session_factory) == []
+
+
 class TestImportAndRemove:
     async def test_copying_configuration_in_needs_nothing_retyped(
         self, world: World, operator, session_factory, tmp_path: Path
@@ -692,6 +842,24 @@ class TestCheckAndImpact:
         assert checked.status_code == 200
         assert checked.json()["ok"] is False
         assert len(await _audit(session_factory)) == 1
+
+    async def test_a_passing_google_check_says_it_cannot_see_the_redirect(
+        self, world: World, operator
+    ) -> None:
+        await world.install()
+        async with world.harness.client() as client:
+            cookies = cookies_for(operator)
+            saved = await client.put(
+                f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies
+            )
+            checked = await client.post(f"{APPS}/{GOOGLE}/check", cookies=cookies)
+        assert saved.json()["checks"] == checked.json()["checks"]
+        [check] = checked.json()["checks"]
+        assert check["ok"] is True
+        assert check["message"] == "Google Workspace accepts this client ID and secret."
+        assert check["note"] == (
+            "Switch can't check the redirect URI. Connect once to confirm."
+        )
 
     async def test_the_impact_counts_people_across_workspaces(
         self, world: World, operator, session_factory

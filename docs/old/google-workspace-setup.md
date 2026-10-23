@@ -75,9 +75,10 @@ shown to the server's operator only, and only with the server's
 `service_connections` flag on. Choose **Set up Google Workspace**. The dialog
 shows the redirect URI to register, with a copy button; paste the client's
 **Client ID** and **Client secret** as Google Cloud labels them, and choose
-**Check and save**. Switch first asks Google whether the two belong together
-(and, where Google says so, whether the redirect URI is registered), and
-saves only if they do. The secret is stored encrypted, like every other
+**Check and save**. Switch first asks Google whether the two belong together,
+and saves only if they do. Google does not say whether the redirect URI is
+registered until someone signs in, so connect once to confirm it: a missing
+one shows as "Error 400: redirect_uri_mismatch" on Google's page. The secret is stored encrypted, like every other
 stored credential (see [key rotation](key-rotation.md)), and is in use at
 once: nobody needs to restart anything.
 

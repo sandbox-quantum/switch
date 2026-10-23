@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.adapters.github import GitHubAdapter, load_github_app
-from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
+from switch_core.connections.adapters.oauth import (
+    OAuthAdapter,
+    OAuthClientCredentials,
+    StaticClient,
+)
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import RegisteredClient
@@ -100,11 +104,32 @@ def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> Non
     )
 
 
+def test_airtable_is_set_up_by_its_operators_own_client() -> None:
+    assert "airtable" not in build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "airtable": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["airtable"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, StaticClient)
+    assert adapter._client.client.client_id == "c"
+
+
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),
         github_app=None,
-        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        oauth_clients={
+            "example": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
         http=HTTP,
         registration=REG,
     )
@@ -116,7 +141,9 @@ def test_a_cli_entry_gets_the_generic_adapter_with_its_client(tmp_path: Path) ->
     adapters = build_adapters(
         catalog,
         github_app=None,
-        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        oauth_clients={
+            "example": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
         http=HTTP,
         registration=REG,
     )
@@ -200,6 +227,32 @@ def test_an_app_not_set_up_here_says_who_sets_it_up(
         assert broker.server_setup_needed(service) is True
 
 
+def test_a_service_signing_in_only_through_the_server_needs_its_public_url(
+    tmp_path: Path, session_factory
+) -> None:
+    core_only = STATIC.replace("redirect: [loopback, core]", "redirect: [core]")
+    broker = _broker(_catalog(tmp_path, core_only), session_factory, {}, None)
+    example = broker.unavailable("example")
+    assert example is not None
+    assert example.code == "needs_public_url"
+    assert example.reason == (
+        "Example can't be connected on this server: it needs the server's "
+        "public address (GATEWAY_PUBLIC_URL)."
+    )
+    assert broker.server_setup_needed("example") is False
+    # GitHub's App names its own callback, so it isn't held up the same way.
+    github = broker.unavailable("github")
+    assert github is not None and github.code == "app_not_set_up"
+    with_url = _broker(
+        _catalog(tmp_path / "again", core_only),
+        session_factory,
+        {},
+        "https://switch.example.test",
+    )
+    example = with_url.unavailable("example")
+    assert example is not None and example.code == "app_not_set_up"
+
+
 def test_github_cannot_work_on_a_server_without_an_https_address(
     tmp_path: Path, session_factory
 ) -> None:
@@ -243,7 +296,9 @@ def test_a_replaced_adapter_is_used_at_once(tmp_path: Path, session_factory) -> 
     adapter = build_adapters(
         catalog,
         github_app=None,
-        oauth_clients={"example": OAuthClientCredentials("c", "SYNTHETIC")},
+        oauth_clients={
+            "example": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
         http=HTTP,
         registration=REG,
     )["example"]

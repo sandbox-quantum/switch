@@ -841,10 +841,22 @@ sentence saying so: relay it to the person asking ("ask my owner to enable
 
 **Use it when you are asked for a new agent**, or when a job needs one that
 does not exist yet and the person agrees. Before calling `create_agent`,
-check `list_machines` for a machine that is `online` with the provider
-installed and `auth` not `missing` or `expired`, then **propose the name,
-machine, provider and what the agent is for, and get explicit confirmation**:
-it starts a real agent on someone's computer.
+check `list_machines` for a machine that is `online` (or a sleeping cloud
+machine, below) with the provider installed and `auth` not `missing` or
+`expired`, then **propose the name, machine, provider and what the agent is
+for, and get explicit confirmation**: it starts a real agent on someone's
+computer. Ask which machine rather than picking one: an agent on a person's
+computer answers only while it is on, and a cloud machine (`kind` "ec2") keeps
+running when that computer is off.
+
+A cloud machine sleeps when nothing has used it for a while, and then shows
+`offline`. It can still take the agent: `create_agent` wakes it, judging the
+provider by the machine's last report, and the agent starts once the machine
+is up. Say in the proposal that this takes a few minutes, and when checking
+that it came up (below), allow up to ten. A cloud machine its owner stopped is
+not woken: `create_agent` is refused with `controller_offline`. A workspace
+that never used a cloud machine has none listed; the person sets one up by
+choosing Switch cloud in Switch Console's New agent.
 
 **Relay a refusal as it is.** When the machine cannot take the agent, nothing
 is created and the error says why, with a reason code: `controller_offline`

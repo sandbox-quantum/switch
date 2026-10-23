@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
     AccessToken,
+    ConnectionNotRevocable,
     ConnectionSecret,
     IssueRequest,
     ReauthorizationRequiredError,
@@ -70,7 +71,9 @@ def _adapter(
 ) -> tuple[OAuthAdapter, httpx.AsyncClient]:
     http = vendor.client()
     client = StaticClient(
-        OAuthClientCredentials(STATIC_CLIENT_ID, STATIC_CLIENT_SECRET)
+        OAuthClientCredentials(
+            STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+        )
     )
     return OAuthAdapter(_definition(text), client, http), http
 
@@ -236,6 +239,55 @@ class TestRefresh:
             await adapter.refresh(secret)
         assert vendor.token_requests[-1]["resource"] == MCP_URL
 
+    async def test_sends_the_secret_as_basic_where_the_vendor_takes_only_that(
+        self, vendor
+    ) -> None:
+        vendor.metadata["token_endpoint_auth_methods_supported"] = [
+            "client_secret_basic",
+            "none",
+        ]
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.refresh(secret)
+        assert len(vendor.token_requests) == 2
+        assert not any("client_secret" in form for form in vendor.token_requests)
+
+    async def test_sends_the_secret_in_the_body_where_the_vendor_lists_that(
+        self, vendor
+    ) -> None:
+        vendor.metadata["token_endpoint_auth_methods_supported"] = [
+            "client_secret_basic",
+            "client_secret_post",
+        ]
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.refresh(secret)
+        assert [form.get("client_secret") for form in vendor.token_requests] == [
+            STATIC_CLIENT_SECRET,
+            STATIC_CLIENT_SECRET,
+        ]
+
+    async def test_metadata_listing_no_methods_means_basic(self, vendor) -> None:
+        del vendor.metadata["token_endpoint_auth_methods_supported"]
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.refresh(secret)
+        assert len(vendor.token_requests) == 2
+        assert not any("client_secret" in form for form in vendor.token_requests)
+
+    async def test_a_basic_secret_is_form_urlencoded(self, vendor) -> None:
+        unusual = "a+b/c:d%e f="
+        vendor.clients[STATIC_CLIENT_ID] = unusual
+        vendor.metadata["token_endpoint_auth_methods_supported"] = [
+            "client_secret_basic"
+        ]
+        client = StaticClient(
+            OAuthClientCredentials(STATIC_CLIENT_ID, unusual, authentication=None)
+        )
+        adapter = OAuthAdapter(_definition(), client, vendor.client())
+        secret = await _sign_in(adapter, vendor)
+        assert (await adapter.refresh(secret)).access_token in vendor.live_access
+
     async def test_a_reusable_refresh_token_is_kept(self) -> None:
         vendor = FakeOAuthServer(rotating=False)
         adapter, _ = _adapter(vendor)
@@ -355,10 +407,15 @@ class TestDisconnect:
         assert revoked["token"] == secret.values["refresh_token"]
         assert revoked["token_type_hint"] == "refresh_token"
 
-    async def test_says_so_where_the_vendor_offers_no_revocation(self, vendor) -> None:
+    async def test_says_it_cannot_revoke_where_the_vendor_offers_no_revocation(
+        self, vendor
+    ) -> None:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
-        with pytest.raises(ServiceAdapterError, match="no way to revoke"):
+        with pytest.raises(
+            ConnectionNotRevocable,
+            match="so it still works. Remove Switch under Connected apps in Example.",
+        ):
             await adapter.revoke_connection(secret)
         assert vendor.revoked == []
 
@@ -391,8 +448,9 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        with pytest.raises(ServiceAdapterError, match="no way to revoke"):
+        with pytest.raises(ServiceAdapterError, match="no way to revoke") as raised:
             await adapter.revoke_connection(secret)
+        assert not isinstance(raised.value, ConnectionNotRevocable)
 
 
 class TestWhereTheMetadataIs:
@@ -536,3 +594,50 @@ class TestThroughTheBroker:
         assert stored["refresh_token"] in vendor.live_refresh
         assert stored["access_token"] == tokens[0].token
         assert IDENTITY_URL not in vendor.paths
+
+    async def test_disconnecting_a_vendor_without_revocation_says_so_plainly(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        vendor,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        adapter, _ = _adapter(vendor)
+        broker = ServiceBroker(
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            catalog=pass_through_catalog(tmp_path / "catalog"),
+            adapters={"example": adapter},
+            disabled={},
+            store=STORE,
+            token_retention=timedelta(days=30),
+            workspace_services=WorkspaceServiceStore(),
+            workspace_gate=False,
+            public_url=None,
+        )
+        secret = await _sign_in(adapter, vendor)
+        async with session_factory() as session:
+            owner = await _user(session, "ada")
+            await STORE.save_connection(
+                session,
+                user_id=owner.id,
+                service="example",
+                consent="write",
+                granted_scopes=["read:items", "write:items"],
+                account_id="acct-1",
+                external_identity="ada@example.test",
+                encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret.values)),
+                oauth_client_id=None,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            warning = await broker.disconnect(session, owner.id, "example")
+
+        assert warning is not None
+        assert "cannot revoke it, so it still works" in warning
+        assert "could not revoke" not in warning
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
+        assert vendor.revoked == []
+        async with session_factory() as session:
+            assert await STORE.get_connection(session, owner.id, "example") is None

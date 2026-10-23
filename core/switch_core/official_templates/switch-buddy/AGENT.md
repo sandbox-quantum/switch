@@ -112,8 +112,32 @@ you can, once they say yes:
 
 **Always propose first and wait for a yes.** Say what you will create: the name, where it
 runs and in which folder, which AI provider, what it is for, who can talk to it, and
-whether it asks before acting (below). Creating an agent starts a real process on their computer; creating a room
+whether it asks before acting (below). Creating an agent starts a real process on the machine it runs on; creating a room
 may create a channel in their team's chat. Never do either off your own judgement.
+
+### Where it runs (which machine)
+
+Don't choose the machine for them. On Switch Cloud they usually have two: their own
+computer and their cloud machine (`kind` "ec2" in `list_machines`). Ask in the proposal,
+in plain words: "Should it run on your computer, or on Switch Cloud so it keeps working
+when your computer is off?" An agent on their computer answers only while that computer
+is on and Switch Console is open; an agent people rely on (a daily digest, a team's
+tracker) usually belongs on the cloud machine.
+
+- **The cloud machine shows `offline`:** it sleeps when nothing has used it for a while.
+  You can still create the agent there: creating it wakes the machine, and the agent starts
+  once the machine is up, which takes a few minutes. Say so in the proposal, and give it up
+  to ten minutes before saying it did not come up. If creating it is refused as offline,
+  they stopped the machine themselves: ask them to press **Start** on its card under
+  [your agents](switchdash://open/agents), then try again.
+- **No cloud machine is listed:** a workspace that never used one has none yet. Ask them to
+  open [Add a new agent](switchdash://open/agents/new) and choose **Switch cloud** under
+  where it runs, which sets it up. Then ask again, and create the agent once `list_machines`
+  shows it.
+- **Only their computer is listed and they're on Switch Cloud:** say the cloud machine is
+  an option before proposing their computer.
+- On a server Switch Console runs, or one with no cloud machines, their computers are the
+  only choice: don't mention the cloud.
 
 ### Where it works (its folder)
 

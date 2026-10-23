@@ -25,14 +25,16 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
+        "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
+        "airtable",
         "atlassian",
         "datadog",
         "github",
@@ -40,6 +42,7 @@ def test_shipped_catalog_enables_github_atlassian_datadog_and_google_workspace()
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
+    assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
@@ -62,6 +65,8 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     assert oauth.authorization_params == {"access_type": "offline"}
     assert oauth.prompt == "consent select_account"
     assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    # Google refuses a made-up code before comparing the redirect URI.
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
     assert definition.auth.refresh == "reusable"
     assert definition.auth.identity is not None
     assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
@@ -167,6 +172,58 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["airtable"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Airtable keeps a client it registered dynamically in one person's
+    # account, usable by them alone, so each server's operator registers one.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "AIRTABLE"
+    # Back to Core's own https callback, as Google Workspace's.
+    assert oauth.loopback_ports is None
+    # Airtable has no revocation endpoint, so people remove Switch there, and
+    # are told a sign-in left behind widens the next.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Third-party integrations" in oauth.remove_access
+    assert "reaches the bases it shared" in oauth.remove_access
+    # Nothing Switch asks Airtable shows whether the integration is published.
+    assert oauth.unchecked is not None and "published" in oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("airtable", "https://mcp.airtable.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    read = [
+        "data.records:read",
+        "schema.bases:read",
+        "data.recordComments:read",
+        "workspacesAndBases:read",
+    ]
+    assert definition.access.read.scopes == read
+    assert set(definition.access.write.scopes or []) == {
+        *read,
+        "data.records:write",
+        "data.recordComments:write",
+    }
+    # Never the scope that creates and changes bases, tables and fields.
+    assert "schema.bases:write" not in definition.access.write.scopes
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
+    assert definition.auth.identity.account_id == "id"
 
 
 @pytest.fixture
@@ -400,6 +457,7 @@ auth:
   oauth:
     registration: dynamic
     redirect: [loopback, core]
+    remove_access: Remove Switch under Connected apps in Example.
   identity:
     url: https://api.example.test/me
     account_id: account.id
@@ -477,7 +535,8 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     ("old", "new", "message"),
     [
         (
-            "  oauth:\n    registration: dynamic\n    redirect: [loopback, core]\n",
+            "  oauth:\n    registration: dynamic\n    redirect: [loopback, core]\n"
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
             "",
             "an oauth entry needs auth.oauth",
         ),
@@ -582,6 +641,16 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    revocation_discovered: true\n"
             "    revocation_url: https://auth.example.test/revoke\n",
             "revocation_discovered",
+        ),
+        (
+            "    remove_access: Remove Switch under Connected apps in Example.\n",
+            "",
+            "remove_access",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
+            "unchecked is for a static client",
         ),
     ],
 )

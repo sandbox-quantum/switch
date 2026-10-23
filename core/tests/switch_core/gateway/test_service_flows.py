@@ -712,7 +712,7 @@ class TestWorkspaceSwitch:
         assert refused.json() == {
             **WORKSPACE_REFUSAL,
             "detail": WORKSPACE_REFUSAL["detail"]
-            + " Switch could not revoke the sign-in Example just issued. Remove "
-            "Switch from your Example account's connected apps.",
+            + " Switch has stopped using the Example sign-in but cannot revoke it, "
+            "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None

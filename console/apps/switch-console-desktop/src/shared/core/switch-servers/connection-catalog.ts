@@ -25,6 +25,8 @@ export type ServiceKeyForm = z.infer<typeof serviceKeyFormSchema>;
  * - `switched_off`: the server's operator switched it off in its settings.
  * - `needs_https`: it can't work on this server: GitHub's App needs the
  *   server to have an https address.
+ * - `needs_public_url`: its sign-ins return only to the server, which has no
+ *   public address (`GATEWAY_PUBLIC_URL`).
  * - `app_not_set_up`: its app is the operator's to set up, under Admin →
  *   Connector apps, and isn't yet.
  * - `not_set_up`: nothing on this server connects it.
@@ -34,6 +36,7 @@ export const UNAVAILABLE_CODES = [
   'coming_soon',
   'switched_off',
   'needs_https',
+  'needs_public_url',
   'app_not_set_up',
   'not_set_up',
   'not_fully_set_up',
