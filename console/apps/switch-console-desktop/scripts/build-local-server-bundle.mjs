@@ -418,9 +418,9 @@ if (process.platform === 'darwin') {
 
 /**
  * The libraries a Mach-O file loads and the run paths `@rpath` resolves
- * against, from the load commands of every architecture in it: otool alone
- * reads only the slice for the machine running it, which need not be the one
- * a user's Mac loads.
+ * against, from the load commands of every architecture in it: a bare otool
+ * reads only the slice matching the machine running it when there is one,
+ * which need not be the one a user's Mac loads.
  */
 function loadPaths(file) {
   const libraries = new Set();
