@@ -266,10 +266,29 @@ class RoomStore:
         name_contains: str | None,
         limit: int,
         after: tuple[datetime, str] | None,
+        reader_id: str | None,
+        reader_is_admin: bool,
+        member_agent_id: str,
     ) -> list[Room]:
         """Up to `limit` rooms after the `(created_at, id)` position `after`,
-        oldest first, whose name contains `name_contains` (any case)."""
+        oldest first, whose name contains `name_contains` (any case).
+
+        Only rooms an agent may see are returned: those its owner `reader_id`
+        may read (as `list_readable`; every room for a workspace admin) and
+        those `member_agent_id` is in. An agent with no owner sees public
+        rooms and its own."""
         stmt = select(Room)
+        if not reader_is_admin:
+            visible = [
+                Room.read_visibility == "public",
+                exists().where(
+                    room_agents.c.room_id == Room.id,
+                    room_agents.c.agent_id == member_agent_id,
+                ),
+            ]
+            if reader_id is not None:
+                visible.append(involves(reader_id))
+            stmt = stmt.where(or_(*visible))
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         if name_contains:

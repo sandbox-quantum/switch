@@ -84,6 +84,18 @@ version of their own to them without also giving them a release of their own.
   the runner the room existed and could write its name into their new room.
   Now a room the runner cannot read reads as missing.
 
+- **Registering an agent under a parent requires owning the parent.** The
+  agent API's `register-known` and `register-known-bulk` accepted any agent as
+  `parent_agent_id`, copying its name and settings to the new child. They now
+  refuse a parent the registering user does not own, as the dashboard's own
+  subagent registration already did.
+- **Private rooms stay out of room listings for people who cannot read them.**
+  The room link graph, the rooms a document, package or reference is attached
+  to, and an agent's `list_all_rooms` now show only rooms the caller may read
+  (an agent also sees the rooms it is in). Linking a room to another now
+  needs read access to the target, whose name the link shows. An agent can
+  list a room's participants only from inside the room.
+
 #### Added
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,

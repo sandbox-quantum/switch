@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.db.models import Room, User
+from switch_core.db.models import Document, Room, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.package_store import PackageStore
@@ -27,9 +27,11 @@ from switch_core.gateway.documents import (
     detach_document_from_room,
     get_room_document,
     list_room_documents,
+    list_rooms_for_document,
 )
 from switch_core.gateway.packages import detach_package_from_room
 from switch_core.gateway.references import detach_reference_from_room
+from switch_core.gateway.room_links import get_room_link_graph
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -218,3 +220,90 @@ class TestRoomResourceReadAuthz:
                     await _is_admin(session, owner),
                 )
             assert exc.value.status_code == 404
+
+
+async def _add_room(
+    session: AsyncSession, *, name: str, owner_id: str, read_visibility: str
+) -> Room:
+    room = Room(
+        transport_room_id=f"!{name}:test",
+        name=name,
+        description=f"{name} desc",
+        owner_id=owner_id,
+        read_visibility=read_visibility,
+        write_visibility="private",
+    )
+    session.add(room)
+    await session.flush()
+    return room
+
+
+class TestRoomListingsHidePrivateRooms:
+    async def test_link_graph_leaves_out_unreadable_rooms_and_their_links(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            public = await _add_room(
+                session, name="pub", owner_id=owner.id, read_visibility="public"
+            )
+            private = await _add_room(
+                session, name="priv", owner_id=owner.id, read_visibility="private"
+            )
+            svc = _svc(session_factory)
+            await svc.attach_linked_room(
+                session, source_room_id=public.id, target_room_id=private.id, label="x"
+            )
+
+            async def graph_for(user: User) -> tuple[set[str], int]:
+                graph = await get_room_link_graph(
+                    session, svc, _ROOM_STORE, user, await _is_admin(session, user)
+                )
+                return {r.id for r in graph.rooms}, len(graph.links)
+
+            assert await graph_for(other) == ({public.id}, 0)
+            assert await graph_for(owner) == ({public.id, private.id}, 1)
+
+    async def test_rooms_for_document_leaves_out_unreadable_rooms(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            public = await _add_room(
+                session, name="pub", owner_id=owner.id, read_visibility="public"
+            )
+            private = await _add_room(
+                session, name="priv", owner_id=owner.id, read_visibility="private"
+            )
+            doc = Document(
+                owner_id=owner.id,
+                read_visibility="public",
+                write_visibility="private",
+                name="doc",
+                description="d",
+                instructions="",
+                content="c",
+            )
+            session.add(doc)
+            await session.flush()
+            svc = _svc(session_factory)
+            for room in (public, private):
+                await svc.attach_document_to_room(
+                    session, room.id, doc.id, user_id=owner.id
+                )
+
+            async def rooms_for(user: User) -> set[str]:
+                rows = await list_rooms_for_document(
+                    doc.id,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    user,
+                    await _is_admin(session, user),
+                )
+                return {r.room_id for r in rows}
+
+            assert await rooms_for(other) == {public.id}
+            assert await rooms_for(owner) == {public.id, private.id}

@@ -1473,9 +1473,11 @@ async def list_all_rooms(
     limit: int = 100,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of), a page at a time, oldest first. Use `list_rooms` instead
-    to see only the rooms this agent is assigned to.
+    """List the rooms on this Switch instance this agent may see, a page at
+    a time, oldest first: every room its owner can read (public rooms and
+    ones the owner takes part in; all rooms for a workspace admin) plus the
+    rooms it is a member of. Use `list_rooms` instead to see only the rooms
+    this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.

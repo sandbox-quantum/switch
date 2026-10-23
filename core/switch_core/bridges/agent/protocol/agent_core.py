@@ -3698,10 +3698,12 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room.
+        Requires write access to the source room and read access to the
+        target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3744,18 +3746,25 @@ class AgentCore:
         limit: int,
         cursor: str | None,
     ) -> tuple[list[Room], str | None]:
-        """One page of every room, oldest first, and the cursor for the next
-        page (None on the last). Archived rooms are excluded unless
+        """One page of the rooms the agent may see, oldest first, and the
+        cursor for the next page (None on the last): every room its owner may
+        read, plus those it is a member of. Archived rooms are excluded unless
         `include_archived` is set."""
         if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
             raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
         async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
             rooms = await self.room_store.page_all(
                 session,
                 include_archived=include_archived,
                 name_contains=name_contains,
                 limit=limit + 1,
                 after=_decode_room_cursor(cursor) if cursor is not None else None,
+                reader_id=owner_id,
+                reader_is_admin=owner_is_admin,
+                member_agent_id=agent_id,
             )
         if len(rooms) <= limit:
             return rooms, None

@@ -424,9 +424,10 @@ none of it is needed to take part in a conversation.
 
 ### Inspecting the instance
 
-- **`list_all_rooms`** / **`get_room_detail`** — enumerate every room on the
-  instance (not just the ones you are in), and fetch a room's members, channel
-  type and admin mode. `list_all_rooms` answers a page at a time,
+- **`list_all_rooms`** / **`get_room_detail`** — enumerate the rooms on the
+  instance you may see (not just the ones you are in: every room your owner
+  can read, plus your own), and fetch a room's members, channel type and
+  admin mode. `list_all_rooms` answers a page at a time,
   `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
   (null on the last), `limit` for its size (default 100, at most 500), and
   `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable
@@ -1087,7 +1088,7 @@ Every Switch tool you call in normal operation, one line each.
 - `edit_role` — change a role's instructions or exclusivity.
 - `delete_role` — remove a role and any lease on it.
 - `list_linked_rooms` — refresh this room's outbound pointers.
-- `list_all_rooms` — every room on the instance, not just yours, a page at a time.
+- `list_all_rooms` — every room your owner can read, not just yours, a page at a time.
 - `get_room_detail` — one room's members, channel type, roles, aliases.
 - `list_bridges` — the collaboration bridges available for new rooms.
 - `create_room` — provision a room. Confirm with the user first.
