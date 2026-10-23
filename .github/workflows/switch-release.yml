@@ -46,7 +46,10 @@ name: switch release
 # release (a prerelease for an RC or a dev build; switch-dev-cleanup.yml prunes
 # only the dev ones), and pins
 # that package into the switch chart's switchCore.controllerRelease, so Core
-# tells controllers to run the controller of the Switch they talk to.
+# tells controllers to run the controller of the Switch they talk to. The
+# package is published with its signature (`.tgz.sig`, made with the
+# CONTROLLER_RELEASE_SIGNING_KEY secret), which controllers verify before they
+# install it; a publishing run without the secret fails.
 #
 # Artifacts go to GHCR by default, and the packages are public alongside the
 # repo. REGISTRY / IMAGE_NAMESPACE are the only things to change to retarget
@@ -381,7 +384,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           prefix="$(mktemp -d)"
-          npm install --global --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          npm install --global --ignore-scripts --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
           test "$("$prefix/bin/switch-agent-controller" --version)" = "$VERSION"
           "$prefix/bin/switch-agent-controller" --help > /dev/null
 
@@ -392,6 +395,15 @@ jobs:
         run: |
           sha256="$(sha256sum "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" | cut -d' ' -f1)"
           echo "sha256=$sha256" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Sign the package
+        # Controllers install only a release signed with a key built into them
+        # (src/release-keys.ts); see "Release signing" in RELEASING.md.
+        if: needs.prep.outputs.push == 'true'
+        env:
+          CONTROLLER_RELEASE_SIGNING_KEY: ${{ secrets.CONTROLLER_RELEASE_SIGNING_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node packages/agent-controller/scripts/sign-release.mjs "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" "$VERSION"
 
       - name: Release
         # The tag is created from this commit by the release itself. A tag
@@ -417,11 +429,18 @@ jobs:
               echo "::error::$TAG is already released with a different package (sha256 $published, this build $SHA256). Delete that release and its tag, then re-run."
               exit 1
             fi
-            echo "$TAG is already released with this package."
+            # Its signature must be there too, or no controller installs it.
+            if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+              grep -Fqx "switch-agent-controller-$VERSION.tgz.sig"; then
+              gh release upload "$TAG" "$package.sig" --repo "$GITHUB_REPOSITORY"
+              echo "$TAG is already released with this package; uploaded its signature."
+              exit 0
+            fi
+            echo "$TAG is already released with this package and its signature."
             exit 0
           fi
           if [ "$CHANNEL" = rc ]; then
-            gh release create "$TAG" "$package" \
+            gh release create "$TAG" "$package" "$package.sig" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "switch-agent-controller $VERSION (release candidate)" \
@@ -433,7 +452,7 @@ jobs:
             exit 0
           fi
           if [ "$CHANNEL" = dev ]; then
-            gh release create "$TAG" "$package" \
+            gh release create "$TAG" "$package" "$package.sig" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "switch-agent-controller $VERSION (dev build of main)" \
@@ -444,7 +463,7 @@ jobs:
               --latest=false
             exit 0
           fi
-          gh release create "$TAG" "$package" packages/agent-controller/install.sh \
+          gh release create "$TAG" "$package" "$package.sig" packages/agent-controller/install.sh \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "switch-agent-controller $VERSION" \
@@ -452,7 +471,7 @@ jobs:
 
           SHA-256: \`$SHA256\`
 
-          Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. A controller connected to Switch $VERSION updates to this release on its own once it is idle." \
+          Install (Node 22.13 or later) with \`install.sh\`, which checks the package's signature (\`switch-agent-controller-$VERSION.tgz.sig\`) before installing it. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. A controller connected to Switch $VERSION updates to this release on its own once it is idle." \
             --latest=false
 
   chart:

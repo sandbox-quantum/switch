@@ -29,6 +29,8 @@ export type ServiceKeyForm = z.infer<typeof serviceKeyFormSchema>;
  *   Connector apps, and isn't yet.
  * - `not_set_up`: nothing on this server connects it.
  * - `not_fully_set_up`: it can be connected but not granted to agents.
+ * - `key_never_expires`: it connects with a key that never expires, which
+ *   Switch does not hand to agents, so there is nothing to connect it for.
  */
 export const UNAVAILABLE_CODES = [
   'coming_soon',
@@ -37,6 +39,7 @@ export const UNAVAILABLE_CODES = [
   'app_not_set_up',
   'not_set_up',
   'not_fully_set_up',
+  'key_never_expires',
 ] as const;
 export type UnavailableCode = (typeof UNAVAILABLE_CODES)[number];
 

@@ -127,7 +127,12 @@ A removed grant stops a running session within a minute: the agent host reads
 the grants again at most every 30 seconds while it holds a token, drops one
 whose grant has moved on or gone, and the next ask is refused. While Core
 cannot be reached that check cannot run, and `use_until` bounds it to the
-hour. A token already handed out stays valid at the vendor until it expires.
+hour. A token already handed out stays valid at the vendor until it expires:
+for a pass-through service nothing can revoke the owner's token alone (for
+Google, revoking it would end the owner's whole sign-in), so its issuance
+record is marked withdrawn and the change's `warning` says until when it may
+keep working, up to the entry's `max_lifetime` (an hour for Google, eight
+hours for Atlassian, whose tokens cannot be asked for shorter).
 
 ## Connecting
 
@@ -278,8 +283,11 @@ disconnecting still works. A slug outside the catalog stops the server.
 
 A workspace admin switches each catalog service on or off for the workspace
 (`GET` and `PUT /gateway/workspace/services[/{service}]`, admins and owners,
-and the operator in a workspace they belong to). A service with no setting is
-on, so an upgraded server behaves as before; a row is written only when an
+and the operator in a workspace they belong to). A service with no setting
+takes the workspace's default, `tenants.services_on_by_default`: off for every
+workspace made since services started off, so a new workspace has none until
+an admin switches each on, and on for the workspaces that already had members
+then, so nothing they used stopped working. A row is written only when an
 admin touches the switch, and each change is audited
 (`workspace_service.enabled` / `.disabled`). The switch applies only with the
 `service_connections` flag on; with it off, GitHub works as it always has.
@@ -296,7 +304,8 @@ service out, so a running session loses the service within half a minute, as
 it does a removed grant: its host restarts it without the service. A token
 already handed out may be used until that restart, except GitHub's, which the
 switch queues and revokes before it answers (`warning` when some could not be
-yet; the five-minute tick keeps trying). On again, the grants come back with
+yet; the five-minute tick keeps trying). A pass-through token is marked
+withdrawn, and the `warning` says until when it may keep working. On again, the grants come back with
 no re-grant.
 
 The service list (`GET /gateway/service-connections`) carries
@@ -318,6 +327,11 @@ what each person can do about it (`UnavailableCode` in
 - `not_set_up`: nothing on this server connects it, and no app would.
 - `not_fully_set_up`: it can be connected but not granted: its app lacks a
   part (a GitHub App configured with no signing key).
+- `key_never_expires`: it connects with a key that never expires
+  (`token.max_lifetime: null`), which Switch never hands to an agent, so it
+  can be neither connected nor granted. One already connected can still be
+  disconnected, and an existing grant is refused at issue time (403
+  `forbidden`).
 
 `get_my_context`'s `services` carry the same code.
 
@@ -346,7 +360,7 @@ auth:
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
     help_url: https://docs.example.com/keys
-token: { kind: pass_through, max_lifetime: 3600 }   # handed out an hour at a time
+token: { kind: pass_through, max_lifetime: null }   # never handed to an agent
 mcp:
   servers:
     - name: example
@@ -358,7 +372,15 @@ tools: { mode: pass_through }
 
 The loader refuses a template naming an unknown field, a URL naming a secret
 one, a server without headers, an entry naming `access` (a key reaches
-whatever its vendor let it), and a token handed out for longer than an hour.
+whatever its vendor let it), and a `max_lifetime` other than null.
+
+**A key is never handed to an agent.** It does not expire and only its vendor
+can revoke it, so whatever ran beside the agent could keep it for good, past a
+removed grant or a disconnect. The broker refuses to issue one (403
+`forbidden`), the services list marks it `key_never_expires`, and it can be
+neither connected nor granted; one already connected can be disconnected.
+What follows describes the connection as it was built, which stays in place
+for a later server-side use of the key.
 
 - **Connecting.** Switch Console shows the entry's fields (the services list
   carries them as `key`) and sends them to
@@ -368,10 +390,9 @@ whatever its vendor let it), and a token handed out for longer than an hour.
   the vendor accepts them; a refusal names the fields to check. One account
   is linked to one person in a workspace, as for a sign-in. Re-pasting
   replaces the key in place, keeping the grants.
-- **The token.** The connection's secret is the token a session host is
-  handed: compact JSON, `{"public": {...}, "secret": {...}}`. Each issue
-  hands it out for an hour, so the grant checks run at least hourly, and the
-  host's grant check reaches running sessions within half a minute.
+- **The token.** The connection's secret is compact JSON,
+  `{"public": {...}, "secret": {...}}`, the shape a session host would render
+  into its templates.
 - **Sessions.** The host renders each MCP server's `url` and `headers`, or the
   tool's `env`, from the token, and redacts every secret field on its own as
   well as the whole token. The key never reaches the coding tool.
@@ -482,8 +503,9 @@ Built from a spike against a test Workspace with an Internal app:
   browser signed in to another Google account (a personal one, or another
   organization's) does not pick it unasked. `prompt` takes several values,
   space-separated, as OAuth writes them.
-- **Tokens.** Access tokens lived 3,599 s; `max_lifetime` is 3,920, Google's
-  documented sample. Agents still ask again hourly.
+- **Tokens.** Access tokens lived 3,599 s, so `max_lifetime` is 3,600: a
+  token handed out never has more than an hour left, and one Google issued
+  for longer is refused rather than handed out.
 - **The account** is OpenID's `sub`, labelled by `email`, from userinfo.
 - **Scopes as Google names them.** Google answers with full scope URLs
   (`email` comes back as `.../auth/userinfo.email`), and the level is read by

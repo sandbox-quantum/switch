@@ -3,9 +3,15 @@ name: switch-agent-controller release
 # Builds the installable agents controller (console/packages/agent-controller)
 # and publishes it as a GitHub release: the npm package
 # `switch-agent-controller-<version>.tgz`, installed with
-# `npm install --global <its URL>`, and the `install.sh` that finds and installs
+# `npm install --global --ignore-scripts`, and the `install.sh` that finds, verifies and installs
 # the newest one. `switch-agent-controller update` and `install.sh` read these
 # releases, so nothing needs an npm registry or token.
+#
+# A release is signed: `switch-agent-controller-<version>.tgz.sig` is the
+# Ed25519 signature of the version and the package's SHA-256
+# (scripts/sign-release.mjs), made with the CONTROLLER_RELEASE_SIGNING_KEY
+# secret, and controllers and `install.sh` install nothing that does not verify
+# against the keys built into them. A release run without the secret fails.
 #
 # Trigger by pushing a tag like `switch-agent-controller-v0.2.0`; the package
 # is built with the tag's version. `workflow_dispatch` builds and tests it
@@ -82,9 +88,16 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           prefix="$(mktemp -d)"
-          npm install --global --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
+          npm install --global --ignore-scripts --prefix "$prefix" "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz"
           test "$("$prefix/bin/switch-agent-controller" --version)" = "$VERSION"
           "$prefix/bin/switch-agent-controller" --help > /dev/null
+
+      - name: Sign the package
+        if: steps.version.outputs.release == 'true'
+        env:
+          CONTROLLER_RELEASE_SIGNING_KEY: ${{ secrets.CONTROLLER_RELEASE_SIGNING_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node packages/agent-controller/scripts/sign-release.mjs "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" "$VERSION"
 
       - name: Release
         if: steps.version.outputs.release == 'true'
@@ -95,9 +108,10 @@ jobs:
         run: |
           gh release create "$TAG" \
             "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" \
+            "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz.sig" \
             packages/agent-controller/install.sh \
             --title "switch-agent-controller $VERSION" \
             --notes "The Switch agents controller $VERSION, for running managed agents on your own Linux or macOS machines.
 
-          Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. An installed controller updates with \`switch-agent-controller update\`." \
+          Install (Node 22.13 or later) with \`install.sh\`, which checks the package's signature (\`switch-agent-controller-$VERSION.tgz.sig\`) before installing it. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. An installed controller updates with \`switch-agent-controller update\`." \
             --latest=false

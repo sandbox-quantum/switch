@@ -69,9 +69,10 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
         "email",
     )
     assert definition.token is not None
+    # Google's tokens live under an hour; one handed out never has more left.
     assert (definition.token.kind, definition.token.max_lifetime) == (
         "pass_through",
-        3920,
+        3600,
     )
     access = definition.access
     assert access is not None and access.write is not None
@@ -357,8 +358,9 @@ def test_rejects_a_skill_that_talks_about_credentials(catalog_copy, phrase):
         load_catalog(catalog_copy)
 
 
-def test_rejects_a_minted_token_that_outlives_the_hour(catalog_copy):
-    _rewrite_github(catalog_copy, "max_lifetime: 3600", "max_lifetime: 7200")
+@pytest.mark.parametrize("lifetime", ["7200", "null"])
+def test_rejects_a_minted_token_that_outlives_the_hour(catalog_copy, lifetime):
+    _rewrite_github(catalog_copy, "max_lifetime: 3600", f"max_lifetime: {lifetime}")
     with pytest.raises(CatalogError, match="(?s)github is invalid.*at most 3600"):
         load_catalog(catalog_copy)
 
@@ -541,6 +543,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
         ),
         ("refresh: rotating", "refresh: none", "rotating or reusable"),
         ("max_lifetime: 3600", "max_lifetime: 60", "max_lifetime"),
+        ("max_lifetime: 3600", "max_lifetime: null", "name its max_lifetime"),
         ("account_id: account.id", "account_id: account/id", "account_id"),
         (
             "    redirect: [loopback, core]\n",
@@ -840,7 +843,7 @@ auth:
       headers: { X-Key: "{api_key}" }
       account_id: account.id
       label: account.email
-token: { kind: pass_through, max_lifetime: 3600 }
+token: { kind: pass_through, max_lifetime: null }
 mcp:
   servers:
     - name: example
@@ -869,7 +872,10 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
         "DD_APPLICATION_KEY": "{application_key}",
     }
     assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
-    assert definition.token is not None and definition.token.max_lifetime == 3600
+    # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
 
 
 def test_loads_an_api_key_entry(catalog_copy):
@@ -937,9 +943,9 @@ def test_loads_an_api_key_entry_whose_tool_is_a_cli(catalog_copy):
         ),
         ("  refresh: none\n", "  refresh: rotating\n", "refresh is none"),
         (
+            "token: { kind: pass_through, max_lifetime: null }",
             "token: { kind: pass_through, max_lifetime: 3600 }",
-            "token: { kind: pass_through, max_lifetime: 7200 }",
-            "at most an hour",
+            "never handed to an agent",
         ),
         (
             "tools: { mode: pass_through }",

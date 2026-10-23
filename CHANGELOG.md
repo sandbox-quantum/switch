@@ -44,6 +44,29 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **Agents are no longer handed a key that never expires.** Datadog connects
+  with an API key and an application key that do not expire and that only
+  Datadog can revoke, and an agent granted Datadog was handed both. Switch now
+  refuses: Datadog can no longer be connected or granted, and an agent with an
+  existing Datadog grant is told why when it asks. A Datadog connection made
+  before can still be disconnected; revoke the keys in Datadog if they were
+  ever granted to an agent.
+- **Service connections start off in a new workspace.** A workspace created
+  from now on has every service connection switched off until a workspace
+  admin switches each on under Connectors. Workspaces that already had members
+  keep every service on by default, as before, along with every switch an
+  admin already set.
+- **A Google Workspace token is never handed out with more than an hour
+  left,** and one Google issues for longer is refused.
+- **Withdrawing access says what it could not take back.** Removing a grant,
+  disconnecting, or switching a service off for the workspace cannot revoke an
+  Atlassian or Google Workspace token already given to an agent, since that
+  token is the owner's own. The change now marks those tokens withdrawn and
+  its warning names the service and the time until which they may keep
+  working: up to an hour for Google Workspace, and up to eight hours for
+  Atlassian, whose tokens cannot be asked for shorter.
+
 #### Fixed
 - **The template guide agents read now covers a room's `roles:`,
   `references:` and `docs:`.** All three already worked in a room resource
