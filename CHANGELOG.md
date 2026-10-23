@@ -44,6 +44,16 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **Agents and controllers are pinged every 10 seconds instead of every 2.**
+  A connection is now declared dead after 30 seconds without a beat, up from
+  6, so a client that goes away holds its room slot and shows online for up to
+  30 seconds. The interval is advertised on every open, so clients follow it
+  without an update. The agent auth cache now gives each entry a random 80 to
+  120% of `AGENT_AUTH_CACHE_TTL_SECONDS`, so entries filled together after a
+  restart do not all expire together, and that setting must stay below 25
+  seconds (the 30 second heartbeat TTL, less the jitter) or startup refuses it.
+
 #### Fixed
 - **The template guide agents read now covers a room's `roles:`,
   `references:` and `docs:`.** All three already worked in a room resource

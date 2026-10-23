@@ -722,11 +722,12 @@ class SwitchConfig(BaseSettings):
     template_max_bytes: int = 1024 * 1024
 
     # Every authenticated agent request resolves its bearer token against the
-    # database before the handler runs, and each live agent connection beats
-    # every 2s, so the pool is sized against connection count rather than
-    # human traffic: a fleet of N connections costs roughly N/2 checkouts per
-    # second. Exceeding the pool does not shed load, it queues, and a queued
-    # heartbeat that misses HEARTBEAT_TTL_SECONDS costs the connection.
+    # database before the handler runs, so the pool is sized against connection
+    # count rather than human traffic. Agent and controller heartbeats ride
+    # their sockets, authenticated once, but an old event-stream client still
+    # beats over HTTP, and every tool call an agent makes is a request. Exceeding
+    # the pool does not shed load, it queues, and a queued request that the
+    # connection's liveness depends on can still cost it the connection.
     db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
@@ -852,10 +853,25 @@ class SwitchConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_agent_auth_cache(self) -> "SwitchConfig":
+        # Imported here so loading config does not pull in the database models.
+        from switch_core.bridges.agent.api_key_cache import EXPIRY_JITTER
+        from switch_core.bridges.agent.protocol.agent_connections import (
+            HEARTBEAT_TTL_SECONDS,
+        )
+
         if self.agent_auth_cache_ttl_seconds < 0:
             raise ValueError(
                 "AGENT_AUTH_CACHE_TTL_SECONDS must not be negative (0 disables "
                 f"the cache), got {self.agent_auth_cache_ttl_seconds!r}."
+            )
+        if (
+            self.agent_auth_cache_ttl_seconds * (1 + EXPIRY_JITTER)
+            >= HEARTBEAT_TTL_SECONDS
+        ):
+            raise ValueError(
+                f"AGENT_AUTH_CACHE_TTL_SECONDS, with its {EXPIRY_JITTER:.0%} "
+                "jitter, must stay below the agent heartbeat TTL of "
+                f"{HEARTBEAT_TTL_SECONDS}s, got {self.agent_auth_cache_ttl_seconds!r}."
             )
         if self.agent_auth_cache_max_entries < 1:
             raise ValueError(
