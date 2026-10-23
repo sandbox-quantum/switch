@@ -815,3 +815,17 @@ async def require_room_access(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     return room
+
+
+async def readable_room_ids(
+    session: AsyncSession, room_store: RoomStore, user: User, is_admin: bool
+) -> set[str]:
+    """Ids of every room `user` may read, archived ones included.
+
+    For endpoints that list rooms reached through something else (a document,
+    a package, a reference) so they do not name rooms the caller cannot see.
+    """
+    rooms = await room_store.list_readable(
+        session, user.id, is_admin=is_admin, include_archived=True
+    )
+    return {r.id for r in rooms}

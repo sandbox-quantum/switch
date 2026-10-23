@@ -6,10 +6,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal, can_manage
 from switch_core.bridges.agent.server_connectors.lifecycle import (
     ServerSideConnectorLifecycleService,
 )
-from switch_core.db.models import User
+from switch_core.db.models import ServerConnector, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
@@ -28,6 +29,18 @@ from switch_core.gateway.schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _may_manage(
+    session: AsyncSession,
+    api_key_store: ApiKeyStore,
+    record: ServerConnector,
+    principal: Principal,
+) -> bool:
+    """Whether `principal` owns `record` (through its registration key) or is
+    a tenant admin."""
+    reg_key = await api_key_store.get(session, record.api_key_id)
+    return can_manage(principal, reg_key.user_id if reg_key else None)
 
 
 @router.get("/types")
@@ -78,12 +91,19 @@ async def create_connector(
 async def list_connectors(
     session: Annotated[AsyncSession, Depends(get_session)],
     connector_store: Annotated[ServerConnectorStore, Depends(get_connector_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     connector_lifecycle: Annotated[
         ServerSideConnectorLifecycleService, Depends(get_connector_lifecycle)
     ],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ConnectorDetail]:
-    records = await connector_store.get_all(session)
+    principal = Principal(user.id, is_admin)
+    records = [
+        r
+        for r in await connector_store.get_all(session)
+        if await _may_manage(session, api_key_store, r, principal)
+    ]
     return [
         ConnectorDetail(
             connector_id=r.id,
@@ -102,13 +122,18 @@ async def get_connector(
     connector_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     connector_store: Annotated[ServerConnectorStore, Depends(get_connector_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     connector_lifecycle: Annotated[
         ServerSideConnectorLifecycleService, Depends(get_connector_lifecycle)
     ],
-    _user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> ConnectorDetail:
     record = await connector_store.get(session, connector_id)
-    if record is None:
+    # Someone else's connector reads as missing, so its id confirms nothing.
+    if record is None or not await _may_manage(
+        session, api_key_store, record, Principal(user.id, is_admin)
+    ):
         raise HTTPException(status_code=404, detail="Connector not found")
 
     return ConnectorDetail(
@@ -137,12 +162,12 @@ async def delete_connector(
     if record is None:
         raise HTTPException(status_code=404, detail="Connector not found")
 
-    reg_key = await api_key_store.get(session, record.api_key_id)
-    if reg_key is None or reg_key.user_id != user.id:
-        if not is_admin:
-            raise HTTPException(
-                status_code=403, detail="Not authorized to delete this connector"
-            )
+    if not await _may_manage(
+        session, api_key_store, record, Principal(user.id, is_admin)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to delete this connector"
+        )
     # Not held across removal, which deletes the agents on sessions of its own.
     await session.commit()
     try:

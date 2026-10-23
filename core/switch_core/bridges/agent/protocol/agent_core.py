@@ -31,7 +31,7 @@ from switch_core.agent_icon import (
 )
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.authz import Action, Principal, can, require, require_manage
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
@@ -3740,10 +3740,12 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room.
+        Requires write access to the source room and read access to the
+        target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3780,15 +3782,26 @@ class AgentCore:
     async def list_all_rooms(
         self, agent_id: str, *, include_archived: bool = False
     ) -> list[Room]:
-        """List all rooms (moderation only).
+        """List the rooms the agent may see: those its owner may read, plus
+        those it is a member of.
 
         Archived rooms are excluded unless `include_archived` is set.
         """
         async with self.session_factory() as session:
+            _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            principal = Principal(owner_id, owner_is_admin)
+            member_of = {
+                r.id
+                for r in await self.room_store.get_rooms_for_agent(
+                    session, agent_id, include_archived=include_archived
+                )
+            }
             rooms = await self.room_store.get_all(
                 session, include_archived=include_archived
             )
-        return rooms
+        return [r for r in rooms if r.id in member_of or can(principal, "read", r)]
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.

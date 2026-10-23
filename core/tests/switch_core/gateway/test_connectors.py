@@ -8,7 +8,11 @@ from switch_core.db.models import ApiKey, ServerConnector, User
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.gateway.connectors import delete_connector
+from switch_core.gateway.connectors import (
+    delete_connector,
+    get_connector,
+    list_connectors,
+)
 
 _USER_STORE = UserStore()
 
@@ -26,6 +30,9 @@ class _StubLifecycle:
 
     async def remove(self, connector_id: str) -> None:
         self.removed.append(connector_id)
+
+    async def get_agent_names(self, connector_id: str) -> list[str]:
+        return []
 
 
 async def _make_user(session: AsyncSession, *, role: str) -> User:
@@ -158,3 +165,74 @@ class TestDeleteConnectorAuthorization:
 
             assert exc.value.status_code == 404
             assert lifecycle.removed == []
+
+
+class TestReadConnectorAuthorization:
+    async def test_non_owner_non_admin_gets_not_found(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _make_user(session, role="user")
+            other = await _make_user(session, role="user")
+            connector = await _make_connector(session, owner=owner)
+            await session.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await get_connector(
+                    connector_id=connector.id,
+                    session=session,
+                    connector_store=ServerConnectorStore(),
+                    api_key_store=ApiKeyStore(),
+                    connector_lifecycle=_StubLifecycle(),  # type: ignore[arg-type]
+                    user=other,
+                    is_admin=await _is_admin(session, other),
+                )
+
+            assert exc.value.status_code == 404
+
+    async def test_owner_and_admin_can_get(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _make_user(session, role="user")
+            admin = await _make_user(session, role="admin")
+            connector = await _make_connector(session, owner=owner)
+            await session.commit()
+
+            for user in (owner, admin):
+                detail = await get_connector(
+                    connector_id=connector.id,
+                    session=session,
+                    connector_store=ServerConnectorStore(),
+                    api_key_store=ApiKeyStore(),
+                    connector_lifecycle=_StubLifecycle(),  # type: ignore[arg-type]
+                    user=user,
+                    is_admin=await _is_admin(session, user),
+                )
+                assert detail.connector_id == connector.id
+
+    async def test_list_shows_a_user_only_their_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            alice = await _make_user(session, role="user")
+            bob = await _make_user(session, role="user")
+            admin = await _make_user(session, role="admin")
+            alices = await _make_connector(session, owner=alice)
+            bobs = await _make_connector(session, owner=bob)
+            await session.commit()
+
+            async def listed_ids(user: User) -> set[str]:
+                details = await list_connectors(
+                    session=session,
+                    connector_store=ServerConnectorStore(),
+                    api_key_store=ApiKeyStore(),
+                    connector_lifecycle=_StubLifecycle(),  # type: ignore[arg-type]
+                    user=user,
+                    is_admin=await _is_admin(session, user),
+                )
+                return {d.connector_id for d in details}
+
+            assert await listed_ids(alice) == {alices.id}
+            assert await listed_ids(bob) == {bobs.id}
+            assert {alices.id, bobs.id} <= await listed_ids(admin)

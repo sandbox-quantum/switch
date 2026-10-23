@@ -1449,9 +1449,10 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 @operation
 async def list_all_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of). Use `list_rooms` instead to see only the rooms this
-    agent is assigned to.
+    """List the rooms on this Switch instance this agent may see: every room
+    its owner can read (public rooms and the owner's own; all rooms for a
+    workspace admin) plus the rooms it is a member of. Use `list_rooms`
+    instead to see only the rooms this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
