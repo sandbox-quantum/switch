@@ -41,6 +41,7 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
@@ -83,6 +84,7 @@ from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
+from switch_core.user_changes import LocalUserChanges
 
 
 def create_gateway_app(
@@ -110,6 +112,7 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    user_changes: LocalUserChanges,
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
@@ -138,6 +141,7 @@ def create_gateway_app(
         protocol=protocol,
         install_service=install_service,
         invite_mailer=invite_mailer,
+        user_changes=user_changes,
         config=config,
     )
 
@@ -201,6 +205,7 @@ def create_gateway_app(
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])

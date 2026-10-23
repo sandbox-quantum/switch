@@ -58,6 +58,13 @@ version of their own to them without also giving them a release of their own.
   itself up, its rules with the people, agents and rooms they name. So an
   agent can tell someone who may answer its questions and approvals instead
   of guessing. Another agent sees only the kind.
+- **Console hears when your managed agents or machines change.** A signed-in
+  user's Console opens one WebSocket per workspace (`/gateway/changes/ws`), and
+  switch-core tells it when one of their managed agents or machines changed, so
+  Console reads it again instead of polling. A notice names a kind and an id
+  and carries nothing else. Notices travel between replicas on the signal bus,
+  so a change made through one pod reaches a Console connected to another
+  (#717).
 
 #### Changed
 - **Following the conversation is described the same way everywhere, and the
@@ -1885,6 +1892,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Changed
+- **Managed agents and machines update when the server says they changed.**
+  Against a server that pushes change notices, Console reads those lists
+  again when told to, and otherwise only every five minutes instead of every
+  15 to 30 seconds; against one that does not, it polls as before (#717).
 - **One name for the controller.** Console, the Gateway and the docs say
   "agent controller" everywhere, matching the `switch-agent-controller`
   package, instead of a mix of "agent controller" and "agents controller".

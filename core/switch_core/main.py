@@ -221,6 +221,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
+from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -972,8 +973,17 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
+    # Change notices for signed-in users' Consoles (`gateway/changes.py`): the
+    # sockets this process holds, reached from every process over the bus.
+    user_changes = LocalUserChanges()
+    user_change_publisher = SignalUserChanges(local=user_changes, bus=signal_bus)
     management = create_management(
-        config, session_factory, connections.controllers, signal_bus, process_lease
+        config,
+        session_factory,
+        connections.controllers,
+        signal_bus,
+        process_lease,
+        user_change_publisher,
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
@@ -1185,6 +1195,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             if config.invite_email_enabled
             else None
         ),
+        user_changes=user_changes,
         chat_service=chat_service,
         connector_apps=connector_apps,
         config=config,
