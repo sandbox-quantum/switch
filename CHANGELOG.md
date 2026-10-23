@@ -78,6 +78,11 @@ version of their own to them without also giving them a release of their own.
   its warning names the service and the time until which they may keep
   working: up to an hour for Google Workspace, and up to eight hours for
   Atlassian, whose tokens cannot be asked for shorter.
+- **A template's room params name only rooms its runner can see.** A room
+  param checked its value against every room on the server, and `$first` or
+  a list of candidates could settle on someone else's private room. That told
+  the runner the room existed and could write its name into their new room.
+  Now a room the runner cannot read reads as missing.
 
 #### Added
 - **The `[CONN]` log lines say when a client fell back to the event stream.**

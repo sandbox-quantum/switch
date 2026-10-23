@@ -19,6 +19,7 @@ from typing import Any
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
+from switch_core.authz import Principal
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -58,7 +59,7 @@ from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
-from switch_core.rooms_yaml import GroupSpec, template_json_schema
+from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
 from switch_core.template_runs import (
@@ -1699,12 +1700,14 @@ async def _provision_as_agent(
         return {"created_agents": _created_view(created)}
 
     rooms_yaml = protocol.room_yaml_service()
-    inputs = await rooms_yaml.resolve_defaults(yaml, inputs)
+    # As the owner without admin reach, plus the rooms the agent is in.
+    reader = RoomReader(Principal(owner.id, False), agent_id=agent.id)
+    inputs = await rooms_yaml.resolve_defaults(yaml, inputs, reader=reader)
     builtins = await rooms_yaml.builtins_for(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
-    await rooms_yaml.check_entity_params(parsed)
+    await rooms_yaml.check_entity_params(parsed, reader=reader)
     await rooms_yaml.check_bridges(parsed)
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
@@ -1963,7 +1966,13 @@ async def _run_document(
     if is_v2_text(content):
         # A version 2 condition may read a messaging app or room param
         # whose value is the first candidate the server has.
-        inputs = await rooms_yaml.resolve_defaults(content, inputs)
+        inputs = await rooms_yaml.resolve_defaults(
+            content,
+            inputs,
+            reader=RoomReader(
+                Principal(acting.owner.id, False), agent_id=acting.agent.id
+            ),
+        )
     builtins = await rooms_yaml.builtins_for(
         user_id=acting.owner.id,
         name=acting.owner.name,

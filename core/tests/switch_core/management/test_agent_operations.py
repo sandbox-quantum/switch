@@ -1215,7 +1215,7 @@ class _NoRooms:
         return {"$creator": kwargs["name"], "$creator_email": kwargs["email"]}
 
     async def resolve_defaults(
-        self, text: str, inputs: dict[str, Any] | None
+        self, text: str, inputs: dict[str, Any] | None, **kwargs: Any
     ) -> dict[str, Any] | None:
         return inputs
 
