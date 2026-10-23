@@ -1,0 +1,28 @@
+slug: airtable
+name: Airtable
+category: Project management
+description: Read and write records, tables, and schemas in Airtable bases, with your Personal Access Token.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: personal_access_token
+        label: Personal access token
+        secret: true
+        help: Generate a token at airtable.com/create/tokens with data.records:read, data.records:write, and schema.bases:read scopes.
+    identity:
+      method: GET
+      url: "https://api.airtable.com/v0/meta/whoami"
+      headers: { Authorization: "Bearer {personal_access_token}" }
+    help_url: https://airtable.com/create/tokens
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: airtable
+      url: "https://api.airtable.com/v0/mcp"
+      headers:
+        Authorization: "Bearer {personal_access_token}"
+tools: { mode: pass_through }
