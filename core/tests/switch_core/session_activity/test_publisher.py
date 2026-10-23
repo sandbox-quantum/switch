@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from sqlalchemy import select
@@ -11,10 +14,16 @@ from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
 from switch_core.db.models import (
+    Agent,
     ApprovalRequestPost,
     BridgeMessageMap,
+    Client,
+    ClientRoom,
+    ExternalUser,
+    ExternalUserClaim,
     TurnStatusPost,
 )
+from switch_core.delivery.addressing import AddressingDecision
 from switch_core.session_activity import publisher as publisher_module
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.publisher import (
@@ -302,6 +311,90 @@ async def test_a_card_goes_into_the_thread_it_answers(
     [posted] = await platform.wait_for(1)
     assert posted.thread_ref == ASKED_POST
     assert (await _card_post(session_factory)).thread_ref == ASKED_POST
+
+
+async def test_a_card_in_a_thread_names_the_owner_who_may_answer_it(
+    service, publisher, platform, bridged, session_factory
+):
+    """Slack's thread following reaches only the people already in the thread,
+    and the owner who has to answer is often not one of them."""
+    suffix = uuid.uuid4().hex[:8]
+    async with session_factory() as db, db.begin():
+        owner_id = await db.scalar(select(Agent.owner_id).where(Agent.id == AGENT))
+        client = Client(
+            transport_user_id=f"@owner-{suffix}:test", display_name="owner", type="user"
+        )
+        db.add(client)
+        await db.flush()
+        account = ExternalUser(
+            bridge_id=bridged.bridge_id,
+            external_user_id=f"U{suffix.upper()}",
+            external_username=f"owner-{suffix}",
+            client_id=client.id,
+        )
+        db.add_all([account, ClientRoom(client_id=client.id, room_id=bridged.room_id)])
+        await db.flush()
+        db.add(ExternalUserClaim(external_user_id=account.id, user_id=owner_id))
+
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    [posted] = await platform.wait_for(1)
+    assert posted.thread_ref == ASKED_POST
+    assert posted.content.notify_external_id == f"U{suffix.upper()}"
+
+
+def _bare_publisher() -> AgentSessionActivityPublisher:
+    return AgentSessionActivityPublisher(
+        adapter=RecordingPlatform(),  # type: ignore[arg-type]
+        bridge_id="bridge",
+        bridge_type="slack",
+        tenant_id="tenant",
+        listener=MagicMock(),
+        session_factory=MagicMock(),
+        agent_online=Online(),
+    )
+
+
+async def test_a_card_at_the_channel_root_names_whoever_asked_as_before(monkeypatch):
+    publisher = _bare_publisher()
+    asked = AsyncMock(return_value="UASKER")
+    answerer = AsyncMock()
+    monkeypatch.setattr(publisher_module, "notification_recipient", asked)
+    monkeypatch.setattr(publisher_module, "request_card_recipient", answerer)
+    agent = SimpleNamespace(name="agent", owner_id="owner")
+
+    assert (
+        await publisher._card_recipient(AsyncMock(), "room", agent, None, None)  # type: ignore[arg-type]
+        == "UASKER"
+    )
+    assert asked.call_args.kwargs["thread_id"] is None
+    assert asked.call_args.kwargs["surface"] == "slack"
+    answerer.assert_not_called()
+
+
+async def test_a_card_in_a_thread_asks_the_addressing_policy_who_may_answer(
+    monkeypatch,
+):
+    publisher = _bare_publisher()
+    asked = AsyncMock()
+    answerer = AsyncMock(return_value="UOWNER")
+    permitted = AsyncMock(return_value=AddressingDecision(allowed=False, refusal="no"))
+    monkeypatch.setattr(publisher_module, "notification_recipient", asked)
+    monkeypatch.setattr(publisher_module, "request_card_recipient", answerer)
+    monkeypatch.setattr(publisher._addressing, "permitted", permitted)
+    agent = SimpleNamespace(name="agent", owner_id="owner")
+    db = AsyncMock()
+
+    assert (
+        await publisher._card_recipient(db, "room", agent, None, "123.456")  # type: ignore[arg-type]
+        == "UOWNER"
+    )
+    asked.assert_not_called()
+    kwargs = answerer.call_args.kwargs
+    assert (kwargs["bridge_id"], kwargs["room_id"]) == ("bridge", "room")
+    assert await kwargs["may_answer"]("@someone:switch") is False
+    permitted.assert_awaited_once_with(
+        db, agent=agent, room_id="room", sender="@someone:switch"
+    )
 
 
 async def test_a_refused_post_releases_its_handle(
