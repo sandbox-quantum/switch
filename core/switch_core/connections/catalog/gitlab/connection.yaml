@@ -1,7 +1,51 @@
 slug: gitlab
 name: GitLab
 category: Source control
-description: Work with GitLab projects, merge requests and issues.
-enabled: false
+description: Read and update GitLab projects, issues, merge requests and pipelines, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # GitLab offers dynamic client registration: Core registers one itself,
+    # a public client with no secret, as GitLab's MCP sign-in requires.
+    registration: dynamic
+    # Sign-ins come back to Switch Console, on a loopback port. GitLab's
+    # registered redirect accepts varying loopback ports, so no ports are
+    # fixed here; Atlassian, which matches the port exactly, fixes five.
+    redirect: [loopback]
+    revocation_discovered: true
+  # The identity read uses GitLab's current-user endpoint, which normally
+  # expects a read_user or api grant; GitLab does not document whether the
+  # single mcp scope of an MCP sign-in may call it. Nothing in the loader
+  # tests can prove that — a live connect is what settles it.
+  identity:
+    url: https://gitlab.com/api/v4/user
+    account_id: id
+    label: username
+# GitLab does not publish how long an MCP sign-in's token lives, so this is
+# an allowance rather than a measurement: a token living up to eight hours is
+# accepted, and refresh tokens rotate.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  # GitLab's MCP server is in beta. A top-level group owner must turn MCP
+  # server access on for their group before anyone in it can connect; a
+  # person whose groups have not done this cannot connect. A
+  # self-managed instance serves the same endpoint at
+  # https://<host>/api/v4/mcp and is enabled by its admin; this entry
+  # connects to gitlab.com.
+  servers:
+    - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
+access:
+  # GitLab grants exactly one scope to an MCP sign-in, `mcp`, at either
+  # level: its authorization server offers no narrower scope, and its tools
+  # pass through unclassified, so no level can be narrowed by scope or by
+  # tool list. Read and write name the same scope, and the difference
+  # between the levels is carried by the skill: a read grant is told to
+  # read only, and to say so rather than write.
+  read:
+    scopes: [mcp]
+  write:
+    scopes: [mcp]
+tools: { mode: pass_through }
