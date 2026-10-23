@@ -342,6 +342,9 @@ class AgentSessionDetail(BaseModel):
 
 class AgentDetail(AgentSummary):
     agent_type: str
+    # Saved managed-agent instructions, not a running session's prompt.
+    # None means there is no managed definition; "" means no instructions set.
+    instructions: str | None
     # Whether the agent may act on its owner's agent management (list the
     # owner's machines and managed agents, create managed agents on them).
     # Only the owner changes it; it matters only where agent management runs.

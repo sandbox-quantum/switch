@@ -27,6 +27,7 @@ from switch_core.agent_icon import normalise_icon_url, refuse_third_party_avatar
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
 from switch_core.db.models import Agent, AgentSession
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -191,6 +192,9 @@ async def assemble_agent_detail(
     room_role_store: RoomRoleStore,
     connections: AgentConnectionRegistry,
 ) -> AgentDetail:
+    definition = await AgentDefinitionStore().get_for_agent(
+        session, agent.tenant_id, agent.id
+    )
     tools = await agent_store.get_tools(session, agent.id)
     models = await agent_store.get_models(session, agent.id)
     child_agents = await agent_store.get_children(session, [agent.id])
@@ -309,6 +313,9 @@ async def assemble_agent_detail(
     return AgentDetail(
         **summary.model_dump(),
         agent_type=agent.agent_type,
+        instructions=definition.definition.get("instructions", "")
+        if definition is not None
+        else None,
         can_manage_agents=agent.can_manage_agents,
         integration_profile=agent.integration_profile
         if isinstance(agent.integration_profile, dict)

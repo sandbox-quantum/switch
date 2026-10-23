@@ -10,11 +10,13 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
 from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.db.models import Agent, ApiKey, Client, User
+from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agents import get_agent_detail as gateway_agent_detail
 from switch_core.gateway.known_agents import known_agents
 
 
@@ -175,6 +177,58 @@ class TestGetAgentDetail:
         assert detail.rooms == []
         assert detail.sessions == []
         assert detail.children == []
+        assert detail.model_dump()["instructions"] is None
+
+    @pytest.mark.parametrize("surface", ["agent", "gateway"])
+    @pytest.mark.parametrize(
+        "instructions",
+        [None, "", "Ask before deploying.\n保留证据。", "x" * 32768],
+        ids=["default", "empty", "multiline-unicode", "max-length"],
+    )
+    async def test_returns_saved_managed_instructions(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        surface: str,
+        instructions: str | None,
+    ) -> None:
+        svc = _service(session_factory)
+        definitions = AgentDefinitionStore()
+        async with session_factory() as session:
+            owner = await _make_user(session, "owner")
+            agent = await _make_agent(session, "target", owner_id=owner.id)
+            await definitions.create(
+                session,
+                agent_id=agent.id,
+                owner_id=owner.id,
+                controller_id=None,
+                desired_state="stopped",
+                definition={"provider": "claude"}
+                if instructions is None
+                else {"provider": "claude", "instructions": instructions},
+            )
+            await session.commit()
+            agent_id = agent.id
+
+        if surface == "agent":
+            detail = await svc.get_agent_detail("caller", agent_id)
+        else:
+            async with session_factory() as session:
+                detail = await gateway_agent_detail(
+                    agent_id=agent_id,
+                    session=session,
+                    agent_store=svc.agent_store,
+                    room_store=svc.room_store,
+                    user_store=svc.user_store,
+                    protocol=svc,
+                    _user=owner,
+                )
+        expected = "" if instructions is None else instructions
+        assert detail.model_dump()["instructions"] == expected
+        async with session_factory() as session:
+            row = await definitions.get_for_agent(session, agent.tenant_id, agent_id)
+            assert row is not None
+            assert row.revision == 1
+            assert row.definition.get("instructions", "") == expected
 
     async def test_missing_agent_raises(
         self, session_factory: async_sessionmaker[AsyncSession]

@@ -415,6 +415,8 @@ none of it is needed to take part in a conversation.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
+  `instructions` returns the managed agent's saved instructions (`""` if empty,
+  null if unmanaged), not the prompt currently loaded in a running session.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
@@ -1035,7 +1037,7 @@ Every Switch tool you call in normal operation, one line each.
 - `update_template`: change a template you saved.
 - `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
-- `get_agent_detail` — one agent's config, capabilities and sessions.
+- `get_agent_detail` — one agent's config, saved managed instructions, capabilities and sessions.
 - `update_agent_detail` — change an agent you own.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
