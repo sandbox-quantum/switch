@@ -45,6 +45,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- **Full garbage collections no longer stall the server for hundreds of
+  milliseconds.** Once boot has built what lasts for the life of the process
+  (modules, the ORM's mappers, the app's routes), the server freezes it out of
+  garbage collection, so a full pass walks only what was made since. The
+  clients and bridges started after that stay collectable, since replicas hand
+  them to one another. The dashboard's pause chart now shows the average pause
+  next to p99, as Datadog keeps the average for longer.
 - **The template guide agents read now covers a room's `roles:`,
   `references:` and `docs:`.** All three already worked in a room resource
   and appear when a room is captured, but the guide stopped at `aliases:`, so
