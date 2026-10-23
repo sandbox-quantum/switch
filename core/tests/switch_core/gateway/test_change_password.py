@@ -204,3 +204,17 @@ class TestSchemaValidation:
     def test_empty_new_password_rejected(self) -> None:
         with pytest.raises(ValidationError):
             ChangePasswordRequest(current_password=_OLD_PASSWORD, new_password="")
+
+    def test_new_password_over_seventy_two_bytes_rejected(self) -> None:
+        # 40 characters clears the 8-character floor, but is 80 bytes —
+        # bcrypt's input limit is counted in bytes, so the schema counts
+        # bytes too.
+        with pytest.raises(ValidationError) as exc_info:
+            ChangePasswordRequest(current_password=_OLD_PASSWORD, new_password="é" * 40)
+        assert "at most 72 bytes" in str(exc_info.value.errors())
+
+    def test_new_password_of_exactly_seventy_two_bytes_accepted(self) -> None:
+        request = ChangePasswordRequest(
+            current_password=_OLD_PASSWORD, new_password="é" * 36
+        )
+        assert request.new_password == "é" * 36
