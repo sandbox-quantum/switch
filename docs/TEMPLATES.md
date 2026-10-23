@@ -448,6 +448,17 @@ exports, so an exported room is a valid template once you add `params:`.
 `examples/room-templates/red-blue-workroom.template.yaml` documents every
 field in place.
 
+`roles:` are hats the room's agents can assume, each
+`{name, instructions, exclusive}`; an `exclusive: true` role (the default is
+`false`) has one holder at a time. `references:` attach outside material:
+`{id: ...}` or `{name: ...}` attaches a reference that exists, and one that
+is missing, ambiguous or not the deployer's to read stops the run; an entry
+with `type`, `name`, `description`, `instructions` and `value: {urls: [...]}`
+creates a new one (private unless `read_visibility` / `write_visibility` say
+otherwise). `docs:` are documents created in the room, each
+`{name, description, instructions, content}`. An exported room writes roles
+and docs in full and references by `id`.
+
 `agents:` names agents that exist on the server, plus the ones this
 document creates by the text written as their `name`. `users:` names people
 by their username on the room's messaging app; `{$creator}` puts the

@@ -42,6 +42,8 @@ from switch_core.bridges.agent.operations.definitions import (
 from switch_core.db.models import Agent, Room, Template, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.rooms_yaml import RoomSpec
+from switch_core.template_guide import TEMPLATE_GUIDE
 
 ROOM_TEMPLATE = """\
 version: 1
@@ -747,6 +749,25 @@ async def test_the_guide_describes_the_language_and_the_example_in_it_is_valid(t
         inputs={"topic": "billing"},
     )
     assert created["room_name"] == "billing review"
+
+
+def test_the_guide_shows_room_roles_references_and_docs_in_an_accepted_shape():
+    room_section = TEMPLATE_GUIDE.split("## A room (type: room)", 1)[1].split(
+        "\n## ", 1
+    )[0]
+    for key in ("roles:", "references:", "docs:"):
+        assert key in room_section
+    example = yaml.safe_load(
+        room_section.split("references by id:\n\n", 1)[1].split("\n\n", 1)[0]
+    )
+    spec = RoomSpec(name="n", description="d", **example)
+    assert [type(r).__name__ for r in spec.references] == [
+        "ExistingReferenceById",
+        "ExistingReferenceByName",
+        "InlineExternalReference",
+    ]
+    assert spec.roles[0].exclusive is True
+    assert spec.docs[0].content
 
 
 def test_an_agent_param_whose_candidates_name_a_slot_follows_the_swap():

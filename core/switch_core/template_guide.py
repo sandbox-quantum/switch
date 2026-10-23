@@ -114,9 +114,41 @@ existing agent may stand in for it.
   channel_type: channel_public | channel_private
   agents: [agent keys, or names of agents that exist]
   users: [usernames on its messaging app; "{$creator}" is the deployer]
+  roles: [{name, instructions, exclusive: true | false}]
+  references: [{id} | {name} | {type, name, description, instructions,
+               value: {urls: [...]}}]
+  docs: [{name, description, instructions, content}]
   aliases: {agent key or name: alias}   # @alias addresses it in this room
   kickoff: text                  # posted once the room exists
   group: <group key>             # when the template has a group
+
+roles are hats for the room's agents: one assumes a role with assume_role,
+works under its instructions and releases it; exclusive: true (default
+false) lets one agent hold it at a time. references attach outside material
+(a Drive folder, a repository, a Jira project): {id: ...} or {name: ...}
+attaches one that exists, and a missing, ambiguous or unreadable one stops
+the run; a full entry creates a new one of a reference type (google_drive,
+confluence, github, jira, or one the server defines), private unless
+read_visibility / write_visibility say otherwise. docs are documents created
+in the room; its agents see each one's description and load the content
+when they need it. Capturing a room writes roles and docs in full and
+references by id:
+
+    roles:
+      - {name: reviewer, exclusive: true, instructions: Review each change.}
+    references:
+      - {id: <reference id>}
+      - {name: Design notes}
+      - type: github
+        name: Service repo
+        description: The code under review
+        instructions: Read it; do not push.
+        value: {urls: ["https://github.com/org/repo"]}
+    docs:
+      - name: checklist
+        description: What every review covers
+        instructions: Work through it for each change.
+        content: "Tests pass. Errors are handled. The docs say what changed."
 
 Without bridge the room goes on the server's default messaging app; users
 needs one (make them depend on it: [{if: "{bridge}", value: [...]},

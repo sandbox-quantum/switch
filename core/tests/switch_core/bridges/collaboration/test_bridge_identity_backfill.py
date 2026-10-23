@@ -193,8 +193,8 @@ async def test_attach_reprovision_does_not_overwrite_a_running_task() -> None:
 
 
 async def test_attach_reprovision_runs_when_no_task_is_live() -> None:
-    """The usual case: the start-time run has finished (it fails fast while the
-    bridge is unattached), so attaching spawns a fresh provisioning run."""
+    """The usual case: no run is going (a shared bridge skips the start-time
+    run while unattached), so attaching spawns a fresh provisioning run."""
     runs = 0
     done = asyncio.Event()
 
@@ -211,4 +211,50 @@ async def test_attach_reprovision_runs_when_no_task_is_live() -> None:
 
     assert runs == 1
     assert core._identity_task is not None
+    await core.stop()
+
+
+class _SharedAdapter(_FakeAdapter):
+    """A bridge on its platform's shared connection, attached after it starts."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.connection: object | None = None
+        self._on_attached: Any = None
+
+    def set_on_attached(self, callback: Any) -> None:
+        self._on_attached = callback
+
+    def attach_shared_connection(self, connection: object) -> None:
+        self.connection = connection
+        if self._on_attached is not None:
+            self._on_attached()
+
+    def awaiting_shared_connection(self) -> bool:
+        return self.connection is None
+
+
+async def test_a_shared_bridge_provisions_once_attached_rather_than_at_start() -> None:
+    """Started before the shared connection is up, every agent's call would
+    fail, each logged, and attaching provisions them all anyway."""
+    runs = 0
+    done = asyncio.Event()
+
+    async def _provision() -> None:
+        nonlocal runs
+        runs += 1
+        done.set()
+
+    core, _ = _core(_provision)
+    adapter = _SharedAdapter()
+    core._adapter = adapter  # type: ignore[assignment]
+
+    await core.start()
+    await asyncio.sleep(0)
+    assert core._identity_task is None
+    assert runs == 0
+
+    adapter.attach_shared_connection(object())
+    await asyncio.wait_for(done.wait(), timeout=1)
+    assert runs == 1
     await core.stop()
