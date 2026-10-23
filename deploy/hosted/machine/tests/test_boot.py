@@ -1,4 +1,4 @@
-"""The boot of a Switch cloud machine that runs one agents controller per workspace."""
+"""The boot of a Switch cloud machine that runs one agent controller per workspace."""
 
 from __future__ import annotations
 
@@ -485,7 +485,7 @@ def test_another_index_gets_its_users_with_their_fixed_ids():
             "2200",
             *nologin,
             "--comment",
-            "Switch agents controller",
+            "Switch agent controller",
             "switch-controller-1",
         ],
         ["/usr/sbin/groupadd", "--system", "--gid", "2201", "switch-agents-2200"],

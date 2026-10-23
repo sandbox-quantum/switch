@@ -537,7 +537,7 @@ pnpm run lint
     `.gitignore` stops `git add` and not an archive, a sync or `git add -f`.
     Moving it out is tracked separately; it is deliberately not solved by
     writing it to a second location as well.
-- **The embedded agents controller's credential** (`embedded-controller/`) lives only in
+- **The embedded agent controller's credential** (`embedded-controller/`) lives only in
   the encrypted app secrets store. It reaches the controller child on stdin
   (`--credential-stdin`), never on argv, in the environment or in a file, so the
   watchers and sessions the controller starts cannot inherit it. Keep it that way.

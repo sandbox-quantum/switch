@@ -94,7 +94,7 @@ _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 
 @dataclass(frozen=True)
 class ControllerRelease:
-    """The agents controller package every controller is told to run."""
+    """The agent controller package every controller is told to run."""
 
     version: str
     url: str
@@ -311,7 +311,7 @@ class SwitchConfig(BaseSettings):
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
-    # Cloud machines run the agents controller, so above 0 this needs the
+    # Cloud machines run the agent controller, so above 0 this needs the
     # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
@@ -558,7 +558,7 @@ class SwitchConfig(BaseSettings):
     # agent-bridge app) so the "Open in Switch Console" link is clickable on platforms
     # that only linkify http(s) (Discord, and any future http-only bridge). When
     # unset, the raw `switchdash://` deeplink is posted as-is. Also the
-    # `--server` an agents controller enrolls against, which the gateway's Add
+    # `--server` an agent controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
     gateway_public_url: str | None = None
 
@@ -771,7 +771,7 @@ class SwitchConfig(BaseSettings):
     # `report_within_s`; a controller that has not reported for three of these
     # is shown as unknown and refused new placements.
     controller_status_interval_seconds: int = 60
-    # The agents controller release every controller is told to run, in
+    # The agent controller release every controller is told to run, in
     # answer to its status report. Set all three or none: with none, no
     # controller is told anything and each keeps the version it has. A
     # controller downloads the package from the URL, refuses it unless its
@@ -881,7 +881,7 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     "HOSTED_LAUNCH_CAPACITY needs the "
                     f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
-                    "agents controller."
+                    "agent controller."
                 )
             return self
         if not self.controller_token_secret:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the Switch agents controller (switch-agent-controller) with npm,
+# Installs the Switch agent controller (switch-agent-controller) with npm,
 # from the newest controller release on GitHub, and optionally enrolls this
 # machine and installs the controller as a service of this user.
 #

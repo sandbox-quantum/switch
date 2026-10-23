@@ -1,4 +1,4 @@
-"""One stream per agents controller, sent on its socket
+"""One stream per agent controller, sent on its socket
 (`/v1/controllers/{id}/connection/ws`).
 
 A read-side merge over the per-agent `EventBuffer`: every agent bound to the

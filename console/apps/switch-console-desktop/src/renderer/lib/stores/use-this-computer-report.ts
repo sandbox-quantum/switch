@@ -5,7 +5,7 @@ import type { ThisComputerReport } from '@shared/core/managed-agents/managed-age
 export const THIS_COMPUTER_REPORT_KEY = ['this-computer-report'] as const;
 
 /**
- * This computer's providers as its agents controller last reported them to
+ * This computer's providers as its agent controller last reported them to
  * Switch, or null when it runs no controller with a report. Settings → Agent
  * providers shows this when there is one, so it says what switch-buddy and
  * the New agent form say; Console's own check is the fallback.

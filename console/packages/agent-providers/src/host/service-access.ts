@@ -6,7 +6,7 @@ import { validServiceToken } from './service-github';
  * Google), as Switch grants it.
  *
  * A session reads the agent's grants when it starts or resumes, through the
- * agent's own Switch endpoint: its own key, or the agents controller's relay,
+ * agent's own Switch endpoint: its own key, or the agent controller's relay,
  * which forwards `/agents/{id}/...` as the controller. A grant gives the
  * session its service's skill and, through the agent host, the service's
  * tokens. A change of access reaches its tokens within half a minute

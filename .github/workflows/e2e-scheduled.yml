@@ -1,0 +1,123 @@
+name: E2E scheduled
+
+# When the end-to-end runs that are not PR checks happen. What a run does is
+# e2e.yml's; this file only says when, and reports.
+#
+#   after a merge to main  the provider lane on a throwaway stack. Real model
+#                          calls, so not on every PR, and never a required check
+#   nightly                the provider lane again, then a notification
+#   a release tag          (switch-v*, candidates included) every lane that runs
+#                          on a throwaway stack: fast, provider and agentic, on
+#                          the tagged commit, always reported. A candidate may
+#                          be cut from a release branch, whose commits no main
+#                          run has seen, and it is the code about to be
+#                          promoted; the deployed environments test what they
+#                          run, not what is about to reach them
+#
+# A failed run after a merge is reported too, since the lane is not a required
+# check and nothing else would surface it before the night; a passing one is
+# not, to keep the channel to one message a night.
+#
+# Runs against the deployed environments live with the deployment
+# configuration, not here.
+#
+# The fast lane on a throwaway stack is a PR check in pr-ci.yml.
+#
+# Notifications go to the incoming webhook in the repository secret
+# E2E_NOTIFY_WEBHOOK_URL (Slack and Mattermost both accept the payload). Without
+# it the run says so in a warning and sends nothing.
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  push:
+    branches: [main]
+    # Everything but documentation. The Switch skill is Markdown, but it is the
+    # system context every real agent session runs with, so a change to it can
+    # change whether the agent replies at all: later entries win.
+    paths:
+      - '**'
+      - '!docs/**'
+      - '!**/*.md'
+      - 'console/packages/plugins/src/switch-skill/SKILL.md'
+    # Path filters do not apply to tags: every release tag runs.
+    tags:
+      - 'switch-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    name: Provider lane
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: provider
+      agent_type: claude-code
+
+  fast:
+    name: Fast lane
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: fast
+      agent_type: claude-code
+
+  agentic:
+    name: Agentic lane
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: agentic
+      agent_type: claude-code
+
+  notify:
+    name: Report
+    needs: [provider, fast, agentic]
+    if: ${{ always() && github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send the summary
+        env:
+          WEBHOOK: ${{ secrets.E2E_NOTIFY_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PROVIDER_RESULT: ${{ needs.provider.result }}
+          PROVIDER_SUMMARY: ${{ needs.provider.outputs.summary }}
+          FAST_RESULT: ${{ needs.fast.result }}
+          FAST_SUMMARY: ${{ needs.fast.outputs.summary }}
+          AGENTIC_RESULT: ${{ needs.agentic.result }}
+          AGENTIC_SUMMARY: ${{ needs.agentic.outputs.summary }}
+        run: |
+          tagged=false
+          [ "$GITHUB_REF_TYPE" = tag ] && tagged=true
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$tagged" = false ] && [ "$PROVIDER_RESULT" = success ]; then
+            echo "The provider lane passed after the merge; nothing to report."
+            exit 0
+          fi
+          line() {
+            local mark=❌
+            [ "$2" = success ] && mark=✅
+            printf '%s %s — %s\n' "$mark" "$1" "${3:-$2, no scenario summary}"
+          }
+          if [ "$tagged" = true ]; then
+            title="Switch E2E on $GITHUB_REF_NAME"
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            title="Switch E2E after merging ${GITHUB_SHA:0:9}"
+          else
+            title='Switch E2E nightly'
+          fi
+          lines="$(line 'Provider lane (ephemeral)' "$PROVIDER_RESULT" "$PROVIDER_SUMMARY")"
+          if [ "$tagged" = true ]; then
+            lines="$(printf '%s\n%s\n%s' \
+              "$(line 'Fast lane (ephemeral)' "$FAST_RESULT" "$FAST_SUMMARY")" \
+              "$lines" \
+              "$(line 'Agentic lane (ephemeral)' "$AGENTIC_RESULT" "$AGENTIC_SUMMARY")")"
+          fi
+          text="$(printf '%s\n%s\n%s' "$title" "$lines" "$RUN_URL")"
+          echo "$text"
+          if [ -z "$WEBHOOK" ]; then
+            echo "::warning::E2E_NOTIFY_WEBHOOK_URL is not set; this report was not sent anywhere."
+            exit 0
+          fi
+          curl -fsS -H 'Content-Type: application/json' -d "$(jq -n --arg text "$text" '{text: $text}')" "$WEBHOOK" >/dev/null

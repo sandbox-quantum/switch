@@ -439,6 +439,7 @@ room:
   users:           [ usernames ]
   roles:           [ ... ]
   references:      [ ... ]
+  packages:        [ {id: package id} or {name: package name} ]
   docs:            [ ... ]
   aliases:         { agent name: alias }
 ```
@@ -464,6 +465,13 @@ document creates by the text written as their `name`. `users:` names people
 by their username on the room's messaging app; `{$creator}` puts the
 deployer in. Without `bridge:` the room is created on the server's default
 messaging app; on a server with none, it is a Switch-only room.
+
+`packages:` attaches packages that already exist, by `id` or by `name`; a
+template never creates or changes one. The deployer must be able to read
+each package, as when attaching it by hand, and a name must match exactly
+one package they own or that is public. A package that is missing, ambiguous
+or not theirs to attach stops the run before the room is created. An
+exported room lists its packages by `id`.
 
 ## Groups
 

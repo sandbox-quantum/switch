@@ -23,7 +23,7 @@ This directory holds what runs the machines:
   exposed port.
 
 Machines never join the cluster. They reach Switch over its public,
-authenticated HTTPS API, as any agents controller does.
+authenticated HTTPS API, as any agent controller does.
 
 ## How a user gets a machine
 
@@ -34,7 +34,7 @@ controller for this workspace once it has reported. A machine serves up to 8
 workspaces. Self sign-up claims one too, so it warms
 while the user signs in. The hosted controller polls Core for the machines that
 should exist, creates the data volume, and launches the VM with a bundle as its
-user data. The machine runs one agents controller per workspace seated on it,
+user data. The machine runs one agent controller per workspace seated on it,
 and the bundle (version 5) lists them in Core's order, each under its seat key
 with either the controller it enrolled as or a one-time enrollment code. The
 machine enrolls each controller with its code, and their status reports are

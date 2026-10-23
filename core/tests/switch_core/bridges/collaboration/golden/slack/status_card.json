@@ -1,0 +1,64 @@
+[
+  {
+    "kwargs": {
+      "blocks": [
+        {
+          "block_id": "switch-request:tok-status",
+          "status": "in_progress",
+          "task_id": "turn-1",
+          "title": "Working… 12s",
+          "type": "task_card"
+        },
+        {
+          "elements": [
+            {
+              "text": "Needs attention: <@U0OWNER>",
+              "type": "mrkdwn"
+            }
+          ],
+          "type": "context"
+        }
+      ],
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "metadata": {
+        "event_payload": {
+          "token": "tok-status"
+        },
+        "event_type": "switch_publication"
+      },
+      "text": "<@U0OWNER> Working… 12s",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "blocks": [
+        {
+          "block_id": "switch-request:tok-status",
+          "elements": [
+            {
+              "text": "Worked for 1m 15s. 1 tool call.",
+              "type": "mrkdwn"
+            }
+          ],
+          "type": "context"
+        }
+      ],
+      "channel": "C0GENERAL",
+      "metadata": {
+        "event_payload": {
+          "token": "tok-status"
+        },
+        "event_type": "switch_publication"
+      },
+      "text": "Worked for 1m 15s. 1 tool call.",
+      "ts": "1800000000.000001"
+    },
+    "method": "chat.update"
+  }
+]

@@ -8,7 +8,7 @@ export interface SessionRunner {
 }
 
 /**
- * A controller-backed agent's sessions are run by the agents controller of the
+ * A controller-backed agent's sessions are run by the agent controller of the
  * machine it is placed on, not by a connection of its own; say so, and name the
  * controller. Null for every other session, which the agent runs itself.
  */
@@ -20,8 +20,8 @@ export function sessionRunner(session: AgentSessionDetail): SessionRunner | null
   return {
     label: "Run by a machine",
     detail: session.controller_id
-      ? `Run by agents controller ${session.controller_id} on the machine the agent is placed on, ${place}.`
-      : `Run by the agents controller of the machine the agent is placed on, ${place}.`,
+      ? `Run by agent controller ${session.controller_id} on the machine the agent is placed on, ${place}.`
+      : `Run by the agent controller of the machine the agent is placed on, ${place}.`,
   };
 }
 

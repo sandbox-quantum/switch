@@ -170,7 +170,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
   // Choosing Switch cloud claims the owner's cloud machine and starts it. Once
-  // its agents controller has enrolled and is online, the agent is placed on it
+  // its agent controller has enrolled and is online, the agent is placed on it
   // like on any machine.
   const cloudMachineQuery = useQuery({
     queryKey: ['cloud-machine-ensure', selectedServerId],

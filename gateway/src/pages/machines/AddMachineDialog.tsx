@@ -55,7 +55,7 @@ function CopyBlock({ text, label }: { text: string; label: string }) {
 
 /**
  * Issues a one-time enrollment code and shows the commands that install a
- * machine's agents controller and enroll it with that code. The code is shown
+ * machine's agent controller and enroll it with that code. The code is shown
  * once: closing the dialog discards it, and a new open issues a new one. The
  * optional name and description go into the commands, so the machine enrolls
  * with them.
@@ -103,7 +103,7 @@ export default function AddMachineDialog({
       <DialogTitle>Add a machine</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
-          Run the agents controller on the machine that should run your agents (a laptop, your
+          Run the agent controller on the machine that should run your agents (a laptop, your
           own VM or a server). Enroll it once with the code below; it then runs whatever agents
           you place on it here. It needs Linux or macOS with Node 22.13 or later, and the CLI of
           each provider your agents use (such as <code>claude</code> or <code>codex</code>),

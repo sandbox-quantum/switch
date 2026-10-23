@@ -98,7 +98,7 @@ const WINDOWS_ENV = [
  * above, those each registered provider's runtime asks for, and the basics a
  * CLI needs to find itself, its home and its terminal. Matched without regard
  * to case on Windows, where `Path` and `PATH` are one variable.
- * Console and the headless agents controller both launch hosts with it.
+ * Console and the headless agent controller both launch hosts with it.
  */
 export const EXECUTION_INHERIT_ENV: readonly string[] = [
   ...new Set([...AGENT_ENV_VARS, ...PROVIDER_RUNTIMES.flatMap((runtime) => runtime.inheritEnv)]),

@@ -79,11 +79,11 @@ export interface AgentSessionDetail {
   room_id: string | null;
   room_name: string | null;
   // `heartbeat` / `explicit` (a session row), `connection` (the agent's own
-  // connection) or `controller` (run by the agents controller it is placed on).
+  // connection) or `controller` (run by the agent controller it is placed on).
   lifecycle: string;
   state: string;
   last_seen_at: string;
-  // The agents controller running it, for a `controller` session; else null.
+  // The agent controller running it, for a `controller` session; else null.
   controller_id: string | null;
 }
 
@@ -219,6 +219,9 @@ export interface CreateRoomInput {
   join_event_listeners?: string[];
   user_names?: string[];
   bridge_id?: string | null;
+  // With no bridge_id the server uses the default bridge; this asks for a
+  // room with no external channel instead.
+  internal_only?: boolean;
   external_channel_id?: string | null;
   group_id?: string | null;
   read_visibility?: "public" | "private";
@@ -338,6 +341,7 @@ export interface ProvisionResult {
   room_id: string;
   room_name: string;
   attached_reference_ids: string[];
+  attached_package_ids: string[];
   created_reference_ids: string[];
   created_document_ids: string[];
   role_names: string[];

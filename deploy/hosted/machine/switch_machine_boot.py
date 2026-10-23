@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot a Switch cloud machine that runs one agents controller per workspace.
+"""Boot a Switch cloud machine that runs one agent controller per workspace.
 
 Runs as root, once per boot, before the controllers' services
 (`switch-machine-boot.service`). It reads the bundle the hosted controller
@@ -625,7 +625,7 @@ def ensure_identities(commands: Commands, config: MachineConfig, seat: Seat) -> 
         seat.uid,
         str(seat.gid),
         seat.gid,
-        "Switch agents controller",
+        "Switch agent controller",
     )
     _ensure_group(commands, seat.agents_group, seat.agents_gid)
     for slot in range(1, config.agent_users + 1):

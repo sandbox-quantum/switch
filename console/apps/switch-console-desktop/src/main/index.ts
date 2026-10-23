@@ -8,9 +8,10 @@ import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
-import { flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
+import { deeplinkFromArgv, flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
+import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
 import { createMainWindow, getMainWindow } from './app/window';
 import { startAutoMigration, stopAutoMigration } from './core/agent-migration/agent-migration';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
@@ -84,7 +85,16 @@ registerProcessErrorLogging(log);
 registerRendererLogHandler(ipcMain);
 logAppStart();
 
-app.on('second-instance', () => {
+// A launch while Console is quitting finds no window to show, and one opened
+// now would close with the exit, so Console starts again once it has quit.
+let quitting = false;
+const launchesWhileQuitting = new LaunchesWhileQuitting(deeplinkFromArgv);
+
+app.on('second-instance', (_event, commandLine) => {
+  if (quitting) {
+    launchesWhileQuitting.note(commandLine.slice(1));
+    return;
+  }
   const win = BrowserWindow.getAllWindows()[0];
   if (win?.isMinimized()) win.restore();
   win?.focus();
@@ -269,12 +279,12 @@ void app.whenReady().then(async () => {
       log.error('Failed to initialise remote watchers at startup:', e);
     }
     // The managed agents this computer runs for a server, through the embedded
-    // agents controller. After the dependency probe, like the watchers above:
+    // agent controller. After the dependency probe, like the watchers above:
     // the controller resolves provider CLIs from the same environment.
     try {
       await embeddedControllerService.initialize();
     } catch (e) {
-      log.error('Failed to start the embedded agents controllers at startup:', e);
+      log.error('Failed to start the embedded agent controllers at startup:', e);
     }
     // After the controllers: moving an agent onto this computer's controller needs it running.
     startAutoMigration();
@@ -310,6 +320,12 @@ void app.whenReady().then(async () => {
 
 app.on('before-quit', (event) => {
   event.preventDefault();
+  if (quitting) return;
+  quitting = true;
+  // Installing an update quits through here too, and the installer starts the
+  // new version itself. Starting Console as well could run the old executable
+  // while it is being replaced.
+  const updaterRestarts = updateService.getState().status === 'installing';
   logAppExit('before-quit');
   controlService.dispose();
   stopAutoMigration();
@@ -330,14 +346,24 @@ app.on('before-quit', (event) => {
       ]).catch((e) => {
         log.error('Failed to stop local SDK hosts:', e);
       }),
-      // The embedded agents controllers stop, and their agents and sessions with them.
+      // The embedded agent controllers stop, and their agents and sessions with them.
       embeddedControllerService.dispose().catch((e) => {
-        log.error('Failed to stop the embedded agents controllers:', e);
+        log.error('Failed to stop the embedded agent controllers:', e);
       }),
     ]);
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });
+    const relaunchArgs = launchesWhileQuitting.relaunchArgs();
+    if (relaunchArgs && !updaterRestarts) {
+      app.relaunch({ args: relaunchArgs });
+    } else if (relaunchArgs && launchesWhileQuitting.deeplink) {
+      // Nothing carries a deep link across a restart, so the updated Console
+      // starts without it.
+      log.warn('Dropped a deep link that arrived while Console quit to install an update', {
+        url: launchesWhileQuitting.deeplink,
+      });
+    }
     app.exit(0);
   })();
 });

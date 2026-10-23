@@ -74,6 +74,7 @@ jobs:
       artifacts: ${{ steps.filter.outputs.artifacts }}
       migrations: ${{ steps.filter.outputs.migrations }}
       chart: ${{ steps.filter.outputs.chart }}
+      e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -99,6 +100,10 @@ jobs:
               - 'scripts/check_migration_heads_for_open_prs.py'
               - 'scripts/pin_chart_images.py'
               - 'scripts/prune_dev_packages.py'
+              # The end-to-end coverage gate's snapshot of the server's surface,
+              # checked against the server below.
+              - 'scripts/e2e_surface.py'
+              - 'console/tooling-e2e/surface/**'
             console:
               - *shared
               - 'console/**'
@@ -109,6 +114,15 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
+            # The server, the stack the fast lane stands up, and the harness.
+            e2e:
+              - *shared
+              - 'core/**'
+              - 'console/tooling-e2e/**'
+              - 'console/pnpm-lock.yaml'
+              - 'deploy/local/**'
+              - '.env.example'
+              - '.github/workflows/e2e.yml'
             # Its own filter, narrower than `backend`, so the push-triggered
             # `migration-heads-on-merge` job below only runs when it can
             # actually find a new head — not on every backend-touching push.
@@ -165,6 +179,13 @@ jobs:
 
       - name: mypy
         run: uv run --project core mypy --config-file core/pyproject.toml core/switch_core/
+
+      # The coverage gate in console/tooling-e2e reads this snapshot rather
+      # than the server, so it has to be the server's: a route or operation
+      # added without regenerating it fails here, and the regenerated snapshot
+      # then fails the gate until a scenario or an exemption accounts for it.
+      - name: E2E surface snapshot is current
+        run: uv run --project core python scripts/e2e_surface.py --check
 
       # Store tests boot real Postgres via testcontainers; ubuntu-latest ships
       # Docker so the containers come up without extra setup. The slow
@@ -363,6 +384,18 @@ jobs:
 
       - name: Test (vitest)
         run: npm test
+
+  # Real messages through a real server and Mattermost, on a stack the job
+  # builds from this checkout. Needs no secret, so a fork PR runs it the same.
+  # The provider lane is e2e-scheduled.yml's.
+  e2e-fast:
+    name: E2E fast lane
+    needs: changes
+    if: ${{ needs.changes.outputs.e2e == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/e2e.yml
+    with:
+      lane: fast
+      agent_type: claude-code
 
   migration-heads-on-merge:
     name: Migration heads on merge

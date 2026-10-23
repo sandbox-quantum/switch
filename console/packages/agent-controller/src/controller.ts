@@ -255,7 +255,7 @@ export async function runController(
   }
   const warning = deps.secrets.startupWarning();
   if (warning) log.warn(warning);
-  log.info('Agents controller starting', {
+  log.info('Agent controller starting', {
     controllerId: identity.controllerId,
     server: identity.server,
     version: deps.version,

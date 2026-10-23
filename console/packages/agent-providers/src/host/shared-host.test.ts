@@ -56,12 +56,28 @@ function fakeParent() {
     error?: string;
     event?: { sequence: number };
     identity?: Record<string, string>;
+    ask?: { type: string; roomId?: string };
   };
   const sent: Sent[] = [];
+  // The controller's answer to a host asking for a room's instructions: the
+  // text, or an Error to refuse with.
+  const roomInstructions: { value: string | Error } = { value: '' };
   const port = Object.assign(new EventEmitter(), {
     connected: true,
     send: (message: unknown) => {
-      sent.push(message as Sent);
+      const sentMessage = message as Sent;
+      if (sentMessage.kind === 'ask' && sentMessage.ask?.type === 'room-instructions') {
+        const { value } = roomInstructions;
+        queueMicrotask(() =>
+          port.emit(
+            'message',
+            value instanceof Error
+              ? { kind: 'answer', id: sentMessage.id, ok: false, error: value.message }
+              : { kind: 'answer', id: sentMessage.id, ok: true, value: { instructions: value } }
+          )
+        );
+      }
+      sent.push(sentMessage);
       return true;
     },
   });
@@ -79,7 +95,7 @@ function fakeParent() {
     );
     return reply!;
   };
-  return { port, sent, ask };
+  return { port, sent, ask, roomInstructions };
 }
 
 type Harness = {
@@ -469,6 +485,53 @@ it('tells a running conversation once that its instructions changed, across rest
   const again = await restart(edited, 'Speak plainly.');
   try {
     expect(await answer(again, 4, 'still?')).not.toContain('instructions were changed');
+  } finally {
+    expect(await again.stop()).toBeNull();
+  }
+}, 30_000);
+
+it('tells a conversation a room’s instructions with its first message there, and again when they change', async () => {
+  const restart = async (host: Harness): Promise<Harness> => {
+    expect(await host.stop()).toBeNull();
+    await rm(join(host.root, 'shared-owner.lock'));
+    return start({ rooms: true, base: host.base });
+  };
+  const answer = async (host: Harness, sequence: number, body: string): Promise<string> => {
+    const before = host.turns.length;
+    expect(
+      await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, body) })
+    ).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), { timeout: 5000 });
+    const turn = host.turns.at(-1)!;
+    host.emit({ type: 'turn.completed', turnId: turn.turnId, outcome: 'completed', usage: [] });
+    return turn.text;
+  };
+
+  const first = await start({ rooms: true });
+  first.parent.roomInstructions.value = 'End every reply with -- payments-release.';
+  expect(await answer(first, 1, 'which day?')).toMatch(
+    /^\[Switch\] Room room has instructions of its own\.[\s\S]*BEGIN ROOM INSTRUCTIONS\nEnd every reply with -- payments-release\.\nEND ROOM INSTRUCTIONS\n\n\[Switch\] A Person addressed you/
+  );
+  expect(await answer(first, 2, 'and the time?')).not.toContain('ROOM INSTRUCTIONS');
+
+  first.parent.roomInstructions.value = 'Be brief.';
+  expect(await answer(first, 3, 'still there?')).toContain(
+    "[Switch] Room room's instructions were changed. From now on, follow these there instead of the ones you were given earlier:\nBEGIN ROOM INSTRUCTIONS\nBe brief.\nEND ROOM INSTRUCTIONS"
+  );
+
+  const again = await restart(first);
+  try {
+    again.parent.roomInstructions.value = 'Be brief.';
+    expect(await answer(again, 4, 'after a restart')).not.toContain('ROOM INSTRUCTIONS');
+
+    again.parent.roomInstructions.value = new Error('Switch is unreachable');
+    expect(await answer(again, 5, 'and now?')).toContain(
+      "[Switch] Room room's instructions could not be read for you (Switch is unreachable). Before you reply, call connect_to_room with room_id room"
+    );
+    again.parent.roomInstructions.value = 'Be brief.';
+    const back = await answer(again, 6, 'back?');
+    expect(back).not.toContain('ROOM INSTRUCTIONS');
+    expect(back).not.toContain('could not be read');
   } finally {
     expect(await again.stop()).toBeNull();
   }
@@ -951,7 +1014,7 @@ it('tells the room at once when it refuses a compaction asked for there mid-turn
   const asks = () =>
     host.parent.sent.filter(
       (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask'
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
     );
   try {
     expect(
@@ -1301,7 +1364,7 @@ it('posts for a room turn that ended without the agent posting, and not for one 
   const asks = () =>
     host.parent.sent.filter(
       (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
-        message.kind === 'ask'
+        message.kind === 'ask' && message.ask?.type !== 'room-instructions'
     );
   const answer = (id: number, value: unknown) =>
     host.parent.port.emit('message', { kind: 'answer', id, ok: true, value });

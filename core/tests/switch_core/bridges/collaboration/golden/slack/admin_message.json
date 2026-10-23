@@ -1,0 +1,22 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "text": "**Agents in this room:**\n* @scout — see [docs](https://example.com/docs)",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "text": "Room renamed.\n`!undo` to revert",
+      "thread_ts": "1700000000.000100",
+      "unfurl_links": false,
+      "unfurl_media": false
+    },
+    "method": "chat.postMessage"
+  }
+]

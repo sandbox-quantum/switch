@@ -1,5 +1,5 @@
 /**
- * Moving an agent Console runs itself onto an agents controller, so that
+ * Moving an agent Console runs itself onto an agent controller, so that
  * Switch's agent management runs it instead: "Move to managed", and back with
  * "Stop managing".
  *

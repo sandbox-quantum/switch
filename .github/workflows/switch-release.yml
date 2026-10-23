@@ -306,7 +306,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # The agents controller (console/packages/agent-controller) at this release's
+  # The agent controller (console/packages/agent-controller) at this release's
   # version, published as the `switch-agent-controller-v<version>` GitHub
   # release that `install.sh` and `switch-agent-controller update` already read.
   # The chart below is pinned to it (switchCore.controllerRelease), so Core
@@ -316,7 +316,7 @@ jobs:
   # of a deployment running an RC, or the dev environment, follow it. A dry run
   # builds, tests and packs the controller but publishes nothing.
   controller:
-    name: Package & publish agents controller
+    name: Package & publish agent controller
     needs: prep
     runs-on: ubuntu-latest
     permissions:
@@ -425,7 +425,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "switch-agent-controller $VERSION (release candidate)" \
-              --notes "The Switch agents controller built for the release candidate Switch $VERSION, at $GITHUB_SHA. Controllers connected to a Switch running that candidate update to it on their own once idle; bake it into a machine image for that candidate. \`install.sh\` and \`switch-agent-controller update\` leave it out.
+              --notes "The Switch agent controller built for the release candidate Switch $VERSION, at $GITHUB_SHA. Controllers connected to a Switch running that candidate update to it on their own once idle; bake it into a machine image for that candidate. \`install.sh\` and \`switch-agent-controller update\` leave it out.
 
             SHA-256: \`$SHA256\`" \
               --prerelease \
@@ -437,7 +437,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "switch-agent-controller $VERSION (dev build of main)" \
-              --notes "The Switch agents controller built from main at $GITHUB_SHA, for the dev environment, whose controllers update to it on their own. Not for installing by hand; switch-dev-cleanup prunes it.
+              --notes "The Switch agent controller built from main at $GITHUB_SHA, for the dev environment, whose controllers update to it on their own. Not for installing by hand; switch-dev-cleanup prunes it.
 
             SHA-256: \`$SHA256\`" \
               --prerelease \
@@ -448,7 +448,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "switch-agent-controller $VERSION" \
-            --notes "The Switch agents controller $VERSION, released with Switch $VERSION, for running managed agents on your own Linux or macOS machines.
+            --notes "The Switch agent controller $VERSION, released with Switch $VERSION, for running managed agents on your own Linux or macOS machines.
 
           SHA-256: \`$SHA256\`
 

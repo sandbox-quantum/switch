@@ -20,6 +20,7 @@ import {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { explainStartFailure } from '@shared/core/managed-switch-server/start-failure';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { DOCKER_RECHECK_MS, recheckDocker } from './docker-recheck';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
 import {
@@ -154,12 +155,18 @@ const ManagedServerPage = observer(function ManagedServerPage({
       void remoteServerStore.loadRegister(sshHost);
       // Someone else may have started or removed a stack shown as stopped.
       void remoteServerStore.refresh(sshHost);
-      return undefined;
+    } else {
+      void localServerStore.checkDocker();
     }
-    // The Mattermost switch waits on Docker, which people often start only
-    // after opening this page to find the switch greyed out.
-    return localServerStore.watchDocker();
   }, [sshHost]);
+
+  // The Mattermost switch waits on Docker, which people often start only after
+  // opening this page to find the switch greyed out.
+  const localDockerDown = sshHost === null && localServerStore.docker?.available === false;
+  useEffect(() => {
+    if (!localDockerDown) return;
+    return recheckDocker(() => localServerStore.checkDocker(), window, DOCKER_RECHECK_MS);
+  }, [localDockerDown]);
 
   const state = managedServerState(server) ?? null;
   const status = sshHost ? remoteServerStore.statusFor(sshHost) : localServerStore.status;

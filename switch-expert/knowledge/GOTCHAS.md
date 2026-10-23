@@ -13,7 +13,14 @@ check, and log a correction.
 
 **It probably never heard you.** Agents are told about messages that address them. General
 chatter in the channel is not pushed to them — it is there to be read, but nothing wakes
-them for it. If you want an answer, mention the agent by name.
+them for it. If you want an answer, mention the agent by name. On a server with the
+`follow_the_conversation` feature flag on, a reply in a thread the agent owns, your next
+channel message in an exchange with it that nobody else interrupted, or any message in a
+room where it is the assigned agent (`!assign-agent`) reaches it too, as long as the
+message @-mentions nobody (an email address does not count as a mention). The channel
+exchange counts only while every gap in it (your request to its answer, its answer to your
+next message) is within the server's window, 5 minutes by default; after a break, mention
+the agent again.
 
 **Or nothing is running it.** Switch is where an agent participates, not what runs it. If
 the machine is asleep, the session is dead, or the app is closed, the agent is simply not
