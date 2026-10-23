@@ -18,11 +18,15 @@ import { connectParent, type ParentChannel } from './session-channel';
 import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
+// Shared host tests on Windows write journals, replace configs, and fence workers through PowerShell.
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
 const SESSION: Session = {
@@ -306,11 +310,11 @@ async function start(
           (event) => event.body.type === 'session.upsert' && event.body.session.status === 'ready'
         )
       ).toBe(true),
-    { timeout: 5000 }
+    { timeout: process.platform === 'win32' ? 20_000 : 5000 }
   );
   // A request sent before the host listens for them would go unheard.
   await vi.waitFor(() => expect(parent.sent.some((m) => m.kind === 'ready')).toBe(true), {
-    timeout: 5000,
+    timeout: process.platform === 'win32' ? 20_000 : 5000,
   });
   return {
     base,
@@ -443,7 +447,11 @@ it('tells a running conversation once that its instructions changed, across rest
   // Each host is its own process, whose exit frees its ownership for the next.
   const restart = async (host: Harness, instructions: string): Promise<Harness> => {
     expect(await host.stop()).toBeNull();
-    await rm(join(host.root, 'shared-owner.lock'));
+    await rm(join(host.root, 'shared-owner.lock'), {
+      force: true,
+      maxRetries: 10,
+      retryDelay: 200,
+    });
     return start({ rooms: true, base: host.base, instructions });
   };
   const answer = async (host: Harness, sequence: number, body: string): Promise<string> => {
@@ -451,7 +459,9 @@ it('tells a running conversation once that its instructions changed, across rest
     expect(
       await host.parent.ask({ type: 'room', handoff: roomMessage(sequence, body) })
     ).toMatchObject({ ok: true });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), { timeout: 5000 });
+    await vi.waitFor(() => expect(host.turns).toHaveLength(before + 1), {
+      timeout: process.platform === 'win32' ? 20_000 : 5000,
+    });
     const turn = host.turns.at(-1)!;
     host.emit({ type: 'turn.completed', turnId: turn.turnId, outcome: 'completed', usage: [] });
     return turn.text;

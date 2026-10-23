@@ -9,6 +9,9 @@ import type { ProviderRuntimeEvent } from '../events';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, type RoomReply, unpostedReply } from './session-host';
 
+// Session host tests on Windows write journals and wait for PowerShell-fenced exits.
+if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
+
 /**
  * `vi.waitFor` with room for a slow disk: every step here is a journal write
  * flushed to disk, and Windows runners take well over the default second.
@@ -21,7 +24,8 @@ const roots: string[] = [];
 const hosts: HostedSession[] = [];
 afterEach(async () => {
   for (const host of hosts.splice(0)) await host.shutdown();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 function setup(provider: Session['provider']) {
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
