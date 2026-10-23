@@ -385,7 +385,7 @@ class Gateway:
         }
 
     def bundle(self, prepared: dict, machine: Machine) -> dict:
-        """The bundle a machine boots its agents controllers from, its
+        """The bundle a machine boots its agent controllers from, its
         instance's user data: one controller per workspace seated on the
         machine, each the controller it enrolled as or the one-time code it
         enrolls with until it has one. Never a long-lived credential: the

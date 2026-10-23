@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.agent_store import AgentStore
     from switch_core.db.stores.document_store import DocumentStore
     from switch_core.db.stores.external_user_store import ExternalUserStore
+    from switch_core.db.stores.package_store import PackageStore
     from switch_core.db.stores.reference_store import ReferenceStore
     from switch_core.db.stores.room_role_store import RoomRoleStore
     from switch_core.db.stores.room_store import RoomStore
@@ -181,6 +182,7 @@ class RecipientServices:
     room_store: RoomStore
     document_store: DocumentStore
     reference_store: ReferenceStore
+    package_store: PackageStore
     agent_session_store: AgentSessionStore
     room_role_store: RoomRoleStore
     external_user_store: ExternalUserStore
@@ -494,6 +496,7 @@ class AgentRecipient:
         self._room_store = services.room_store
         self._document_store = services.document_store
         self._reference_store = services.reference_store
+        self._package_store = services.package_store
         self._agent_session_store = services.agent_session_store
         self._room_role_store = services.room_role_store
         self._external_user_store = services.external_user_store
@@ -1314,7 +1317,7 @@ class AgentRecipient:
     async def _controller_unavailable_reply(
         self, session: AsyncSession, agent: Agent, meta: RoomMeta, asker_handle: str
     ) -> str | None:
-        """Why an agent run by an agents controller cannot answer here.
+        """Why an agent run by an agent controller cannot answer here.
 
         Never "open Switch Console": a managed agent
         is started by its controller, so the reply names what stands in the

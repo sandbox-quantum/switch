@@ -273,7 +273,7 @@ function message(error: unknown): string {
 }
 
 /**
- * Moves a Console agent onto an agents controller ("Move to managed") and
+ * Moves a Console agent onto an agent controller ("Move to managed") and
  * back ("Stop managing"), one agent at a time.
  *
  * A move goes straight ahead, in order:

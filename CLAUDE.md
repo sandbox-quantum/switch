@@ -107,8 +107,9 @@ its own cursor, 200 at a time. The notification is a wake-up, never the
 payload. Membership changes reach every
 process through a `NOTIFY` trigger on `client_rooms` and the signal bus
 (`signals.py`, `transport/membership_signals.py`); presence still travels over
-an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
-runs as a single replica. Names such as
+an in-process bus (`transport/ephemeral.py`), so with more than one replica a
+presence update (an agent going busy, say) reaches only the clients on the
+replica that announced it. Names such as
 the `matrix_room_id` / `matrix_user_id` columns and wire fields, the
 `@localpart:server` id shape and `m.room.message` content types are kept as
 stable identifiers and wire shapes, not as a sign that Matrix is in use. In

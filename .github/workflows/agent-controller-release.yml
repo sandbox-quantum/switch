@@ -1,6 +1,6 @@
 name: switch-agent-controller release
 
-# Builds the installable agents controller (console/packages/agent-controller)
+# Builds the installable agent controller (console/packages/agent-controller)
 # and publishes it as a GitHub release: the npm package
 # `switch-agent-controller-<version>.tgz`, installed with
 # `npm install --global <its URL>`, and the `install.sh` that finds and installs
@@ -97,7 +97,7 @@ jobs:
             "packages/agent-controller/dist-package/switch-agent-controller-$VERSION.tgz" \
             packages/agent-controller/install.sh \
             --title "switch-agent-controller $VERSION" \
-            --notes "The Switch agents controller $VERSION, for running managed agents on your own Linux or macOS machines.
+            --notes "The Switch agent controller $VERSION, for running managed agents on your own Linux or macOS machines.
 
           Install (Node 22.13 or later): \`npm install --global https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/switch-agent-controller-$VERSION.tgz\`, or run \`install.sh\`. Then enroll with a code from the Machines page and run \`switch-agent-controller install-service\`. An installed controller updates with \`switch-agent-controller update\`." \
             --latest=false

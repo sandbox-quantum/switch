@@ -1,4 +1,4 @@
-# Switch agents controller (headless)
+# Switch agent controller (headless)
 
 `switch-agent-controller` runs the Switch agents that Management assigns to this
 machine and reports their status. Run one per machine. It is the headless half of

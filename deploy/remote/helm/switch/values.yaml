@@ -68,7 +68,7 @@ ingress:
     - /agent-sessions
     - /version
     - /deeplink
-    # Agents controllers: enrollment, tokens, assignment, status and their
+    # Agent controllers: enrollment, tokens, assignment, status and their
     # event stream (/v1/management/..., /v1/controllers/...).
     - /v1
     - /mcp
@@ -102,7 +102,7 @@ ingress:
 #      AGENT_REGISTRATION_TOKEN, SECRET_KEYS, GATEWAY_ADMIN_EMAIL,
 #      GATEWAY_ADMIN_PASSWORD,
 #      JWT_SECRET_KEY (optional, legacy — see secrets.jwtSecretKey),
-#      CONTROLLER_TOKEN_SECRET (if switchCore.agentManagement.enabled),
+#      CONTROLLER_TOKEN_SECRET (with the agent_management feature flag on),
 #      MATTERMOST_ADMIN_PASSWORD + MATTERMOST_USER_PASSWORD (if mattermost.enabled),
 #      GATEWAY_OIDC_CLIENT_SECRET (if switchCore.oidc.enabled).
 secrets:
@@ -137,8 +137,8 @@ secrets:
   gatewayAdminPassword: ""
   mattermostAdminPassword: ""
   mattermostUserPassword: ""
-  # Signs agent controllers' access tokens (required when
-  # switchCore.agentManagement.enabled), at least 32 characters. Kept apart from
+  # Signs agent controllers' access tokens (required with "agent_management" in
+  # switchCore.featureFlags.enabled), at least 32 characters. Kept apart from
   # secretKeys so rotating either never invalidates the other. Generate one
   # with: openssl rand -hex 32
   controllerTokenSecret: ""
@@ -210,7 +210,7 @@ switchCore:
   googleWorkspaceClientSecret: ""
   hostedControllerSecret: ""
   # How many cloud machines may run at once; 0 means this server cannot run
-  # them. Cloud machines run the agents controller, so above 0 this needs the
+  # them. Cloud machines run the agent controller, so above 0 this needs the
   # "agent_management" feature flag. The "hosted_agents" flag is what offers
   # them in Switch Console.
   hostedLaunchCapacity: 0
@@ -389,7 +389,18 @@ switchCore:
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
-  # The agents controller release switch-core tells every controller to run
+  # Follow the conversation: a person's message that names nobody can reach the
+  # agent they are talking to (a thread it owns, their next message in a
+  # channel exchange with it that nobody interrupted, a room's assigned agent).
+  # Turned on by the "follow_the_conversation" feature flag
+  # (featureFlags.enabled below).
+  followTheConversation:
+    # A channel exchange counts only while every gap in it (request to answer,
+    # answer to the next message) is within this many seconds; after a break,
+    # people mention the agent again. FOLLOW_THE_CONVERSATION_WINDOW_SECONDS,
+    # 1 to 3600.
+    windowSeconds: 300
+  # The agent controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs
   # another version downloads the package from `url`, refuses it unless its
@@ -416,7 +427,8 @@ switchCore:
   # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
-  # hosted_agents, service_connections, agent_chats.
+  # hosted_agents, service_connections, agent_chats, follow_the_conversation,
+  # switch_buddy.
   featureFlags:
     enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is

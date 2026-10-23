@@ -1648,6 +1648,43 @@ async def test_a_notification_before_the_subscriptions_could_be_read_reads_them(
     assert adapter._subscriptions == {CHANNEL: "LIVE"}
 
 
+async def test_a_quiet_copy_relays_a_removal_it_cannot_know_to_the_holder() -> None:
+    """A quiet copy adopts no subscriptions at start, and Graph no longer
+    lists one it has removed, so the copy cannot know it. The holder can,
+    and recreates it; a removal stopped at the copy would leave capture off
+    until the holder's repair loop noticed. The organisation's clientState
+    is still checked before anything is relayed."""
+    adapter = _shared_adapter(team_id="team-1")
+    adapter.set_listening(False)
+    relayed: list[dict[str, str]] = []
+    adapter.set_holder_relay(relayed.append)
+    graph = _SubscribingGraph(list_failures=0, held=[])
+    adapter._graph = graph  # type: ignore[assignment]
+
+    await adapter.receive_notification(
+        {
+            "lifecycleEvent": "subscriptionRemoved",
+            "subscriptionId": "REMOVED",
+            "clientState": client_state_for("jwt-secret", OTHER_ORG),
+        }
+    )
+    await adapter.receive_notification(
+        {
+            "lifecycleEvent": "subscriptionRemoved",
+            "subscriptionId": "REMOVED",
+            "clientState": adapter._me.client_state,
+        }
+    )
+
+    assert relayed == [
+        {
+            "action": "lifecycle",
+            "event": "subscriptionRemoved",
+            "subscription_id": "REMOVED",
+        }
+    ]
+
+
 # ── Capture only where Switch is ─────────────────────────────────────────────
 
 

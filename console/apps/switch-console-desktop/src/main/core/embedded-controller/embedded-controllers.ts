@@ -44,7 +44,7 @@ async function controllerVersion(bundle: string): Promise<string> {
     timeout: 15_000,
   });
   const version = stdout.trim();
-  if (!version) throw new Error(`The agents controller at ${bundle} did not report a version.`);
+  if (!version) throw new Error(`The agent controller at ${bundle} did not report a version.`);
   return version;
 }
 

@@ -813,6 +813,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             room_store=room_store,
             document_store=document_store,
             reference_store=reference_store,
+            package_store=package_store,
             agent_session_store=agent_session_store,
             room_role_store=room_role_store,
             external_user_store=external_user_store,

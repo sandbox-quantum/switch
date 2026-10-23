@@ -157,7 +157,7 @@ export class ControllerSupervisor {
   recheckProviders(timeoutMs: number): Promise<void> {
     const child = this.child;
     if (!child || !child.connected)
-      return Promise.reject(new Error('The agents controller on this computer is not running.'));
+      return Promise.reject(new Error('The agent controller on this computer is not running.'));
     const id = randomUUID();
     return new Promise<void>((resolve, reject) => {
       const done = () => {
@@ -166,7 +166,7 @@ export class ControllerSupervisor {
       };
       const timer = setTimeout(() => {
         done();
-        reject(new Error('The agents controller on this computer did not answer in time.'));
+        reject(new Error('The agent controller on this computer did not answer in time.'));
       }, timeoutMs);
       const onMessage = (message: unknown) => {
         if (!isProviderRecheckReply(message) || message.id !== id) return;
@@ -178,7 +178,7 @@ export class ControllerSupervisor {
       const request: ProviderRecheckRequest = { kind: PROVIDER_RECHECK_KIND, id };
       if (!child.send(request)) {
         done();
-        reject(new Error('Could not reach the agents controller on this computer.'));
+        reject(new Error('Could not reach the agent controller on this computer.'));
       }
     });
   }
@@ -257,7 +257,7 @@ export class ControllerSupervisor {
     if (failure) {
       this.deps.onPhase({
         kind: 'error',
-        message: `The agents controller could not be started: ${failure.message}`,
+        message: `The agent controller could not be started: ${failure.message}`,
       });
       return;
     }
@@ -268,7 +268,7 @@ export class ControllerSupervisor {
     if (code === EXIT_CONFIGURATION) {
       this.deps.onPhase({
         kind: 'error',
-        message: `The agents controller cannot run as it is set up: ${this.lastWords() ?? 'it gave no reason'}`,
+        message: `The agent controller cannot run as it is set up: ${this.lastWords() ?? 'it gave no reason'}`,
       });
       return;
     }

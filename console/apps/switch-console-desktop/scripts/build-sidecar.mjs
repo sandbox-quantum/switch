@@ -54,7 +54,7 @@ await build({
 });
 
 /**
- * The agents controller Console runs as a child process when "Run managed
+ * The agent controller Console runs as a child process when "Run managed
  * agents on this computer" is on: the same `switch-agent-controller` CLI a
  * headless machine runs, bundled whole because the packaged app has no
  * workspace to resolve its packages from. It runs on Electron's binary as Node

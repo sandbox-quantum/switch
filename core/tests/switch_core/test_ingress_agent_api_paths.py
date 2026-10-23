@@ -67,7 +67,7 @@ def _served_prefixes() -> set[str]:
         gateway_ui=None,
     )
     prefixes = set(_ADDED_IN_MAIN)
-    # The agents controller's routes join the agent bridge app only when agent
+    # The agent controller's routes join the agent bridge app only when agent
     # management is on (`management/wiring.py`), so they are read from their
     # router here.
     for route in [*app.routes, *controller_router.routes]:

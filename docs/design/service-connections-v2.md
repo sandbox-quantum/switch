@@ -222,7 +222,7 @@ reads `.zip` too on Windows) and installs it under
 `~/.local/state/switch/tools/<binary>/<sha256>/`, once per machine. Upgrading a
 tool is a catalog change; a machine without a build is told so when the tool
 is called. What each install found (installed, failed, no build here) is kept
-in that folder's `status.json`, and the agents controller reports it with `git`
+in that folder's `status.json`, and the agent controller reports it with `git`
 and `gh` in its status (`ok`, `missing` or `unsupported`).
 
 Pinning the build in the catalog means Core names a binary that session hosts

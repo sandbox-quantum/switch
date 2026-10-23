@@ -38,6 +38,7 @@ from switch_core.db.models import (
     RoomRole,
     User,
     room_agents,
+    room_packages,
     room_references,
 )
 from switch_core.db.stores.agent_store import AgentStore
@@ -53,6 +54,8 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
+    ExistingPackageById,
+    ExistingPackageByName,
     ExistingReferenceById,
     GroupSpec,
     ParamSpec,
@@ -140,6 +143,10 @@ class FakeRoomService:
             for rid in config.reference_ids or []:
                 await session.execute(
                     insert(room_references).values(room_id=room.id, reference_id=rid)
+                )
+            for pid in config.package_ids or []:
+                await session.execute(
+                    insert(room_packages).values(room_id=room.id, package_id=pid)
                 )
             await session.commit()
             return RoomCreateResult(room=room, failed_attachments=[])
@@ -569,6 +576,199 @@ async def test_provision_ambiguous_reference_name_fails(env):
         await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
 
 
+async def _make_package(
+    env, name: str, *, owner_id: str | None = None, read_visibility: str = "private"
+) -> str:
+    async with env["session_factory"]() as session:
+        pkg = await env["resource_service"].create_package(
+            session,
+            owner_id=owner_id or env["user_id"],
+            read_visibility=read_visibility,
+            write_visibility="private",
+            name=name,
+            description="d",
+            instructions="i",
+        )
+        await session.commit()
+        return pkg.id
+
+
+async def _room_package_ids(env, room_id: str) -> list[str]:
+    async with env["session_factory"]() as session:
+        rows = await session.execute(
+            select(room_packages.c.package_id).where(room_packages.c.room_id == room_id)
+        )
+        return list(rows.scalars().all())
+
+
+async def _other_user(env) -> str:
+    async with env["session_factory"]() as session:
+        other = User(name="mallory", email="mallory@example.com", role="member")
+        session.add(other)
+        await session.commit()
+        return other.id
+
+
+def test_parse_packages_by_id_and_by_name(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          packages:
+            - { id: "pkg-1" }
+            - { name: "Payments context" }
+        """
+    )
+    assert spec.packages == [
+        ExistingPackageById(id="pkg-1"),
+        ExistingPackageByName(name="Payments context"),
+    ]
+
+
+def test_parse_package_entry_refuses_an_inline_definition(env):
+    with pytest.raises(ValueError, match="Invalid room spec"):
+        _svc(env).parse(
+            """
+            room:
+              name: "R"
+              description: "d"
+              packages:
+                - { name: "New", description: "d", instructions: "i" }
+            """
+        )
+
+
+@pytest.mark.asyncio
+async def test_provision_attaches_packages_by_id_and_by_name(env):
+    by_id = await _make_package(env, "By id")
+    by_name = await _make_package(env, "Payments context")
+
+    spec, _ = _svc(env).parse(
+        f"""
+        room:
+          name: "With packages"
+          description: "d"
+          packages:
+            - {{ id: "{by_id}" }}
+            - {{ name: "Payments context" }}
+        """
+    )
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+    assert result.attached_package_ids == [by_id, by_name]
+    assert result.failed_attachments == []
+    assert sorted(await _room_package_ids(env, result.room_id)) == sorted(
+        [by_id, by_name]
+    )
+
+
+@pytest.mark.asyncio
+async def test_provision_attaches_a_public_package_of_another_user_by_name(env):
+    other = await _other_user(env)
+    pkg_id = await _make_package(
+        env, "Shared context", owner_id=other, read_visibility="public"
+    )
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          packages:
+            - { name: "Shared context" }
+        """
+    )
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert result.attached_package_ids == [pkg_id]
+
+
+@pytest.mark.asyncio
+async def test_provision_unknown_package_id_fails_before_the_room_exists(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "No such package"
+          description: "d"
+          packages:
+            - { id: "does-not-exist" }
+        """
+    )
+    with pytest.raises(ValueError, match="Package not found: does-not-exist"):
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+    async with env["session_factory"]() as session:
+        rooms = (
+            (await session.execute(select(Room).where(Room.name == "No such package")))
+            .scalars()
+            .all()
+        )
+    assert rooms == []
+
+
+@pytest.mark.asyncio
+async def test_provision_unknown_package_name_fails(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          packages:
+            - { name: "no such package" }
+        """
+    )
+    with pytest.raises(ValueError, match="No package named 'no such package'"):
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+
+@pytest.mark.asyncio
+async def test_provision_private_package_of_another_user_fails(env):
+    """A template attaches only what its runner could attach by hand: another
+    user's private package is refused by id and invisible by name."""
+    other = await _other_user(env)
+    pkg_id = await _make_package(env, "Secret context", owner_id=other)
+
+    by_id, _ = _svc(env).parse(
+        f"""
+        room:
+          name: "R"
+          description: "d"
+          packages:
+            - {{ id: "{pkg_id}" }}
+        """
+    )
+    with pytest.raises(PermissionError, match=f"Cannot attach package '{pkg_id}'"):
+        await _svc(env).provision(by_id, user_id=env["user_id"], is_admin=False)
+
+    by_name, _ = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          packages:
+            - { name: "Secret context" }
+        """
+    )
+    with pytest.raises(ValueError, match="No package named 'Secret context'"):
+        await _svc(env).provision(by_name, user_id=env["user_id"], is_admin=False)
+
+
+@pytest.mark.asyncio
+async def test_provision_ambiguous_package_name_fails(env):
+    await _make_package(env, "dup")
+    await _make_package(env, "dup")
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "R"
+          description: "d"
+          packages:
+            - { name: "dup" }
+        """
+    )
+    with pytest.raises(ValueError, match="Ambiguous package name 'dup'"):
+        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+
 @pytest.mark.asyncio
 async def test_provision_duplicate_doc_name_is_best_effort(env):
     spec, _ = _svc(env).parse(
@@ -647,6 +847,32 @@ async def test_export_round_trips_within_import_surface(env):
     assert len(reparsed.docs) == 1
     assert reparsed.docs[0].name == "Doc1"
     assert reparsed.docs[0].content == "line1\nline2"
+
+
+@pytest.mark.asyncio
+async def test_export_emits_packages_and_round_trips(env):
+    pkg_id = await _make_package(env, "Payments context")
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Packaged"
+          description: "d"
+          packages:
+            - { name: "Payments context" }
+        """
+    )
+    result = await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+    yaml_text = await _svc(env).export(result.room_id)
+    assert yaml.safe_load(yaml_text)["room"]["packages"] == [{"id": pkg_id}]
+
+    reparsed, _ = _svc(env).parse(yaml_text)
+    assert reparsed.packages == [ExistingPackageById(id=pkg_id)]
+    again = await _svc(env).provision(reparsed, user_id=env["user_id"], is_admin=False)
+    assert await _room_package_ids(env, again.room_id) == [pkg_id]
+
+    without = await _svc(env).export(result.room_id, packages=False)
+    assert "packages" not in yaml.safe_load(without)["room"]
 
 
 @pytest.mark.asyncio
