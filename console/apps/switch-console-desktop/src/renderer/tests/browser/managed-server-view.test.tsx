@@ -84,7 +84,7 @@ vi.mock('@renderer/features/switch-servers/local-server-store', () => ({
     error: null,
     errorDetail: null,
     checkoutBuild: null,
-    checkDocker: () => Promise.resolve(),
+    watchDocker: () => () => {},
     start: (...args: unknown[]) => state.localStart(...args),
     stop: (...args: unknown[]) => state.localStop(...args),
     useAnotherPort: (port: number) => state.useAnotherPort(port),

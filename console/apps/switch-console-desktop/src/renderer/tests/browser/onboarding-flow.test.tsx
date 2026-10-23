@@ -86,7 +86,7 @@ const localServer = vi.hoisted(() => ({
   errorDetail: null as string | null,
   logs: [] as string[],
   init: vi.fn(() => Promise.resolve()),
-  checkDocker: vi.fn(() => Promise.resolve()),
+  watchDocker: vi.fn(() => () => {}),
   start: vi.fn(),
 }));
 
