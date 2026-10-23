@@ -2104,14 +2104,18 @@ async def _shutdown(
     # Before uvicorn closes the sockets, so the controllers' are recorded as
     # closed by the server.
     controllers.begin_shutdown()
-    # Also before the sockets close, and not left to the lifespan's teardown:
+    # Serve through the drain still owning the work and the lease, so the
+    # agents and controllers connected here read online everywhere while the
+    # Service moves new requests to the other replicas.
+    if drain_seconds:
+        await asyncio.sleep(drain_seconds)
+    # Before the sockets close, and not left to the lifespan's teardown:
     # uvicorn runs that only once every connection has closed, and a stream
     # still open when the process is killed would mean it never runs. Every
     # other process reads this one's machines offline from here, and has taken
-    # over the consumers, bridges and connectors it owned.
+    # over the consumers, bridges and connectors it owned, so the sockets close
+    # straight after and their clients reconnect to a process that holds them.
     await release()
-    if drain_seconds:
-        await asyncio.sleep(drain_seconds)
     server.should_exit = True
     await connector_lifecycle.stop_all()
     await collab_lifecycle.stop_all()

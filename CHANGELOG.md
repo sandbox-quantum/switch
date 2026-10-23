@@ -44,6 +44,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **Agents no longer read offline while their replica shuts down.** With several
+  replicas, a stopping replica released its lease before its 5 s drain, so for
+  up to about 6 s the other replicas counted its connected agents as gone: `@role`
+  mentions did not reach the holder, rooms got false "offline" notices, and stop
+  and reset commands were refused. It now drains first and closes its sockets
+  as it releases.
+
 ### [0.31.0] - 2026-10-20
 
 #### Added
