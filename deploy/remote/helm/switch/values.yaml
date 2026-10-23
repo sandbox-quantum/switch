@@ -389,6 +389,17 @@ switchCore:
     # How often a controller must report; one silent for three of these is
     # shown as unknown and gets no new placements.
     statusIntervalSeconds: 60
+  # Follow the conversation: a person's message that names nobody can reach the
+  # agent they are talking to (a thread it owns, their next message in a
+  # channel exchange with it that nobody interrupted, a room's assigned agent).
+  # Turned on by the "follow_the_conversation" feature flag
+  # (featureFlags.enabled below).
+  followTheConversation:
+    # A channel exchange counts only while every gap in it (request to answer,
+    # answer to the next message) is within this many seconds; after a break,
+    # people mention the agent again. FOLLOW_THE_CONVERSATION_WINDOW_SECONDS,
+    # 1 to 3600.
+    windowSeconds: 300
   # The agents controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs
@@ -416,7 +427,8 @@ switchCore:
   # ["ecosystem.show_owners"]. Every other flag is off, and no one can change
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
-  # hosted_agents, service_connections, agent_chats.
+  # hosted_agents, service_connections, agent_chats, follow_the_conversation,
+  # switch_buddy.
   featureFlags:
     enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is

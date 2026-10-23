@@ -161,15 +161,19 @@ class DiscordGatewayClient:
         await self._bring_up(listen=True)
 
     async def _bring_up(self, *, listen: bool) -> None:
-        """Open the socket, or log in for the API alone, retrying with backoff
-        until it succeeds, then attach the bridges.
+        """Open the socket, or log in for the API alone, and attach the
+        bridges, retrying the whole with backoff until it succeeds.
 
         Run in the background so a configured-but-unreachable Discord app
         never blocks or fails boot, or a take-over. Only the *initial* connect
         is retried here — once it is up, discord.py reconnects transient drops
         on its own (the same connection object, so attached bridges keep
-        working). On success `on_connected` fires, which walks the running
-        bridges and attaches the ones on a shared connection.
+        working). Once connected, `on_connected` walks the running bridges and
+        attaches the ones on a shared connection. A walk that raises is a
+        failed bring-up like a connect that does: the connection is closed and
+        the whole is tried again. Otherwise a process holding the socket would
+        keep it open with no bridge attached, and Discord would go silent
+        everywhere until the socket next moved.
         """
         delay = _INITIAL_RETRY_DELAY
         while True:
@@ -178,7 +182,12 @@ class DiscordGatewayClient:
                     await self.start()
                 else:
                     await self._connection.login()
-                break
+                # Before the walk, with no await between: a bridge starting
+                # from here on is attached as it starts, and every one started
+                # before is in the walk, so none falls between the two.
+                self._live = True
+                await self._on_connected(self._connection)
+                return
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -188,14 +197,10 @@ class DiscordGatewayClient:
                     "Gateway connection" if listen else "API log-in",
                     delay,
                 )
+                self._live = False
                 await self._connection.close()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RETRY_DELAY)
-        # Before the walk, with no await between: a bridge starting from here
-        # on is attached as it starts, and every one started before is in the
-        # walk, so none falls between the two.
-        self._live = True
-        await self._on_connected(self._connection)
 
     def own(self, ownership: Ownership) -> None:
         """Make the socket owned work: opened in the one process that holds
@@ -238,9 +243,8 @@ class DiscordGatewayClient:
     async def _close(self) -> None:
         """Stop whatever is being brought up, and close the connection.
 
-        Closed even when the bring-up failed after connecting, in
-        `on_connected`, and its error is raised from here: the ownership logs
-        a hand-over that raises and releases the socket's lease all the same,
+        Closed even when stopping the bring-up raises: the ownership logs a
+        hand-over that raises and releases the socket's lease all the same,
         and the next holder opens a socket of its own.
         """
         task, self._task = self._task, None
