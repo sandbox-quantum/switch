@@ -3,8 +3,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Room
-from switch_core.db.stores.room_group_store import RoomGroupStore
+from switch_core.db.models import Room, RoomGroup
+from switch_core.db.stores.room_group_store import (
+    RoomGroupNameTaken,
+    RoomGroupStore,
+)
 from switch_core.db.stores.room_store import RoomStore
 
 GroupStore = RoomGroupStore
@@ -113,6 +116,32 @@ class TestRoomGroupStore:
                     session, a.id, parent_group_id=c.id, reparent=True
                 )
 
+    async def test_reparent_sees_a_move_another_session_committed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            a = await store.create(
+                session, name="A", description=None, color=None, parent_group_id=None
+            )
+            b = await store.create(
+                session, name="B", description=None, color=None, parent_group_id=None
+            )
+            await session.commit()
+            # This session still holds A at the top level when another one
+            # moves A under B; B under A would then close a cycle.
+            async with session_factory() as other:
+                await store.update_fields(
+                    other, a.id, parent_group_id=b.id, reparent=True
+                )
+                await other.commit()
+            assert a.parent_group_id is None
+
+            with pytest.raises(ValueError, match="descendants"):
+                await store.update_fields(
+                    session, b.id, parent_group_id=a.id, reparent=True
+                )
+
     async def test_reparent_to_top_level(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -207,6 +236,36 @@ class TestRoomGroupStore:
             b_refreshed = await store.get(session, b.id)
             assert b_refreshed is not None and b_refreshed.parent_group_id is None
 
+    async def test_delete_promotes_children_to_the_parent_committed_last(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            a = await store.create(
+                session, name="A", description=None, color=None, parent_group_id=None
+            )
+            b = await store.create(
+                session, name="B", description=None, color=None, parent_group_id=a.id
+            )
+            c = await store.create(
+                session, name="C", description=None, color=None, parent_group_id=b.id
+            )
+            await session.commit()
+            # This session still holds B under A when another one moves it.
+            assert (await store.get(session, b.id)) is not None
+            async with session_factory() as other:
+                await store.update_fields(
+                    other, b.id, parent_group_id=None, reparent=True
+                )
+                await other.commit()
+
+            assert await store.delete(session, b.id) is True
+            await session.commit()
+            c_refreshed = await store.get(session, c.id)
+            assert c_refreshed is not None
+            await session.refresh(c_refreshed)
+            assert c_refreshed.parent_group_id is None
+
     async def test_delete_missing_returns_false(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -244,3 +303,174 @@ class TestRoomGroupStore:
         rooms = Rooms()
         async with session_factory() as session:
             assert await rooms.set_group_bulk(session, [], None) == 0
+
+
+async def _group(
+    store: RoomGroupStore, session: AsyncSession, name: str, parent: str | None
+) -> str:
+    group = await store.create(
+        session, name=name, description=None, color=None, parent_group_id=parent
+    )
+    return group.id
+
+
+class TestSiblingNames:
+    async def test_same_name_under_different_parents_is_allowed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            fraud = await _group(store, session, "Fraud", None)
+            await _group(store, session, "Incidents", payments)
+            await _group(store, session, "Incidents", fraud)
+            await session.commit()
+            assert await store.resolve(session, "Fraud/Incidents") != (
+                await store.resolve(session, "Payments/Incidents")
+            )
+
+    async def test_top_level_duplicate_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            await _group(store, session, "Fraud", None)
+            with pytest.raises(RoomGroupNameTaken) as e:
+                await _group(store, session, " fraud ", None)
+            assert str(e.value) == (
+                "A room group named 'Fraud' already exists at the top level"
+            )
+
+    async def test_nested_duplicate_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            fraud = await _group(store, session, "Fraud", None)
+            await _group(store, session, "Incidents", fraud)
+            with pytest.raises(RoomGroupNameTaken, match="under 'Fraud'"):
+                await _group(store, session, "Incidents", fraud)
+
+    async def test_separator_and_empty_names_are_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            with pytest.raises(ValueError, match="cannot contain '/'"):
+                await _group(store, session, "Fraud/Incidents", None)
+            with pytest.raises(ValueError, match="cannot be empty"):
+                await _group(store, session, "  ", None)
+
+    async def test_rename_onto_a_sibling_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            await _group(store, session, "Fraud", None)
+            other = await _group(store, session, "Payments", None)
+            with pytest.raises(RoomGroupNameTaken, match="'Fraud' already exists"):
+                await store.update_fields(session, other, name="Fraud")
+            with pytest.raises(ValueError, match="cannot contain '/'"):
+                await store.update_fields(session, other, name="Pay/ments")
+            # Changing only the case of its own name is not a clash with itself.
+            renamed = await store.update_fields(session, other, name="PAYMENTS")
+            assert renamed.name == "PAYMENTS"
+
+    async def test_reparent_next_to_a_namesake_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            fraud = await _group(store, session, "Fraud", None)
+            await _group(store, session, "Incidents", payments)
+            moving = await _group(store, session, "Incidents", fraud)
+            with pytest.raises(RoomGroupNameTaken, match="under 'Payments'"):
+                await store.update_fields(
+                    session, moving, parent_group_id=payments, reparent=True
+                )
+
+    async def test_rename_checks_names_under_the_parent_committed_last(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            fraud = await _group(store, session, "Fraud", None)
+            await _group(store, session, "Releases", payments)
+            moving = await _group(store, session, "Incidents", fraud)
+            await session.commit()
+            # This session still holds Incidents under Fraud when another one
+            # moves it under Payments. Kept referenced so the session's
+            # identity map keeps the stale copy.
+            held = await store.get(session, moving)
+            assert held is not None and held.parent_group_id == fraud
+            async with session_factory() as other:
+                await store.update_fields(
+                    other, moving, parent_group_id=payments, reparent=True
+                )
+                await other.commit()
+
+            with pytest.raises(RoomGroupNameTaken, match="under 'Payments'"):
+                await store.update_fields(session, moving, name="Releases")
+
+    async def test_rename_checks_sibling_names_committed_last(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            releases = await _group(store, session, "Releases", payments)
+            incidents = await _group(store, session, "Incidents", payments)
+            await session.commit()
+            # This session still holds the sibling as Releases when another
+            # one renames it to Archive.
+            held = await store.get(session, releases)
+            assert held is not None
+            async with session_factory() as other:
+                await store.update_fields(other, releases, name="Archive")
+                await other.commit()
+
+            with pytest.raises(RoomGroupNameTaken, match="'Archive'"):
+                await store.update_fields(session, incidents, name="Archive")
+
+    async def test_delete_that_would_promote_onto_a_namesake_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = GroupStore()
+        async with session_factory() as session:
+            payments = await _group(store, session, "Payments", None)
+            await _group(store, session, "Incidents", payments)
+            archive = await _group(store, session, "Archive", payments)
+            await _group(store, session, "Incidents", archive)
+            await session.commit()
+            with pytest.raises(RoomGroupNameTaken) as e:
+                await store.delete(session, archive)
+            assert str(e.value) == (
+                "Cannot delete room group 'Archive': its subgroup 'Incidents' "
+                "would move under 'Payments', where a group named 'Incidents' "
+                "already exists. Rename or move one of them first"
+            )
+
+    async def test_legacy_top_level_duplicates_offer_the_final_groups_ids(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Two top-level "Ops" groups from before the sibling rule, added past
+        # the store because it would refuse the second.
+        store = GroupStore()
+        async with session_factory() as session:
+            ops = [RoomGroup(name="Ops"), RoomGroup(name="Ops")]
+            session.add_all(ops)
+            await session.flush()
+            incidents = [
+                await _group(store, session, "Incidents", group.id) for group in ops
+            ]
+            await session.commit()
+            with pytest.raises(ValueError) as e:
+                await store.resolve(session, "Ops/Incidents")
+            message = str(e.value)
+            assert "2 groups are named 'Ops' at the top level" in message
+            for group_id in incidents:
+                assert f"'Ops/Incidents' (id '{group_id}')" in message
+            for group in ops:
+                assert group.id not in message

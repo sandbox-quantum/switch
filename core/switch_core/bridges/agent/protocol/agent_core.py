@@ -2962,8 +2962,9 @@ class AgentCore:
         into that room's run (see `agent_runs`), and is refused if the run is
         paused or stopped or the agent is already creating a room.
 
-        `group_name`, when given, files the room under an existing room group;
-        it is resolved to a group id here (agents work in names, not ids)."""
+        `group_name`, when given, files the room under an existing room group.
+        It may be a path, a bare name or an id, and is resolved to a group id
+        here (see `_resolve_group_name`)."""
         from switch_core.room_service import (
             LinkedRoomSpec,
             RoleSpec,
@@ -3034,24 +3035,15 @@ class AgentCore:
     async def _resolve_group_name(
         self, session: AsyncSession, group_name: str | None
     ) -> str | None:
-        """Resolve a room-group name to its id. Returns None for no group.
+        """Resolve what an agent passed as a group (a path such as
+        "Fraud/Incidents", a bare name, or an id) to its id. Returns None for
+        no group.
 
-        Raises ValueError if the name is unknown or ambiguous (group names are
-        not unique across the tree)."""
+        Raises ValueError if it is unknown or ambiguous; an ambiguous bare name
+        lists each match by path (see `RoomGroupStore.resolve`)."""
         if group_name is None:
             return None
-        result = await session.execute(
-            select(RoomGroup).where(RoomGroup.name == group_name)
-        )
-        matches = result.scalars().all()
-        if not matches:
-            raise ValueError(f"No room group named '{group_name}'")
-        if len(matches) > 1:
-            raise ValueError(
-                f"Multiple room groups named '{group_name}'; ask the user which "
-                "one to use"
-            )
-        return matches[0].id
+        return await self.room_group_store.resolve(session, group_name)
 
     async def _group_labels(
         self, session: AsyncSession, group_id: str | None
@@ -3863,9 +3855,10 @@ class AgentCore:
         parent_group_name: str | None,
     ) -> dict[str, Any]:
         """Create a room group, optionally nested under an existing parent
-        (resolved by name). Returns the new group's detail dict.
+        (a path, bare name or id). Returns the new group's detail dict.
 
-        Raises ValueError if `parent_group_name` is unknown or ambiguous.
+        Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
+        the parent already has a group with this name.
         """
         async with self.session_factory() as session:
             parent_group_id = await self._resolve_group_name(session, parent_group_name)

@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.discord import gateway as gateway_module
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -93,6 +94,8 @@ class _WithGateway:
     process: _Process
     gateway: DiscordGatewayClient
     connection: _Connection
+    # How many times the gateway has tried to attach the bridges.
+    attach_attempts: Callable[[], int]
 
     async def boot(self) -> None:
         """Start as `main` does, the gateway wanted before the first balance
@@ -116,20 +119,32 @@ class _WithGateway:
     def holds_every(self, bridge_ids: list[str]) -> bool:
         return all(self.process.bridges.holds(b) for b in bridge_ids)
 
+    def attached_every(self, bridge_ids: list[str]) -> bool:
+        return all(
+            getattr(self.process.bridges.get_adapter(b), "_connection", None)
+            is self.connection
+            for b in bridge_ids
+        )
+
 
 async def _with_gateway(
     postgres_url: str,
     session_factory: async_sessionmaker[AsyncSession],
     discord: _Discord,
     *,
-    attach_fails: bool = False,
+    attach_failures: int = 0,
 ) -> _WithGateway:
+    """`attach_failures` is how many times attaching the bridges fails before
+    it succeeds."""
     process = await _bridge_process(postgres_url, session_factory)
     process.bridges.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
     bridges = process.bridges
+    attempts = 0
 
     async def attach(connection: DiscordConnection) -> None:
-        if attach_fails:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= attach_failures:
             raise RuntimeError("attaching the bridges failed")
         for adapter in bridges.iter_adapters():
             if isinstance(adapter, DiscordAdapter):
@@ -145,7 +160,12 @@ async def _with_gateway(
     connection = _Connection(discord)
     gateway._connection = connection  # type: ignore[assignment]
     bridges.add_bridge_starting_listener(gateway.attach_if_live)
-    return _WithGateway(process=process, gateway=gateway, connection=connection)
+    return _WithGateway(
+        process=process,
+        gateway=gateway,
+        connection=connection,
+        attach_attempts=lambda: attempts,
+    )
 
 
 @pytest.fixture
@@ -242,7 +262,7 @@ class TestOneSocket:
         assert not any(other.process.bridges.holds(b) for b in shared_bridges)
         assert owner.connection.discord.most_sockets == 1
 
-    async def test_every_copy_of_a_bridge_is_attached_to_its_own_processs_connection(
+    async def test_every_copy_of_a_bridge_is_attached_to_its_own_process_connection(
         self,
         two: tuple[_WithGateway, _WithGateway],
         shared_bridges: list[str],
@@ -256,6 +276,34 @@ class TestOneSocket:
                         is p.connection
                     )
                 )
+
+
+class TestBringingUp:
+    async def test_attaching_the_bridges_is_retried_when_it_fails(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        shared_bridges: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A process that takes the socket and fails to attach its bridges
+        tries the bring-up again, rather than holding the socket with no
+        bridge attached, which would leave Discord silent until the socket
+        next moved."""
+        monkeypatch.setattr(gateway_module, "_INITIAL_RETRY_DELAY", 0.05)
+        discord = _Discord()
+        process = await _with_gateway(
+            postgres_url, session_factory, discord, attach_failures=1
+        )
+        try:
+            await process.boot()
+
+            await _eventually(lambda: process.attached_every(shared_bridges))
+            assert process.attach_attempts() == 2
+            assert process.holds_every(shared_bridges)
+            assert discord.sockets == [process.connection]
+        finally:
+            await process.stop()
 
 
 class TestHandingOver:
@@ -276,26 +324,28 @@ class TestHandingOver:
         assert other.connection.discord.sockets == [other.connection]
         assert other.connection.discord.most_sockets == 1
 
-    async def test_a_socket_whose_bring_up_failed_is_closed_as_it_is_handed_over(
+    async def test_a_socket_whose_bring_up_keeps_failing_is_closed_as_it_is_handed_over(
         self,
         postgres_url: str,
         session_factory: async_sessionmaker[AsyncSession],
         shared_bridges: list[str],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Attaching the bridges failed once the socket was up, and handing
-        the socket over raises that failure. The ownership releases the
-        socket's lease all the same, and the next holder opens a socket of its
-        own, so this one has to be closed by then."""
+        """Attaching the bridges keeps failing once the socket is up, so the
+        bring-up is still being retried when the socket is handed over. The
+        hand-over stops it, and the next holder opens a socket of its own, so
+        this one has to be closed by then."""
+        monkeypatch.setattr(gateway_module, "_INITIAL_RETRY_DELAY", 0.05)
         discord = _Discord()
         started: list[_WithGateway] = []
         try:
             failing = await _with_gateway(
-                postgres_url, session_factory, discord, attach_fails=True
+                postgres_url, session_factory, discord, attach_failures=1_000
             )
             started.append(failing)
             # Alone, so it takes the socket.
             await failing.boot()
-            await _eventually(failing.has_socket)
+            await _eventually(lambda: failing.attach_attempts() >= 2)
             other = await _with_gateway(postgres_url, session_factory, discord)
             started.append(other)
             await other.boot()

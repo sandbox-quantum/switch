@@ -1,7 +1,7 @@
 name: switch dev cleanup
 
 # Prunes old dev builds — the images and chart every push to main publishes
-# under ghcr.io/<owner>/dev/, and the agents controller it publishes as a
+# under ghcr.io/<owner>/dev/, and the agent controller it publishes as a
 # GitHub prerelease (see switch-release.yml) — so they do not grow without
 # bound. Only the dev/ packages and the dev controller prereleases are
 # touched; releases and RCs live apart. A build is deleted once it is older than 30

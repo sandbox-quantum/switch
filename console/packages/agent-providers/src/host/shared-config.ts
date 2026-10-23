@@ -247,7 +247,7 @@ export async function sessionServiceGrants(config: SharedHostConfig): Promise<Se
 }
 
 /**
- * The provider login an agents controller hands this agent host with its
+ * The provider login an agent controller hands this agent host with its
  * credentials, when the machine has none of its own for the provider and
  * Switch gave it one; null when it hands none.
  */
@@ -272,7 +272,7 @@ export async function readSharedCredentials(config: SharedHostConfig) {
         SWITCH_API_ENDPOINT: z.string().min(1),
         SWITCH_API_TOKEN: z.string().min(1),
         SWITCH_AGENT_ID: z.string().min(1),
-        // Set when an agents controller runs the agent host in a process of
+        // Set when an agent controller runs the agent host in a process of
         // its own: the hub it hears its events on instead of Switch.
         SWITCH_AGENT_HUB: z.string().min(1).optional(),
       }),

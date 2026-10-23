@@ -7,7 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Principal, require
 from switch_core.db.models import RoomGroup, User
-from switch_core.db.stores.room_group_store import RoomGroupStore
+from switch_core.db.stores.room_group_store import (
+    RoomGroupNameTaken,
+    RoomGroupStore,
+)
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
@@ -67,6 +70,8 @@ async def create_room_group(
             color=req.color,
             parent_group_id=req.parent_group_id,
         )
+    except RoomGroupNameTaken as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
@@ -99,6 +104,8 @@ async def patch_room_group(
             parent_group_id=req.parent_group_id,
             reparent=reparent,
         )
+    except RoomGroupNameTaken as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         # "not found" → 404; cycle/validation → 400.
         if "not found" in str(e).lower():
@@ -167,7 +174,10 @@ async def delete_room_group(
     # what makes that stay true if the order ever changes.
     age = age_days(group.created_at) if group else UNKNOWN_AGE
 
-    removed = await room_group_store.delete(session, group_id)
+    try:
+        removed = await room_group_store.delete(session, group_id)
+    except RoomGroupNameTaken as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     if not removed:
         raise HTTPException(status_code=404, detail="Room group not found")
     await session.commit()

@@ -328,7 +328,7 @@ class AgentSessionDetail(BaseModel):
 
     `lifecycle` is `heartbeat` or `explicit` for an `agent_sessions` row,
     `connection` for an agent's own live connection, and `controller` for a
-    controller-backed agent's session, which its agents controller (a machine)
+    controller-backed agent's session, which its agent controller (a machine)
     runs; `controller_id` names that controller, and is null otherwise.
     """
 

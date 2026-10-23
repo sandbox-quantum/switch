@@ -398,7 +398,7 @@ class CloudMachine(Base):
 
 
 class MachineWorkspace(TenantScoped, Base):
-    """A workspace on its owner's cloud machine: the agents controller the
+    """A workspace on its owner's cloud machine: the agent controller the
     machine runs for this workspace, enrolled with a one-time code minted here.
     The owner's managed agents placed on that controller run on the machine."""
 

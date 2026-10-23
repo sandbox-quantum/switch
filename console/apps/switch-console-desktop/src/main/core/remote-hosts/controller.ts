@@ -89,7 +89,7 @@ export const remoteHostsController = createRPCController({
    */
   removeHost: async (sshHost: string): Promise<void> => {
     try {
-      // Its agents controllers are revoked first: a host Console forgets would
+      // Its agent controllers are revoked first: a host Console forgets would
       // otherwise go on running agents with nothing left here to stop them.
       await hostControllerService.forgetHost(sshHost);
       await removeRemoteHost(sshHost);

@@ -77,7 +77,7 @@ peer still on it, and it can never be raised past what is running in the field.
    - builds multi-arch (`linux/amd64`, `linux/arm64`) images for `switch-core`,
      `gateway`, and `setup` and pushes them to the container registry tagged
      `<version>` and `latest`;
-   - builds, tests and packs the agents controller at the same version and
+   - builds, tests and packs the agent controller at the same version and
      publishes it as the `switch-agent-controller-v<version>` GitHub release
      (see "The controller a Switch release names" below);
    - once the images are pushed, writes each image's digest into the chart's
@@ -141,7 +141,7 @@ building from source at deploy time.
   before the next release or RC. The server reports `0.29.1.dev512` (PEP 440),
   stamped on the runner like an RC. A semver pre-release, so `helm install`
   skips it unless given that exact `--version`. No compose artifact.
-- **A dev controller too.** The run publishes the agents controller at the dev
+- **A dev controller too.** The run publishes the agent controller at the dev
   version as a GitHub *prerelease*, `switch-agent-controller-v<dev version>`
   (package only, no `install.sh`), and pins it into the dev switch chart's
   `switchCore.controllerRelease`, so the dev environment's controllers follow
@@ -272,7 +272,7 @@ canary installs find no update until the next canary is tagged.
 
 ## switch-agent-controller release (separate)
 
-The headless agents controller (`console/packages/agent-controller`), which runs
+The headless agent controller (`console/packages/agent-controller`), which runs
 managed agents on a customer's own Linux or macOS machine, releases on its own tag,
 `switch-agent-controller-v<version>`, via
 `.github/workflows/agent-controller-release.yml`:

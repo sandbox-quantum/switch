@@ -217,6 +217,28 @@ those services is refused with the reason. Switch Console asks the server and
 stops drawing them for its agents. An icon an owner set on any other host is
 unaffected.
 
+## Follow the conversation
+
+Off by default. With the `follow_the_conversation` feature flag on, a person's
+message that names nobody can still reach an agent: a reply in a thread the
+agent owns, their next channel message in an exchange with the agent that
+nobody else interrupted, or any message in a room whose assigned agent it is.
+People turn the follow-ups off per room with `!follow-ups off`.
+
+```yaml
+switchCore:
+  featureFlags:
+    enabled: ["follow_the_conversation"]
+  followTheConversation:
+    windowSeconds: 300
+```
+
+The chart sets `FOLLOW_THE_CONVERSATION_WINDOW_SECONDS` from `windowSeconds`
+only while the flag is on (1 to 3600 seconds). A channel exchange counts only
+while every gap in it, from a person's request to the agent's answer and from
+that answer to their next message, is within the window; after a break, people
+mention the agent again.
+
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are
@@ -247,7 +269,7 @@ AGENT_MANAGEMENT_ENABLED- CONTROLLER_TOKEN_SECRET-`). Otherwise Helm merges its
 
 ### Controller updates
 
-`switchCore.controllerRelease` names the agents controller release switch-core
+`switchCore.controllerRelease` names the agent controller release switch-core
 tells every controller to run (cloud machines, and `switch-agent-controller`
 on SSH hosts and laptops; Switch Console's own controller updates with Console):
 

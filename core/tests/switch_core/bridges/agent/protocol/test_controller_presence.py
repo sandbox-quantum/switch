@@ -1,4 +1,4 @@
-"""Presence for agents run by an agents controller.
+"""Presence for agents run by an agent controller.
 
 A controller-backed agent holds no connection of its own: it is live while its
 controller's stream is attached and beating, and every presence reader asks the

@@ -1609,6 +1609,34 @@ async def _cmd_roles(
     await _reply(client, room, event, "\n".join(lines))
 
 
+async def _package_sources(
+    client: AgentRecipient,
+    session: AsyncSession,
+    room_id: str,
+    kind: Literal["reference", "document"],
+) -> dict[str, list[str]]:
+    """Each item the room's packages bring, to the names of the packages that
+    bring it. An agent in the room is sent every one of them, so they are
+    listed whoever asks."""
+    sources: dict[str, list[str]] = {}
+    for pkg in await client._package_store.list_for_room(session, room_id):
+        if kind == "reference":
+            ids = await client._package_store.list_reference_ids_for_package(
+                session, pkg.id
+            )
+        else:
+            ids = await client._package_store.list_document_ids_for_package(
+                session, pkg.id
+            )
+        for item_id in ids:
+            sources.setdefault(item_id, []).append(pkg.name)
+    return sources
+
+
+def _via(package_names: list[str]) -> str:
+    return "via " + ", ".join(package_names)
+
+
 async def _cmd_list_documents(
     client: AgentRecipient,
     room: RoomRef,
@@ -1621,7 +1649,14 @@ async def _cmd_list_documents(
         return
 
     async with client.session_factory() as session:
-        docs = await client._document_store.list_for_room(session, meta.room_id)
+        direct = await client._document_store.list_for_room(session, meta.room_id)
+        sources = await _package_sources(client, session, meta.room_id, "document")
+        direct_ids = {d.id for d in direct}
+        fetched = await client._document_store.get_many(
+            session, [i for i in sources if i not in direct_ids]
+        )
+        by_id = {d.id: d for d in fetched}
+        docs = [*direct, *(by_id[i] for i in sources if i in by_id)]
         if not docs:
             await _reply(client, room, event, "No internal documents in this room.")
             return
@@ -1634,6 +1669,7 @@ async def _cmd_list_documents(
         lines = ["**Internal documents in this room:**"]
         for d in docs:
             scope = " _(room-scoped)_" if d.room_id is not None else ""
+            via = f" _({_via(sources[d.id])})_" if d.id not in direct_ids else ""
             creator = ""
             if d.created_by_agent_id:
                 agent = await client._agent_store.get(session, d.created_by_agent_id)
@@ -1650,7 +1686,7 @@ async def _cmd_list_documents(
                 else:
                     url = f"{client._frontend_base_url}/resources/documents/{d.id}"
                 name_md = f"[{d.name}]({url})"
-            lines.append(f"- {name_md}{scope}{desc}{creator}")
+            lines.append(f"- {name_md}{scope}{via}{desc}{creator}")
 
     await _reply(client, room, event, "\n".join(lines))
 
@@ -1667,7 +1703,17 @@ async def _cmd_list_references(
         return
 
     async with client.session_factory() as session:
-        refs = await client._reference_store.list_for_room(session, meta.room_id)
+        direct = await client._reference_store.list_for_room(session, meta.room_id)
+        sources = await _package_sources(client, session, meta.room_id, "reference")
+        direct_ids = {r.id for r in direct}
+        from_packages = []
+        for ref_id in sources:
+            if ref_id in direct_ids:
+                continue
+            ref = await client._reference_store.get(session, ref_id)
+            if ref is not None:
+                from_packages.append(ref)
+    refs = [*direct, *from_packages]
 
     if not refs:
         await _reply(client, room, event, "No references in this room.")
@@ -1686,7 +1732,10 @@ async def _cmd_list_references(
         else:
             url = f"{client._frontend_base_url}/resources/references/{ref.id}"
             name_md = f"[{ref.name}]({url})"
-        lines.append(f"- {name_md} _({ref.type})_{desc}")
+        kind = (
+            ref.type if ref.id in direct_ids else f"{ref.type}, {_via(sources[ref.id])}"
+        )
+        lines.append(f"- {name_md} _({kind})_{desc}")
 
     await _reply(client, room, event, "\n".join(lines))
 

@@ -188,7 +188,7 @@ export interface EventStreamLogger {
 export interface SessionCommand {
   /**
    * The session it is for. Null when Switch knows only the room it was typed
-   * in (`roomId`), as for an agent run by an agents controller: the agent
+   * in (`roomId`), as for an agent run by an agent controller: the agent
    * decides which of its sessions that is.
    */
   sessionId: string | null;
@@ -467,7 +467,7 @@ export class SwitchEventStream {
 
   /**
    * Whether this client tells a room it is starting a session for it, rather
-   * than the server: an agents controller leaves it to the agent, Switch
+   * than the server: an agent controller leaves it to the agent, Switch
    * itself does it for an agent connected on its own.
    */
   get announcesSessionStarts(): boolean {

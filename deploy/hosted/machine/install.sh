@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bakes a Switch cloud machine image that runs the agents controller.
+# Bakes a Switch cloud machine image that runs the agent controller.
 #
 #   install.sh <switch-agent-controller .tgz> <node-sha256> [agent-users]
 #
@@ -68,7 +68,7 @@ if ! getent passwd "$controller_user" >/dev/null; then
   groupadd --system --gid "$controller_uid" "$controller_user"
   useradd --system --uid "$controller_uid" --gid "$controller_uid" \
     --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin \
-    --comment "Switch agents controller" "$controller_user"
+    --comment "Switch agent controller" "$controller_user"
 fi
 [ "$(id -u "$controller_user")" -eq "$controller_uid" ] || {
   echo "$controller_user exists with another uid than $controller_uid" >&2

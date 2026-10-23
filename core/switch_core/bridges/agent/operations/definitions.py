@@ -949,10 +949,13 @@ async def create_room(
         write_visibility: "public" (anyone may modify — invite, attach, edit)
             or "private" (owner/admin only). Defaults to "public". Must not be
             "public" while read_visibility is "private".
-        group_name: Optional name of an existing room group to file this room
-            under (a navigation/visualization layer surfaced in the room list
-            and graph). Must match an existing group exactly; errors if unknown
-            or ambiguous. Omit to leave the room standalone.
+        group_name: Optional existing room group to file this room under (a
+            navigation/visualization layer surfaced in the room list and
+            graph). Give its path from the top level, e.g. "Fraud/Incidents",
+            or a bare name when that name is unique; a group id also works.
+            Names match exactly. An ambiguous bare name errors with the path
+            of each match to retry with; an unknown path errors naming the
+            first segment not found. Omit to leave the room standalone.
         roles: Optional room-roles to define at creation. Each entry is
             `{"name": "...", "instructions": "...", "exclusive": bool}`.
             Roles are assumable instruction bundles agents pick up with
@@ -1484,14 +1487,17 @@ async def list_room_groups() -> list[dict[str, Any]]:
 
     Room groups are a navigation/organization layer: a room can belong to a
     group (or be standalone), and groups can nest under a parent group. Use
-    this to discover the group names you can pass as `group_name` to
-    `create_room`, or to understand how rooms are organized.
+    this to discover the groups you can pass as `group_name` to
+    `create_room`, or to understand how rooms are organized. Group names are
+    unique among siblings but may repeat under different parents, so name a
+    group by its path.
 
     Returns:
         List of {id, name, description, parent_group_id, room_count, path}
         dicts, where `path` is the group's root-first ancestry (e.g.
-        "Parent / Child") and `room_count` is the number of rooms directly in
-        the group. Sorted by path.
+        "Parent / Child", which can be passed as a group path as it is) and
+        `room_count` is the number of rooms directly in the group. Sorted by
+        path.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
@@ -1509,15 +1515,20 @@ async def create_room_group(
 
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
-    form a tree. Creating a group does not move any rooms into it.
+    form a tree. Creating a group does not move any rooms into it, and does
+    not create missing parents: create each level first.
 
     Args:
-        name: The group's display name.
+        name: The group's display name. It cannot contain "/" (the path
+            separator), and must differ from every group already under the
+            same parent (or at the top level), ignoring case; the same name
+            under a different parent is fine.
         description: Optional free-text description.
         color: Optional UI colour hint (e.g. a hex string).
-        parent_group_name: Optional name of an existing group to nest this one
-            under. Must match an existing group exactly; errors if unknown or
-            ambiguous. Omit to create a top-level group.
+        parent_group_name: Optional existing group to nest this one under,
+            given as a path such as "Fraud/Incidents", a bare name that is
+            unique, or a group id. Resolved like `create_room`'s
+            `group_name`. Omit to create a top-level group.
 
     Returns:
         {id, name, description, color, parent_group_id, room_count, path,

@@ -10,10 +10,12 @@ from switch_core.db.stores.room_store import RoomStore
 
 
 def _bare_service() -> AgentCore:
-    # These methods only touch the passed-in session / session_factory, so we
-    # can exercise them on an un-__init__'d instance (matching the fake-based
-    # protocol tests).
-    return object.__new__(AgentCore)
+    # These methods only touch the passed-in session / session_factory and the
+    # group store, so we can exercise them on an un-__init__'d instance
+    # (matching the fake-based protocol tests).
+    svc = object.__new__(AgentCore)
+    svc.room_group_store = RoomGroupStore()  # type: ignore[attr-defined]
+    return svc
 
 
 class TestResolveGroupName:
@@ -44,7 +46,7 @@ class TestResolveGroupName:
             with pytest.raises(ValueError, match="No room group named"):
                 await svc._resolve_group_name(session, "Nope")
 
-    async def test_ambiguous_name_raises(
+    async def test_ambiguous_name_lists_paths_and_path_resolves(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         svc = _bare_service()
@@ -54,15 +56,34 @@ class TestResolveGroupName:
                 session, name="Root", description=None, color=None, parent_group_id=None
             )
             # Two distinct groups can share a name (one nested under the other).
-            await store.create(
+            top = await store.create(
                 session, name="Dup", description=None, color=None, parent_group_id=None
             )
-            await store.create(
+            nested = await store.create(
                 session, name="Dup", description=None, color=None, parent_group_id=a.id
             )
             await session.commit()
-            with pytest.raises(ValueError, match="Multiple room groups named"):
+            with pytest.raises(ValueError) as e:
                 await svc._resolve_group_name(session, "Dup")
+            assert str(e.value) == (
+                "Ambiguous room group 'Dup': use 'Root/Dup' or id "
+                f"'{top.id}' for the top-level 'Dup'"
+            )
+            assert await svc._resolve_group_name(session, "Root/Dup") == nested.id
+            assert await svc._resolve_group_name(session, top.id) == top.id
+
+    async def test_unknown_path_names_the_missing_segment(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _bare_service()
+        store = RoomGroupStore()
+        async with session_factory() as session:
+            await store.create(
+                session, name="Root", description=None, color=None, parent_group_id=None
+            )
+            await session.commit()
+            with pytest.raises(ValueError, match="no group named 'Nope' under 'Root'"):
+                await svc._resolve_group_name(session, "Root/Nope")
 
 
 class TestListRoomGroups:

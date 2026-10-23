@@ -506,7 +506,7 @@ class AgentConnection:
         return self.position.get(OWN_EVENTS, 0)
 
 
-# The `(transport, client)` an agent run by an agents controller counts under:
+# The `(transport, client)` an agent run by an agent controller counts under:
 # it travels on its controller's connection, whatever that connection uses.
 CONTROLLER_LABEL = ("controller", "agents-controller")
 
@@ -603,7 +603,7 @@ class AgentConnectionRegistry:
         # replaced wholesale, and a placement another connection takes is
         # reported to the one that lost it.
         self._placement_owners: dict[str, dict[str, str]] = {}
-        # Agents run by an agents controller hold no connection here: their
+        # Agents run by an agent controller hold no connection here: their
         # presence is their controller's. Every presence question below asks
         # it first for those agents, and this registry for the rest.
         self.controllers = ControllerPresence(on_bound=self._close_for_controller)
@@ -884,7 +884,7 @@ class AgentConnectionRegistry:
                 cid,
                 Closure(
                     code="closed",
-                    message="this agent is now run by an agents controller, which "
+                    message="this agent is now run by an agent controller, which "
                     "receives its events; its own connection is closed",
                     room_id=None,
                 ),
@@ -1734,7 +1734,7 @@ class AgentConnectionRegistry:
         Counted like `live_agent_ids`: an agent is one, however many
         connections it holds, but an agent connected two different ways counts
         once under each, so the labels can sum to more than the agent count.
-        An agent run by an agents controller has no connection of its own and
+        An agent run by an agent controller has no connection of its own and
         counts under `CONTROLLER_LABEL` while its controller is live.
 
         Only what this process holds: each process reports its own, so the

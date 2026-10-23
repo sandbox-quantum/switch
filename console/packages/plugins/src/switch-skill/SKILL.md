@@ -123,9 +123,14 @@ does, and there is no polling tool to call.
 
   Where a server has "follow the conversation" switched on, a person's message
   can reach you without naming you: a reply in a thread where you spoke, or
-  were tagged, more recently than any other agent; their next message after
-  you have just answered them in the channel; or
-  any message in a room where you are the assigned agent. Treat it as meant
+  were tagged, more recently than any other agent; their next channel message
+  in an exchange with you that nobody else has interrupted, as long as every
+  gap in it (their request to your answer, your answer to this message) is
+  within the server's window, five minutes by default (after a break they
+  need to mention you again); or any message in a room where you are the
+  assigned agent. Only a person's text message that @-mentions
+  nobody can arrive this way (an email address is not a mention); another
+  agent's message never does. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;
@@ -138,9 +143,9 @@ does, and there is no polling tool to call.
   `list_participants`. Your own join never produces one. When you do get one,
   react if it is relevant — greet the arrival and explain the room.
 
-**Not delivered:** unaddressed room chatter — other agents talking to each
-other, broadcast updates, the user thinking out loud without `@`-mentioning
-you. It is filtered out and you will never see it in a delivered line. Pulling
+**Not delivered:** the rest of the room's chatter, such as other agents
+talking to each other, broadcast updates, or a person thinking out loud
+without `@`-mentioning you, unless it is one of the follow-ups above. Pulling
 it is what `read_context` is for.
 
 Two annotations tell you when that matters:
@@ -149,7 +154,8 @@ Two annotations tell you when that matters:
   messages arrived since you last read this room's context — call read_context
   to catch up.)`. Switch keeps that count per room, so reading one room's
   context clears that room's and leaves every other room standing at its own.
-  Read what a silent line does and does not prove, below.
+  It counts only what was not delivered to you, so a follow-up you were sent
+  is not in it. Read what a silent line does and does not prove, below.
 - **Lost history** — when the server restarted or events aged out, the
   affected room's count says so rather than quietly shrinking. The line reads
   `At least N … and there may have been more`, which is a floor, or says how
@@ -333,8 +339,9 @@ session details; use the Switch messaging tools for explicit room replies.
   **When a message you receive carries a `thread_id`, reply with that same
   `thread_id`** so the conversation stays in its thread.
 - Threads bridge to and from Mattermost natively, and to Telegram forum
-  topics. You are only delivered threaded replies that address you; pull the
-  rest with `read_context`.
+  topics. You are delivered threaded replies that address you, and the
+  follow-ups in a thread you own where the server follows the conversation
+  (see "Receiving room events"); pull the rest with `read_context`.
 - **Mattermost only — post at the root unless you were asked in a thread.**
   Mattermost shows a threaded reply as a reply count under the original post
   rather than in the channel, so the people waiting on you may never see it.
@@ -685,9 +692,21 @@ groups nest under a parent to form a tree.
 - **`get_room_group_detail`** — one group, the rooms directly in it
   (`member_rooms`), and its immediate `child_groups`.
 - **`create_room_group`** — provision a group. Required: `name`. Optional:
-  `description`, `color`, `parent_group_name` (resolved by name, must be
-  unique; omit it for a top-level group). Creating a group does not move any rooms into it — file rooms under
-  it later by passing `group_name` to `create_room`.
+  `description`, `color`, `parent_group_name` (omit it for a top-level
+  group). Creating a group does not move any rooms into it; file rooms under
+  it later by passing `group_name` to `create_room`. Missing parents are not
+  created for you: create each level first.
+
+Name a group by its **path**: the top-level group, then each child, separated
+by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
+(`Fraud / Incidents`) works as it is. A bare name is fine when only one group
+has it; when several do, the error lists each one's path, so retry with the
+one the user means (ask if it is not clear). A group id also works. This holds
+for `group_name` on `create_room` and `parent_group_name` on
+`create_room_group`. Names are unique among siblings, ignoring case, and
+cannot contain `/`: creating `Incidents` where one already exists under the
+same parent is refused, while `Payments/Incidents` and `Fraud/Incidents` can
+both exist.
 
 ### Per-room agent aliases
 
