@@ -64,6 +64,7 @@ from switch_core.rooms_yaml import (
     GroupProvisionResult,
     GroupSpec,
     ProvisionResult,
+    RoomReader,
     RoomYamlService,
     template_json_schema,
 )
@@ -474,12 +475,13 @@ async def create_room_from_yaml(
             text = (await request.body()).decode("utf-8")
             inputs = None
             template_name = None
-        inputs = await rooms_yaml.resolve_defaults(text, inputs)
+        reader = RoomReader(Principal(user.id, is_admin))
+        inputs = await rooms_yaml.resolve_defaults(text, inputs, reader=reader)
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id, name=user.name, email=user.email, text=text, inputs=inputs
         )
         parsed = rooms_yaml.parse_template(text, inputs=inputs, builtins=builtins)
-        await rooms_yaml.check_entity_params(parsed)
+        await rooms_yaml.check_entity_params(parsed, reader=reader)
         if isinstance(parsed.spec, GroupSpec):
             return await rooms_yaml.provision_group(
                 parsed.spec,
@@ -645,7 +647,14 @@ async def run_template_document(
     inputs = body.inputs or {}
     try:
         if is_v2_text(body.template):
-            inputs = await rooms_yaml.resolve_defaults(body.template, inputs) or {}
+            inputs = (
+                await rooms_yaml.resolve_defaults(
+                    body.template,
+                    inputs,
+                    reader=RoomReader(Principal(user.id, is_admin)),
+                )
+                or {}
+            )
         builtins = await rooms_yaml.builtins_for(
             user_id=user.id,
             name=user.name,
@@ -704,7 +713,8 @@ async def _run_as_person(
         parsed = None
         builtins: dict[str, str] = {}
         if document is not None:
-            inputs = await rooms_yaml.resolve_defaults(document, inputs)
+            reader = RoomReader(Principal(user.id, is_admin))
+            inputs = await rooms_yaml.resolve_defaults(document, inputs, reader=reader)
             builtins = await rooms_yaml.builtins_for(
                 user_id=user.id,
                 name=user.name,
@@ -715,7 +725,7 @@ async def _run_as_person(
             parsed = rooms_yaml.parse_template(
                 document, inputs=inputs, builtins=builtins
             )
-            await rooms_yaml.check_entity_params(parsed)
+            await rooms_yaml.check_entity_params(parsed, reader=reader)
             await rooms_yaml.check_bridges(parsed)
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)

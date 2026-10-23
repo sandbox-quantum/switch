@@ -60,6 +60,11 @@ version of their own to them without also giving them a release of their own.
   (an agent also sees the rooms it is in). Linking a room to another now
   needs read access to the target, whose name the link shows. An agent can
   list a room's participants only from inside the room.
+- **A template's room params name only rooms its runner can see.** A room
+  param checked its value against every room on the server, and `$first` or
+  a list of candidates could settle on someone else's private room. That told
+  the runner the room existed and could write its name into their new room.
+  Now a room the runner cannot read reads as missing.
 
 #### Fixed
 - **The template guide agents read now covers a room's `roles:`,

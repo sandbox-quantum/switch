@@ -40,6 +40,7 @@ import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
+from switch_core.authz import Principal, can
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
@@ -77,6 +78,18 @@ PLACEHOLDER_RE = re.compile(r"\{(\$?[A-Za-z_][A-Za-z0-9_]*)\}")
 # box. The value is the name a template would write: an agent's name, a
 # bridge's display name, a room's name, a platform username.
 ENTITY_PARAM_TYPES = ("agent", "bridge", "room", "user")
+
+
+@dataclass(frozen=True)
+class RoomReader:
+    """Who a template runs as, which decides the rooms its `room` params may
+    name: the rooms `principal` may read, plus the rooms `agent_id` is in when
+    an agent runs it. Any other room reads as missing, so a template cannot
+    confirm or fill in the name of a room its runner cannot see."""
+
+    principal: Principal
+    agent_id: str | None = None
+
 
 # Param types that say how an agent the template creates runs: the coding
 # agent that runs it, where it runs (`location`, a Console answer: this
@@ -728,7 +741,9 @@ class RoomYamlService:
 
     # ── Entity params ─────────────────────────────────────────────────────
 
-    async def check_entity_params(self, parsed: ParsedTemplate) -> None:
+    async def check_entity_params(
+        self, parsed: ParsedTemplate, *, reader: RoomReader
+    ) -> None:
         """Every entity-typed param must name something this server has.
 
         Raises ``ValueError`` in the ``param 'x': ...`` form the Console maps
@@ -773,7 +788,7 @@ class RoomYamlService:
                             f"param {param!r}: messaging app {value!r} is not running"
                         )
             if "room" in wanted:
-                rooms = {r.name for r in await self._room_store.get_all(session)}
+                rooms = set(await self._readable_room_names(session, reader))
                 for param, value in wanted["room"]:
                     if value not in rooms:
                         raise ValueError(
@@ -807,13 +822,14 @@ class RoomYamlService:
                     )
 
     async def resolve_defaults(
-        self, text: str, inputs: dict[str, Any] | None
+        self, text: str, inputs: dict[str, Any] | None, *, reader: RoomReader
     ) -> dict[str, Any] | None:
         """Turn each list default into an input, for params sent no value.
 
         The candidates are tried in order and the first one the server has
         wins: a bridge by display name, an agent or room by name, ``$first``
-        for the default messaging app or the first agent or room by name. A
+        for the default messaging app or the first agent or room by name. Only
+        rooms `reader` may name count (see ``RoomReader``). A
         chain with no hit leaves the param as it was, for ``resolve_params``
         to report. Runs before ``builtins_for``, because the bridge decides
         which messaging app ``{$creator}`` is looked up on. A document that
@@ -849,7 +865,7 @@ class RoomYamlService:
             names: dict[str, list[str]] = {}
             for name, spec in chains.items():
                 if spec.type not in names:
-                    names[spec.type] = await self._names_of(session, spec.type)
+                    names[spec.type] = await self._names_of(session, spec.type, reader)
                 have = names[spec.type]
                 for candidate in spec.default:  # type: ignore[union-attr]
                     if candidate == FIRST and have:
@@ -860,7 +876,9 @@ class RoomYamlService:
                         break
         return filled if filled != given else inputs
 
-    async def _names_of(self, session: AsyncSession, param_type: str) -> list[str]:
+    async def _names_of(
+        self, session: AsyncSession, param_type: str, reader: RoomReader
+    ) -> list[str]:
         """What the server has of one entity type, the ``$first`` one first."""
         if param_type == "bridge":
             active = [
@@ -877,7 +895,27 @@ class RoomYamlService:
             )
         if param_type == "agent":
             return sorted(a.name for a in await self._agent_store.get_all(session))
-        return sorted(r.name for r in await self._room_store.get_all(session))
+        return sorted(await self._readable_room_names(session, reader))
+
+    async def _readable_room_names(
+        self, session: AsyncSession, reader: RoomReader
+    ) -> list[str]:
+        """Names of the rooms `reader` may name in a `room` param."""
+        member_of = (
+            {
+                r.id
+                for r in await self._room_store.get_rooms_for_agent(
+                    session, reader.agent_id
+                )
+            }
+            if reader.agent_id is not None
+            else set()
+        )
+        return [
+            r.name
+            for r in await self._room_store.get_all(session)
+            if r.id in member_of or can(reader.principal, "read", r)
+        ]
 
     async def builtins_for(
         self,
