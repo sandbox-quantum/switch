@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { checkGroup, type DoctorInputs, doctorJson, formatChecks, runDoctor } from './doctor';
+import { PLAIN } from './format';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {
@@ -38,7 +39,7 @@ describe('doctor', () => {
   it('passes a machine that is ready', async () => {
     const checks = await runDoctor(inputs());
     expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
-    expect(formatChecks(checks)).toContain('ok    claude');
+    expect(formatChecks(PLAIN, checks)).toContain('  ok    claude');
   });
 
   it('passes a ready Windows machine, which Console runs rather than a service', async () => {
@@ -82,7 +83,7 @@ describe('doctor', () => {
         },
       })
     );
-    expect(checks.find((check) => check.name === 'Server')?.detail).toMatch(
+    expect(checks.find((check) => check.name === 'Server')?.fix).toMatch(
       /send \/v1 to switch-core/
     );
   });
@@ -113,5 +114,56 @@ describe('doctor', () => {
       })
     );
     expect(offline.find((check) => check.name === 'Version')?.detail).toMatch(/offline/);
+  });
+
+  it('gives a fix for every failure it knows how to fix, and none for what passed', async () => {
+    const checks = await runDoctor(inputs({ identity: null, nodeVersion: 'v20.0.0' }));
+    expect(checks.find((check) => check.name === 'Enrollment')?.fix).toMatch(
+      /^switch-agent-controller enroll --server <url> --code <code>/
+    );
+    expect(checks.find((check) => check.name === 'Node')?.fix).toBe('Install Node 22.13 or later.');
+    expect(checks.filter((check) => check.status === 'ok' && check.fix !== null)).toEqual([]);
+  });
+});
+
+describe('formatChecks', () => {
+  it('groups checks under Machine, Server and Providers, with fixes and a count', async () => {
+    const text = formatChecks(
+      PLAIN,
+      await runDoctor(
+        inputs({ latest: async () => ({ version: '0.3.0', packageUrl: 'https://x.invalid' }) })
+      )
+    );
+    const lines = text.split('\n');
+    expect(lines[0]).toBe('Machine');
+    expect(lines).toContain('Server');
+    expect(lines).toContain('Providers');
+    expect(text).toContain('  warn  Version      0.2.0; 0.3.0 is available');
+    expect(text).toContain('        Fix: switch-agent-controller update');
+    expect(lines.at(-1)).toBe('8 ok, 1 warning, 0 failed');
+    expect(text).not.toMatch(/\u001b\[/);
+  });
+
+  it('marks with coloured symbols on a terminal', async () => {
+    const text = formatChecks({ rich: true }, await runDoctor(inputs()));
+    expect(text).toContain('\u001b[32m✓\u001b[39m');
+    expect(text).not.toContain('ok    claude');
+  });
+
+  it('puts every check in a group', () => {
+    expect(checkGroup('Node')).toBe('Machine');
+    expect(checkGroup('Credential')).toBe('Server');
+    expect(checkGroup('codex')).toBe('Providers');
+    expect(checkGroup('Providers')).toBe('Providers');
+  });
+});
+
+describe('doctorJson', () => {
+  it('reports every check, and fails when any check failed', async () => {
+    const ready = JSON.parse(doctorJson(await runDoctor(inputs())));
+    expect(ready.ok).toBe(true);
+    expect(ready.checks[0]).toEqual({ name: 'Node', status: 'ok', detail: 'v22.13.0', fix: null });
+    const broken = JSON.parse(doctorJson(await runDoctor(inputs({ platform: 'freebsd' }))));
+    expect(broken.ok).toBe(false);
   });
 });
