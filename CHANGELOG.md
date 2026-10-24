@@ -1945,6 +1945,10 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Two agent hosts starting at once on Windows no longer crash each other.**
+  A host reading another host's ownership ticket while that host replaced or
+  deleted it got `EPERM` from Windows and exited. It now tries the read again
+  for a few seconds, as it already did for its own writes.
 - **The local Switch server starts on Intel Macs without Homebrew.**
   cryptography publishes no wheel for Intel Macs, so the Intel build of
   Console compiled its own against the build machine's Homebrew OpenSSL, and
