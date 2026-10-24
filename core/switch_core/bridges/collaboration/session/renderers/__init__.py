@@ -75,6 +75,10 @@ def turn_state(
     reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued":
+        user_msg = next((item for item in items if item.kind == "user-message"), None)
+        if user_msg is not None and user_msg.revision > 1:
+            state = "Queued (edited). Waiting for the agent to start…"
     if turn.status not in TURN_ENDED:
         if elapsed_seconds is not None:
             return f"{state} {_format_duration(elapsed_seconds)}"

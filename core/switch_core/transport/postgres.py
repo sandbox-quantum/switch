@@ -1045,6 +1045,35 @@ class PostgresTransport:
             room_id, "m.room.message", content, sender_name, metered=metered
         )
 
+    async def edit_message(
+        self,
+        room_id: str,
+        transport_event_id: str,
+        body: str,
+        *,
+        sender_name: str,
+        format: MessageFormat = "text",
+    ) -> bool:
+        transport_room_id = room_id
+        db_room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            routed = await self._router.store_edit(
+                session,
+                tenant_id=tenant_id,
+                room_id=db_room_id,
+                transport_room_id=transport_room_id,
+                transport_event_id=transport_event_id,
+                new_body=body,
+                sender_client_id=self.client_id,
+                sender_name=sender_name,
+            )
+            if routed is None:
+                return False
+            await session.commit()
+        routed.committed()
+        self._room_cache.invalidate(tenant_id, db_room_id)
+        return True
+
     async def _send(
         self,
         transport_room_id: str,

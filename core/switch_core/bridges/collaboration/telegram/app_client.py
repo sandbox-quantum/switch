@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 ALLOWED_UPDATES: tuple[str, ...] = (
     "message",
     "channel_post",
+    "edited_message",
+    "edited_channel_post",
     "my_chat_member",
     "callback_query",
 )

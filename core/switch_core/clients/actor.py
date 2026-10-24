@@ -247,6 +247,31 @@ class Actor[ConfigT: ClientConfig]:
             return None
         return result.event_id
 
+    async def edit_message(
+        self,
+        room_id: str,
+        transport_event_id: str,
+        body: str,
+        *,
+        format: Literal["text", "markdown"] = "text",
+    ) -> bool:
+        try:
+            return await self._transport.edit_message(
+                room_id,
+                transport_event_id,
+                body,
+                sender_name=self.display_name,
+                format=format,
+            )
+        except TransportError as exc:
+            logger.error(
+                "Failed to edit message %s in %s: %s",
+                transport_event_id,
+                room_id,
+                exc,
+            )
+            return False
+
     async def send_event(
         self, room_id: str, event_type: str, content: dict[str, object]
     ) -> str:

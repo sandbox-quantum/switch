@@ -79,6 +79,9 @@ class DiscordConnection:
         self._message_handlers: dict[
             int, Callable[[discord.Message], Awaitable[None]]
         ] = {}
+        self._message_edit_handlers: dict[
+            int, Callable[[discord.Message], Awaitable[None]]
+        ] = {}
         # A single handler for *every* guild's messages, used by the shared
         # multi-tenant connection: it routes each event by resolving the guild
         # to its tenant fresh, rather than keeping a per-guild registry that
@@ -118,6 +121,14 @@ class DiscordConnection:
 
     def unregister_message_handler(self, guild_id: int) -> None:
         self._message_handlers.pop(guild_id, None)
+
+    def register_message_edit_handler(
+        self, guild_id: int, handler: Callable[[discord.Message], Awaitable[None]]
+    ) -> None:
+        self._message_edit_handlers[guild_id] = handler
+
+    def unregister_message_edit_handler(self, guild_id: int) -> None:
+        self._message_edit_handlers.pop(guild_id, None)
 
     def set_guild_message_handler(
         self, handler: Callable[[discord.Message], Awaitable[None]] | None
@@ -215,6 +226,7 @@ class DiscordConnection:
             intents=self._intents, allowed_mentions=NO_MASS_MENTIONS
         )
         client.event(self._make_on_message())
+        client.event(self._make_on_message_edit())
         # Presses on a card's buttons. Registered alongside the command tree
         # rather than through it: the tree is handed application-command
         # interactions only, and a component interaction is dispatched as the
@@ -335,6 +347,25 @@ class DiscordConnection:
                 logger.exception("Failed to handle inbound Discord message")
 
         return on_message
+
+    def _make_on_message_edit(
+        self,
+    ) -> Callable[[discord.Message, discord.Message], Coroutine[Any, Any, None]]:
+        async def on_message_edit(
+            before: discord.Message, after: discord.Message
+        ) -> None:
+            guild = after.guild
+            if guild is None:
+                return
+            handler = self._message_edit_handlers.get(guild.id)
+            if handler is None:
+                return
+            try:
+                await handler(after)
+            except Exception:
+                logger.exception("Failed to handle inbound Discord message edit")
+
+        return on_message_edit
 
     def _make_on_interaction(
         self,

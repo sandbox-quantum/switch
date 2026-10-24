@@ -699,8 +699,50 @@ export class HostedSession {
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
     const previous = this.commands.get(command.commandId);
     if (previous) {
-      if (!isDeepStrictEqual(previous, command)) throw new Error('IDEMPOTENCY_CONFLICT');
-      return this.status(command.commandId);
+      if (isDeepStrictEqual(previous, command)) {
+        return this.status(command.commandId);
+      }
+      if (previous.body.type === 'message.send' && command.body.type === 'message.send') {
+        const queuedIndex = this.queue.findIndex((c) => c.commandId === command.commandId);
+        if (queuedIndex >= 0) {
+          if (eventBytes(command) > 60 * 1024)
+            throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
+          if (command.body.attachments.length && !this.config.stageAttachments)
+            throw new Error('UNSUPPORTED_CAPABILITY: attachment staging is not configured.');
+          if (
+            command.body.attachments.some(
+              (file) => !session.capabilities.attachmentMimeTypes.includes(file.mimeType)
+            )
+          )
+            throw new Error(
+              'UNSUPPORTED_CAPABILITY: the selected provider model does not accept this attachment type.'
+            );
+          this.queue[queuedIndex] = command;
+          this.commands.set(command.commandId, command);
+          await this.inbox.append({ type: 'accepted', command });
+          const turnId = command.commandId;
+          const userItem = this.replica
+            .snapshot()
+            .items.find((item) => item.itemId === `user-${command.commandId}`);
+          const revision = (userItem?.revision ?? 1) + 1;
+          await this.publish({
+            type: 'item.upsert',
+            item: {
+              itemId: `user-${command.commandId}`,
+              turnId,
+              revision,
+              kind: 'user-message',
+              status: 'completed',
+              title: '',
+              text: command.body.text,
+              attachments: command.body.attachments,
+              origin: command.origin,
+            },
+          });
+          return this.status(command.commandId);
+        }
+      }
+      throw new Error('IDEMPOTENCY_CONFLICT');
     }
     if (this.fault) throw this.fault;
     if (command.epoch !== session.epoch) throw new Error('STALE_EPOCH');

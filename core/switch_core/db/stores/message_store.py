@@ -198,6 +198,28 @@ class MessageStore:
         )
         return result.scalar_one_or_none()
 
+    async def update_body(
+        self,
+        session: AsyncSession,
+        transport_event_id: str,
+        new_body: str,
+        *,
+        new_formatted_body: str | None = None,
+    ) -> Message | None:
+        message = await self.get_by_transport_event_id(session, transport_event_id)
+        if message is None:
+            return None
+        message.body = new_body
+        if new_formatted_body is not None:
+            message.formatted_body = new_formatted_body
+        content = dict(message.content)
+        content["body"] = new_body
+        if new_formatted_body is not None:
+            content["formatted_body"] = new_formatted_body
+        message.content = content
+        await session.flush()
+        return message
+
     async def list_for_room(
         self, session: AsyncSession, room_id: str, *, after_seq: int, limit: int
     ) -> list[Message]:

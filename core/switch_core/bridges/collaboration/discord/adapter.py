@@ -58,6 +58,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     RetireOutcome,
 )
@@ -699,6 +700,7 @@ class DiscordAdapter(PlatformAdapter):
         # messages still reach it. The connection routes each message by guild
         # id, which for a single-guild bridge is exactly the old filter.
         conn.register_message_handler(self._guild_id, self._handle_message)
+        conn.register_message_edit_handler(self._guild_id, self._handle_message_edit)
         conn.set_dm_handler(self._handle_message)
         conn.set_interaction_handler(self._make_on_interaction())
         await conn.connect(
@@ -780,6 +782,9 @@ class DiscordAdapter(PlatformAdapter):
         thin public entry so the shared client does not reach into the adapter.
         """
         await self._handle_message(message)
+
+    async def dispatch_edit(self, message: discord.Message) -> None:
+        await self._handle_message_edit(message)
 
     async def dispatch_slash(
         self,
@@ -2907,6 +2912,53 @@ class DiscordAdapter(PlatformAdapter):
                 attachments=attachments,
                 attachment_failures=attachment_failures,
                 self_mention_token=str(bot_user_id) if self_mention else None,
+            )
+        )
+
+    async def _handle_message_edit(self, message: Any) -> None:
+        if self._on_message_edit is None:
+            return
+        author = getattr(message, "author", None)
+        if author is None:
+            return
+        bot_user_id = self._require_connection().bot_user_id
+        if author.id == bot_user_id:
+            return
+        webhook_id = getattr(message, "webhook_id", None)
+        if webhook_id and webhook_id in self._webhook_ids:
+            return
+        if getattr(message, "type", None) not in ALLOWED_MESSAGE_TYPES:
+            return
+
+        channel = message.channel
+        parent_id = getattr(channel, "parent_id", None)
+        root_id: str | None = None
+        if parent_id is not None:
+            channel_id = str(parent_id)
+            root_id = f"{parent_id}:{channel.id}"
+            channel_name = getattr(getattr(channel, "parent", None), "name", None)
+        else:
+            channel_id = str(channel.id)
+            channel_name = getattr(channel, "name", None)
+
+        username = str(author.name)
+        self._user_names[author.id] = username
+        self._username_to_id[username] = author.id
+
+        content = str(message.content or "")
+        channel_type = self._channel_type_of(channel)
+        message_ref = f"{channel.id}:{message.id}"
+
+        await self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=channel_id,
+                channel_type=channel_type,
+                sender_id=str(author.id),
+                sender_name=username,
+                content=content,
+                message_ref=message_ref,
+                root_id=root_id,
+                channel_name=channel_name,
             )
         )
 

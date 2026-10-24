@@ -139,6 +139,24 @@ class InboundMessage(BaseModel):
     sender_is_app: bool = False
 
 
+class InboundMessageEdit(BaseModel):
+    """An inbound message edit reported by an external platform."""
+
+    channel_id: str
+    message_ref: str
+    content: str
+    sender_id: str
+    sender_name: str
+    channel_type: ChannelType = "channel_public"
+    agent_name: str | None = None
+    channel_name: str | None = None
+    root_id: str | None = None
+    attachments: list[Attachment] = []
+    attachment_failures: list[AttachmentFailure] = []
+    self_mention_token: str | None = None
+    sender_is_app: bool = False
+
+
 class InboundCommand(BaseModel):
     channel_id: str
     channel_type: ChannelType

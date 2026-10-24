@@ -1572,6 +1572,8 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
     assert app.updater.polling_kwargs["allowed_updates"] == [
         "message",
         "channel_post",
+        "edited_message",
+        "edited_channel_post",
         "my_chat_member",
         "callback_query",
     ]

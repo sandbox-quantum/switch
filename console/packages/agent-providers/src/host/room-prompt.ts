@@ -14,7 +14,7 @@ const MAX_ATTACHMENTS = 8;
 
 /** The part of a room message event a prompt is built from. */
 export const roomMessageSchema = z.object({
-  type: z.literal('message'),
+  type: z.union([z.literal('message'), z.literal('message_edit')]),
   payload: z.object({
     sender: z.string().min(1),
     sender_name: z.string(),
