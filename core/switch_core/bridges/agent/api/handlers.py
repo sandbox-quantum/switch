@@ -24,22 +24,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response, StreamingResponse
 
 from switch_core.bridges.agent.api.schemas import (
-    AgentInfo,
-    AgentListResponse,
     BulkRegisterResult,
     ConnectionBeatRequest,
     ConnectionPlacementsRequest,
     ConnectionRenewRequest,
     ConnectionSubscribeRequest,
-    CreateModerationRoomRequest,
-    CreateModerationRoomResponse,
     EventResponse,
     FeatureFlagInfo,
     FeatureFlagListResponse,
     HistoryMessage,
     HistoryResponse,
-    InviteAgentRequest,
-    ListBridgesResponse,
     ParticipantInfo,
     ParticipantsResponse,
     PostLlmResponseRequest,
@@ -56,9 +50,6 @@ from switch_core.bridges.agent.api.schemas import (
     RegisterKnownAgentBulkResponse,
     RegisterKnownAgentRequest,
     ReportEventsRequest,
-    RoomDetailResponse,
-    RoomInfo,
-    RoomListResponse,
     RuntimeStateRequest,
     SendMessageRequest,
     StatusRequest,
@@ -1853,153 +1844,6 @@ async def post_llm_response(
         raise HTTPException(status_code=403, detail=str(e)) from e
 
     return PostLlmResponseResponse(verdict=result["verdict"])  # type: ignore[arg-type]
-
-
-# Moderation endpoints
-
-
-@router.post("/{agent_id}/moderation/rooms")
-async def create_room(
-    agent_id: str,
-    req: CreateModerationRoomRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> CreateModerationRoomResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        result = await protocol.create_moderation_room(
-            agent_id=agent.id,
-            name=req.name,
-            description=req.description,
-            agent_names=req.agent_names,
-            include_subagents_for=req.include_subagents_for,
-            user_names=req.user_names,
-            channel_type=req.channel_type,
-            bridge_id=req.bridge_id,
-            internal_only=req.internal_only,
-            admin_mode=req.admin_mode,
-            security_config=req.security_config,
-            instructions=req.instructions,
-            reference_ids=req.reference_ids,
-            package_ids=req.package_ids,
-            linked_rooms=(
-                [lr.model_dump() for lr in req.linked_rooms]
-                if req.linked_rooms
-                else None
-            ),
-        )
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-
-    return CreateModerationRoomResponse(
-        id=result.room.id,
-        name=result.room.name,
-        transport_room_id=result.room.transport_room_id,
-        matrix_room_id=result.room.transport_room_id,
-        failed_attachments=result.failed_attachments,
-    )
-
-
-@router.post("/{agent_id}/moderation/rooms/{room_id}/invite")
-async def invite_agent(
-    agent_id: str,
-    room_id: str,
-    req: InviteAgentRequest,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> dict[str, bool]:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        await protocol.invite_agent_to_room(
-            agent.id, room_id, req.agent_name, include_subagents=req.include_subagents
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    return {"ok": True}
-
-
-@router.get("/{agent_id}/moderation/rooms")
-async def list_rooms(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RoomListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    rooms = await protocol.list_all_rooms(agent.id)
-    return RoomListResponse(
-        rooms=[RoomInfo(id=r.id, name=r.name, description=r.description) for r in rooms]
-    )
-
-
-@router.get("/{agent_id}/moderation/rooms/{room_id}")
-async def get_room(
-    agent_id: str,
-    room_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> RoomDetailResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    try:
-        room_detail = await protocol.get_room_detail(agent.id, room_id)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-
-    return RoomDetailResponse(
-        id=room_detail.id,
-        name=room_detail.name,
-        description=room_detail.description,
-        channel_type=room_detail.channel_type,
-        admin_mode=room_detail.admin_mode,
-        agent_names=room_detail.agent_names,
-    )
-
-
-@router.get("/{agent_id}/moderation/agents")
-async def list_agents(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> AgentListResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    agents = await protocol.list_all_agents(agent.id)
-    return AgentListResponse(
-        agents=[
-            AgentInfo(
-                id=a.id,
-                name=a.name,
-                description=a.description,
-                display_name=a.display_name,
-            )
-            for a in agents
-        ]
-    )
-
-
-@router.get("/{agent_id}/moderation/bridges")
-async def list_bridges(
-    agent_id: str,
-    agent: Annotated[Agent, Depends(get_agent_from_scope)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-) -> ListBridgesResponse:
-    if agent.id != agent_id:
-        raise HTTPException(status_code=403, detail="Not authorized for this agent")
-
-    bridges = await protocol.list_bridges()
-    return ListBridgesResponse(bridges=bridges)
 
 
 # Feature flag endpoints

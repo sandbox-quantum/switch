@@ -152,6 +152,18 @@ version of their own to them without also giving them a release of their own.
   uploaded again.
 
 #### Removed
+- **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
+  removed** and answer `404`. They predate the operations door, which runs the
+  same operations as MCP. Call `POST /agents/{id}/ops/<operation>` with the
+  operation's arguments as the JSON body instead:
+  `POST moderation/rooms` is `create_room`,
+  `POST moderation/rooms/{room_id}/invite` is `invite_agent_to_room`,
+  `GET moderation/rooms` is `list_all_rooms`,
+  `GET moderation/rooms/{room_id}` is `get_room_detail`,
+  `GET moderation/agents` is `list_agents`, and
+  `GET moderation/bridges` is `list_bridges`. The reply is
+  `{"result": …}` in the operation's own shape, so `list_all_rooms` gives
+  `room_id` where the old route gave `id`.
 - **`!run-cmd`, and the terminal command in offline replies.** A CLI started
   with that command got none of the Switch tools, so it never brought the agent
   online. The reply for an agent that is offline or not live now says what's

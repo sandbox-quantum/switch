@@ -4280,12 +4280,6 @@ class AgentCore:
         await self.room_service.set_room_archived(room_id, archived)
         return await self.get_room_detail(agent_id, room_id)
 
-    async def list_all_agents(self, agent_id: str) -> list[Agent]:
-        """List all agents (moderation only)."""
-        async with self.session_factory() as session:
-            agents = await self.agent_store.get_all(session)
-        return agents
-
     async def pre_tool_call(
         self,
         agent_id: str,
