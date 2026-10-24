@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -835,19 +836,49 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+PASSWORD_MIN_LENGTH = 8
+
+
+def _bcrypt_sized_validator(password: str) -> str:
+    if len(password.encode()) > 72:
+        raise ValueError("Password must be at most 72 bytes.")
+    return password
+
+
+# Every password the server is asked to store: long enough to mean something,
+# and short enough that the bcrypt hash (which caps input at 72 bytes by its
+# digest construction) never sees the request fail on the API's behalf.
+Password = Annotated[
+    str,
+    StringConstraints(min_length=PASSWORD_MIN_LENGTH),
+    AfterValidator(_bcrypt_sized_validator),
+]
+
+# Anywhere a person's address is accepted as input, it is trimmed, lowercased
+# and shape-checked the way `/auth/signup` treats it, so the same address
+# arriving through signup, the admin user list or any later form resolves to
+# one account, not near-duplicates.
+Email = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
+
+
 class CreateUserRequest(BaseModel):
     name: str
-    email: str
-    password: str
+    email: Email
+    password: Password
     role: str = "user"
-
-
-PASSWORD_MIN_LENGTH = 8
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    new_password: Password
 
 
 class DeleteAccountRequest(BaseModel):
@@ -859,29 +890,14 @@ class DeleteAccountRequest(BaseModel):
 
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    email: Annotated[
-        str,
-        StringConstraints(
-            strip_whitespace=True,
-            to_lower=True,
-            max_length=320,
-            pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-        ),
-    ]
-    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    email: Email
+    password: Password
     display_name: (
         Annotated[
             str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
         ]
         | None
     ) = None
-
-    @field_validator("password")
-    @classmethod
-    def bcrypt_sized(cls, password: str) -> str:
-        if len(password.encode()) > 72:
-            raise ValueError("Password must be at most 72 bytes.")
-        return password
 
 
 class SignupMachine(BaseModel):
