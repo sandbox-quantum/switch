@@ -38,6 +38,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.invites import Inviter
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import RoomYamlService
 
@@ -52,8 +53,12 @@ class FakeRoomService:
     ) -> None:
         self._sf = session_factory
         self._agents = agent_store
+        self.inviters: list[Inviter] = []
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        self.inviters.append(invited_by)
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:

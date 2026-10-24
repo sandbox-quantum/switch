@@ -84,6 +84,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
+from tests.inviting import FIXTURE_INVITER
 from tests.ownership import process_lease_on
 from tests.routing import router_on
 
@@ -909,7 +910,8 @@ class TestChangesMadeElsewhere:
                     external_channel_id="C2",
                     channel_type="channel_public",
                     created_by_kind="system",
-                )
+                ),
+                invited_by=FIXTURE_INVITER,
             )
         async with session_factory() as session:
             await RoomStore().add_client(session, bridge.speaker_id, created.room.id)

@@ -187,6 +187,11 @@ class InboundAgentJoin(BaseModel):
     channel_id: str
     channel_type: ChannelType
     agent_name: str
+    # The platform account that added the agent's bot to the channel, when the
+    # platform reports it; None when it does not. Every adapter says which, so
+    # an unattributed join is a decision rather than an omission: the agent's
+    # addressing policy judges whoever added it (`invites`).
+    added_by_external_user_id: str | None
     channel_name: str | None = None
 
 
@@ -195,6 +200,8 @@ class InboundUserJoin(BaseModel):
     channel_type: ChannelType
     external_user_id: str
     external_username: str
+    # Who added them, when the platform says; see `InboundAgentJoin`.
+    added_by_external_user_id: str | None
     channel_name: str | None = None
 
 

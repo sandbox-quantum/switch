@@ -103,6 +103,7 @@ from tests.integration.conftest import (
     _NoBridges,
     _truncate_all,
 )
+from tests.inviting import FIXTURE_INVITER
 from tests.ownership import process_lease_on
 
 # Agents driven by a host process, which is what the benchmark spawns. The
@@ -291,7 +292,8 @@ class BenchServer:
                 name=name,
                 description="connection-model baseline benchmark room",
                 agent_ids=agent_ids,
-            )
+            ),
+            invited_by=FIXTURE_INVITER,
         )
         return result.room.id
 

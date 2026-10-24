@@ -3841,6 +3841,9 @@ class TeamsAdapter(PlatformAdapter):
                         external_username=await self._sender_handle(
                             joiner_id, str(member.get("name") or "")
                         ),
+                        # The membership update is not attributed to whoever
+                        # made it reliably enough to judge them by.
+                        added_by_external_user_id=None,
                         channel_name=channel_name,
                     )
                 )

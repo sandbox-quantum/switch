@@ -18,6 +18,7 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import ChannelNotBindable
 from switch_core.room_service import RoomCreateConfig
+from tests.inviting import FIXTURE_INVITER
 from tests.switch_core.test_room_service_change_bridge import (
     _build_service,
     _FakeCollaborationCore,
@@ -63,7 +64,7 @@ async def test_a_channel_the_bridge_refuses_is_not_bound(kind: str) -> None:
     svc, _ = _service(events)
 
     with pytest.raises(ChannelNotBindable):
-        await svc.create_room(_config(kind))
+        await svc.create_room(_config(kind), invited_by=FIXTURE_INVITER)
 
     assert events == [("require_bindable", "chan-elsewhere")]
 
@@ -73,6 +74,6 @@ async def test_a_channel_the_platform_delivered_is_not_asked_about() -> None:
     svc, _ = _service(events)
 
     with pytest.raises(_Reached):
-        await svc.create_room(_config("system"))
+        await svc.create_room(_config("system"), invited_by=FIXTURE_INVITER)
 
     assert ("require_bindable", "chan-elsewhere") not in events

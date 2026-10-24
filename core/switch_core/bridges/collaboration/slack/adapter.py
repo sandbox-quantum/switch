@@ -3349,12 +3349,16 @@ class SlackAdapter(PlatformAdapter):
         channel_type = await self.get_channel_type(channel_id)
         channel_name = await self._resolve_channel_name(channel_id)
 
+        # Slack names whoever invited the member; a member who joined on their
+        # own has no inviter.
+        inviter = str(event.get("inviter") or "") or None
         await self._on_user_joined(
             InboundUserJoin(
                 channel_id=channel_id,
                 channel_type=channel_type,
                 external_user_id=user_id,
                 external_username=user.name,
+                added_by_external_user_id=inviter,
                 channel_name=channel_name,
             )
         )

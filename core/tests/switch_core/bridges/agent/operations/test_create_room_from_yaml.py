@@ -23,6 +23,7 @@ from switch_core.db.models import (
     RoomGroup,
     RoomLink,
 )
+from switch_core.invites import Inviter
 
 SINGLE_ROOM_YAML = """\
 version: 0
@@ -82,6 +83,14 @@ async def test_single_room_provisioned(env):
         room = await session.get(Room, result["room_id"])
         assert room is not None
         assert room.owner_id == env["user_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_template_an_agent_runs_invites_as_the_person_it_runs_for(env):
+    # A template run is judged as the person running it: the agent's owner,
+    # whose agents and anyone they may address are the ones it can bring in.
+    await _call(env["agent_id"], yaml=SINGLE_ROOM_YAML)
+    assert env["protocol"].room_service.inviters == [Inviter.user(env["user_id"])]
 
 
 @pytest.mark.asyncio

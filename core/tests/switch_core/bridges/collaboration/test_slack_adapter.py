@@ -6,7 +6,11 @@ from typing import Any
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
+from switch_core.bridges.collaboration.models import (
+    InboundCommand,
+    InboundMessage,
+    InboundUserJoin,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -1028,10 +1032,7 @@ def test_bot_join_fires_on_app_joined() -> None:
 
 
 def test_user_join_does_not_fire_on_app_joined() -> None:
-    from switch_core.bridges.collaboration.models import (
-        InboundAppJoin,
-        InboundUserJoin,
-    )
+    from switch_core.bridges.collaboration.models import InboundAppJoin
 
     adapter = _adapter()
     adapter._bot_user_id = "UBOT"
@@ -1060,6 +1061,36 @@ def test_user_join_does_not_fire_on_app_joined() -> None:
     assert app_joins == []
     assert len(user_joins) == 1
     assert user_joins[0].external_user_id == "U1"
+    # Joined on their own: nobody added them.
+    assert user_joins[0].added_by_external_user_id is None
+
+
+def test_a_member_someone_invited_carries_the_inviter() -> None:
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._web_client = _FakeConversationsInfoClient({})  # type: ignore[assignment]
+    adapter._channel_name_cache["C123"] = "general"
+    adapter._user_cache["U1"] = SlackUser(name="alice", display_name="Alice")
+    user_joins: list[InboundUserJoin] = []
+
+    async def on_user_joined(join: InboundUserJoin) -> None:
+        user_joins.append(join)
+
+    adapter._on_user_joined = on_user_joined
+    _run(
+        adapter._handle_member_joined_channel(
+            {
+                "type": "member_joined_channel",
+                "user": "U1",
+                "channel": "C123",
+                "inviter": "U2",
+            }
+        )
+    )
+
+    # Slack names who invited the member, so their addressing policy can be
+    # asked about them when the member is an agent.
+    assert user_joins[0].added_by_external_user_id == "U2"
 
 
 # ── Outbound attachments ─────────────────────────────────────────────────────

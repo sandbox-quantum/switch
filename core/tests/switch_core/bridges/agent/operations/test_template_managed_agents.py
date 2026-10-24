@@ -36,6 +36,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import Agent, Room, Template
+from switch_core.invites import Inviter
 from switch_core.template_runs import AgentsNotCreated, RunUndone
 from tests.switch_core.bridges.agent.operations.conftest import _make_agent
 
@@ -418,7 +419,7 @@ async def test_agents_are_deleted_again_when_a_later_one_fails(managed):
 
 @pytest.mark.asyncio
 async def test_agents_are_deleted_again_when_the_room_fails(managed):
-    async def broken(config: Any) -> Any:
+    async def broken(config: Any, *, invited_by: Any) -> Any:
         raise ValueError("the messaging app is down")
 
     managed["protocol"].room_service.create_room = broken
@@ -623,9 +624,13 @@ def test_join_names_the_existing_rooms_to_add_the_agent_to():
 @pytest.mark.asyncio
 async def test_a_new_agent_joins_an_existing_room_or_the_run_is_refused(managed):
     added: list[tuple[str, list[str]]] = []
+    inviters: list[Inviter] = []
 
-    async def add_agents_to_room(room_id: str, agent_ids: list[str]) -> None:
+    async def add_agents_to_room(
+        room_id: str, agent_ids: list[str], *, invited_by: Inviter
+    ) -> None:
         added.append((room_id, agent_ids))
+        inviters.append(invited_by)
 
     managed["protocol"].room_service.add_agents_to_room = add_agents_to_room
     async with managed["session_factory"]() as session:
@@ -658,6 +663,8 @@ agent:
     result = await _as(managed["agent_id"], run_template, template_id=known)
     (created,) = result["created_agents"]
     assert added == [(lobby_id, [created["agent_id"]])]
+    # The person running the template is the one who brings its agent in.
+    assert inviters == [Inviter.user(managed["user_id"])]
 
 
 def test_a_provider_chain_takes_the_first_ready_on_the_machine():
@@ -746,9 +753,9 @@ async def test_the_rooms_wait_until_the_new_agents_are_listening(managed):
     order: list[str] = []
     names: dict[str, str] = {}
 
-    async def create_room(config: Any) -> Any:
+    async def create_room(config: Any, *, invited_by: Any) -> Any:
         order.append(f"room {config.name}")
-        return await original(config)
+        return await original(config, invited_by=invited_by)
 
     original = managed["protocol"].room_service.create_room
     managed["protocol"].room_service.create_room = create_room

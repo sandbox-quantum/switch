@@ -43,7 +43,7 @@ from switch_core.clients.admin_messages import (
 from switch_core.clients.mentions import mention_regex, strip_emphasis
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -348,40 +348,17 @@ class AddressingResolver:
             )
             return AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE)
 
-        if principal.kind == "platform" and principal.on_behalf_of is not None:
-            allowed = allows_on_behalf_of(
-                policy,
-                room_id=room_id,
-                group_id=group_id,
-                user_id=principal.on_behalf_of,
-                external_user_ids=await self.claimed_accounts(
-                    session, principal.on_behalf_of
-                ),
-                owner_user_id=agent.owner_id,
-            )
-        elif policy.is_open() and principal.kind != "platform":
-            allowed = True
-        else:
-            allowed = can_address(
-                policy,
-                room_id=room_id,
-                group_id=group_id,
-                sender_kind=principal.kind,
-                sender_id=principal.id,
-                sender_user_ids=principal.user_ids,
-                sender_owner_user_id=principal.owner_user_id,
-                owner_user_id=agent.owner_id,
-            )
-        if allowed:
+        if await principal_permitted(
+            session,
+            agent=agent,
+            principal=principal,
+            room_id=room_id,
+            group_id=group_id,
+            claimed_accounts=self.claimed_accounts,
+        ):
             return AddressingDecision(allowed=True, refusal="")
 
-        # An owner-scoped rule cannot match a human nobody has claimed, so the
-        # refusal says what to fix rather than implying a decision was made.
-        unclaimed = (
-            principal.kind == "user"
-            and not principal.user_ids
-            and policy.requires_owner_identity()
-        )
+        unclaimed = unclaimed_owner_refusal(agent, principal)
         if unclaimed:
             logger.warning(
                 "Addressing denied for %s: sender %s in room %s has not been "
@@ -434,39 +411,114 @@ class AddressingResolver:
         owner — and `owner_user_id` is who owns an agent sender, None for a
         human.
         """
-        client = await self._client_store.get_by_transport_user_id(
-            session, transport_user_id
+        return await resolve_sender(
+            session,
+            transport_user_id,
+            content,
+            client_store=self._client_store,
+            agent_store=self._agent_store,
+            external_user_store=self._external_user_store,
         )
-        if client is None:
-            return None
-        agent = await self._agent_store.get_by_client_id(session, client.id)
-        if agent is not None:
-            return SenderPrincipal("agent", agent.id, [], agent.owner_id)
-        external_user = await self._external_user_store.get_by_client_id(
-            session, client.id
-        )
-        if external_user is not None:
-            claimants = await self._external_user_store.claimant_ids(
-                session, external_user.id
-            )
-            return SenderPrincipal("user", external_user.id, claimants, None)
-        if client.type == MEMBER_CLIENT_TYPE and client.user_id is not None:
-            return SenderPrincipal("user", client.id, [client.user_id], None)
-        if client.type == "admin":
-            person = platform_on_behalf_of(content or {})
-            if person is not None and person.agent_id is not None:
-                # The message speaks for an agent, so the policy is asked what
-                # it would say to that agent. An agent that no longer exists
-                # leaves a bare platform message, which is denied by default.
-                speaker = await self._agent_store.get(session, person.agent_id)
-                if speaker is not None:
-                    return SenderPrincipal("agent", speaker.id, [], speaker.owner_id)
-                person = None
-            return SenderPrincipal(
-                "platform",
-                client.id,
-                [],
-                None,
-                on_behalf_of=person.user_id if person is not None else None,
-            )
+
+
+# ── Shared with room invites ──────────────────────────────────────────────────
+#
+# Who may invite an agent into a room is who may address it (see `invites`),
+# so both questions are answered by these two functions rather than by copies.
+
+
+async def resolve_sender(
+    session: AsyncSession,
+    transport_user_id: str,
+    content: Mapping[str, object] | None,
+    *,
+    client_store: ClientStore,
+    agent_store: AgentStore,
+    external_user_store: ExternalUserStore,
+) -> SenderPrincipal | None:
+    """The principal a policy is written about, for a sender's mxid.
+
+    See `AddressingResolver.resolve_sender`, which is this over its own stores.
+    """
+    client = await client_store.get_by_transport_user_id(session, transport_user_id)
+    if client is None:
         return None
+    agent = await agent_store.get_by_client_id(session, client.id)
+    if agent is not None:
+        return SenderPrincipal("agent", agent.id, [], agent.owner_id)
+    external_user = await external_user_store.get_by_client_id(session, client.id)
+    if external_user is not None:
+        claimants = await external_user_store.claimant_ids(session, external_user.id)
+        return SenderPrincipal("user", external_user.id, claimants, None)
+    if client.type == MEMBER_CLIENT_TYPE and client.user_id is not None:
+        return SenderPrincipal("user", client.id, [client.user_id], None)
+    if client.type == "admin":
+        person = platform_on_behalf_of(content or {})
+        if person is not None and person.agent_id is not None:
+            # The message speaks for an agent, so the policy is asked what
+            # it would say to that agent. An agent that no longer exists
+            # leaves a bare platform message, which is denied by default.
+            speaker = await agent_store.get(session, person.agent_id)
+            if speaker is not None:
+                return SenderPrincipal("agent", speaker.id, [], speaker.owner_id)
+            person = None
+        return SenderPrincipal(
+            "platform",
+            client.id,
+            [],
+            None,
+            on_behalf_of=person.user_id if person is not None else None,
+        )
+    return None
+
+
+async def principal_permitted(
+    session: AsyncSession,
+    *,
+    agent: Agent,
+    principal: SenderPrincipal,
+    room_id: str,
+    group_id: str | None,
+    claimed_accounts: Callable[[AsyncSession, str], Awaitable[list[str]]],
+) -> bool:
+    """Whether `principal` may address `agent` in this room (or group).
+
+    The platform acting for a person is judged as that person, with the
+    platform accounts they have claimed (`claimed_accounts`); anyone else by
+    the policy as written.
+    """
+    policy = parse_policy(agent.addressing_policy)
+    if principal.kind == "platform" and principal.on_behalf_of is not None:
+        return allows_on_behalf_of(
+            policy,
+            room_id=room_id,
+            group_id=group_id,
+            user_id=principal.on_behalf_of,
+            external_user_ids=await claimed_accounts(session, principal.on_behalf_of),
+            owner_user_id=agent.owner_id,
+        )
+    if policy.is_open() and principal.kind != "platform":
+        return True
+    return can_address(
+        policy,
+        room_id=room_id,
+        group_id=group_id,
+        sender_kind=principal.kind,
+        sender_id=principal.id,
+        sender_user_ids=principal.user_ids,
+        sender_owner_user_id=principal.owner_user_id,
+        owner_user_id=agent.owner_id,
+    )
+
+
+def unclaimed_owner_refusal(agent: Agent, principal: SenderPrincipal) -> bool:
+    """Whether a refusal is down to an unclaimed chat account.
+
+    An owner-scoped rule cannot match a human nobody has claimed, so the
+    refusal should say what to fix rather than imply a decision was made.
+    """
+    return (
+        principal.kind == "user"
+        and not principal.user_ids
+        and parse_policy(agent.addressing_policy).requires_owner_identity()
+    )

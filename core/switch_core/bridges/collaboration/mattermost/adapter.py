@@ -2444,6 +2444,9 @@ class MattermostAdapter(PlatformAdapter):
                         channel_id=channel_id,
                         channel_type=self._to_channel_type(mm_type),
                         agent_name=agent_name,
+                        # Found by listing the bot's channels: nothing says
+                        # who put it there.
+                        added_by_external_user_id=None,
                         channel_name=str(channel.get("display_name", "")) or None,
                     )
                 )
@@ -2908,6 +2911,8 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id=channel_id,
                     channel_type=channel_type,
                     agent_name=agent_name,
+                    # Mattermost's user_added event does not say who added them.
+                    added_by_external_user_id=None,
                     channel_name=channel_name,
                 )
             )
@@ -2935,6 +2940,8 @@ class MattermostAdapter(PlatformAdapter):
                 channel_type=channel_type,
                 external_user_id=user_id,
                 external_username=username,
+                # Mattermost's user_added event does not say who added them.
+                added_by_external_user_id=None,
                 channel_name=channel_name,
             )
         )

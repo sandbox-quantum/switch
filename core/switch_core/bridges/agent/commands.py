@@ -36,6 +36,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.invites import Inviter, InviteRefused
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -1106,10 +1107,17 @@ async def _cmd_invite(
     # runs this handler — the `room_service` reference lives on CommandConsumer.
     # Reuse `add_agents_to_room` (the same path as the `invite_agent_to_room`
     # MCP tool) so the agent is invited to the room AND added to any bridged
-    # channel.
-    await cast("CommandConsumer", client)._room_service.add_agents_to_room(
-        meta.room_id, agent_names=[target.name]
-    )
+    # channel, and the person who typed the command is judged by the agent's
+    # addressing policy like any other inviter.
+    try:
+        await cast("CommandConsumer", client)._room_service.add_agents_to_room(
+            meta.room_id,
+            agent_names=[target.name],
+            invited_by=Inviter.chat(event.user_id),
+        )
+    except InviteRefused as refused:
+        await _reply(client, room, event, str(refused))
+        return
     await _reply(
         client,
         room,

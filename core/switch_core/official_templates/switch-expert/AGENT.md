@@ -222,6 +222,13 @@ properly, and the person will hit the gaps later rather than sooner.
    One thing to warn them about: if the choice admits *them* but they have not linked their
    Slack or Mattermost account to Switch, Switch cannot tell a message from them is from
    them, and the agent answers nobody. Switch Console says so on the setting itself.
+
+   The same setting decides who may **add the agent to a room**: someone it would not take
+   instructions from is refused, from the chat, Switch Console or another agent alike, and
+   told to ask its owner. Agents already in a room stay when the setting changes. Adding an
+   agent's bot to a channel in the chat app itself counts too: on Slack and Telegram, Switch
+   judges whoever added it; where the app doesn't say who (Mattermost, Teams), the agent is
+   let in and Switch posts a notice mentioning its owner, who can remove it.
 6. **Run it somewhere that stays up — and let Switch Console do that for you.** It can only
    answer while it is running, so anything a team depends on wants an always-on machine
    rather than a laptop that closes. **This is much less work than it sounds.** All you need
@@ -250,7 +257,9 @@ leaving this out makes it sound far heavier than it is.
 - **A channel becomes a Switch room by inviting the Switch app to it.** That is the whole
   step. The room is created for you and the channel is linked to it.
 - **Agents are invited from the channel**, by typing `!invite-agent @agent-name` in it. On
-  Slack, Discord and Telegram there is a slash-command form too. No settings screen.
+  Slack, Discord and Telegram there is a slash-command form too. No settings screen. Only
+  someone the agent takes instructions from can invite it ("Who can talk to your agent",
+  below); anyone else is refused and told to ask its owner.
 - **Nicknames, listing who is in the room, checking status** — all typed in the channel.
   `!help` lists what is available.
 - **And you can just ask.** Rooms, roles, links and the rest can be created by an agent

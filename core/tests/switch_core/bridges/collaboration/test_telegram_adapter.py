@@ -589,6 +589,20 @@ def test_a_person_joining_is_reported_as_a_user_join() -> None:
     assert joins[0].external_user_id == "9"
     assert joins[0].external_username == "bob"
     assert joins[0].channel_id == str(CHAT_ID)
+    # Telegram sends the join from whoever added the member: alice (7).
+    assert joins[0].added_by_external_user_id == "7"
+
+
+def test_joining_by_link_is_added_by_nobody() -> None:
+    # A member who joins on their own sends the join themselves.
+    adapter = _adapter()
+    joins: list[Any] = []
+    adapter._on_user_joined = lambda j: _collect(joins, j)
+    bob = _FakeUser(user_id=9, username="bob")
+
+    _run(adapter._handle_message(_FakeInbound(new_chat_members=[bob], from_user=bob)))
+
+    assert joins[0].added_by_external_user_id is None
 
 
 def test_the_bot_being_added_provisions_the_room() -> None:

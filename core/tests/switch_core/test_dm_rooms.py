@@ -7,7 +7,9 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
+from switch_core.invites import InviteOutcome
 from switch_core.room_service import RoomCreateConfig, RoomService
+from tests.inviting import FIXTURE_INVITER
 
 # A DM room is a 1:1 "direct" room provisioned outbound onto a bridge (on Slack,
 # a private channel with the one user invited). It must have exactly one agent
@@ -123,6 +125,14 @@ class _FakeBridgeStore:
         )
 
 
+class _AdmittingGate:
+    """Admits every invite, so these tests exercise the DM path rather than
+    the invite check (test_invites.py covers that on a real database)."""
+
+    async def check(self, session: Any, **_: Any) -> InviteOutcome:
+        return InviteOutcome()
+
+
 def _dm_service(
     *, known_users: dict[str, str], channel_creation_enabled: bool = True
 ) -> tuple[RoomService, _FakeBridge]:
@@ -130,6 +140,7 @@ def _dm_service(
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._agent_store = _FakeAgentStore({"a1": "agent.bot"})  # type: ignore[assignment]
+    svc._invites = _AdmittingGate()  # type: ignore[assignment]
     svc._collab_lifecycle = _FakeLifecycle({"bridge-1": bridge})  # type: ignore[assignment]
     svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
         channel_creation_enabled=channel_creation_enabled
@@ -141,7 +152,10 @@ async def test_create_dm_room_fails_when_user_unknown_to_bridge() -> None:
     svc, bridge = _dm_service(known_users={})
 
     with pytest.raises(ValueError, match="no user 'ghost' is known"):
-        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["ghost"]))
+        await svc.create_room(
+            _dm_config(agent_ids=["a1"], user_names=["ghost"]),
+            invited_by=FIXTURE_INVITER,
+        )
 
     # We never tried to create a channel for an unreachable user.
     assert bridge.dm_calls == []
@@ -155,7 +169,10 @@ async def test_create_dm_room_refused_when_operator_withheld_channel_creation() 
     )
 
     with pytest.raises(ChannelCreationUnsupported, match="turned off"):
-        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["alice"]))
+        await svc.create_room(
+            _dm_config(agent_ids=["a1"], user_names=["alice"]),
+            invited_by=FIXTURE_INVITER,
+        )
 
     assert bridge.dm_calls == []
 

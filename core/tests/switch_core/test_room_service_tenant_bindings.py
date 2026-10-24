@@ -61,9 +61,11 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.invites import Inviter
 from switch_core.room_service import RoomService
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 from tests.ownership import NeverOwned
@@ -260,6 +262,7 @@ def _service(
     svc = object.__new__(RoomService)
     svc._session_factory = session_factory  # type: ignore[assignment]
     svc._room_store = store  # type: ignore[assignment]
+    svc._agent_store = AgentStore()  # type: ignore[assignment]
     svc._client_lifecycle = clients  # type: ignore[assignment]
     svc._provisioning = matrix  # type: ignore[assignment]
     svc._collab_lifecycle = None  # type: ignore[assignment]
@@ -312,8 +315,8 @@ async def _seed_client(
 
 async def _seed_agent(
     session: AsyncSession, *, tenant_id: str, agent_id: str, client_id: str
-) -> None:
-    """An agent and the user/key/client rows its foreign keys need."""
+) -> str:
+    """An agent and the user/key/client rows its foreign keys need; returns its owner."""
     user_id = str(uuid.uuid4())
     session.add(
         User(id=user_id, name=agent_id, email=f"{agent_id}@x.test", role="user")
@@ -352,6 +355,7 @@ async def _seed_agent(
             owner_id=user_id,
         )
     )
+    return user_id
 
 
 async def _client_room_rows(
@@ -648,7 +652,7 @@ class TestBindingsOnTheRoomsOwnTenant:
                 room_id="room-b",
                 transport_room_id="!b:switch.local",
             )
-            await _seed_agent(
+            owner = await _seed_agent(
                 session,
                 tenant_id=TENANT_B,
                 agent_id="agent-b",
@@ -667,7 +671,9 @@ class TestBindingsOnTheRoomsOwnTenant:
         )
 
         assert current_tenant_id() is None
-        await svc.add_agents_to_room("room-b", agent_ids=["agent-b"])
+        await svc.add_agents_to_room(
+            "room-b", agent_ids=["agent-b"], invited_by=Inviter.user(owner)
+        )
 
         assert store.tenants_for("add_agents") == [TENANT_B]
         assert store.tenants_for("add_client") == [TENANT_B]

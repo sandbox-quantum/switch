@@ -86,6 +86,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.invites import Inviter, InviteRefused
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1025,8 +1026,11 @@ class ChatService:
                                 if greeting is not None
                                 else None
                             ),
-                        )
+                        ),
+                        invited_by=Inviter.user(user.id),
                     )
+                except InviteRefused as exc:
+                    raise ChatError(403, "AGENT_NOT_ALLOWED", str(exc)) from exc
                 except ValueError as exc:
                     raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
                 room = created.room

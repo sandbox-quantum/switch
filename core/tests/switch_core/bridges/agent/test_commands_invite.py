@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.invites import Inviter, InviteRefused
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -16,15 +17,20 @@ class _Room(SimpleNamespace):
 
 
 def _build_client(
-    *, registry: dict[str, Any], room_agent_ids: list[str]
+    *,
+    registry: dict[str, Any],
+    room_agent_ids: list[str],
+    refuse: InviteRefused | None = None,
 ) -> tuple[SimpleNamespace, list[str], list[tuple[str, list[str]]]]:
     """A fake admin client capturing replies and add_agents_to_room calls.
 
     `registry` maps a lowercased agent name to its agent record (mirrors the
-    case-insensitive `get_by_name_insensitive` lookup).
+    case-insensitive `get_by_name_insensitive` lookup). With `refuse`, the
+    room service refuses the invite as an agent's addressing policy would.
     """
     posted: list[str] = []
     added: list[tuple[str, list[str]]] = []
+    inviters: list[Inviter] = []
 
     @asynccontextmanager
     async def _session_factory():  # type: ignore[no-untyped-def]
@@ -42,10 +48,14 @@ def _build_client(
     async def _get_agent_ids(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(room_agent_ids)
 
-    async def _add_agents_to_room(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
+    async def _add_agents_to_room(room_id, agent_names=None, *, invited_by, **_kw):  # type: ignore[no-untyped-def]
+        inviters.append(invited_by)
+        if refuse is not None:
+            raise refuse
         added.append((room_id, list(agent_names or [])))
 
     client = SimpleNamespace(
+        inviters=inviters,
         session_factory=_session_factory,
         _resolve_room_meta=_resolve_room_meta,
         reply_command=_reply_command,
@@ -56,8 +66,13 @@ def _build_client(
     return client, posted, added
 
 
+_SENDER = "@bo:switch.local"
+
+
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id=_SENDER
+    )
 
 
 def _agent(
@@ -98,6 +113,31 @@ class TestInviteCommand:
         )
         assert added == []
         assert "already in this room" in posted[0]
+
+    async def test_the_person_who_typed_it_is_the_inviter(self) -> None:
+        # Their chat identity is what the agent's addressing policy judges.
+        client, _posted, _added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[]
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert client.inviters == [Inviter.chat(_SENDER)]
+
+    async def test_a_refused_invite_says_why_and_adds_nothing(self) -> None:
+        refusal = InviteRefused(
+            _ALICE,  # type: ignore[arg-type]
+            "claude-code.alice can only be added to a room by someone it takes "
+            "instructions from. Ask its owner, Ada, to add it.",
+        )
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE}, room_agent_ids=[], refuse=refusal
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert posted == [str(refusal)]
 
     async def test_missing_target_shows_usage(self) -> None:
         client, posted, added = _build_client(registry={}, room_agent_ids=[])
@@ -169,3 +209,8 @@ class TestInviteCommandRegistration:
         # reference).
         cmd = COMMANDS_BY_NAME["invite-agent"]
         assert cmd.admin_owned is True
+
+    def test_the_slash_command_runs_the_same_handler(self) -> None:
+        # `/invite-agent` on Slack, Discord, Teams and Telegram is this same
+        # command, so it is refused exactly as `!invite-agent` is.
+        assert COMMANDS_BY_NAME["invite-agent"].handler is _cmd_invite
