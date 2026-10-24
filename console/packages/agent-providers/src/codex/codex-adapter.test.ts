@@ -7,7 +7,8 @@ import type { ProviderRuntimeEvent, ProviderRuntimeEventType } from '../events';
 import { FakeAppServer, type FakeJsonRpcMessage } from './fake-app-server';
 
 const servers: FakeAppServer[] = [];
-let authenticated = true;
+let account: Record<string, unknown> | null = { type: 'apiKey' };
+let requiresOpenaiAuth = true;
 
 vi.mock('node:child_process', () => ({
   spawn: (_command: string, args: string[]) => {
@@ -15,8 +16,8 @@ vi.mock('node:child_process', () => ({
     Object.assign(server, { spawnArgs: args });
     server.replyAlways('initialize', () => ({ userAgent: 'fake' }));
     server.replyAlways('account/read', () => ({
-      account: authenticated ? { type: 'apiKey' } : null,
-      requiresOpenaiAuth: true,
+      account,
+      requiresOpenaiAuth,
     }));
     server.replyAlways('thread/start', () => ({ thread: { id: 'thread-1' } }));
     servers.push(server);
@@ -24,7 +25,7 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-const { createCodexAdapter } = await import('./codex-adapter');
+const { CODEX_SIGN_IN_REQUIRED, createCodexAdapter } = await import('./codex-adapter');
 
 const THREAD = 'thread-1';
 
@@ -61,7 +62,8 @@ function turnNotification(id: string, status: string) {
 describe('CodexAdapter', () => {
   beforeEach(() => {
     servers.length = 0;
-    authenticated = true;
+    account = { type: 'apiKey' };
+    requiresOpenaiAuth = true;
   });
 
   it('checks authentication on the session process before opening a thread', async () => {
@@ -74,9 +76,68 @@ describe('CodexAdapter', () => {
   });
 
   it('rejects signed-out startup without opening a thread', async () => {
-    authenticated = false;
+    account = null;
     await expect(start()).rejects.toThrow('codex login');
     expect(servers[0].received.some((m) => m.method === 'thread/start')).toBe(false);
+  });
+
+  it('explains that an isolated session cannot use a keyring login, and the file workaround', async () => {
+    account = null;
+    const exited = vi.fn();
+    const failed = start();
+    servers.at(-1)?.on('exit', exited);
+    const error = await failed.catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toContain(CODEX_SIGN_IN_REQUIRED);
+    expect(message).toContain('does not copy keyring entries');
+    expect(message).toContain('cli_auth_credentials_store = "file"');
+    expect(message).toContain('start a new Switch session');
+    expect(message).toContain('plaintext in auth.json');
+    expect(servers).toHaveLength(1);
+    expect(servers[0].received.map((m) => m.method)).toEqual([
+      'initialize',
+      'initialized',
+      'account/read',
+    ]);
+    expect(exited).toHaveBeenCalled();
+  });
+
+  it('keeps the diagnostic static, with nothing from the session environment in it', async () => {
+    account = null;
+    const marker = 'placeholder-secret-marker';
+    const adapter = createCodexAdapter();
+    const failure = adapter.startSession({
+      sessionId: 'session-1',
+      cwd: `/work/${marker}`,
+      runtimeMode: 'full-access',
+      env: { PATH: '/usr/bin', CODEX_HOME: `/home/${marker}`, OPENAI_API_KEY: marker },
+      mcpServers: {},
+      connectorMcpServers: [],
+    });
+    await expect(failure).rejects.toThrow(CODEX_SIGN_IN_REQUIRED);
+    await expect(failure).rejects.not.toThrow(marker);
+    await expect(adapter.interruptTurn('session-1')).rejects.toThrow(/unknown or stopped session/);
+  });
+
+  it('starts with a recognized login even when the backend requires OpenAI sign-in', async () => {
+    for (const recognized of [
+      { type: 'apiKey' },
+      { type: 'chatgpt', email: null, planType: null },
+    ]) {
+      account = recognized;
+      const { adapter, session } = await start();
+      expect(session.nativeSessionId).toBe(THREAD);
+      await adapter.stopAll();
+    }
+  });
+
+  it('starts without a login when the backend does not require OpenAI sign-in', async () => {
+    account = null;
+    requiresOpenaiAuth = false;
+    const { adapter, session } = await start();
+    expect(session.nativeSessionId).toBe(THREAD);
+    await adapter.stopAll();
   });
 
   it('initializes, opens a thread and reports the thread id as the native session', async () => {
