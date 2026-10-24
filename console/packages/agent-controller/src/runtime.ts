@@ -1,10 +1,9 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rm, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { promisify } from 'node:util';
 import {
   bundleIdentity,
   clearTakenOver,
@@ -42,8 +41,6 @@ import { errorMessage, type Logger } from './log';
 import { agentWorkspace, type DataLayout } from './paths';
 import type { Isolation, Provider } from './schemas';
 import type { GivenLogin } from './sealed-logins';
-
-const execute = promisify(execFile);
 
 /** What is on disk and alive for one agent's agent host. */
 export type AgentObservation = {
@@ -183,13 +180,34 @@ export async function probeProvider(
   cwd: string,
   env: NodeJS.ProcessEnv
 ): Promise<ProviderReadiness> {
-  const { stdout } = await execute(
-    process.execPath,
-    [bundlePath, '--probe', provider, cwd, binaryPath],
-    { timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024, env, windowsHide: true }
-  );
-  const line = stdout.trim().split('\n').at(-1) ?? '';
-  return providerReadinessSchema.parse(JSON.parse(line));
+  let child: ChildProcess | undefined;
+  try {
+    const promise = new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      child = execFile(
+        process.execPath,
+        [bundlePath, '--probe', provider, cwd, binaryPath],
+        {
+          timeout: PROBE_TIMEOUT_MS,
+          maxBuffer: 4 * 1024 * 1024,
+          env,
+          windowsHide: true,
+          encoding: 'utf8',
+        },
+        (error, stdout, stderr) => {
+          if (error) reject(error);
+          else resolve({ stdout: stdout ?? '', stderr: stderr ?? '' });
+        }
+      );
+    });
+    const { stdout } = await promise;
+    const line = stdout.trim().split('\n').at(-1) ?? '';
+    return providerReadinessSchema.parse(JSON.parse(line));
+  } catch (error) {
+    if (child?.pid) {
+      await killProcessTree(child.pid).catch(() => {});
+    }
+    throw error;
+  }
 }
 /** What an agent host's credentials file holds; see `readSharedCredentials`. */
 export function relayCredentialsBody(agentId: string, credentials: RelayCredentials): string {

@@ -146,7 +146,10 @@ export function commandLineNames(commandLine: string, root: string): boolean {
  * walks the tree instead. For a process that would not stop when asked;
  * there is no grace here.
  */
-export async function killProcessTree(pid: number): Promise<void> {
+export async function killProcessTree(
+  pid: number,
+  signal: NodeJS.Signals = 'SIGKILL'
+): Promise<void> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid process to kill.');
   if (process.platform === 'win32') {
     const processes = await listWindowsProcesses();
@@ -154,24 +157,44 @@ export async function killProcessTree(pid: number): Promise<void> {
     for (const target of doomed) terminate(target);
     return;
   }
-  const { stdout } = await execute('ps', ['-A', '-o', 'pid=,ppid=']);
+  const { stdout } = await execute('ps', ['-A', '-o', 'pid=,ppid=,pgid=']);
   const children = new Map<number, number[]>();
+  const inGroup = new Set<number>();
   for (const line of stdout.split('\n')) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    const parts = line.trim().split(/\s+/).map(Number);
+    if (parts.length < 2) continue;
+    const [child, parent, pgid] = parts;
     if (!child || parent === undefined || Number.isNaN(parent)) continue;
     children.set(parent, [...(children.get(parent) ?? []), child]);
+    if (pgid === pid && child !== pid) {
+      inGroup.add(child);
+    }
   }
   const doomed: number[] = [];
+  const seen = new Set<number>();
   const visit = (next: number) => {
-    doomed.push(next);
+    if (seen.has(next)) return;
+    seen.add(next);
     for (const child of children.get(next) ?? []) visit(child);
+    doomed.push(next);
   };
   visit(pid);
+  for (const groupChild of inGroup) {
+    visit(groupChild);
+  }
   for (const target of doomed) {
     try {
-      process.kill(target, 'SIGKILL');
+      process.kill(target, signal);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  }
+  if (inGroup.size > 0) {
+    try {
+      process.kill(-pid, signal);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ESRCH' && code !== 'EPERM') throw error;
     }
   }
 }

@@ -30,6 +30,31 @@ describe.skipIf(process.platform === 'win32')('on macOS and Linux', () => {
       join(dir, 'bin-tool')
     );
   });
+
+  it('stops a wrapper script CLI and the process it runs, not just the shell wrapper', async () => {
+    const jsPath = join(dir, 'long-running.js');
+    writeFileSync(jsPath, 'console.log(process.pid); setInterval(() => {}, 1000);');
+    const shPath = join(dir, 'tool-wrapper');
+    writeFileSync(shPath, `#!/bin/sh\n"${process.execPath}" "${jsPath}" "$@"\n`);
+    chmodSync(shPath, 0o755);
+
+    const child = spawnProvider(shPath, [], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const [line] = await once(child.stdout!, 'data');
+    const node = Number(String(line).trim());
+    const exited = once(child, 'exit');
+    stopProvider(child, 'SIGTERM');
+    await exited;
+    for (let waited = 0; waited < 10_000; waited += 200) {
+      try {
+        process.kill(node, 0);
+      } catch {
+        return;
+      }
+      await delay(200);
+    }
+    process.kill(node);
+    throw new Error('The CLI behind the shell wrapper was left running.');
+  }, 60_000);
 });
 
 /** A `.cmd` CLI like npm's shims: it runs node on a script beside it with its arguments. */
