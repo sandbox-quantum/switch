@@ -107,6 +107,15 @@ import {
 } from './status';
 import { ControllerStore } from './store';
 import { SystemdRuntime, systemctl } from './systemd-runtime';
+import {
+  createColors,
+  formatKeyValue,
+  formatProcessStatus,
+  formatSection,
+  formatTable,
+  isColorSupported,
+  reasonFix,
+} from './terminal';
 import { installPrefix, isNewer, latestRelease, releasesRepository } from './update';
 
 export const VERSION: string = packageJson.version;
@@ -120,10 +129,55 @@ const USAGE = `Usage: switch-agent-controller <command> [options]
 
 Commands:
   enroll --server <agent-bridge-url> --code <code> [--name <name>]
-      [--description <text>] [--data-dir <dir>]
+      [--description <text>] [--data-dir <dir>] [--secret-store <kind>]
       Enroll this machine with a one-time code from Switch. --name defaults to
       the host name; --description says what the machine is for (optional,
       at most 500 characters, editable later in the gateway).
+
+  status [--data-dir <dir>] [--shared-host-bundle <path>] [--json]
+      Show this controller's identity and its agents, from local state only.
+      With --json, outputs the status as a structured JSON object.
+
+  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>] [--json]
+      Check this machine can run agents: Node, enrollment, the credential, the
+      server, the provider CLIs and their sign-in, the service, and updates.
+      With --json, outputs results as a structured JSON object.
+
+  update [--check] [--data-dir <dir>]
+      Install the newest release with npm, and restart the service if it runs.
+      --check only says whether there is one.
+
+  install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
+      Run this controller as a service of this user: a systemd user unit on
+      Linux, a launchd agent on macOS. It starts now and again at each login
+      (at boot too, on Linux with lingering on), and restarts after an error
+      that may pass. It keeps the PATH of the shell that installed it. It
+      runs the controller through <data dir>/releases/current, where it
+      installs the releases Switch names and keeps the one before.
+
+  uninstall-service [--data-dir <dir>]
+      Stop the service and remove it, and the releases it installed. The
+      enrollment and data are kept.
+
+  install-service --separate-users [--user <name>] [--data-dir <dir>]
+      [--env-file <path>] [--agents-dir <dir>] [--agent-users <n>] [--no-block]
+      [--releases-dir <dir>]
+      As root, once (Linux with systemd and polkit): run every agent as a
+      Linux user of its own, seeing only its own directory. Makes <n> agent
+      users (default 16), a unit template for them, a polkit rule that lets
+      the controller start only those units, and runs the controller as a
+      system service of --user (default: the user who ran sudo). Node and the
+      controller must be installed system-wide. Run it again to change it.
+      --no-block queues the controller's start rather than waiting for it,
+      for a service the controller's unit is ordered after. --releases-dir
+      (default /var/lib/switch-agent-controller-<uid>/releases) is where the
+      controller installs the releases Switch names; the units run it
+      through <dir>/current.
+
+  uninstall-service --separate-users [--user <name>]
+      As root: stop the controller and its agents, and remove what the setup
+      made. The agents' directories are kept.
+
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin] [--agent-runtime default|separate-user]
@@ -141,48 +195,21 @@ Commands:
       runs on an SSH host, says Console updates it: it follows no release
       Switch names, and tells Switch so. --provider-seed <file> takes the
       provider checks precheck wrote, so the first report carries them.
-  precheck --out <file> --probe-dir <dir> [--shared-host-bundle <path>]
-      Check every provider's installation and sign-in as run would, with no
-      enrollment, writing the results to <file> as each comes back.
+
   set-info [--name <name>] [--description <text>] [--data-dir <dir>]
       Rename this machine and/or change its description on the server, with
       this controller's own credential. Either or both; --description ""
       clears the description. The same limits as at enrollment.
-  status [--data-dir <dir>] [--shared-host-bundle <path>]
-      Show this controller's identity and its agents, from local state only.
-  install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
-      Run this controller as a service of this user: a systemd user unit on
-      Linux, a launchd agent on macOS. It starts now and again at each login
-      (at boot too, on Linux with lingering on), and restarts after an error
-      that may pass. It keeps the PATH of the shell that installed it. It
-      runs the controller through <data dir>/releases/current, where it
-      installs the releases Switch names and keeps the one before.
-  uninstall-service [--data-dir <dir>]
-      Stop the service and remove it, and the releases it installed. The
-      enrollment and data are kept.
-  install-service --separate-users [--user <name>] [--data-dir <dir>]
-      [--env-file <path>] [--agents-dir <dir>] [--agent-users <n>] [--no-block]
-      [--releases-dir <dir>]
-      As root, once (Linux with systemd and polkit): run every agent as a
-      Linux user of its own, seeing only its own directory. Makes <n> agent
-      users (default 16), a unit template for them, a polkit rule that lets
-      the controller start only those units, and runs the controller as a
-      system service of --user (default: the user who ran sudo). Node and the
-      controller must be installed system-wide. Run it again to change it.
-      --no-block queues the controller's start rather than waiting for it,
-      for a service the controller's unit is ordered after. --releases-dir
-      (default /var/lib/switch-agent-controller-<uid>/releases) is where the
-      controller installs the releases Switch names; the units run it
-      through <dir>/current.
-  uninstall-service --separate-users [--user <name>]
-      As root: stop the controller and its agents, and remove what the setup
-      made. The agents' directories are kept.
-  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>]
-      Check this machine can run agents: Node, enrollment, the credential, the
-      server, the provider CLIs and their sign-in, the service, and updates.
-  update [--check] [--data-dir <dir>]
-      Install the newest release with npm, and restart the service if it runs.
-      --check only says whether there is one.
+
+  precheck --out <file> --probe-dir <dir> [--shared-host-bundle <path>]
+      Check every provider's installation and sign-in as run would, with no
+      enrollment, writing the results to <file> as each comes back.
+
+Options:
+  -h, --help     Show this help text
+  --version      Show version
+  --protocol     Show protocol version
+  --json         Format status and doctor outputs as JSON for scripting
 
 When Switch names a release for this controller, run installs it once no
 session runs and exits 7 for its service to start it again on it.
@@ -293,11 +320,37 @@ async function enrollCommand(args: string[]): Promise<number> {
       name,
       enrolledAt: new Date().toISOString(),
     });
-    process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
-    );
+    const useColor = isColorSupported();
+    const colors = createColors(useColor);
+    const checkMark = useColor ? colors.green('✔') : 'ok';
+    const bullet = useColor ? colors.gray('•') : '*';
+    const dataDirFlag = values['data-dir'] ? ` --data-dir ${dataDir}` : '';
+    const lines = [
+      `${checkMark} Enrolled controller successfully`,
+      '',
+      formatKeyValue(
+        [
+          ['Controller ID', enrolled.controller_id],
+          ['Name', name],
+          ['Server', server],
+          ['Data directory', dataDir],
+        ],
+        { indent: '  ', color: useColor }
+      ),
+      '',
+      useColor ? colors.bold('Next steps:') : 'Next steps:',
+      `  ${bullet} Run as a service:`,
+      `      switch-agent-controller install-service${dataDirFlag}`,
+      `  ${bullet} Or run in this terminal:`,
+      `      switch-agent-controller run${dataDirFlag}`,
+      '',
+    ];
+    process.stdout.write(lines.join('\n'));
     const warning = secrets.startupWarning();
-    if (warning) process.stderr.write(`Warning: ${warning}\n`);
+    if (warning) {
+      const warnMark = useColor ? colors.yellow('▲ Warning:') : 'Warning:';
+      process.stderr.write(`${warnMark} ${warning}\n`);
+    }
     return EXIT_OK;
   } finally {
     store.close();
@@ -672,7 +725,11 @@ async function runCommand(args: string[]): Promise<number> {
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+      json: { type: 'boolean' },
+    },
     strict: true,
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
@@ -688,77 +745,301 @@ async function statusCommand(args: string[]): Promise<number> {
           now: Date.now,
         })
       : null;
-    const out: string[] = [`Data directory: ${dataDir}`];
-    if (separateUsers)
-      out.push(
-        `Agents:         each as a user of its own, in ${separateUsers.agentsDir} (${separateUserNames(separateUsers.uid).controllerUnit})`
-      );
     const identity = store.identity();
+    const revokedAt = store.revokedAt();
+    let credential: string | null = null;
+    try {
+      credential = await secrets.get(CONTROLLER_CREDENTIAL);
+    } catch {
+      credential = null;
+    }
+    const relayPort = store.relayPort();
+    const cached = store.cachedAssignment();
+
+    type MappedAgentInfo = {
+      agent_id: string;
+      name: string;
+      provider: string;
+      desired_state: string;
+      revision: number;
+      applied_revision: number | null;
+      process: string;
+      reason: string | null;
+      detail: string | null;
+      unreadable: string | null;
+      active_sessions: number;
+      workspace_dir: string | null;
+    };
+
+    const mappedAgents: MappedAgentInfo[] = [];
+    if (cached.kind === 'saved') {
+      for (const entry of cached.assignment.agents) {
+        const row = store.agent(entry.agent_id);
+        let observation = emptyObservation();
+        let unreadable: string | null = null;
+        if (!definitionProblem(entry)) {
+          if (separateRuntime)
+            observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
+              unreadable = errorMessage(error);
+              return emptyObservation();
+            });
+          else observation = await observeOnDisk(layout, entry.agent_id);
+        }
+        // Whether events flow is the running controller's to know; this reads only disk.
+        const mapped = mapAgentProcess({
+          assignment: entry,
+          row,
+          observation,
+          relayAttached: false,
+          nowMs: Date.now(),
+        });
+        const health = observation.alive && observation.health?.current ? observation.health : null;
+        const activeSessions = health ? Object.keys(health.placements).length : 0;
+        mappedAgents.push({
+          agent_id: entry.agent_id,
+          name: entry.definition.name,
+          provider: entry.definition.provider,
+          desired_state: entry.desired_state,
+          revision: entry.revision,
+          applied_revision: row?.appliedRevision ?? null,
+          process: mapped.process,
+          reason: mapped.reason ?? null,
+          detail: mapped.detail ?? null,
+          unreadable,
+          active_sessions: activeSessions,
+          workspace_dir: observation.configured?.cwd ?? null,
+        });
+      }
+    }
+
+    if (values.json) {
+      if (!identity) {
+        process.stdout.write(
+          `${JSON.stringify(
+            {
+              enrolled: false,
+              data_dir: dataDir,
+              agents_runtime: separateUsers
+                ? {
+                    agents_dir: separateUsers.agentsDir,
+                    controller_unit: separateUserNames(separateUsers.uid).controllerUnit,
+                  }
+                : null,
+            },
+            null,
+            2
+          )}\n`
+        );
+        return 1;
+      }
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            enrolled: true,
+            data_dir: dataDir,
+            controller: {
+              id: identity.controllerId,
+              name: identity.name,
+              server: identity.server,
+              enrolled_at: identity.enrolledAt,
+              secret_store: secrets.description,
+              relay_port: relayPort,
+              revoked_at: revokedAt,
+              has_credential: Boolean(credential),
+            },
+            agents_runtime: separateUsers
+              ? {
+                  agents_dir: separateUsers.agentsDir,
+                  controller_unit: separateUserNames(separateUsers.uid).controllerUnit,
+                }
+              : null,
+            assignment:
+              cached.kind === 'saved'
+                ? {
+                    revision: cached.assignment.revision,
+                    agents: mappedAgents,
+                  }
+                : {
+                    status: cached.kind,
+                    detail: cached.kind === 'unreadable' ? cached.detail : null,
+                  },
+          },
+          null,
+          2
+        )}\n`
+      );
+      return 0;
+    }
+
+    const useColor = isColorSupported();
+    const colors = createColors(useColor);
+    const sections: string[] = [];
+
+    const controllerRows: [string, string][] = [];
     if (!identity) {
-      out.push('Not enrolled.');
-      process.stdout.write(`${out.join('\n')}\n`);
+      controllerRows.push(
+        ['Status', useColor ? `${colors.red('✖ Not enrolled')}` : 'Not enrolled'],
+        ['Data directory', dataDir]
+      );
+      if (separateUsers) {
+        controllerRows.push([
+          'Agents runtime',
+          `each as user in ${separateUsers.agentsDir} (${separateUserNames(separateUsers.uid).controllerUnit})`,
+        ]);
+      }
+      sections.push(
+        formatSection('MACHINE & CONTROLLER', { color: useColor }),
+        formatKeyValue(controllerRows, { indent: '  ', color: useColor }),
+        '',
+        useColor
+          ? `${colors.red('✖ Problem:')} This controller is not enrolled.`
+          : 'Problem: This controller is not enrolled.',
+        useColor
+          ? `${colors.cyan('  Fix:')} Run: switch-agent-controller enroll --server <agent-bridge-url> --code <code>`
+          : '  Fix: Run: switch-agent-controller enroll --server <agent-bridge-url> --code <code>'
+      );
+      process.stdout.write(`${sections.join('\n')}\n`);
       return 1;
     }
-    out.push(
-      `Controller:     ${identity.controllerId} ("${identity.name}")`,
-      `Server:         ${identity.server}`,
-      `Enrolled at:    ${identity.enrolledAt}`,
-      `Secret store:   ${secrets.description}`
+
+    const enrolledStatus = revokedAt
+      ? useColor
+        ? `${colors.red('✖ Revoked')} (at ${revokedAt})`
+        : `Revoked (at ${revokedAt})`
+      : useColor
+        ? `${colors.green('✔ Enrolled')}`
+        : 'Enrolled';
+
+    controllerRows.push(
+      ['Status', enrolledStatus],
+      ['Controller ID', identity.controllerId],
+      ['Name', identity.name],
+      ['Server', identity.server],
+      ['Enrolled at', identity.enrolledAt],
+      ['Secret store', secrets.description],
+      [
+        'Relay',
+        relayPort === null
+          ? 'never started'
+          : `http://127.0.0.1:${relayPort} (where agents were last pointed)`,
+      ],
+      ['Data directory', dataDir]
     );
-    const relayPort = store.relayPort();
-    out.push(
-      `Relay:          ${relayPort === null ? 'never started' : `http://127.0.0.1:${relayPort} (where agents were last pointed)`}`
-    );
-    const revokedAt = store.revokedAt();
-    if (revokedAt) out.push(`Revoked at:     ${revokedAt}`);
-    else if (!(await secrets.get(CONTROLLER_CREDENTIAL)))
-      out.push('Credential:     not in this data directory (missing, or handed over at run time)');
-    const cached = store.cachedAssignment();
-    if (cached.kind === 'none') {
-      out.push('Assignment:     not pulled yet');
-      process.stdout.write(`${out.join('\n')}\n`);
-      return 0;
+
+    if (separateUsers) {
+      controllerRows.push([
+        'Agents runtime',
+        `each as user in ${separateUsers.agentsDir} (${separateUserNames(separateUsers.uid).controllerUnit})`,
+      ]);
     }
-    if (cached.kind === 'unreadable') {
-      out.push(
-        `Assignment:     saved by an earlier version and not readable by this one (${cached.detail}); pulled again when the controller next runs`
-      );
-      process.stdout.write(`${out.join('\n')}\n`);
-      return 0;
+
+    if (!revokedAt && !credential) {
+      controllerRows.push([
+        'Credential',
+        useColor
+          ? `${colors.yellow('▲ Not in this data directory')} (missing, or handed over at run time)`
+          : 'Not in this data directory (missing, or handed over at run time)',
+      ]);
     }
-    out.push(
-      `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
+
+    sections.push(
+      formatSection('MACHINE & CONTROLLER', { color: useColor }),
+      formatKeyValue(controllerRows, { indent: '  ', color: useColor })
     );
-    for (const entry of cached.assignment.agents) {
-      const row = store.agent(entry.agent_id);
-      let observation = emptyObservation();
-      let unreadable: string | null = null;
-      if (!definitionProblem(entry)) {
-        if (separateRuntime)
-          observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
-            unreadable = errorMessage(error);
-            return emptyObservation();
-          });
-        else observation = await observeOnDisk(layout, entry.agent_id);
-      }
-      // Whether events flow is the running controller's to know; this reads only disk.
-      const mapped = mapAgentProcess({
-        assignment: entry,
-        row,
-        observation,
-        relayAttached: false,
-        nowMs: Date.now(),
-      });
-      out.push(
+
+    if (revokedAt) {
+      sections.push(
         '',
-        `  ${entry.definition.name} (${entry.agent_id})`,
-        `    provider ${entry.definition.provider}, desired ${entry.desired_state}, revision ${entry.revision}, applied ${row?.appliedRevision ?? 'never'}`,
-        unreadable && separateUsers
-          ? `    ${await unitSummary(separateUsers, store.agentUser(entry.agent_id))}; the rest needs the agents' group (${unreadable})`
-          : `    ${mapped.process}${mapped.reason ? ` [${mapped.reason}]` : ''}${mapped.detail ? `: ${mapped.detail}` : ''}`
+        useColor
+          ? `${colors.red('✖ Problem:')} Controller ${identity.controllerId} was revoked.`
+          : `Problem: Controller ${identity.controllerId} was revoked.`,
+        useColor
+          ? `${colors.cyan('  Fix:')} Re-enroll this machine with a new code from the Machines page in Switch.`
+          : '  Fix: Re-enroll this machine with a new code from the Machines page in Switch.'
       );
     }
-    process.stdout.write(`${out.join('\n')}\n`);
+
+    sections.push('', formatSection('ASSIGNMENT', { color: useColor }));
+    if (cached.kind === 'none') {
+      sections.push('  Not pulled yet');
+    } else if (cached.kind === 'unreadable') {
+      sections.push(
+        `  ${useColor ? colors.yellow('▲ Unreadable:') : 'Unreadable:'} saved by an earlier version and not readable by this one (${cached.detail}); pulled again when the controller next runs`
+      );
+    } else {
+      sections.push(
+        `  Revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
+      );
+
+      if (mappedAgents.length > 0) {
+        sections.push('', formatSection('AGENTS', { color: useColor }));
+        const headers = ['NAME', 'ID', 'PROVIDER', 'DESIRED', 'STATUS', 'SESSIONS', 'APPLIED'];
+        const tableRows: string[][] = [];
+        const agentProblems: {
+          agentId: string;
+          name: string;
+          problem: string;
+          fix: string | null;
+        }[] = [];
+
+        for (const a of mappedAgents) {
+          const statusText =
+            a.unreadable && separateUsers
+              ? useColor
+                ? colors.yellow('▲ unreadable')
+                : 'unreadable'
+              : formatProcessStatus(a.process, useColor);
+
+          tableRows.push([
+            a.name,
+            a.agent_id,
+            a.provider,
+            a.desired_state,
+            statusText,
+            String(a.active_sessions),
+            a.applied_revision !== null ? String(a.applied_revision) : 'never',
+          ]);
+
+          if (a.unreadable && separateUsers) {
+            const unit = await unitSummary(separateUsers, store.agentUser(a.agent_id));
+            agentProblems.push({
+              agentId: a.agent_id,
+              name: a.name,
+              problem: `${unit}; needs the agents' group (${a.unreadable})`,
+              fix: 'Ensure this user has permissions for the agent users group.',
+            });
+          } else if (a.reason || (a.process !== 'running' && a.desired_state === 'running')) {
+            const problem = a.detail
+              ? a.reason
+                ? `[${a.reason}] ${a.detail}`
+                : a.detail
+              : (a.reason ?? `Agent process is ${a.process}`);
+            agentProblems.push({
+              agentId: a.agent_id,
+              name: a.name,
+              problem,
+              fix: reasonFix(a.reason ?? undefined, a.detail ?? undefined),
+            });
+          }
+        }
+
+        sections.push(formatTable(headers, tableRows, { indent: '  ', color: useColor }));
+
+        if (agentProblems.length > 0) {
+          sections.push('');
+          for (const prob of agentProblems) {
+            const prefix = useColor ? colors.yellow('  ▲') : '  *';
+            sections.push(`${prefix} ${prob.name} (${prob.agentId}): ${prob.problem}`);
+            if (prob.fix) {
+              const fixPrefix = useColor ? colors.cyan('    Fix:') : '    Fix:';
+              sections.push(`${fixPrefix} ${prob.fix}`);
+            }
+          }
+        }
+      }
+    }
+
+    process.stdout.write(`${sections.join('\n')}\n`);
     return 0;
   } finally {
     store.close();
@@ -911,8 +1192,17 @@ async function installServiceCommand(args: string[]): Promise<number> {
     },
     runSecretCommand
   );
+  const useColor = isColorSupported();
+  const colors = createColors(useColor);
+  const okMark = useColor ? colors.green('✔') : 'ok';
+  const bullet = useColor ? colors.gray('•') : '*';
   process.stdout.write(
-    [`Installed and started: ${report.file}`, ...report.notes, releasesNote, ''].join('\n')
+    [
+      `${okMark} Service installed and started: ${report.file}`,
+      ...report.notes.map((n) => `  ${bullet} ${n}`),
+      `  ${bullet} ${releasesNote}`,
+      '',
+    ].join('\n')
   );
   return EXIT_OK;
 }
@@ -978,7 +1268,17 @@ async function installSeparateUsersCommand(values: {
     },
     runSecretCommand
   );
-  process.stdout.write(['Agents now run as users of their own.', ...report.notes, ''].join('\n'));
+  const useColor = isColorSupported();
+  const colors = createColors(useColor);
+  const okMark = useColor ? colors.green('✔') : 'ok';
+  const bullet = useColor ? colors.gray('•') : '*';
+  process.stdout.write(
+    [
+      `${okMark} Agents now run as users of their own.`,
+      ...report.notes.map((n) => `  ${bullet} ${n}`),
+      '',
+    ].join('\n')
+  );
   return EXIT_OK;
 }
 
@@ -999,8 +1299,16 @@ async function uninstallServiceCommand(args: string[]): Promise<number> {
         'uninstall-service --separate-users needs --user <name> when not run through sudo.'
       );
     const report = await uninstallSeparateUsers(user, runSecretCommand);
+    const useColor = isColorSupported();
+    const colors = createColors(useColor);
+    const okMark = useColor ? colors.green('✔') : 'ok';
+    const bullet = useColor ? colors.gray('•') : '*';
     process.stdout.write(
-      ['Removed the setup for agents as users of their own.', ...report.notes, ''].join('\n')
+      [
+        `${okMark} Removed the setup for agents as users of their own.`,
+        ...report.notes.map((n) => `  ${bullet} ${n}`),
+        '',
+      ].join('\n')
     );
     return EXIT_OK;
   }
@@ -1011,11 +1319,17 @@ async function uninstallServiceCommand(args: string[]): Promise<number> {
   const releasesDir = serviceReleasesDir(dataDir);
   const current = await readCurrent(releasesDir);
   if (current.kind !== 'missing') await rm(releasesDir, { recursive: true, force: true });
+  const useColor = isColorSupported();
+  const colors = createColors(useColor);
+  const okMark = useColor ? colors.green('✔') : 'ok';
+  const bullet = useColor ? colors.gray('•') : '*';
   process.stdout.write(
     [
-      removed ? 'Stopped and removed the service.' : 'No service was installed.',
+      removed
+        ? `${okMark} Stopped and removed the service.`
+        : `${bullet} No service was installed.`,
       ...(current.kind !== 'missing'
-        ? [`Removed the releases it installed for itself, in ${releasesDir}.`]
+        ? [`  ${bullet} Removed the releases it installed for itself, in ${releasesDir}.`]
         : []),
       '',
     ].join('\n')
@@ -1030,6 +1344,7 @@ async function doctorCommand(args: string[]): Promise<number> {
       'data-dir': { type: 'string' },
       'shared-host-bundle': { type: 'string' },
       'env-file': { type: 'string' },
+      json: { type: 'boolean' },
     },
     strict: true,
   });
@@ -1078,7 +1393,29 @@ async function doctorCommand(args: string[]): Promise<number> {
       },
       latest: () => latestRelease(fetch, releasesRepository(process.env)),
     });
-    process.stdout.write(`${formatChecks(checks)}\n`);
+    if (values.json) {
+      const failures = checks.filter((c) => c.status === 'fail').length;
+      const warnings = checks.filter((c) => c.status === 'warn').length;
+      const passed = checks.filter((c) => c.status === 'ok').length;
+      process.stdout.write(
+        `${JSON.stringify(
+          {
+            ok: failures === 0,
+            checks,
+            summary: {
+              total: checks.length,
+              passed,
+              warnings,
+              failures,
+            },
+          },
+          null,
+          2
+        )}\n`
+      );
+      return failures > 0 ? 1 : EXIT_OK;
+    }
+    process.stdout.write(`${formatChecks(checks, { color: isColorSupported() })}\n`);
     return checks.some((check) => check.status === 'fail') ? 1 : EXIT_OK;
   } finally {
     store.close();
@@ -1091,18 +1428,23 @@ async function updateCommand(args: string[]): Promise<number> {
     options: { check: { type: 'boolean' }, 'data-dir': { type: 'string' } },
     strict: true,
   });
+  const useColor = isColorSupported();
+  const colors = createColors(useColor);
   const latest = await latestRelease(fetch, releasesRepository(process.env));
   if (!latest) {
-    process.stdout.write('No switch-agent-controller release is published yet.\n');
+    const mark = useColor ? colors.gray('•') : '*';
+    process.stdout.write(`${mark} No switch-agent-controller release is published yet.\n`);
     return 1;
   }
   if (!isNewer(latest.version, VERSION)) {
-    process.stdout.write(`This is the latest release, ${VERSION}.\n`);
+    const mark = useColor ? colors.green('✔') : 'ok';
+    process.stdout.write(`${mark} switch-agent-controller is up to date (${VERSION}).\n`);
     return EXIT_OK;
   }
   if (values.check) {
+    const mark = useColor ? colors.yellow('▲') : 'warn';
     process.stdout.write(
-      `${latest.version} is available (this is ${VERSION}). Install it with: switch-agent-controller update\n`
+      `${mark} Update available: ${latest.version} (current: ${VERSION}).\n  Run: switch-agent-controller update\n`
     );
     return EXIT_OK;
   }
@@ -1112,7 +1454,10 @@ async function updateCommand(args: string[]): Promise<number> {
       `This controller runs from ${prefix}, a releases directory install-service set up: it installs the release Switch names itself, once no session is mid-turn. To install another by hand, install it with npm and run install-service again.`
     );
   const dataDir = resolveDataDir(values['data-dir']);
-  process.stdout.write(`Installing ${latest.version} from ${latest.packageUrl}\n`);
+  const infoMark = useColor ? colors.cyan('•') : '*';
+  process.stdout.write(
+    `${infoMark} Installing switch-agent-controller ${latest.version} from ${latest.packageUrl}...\n`
+  );
   const { file } = await downloadPackage({
     fetch,
     url: latest.packageUrl,
@@ -1134,10 +1479,11 @@ async function updateCommand(args: string[]): Promise<number> {
     process.stdout.write(
       `${await ensureReleases({ releasesDir, prefix, version: latest.version, owner: null })}\n`
     );
+  const okMark = useColor ? colors.green('✔') : 'ok';
   if ((await serviceState(dataDir, runSecretCommand)) === 'running') {
     await restartService(dataDir, runSecretCommand);
-    process.stdout.write(`Installed ${latest.version} and restarted the service.\n`);
-  } else process.stdout.write(`Installed ${latest.version}.\n`);
+    process.stdout.write(`${okMark} Installed ${latest.version} and restarted the service.\n`);
+  } else process.stdout.write(`${okMark} Installed ${latest.version}.\n`);
   return EXIT_OK;
 }
 

@@ -12,17 +12,22 @@ import { ControllerStore } from './store';
 let dir: string;
 let bundle: string;
 let stderr: string[];
+let stdout: string[];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
   stderr = [];
+  stdout = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
     stderr.push(String(chunk));
     return true;
   });
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
 });
 
 afterEach(() => {
@@ -33,6 +38,10 @@ afterEach(() => {
 /** The last line the CLI wrote to stderr: the reason a parent shows. */
 function lastLine(): string {
   return stderr.join('').trimEnd().split('\n').at(-1) ?? '';
+}
+
+function fullStdout(): string {
+  return stdout.join('');
 }
 
 describe('main', () => {
@@ -272,6 +281,215 @@ describe('main', () => {
       EXIT_CONFIGURATION
     );
     expect(lastLine()).toMatch(/not enrolled/);
+  });
+
+  it('status reports not enrolled with clear problem and fix, and exits 1', async () => {
+    const code = await main(['status', '--data-dir', dir]);
+    expect(code).toBe(1);
+    const out = fullStdout();
+    expect(out).toContain('MACHINE & CONTROLLER');
+    expect(out).toContain('Not enrolled');
+    expect(out).toContain('Problem: This controller is not enrolled.');
+    expect(out).toContain('Fix: Run: switch-agent-controller enroll');
+  });
+
+  it('status --json outputs valid JSON when not enrolled, and exits 1', async () => {
+    const code = await main(['status', '--data-dir', dir, '--json']);
+    expect(code).toBe(1);
+    const parsed = JSON.parse(fullStdout());
+    expect(parsed).toEqual({ enrolled: false, data_dir: dir, agents_runtime: null });
+  });
+
+  it('status formats sections and agent table with problem fix when enrolled', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.saveAssignment(
+      {
+        revision: 2,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 2,
+            desired_state: 'running',
+            definition: {
+              name: 'Claude Worker',
+              display_name: null,
+              icon_url: null,
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: '',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      },
+      null,
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.recordFailure(
+      'agent-1',
+      { revision: 2, reason: 'provider_login_missing', detail: 'Run claude auth login' },
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.close();
+
+    const code = await main(['status', '--data-dir', dir]);
+    expect(code).toBe(EXIT_OK);
+    const out = fullStdout();
+    expect(out).toContain('MACHINE & CONTROLLER');
+    expect(out).toContain('Enrolled');
+    expect(out).toContain('controller-1');
+    expect(out).toContain('ASSIGNMENT');
+    expect(out).toContain('Revision 2');
+    expect(out).toContain('AGENTS');
+    expect(out).toContain('NAME');
+    expect(out).toContain('Claude Worker');
+    expect(out).toContain('agent-1');
+    expect(out).toContain('provider_login_missing');
+    expect(out).toContain('Fix: Sign in with the provider CLI');
+  });
+
+  it('status --json outputs structured assignment and agent info when enrolled', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'build-box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.saveAssignment(
+      {
+        revision: 1,
+        agents: [
+          {
+            agent_id: 'agent-1',
+            revision: 1,
+            desired_state: 'running',
+            definition: {
+              name: 'Claude Worker',
+              display_name: null,
+              icon_url: null,
+              provider: 'claude',
+              model: null,
+              advanced_config: {},
+              instructions: '',
+              auto_approve: false,
+              auto_mode: false,
+              directory: null,
+              isolation: 'shared',
+            },
+          },
+        ],
+      },
+      null,
+      '2026-01-01T00:00:00.000Z'
+    );
+    store.close();
+
+    const code = await main(['status', '--data-dir', dir, '--json']);
+    expect(code).toBe(EXIT_OK);
+    const parsed = JSON.parse(fullStdout());
+    expect(parsed.enrolled).toBe(true);
+    expect(parsed.controller.id).toBe('controller-1');
+    expect(parsed.controller.name).toBe('build-box');
+    expect(parsed.assignment.revision).toBe(1);
+    expect(parsed.assignment.agents).toHaveLength(1);
+    expect(parsed.assignment.agents[0].name).toBe('Claude Worker');
+    expect(parsed.assignment.agents[0].provider).toBe('claude');
+  });
+
+  it('doctor formats checks with summary and exits 1 when checks fail', async () => {
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+      )
+    );
+    try {
+      const code = await main(['doctor', '--data-dir', dir]);
+      expect(code).toBe(1);
+      const out = fullStdout();
+      expect(out).toContain('Node');
+      expect(out).toContain('Platform');
+      expect(out).toContain('Enrollment');
+      expect(out).toContain('Summary:');
+      expect(out).toMatch(/\d+ failed/);
+    } finally {
+      process.env.PATH = originalPath;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('doctor --json outputs structured JSON with ok: false and summary', async () => {
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+      )
+    );
+    try {
+      const code = await main(['doctor', '--data-dir', dir, '--json']);
+      expect(code).toBe(1);
+      const parsed = JSON.parse(fullStdout());
+      expect(parsed.ok).toBe(false);
+      expect(Array.isArray(parsed.checks)).toBe(true);
+      expect(parsed.checks.some((c: { name: string }) => c.name === 'Enrollment')).toBe(true);
+      expect(parsed.summary.failures).toBeGreaterThanOrEqual(1);
+    } finally {
+      process.env.PATH = originalPath;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('update formats up-to-date and --check messages cleanly', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              {
+                tag_name: 'switch-agent-controller-v99.9.9',
+                draft: false,
+                prerelease: false,
+                assets: [
+                  {
+                    name: 'switch-agent-controller-99.9.9.tgz',
+                    browser_download_url: 'https://example.invalid/p.tgz',
+                  },
+                ],
+              },
+            ]),
+            { status: 200 }
+          )
+      )
+    );
+    const code = await main(['update', '--check', '--data-dir', dir]);
+    vi.unstubAllGlobals();
+    expect(code).toBe(EXIT_OK);
+    expect(fullStdout()).toContain('Update available: 99.9.9');
+    expect(fullStdout()).toContain('Run: switch-agent-controller update');
   });
 });
 
