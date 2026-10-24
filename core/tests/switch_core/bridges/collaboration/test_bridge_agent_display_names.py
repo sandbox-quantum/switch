@@ -1601,7 +1601,12 @@ class _MattermostAdmin:
         if method == "put" and endpoint.startswith("/bots/"):
             return {}
         if method == "post" and endpoint.endswith("/tokens"):
-            return {"token": "placeholder-bot-token"}
+            n = sum(1 for m, e, _ in self.requests if m == "post" and e == endpoint)
+            return {"token": "placeholder-bot-token", "id": f"tok-{n}"}
+        if method == "get" and "/tokens" in endpoint:
+            return []
+        if method == "post" and endpoint == "/users/tokens/revoke":
+            return {}
         raise AssertionError(f"unexpected Mattermost call: {method} {endpoint}")
 
     def bodies(self, method: str, endpoint: str) -> list[dict[str, Any] | None]:
