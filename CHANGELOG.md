@@ -3955,6 +3955,19 @@ tags; see RELEASING.md.
   `--env-file`, not its user's own logins. `--agent-users` sets how many agents
   can run (16 by default).
 
+#### Changed
+- **Readable command output, and `--json` for `status` and `doctor`.** `status`
+  prints Machine, Controller and Agents sections with aligned labels and a mark
+  per agent. `doctor` groups its checks under Machine, Server and Providers,
+  puts what to do about each problem on a `Fix:` line of its own, and ends with
+  a count. `enroll`, `set-info`, `update`, `install-service`,
+  `uninstall-service` and `help` lead each result with a mark, and `help` is in
+  sections. Colour and symbols appear only on a terminal, never with `NO_COLOR`
+  set or `TERM=dumb`; piped or logged output keeps the same layout as plain
+  text, with the `ok` / `warn` / `FAIL` words and the `Label:` rows scripts
+  read. `status --json` and `doctor --json` print the same facts for scripts.
+  Exit codes are unchanged.
+
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not
   signed in.** `claude auth status` only says a login or key is present, so a

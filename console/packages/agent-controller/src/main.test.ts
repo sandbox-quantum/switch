@@ -275,6 +275,160 @@ describe('main', () => {
   });
 });
 
+describe('command output', () => {
+  let stdout: string[];
+  let wasTTY: boolean | undefined;
+
+  beforeEach(() => {
+    stdout = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdout.push(String(chunk));
+      return true;
+    });
+    // Whatever runs the suite, these commands write to something that is not a terminal.
+    wasTTY = process.stdout.isTTY;
+    process.stdout.isTTY = false;
+    vi.stubEnv('NO_COLOR', '');
+    vi.stubEnv('TERM', 'xterm-256color');
+  });
+
+  afterEach(() => {
+    process.stdout.isTTY = wasTTY as true;
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function enrollHere(): void {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.close();
+  }
+
+  /** GitHub's release list, with one controller release at `version`, or none. */
+  function stubReleases(version: string | null): void {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url.endsWith('/token'))
+          return Response.json({
+            access_token: 'swct_test',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          });
+        return Response.json(
+          version
+            ? [
+                {
+                  tag_name: `switch-agent-controller-v${version}`,
+                  draft: false,
+                  prerelease: false,
+                  assets: [
+                    {
+                      name: `switch-agent-controller-${version}.tgz`,
+                      browser_download_url: 'https://example.invalid/p.tgz',
+                    },
+                  ],
+                },
+              ]
+            : []
+        );
+      })
+    );
+  }
+
+  it('is coloured on a terminal, and plain with NO_COLOR', async () => {
+    enrollHere();
+    process.stdout.isTTY = true;
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(stdout.join('')).toMatch(/\u001b\[/);
+    stdout = [];
+    vi.stubEnv('NO_COLOR', '1');
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(stdout.join('')).not.toMatch(/\u001b\[/);
+  });
+
+  it('doctor exits 1 when a check fails, as text and as JSON', async () => {
+    enrollHere();
+    await new FileSecretStore(dataLayout(dir).secrets).set(CONTROLLER_CREDENTIAL, 'swcc_test');
+    stubReleases(null);
+    // No provider CLI on PATH, so the Providers check fails.
+    vi.stubEnv('PATH', dir);
+    const args = ['doctor', '--data-dir', dir, '--shared-host-bundle', bundle];
+    expect(await main(args)).toBe(EXIT_FAILURE);
+    const text = stdout.join('');
+    expect(text).not.toMatch(/\u001b\[/);
+    expect(text).toMatch(/^Machine\n/);
+    expect(text).toMatch(/ {2}FAIL {2}Providers/);
+    expect(text).toMatch(/ {8}Fix: Install one/);
+    expect(text).toMatch(/\d+ ok, \d+ warnings?, 1 failed\n$/);
+    stdout = [];
+    expect(await main([...args, '--json'])).toBe(EXIT_FAILURE);
+    const json = JSON.parse(stdout.join(''));
+    expect(json.ok).toBe(false);
+    expect(json.checks).toContainEqual(
+      expect.objectContaining({ name: 'Server', status: 'ok', fix: null })
+    );
+  });
+
+  it('update --check exits 0 and says how to install a newer release, 1 when none is published', async () => {
+    stubReleases('99.0.0');
+    expect(await main(['update', '--check', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(stdout.join('')).toMatch(
+      /^99\.0\.0 is available \(this is .+\)\. Install it with: switch-agent-controller update\n$/
+    );
+    stdout = [];
+    stubReleases(null);
+    expect(await main(['update', '--check', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    expect(stdout.join('')).toBe('No switch-agent-controller release is published yet.\n');
+  });
+
+  it('install-service exits 2 before it is enrolled, and says how', async () => {
+    expect(await main(['install-service', '--data-dir', dir])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/is not enrolled\. Enroll first/);
+  });
+
+  it('help exits 0 and is in sections', async () => {
+    expect(await main(['help'])).toBe(EXIT_OK);
+    const text = stdout.join('');
+    for (const section of ['Set up:', 'Run:', 'Check:', 'Service:', 'Update:', 'Exit codes:'])
+      expect(text).toContain(`\n${section}\n`);
+    expect(text).not.toMatch(/\u001b\[/);
+  });
+
+  it('status exits 1 when not enrolled, as text and as JSON', async () => {
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    expect(stdout.join('')).toMatch(/Not enrolled\./);
+    stdout = [];
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(EXIT_FAILURE);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({ dataDir: dir, controller: null });
+  });
+
+  it('status prints plain text when stdout is not a terminal, and the same facts as JSON', async () => {
+    enrollHere();
+    expect(await main(['status', '--data-dir', dir])).toBe(EXIT_OK);
+    const text = stdout.join('');
+    expect(text).not.toMatch(/\u001b\[/);
+    expect(text).toMatch(/^Machine\n {2}Data directory: {2}/);
+    expect(text).toContain('controller-1 ("box")');
+    expect(text).toContain('Assignment not pulled yet.');
+    stdout = [];
+    expect(await main(['status', '--json', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(stdout.join(''))).toMatchObject({
+      controller: {
+        id: 'controller-1',
+        name: 'box',
+        server: 'https://switch.example.com',
+        credentialStored: false,
+        assignment: { state: 'not-pulled' },
+      },
+    });
+  });
+});
+
 describe('infoChange', () => {
   it('trims, clears a blank description, and keeps to the limits', () => {
     expect(infoChange({ name: ' box ' })).toEqual({ name: 'box' });

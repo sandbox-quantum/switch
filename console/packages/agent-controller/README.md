@@ -84,9 +84,9 @@ switch-agent-controller enroll \
 
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
-switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller status [--json] [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
-switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
+switch-agent-controller doctor [--json] [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
 ```
 
@@ -106,6 +106,12 @@ switch-agent-controller update [--check]
   controller whose credential is handed over with `--credential-stdin` is
   renamed in the gateway instead. It can run while `run` does.
 - `status` reads only local state. It makes no network call.
+- `status` and `doctor` print sections with `ok` / `warn` / `fail` marks, and
+  `doctor` puts what to do about each problem on a `Fix:` line. Colour and
+  symbols are used only on a terminal, and never with `NO_COLOR` set or
+  `TERM=dumb`; piped or logged output is the same layout as plain text. For
+  scripts, `--json` prints the same facts as JSON (`doctor --json` adds `ok`,
+  false when any check failed). The exit codes are the same either way.
 - Logging goes to stderr. Set the level with `SWITCH_CONTROLLER_LOG_LEVEL`
   (`debug`, `info`, `warn`, `error`; the default is `info`).
 - Exit codes:
