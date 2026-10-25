@@ -62,6 +62,7 @@ from switch_core.room_service import RoomCreateConfig
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import TEST_KEYRING
 from tests.integration.conftest import Harness
+from tests.inviting import FIXTURE_INVITER
 from tests.switch_core.bridges.collaboration.test_telegram_adapter import _FakeBot
 
 pytestmark = [
@@ -434,7 +435,8 @@ async def test_a_room_cannot_be_bound_to_another_organisations_chat(
                 external_channel_id=str(chat_b["id"]),
                 created_by=admin_a,
                 owner_id=admin_a,
-            )
+            ),
+            invited_by=FIXTURE_INVITER,
         )
 
     assert str(chat_b["id"]) not in await _scoped(
@@ -451,7 +453,8 @@ async def test_a_room_cannot_be_bound_to_another_organisations_chat(
                 internal_only=True,
                 created_by=admin_a,
                 owner_id=admin_a,
-            )
+            ),
+            invited_by=FIXTURE_INVITER,
         )
         with pytest.raises(ValueError):
             await harness.room_service.change_bridge(

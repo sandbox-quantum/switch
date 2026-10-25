@@ -532,6 +532,15 @@ carrying a display name addresses no one.
   `/invite_agent`, since it will not accept a hyphen in a command). On Telegram
   a command tapped from the `/` menu is sent immediately with no argument, so
   the bot asks for the one it needs and runs when you reply with it.
+  An agent's addressing policy ("who can talk to it") also decides who may
+  bring it into a room: if it would not take instructions from you, the
+  invite is refused with the reason and who can add it instead (its owner).
+  The same goes for the agents you name in `create_room`, and for
+  `create_room_from_yaml`, which is judged as the person you run it for. Pass
+  the refusal on to whoever asked; don't retry. Agents already in a room stay
+  when their policy changes. If Switch posts that an agent was added to a
+  channel by someone it couldn't identify, the agent is in the room
+  unverified; its owner decides whether it stays.
 - **`remove_agent_from_room`** — take an agent out of a room by name, the
   opposite of `invite_agent_to_room`; any session it had there is
   disconnected. You need not be in the room. Allowed when you may address

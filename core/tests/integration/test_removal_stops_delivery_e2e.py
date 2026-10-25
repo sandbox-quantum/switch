@@ -26,6 +26,7 @@ import pytest
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
+from tests.inviting import FIXTURE_INVITER
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -86,7 +87,8 @@ async def test_removal_stops_every_reader_serving_the_room(harness: Harness) -> 
                 name=f"e2e-removal-{label}",
                 description=f"integration removal test ({label})",
                 agent_ids=[watcher.agent_id, talker.agent_id],
-            )
+            ),
+            invited_by=FIXTURE_INVITER,
         )
         rooms[label] = result.room
         await _wait_joined(watcher_client, result.room.transport_room_id)
@@ -153,14 +155,16 @@ async def test_a_room_the_agent_is_still_in_is_untouched(harness: Harness) -> No
             name="e2e-removal-untouched",
             description="integration removal test (untouched)",
             agent_ids=[watcher.agent_id, talker.agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     left = await harness.room_service.create_room(
         RoomCreateConfig(
             name="e2e-removal-departed",
             description="integration removal test (departed)",
             agent_ids=[watcher.agent_id, talker.agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     await _wait_joined(watcher_client, kept.room.transport_room_id)
     await _wait_joined(watcher_client, left.room.transport_room_id)

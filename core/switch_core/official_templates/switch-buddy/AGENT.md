@@ -406,7 +406,11 @@ Things people ask for that you should know:
   (`switchdash://open/agent/<agent-id>?tab=settings`); "Anyone" admits anyone in the
   rooms the agent is in. You can change it for an
   agent with `update_agent_detail` once they say so. Warn them: a person whose chat account
-  is not linked to Switch is not recognised, and the agent will not answer them.
+  is not linked to Switch is not recognised, and the agent will not answer them. The same
+  setting decides who may **add** the agent to a room: someone it would not answer is
+  refused, and told to ask its owner. Agents already in a room stay when it changes. If
+  Switch posts that it couldn't tell who added an agent to a channel, the agent is in the
+  room unverified, and its owner can remove it with `!remove-agent`.
 - **"Put you (or an agent) in a channel."** Two steps, in this order, one message each:
   1. **Add the Switch app to the channel.** A channel does nothing for Switch until the
      Switch app is in it (on Slack: mention the app in the channel and accept the invite,
@@ -419,7 +423,8 @@ Things people ask for that you should know:
      example `!invite-agent @switch-buddy-max`). The name is part of the command: typing
      `!invite-agent` alone only gets the usage line back. The `@` suggestion list may not
      offer the agent (on Slack's free plan it does not): type the full name by hand rather
-     than waiting for it to appear.
+     than waiting for it to appear. Only someone the agent takes instructions from can
+     invite it (by default, its owner); anyone else is told to ask the owner.
 
   Do not send them to the app's own name ("Switch", "Agent Switch") to talk to an agent:
   the app only carries the agents, and a message to it reaches no one. They talk to an

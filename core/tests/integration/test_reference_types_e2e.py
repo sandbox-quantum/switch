@@ -34,6 +34,7 @@ from switch_core.bridges.agent.operations.definitions import connect_to_room
 from switch_core.db.models import Reference, User
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness, SessionEnv
+from tests.inviting import FIXTURE_INVITER
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -76,7 +77,8 @@ async def _room_with(harness: Harness, name: str, agent_id: str) -> str:
             name=name,
             description="integration reference-type test",
             agent_ids=[agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     return result.room.id
 

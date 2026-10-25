@@ -55,6 +55,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.invites import Inviter
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1019,6 +1020,7 @@ class CollaborationCore:
                         agent_name=msg.agent_name,
                         sender_name=msg.sender_name,
                         channel_name=msg.channel_name,
+                        added_by=None,
                     )
             if room_ids is None:
                 return
@@ -1258,6 +1260,7 @@ class CollaborationCore:
                         agent_name=cmd.agent_name,
                         sender_name=cmd.sender_name,
                         channel_name=cmd.channel_name,
+                        added_by=None,
                     )
             if room_ids is None:
                 return
@@ -1365,8 +1368,14 @@ class CollaborationCore:
         if existing is not None:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
+            # The agent's bot was added to the channel on the platform itself:
+            # judged as whoever added it, when the platform says who.
             await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
+                room_id,
+                agent_names=[join.agent_name],
+                invited_by=Inviter.platform(
+                    self._bridge_id, join.added_by_external_user_id
+                ),
             )
             return
 
@@ -1375,6 +1384,7 @@ class CollaborationCore:
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
+            added_by=join.added_by_external_user_id,
         )
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
@@ -1392,6 +1402,7 @@ class CollaborationCore:
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
+                added_by=None,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -1489,7 +1500,12 @@ class CollaborationCore:
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
+        added_by: str | None,
     ) -> tuple[str, str] | None:
+        """Bridge a channel the platform delivered, with the agents whose bots
+        are already in it. Those were added on the platform, by `added_by` (a
+        platform account) when it is known, and are judged as such (`invites`).
+        """
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
         #  1. Switch is itself provisioning this channel right now — the mapping
@@ -1534,7 +1550,9 @@ class CollaborationCore:
         )
 
         try:
-            result = await self._room_service.create_room(config)
+            result = await self._room_service.create_room(
+                config, invited_by=Inviter.platform(self._bridge_id, added_by)
+            )
         except IntegrityError:
             # Backstop: the (bridge_id, external_channel_id) unique index
             # rejected a concurrent duplicate. Adopt the room that won the race.
@@ -1922,6 +1940,7 @@ class CollaborationCore:
                     channel_id=join.channel_id,
                     channel_type=join.channel_type,
                     agent_name=join.external_username,
+                    added_by_external_user_id=join.added_by_external_user_id,
                     channel_name=join.channel_name,
                 )
             )
@@ -1937,6 +1956,7 @@ class CollaborationCore:
                         channel_type=join.channel_type,
                         sender_name=join.external_username,
                         channel_name=join.channel_name,
+                        added_by=None,
                     )
             if room_ids is None:
                 return

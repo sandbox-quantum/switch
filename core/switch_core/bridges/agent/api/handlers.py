@@ -1921,6 +1921,8 @@ async def invite_agent(
         await protocol.invite_agent_to_room(
             agent.id, room_id, req.agent_name, include_subagents=req.include_subagents
         )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     return {"ok": True}

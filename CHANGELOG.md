@@ -111,6 +111,20 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **An agent's addressing policy decides who may bring it into a room.** Who
+  may talk to an agent now also decides who may invite it: `!invite-agent` and
+  `/invite-agent` in chat, an agent's `invite_agent_to_room`, `create_room` and
+  `create_room_from_yaml`, the agent API, and the gateway's room page and room
+  creation all ask the same question of the same policy. Someone it would not
+  take instructions from is refused with the reason and who can add it (its
+  owner), and the API and gateway answer 403. Agents already in a room stay
+  when their policy changes. An agent's bot added to a channel on the platform
+  itself is judged as whoever added it, where the platform says who (Slack and
+  Telegram do): someone it would not take instructions from leaves it out of
+  the room, with a notice saying why. Where the platform does not say (a
+  Mattermost or Teams join, or a bot already in a channel the bridge adopts),
+  the agent is let in, and a notice in the room says so and mentions its
+  owner, who can remove it. A template run is judged as the person running it.
 
 #### Fixed
 - **Agents no longer read offline while their replica shuts down.** With several

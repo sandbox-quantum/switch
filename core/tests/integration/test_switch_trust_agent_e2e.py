@@ -24,6 +24,7 @@ from switch_core.trust.client import (
     TrustFinding,
 )
 from tests.integration.conftest import Harness, SessionEnv
+from tests.inviting import FIXTURE_INVITER
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -109,7 +110,8 @@ async def _setup_room(
             name=f"{agent_name}-room",
             description="integration switch trust test",
             agent_ids=[agent.agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     await _wait_joined(client, result.room.transport_room_id)
     return agent.agent_id, result.room.id

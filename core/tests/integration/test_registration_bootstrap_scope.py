@@ -19,6 +19,7 @@ import pytest
 
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import REGISTRATION_TOKEN, Harness, SessionEnv
+from tests.inviting import FIXTURE_INVITER
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -88,7 +89,8 @@ async def test_bootstrap_owned_agent_cannot_write_a_private_room_it_does_not_own
             created_by=harness.owner_id,
             read_visibility="private",
             write_visibility="private",
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
 
     async with session_env.session_factory() as session:  # type: ignore[operator]

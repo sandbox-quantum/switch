@@ -23,6 +23,7 @@ from switch_core.room_wide_mention import (
     reject_reserved_mention_name,
     strip_room_wide_target,
 )
+from tests.inviting import FIXTURE_INVITER
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
     make_owner,
     make_service,
@@ -165,7 +166,7 @@ async def test_create_room_refuses_a_reserved_alias_before_provisioning() -> Non
     )
 
     with pytest.raises(AliasError, match="reserved"):
-        await svc.create_room(config)
+        await svc.create_room(config, invited_by=FIXTURE_INVITER)
 
 
 class TestAgentNames:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
@@ -8,6 +9,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
 )
+from switch_core.invites import Inviter
 
 # CHOO-551: a bridged Switch agent must map to a single agent participant and
 # never spawn a duplicate "user" identity. The discriminator is "is this a
@@ -37,12 +39,13 @@ def _msg(sender_name: str) -> InboundMessage:
     )
 
 
-def _join(external_username: str) -> InboundUserJoin:
+def _join(external_username: str, added_by: str | None = None) -> InboundUserJoin:
     return InboundUserJoin(
         channel_id="chan-1",
         channel_type="channel_public",
         external_user_id="ext-id",
         external_username=external_username,
+        added_by_external_user_id=added_by,
         channel_name="War Room",
     )
 
@@ -113,6 +116,58 @@ async def test_user_join_from_agent_routes_to_agent_join() -> None:
     # Routed to the agent-join path; no external-user human actor created.
     assert [j.agent_name for j in bridge.agent_joins] == ["github.phil.conway"]
     assert bridge.ensure_calls == []
+
+
+async def test_a_bots_join_keeps_who_added_it() -> None:
+    # The agent's addressing policy judges whoever added its bot, so the
+    # platform's word on who that was must survive the re-routing.
+    bridge = _fake_bridge(agents={"github.phil.conway"})
+
+    await CollaborationCore._handle_user_joined_channel(
+        bridge, _join("github.phil.conway", added_by="U-ada")
+    )
+
+    assert [j.added_by_external_user_id for j in bridge.agent_joins] == ["U-ada"]
+
+
+async def test_an_agent_join_is_judged_as_whoever_added_the_bot() -> None:
+    invites: list[tuple[str, list[str], Inviter]] = []
+
+    async def add_agents_to_room(
+        room_id: str, *, agent_names: list[str], invited_by: Inviter
+    ) -> None:
+        invites.append((room_id, agent_names, invited_by))
+
+    @asynccontextmanager
+    async def session_factory():  # type: ignore[no-untyped-def]
+        yield SimpleNamespace()
+
+    async def get_by_name(_session: object, name: str) -> object:
+        return SimpleNamespace(name=name)
+
+    bridge = SimpleNamespace(
+        _session_factory=session_factory,
+        _agent_store=SimpleNamespace(get_by_name=get_by_name),
+        _channel_to_room={"chan-1": ("room-uuid", "!matrix:switch.local")},
+        _room_service=SimpleNamespace(add_agents_to_room=add_agents_to_room),
+        _bridge_id="bridge-1",
+    )
+    for added_by in ("U-ada", None):
+        await CollaborationCore._handle_agent_joined_channel_locked(
+            bridge,  # type: ignore[arg-type]
+            InboundAgentJoin(
+                channel_id="chan-1",
+                channel_type="channel_public",
+                agent_name="private-helper",
+                added_by_external_user_id=added_by,
+            ),
+        )
+
+    assert invites == [
+        ("room-uuid", ["private-helper"], Inviter.platform("bridge-1", "U-ada")),
+        # Unattributed: let in, and the room service says so (`invites`).
+        ("room-uuid", ["private-helper"], Inviter.platform("bridge-1", None)),
+    ]
 
 
 async def test_user_join_from_human_creates_human_actor() -> None:

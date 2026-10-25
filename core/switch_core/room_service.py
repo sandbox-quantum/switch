@@ -30,14 +30,25 @@ from switch_core.bridges.collaboration.models import (
     RetireOutcome,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.clients.actor import SystemActor
+from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import Agent, Room, RoomGroup, RoomRole
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invites import (
+    InviteGate,
+    InviteOutcome,
+    Inviter,
+    refused_join_notice,
+    unverified_notice,
+)
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -165,6 +176,12 @@ class RoomService:
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
+    # Its stores hold no state, so one gate serves every instance.
+    _invites = InviteGate(
+        agent_store=AgentStore(),
+        client_store=ClientStore(),
+        external_user_store=ExternalUserStore(),
+    )
 
     def __init__(
         self,
@@ -510,7 +527,16 @@ class RoomService:
             [(external_channel_id, channel_type)]
         )
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        """Create a room with `config.agents` in it, on `invited_by`'s authority.
+
+        Each agent's addressing policy must let `invited_by` address it
+        (`invites`); a refusal is raised before anything is provisioned. A
+        platform join is never refused outright, since it already happened on
+        the platform: refused agents are left out and the room is told why.
+        """
         await self._validate_attachments(config)
         # Before anything is provisioned: a name refused after the channel and
         # the room exist would leave both behind. Alias collisions need the
@@ -526,6 +552,10 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        invite = await self._check_invite(
+            invited_by, agent_ids, room_id=None, group_id=config.group_id
+        )
+        agent_ids = [aid for aid in agent_ids if aid not in invite.refused_ids]
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -794,6 +824,7 @@ class RoomService:
                 failed_attachments,
             )
 
+        await self._disclose_invite(room, invite)
         return RoomCreateResult(room=room, failed_attachments=failed_attachments)
 
     async def _seed_aliases(
@@ -956,8 +987,17 @@ class RoomService:
         agent_names: list[str] | None = None,
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
-        added_by_kind: Literal["user", "agent", "system"] = "user",
+        *,
+        invited_by: Inviter,
     ) -> None:
+        """Add agents to a room on `invited_by`'s authority.
+
+        Each agent not already in the room must have an addressing policy that
+        lets `invited_by` address it there (`invites`); a refusal is raised
+        before anything is written. Agents already present are left alone. A
+        platform join is never refused outright, since it already happened on
+        the platform: refused agents are left out and the room is told why.
+        """
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -992,6 +1032,14 @@ class RoomService:
             )
             return
 
+        with tenant_scope(room.tenant_id):
+            invite = await self._check_invite(
+                invited_by, new_agent_ids, room_id=room.id, group_id=room.group_id
+            )
+        new_agent_ids = [aid for aid in new_agent_ids if aid not in invite.refused_ids]
+        if not new_agent_ids:
+            await self._disclose_invite(room, invite)
+            return
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
         # One binding for the whole membership change: the two writes below
@@ -1033,9 +1081,100 @@ class RoomService:
             {
                 # Added, not requested.
                 "agent_count": len(new_agent_ids),
-                "added_by_kind": added_by_kind,
+                "added_by_kind": invited_by.actor_kind,
             },
         )
+        await self._disclose_invite(room, invite)
+
+    async def _check_invite(
+        self,
+        inviter: Inviter,
+        agent_ids: list[str],
+        *,
+        room_id: str | None,
+        group_id: str | None,
+    ) -> InviteOutcome:
+        """Judge an invite before any write (`invites`).
+
+        A refusal is raised, except for a platform join: the agent is already
+        in the channel there, so the refused agents are only left out of the
+        room, and `_disclose_invite` tells the room why.
+        """
+        if not agent_ids:
+            return InviteOutcome()
+        async with self._session_factory() as session:
+            agents: list[Agent] = []
+            for aid in agent_ids:
+                agent = await self._agent_store.get(session, aid)
+                if agent is None:
+                    raise ValueError(f"Agent not found: {aid}")
+                agents.append(agent)
+            outcome = await self._invites.check(
+                session,
+                inviter=inviter,
+                agents=agents,
+                room_id=room_id,
+                group_id=group_id,
+            )
+        if outcome.refused and inviter.kind != "platform":
+            raise outcome.refused[0]
+        return outcome
+
+    async def _disclose_invite(self, room: Room, outcome: InviteOutcome) -> None:
+        """Say in the room what a platform join could not be checked for, or
+        was refused for, and @-mention an unverified agent's owner.
+
+        Best effort: the membership is settled whether or not a notice lands,
+        and each case is logged as a warning either way.
+        """
+        if not outcome.refused and not outcome.unverified:
+            return
+        notices: list[str] = []
+        async with self._session_factory() as session:
+            for agent in outcome.unverified:
+                logger.warning(
+                    "Agent %s was added to room %s on the platform by someone "
+                    "the platform did not name; let in unverified",
+                    agent.name,
+                    room.id,
+                )
+                handle = await self._invites.owner_handle(
+                    session, agent, room.bridge_id
+                )
+                notices.append(unverified_notice(agent, handle))
+        for refusal in outcome.refused:
+            logger.warning(
+                "Agent %s added to room %s on the platform was left out: %s",
+                refusal.agent_name,
+                room.id,
+                refusal,
+            )
+            notices.append(refused_join_notice(refusal))
+        admin = next(
+            (
+                client
+                for client in self._client_lifecycle.get_by_type(
+                    "admin", room.tenant_id
+                )
+                if isinstance(client, SystemActor)
+            ),
+            None,
+        )
+        if admin is None:
+            logger.warning("No admin client to post invite notices in %s", room.id)
+            return
+        for notice in notices:
+            try:
+                await admin.send_admin(
+                    room.transport_room_id,
+                    notice,
+                    message_type=AdminMessageType.AGENT_LIFECYCLE,
+                    thread_root_id=None,
+                )
+            except Exception:  # noqa: BLE001 - the membership stands either way
+                logger.warning(
+                    "Could not post an invite notice in %s", room.id, exc_info=True
+                )
 
     async def remove_agents_from_room(
         self,

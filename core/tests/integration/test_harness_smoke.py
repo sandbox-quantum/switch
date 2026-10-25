@@ -12,6 +12,7 @@ import pytest
 
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
+from tests.inviting import FIXTURE_INVITER
 
 # Session-scoped event loop: the background clients are created and torn down
 # across tests; sharing one loop lets their connections finalize cleanly instead
@@ -44,7 +45,8 @@ async def test_harness_boots_and_agents_join_room(harness: Harness) -> None:
             name="smoke-room",
             description="integration harness smoke test",
             agent_ids=[alice.agent_id, bob.agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     transport_room_id = result.room.transport_room_id
 

@@ -52,6 +52,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.invites import Inviter
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     ExistingPackageById,
@@ -94,6 +95,7 @@ class FakeRoomService:
         #: username → external id, the people a bridge would resolve.
         self.bridge_users: dict[str, str] = {}
         self.bridge_user_lookups: list[tuple[str, list[str]]] = []
+        self.inviters: list[Inviter] = []
 
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
@@ -101,7 +103,10 @@ class FakeRoomService:
         self.bridge_user_lookups.append((bridge_id, names))
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        self.inviters.append(invited_by)
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:
@@ -386,6 +391,7 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     assert len(result.created_document_ids) == 1
     assert result.role_names == ["manager"]
     assert result.failed_attachments == []
+    assert env["rooms"].inviters == [Inviter.user(env["user_id"])]
 
 
 @pytest.mark.asyncio

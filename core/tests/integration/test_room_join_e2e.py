@@ -15,6 +15,7 @@ import pytest
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.room_service import RoomCreateConfig
 from tests.integration.conftest import Harness
+from tests.inviting import FIXTURE_INVITER
 
 # Session-scoped event loop: the background clients are created and torn down
 # across tests; sharing one loop lets their connections finalize cleanly instead
@@ -67,7 +68,8 @@ async def test_join_emits_room_join_event(harness: Harness) -> None:
             agent_ids=[watcher.agent_id],
             # Opt the watcher in so `listening` comes back True.
             join_event_listeners=[watcher.agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     room_id = result.room.id
     transport_room_id = result.room.transport_room_id
@@ -75,7 +77,9 @@ async def test_join_emits_room_join_event(harness: Harness) -> None:
     await _wait_joined(watcher_client, transport_room_id)
 
     # Trigger the observed join.
-    await harness.room_service.add_agents_to_room(room_id, agent_ids=[joiner.agent_id])
+    await harness.room_service.add_agents_to_room(
+        room_id, agent_ids=[joiner.agent_id], invited_by=FIXTURE_INVITER
+    )
 
     event = await _drain_room_join(harness, watcher.agent_id, room_id)
 
@@ -98,7 +102,8 @@ async def test_self_join_does_not_emit_room_join(harness: Harness) -> None:
             name="e2e-room-solo",
             description="integration self-join test",
             agent_ids=[watcher.agent_id],
-        )
+        ),
+        invited_by=FIXTURE_INVITER,
     )
     await _wait_joined(watcher_client, result.room.transport_room_id)
 
