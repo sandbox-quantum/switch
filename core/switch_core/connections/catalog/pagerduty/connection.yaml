@@ -1,0 +1,47 @@
+slug: pagerduty
+name: PagerDuty
+category: Incident management
+description: Read PagerDuty incidents, services and on-call, and acknowledge or resolve incidents, as you.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    # PagerDuty's MCP server also takes a static OAuth client, but not a
+    # dynamically registered one. A user key acts with its owner's own
+    # permissions, so what an agent can do is what the person can do.
+    fields:
+      - name: api_key
+        label: User API key
+        secret: true
+        help: My Profile, User Settings, Create API User Token. Needs Advanced Permissions on the account.
+      - name: region
+        label: Service region
+        secret: false
+        help: eu.pagerduty.com for accounts in the EU service region.
+        choices:
+          - pagerduty.com
+          - eu.pagerduty.com
+    # /users/me answers only for a user's key: an account-wide key is refused
+    # here, which keeps connections personal. The API version comes from the
+    # key (new keys get v2), so the vendor Accept header is not needed.
+    identity:
+      method: GET
+      url: "https://api.{region}/users/me"
+      headers: { Authorization: "Token token={api_key}" }
+      account_id: user.id
+      label: user.email
+    help_url: https://docs.pagerduty.com/account-admin/api-access-keys
+# A key does not expire; each issue hands it out for an hour, so the grant is
+# checked again at least hourly.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # The hosted server, one per service region. It offers every tool to every
+    # key and has no read-only mode; PagerDuty refuses what the key's owner
+    # may not do.
+    - name: pagerduty
+      url: "https://mcp.{region}/mcp"
+      headers: { Authorization: "Token token={api_key}" }
+tools: { mode: pass_through }
