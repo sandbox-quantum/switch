@@ -15,6 +15,7 @@ import secrets
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs
 
 import httpx
@@ -25,8 +26,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.app_checks import Check, CheckResult
 from switch_core.connections.app_credentials import (
     GITHUB_NEEDS_HTTPS,
+    AppSpec,
     ConnectorApps,
 )
 from switch_core.connections.broker import ServiceBroker
@@ -47,6 +50,7 @@ from switch_core.db.stores.service_app_credential_store import (
 )
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
+from switch_core.gateway import connector_apps
 from switch_core.gateway.connector_apps import router as connector_apps_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
@@ -364,7 +368,12 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"asana", "github", GOOGLE, AIRTABLE}
+        assert apps["asana"]["source"] == "none"
+        assert (
+            apps["asana"]["redirect_uri"]
+            == "http://127.0.0.1:39231/switch-services/callback"
+        )
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -943,3 +952,77 @@ class TestNoSecretLeaves:
             for text in [r.text for r in responses] + [audit, logged]:
                 assert secret not in text
         assert STATIC_CLIENT_SECRET[-4:] in responses[2].text
+
+
+@pytest.mark.parametrize("public_url", [None, PUBLIC])
+async def test_asana_app_save_and_display_use_fixed_loopback_without_public_url(
+    session_factory, operator, monkeypatch, public_url
+):
+    world = World(session_factory, public_url)
+    apps = await world.install()
+    check = AsyncMock(
+        return_value=CheckResult([Check("client", True, "Accepted", None)], {})
+    )
+    monkeypatch.setattr(connector_apps, "check_app", check)
+    async with world.harness.client() as client:
+        answer = await client.put(
+            f"{APPS}/asana", json=_google_body(), cookies=cookies_for(operator)
+        )
+    assert answer.status_code == 200, answer.text
+    assert (
+        answer.json()["redirect_uri"]
+        == "http://127.0.0.1:39231/switch-services/callback"
+    )
+    assert answer.json()["source"] == "saved"
+    assert check.call_args.args[1].service == "asana"
+    assert check.call_args.args[2] == apps.definition("asana")
+    assert check.call_args.args[4] == answer.json()["redirect_uri"]
+    assert apps.oauth_clients()["asana"].client_id == STATIC_CLIENT_ID
+
+
+@pytest.mark.parametrize(
+    "modes,ports,public_url,expected",
+    [
+        (
+            ["core", "loopback"],
+            [39231],
+            PUBLIC,
+            f"{PUBLIC}/gateway/service-connections/example/flows/callback",
+        ),
+        (
+            ["core", "loopback"],
+            [39231],
+            None,
+            "http://127.0.0.1:39231/switch-services/callback",
+        ),
+        (
+            ["loopback", "core"],
+            [39231],
+            PUBLIC,
+            "http://127.0.0.1:39231/switch-services/callback",
+        ),
+        (["loopback"], None, None, "http://127.0.0.1/switch-services/callback"),
+        (["core"], None, None, None),
+    ],
+)
+def test_operator_callback_honors_the_apps_own_catalog_and_redirect_preference(
+    modes, ports, public_url, expected
+):
+    definition = CATALOG["asana"].definition
+    oauth = definition.auth.oauth.model_copy(
+        update={"redirect": modes, "loopback_ports": ports}
+    )
+    definition = definition.model_copy(
+        update={
+            "slug": "example",
+            "auth": definition.auth.model_copy(update={"oauth": oauth}),
+        }
+    )
+    apps = Mock(spec=ConnectorApps)
+    apps.definition.return_value = definition
+    apps.public_url = public_url
+    spec = AppSpec(
+        "example", "Example", "oauth_client", ("EXAMPLE_CLIENT_CONFIG_PATH",)
+    )
+    assert next(iter(connector_apps._redirects(apps, spec, Mock())), None) == expected
+    apps.definition.assert_called_once_with("example")

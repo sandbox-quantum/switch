@@ -195,6 +195,7 @@ class ServiceFlows:
                 owner_label=owner_label,
                 details={
                     "name": definition.name,
+                    "unscoped": access.unscoped,
                     "consent": consent,
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
@@ -348,6 +349,8 @@ class ServiceFlows:
         """What the person consented to, as the vendor granted it."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
+        if details.get("unscoped"):
+            return "write"
         write_scopes = set(details["write_scopes"])
         if write_scopes and write_scopes <= granted:
             return "write"

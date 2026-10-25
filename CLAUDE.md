@@ -193,6 +193,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   self-hosted server: registering the Google app (Internal or External), its
   redirect URI, saving it under Connectors or in
   `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`, and switching it off
+- `docs/old/asana-setup.md` — offering Asana on a self-hosted server:
+  registering the Asana MCP app and its loopback callback, saving it under
+  Connectors or in `ASANA_CLIENT_CONFIG_PATH`, what its one consent level
+  means, and its known limits
 - `docs/old/github-app-setup.md` — offering GitHub on a self-hosted server:
   creating the GitHub App, saving it under Connectors or in configuration,
   which wins, rotating its secret or key, and replacing it

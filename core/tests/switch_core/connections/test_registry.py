@@ -286,7 +286,7 @@ def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
         "Datadog is not set up on this server.",
     )
     assert broker.server_setup_needed("datadog") is False
-    asana = broker.unavailable("asana")
+    asana = broker.unavailable("gitlab")
     assert asana is not None and asana.code == "coming_soon"
 
 

@@ -17,15 +17,21 @@ metadata (RFC 9728) names the authorization server, whose metadata
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import json
+import logging
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 from switch_core.connections.adapters import (
     AccessToken,
@@ -44,6 +50,26 @@ MAX_METADATA_BYTES = 64 * 1024
 # How a client's secret goes with a token or revocation request (RFC 8414's
 # names): in the form body, or as HTTP Basic.
 ClientAuthentication = Literal["client_secret_post", "client_secret_basic"]
+
+_IDENTITY_DIAGNOSTICS: ContextVar[bool] = ContextVar(
+    "mcp_identity_diagnostics", default=False
+)
+
+
+class _IdentityDiagnosticFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _IDENTITY_DIAGNOSTICS.get():
+            # SDK validation diagnostics include raw vendor responses and exceptions.
+            record.msg = "MCP identity transport diagnostic (vendor details omitted)."
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+        return True
+
+
+for _sdk_logger in ("mcp.client.streamable_http", "fastmcp.client.client"):
+    logging.getLogger(_sdk_logger).addFilter(_IdentityDiagnosticFilter())
 
 
 @dataclass(frozen=True)
@@ -145,9 +171,33 @@ def s256(verifier: str) -> str:
 
 
 def _https(url: object, what: str) -> str:
-    if not isinstance(url, str) or urlsplit(url).scheme != "https":
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+        valid = (
+            parts is not None
+            and parts.scheme == "https"
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+        )
+    except ValueError:
+        valid = False
+    if not valid:
         raise ServiceAdapterError(f"The vendor's {what} is not an https URL.")
+    assert isinstance(url, str)
     return url
+
+
+def _mcp_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx.Timeout | None = None,
+    auth: httpx.Auth | None = None,
+    **kwargs: Any,
+) -> httpx.AsyncClient:
+    kwargs["follow_redirects"] = False
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return httpx.AsyncClient(headers=headers, auth=auth, **kwargs)
 
 
 def _path_value(document: Any, path: str) -> Any:
@@ -329,7 +379,7 @@ class OAuthAdapter:
                 if revocation is None
                 else _https(revocation, "revocation endpoint")
             ),
-            resource=mcp_url,
+            resource=_https(resource.get("resource", mcp_url), "resource identifier"),
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
@@ -452,11 +502,13 @@ class OAuthAdapter:
             "response_type": "code",
             "client_id": client.client_id,
             "redirect_uri": redirect_uri,
-            "scope": " ".join(scopes),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        access = self._definition.access
+        if access is None or not access.unscoped:
+            query["scope"] = " ".join(scopes)
         for key, value in self._oauth.authorization_params.items():
             query[key] = value
         if self._oauth.prompt is not None:
@@ -488,26 +540,30 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
-        response = await self._send(
-            self._http.build_request(
-                "GET",
-                self._identity.url,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Accept": "application/json",
-                },
+        if self._identity.mcp_tool is not None:
+            body = await self._mcp_identity(access_token)
+        else:
+            assert self._identity.url is not None
+            response = await self._send(
+                self._http.build_request(
+                    "GET",
+                    self._identity.url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                    },
+                )
             )
-        )
-        if response.status_code == 401:
-            raise ReauthorizationRequiredError(
-                f"{self._name} refused the new sign-in when asked whose it is."
-            )
-        if response.status_code != 200:
-            raise ServiceAdapterError(
-                f"{self._name} would not say whose sign-in this is "
-                f"(HTTP {response.status_code})."
-            )
-        body = self._json(response, "account")
+            if response.status_code == 401:
+                raise ReauthorizationRequiredError(
+                    f"{self._name} refused the new sign-in when asked whose it is."
+                )
+            if response.status_code != 200:
+                raise ServiceAdapterError(
+                    f"{self._name} would not say whose sign-in this is "
+                    f"(HTTP {response.status_code})."
+                )
+            body = self._json(response, "account")
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
@@ -517,6 +573,41 @@ class OAuthAdapter:
         return Identity(
             account_id, label if isinstance(label, str) and label else account_id
         )
+
+    async def _mcp_identity(self, access_token: str) -> dict[str, Any]:
+        if self._mcp_url is None or self._identity.mcp_tool is None:
+            raise ServiceAdapterError(f"{self._name} has no MCP identity source.")
+        diagnostics = _IDENTITY_DIAGNOSTICS.set(True)
+        try:
+            async with asyncio.timeout(15):
+                transport = StreamableHttpTransport(
+                    self._mcp_url,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    httpx_client_factory=_mcp_http_client,
+                )
+                async with Client(transport, timeout=15, init_timeout=15) as client:
+                    result = await client.call_tool_mcp(self._identity.mcp_tool, {})
+            if (
+                result.isError
+                or len(result.model_dump_json().encode()) > MAX_METADATA_BYTES
+            ):
+                raise ValueError("invalid identity result")
+            if result.structuredContent is not None:
+                body = result.structuredContent
+            elif len(result.content) == 1 and result.content[0].type == "text":
+                body = json.loads(result.content[0].text)
+            else:
+                raise ValueError("identity result is not JSON")
+            if not isinstance(body, dict):
+                raise ValueError("identity result is not an object")
+            return body
+        except Exception:
+            # Vendor error payloads can contain account data or authorization details.
+            raise ServiceAdapterError(
+                f"{self._name} could not identify the account through MCP."
+            ) from None
+        finally:
+            _IDENTITY_DIAGNOSTICS.reset(diagnostics)
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

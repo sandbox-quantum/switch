@@ -45,6 +45,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Asana can be connected and granted to agents.** It goes through Asana's own
+  MCP server with an OAuth app the operator registers (Asana offers no dynamic
+  registration), and an agent granted it reads and updates tasks and projects as
+  the person who connected it, within their Asana permissions. Asana's MCP tokens
+  cannot call its REST API, so a catalog entry can now name an MCP tool to read
+  the account from (`identity.mcp_tool`), and Asana has no narrower scopes, so an
+  entry can declare `access.unscoped`: no scope is asked for and the connection is
+  shown as read and write, never as read-only.
 - **Templates carry packages.** A room in a template takes `packages:`, a list
   of packages that already exist, by `id` or by `name`, attached when the room
   is created. The person running the template must be able to attach each one

@@ -134,7 +134,7 @@ class TestConnections:
         assert github["connectable"] is True
         assert (github["pass_through"], github["token_lifetime"]) == (False, 3600)
         assert github["loopback_ports"] is None
-        asana = entries["asana"]
+        asana = entries["gitlab"]
         assert (asana["pass_through"], asana["token_lifetime"]) == (False, None)
         assert asana["configured"] is False
         assert asana["unavailable_code"] == "coming_soon"
@@ -308,7 +308,7 @@ class TestGrants:
         owner = await add_member(harness.session_factory, "ada")
         agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
 
-        asana = await _put(harness, owner, agent_id, {"resources": {}}, "asana")
+        asana = await _put(harness, owner, agent_id, {"resources": {}}, "gitlab")
         unknown = await _put(harness, owner, agent_id, {"resources": {}}, "nowhere")
 
         assert asana.status_code == 422
@@ -635,7 +635,7 @@ class TestYourAgents:
         response = await _agents(harness, member)
         assert (response.status_code, response.json()) == (200, [])
 
-    @pytest.mark.parametrize("service", ["nowhere", "asana"])
+    @pytest.mark.parametrize("service", ["nowhere", "gitlab"])
     async def test_an_unknown_or_placeholder_service_is_not_found(
         self, harness: Harness, service: str
     ) -> None:

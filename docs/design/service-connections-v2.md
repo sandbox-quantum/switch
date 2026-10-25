@@ -581,6 +581,25 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## Asana
+
+Asana uses the official v2 MCP server with a static MCP OAuth app. See
+[operator setup](../old/asana-setup.md). MCP-app tokens cannot call Asana REST;
+the host resolves identity through `get_user` over MCP. An identity entry specifies
+either its HTTPS JSON GET `url` or an MCP `mcp_tool`, never both. The selected tool
+receives no arguments and must return JSON with the configured account ID and
+label paths. Calls have a bounded timeout and failures hide vendor payloads.
+
+Asana MCP offers no granular read/write scopes. `access.unscoped: true` explicitly
+requires empty scope lists at both levels; authorization omits `scope` and successful
+consent is recorded as write access. Grants are on or off, reaching all available
+tools within the owner's existing Asana permissions. This does not enforce read-only
+access. Other OAuth entries still require nonempty scopes.
+
+The documented access-token lifetime is one hour. Refresh and vendor revocation use
+the generic OAuth adapter. Credentials stay with Core and the session host. Disable
+`asana` through `DISABLED_SERVICES` or remove its operator app to make it unavailable.
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
