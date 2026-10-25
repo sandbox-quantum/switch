@@ -6,6 +6,7 @@ import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { ServiceState } from './service';
 import type { LocatedProvider } from './status';
 import type { Identity } from './store';
+import { createColors, isColorSupported } from './terminal';
 import { type ControllerRelease, isNewer } from './update';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
@@ -232,11 +233,59 @@ export async function runDoctor(inputs: DoctorInputs): Promise<Check[]> {
   return checks;
 }
 
-const MARK: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
+const MARK_PLAIN: Record<CheckStatus, string> = { ok: 'ok  ', warn: 'warn', fail: 'FAIL' };
 
-export function formatChecks(checks: Check[]): string {
-  const width = Math.max(...checks.map((check) => check.name.length));
-  return checks
-    .map((check) => `${MARK[check.status]}  ${check.name.padEnd(width)}  ${check.detail}`)
-    .join('\n');
+export function formatChecks(
+  checks: Check[],
+  options: { color?: boolean; summary?: boolean } = {}
+): string {
+  const useColor = options.color ?? isColorSupported();
+  const colors = createColors(useColor);
+  const width = Math.max(0, ...checks.map((check) => check.name.length));
+
+  const lines = checks.map((check) => {
+    let mark: string;
+    if (useColor) {
+      switch (check.status) {
+        case 'ok':
+          mark = `${colors.green('✔ ok')}  `;
+          break;
+        case 'warn':
+          mark = `${colors.yellow('▲ warn')}`;
+          break;
+        case 'fail':
+          mark = `${colors.red('✖ FAIL')}`;
+          break;
+      }
+    } else {
+      mark = MARK_PLAIN[check.status];
+    }
+    const name = useColor ? colors.bold(check.name.padEnd(width)) : check.name.padEnd(width);
+    return `${mark}  ${name}  ${check.detail}`;
+  });
+
+  if (options.summary === false) {
+    return lines.join('\n');
+  }
+
+  const passed = checks.filter((c) => c.status === 'ok').length;
+  const warnings = checks.filter((c) => c.status === 'warn').length;
+  const failures = checks.filter((c) => c.status === 'fail').length;
+
+  let summary: string;
+  if (failures > 0) {
+    summary = useColor
+      ? `${colors.red(`✖ ${failures} failed`)}, ${warnings > 0 ? `${colors.yellow(`${warnings} warnings`)}, ` : ''}${colors.green(`${passed} passed`)} (${checks.length} checks total)`
+      : `Summary: ${failures} failed, ${warnings} warning(s), ${passed} passed (${checks.length} total)`;
+  } else if (warnings > 0) {
+    summary = useColor
+      ? `${colors.yellow(`▲ ${warnings} warning(s)`)}, ${colors.green(`${passed} passed`)} (${checks.length} checks total)`
+      : `Summary: ${warnings} warning(s), ${passed} passed (${checks.length} total)`;
+  } else {
+    summary = useColor
+      ? colors.green(`✔ All ${checks.length} checks passed`)
+      : `Summary: all ${checks.length} checks passed`;
+  }
+
+  return `${lines.join('\n')}\n\n${summary}`;
 }
