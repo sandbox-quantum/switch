@@ -17,6 +17,9 @@ import {
   fetchManagementControllers,
   GatewayError,
   giveMachineLogin,
+  issueMachineEnrollment,
+  recheckMachineProvider,
+  type ManagementController,
   managementErrorMessage,
   setManagedAgentDesiredState,
   updateManagedAgent,
@@ -32,21 +35,35 @@ import {
 import { withReachableServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
+import type { MachineEnrollment } from '@shared/core/managed-agents/machine-enrollment';
 import type {
   AdvancedConfigField,
   ManagedAgentChanges,
   ManagedAgentView,
   MachineLoginInput,
+  MachineDetail,
   MachineLoginOutcome,
   ManagedMachine,
   OwnedMachine,
   ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import { isLoopbackUrl } from '@shared/core/switch-servers/loopback';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { ownedMachines, preferredFirst, thisComputerReport } from './owned-machines';
+import {
+  type LocalControllers,
+  machineDetails,
+  ownedMachines,
+  preferredFirst,
+  thisComputerReport,
+} from './owned-machines';
 
-async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+/** The owner's controllers on a server, as `view` makes them; null without agent management. */
+async function controllersOn<T>(
+  serverId: string,
+  view: (controllers: ManagementController[], local: LocalControllers) => T
+): Promise<T | null> {
   const [thisComputer, hosts] = await Promise.all([
     embeddedControllerService.enrolledControllerId(serverId),
     hostControllerService.recordsOn(serverId),
@@ -59,11 +76,15 @@ async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
       if (error instanceof AgentManagementUnavailableError) return null;
       throw error;
     }
-    return ownedMachines(controllers, {
+    return view(controllers, {
       thisComputer,
       sshHosts: hosts.map(({ controllerId, sshHost }) => ({ controllerId, sshHost })),
     });
   });
+}
+
+function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+  return controllersOn(serverId, ownedMachines);
 }
 
 /**
@@ -135,6 +156,14 @@ export const managedAgentsController = createRPCController({
   machines: (serverId: string): Promise<OwnedMachine[] | null> => machinesOn(serverId),
 
   /**
+   * Every one of the owner's machines on a server, revoked ones included, with
+   * all each last reported, for the Machines page. Null when the server does
+   * not run agent management.
+   */
+  machineDetails: (serverId: string): Promise<MachineDetail[] | null> =>
+    controllersOn(serverId, machineDetails),
+
+  /**
    * This computer's providers as its controller last reported them to a
    * server it runs for, `preferServerId` (the one Console is on now) first
    * when it is one; null when it runs for none, or none has a report, and
@@ -186,28 +215,56 @@ export const managedAgentsController = createRPCController({
       return { operationId };
     }),
 
+  /**
+   * A one-time code to enroll a new machine with, and the address it enrolls
+   * against: the one the server names, else the one Console reaches it at.
+   * `loopback` says that address only works on this computer.
+   */
+  machineEnrollment: (serverId: string): Promise<MachineEnrollment> =>
+    withReachableServerWorkspaceSession(serverId, async (server) => {
+      const issued = await issueMachineEnrollment(server);
+      const serverUrl = issued.serverUrl ?? server.url;
+      return {
+        code: issued.code,
+        expiresAt: issued.expiresAt,
+        serverUrl,
+        loopback: isLoopbackUrl(serverUrl),
+      };
+    }),
+
   /** How the machine took up a login given to it, by the operation `giveMachineLogin` answered. */
   machineLoginOutcome: (params: {
     serverId: string;
     machineId: string;
     operationId: string;
   }): Promise<MachineLoginOutcome> =>
-    withReachableServerWorkspaceSession(params.serverId, async (server) => {
-      const operation = await fetchMachineOperation(server, params.machineId, params.operationId);
-      if (!operation) return { state: 'pending' };
-      if (operation.state === 'succeeded') return { state: 'succeeded' };
-      if (operation.state === 'pending' || operation.state === 'claimed')
-        return { state: 'pending' };
-      return {
-        state: 'failed',
-        code: operation.error?.code ?? operation.state,
-        message:
-          operation.error?.message ??
-          (operation.state === 'expired'
-            ? 'The machine did not take the login up in time; is it online?'
-            : `The machine did not take the login up (${operation.state}).`),
-      };
-    }),
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      machineOperationOutcome(server, params.machineId, params.operationId, 'take the login up')
+    ),
+
+  /**
+   * Has one of the owner's machines check a provider's install and sign-in
+   * again. Answers the operation; `machineRecheckOutcome` says how it went,
+   * and the machine's next report carries what it found.
+   */
+  recheckMachineProvider: (params: {
+    serverId: string;
+    machineId: string;
+    provider: AgentProviderId;
+  }): Promise<{ operationId: string }> =>
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      recheckMachineProvider(server, params.machineId, params.provider)
+    ),
+
+  /** How a recheck went, by the operation `recheckMachineProvider` answered. */
+  machineRecheckOutcome: (params: {
+    serverId: string;
+    machineId: string;
+    operationId: string;
+  }): Promise<MachineLoginOutcome> =>
+    withReachableServerWorkspaceSession(params.serverId, (server) =>
+      machineOperationOutcome(server, params.machineId, params.operationId, 'check the provider')
+    ),
 
   /** Each provider's advanced configuration fields, keyed by provider, as the server checks a definition against them. */
   advancedConfigSchema: (serverId: string): Promise<Record<string, AdvancedConfigField[]>> =>
@@ -321,4 +378,30 @@ async function loginToGive(
         : `This computer is not signed in to ${provider}. Sign in here first.`
     );
   return { kind: 'auth-json', credential };
+}
+
+/**
+ * Where one of a machine's operations stands: still pending, done, or why it
+ * failed. `what` finishes "The machine did not …" for the failures the
+ * server gives no words for.
+ */
+async function machineOperationOutcome(
+  server: SwitchServer,
+  machineId: string,
+  operationId: string,
+  what: string
+): Promise<MachineLoginOutcome> {
+  const operation = await fetchMachineOperation(server, machineId, operationId);
+  if (!operation) return { state: 'pending' };
+  if (operation.state === 'succeeded') return { state: 'succeeded' };
+  if (operation.state === 'pending' || operation.state === 'claimed') return { state: 'pending' };
+  return {
+    state: 'failed',
+    code: operation.error?.code ?? operation.state,
+    message:
+      operation.error?.message ??
+      (operation.state === 'expired'
+        ? `The machine did not ${what} in time; is it online?`
+        : `The machine did not ${what} (${operation.state}).`),
+  };
 }

@@ -85,7 +85,7 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       return;
     case 'agents/new':
       navigation.navigate('serverAgents', { serverId });
-      showModal('addAgentModal', { entryPoint: 'link' });
+      showModal('addAgentModal', { entryPoint: 'link', machineId: null });
       return;
     case 'agent':
       await openAgent(serverId, link.id!, link.tab);

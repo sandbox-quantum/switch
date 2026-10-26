@@ -48,7 +48,7 @@ function createAppCommandProvider(): CommandProvider {
           shortcutKey: newLocationDef.shortcutKey,
           group: newLocationDef.group,
           execute() {
-            showModal('addAgentModal', { entryPoint: 'command_palette' });
+            showModal('addAgentModal', { entryPoint: 'command_palette', machineId: null });
           },
         },
         {

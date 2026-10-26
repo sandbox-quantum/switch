@@ -1,6 +1,7 @@
 export type WorkspaceNavView =
   | 'server'
   | 'serverAgents'
+  | 'machines'
   | 'serverRooms'
   | 'connectors'
   | 'templates'
@@ -14,17 +15,20 @@ export type WorkspaceNavView =
  * connections are on, its connector settings needing them, and for whoever
  * runs the server from this Console, whose status is under Admin's Server
  * heading: the others are run by someone else, and there is nothing here to
- * start, stop or update.
+ * start, stop or update. Your Machines follows Your Agents where the server
+ * runs agent management: with it off there are no machines to list.
  */
 export function workspaceNavViews(server: {
   managed: boolean;
   serviceConnections: boolean;
   administers: boolean;
+  agentManagement: boolean;
 }): WorkspaceNavView[] {
   const admin = (server.serviceConnections && server.administers) || server.managed;
   return [
     'server',
     'serverAgents',
+    ...(server.agentManagement ? (['machines'] as const) : []),
     'serverRooms',
     ...(server.serviceConnections ? (['connectors'] as const) : []),
     'templates',

@@ -70,7 +70,7 @@ export function useOnboardingChecklist(): OnboardingChecklist {
           navigate('settings', { tab: 'clis-models' });
           return;
         case 'onboardAgents':
-          showAddAgentModal({ entryPoint: 'onboarding' });
+          showAddAgentModal({ entryPoint: 'onboarding', machineId: null });
           return;
         case 'createRoom':
           showCreateRoomModal({});

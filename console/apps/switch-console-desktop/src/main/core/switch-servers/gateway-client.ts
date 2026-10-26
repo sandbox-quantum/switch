@@ -4028,6 +4028,59 @@ export type ManagementController = {
    * its controller has none (it keeps no key, or predates sealed logins).
    */
   sealingKey: { key: string; keyId: string } | null;
+  /** Its platform as it last reported; null when not known. */
+  platform: { os: string; arch: string; osVersion: string } | null;
+  /** The controller version it last reported; null before it has. */
+  version: string | null;
+  /** Its connection as Switch last recorded it: the current one, or the last; null when it never connected. */
+  connection: ControllerConnection | null;
+  /** The release Switch tells it to run; null when it is told none, as for one Console updates. */
+  release: { wanted: string; running: string | null; current: boolean } | null;
+  /** The rest of its last status report; null before it has reported. */
+  report: ControllerReport | null;
+  /** When it enrolled; null from a server that does not say. */
+  createdAt: string | null;
+};
+
+export type ControllerConnection = {
+  connectedAt: string;
+  /** Null while it is connected. */
+  disconnectedAt: string | null;
+  /** Null while it is connected; else a reason code such as `socket_closed` or `heartbeat_lapsed`. */
+  disconnectReason: string | null;
+};
+
+/** What a controller's last status report says beyond its providers. */
+export type ControllerReport = {
+  observedAt: string | null;
+  /** Who moves it onto another release; null from a controller that does not say. */
+  updatedBy: 'self' | 'console' | null;
+  /** Why it does not run the release Switch names yet; null when it does or does not say. */
+  update: { target: string; state: string; problem: string | null } | null;
+  /** The machine's resources; null when the report carries none. */
+  resources: {
+    diskFreeBytes: number;
+    diskTotalBytes: number;
+    memFreeBytes: number;
+    memTotalBytes: number;
+    sessionsRunning: number;
+    sessionsMax: number;
+  } | null;
+  /** Each provider's version and when it was last checked, beside `providers`. */
+  providerChecks: { provider: string; version: string | null; checkedAt: string | null }[];
+  /** Each agent it runs, as it last saw it. */
+  agents: ControllerAgentReport[];
+};
+
+export type ControllerAgentReport = {
+  agentId: string;
+  process: string;
+  attached: boolean;
+  activeSessions: number;
+  restarts10m: number;
+  since: string | null;
+  reason: string | null;
+  detail: string | null;
 };
 
 /** A managed agent as the owner's list shows it. */
@@ -4086,8 +4139,16 @@ type ManagementControllerJson = {
   revoked_at: string | null;
   status?: unknown;
   workspaces_dir?: string | null;
-  platform?: { os: string } | null;
+  platform?: { os: string; arch?: string; os_version?: string } | null;
   public_key?: { alg: string; key: string; key_id: string } | null;
+  version?: string | null;
+  connection?: {
+    connected_at: string;
+    disconnected_at: string | null;
+    disconnect_reason: string | null;
+  } | null;
+  release?: { wanted: string; running: string | null; current: boolean } | null;
+  created_at?: string;
 };
 
 type ManagedAgentJson = {
@@ -4145,14 +4206,27 @@ export async function enrollConsoleController(
 /**
  * A one-time code a headless controller enrolls with
  * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
- * minutes. A secret until it is spent.
+ * minutes. A secret until it is spent. `serverUrl` is the agent bridge's public
+ * origin as the server names it; null when it names none.
  */
-export async function issueEnrollmentCode(server: SwitchServer): Promise<string> {
+export async function issueMachineEnrollment(
+  server: SwitchServer
+): Promise<{ code: string; expiresAt: string; serverUrl: string | null }> {
   const res = await managementFetch(server, '/enrollment-codes', {
     authenticated: true,
     method: 'POST',
   });
-  return ((await res.json()) as { code: string }).code;
+  const json = (await res.json()) as {
+    code: string;
+    expires_at: string;
+    server_url: string | null;
+  };
+  return { code: json.code, expiresAt: json.expires_at, serverUrl: json.server_url ?? null };
+}
+
+/** Just the code of a fresh enrollment, for a controller Console enrolls itself. */
+export async function issueEnrollmentCode(server: SwitchServer): Promise<string> {
+  return (await issueMachineEnrollment(server)).code;
 }
 
 /** The signed-in user's controllers (`GET /gateway/management/controllers`). */
@@ -4175,6 +4249,24 @@ export async function fetchManagementControllers(
       json.public_key?.alg === 'X25519'
         ? { key: json.public_key.key, keyId: json.public_key.key_id }
         : null,
+    platform: json.platform
+      ? {
+          os: json.platform.os,
+          arch: json.platform.arch ?? '',
+          osVersion: json.platform.os_version ?? '',
+        }
+      : null,
+    version: json.version ?? null,
+    connection: json.connection
+      ? {
+          connectedAt: json.connection.connected_at,
+          disconnectedAt: json.connection.disconnected_at,
+          disconnectReason: json.connection.disconnect_reason,
+        }
+      : null,
+    release: json.release ?? null,
+    report: controllerReport(json.status),
+    createdAt: json.created_at ?? null,
   }));
 }
 
@@ -4216,6 +4308,25 @@ export async function withdrawMachineLogin(
   );
 }
 
+/**
+ * Has a machine check one provider's install and sign-in again
+ * (`POST /operations`, kind `provider.recheck`). Answers the operation; the
+ * machine's next status report carries what it found.
+ */
+export async function recheckMachineProvider(
+  server: SwitchServer,
+  controllerId: string,
+  provider: string
+): Promise<{ operationId: string }> {
+  const res = await managementFetch(server, '/operations', {
+    method: 'POST',
+    authenticated: true,
+    body: { controller_id: controllerId, kind: 'provider.recheck', params: { provider } },
+  });
+  const body = (await res.json()) as { id: string };
+  return { operationId: body.id };
+}
+
 /** One of a machine's operations as its owner sees it, by id; null when the server lists none by it. */
 export async function fetchMachineOperation(
   server: SwitchServer,
@@ -4239,6 +4350,84 @@ export async function fetchMachineOperation(
   ).find((operation) => operation.id === operationId);
   if (!found) return null;
   return { state: found.state, error: found.result?.error ?? null };
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function jsonText(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null;
+}
+
+function jsonCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * The parts of a controller's last status report beyond its providers, read
+ * defensively: the report is the controller's own JSON, stored as it sent it,
+ * so an older controller can leave any part out. Null before it has reported.
+ */
+function controllerReport(status: unknown): ControllerReport | null {
+  const report = jsonRecord(status);
+  if (!report) return null;
+  const controller = jsonRecord(report.controller);
+  const machine = jsonRecord(report.machine);
+  const update = jsonRecord(report.update);
+  const updatedBy = controller?.updated_by;
+  return {
+    observedAt: jsonText(report.observed_at),
+    updatedBy: updatedBy === 'self' || updatedBy === 'console' ? updatedBy : null,
+    update:
+      update && typeof update.target === 'string' && typeof update.state === 'string'
+        ? { target: update.target, state: update.state, problem: jsonText(update.problem) }
+        : null,
+    resources: machine
+      ? {
+          diskFreeBytes: jsonCount(machine.disk_free_bytes),
+          diskTotalBytes: jsonCount(machine.disk_total_bytes),
+          memFreeBytes: jsonCount(machine.mem_free_bytes),
+          memTotalBytes: jsonCount(machine.mem_total_bytes),
+          sessionsRunning: jsonCount(machine.sessions_running),
+          sessionsMax: jsonCount(machine.sessions_max),
+        }
+      : null,
+    providerChecks: (Array.isArray(report.providers) ? report.providers : []).flatMap(
+      (entry: unknown) => {
+        const provider = jsonRecord(entry);
+        if (!provider || typeof provider.provider !== 'string') return [];
+        return [
+          {
+            provider: provider.provider,
+            version: jsonText(provider.version),
+            checkedAt: jsonText(provider.checked_at),
+          },
+        ];
+      }
+    ),
+    agents: (Array.isArray(report.agents) ? report.agents : []).flatMap(
+      (entry: unknown): ControllerAgentReport[] => {
+        const agent = jsonRecord(entry);
+        if (!agent || typeof agent.agent_id !== 'string' || typeof agent.process !== 'string')
+          return [];
+        return [
+          {
+            agentId: agent.agent_id,
+            process: agent.process,
+            attached: agent.attached === true,
+            activeSessions: jsonCount(jsonRecord(agent.sessions)?.active),
+            restarts10m: jsonCount(agent.restarts_10m),
+            since: jsonText(agent.since),
+            reason: jsonText(agent.reason),
+            detail: jsonText(agent.detail),
+          },
+        ];
+      }
+    ),
+  };
 }
 
 /**

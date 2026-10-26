@@ -40,19 +40,3 @@ export function installSourcesDiffer(
   );
 }
 
-/** The line Settings shows for a provider the controller reported on, worded as Console's own check words it. */
-export function reportedHeadline(reported: MachineProvider): string {
-  if (reported.ready) return 'Signed in';
-  switch (reported.problem) {
-    case 'not installed':
-      return 'CLI not installed';
-    case 'not logged in':
-      return reported.loginHelps ? 'Not signed in' : 'Can’t be used yet';
-    case 'login expired':
-      return 'Sign-in expired';
-    case 'login not checked yet':
-      return 'Checking sign-in…';
-    default:
-      return 'Sign-in could not be checked';
-  }
-}
