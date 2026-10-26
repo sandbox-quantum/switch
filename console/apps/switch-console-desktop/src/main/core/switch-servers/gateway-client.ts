@@ -4066,8 +4066,13 @@ export type ControllerReport = {
     sessionsRunning: number;
     sessionsMax: number;
   } | null;
-  /** Each provider's version and when it was last checked, beside `providers`. */
-  providerChecks: { provider: string; version: string | null; checkedAt: string | null }[];
+  /** Each provider's version, where its sign-in comes from and when it was last checked, beside `providers`. */
+  providerChecks: {
+    provider: string;
+    version: string | null;
+    authSource: 'local' | 'sealed' | null;
+    checkedAt: string | null;
+  }[];
   /** Each agent it runs, as it last saw it. */
   agents: ControllerAgentReport[];
 };
@@ -4403,6 +4408,10 @@ function controllerReport(status: unknown): ControllerReport | null {
           {
             provider: provider.provider,
             version: jsonText(provider.version),
+            authSource:
+              provider.auth_source === 'local' || provider.auth_source === 'sealed'
+                ? provider.auth_source
+                : null,
             checkedAt: jsonText(provider.checked_at),
           },
         ];

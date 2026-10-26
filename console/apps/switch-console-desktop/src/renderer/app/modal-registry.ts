@@ -13,6 +13,8 @@ import { AddAgentModal } from '@renderer/features/locations/components/add-agent
 import { DeleteAgentModal } from '@renderer/features/locations/components/delete-agent-modal';
 import { ResetAgentModal } from '@renderer/features/locations/components/reset-agent-modal';
 import { AddMachineModal } from '@renderer/features/machines/add-machine-modal';
+import { MoveAgentModal } from '@renderer/features/machines/move-agent-modal';
+import { RenameMachineModal } from '@renderer/features/machines/rename-machine-modal';
 import { AddHostModal } from '@renderer/features/remote-hosts/add-host-modal';
 import { RemoveAgentConfigModal } from '@renderer/features/remote-hosts/remove-agent-config-modal';
 import { CreateSessionModal } from '@renderer/features/sessions/create-session-modal/create-session-modal';
@@ -72,6 +74,11 @@ export const modalRegistry = {
   sessionModal: createModal(CreateSessionModal, { dismissOnOutsideClick: false }),
   addAgentModal: createModal(AddAgentModal, { size: 'lg', dismissOnOutsideClick: false }),
   addMachineModal: createModal(AddMachineModal, { size: 'lg' }),
+  moveAgentModal: createModal(MoveAgentModal, { size: 'md' }),
+  renameMachineModal: createModal(RenameMachineModal, {
+    size: 'sm',
+    dismissOnOutsideClick: false,
+  }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   deleteAgentModal: createModal(DeleteAgentModal, { size: 'sm' }),

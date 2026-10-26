@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import type { MachineDetail } from '@shared/core/managed-agents/managed-agents';
+import type {
+  MachineDetail,
+  MachineProviderDetail,
+} from '@shared/core/managed-agents/managed-agents';
 import {
   arrangeMachines,
   controllerRelease,
   filterMachines,
   lastContact,
+  machineCategory,
   machineConnection,
   machineNotices,
+  moveTarget,
   machineSummary,
   platformLabel,
   sessionsLabel,
@@ -220,6 +225,7 @@ describe('machineNotices', () => {
             problem: 'login expired',
             detail: null,
             version: null,
+            authSource: null,
             checkedAt: null,
           },
           {
@@ -228,6 +234,7 @@ describe('machineNotices', () => {
             problem: 'not installed',
             detail: null,
             version: null,
+            authSource: null,
             checkedAt: null,
           },
         ],
@@ -253,5 +260,64 @@ describe('sessionsLabel', () => {
 
   it('shows only the count when the controller enforces no limit', () => {
     expect(sessionsLabel({ ...resources, sessionsMax: 0 })).toBe('1');
+  });
+});
+
+describe('moveTarget', () => {
+  const ready: MachineProviderDetail = {
+    provider: 'claude',
+    ready: true,
+    problem: null,
+    detail: null,
+    version: null,
+    authSource: null,
+    checkedAt: null,
+  };
+
+  it('takes an agent on a connected machine with its provider signed in', () => {
+    expect(moveTarget(machine({ id: 'm', providers: [ready] }), 'claude')).toMatchObject({
+      selectable: true,
+      tone: 'ok',
+    });
+  });
+
+  it('refuses what Switch refuses: offline, not installed, signed out', () => {
+    expect(
+      moveTarget(machine({ id: 'm', state: 'offline', providers: [ready] }), 'claude')
+    ).toMatchObject({
+      selectable: false,
+      line: 'Offline. Bring it online to move agents here.',
+    });
+    expect(moveTarget(machine({ id: 'm', providers: [] }), 'claude').selectable).toBe(false);
+    for (const problem of ['not installed', 'not logged in', 'login expired'])
+      expect(
+        moveTarget(machine({ id: 'm', providers: [{ ...ready, ready: false, problem }] }), 'claude')
+          .selectable
+      ).toBe(false);
+  });
+
+  it('lets a sign-in not checked yet through, as Switch does', () => {
+    expect(
+      moveTarget(
+        machine({
+          id: 'm',
+          providers: [{ ...ready, ready: false, problem: 'login not checked yet' }],
+        }),
+        'claude'
+      )
+    ).toMatchObject({ selectable: true, tone: 'warning' });
+  });
+});
+
+describe('machineCategory', () => {
+  it('groups the cloud machine, SSH hosts and every other computer', () => {
+    expect(machineCategory(machine({ id: 'c', cloud: true }))).toBe('cloud');
+    expect(machineCategory(machine({ id: 's', local: { kind: 'ssh-host', sshHost: 'box' } }))).toBe(
+      'ssh-host'
+    );
+    expect(machineCategory(machine({ id: 't', local: { kind: 'this-computer' } }))).toBe(
+      'computer'
+    );
+    expect(machineCategory(machine({ id: 'd' }))).toBe('computer');
   });
 });

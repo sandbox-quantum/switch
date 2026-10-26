@@ -1,4 +1,4 @@
-import type { MachineDetail } from '@shared/core/managed-agents/managed-agents';
+import type { MachineDetail, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 
 export type MachineTone = 'ok' | 'warning' | 'problem' | 'idle';
@@ -66,7 +66,7 @@ export function lastContact(machine: MachineDetail, now: Date): string | null {
 }
 
 /** What the machine is to this person: this computer, an SSH host of theirs, or how it runs. */
-export function machineKindLabel(machine: MachineDetail): string {
+export function machineKindLabel(machine: Pick<MachineDetail, 'local' | 'cloud' | 'kind'>): string {
   if (machine.local?.kind === 'this-computer') return 'This computer';
   if (machine.local?.kind === 'ssh-host') return `SSH host · ${machine.local.sshHost}`;
   if (machine.cloud) return 'Switch cloud';
@@ -268,4 +268,69 @@ export function sessionsLabel(resources: NonNullable<MachineDetail['resources']>
   return resources.sessionsMax > 0
     ? `${resources.sessionsRunning} of ${resources.sessionsMax}`
     : `${resources.sessionsRunning}`;
+}
+
+/** Where a machine stands as a place to move an agent to, and the line saying so. */
+export type MoveTarget = { selectable: boolean; tone: MachineTone; line: string };
+
+/** The provider problems Switch refuses a placement for, as the machine reports them. */
+const REFUSED_PROBLEMS = new Set(['not installed', 'not logged in', 'login expired']);
+
+/**
+ * Whether an agent running `provider` can be moved to `machine`, by the rules
+ * Switch places it by: the machine is connected, and has the provider
+ * installed and not signed out. A sign-in it has not checked yet is let
+ * through, as Switch lets it through.
+ */
+export function moveTarget(machine: OwnedMachine, provider: string): MoveTarget {
+  const name = providerDisplayName(provider) ?? provider;
+  if (machine.state === 'revoked')
+    return { selectable: false, tone: 'idle', line: 'Removed from Switch.' };
+  if (machine.state !== 'online')
+    return {
+      selectable: false,
+      tone: 'idle',
+      line: 'Offline. Bring it online to move agents here.',
+    };
+  const reported = machine.providers.find((p) => p.provider === provider);
+  if (!reported)
+    return { selectable: false, tone: 'warning', line: `${name} isn't installed here.` };
+  if (reported.ready) return { selectable: true, tone: 'ok', line: `Ready: ${name} signed in` };
+  if (reported.problem !== null && REFUSED_PROBLEMS.has(reported.problem))
+    return {
+      selectable: false,
+      tone: 'warning',
+      line:
+        reported.problem === 'not installed'
+          ? `${name} isn't installed here.`
+          : reported.problem === 'login expired'
+            ? `${name}'s sign-in has expired here. Sign in first.`
+            : `${name} isn't signed in here. Sign in first.`,
+    };
+  return {
+    selectable: true,
+    tone: 'warning',
+    line: `${name}: ${reported.problem ?? 'not checked yet'}`,
+  };
+}
+
+/** The groups the machines page filters by: what a machine is, as the person tells them apart. */
+export type MachineCategory = 'cloud' | 'ssh-host' | 'computer';
+
+export const MACHINE_CATEGORY_LABELS: Record<MachineCategory, string> = {
+  cloud: 'Cloud',
+  'ssh-host': 'SSH hosts',
+  computer: 'Computers',
+};
+
+/**
+ * Which group a machine falls in: the Switch cloud machine, an SSH host this
+ * Console set up, or any other computer, this one and headless controllers
+ * alike. An SSH host enrolled from another Console is a computer here, since
+ * only the Console that set it up knows it is one.
+ */
+export function machineCategory(machine: Pick<MachineDetail, 'local' | 'cloud'>): MachineCategory {
+  if (machine.cloud) return 'cloud';
+  if (machine.local?.kind === 'ssh-host') return 'ssh-host';
+  return 'computer';
 }

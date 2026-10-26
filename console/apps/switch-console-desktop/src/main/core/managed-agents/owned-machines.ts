@@ -83,6 +83,7 @@ export function machineDetails(
         return {
           ...machineProvider(entry),
           version: check?.version ?? null,
+          authSource: check?.authSource ?? null,
           checkedAt: check?.checkedAt ?? null,
         };
       }),

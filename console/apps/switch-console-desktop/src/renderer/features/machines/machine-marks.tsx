@@ -47,7 +47,7 @@ export function MachineIcon({
   machine,
   className,
 }: {
-  machine: MachineDetail;
+  machine: Pick<MachineDetail, 'local' | 'cloud' | 'kind'>;
   className?: string;
 }) {
   const Icon =

@@ -3339,6 +3339,7 @@ describe('agent management calls', () => {
                 provider: 'claude',
                 installed: true,
                 auth: 'ok',
+                auth_source: 'sealed',
                 version: '2.1.0',
                 checked_at: '2026-10-01T10:29:00Z',
               },
@@ -3376,7 +3377,14 @@ describe('agent management calls', () => {
         sessionsRunning: 1,
         sessionsMax: 0,
       },
-      providerChecks: [{ provider: 'claude', version: '2.1.0', checkedAt: '2026-10-01T10:29:00Z' }],
+      providerChecks: [
+        {
+          provider: 'claude',
+          version: '2.1.0',
+          authSource: 'sealed',
+          checkedAt: '2026-10-01T10:29:00Z',
+        },
+      ],
       agents: [
         {
           agentId: 'a1',

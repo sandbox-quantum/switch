@@ -137,6 +137,11 @@ export type OwnedMachine = ManagedMachine & {
 /** A provider on a machine with its version and when the machine last checked it. */
 export type MachineProviderDetail = MachineProvider & {
   version: string | null;
+  /**
+   * Where its sign-in comes from: the machine's own (`local`) or one given to
+   * it from Switch Console (`sealed`); null when it has none or did not say.
+   */
+  authSource: 'local' | 'sealed' | null;
   checkedAt: string | null;
 };
 

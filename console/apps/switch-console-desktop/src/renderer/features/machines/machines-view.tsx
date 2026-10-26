@@ -13,6 +13,7 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { SearchInput } from '@renderer/lib/ui/search-input';
+import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { MachineDetail, ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { MachineIcon, TonePill } from './machine-marks';
@@ -20,6 +21,9 @@ import {
   arrangeMachines,
   controllerRelease,
   filterMachines,
+  MACHINE_CATEGORY_LABELS,
+  type MachineCategory,
+  machineCategory,
   machineConnection,
   machineSummary,
 } from './machine-state';
@@ -91,11 +95,18 @@ function MachineList({
   agents: ManagedAgentView[];
 }) {
   const [filter, setFilter] = useState('');
+  const [category, setCategory] = useState<'all' | MachineCategory>('all');
   const [showRemoved, setShowRemoved] = useState(false);
   const arranged = arrangeMachines(machines);
-  const live = filterMachines(arranged.live, filter);
-  const removed = filterMachines(arranged.removed, filter);
-  const filtering = filter.trim() !== '';
+  // Only the groups the person has a machine in: a tab with nothing behind it filters nothing.
+  const categories = (Object.keys(MACHINE_CATEGORY_LABELS) as MachineCategory[]).filter((c) =>
+    arranged.live.some((machine) => machineCategory(machine) === c)
+  );
+  const inCategory = (list: MachineDetail[]) =>
+    category === 'all' ? list : list.filter((machine) => machineCategory(machine) === category);
+  const live = filterMachines(inCategory(arranged.live), filter);
+  const removed = filterMachines(inCategory(arranged.removed), filter);
+  const filtering = filter.trim() !== '' || category !== 'all';
   const placedOn = (machine: MachineDetail) =>
     agents.filter((agent) => agent.machine?.id === machine.id).length;
 
@@ -109,15 +120,32 @@ function MachineList({
 
   return (
     <div className="flex flex-col gap-6">
-      <SearchInput
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder="Filter machines…"
-        aria-label="Filter machines by name, description or kind"
-      />
+      <div className="flex items-center gap-3">
+        {categories.length > 1 && (
+          <SegmentedControl
+            value={category}
+            onChange={setCategory}
+            ariaLabel="Show machines of one kind"
+            className="shrink-0"
+            options={[
+              { value: 'all', label: 'All' },
+              ...categories.map((c) => ({ value: c, label: MACHINE_CATEGORY_LABELS[c] })),
+            ]}
+          />
+        )}
+        <SearchInput
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter machines…"
+          aria-label="Filter machines by name, description or kind"
+          containerClassName="flex-1"
+        />
+      </div>
       {live.length === 0 && removed.length === 0 ? (
         <p className="py-2 text-sm text-foreground-muted">
-          No machine here matches “{filter.trim()}”.
+          {filter.trim() === ''
+            ? 'No machine of this kind.'
+            : `No machine here matches “${filter.trim()}”.`}
         </p>
       ) : (
         <>

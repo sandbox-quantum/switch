@@ -21,8 +21,10 @@ import {
   recheckMachineProvider,
   type ManagementController,
   managementErrorMessage,
+  revokeManagementController,
   setManagedAgentDesiredState,
   updateManagedAgent,
+  updateManagementController,
 } from '@main/core/switch-servers/gateway-client';
 import {
   localGoogleCredentialsPath,
@@ -255,6 +257,42 @@ export const managedAgentsController = createRPCController({
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       recheckMachineProvider(server, params.machineId, params.provider)
     ),
+
+  /**
+   * Renames one of the owner's machines and/or changes its description;
+   * `description: null` clears it. Switch refuses a name it does not take,
+   * in its own words.
+   */
+  updateMachine: (params: {
+    serverId: string;
+    machineId: string;
+    changes: { name?: string; description?: string | null };
+  }): Promise<void> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      try {
+        await updateManagementController(server, params.machineId, params.changes);
+      } catch (error) {
+        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
+          throw new Error(managementErrorMessage(error));
+        throw error;
+      }
+    }),
+
+  /**
+   * Removes one of the owner's machines from Switch: its credential is
+   * deleted and it cannot reconnect. The agents placed on it stay placed on
+   * it, and do not run until they are moved.
+   */
+  removeMachine: (params: { serverId: string; machineId: string }): Promise<void> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      try {
+        await revokeManagementController(server, params.machineId);
+      } catch (error) {
+        if (error instanceof GatewayError && error.status !== undefined && error.status < 500)
+          throw new Error(managementErrorMessage(error));
+        throw error;
+      }
+    }),
 
   /** How a recheck went, by the operation `recheckMachineProvider` answered. */
   machineRecheckOutcome: (params: {
