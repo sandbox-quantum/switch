@@ -14,6 +14,7 @@ The HTTP tests drive the real auth router against real Postgres, as
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -171,6 +172,34 @@ class TestCreateUserOverHttp:
         assert second.status_code == 409, second.text
         assert await _emails_like(session_factory, "di@example.invalid") == [
             "di@example.invalid"
+        ]
+
+    async def test_concurrent_creates_of_one_address_are_one_user_and_a_conflict(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Both requests pass the existence check before either inserts, since
+        # the check runs before bcrypt and the insert after it: a double-click.
+        app = _app(session_factory)
+        async with await _admin_client(session_factory, app) as client:
+            responses = await asyncio.gather(
+                *(
+                    client.post(
+                        "/users",
+                        json={
+                            "name": f"Ed {n}",
+                            "email": "ed@example.invalid",
+                            "password": "good-pass-1",
+                        },
+                    )
+                    for n in range(2)
+                )
+            )
+
+        assert sorted(r.status_code for r in responses) == [200, 409], [
+            r.text for r in responses
+        ]
+        assert await _emails_like(session_factory, "ed@example.invalid") == [
+            "ed@example.invalid"
         ]
 
 

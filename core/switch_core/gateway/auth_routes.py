@@ -518,7 +518,16 @@ async def create_user(
         role=req.role,
         password_hash=password_hash,
     )
-    await user_store.create(session, user)
+    # The check above ran before bcrypt, so a concurrent request for the same
+    # address can have inserted since; the unique constraint is what decides.
+    try:
+        async with session.begin_nested():
+            await user_store.create(session, user)
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Email already registered"
+        ) from None
     await session.commit()
 
     logger.info("Created user: %s (%s)", user.email, user.id)
