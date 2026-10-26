@@ -121,7 +121,6 @@ PACKAGE_DOCUMENTS = 20
 PACKAGES = 1
 ROOM_PACKAGES = 1
 ROOM_DOCUMENTS = 1
-SERVER_CONNECTORS = 1
 FEATURE_FLAGS = 1
 
 _WORDS = [
@@ -324,7 +323,6 @@ async def generate(dsn: str, scale: float) -> None:
         packages_n = PACKAGES
         room_packages_n = ROOM_PACKAGES
         room_documents_n = ROOM_DOCUMENTS
-        server_connectors_n = SERVER_CONNECTORS
         feature_flags_n = FEATURE_FLAGS
 
         pool = IdPool()
@@ -1025,22 +1023,7 @@ async def generate(dsn: str, scale: float) -> None:
                 [(room_ids[0], document_ids[0])] if room_documents_n else [],
             )
 
-        # ── server_connectors / feature_flags ────────────────────────────
-        await _copy(
-            conn,
-            "server_connectors",
-            ["id", "type", "display_name", "api_key_id", "status"],
-            [
-                (
-                    _rand_id("connector", i),
-                    "resource",
-                    f"Synthetic Connector {i}",
-                    api_key_ids[0],
-                    "active",
-                )
-                for i in range(server_connectors_n)
-            ],
-        )
+        # ── feature_flags ────────────────────────────────────────────────
         await _copy(
             conn,
             "feature_flags",

@@ -796,29 +796,6 @@ class LinkedIdentity(BaseModel):
     external_username: str
 
 
-# ── Server-Side Connectors ──────────────────────────────────────────────────
-
-
-class ConnectorTypeInfo(BaseModel):
-    key: str
-    config_schema: dict[str, Any]
-
-
-class CreateConnectorRequest(BaseModel):
-    type: str
-    display_name: str
-    connection_config: dict[str, object]
-
-
-class ConnectorDetail(BaseModel):
-    connector_id: str
-    connector_type: str
-    display_name: str
-    status: str
-    agent_names: list[str]
-    created_at: str
-
-
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 

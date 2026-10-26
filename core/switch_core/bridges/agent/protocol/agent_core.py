@@ -64,10 +64,6 @@ from switch_core.bridges.agent.protocol.types import (
     ToolCallReport,
     ToolSpec,
 )
-from switch_core.bridges.agent.registration_bootstrap import (
-    REGISTRATION_KEY_TYPES,
-    resolve_registration_owner_id,
-)
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
@@ -115,7 +111,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
     LlmCallReport as RoomLlmCallReport,
@@ -296,17 +292,6 @@ class AgentDeletionResult:
     bridge_failures: list[str]
 
 
-class BootstrapOwnerMisconfiguredError(Exception):
-    """Raised when the deployment-wide bootstrap key's owner account cannot
-    be resolved or trusted (see ``registration_bootstrap.py``).
-
-    Deliberately not a ``PermissionError``: the presented token is valid, so
-    this is a deployment misconfiguration, not a bad credential. A caller
-    that catches ``PermissionError`` to mean "bad token" must not also catch
-    this and report the same thing.
-    """
-
-
 def _describe_room(room: Room) -> RoomDescriptor:
     return RoomDescriptor(
         id=room.id,
@@ -438,8 +423,8 @@ class AgentCore:
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
-        Pass ``owner_id`` directly (gateway flow) or use
-        ``register_agent_with_token`` to resolve a registration token first.
+        The caller resolves ``owner_id``: the gateway from the signed-in
+        person, the HTTP registration endpoint from the registration token.
 
         ``parent_agent_id`` links this agent as a child of another (a Claude
         Code subagent registered under the user's main agent); None for an
@@ -609,91 +594,6 @@ class AgentCore:
             api_key=api_key,
             oauth_client_id=oauth_client_id,
         )
-
-    async def register_agent_with_token(
-        self,
-        *,
-        registration_token: str,
-        name: str,
-        description: str,
-        display_name: str | None = None,
-        connector_type: str,
-        integration_profile: IntegrationProfile,
-        tools: list[ToolSpec] | None = None,
-        models: list[ModelSpec] | None = None,
-        metadata: dict[str, Any] | None = None,
-        overwrite: bool = False,
-        addressing_policy: AddressingPolicy | None = default_agent_policy(),
-    ) -> RegistrationResult:
-        """Resolve a registration token to its owner, then register the agent.
-
-        Raises PermissionError if the token does not match a stored ApiKey of
-        a registration type (see ``registration_bootstrap.REGISTRATION_KEY_TYPES``).
-        Raises BootstrapOwnerMisconfiguredError if the token is valid but its
-        bootstrap owner cannot be resolved or trusted — a deployment fault,
-        not a bad credential, so callers must not conflate it with the
-        PermissionError above (the detail is logged here, not in the
-        exception, to match the HTTP registration path's handling of the
-        same failure).
-        Raises AgentExistsError if the name is taken and ``overwrite`` is False.
-
-        The token also decides the *tenant* the new agent and its API key land
-        in, and that is bound here rather than left to the caller. The HTTP
-        registration endpoint has ``BearerAuthMiddleware`` in front of it doing
-        the same thing. This path does not: a server-side connector calls it
-        in-process from ``server_connectors/core.py``, which binds its own
-        row's tenant around the call (``_register_agent``) — from boot, and
-        from ``POST /connectors``, where the tenant already bound is the
-        *requesting operator's*, which is not necessarily the connector's.
-
-        So the binding here is not filling a vacuum; it is overriding whatever
-        the caller had, with the one thing that is authoritative for these
-        rows. Bearer authentication later reads ``api_keys.tenant_id`` back as
-        the source of truth, so a key filed under the wrong tenant would keep
-        confirming itself on every subsequent call.
-        """
-        token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
-        # Resolving a credential is the read that *produces* a tenant, so it
-        # cannot be answered under one: doing so is either a tautology or a
-        # false "invalid token". `key_hash` is one of the two columns
-        # deliberately left globally unique for exactly this, and the
-        # exemption (`db/tenant_lookup.py`) turns it into a tenant id. The key
-        # row itself, and the owner resolution that reads it, are then
-        # ordinary scoped reads under that tenant.
-        tenant_id = await tenant_of_api_key(self.session_factory, token_hash)
-        if tenant_id is None:
-            raise PermissionError("Invalid registration token")
-        async with tenant_session(self.session_factory, tenant_id) as session:
-            key = await self.api_key_store.get_by_hash(session, token_hash)
-            if key is None or key.type not in REGISTRATION_KEY_TYPES:
-                raise PermissionError("Invalid registration token")
-            try:
-                owner_id = await resolve_registration_owner_id(
-                    session, self.user_store, key
-                )
-            except RuntimeError as exc:
-                logger.error(
-                    "Agent-registration bootstrap owner resolution failed: %s", exc
-                )
-                raise BootstrapOwnerMisconfiguredError(
-                    "Agent registration is temporarily unavailable"
-                ) from exc
-
-        with tenant_scope(tenant_id):
-            return await self.register_agent(
-                name=name,
-                description=description,
-                display_name=display_name,
-                connector_type=connector_type,
-                integration_profile=integration_profile,
-                tools=tools,
-                models=models,
-                metadata=metadata,
-                owner_id=owner_id,
-                overwrite=overwrite,
-                addressing_policy=addressing_policy,
-                registration_path="bootstrap",
-            )
 
     async def _create_agent(
         self,
@@ -1117,8 +1017,7 @@ class AgentCore:
                 unsafe to render (InvalidDisplayName), or no such agent.
             AgentExistsError: another agent has the name.
             AgentRenameRefused: a clash in a room or on a platform, or an agent
-                that cannot be renamed (a subagent, a parent of subagents, or
-                one a server connector discovered).
+                that cannot be renamed (a subagent or a parent of subagents).
             RuntimeError: no tenant is bound.
         """
         (
@@ -1256,8 +1155,8 @@ class AgentCore:
 
         Raises:
             PermissionError: the target belongs to another owner.
-            AgentRenameRefused: the target is the caller itself, an agent that
-                can manage agents, or one a server connector found.
+            AgentRenameRefused: the target is the caller itself, or an agent
+                that can manage agents.
             ValueError: no such agent or room.
             RuntimeError: deletion requests are not wired in this process.
         """
@@ -1283,11 +1182,6 @@ class AgentCore:
                     f"Agent '{target.name}' can manage agents itself, so another "
                     "agent cannot ask for it to be deleted. Its owner can delete "
                     "it from the gateway or with `!delete-agent`."
-                )
-            if (target.metadata_ or {}).get("server_connector_id"):
-                raise AgentRenameRefused(
-                    f"Agent '{target.name}' was found by a server connector, which "
-                    "would bring it back. Remove it at its source."
                 )
             await record_audit_event(
                 session,
@@ -1340,11 +1234,6 @@ class AgentCore:
     async def _check_renamable(
         self, session: AsyncSession, agent: Agent, new_name: str
     ) -> None:
-        if (agent.metadata_ or {}).get("server_connector_id"):
-            raise AgentRenameRefused(
-                f"Agent '{agent.name}' was found by a server connector, which "
-                "would bring it back under its old name. Rename it at its source."
-            )
         if agent.parent_agent_id is not None:
             raise AgentRenameRefused(
                 f"Agent '{agent.name}' is a subagent; its name comes from its "

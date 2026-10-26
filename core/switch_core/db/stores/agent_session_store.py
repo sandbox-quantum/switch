@@ -37,13 +37,13 @@ class AgentSessionStore:
     a schema change.
     """
 
-    # always_on agents (server-side connectors) refresh their heartbeat as a
-    # side effect of re-entering poll_events, so the gap between beats is
-    # bounded below by the poll long-poll timeout — 30s for the server
-    # connector (see CONNECTOR_POLL_TIMEOUT_SECONDS) — and grows further while
-    # the agent is busy handling an event. 90s gives that 30s cadence ~3x
-    # headroom so always_on agents stay live across idle long-polls and slow
-    # event handling, while a genuinely crashed agent still drops within 90s.
+    # always_on agents refresh their heartbeat as a side effect of re-entering
+    # poll_events (`GET /agents/{id}/events`), so the gap between beats is
+    # bounded below by the long-poll timeout the agent asks for and grows
+    # further while it is busy handling an event. 90s gives a 30s long-poll
+    # ~3x headroom so always_on agents stay live across idle long-polls and
+    # slow event handling, while a genuinely crashed agent still drops within
+    # 90s.
     ALWAYS_ON_TTL = timedelta(seconds=90)
 
     # session_addressable agents on the old Claude Code plugin renew their heartbeat

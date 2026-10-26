@@ -219,7 +219,7 @@ class SwitchConfig(BaseSettings):
     jwt_secret_key: str | None = None
 
     # Private hosts Switch may reach at a URL a tenant or agent supplied (a
-    # Mattermost server, an OpenCode server, an agent icon): comma-separated
+    # Mattermost server, an agent icon): comma-separated
     # hostnames and CIDRs. Anything else that is not a public address is
     # refused. Link-local and metadata addresses are refused even when listed.
     # See `outbound.py`.
@@ -370,9 +370,9 @@ class SwitchConfig(BaseSettings):
     #
     # It exists because workspace creation is an amplification vector rather
     # than just a row: `all_tenant_ids()` drives a fan-out per tenant at boot
-    # and a sweep every few seconds, across clients, collaboration bridges,
-    # server connectors and rooms. Unbounded self-service creation therefore
-    # buys steady-state work in the deployment, not storage.
+    # and a sweep every few seconds, across clients, collaboration bridges and
+    # rooms. Unbounded self-service creation therefore buys steady-state work
+    # in the deployment, not storage.
     #
     # Counts `owner` memberships only, so being invited into someone else's
     # workspace never spends an allowance the invitee cannot get back. Deployment

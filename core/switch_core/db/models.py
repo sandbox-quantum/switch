@@ -1750,33 +1750,6 @@ class MessagingEventReceipt(TenantScoped, Base):
     )
 
 
-# ── Server-Side Connectors ────────────────────────────────────────────────────
-
-
-class ServerConnector(TenantScoped, Base):
-    __tablename__ = "server_connectors"
-    __table_args__ = (
-        Index("ix_server_connectors_tenant_id", "tenant_id"),
-        ForeignKeyConstraint(
-            ["tenant_id", "api_key_id"],
-            ["api_keys.tenant_id", "api_keys.id"],
-            name="fk_server_connectors_api_key",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
-    type: Mapped[str] = mapped_column(Text, nullable=False)
-    display_name: Mapped[str] = mapped_column(Text, nullable=False)
-    connection_config: Mapped[dict | None] = mapped_column(
-        EncryptedJSONB, nullable=True
-    )
-    api_key_id: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[str] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
 # ── External Users ─────────────────────────────────────────────────────────────
 
 
