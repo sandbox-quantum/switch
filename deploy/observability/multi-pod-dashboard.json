@@ -106,7 +106,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Consumers and connectors running, by pod",
+        "title": "Consumers running, by pod",
         "show_legend": true,
         "legend_layout": "auto",
         "requests": [
@@ -116,11 +116,6 @@
                 "data_source": "metrics",
                 "name": "q0",
                 "query": "sum:switch.consumers.running{$env,$service,$pod_name} by {pod_name}"
-              },
-              {
-                "data_source": "metrics",
-                "name": "q1",
-                "query": "sum:switch.connectors.running{$env,$service,$pod_name} by {pod_name}"
               }
             ],
             "response_format": "timeseries",
@@ -128,9 +123,6 @@
             "formulas": [
               {
                 "formula": "q0"
-              },
-              {
-                "formula": "q1"
               }
             ]
           }
