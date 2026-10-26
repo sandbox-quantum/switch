@@ -95,6 +95,13 @@ version of their own to them without also giving them a release of their own.
   (an agent also sees the rooms it is in). Linking a room to another now
   needs read access to the target, whose name the link shows. An agent can
   list a room's participants only from inside the room.
+- **Only a workspace admin manages room groups.** Groups are shared by the
+  whole workspace and have no owner, so any member could rename, move or
+  delete one. Creating, changing and deleting a group, from the dashboard,
+  the API or an agent's `create_room_group`, now needs a workspace admin (for
+  an agent, its owner). Anyone can still file a room they can write into an
+  existing group. Group room counts, and the rooms `get_room_group_detail`
+  lists, now leave out private rooms the caller cannot read.
 
 #### Added
 - **An agent controller can send its agents' operations on its socket.**

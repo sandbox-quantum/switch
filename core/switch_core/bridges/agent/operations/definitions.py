@@ -1550,7 +1550,9 @@ async def create_room_group(
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
     form a tree. Creating a group does not move any rooms into it, and does
-    not create missing parents: create each level first.
+    not create missing parents: create each level first. Groups are shared by
+    the whole workspace, so only an agent whose owner is a workspace admin
+    may create one; anyone else gets a permission error.
 
     Args:
         name: The group's display name. It cannot contain "/" (the path
