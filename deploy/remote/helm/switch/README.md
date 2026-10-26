@@ -200,10 +200,11 @@ stored in the database.
 
 An agent with no icon of its own is drawn by api.dicebear.com with its name as
 the seed, and a person relayed from another platform by ui-avatars.com with their
-name in the URL, so the services see the name. Slack, Discord and Teams fetch the
-image on their own servers and serve their copy, the Mattermost bridge fetches it
-from switch-core, and Switch Console loads it on each user's machine. To send no
-such URL:
+name in the URL, so the services see the name. Slack and Discord fetch the image
+on their own servers and serve their copy, Teams draws it inside each card (some
+Teams clients may load it from the service directly), the Mattermost bridge
+fetches it from switch-core, and Switch Console loads it on each user's machine.
+To send no such URL:
 
 ```yaml
 switchCore:

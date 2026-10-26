@@ -308,12 +308,14 @@ switchCore:
   # Agents and people drawn by outside avatar services. An agent with no icon
   # of its own wears a face from api.dicebear.com seeded with its name, and a
   # person relayed from another platform a lettered badge from ui-avatars.com
-  # with their name in the URL, so the services see the name. Slack, Discord
-  # and Teams fetch the image on their own servers, the Mattermost bridge from
-  # switch-core, and Switch Console on each user's machine. false sends no such
-  # URL, stored icons included: each platform shows its own default icon (a
-  # Mattermost bot keeps the image it already has), new agents get no generated
-  # icon, and Switch Console stops drawing them for this server.
+  # with their name in the URL, so the services see the name. Slack and Discord
+  # fetch the image on their own servers, Teams draws it inside each card (some
+  # Teams clients may load it from the service directly), the Mattermost bridge
+  # fetches it from switch-core, and Switch Console loads it on each user's
+  # machine. false sends no such URL, stored icons included: each platform
+  # shows its own default icon (a Mattermost bot keeps the image it already
+  # has), new agents get no generated icon, and Switch Console stops drawing
+  # them for this server.
   thirdPartyAvatars:
     enabled: true
 

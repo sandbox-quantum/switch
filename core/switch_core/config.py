@@ -525,9 +525,10 @@ class SwitchConfig(BaseSettings):
     # agent with no icon of its own wears a face from api.dicebear.com seeded
     # with its name, and a person relayed from another platform a lettered
     # badge from ui-avatars.com with their name in the URL, so the services
-    # see the name. Slack, Discord and Teams fetch the image on their own
-    # servers and serve their copy, the Mattermost adapter fetches it from this
-    # server, and Switch Console loads it on each user's machine.
+    # see the name. Slack and Discord fetch the image on their own servers and
+    # serve their copy, Teams draws it inside each card (some Teams clients may
+    # load it from the service directly), the Mattermost adapter fetches it
+    # from this server, and Switch Console loads it on each user's machine.
     # False sends no such URL anywhere, stored ones included: each platform
     # shows its own default icon (a Mattermost bot keeps the image it already
     # has), new agents get no generated icon, setting an icon on one of those
