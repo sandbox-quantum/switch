@@ -719,8 +719,8 @@ class AgentCore:
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
         icon_fields = {} if icon_url is None else {"icon_url": icon_url}
-        # Same for the display name: a connector re-registers on every startup
-        # and knows nothing about it.
+        # Same for the display name: a client that re-registers on every
+        # launch knows nothing about it.
         display_name_fields = (
             {} if display_name is None else {"display_name": display_name}
         )

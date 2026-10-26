@@ -18,7 +18,7 @@ metadata:
     {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 4 }}
 spec:
   replicas: {{ .Values.switchCore.replicaCount }}
-  # Each bridge, connector and reader is held by one pod at a time through a
+  # Each bridge and reader is held by one pod at a time through a
   # lease in Postgres, so two pods side by side during a roll do not both run
   # it: the old pod hands its work over on SIGTERM, and the new one takes it
   # over. One replica still uses Recreate, because switch-core sizes its

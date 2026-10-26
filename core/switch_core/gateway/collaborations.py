@@ -329,8 +329,8 @@ async def create_bridge(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     # Admin-only: a bridge is an unowned, workspace-wide integration holding
-    # platform secrets, so there is no owner to scope to (unlike connectors,
-    # whose authz is owner-or-admin) — registering one is an admin action.
+    # platform secrets, so there is no owner to scope to — registering one is
+    # an admin action.
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     # A shared bridge runs on this deployment's own app, which is in every

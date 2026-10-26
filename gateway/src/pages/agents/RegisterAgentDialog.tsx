@@ -42,7 +42,8 @@ export default function RegisterAgentDialog({
   const { data: knownTypes } = useKnownAgentTypes();
 
   const [selectedKey, setSelectedKey] = useState("");
-  const [selectedKind, setSelectedKind] = useState<SelectedKind>(null);
+  const selectedKind: SelectedKind =
+    selectedKey === "" ? null : selectedKey === OTHER_KEY ? "other" : "known";
 
   // Known agent / Other fields
   const [name, setName] = useState("");
@@ -62,7 +63,6 @@ export default function RegisterAgentDialog({
 
   const reset = useCallback(() => {
     setSelectedKey("");
-    setSelectedKind(null);
     setName("");
     setDescription("");
     setKnownAgentOptions({});
@@ -81,12 +81,10 @@ export default function RegisterAgentDialog({
   const handleTypeChange = useCallback(
     (value: string) => {
       setSelectedKey(value);
-      const kind: SelectedKind = value === OTHER_KEY ? "other" : "known";
-      setSelectedKind(kind);
 
       // Seed type-specific options with their schema defaults so unchecking a
       // box explicitly sets `false` rather than dropping the field.
-      if (kind === "known") {
+      if (value !== OTHER_KEY) {
         const spec = knownTypes?.find((t) => t.key === value);
         setKnownAgentOptions(extractDefaults(spec?.options_schema));
       } else {
@@ -96,12 +94,7 @@ export default function RegisterAgentDialog({
     [knownTypes],
   );
 
-  const canSubmit =
-    selectedKind === "known"
-      ? selectedKey && name
-      : selectedKind === "other"
-        ? name
-        : false;
+  const canSubmit = selectedKind !== null && name !== "";
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) return;
@@ -109,18 +102,16 @@ export default function RegisterAgentDialog({
     setError(null);
 
     try {
-      if (selectedKind === "known") {
-        const res = await registerKnownAgent(
-          selectedKey,
-          name,
-          description,
-          knownAgentOptions,
-        );
-        setAgentResult(res);
-      } else if (selectedKind === "other") {
-        const res = await registerOtherAgent(name, description);
-        setAgentResult(res);
-      }
+      const res =
+        selectedKind === "known"
+          ? await registerKnownAgent(
+              selectedKey,
+              name,
+              description,
+              knownAgentOptions,
+            )
+          : await registerOtherAgent(name, description);
+      setAgentResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed.");
     } finally {
@@ -255,7 +246,7 @@ export default function RegisterAgentDialog({
                 </MenuItem>
               </TextField>
 
-              {(selectedKind === "known" || selectedKind === "other") && (
+              {selectedKind !== null && (
                 <>
                   <TextField
                     label="Name"

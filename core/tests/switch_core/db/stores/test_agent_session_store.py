@@ -87,13 +87,6 @@ async def _age_room_heartbeat(
 
 
 class TestLiveness:
-    def test_ttl_exceeds_the_idle_long_poll(self) -> None:
-        """Regression guard for the always_on flapping bug: the liveness
-        window must stay above the long-poll timeout, otherwise a healthy
-        agent reads "disconnected" between heartbeats. Keep generous headroom
-        for event-handling time on top of the idle cadence."""
-        assert AgentSessionStore.ALWAYS_ON_TTL > _IDLE_LONG_POLL
-
     async def test_heartbeat_at_idle_poll_cadence_stays_live(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

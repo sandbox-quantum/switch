@@ -9,13 +9,16 @@ together with the framework it plugged into. This drops what only it used:
   the whole exemption from row-level security (`db/tenant_lookup.py`);
 - the registration key each connector minted to register its agents. Such a
   key can still register agents over HTTP, and nothing holds it any more, so
-  it is deleted rather than left live.
+  it is deleted rather than left live;
+- each connector's row in `ownership_leases` (kind `connector`), which no
+  process will claim or release again.
 
 The agents a connector registered are left in place. Deleting an agent takes
 its client, its room memberships and its handle on each chat platform with it
 (`AgentCore.delete_agent`), which is not a statement to repeat here. Nothing
 can drive them now, so each is logged by workspace and name for an operator
-to delete from the gateway, and the connector's id comes off its metadata.
+to delete from the gateway, and the connector's id comes off its metadata. The
+gateway still shows each as `server-side:opencode`, its connector type.
 
 The downgrade puts the table, its policy and the lookup back as they were,
 empty: the connectors, their keys and the mark on their agents are not
@@ -80,7 +83,8 @@ def upgrade() -> None:
     if stranded:
         logger.warning(
             "Server-side connectors are gone, and nothing can run the agents "
-            "they registered. Delete these from the gateway (workspace/agent): %s",
+            "they registered (shown in the gateway as type server-side:...). "
+            "Delete these from the gateway (workspace/agent): %s",
             ", ".join(stranded),
         )
     op.execute(
@@ -94,6 +98,7 @@ def upgrade() -> None:
         "WHERE k.tenant_id = c.tenant_id AND k.id = c.api_key_id "
         "AND k.type = 'registration'"
     )
+    op.execute("DELETE FROM ownership_leases WHERE kind = 'connector'")
     op.execute(DROP_TENANT_OF_SERVER_CONNECTOR)
     op.drop_table(TABLE)
 

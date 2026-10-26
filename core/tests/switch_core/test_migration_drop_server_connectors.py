@@ -62,6 +62,12 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
             )
             await connection.execute(
                 text(
+                    "INSERT INTO ownership_leases (kind, key, token) "
+                    "VALUES ('connector', 'c1', 1), ('client', 'found-client', 1)"
+                )
+            )
+            await connection.execute(
+                text(
                     "INSERT INTO clients (tenant_id, id, matrix_user_id, "
                     "display_name, type) VALUES "
                     "(:t, 'found-client', '@found:test', 'found', 'agent'), "
@@ -109,6 +115,13 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
             keys = set(
                 (await connection.execute(text("SELECT id FROM api_keys"))).scalars()
             )
+            leases = set(
+                (
+                    await connection.execute(
+                        text("SELECT kind, key FROM ownership_leases")
+                    )
+                ).tuples()
+            )
             metadata = {
                 row.id: row.metadata
                 for row in await connection.execute(
@@ -124,6 +137,8 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
     # Only the connector's own registration key: another person's registration
     # key and the agents' own keys are nobody's connector's.
     assert keys == {"personal-key", "found-key", "own-key"}
+    # Nothing claims a connector's work any more; every other kind is left.
+    assert leases == {("client", "found-client")}
     # The agent stays, for an operator to delete properly; only the mark of a
     # connector that no longer exists comes off it.
     assert metadata == {"found": {"kept": 1}, "own": {"kept": 2}}

@@ -322,7 +322,11 @@ class Harness:
     ) -> RegistrationResult:
         """Register the way a standalone agent does: with a bearer token
         presented to `POST /agents`, its owner resolved by the endpoint's own
-        dependency rather than over real HTTP."""
+        dependency rather than over real HTTP.
+
+        The tenant is the harness's, tenant zero, which is where the bootstrap
+        key lives; binding the token's own tenant is `BearerAuthMiddleware`'s
+        part, covered by `test_bearer_auth_tenant_binding.py`."""
         async with self.session_factory() as session:  # type: ignore[operator]
             owner_id = await _resolve_registration_user_id(
                 authorization=f"Bearer {token}",

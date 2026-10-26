@@ -495,9 +495,8 @@ none of it is needed to take part in a conversation.
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
   sending `!delete-agent <name> confirm` within two minutes. Needs "can
-  manage agents"; refused for yourself, an agent that can manage agents, and
-  a connector's agent. Confirm with the person asking first, then tell them
-  what to send.
+  manage agents"; refused for yourself and for an agent that can manage
+  agents. Confirm with the person asking first, then tell them what to send.
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
