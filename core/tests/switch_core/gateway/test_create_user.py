@@ -22,10 +22,12 @@ import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import User
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway import auth_routes
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.auth_routes import router
@@ -76,6 +78,15 @@ async def _admin_client(
         base_url="http://test",
         cookies={"switch_auth": token},
     )
+
+
+class _NamelessUserStore(UserStore):
+    """Writes the user with no name, which `users.name` refuses: an integrity
+    failure that is not the email being taken."""
+
+    async def create(self, session: AsyncSession, user: User) -> None:
+        user.name = None  # type: ignore[assignment]
+        await super().create(session, user)
 
 
 async def _emails_like(
@@ -175,10 +186,24 @@ class TestCreateUserOverHttp:
         ]
 
     async def test_concurrent_creates_of_one_address_are_one_user_and_a_conflict(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Both requests pass the existence check before either inserts, since
-        # the check runs before bcrypt and the insert after it: a double-click.
+        # A double-click. Holding each request at bcrypt until both reach it
+        # puts both past the existence check before either inserts, so the
+        # insert, not the check, is what refuses the second.
+        both_checked = asyncio.Barrier(2)
+        hash_password = auth_routes.hash_password_off_loop
+
+        async def hash_once_both_have_checked(password: str) -> str:
+            async with asyncio.timeout(10):
+                await both_checked.wait()
+            return await hash_password(password)
+
+        monkeypatch.setattr(
+            auth_routes, "hash_password_off_loop", hash_once_both_have_checked
+        )
         app = _app(session_factory)
         async with await _admin_client(session_factory, app) as client:
             responses = await asyncio.gather(
@@ -198,9 +223,30 @@ class TestCreateUserOverHttp:
         assert sorted(r.status_code for r in responses) == [200, 409], [
             r.text for r in responses
         ]
+        assert next(r for r in responses if r.status_code == 409).json() == {
+            "detail": "Email already registered"
+        }
         assert await _emails_like(session_factory, "ed@example.invalid") == [
             "ed@example.invalid"
         ]
+
+    async def test_an_integrity_failure_other_than_the_email_is_not_a_conflict(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        app = _app(session_factory)
+        app.dependency_overrides[gw_deps.get_user_store] = _NamelessUserStore
+        async with await _admin_client(session_factory, app) as client:
+            with pytest.raises(IntegrityError, match='null value in column "name"'):
+                await client.post(
+                    "/users",
+                    json={
+                        "name": "Flo",
+                        "email": "flo@example.invalid",
+                        "password": "good-pass-1",
+                    },
+                )
+
+        assert await _emails_like(session_factory, "flo@example.invalid") == []
 
 
 class TestCreateUserSchemaValidation:
