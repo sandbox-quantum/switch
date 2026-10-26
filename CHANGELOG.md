@@ -2112,6 +2112,14 @@ version of their own to them without also giving them a release of their own.
   A host reading another host's ownership ticket while that host replaced or
   deleted it got `EPERM` from Windows and exited. It now tries the read again
   for a few seconds, as it already did for its own writes.
+- **Codex is no longer shown as ready with a login sessions cannot use.** A
+  ChatGPT login kept in the OS keyring passed Console's sign-in check, so
+  Codex showed as signed in while every session failed: a session takes that
+  login only from `auth.json`. The check now reports it as not signed in and
+  says why, with the switch to file storage as the way out. An API key in the
+  keyring still counts as signed in, since sessions are handed it. The
+  provider status card and the warning beside an agent now show what the
+  check said when a provider is not signed in, instead of a generic line.
 - **Settings → Agent providers keeps this computer's report current.** It
   prefers the report from the server Console is on, rereads it while open and
   after the controller reports again, and the install section says so when

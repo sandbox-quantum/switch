@@ -60,6 +60,14 @@ it('suggests signing in when the CLI says it is signed out', () => {
   expect(render(false)).toContain('claude auth login');
 });
 
+it('says why a sign-in sessions cannot use counts as signed out', () => {
+  const keyring = 'The login is in the OS keyring, which sessions cannot use.';
+  query.data = { installed: true, status: 'unauthenticated', message: keyring, models: [] };
+
+  expect(render(false)).toContain(keyring);
+  expect(render(true)).toContain(`title="${keyring}"`);
+});
+
 it('gives no reason when signed in', () => {
   query.data = { installed: true, status: 'authenticated', message: 'ok', models: [] };
 

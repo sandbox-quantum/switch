@@ -99,9 +99,7 @@ export function ProviderConnectionStatus({
       ? null
       : query.error
         ? 'Could not reach this host. Check the connection and try again.'
-        : data?.status === 'unauthenticated'
-          ? 'Sign in to use this provider.'
-          : (data?.message ?? null);
+        : (data?.message ?? null);
   // Only a CLI that answered "signed out" (or "no backend") is fixed by its
   // login command. An unknown status means the check itself could not run,
   // and the reason says what to do instead.
