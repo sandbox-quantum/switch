@@ -2,30 +2,42 @@
 
 `test_migration_parity.py` replays the chain into an empty database, so it
 cannot see what the revision does to a deployment that ran a connector. This
-seeds one, with the agent it registered and the registration key it minted
-beside a key and an agent that are nobody's connector's, stops the chain one
-revision short, runs it, and reads what is left. The downgrade is checked to
-land on the schema the revision below built, so it can upgrade again.
+seeds two, with the agent one registered and the registration keys they
+minted, a key left by a connector removed earlier, and keys and agents that
+are nobody's connector's; stops the chain one revision short, runs it, and
+reads what is left. The downgrade is checked to land on the schema the
+revision below built, so it can upgrade again.
 """
 
 from __future__ import annotations
 
 import pytest
+from alembic.config import Config
 from sqlalchemy import text
 
-from tests.switch_core.test_migration_drop_feature_flags_table import _migrate
+from tests.switch_core.test_migration_drop_feature_flags_table import (
+    _CORE,
+    _migrate,
+    _script_directory,
+)
 from tests.switch_core.test_migration_operator_owns_tenant_zero import (
     _drop_fixture,
     _fixture_engine,
     _upgrade_to,
 )
 
-_PRE_MIGRATION_REVISION = "f68b679599ab"
 _MIGRATION_UNDER_TEST = "e223eae63078"
+# Whatever the revision follows, so seeding stays one revision short however
+# often its `down_revision` is moved onto a newer head.
+_PRE_MIGRATION_REVISION = (
+    _script_directory(Config(str(_CORE / "alembic.ini")))
+    .get_revision(_MIGRATION_UNDER_TEST)
+    .down_revision
+)
 _TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
 
 
-async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
+async def test_the_connectors_go_their_keys_are_retired_and_their_agent_is_named(
     postgres_url: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     engine = await _fixture_engine(postgres_url)
@@ -48,6 +60,8 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
                     "'registration'), "
                     "(:t, 'removed-connector-key', 'ada', 'h5', 'x', "
                     "'server-connector:gone', 'registration'), "
+                    "(:t, 'relabelled-key', 'ada', 'h7', 'x', 'relabelled', "
+                    "'registration'), "
                     "(:t, 'personal-key', 'ada', 'h2', 'x', 'mine', 'registration'), "
                     "(:t, 'found-key', 'ada', 'h3', 'x', 'found', 'agent'), "
                     "(:t, 'own-key', 'ada', 'h4', 'x', 'own', 'agent'), "
@@ -59,7 +73,8 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
                 text(
                     "INSERT INTO server_connectors (tenant_id, id, type, "
                     "display_name, api_key_id, status) "
-                    "VALUES (:t, 'c1', 'opencode', 'oc', 'connector-key', 'active')"
+                    "VALUES (:t, 'c1', 'opencode', 'oc', 'connector-key', 'active'), "
+                    "(:t, 'c2', 'opencode', 'other', 'relabelled-key', 'active')"
                 ),
                 {"t": _TENANT_ZERO_ID},
             )
@@ -122,9 +137,12 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
                     "WHERE proname = 'tenant_of_server_connector'"
                 )
             )
-            keys = set(
-                (await connection.execute(text("SELECT id FROM api_keys"))).scalars()
-            )
+            keys = {
+                row.id: (row.type, row.label)
+                for row in await connection.execute(
+                    text("SELECT id, type, label FROM api_keys")
+                )
+            }
             leases = set(
                 (
                     await connection.execute(
@@ -144,18 +162,29 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
 
     assert table is None
     assert functions == 0
-    # The keys connectors minted, of the connector still here and of one
-    # removed before, which removing it never deleted. Another person's
-    # registration key and the agents' own keys are nobody's connector's.
-    assert keys == {"personal-key", "found-key", "own-key", "nulled-key"}
-    assert "server-connector:gone" in caplog.text
+    # Retired, not deleted: the keys connectors minted, found by their
+    # connector's row or by the label a removed connector's key still carries,
+    # and the agent key of the agent a connector registered. Another person's
+    # registration key and the keys of agents that only look like a
+    # connector's are left as they were.
+    gone = " (retired: its server-side connector is gone)"
+    assert keys == {
+        "connector-key": ("retired", "server-connector:oc" + gone),
+        "relabelled-key": ("retired", "relabelled" + gone),
+        "removed-connector-key": ("retired", "server-connector:gone" + gone),
+        "found-key": ("retired", "found" + gone),
+        "personal-key": ("registration", "mine"),
+        "own-key": ("agent", "own"),
+        "nulled-key": ("agent", "nulled"),
+    }
+    assert "server-connector:gone" + gone in caplog.text
     # Nothing claims a connector's work any more; every other kind is left.
     assert leases == {("client", "found-client")}
-    # The connector's agent stays, for an operator to delete properly; only
-    # the mark of a connector that no longer exists comes off it. Agents that
-    # only look like one keep their metadata and are not named.
+    # The connector's agent stays, for an operator to delete properly, and
+    # keeps the mark that says where it came from. Agents that only look like
+    # one are not named.
     assert metadata == {
-        "found": {"kept": 1},
+        "found": {"server_connector_id": "c1", "kept": 1},
         "own": {"server_connector_id": "x", "kept": 2},
         "nulled": {"server_connector_id": None, "kept": 3},
     }

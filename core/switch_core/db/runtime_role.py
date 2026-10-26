@@ -123,8 +123,8 @@ async def grant_runtime_role(owner: AsyncConnection, role: str) -> None:
     **The two revokes are what make the grant mean something.** Without them
     `EXECUTE` on the tenant lookups stays at the `PUBLIC` default a new
     function is created with, so every role with `CONNECT` on this database
-    can resolve which tenant any user, credential, client, room, bridge or
-    connector belongs to — see `db/tenant_lookup.py` on what that discloses.
+    can resolve which tenant any user, credential, client, room or bridge
+    belongs to — see `db/tenant_lookup.py` on what that discloses.
     Revoking from `PUBLIC` and granting to `role` by name replaces "callable
     by anyone" with "callable by the process".
 
@@ -512,8 +512,8 @@ async def _refuse_public_execute(connection: AsyncConnection) -> None:
             f"PUBLIC holds EXECUTE on {public}, so every role with CONNECT on "
             "this database can call the tenant lookups (db/tenant_lookup.py) "
             "— enumerate every tenant, and resolve any user, credential, "
-            "client, room, bridge or connector it can name to the tenant that "
-            "owns it. That is the default a CREATE FUNCTION leaves behind, so "
+            "client, room or bridge it can name to the tenant that owns it. "
+            "That is the default a CREATE FUNCTION leaves behind, so "
             "either the boot grants have never run against this database "
             "(configure DB_OWNER_USER / DB_OWNER_PASSWORD) or something has "
             "granted EXECUTE back to PUBLIC since. Revoke it: REVOKE EXECUTE "
