@@ -341,7 +341,6 @@ class Harness:
             integration_profile=_PROFILE,
             owner_id=owner_id,
             overwrite=True,
-            addressing_policy=None,
             registration_path=registration_path(),
         )
         self._registered.append(result.agent_id)

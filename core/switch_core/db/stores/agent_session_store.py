@@ -39,11 +39,12 @@ class AgentSessionStore:
 
     # always_on agents refresh their heartbeat as a side effect of re-entering
     # poll_events (`GET /agents/{id}/events`), so the gap between beats is
-    # bounded below by the long-poll timeout the agent asks for and grows
-    # further while it is busy handling an event. 90s gives a 30s long-poll
-    # ~3x headroom so always_on agents stay live across idle long-polls and
-    # slow event handling, while a genuinely crashed agent still drops within
-    # 90s.
+    # bounded below by the long-poll timeout the agent asks for (10s unless it
+    # says otherwise) and grows further while it is busy handling an event.
+    # 90s leaves room for long-polls of up to about 30s plus slow event
+    # handling, while a genuinely crashed agent still drops within 90s. A
+    # client that asks for a timeout near or past the TTL reads as
+    # disconnected between its polls.
     ALWAYS_ON_TTL = timedelta(seconds=90)
 
     # session_addressable agents on the old Claude Code plugin renew their heartbeat

@@ -46,9 +46,12 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
                     "encrypted_key, label, type) VALUES "
                     "(:t, 'connector-key', 'ada', 'h1', 'x', 'server-connector:oc', "
                     "'registration'), "
+                    "(:t, 'removed-connector-key', 'ada', 'h5', 'x', "
+                    "'server-connector:gone', 'registration'), "
                     "(:t, 'personal-key', 'ada', 'h2', 'x', 'mine', 'registration'), "
                     "(:t, 'found-key', 'ada', 'h3', 'x', 'found', 'agent'), "
-                    "(:t, 'own-key', 'ada', 'h4', 'x', 'own', 'agent')"
+                    "(:t, 'own-key', 'ada', 'h4', 'x', 'own', 'agent'), "
+                    "(:t, 'nulled-key', 'ada', 'h6', 'x', 'nulled', 'agent')"
                 ),
                 {"t": _TENANT_ZERO_ID},
             )
@@ -71,7 +74,8 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
                     "INSERT INTO clients (tenant_id, id, matrix_user_id, "
                     "display_name, type) VALUES "
                     "(:t, 'found-client', '@found:test', 'found', 'agent'), "
-                    "(:t, 'own-client', '@own:test', 'own', 'agent')"
+                    "(:t, 'own-client', '@own:test', 'own', 'agent'), "
+                    "(:t, 'nulled-client', '@nulled:test', 'nulled', 'agent')"
                 ),
                 {"t": _TENANT_ZERO_ID},
             )
@@ -83,12 +87,18 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
                     "(:t, 'found', 'found', '', 'always_on', 'server-side:opencode', "
                     "'{}', 'found-client', 'found-key', 'ada', :found), "
                     "(:t, 'own', 'own', '', 'auto_session', 'claude-code', "
-                    "'{}', 'own-client', 'own-key', 'ada', :own)"
+                    "'{}', 'own-client', 'own-key', 'ada', :own), "
+                    "(:t, 'nulled', 'nulled', '', 'always_on', "
+                    "'server-side:opencode', '{}', 'nulled-client', 'nulled-key', "
+                    "'ada', :nulled)"
                 ),
                 {
                     "t": _TENANT_ZERO_ID,
                     "found": '{"server_connector_id": "c1", "kept": 1}',
-                    "own": '{"kept": 2}',
+                    # The metadata is the client's to write over HTTP: carrying
+                    # the key, or a null under it, is not being a connector's.
+                    "own": '{"server_connector_id": "x", "kept": 2}',
+                    "nulled": '{"server_connector_id": null, "kept": 3}',
                 },
             )
 
@@ -134,16 +144,24 @@ async def test_the_connector_its_key_and_its_mark_go_and_its_agent_is_named(
 
     assert table is None
     assert functions == 0
-    # Only the connector's own registration key: another person's registration
-    # key and the agents' own keys are nobody's connector's.
-    assert keys == {"personal-key", "found-key", "own-key"}
+    # The keys connectors minted, of the connector still here and of one
+    # removed before, which removing it never deleted. Another person's
+    # registration key and the agents' own keys are nobody's connector's.
+    assert keys == {"personal-key", "found-key", "own-key", "nulled-key"}
+    assert "server-connector:gone" in caplog.text
     # Nothing claims a connector's work any more; every other kind is left.
     assert leases == {("client", "found-client")}
-    # The agent stays, for an operator to delete properly; only the mark of a
-    # connector that no longer exists comes off it.
-    assert metadata == {"found": {"kept": 1}, "own": {"kept": 2}}
+    # The connector's agent stays, for an operator to delete properly; only
+    # the mark of a connector that no longer exists comes off it. Agents that
+    # only look like one keep their metadata and are not named.
+    assert metadata == {
+        "found": {"kept": 1},
+        "own": {"server_connector_id": "x", "kept": 2},
+        "nulled": {"server_connector_id": None, "kept": 3},
+    }
     assert f"{slug}/found" in caplog.text
     assert f"{slug}/own" not in caplog.text
+    assert f"{slug}/nulled" not in caplog.text
 
 
 async def test_the_downgrade_puts_the_table_and_its_lookup_back_empty(

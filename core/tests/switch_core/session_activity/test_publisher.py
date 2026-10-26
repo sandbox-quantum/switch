@@ -672,7 +672,15 @@ async def test_a_restart_redraws_running_turns_but_not_ones_already_shown_ended(
     try:
         await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
         await _turn(service, bridged.room_id, "running", 1, turn_id="turn-2")
-        await platform.wait_until(lambda: len(_turns(platform)) == 2)
+        # Turns, not draws: turn-1 drawn before turn-2 started is redrawn to
+        # name turn-2 in its stop control, a third draw that can land in the
+        # same poll as the second.
+        await platform.wait_until(
+            lambda: (
+                {d.content.turn.turn_id for d in _turns(platform)}
+                == {"turn-1", "turn-2"}
+            )
+        )
         await _turn(service, bridged.room_id, "completed", 2, turn_id="turn-1")
         await platform.wait_until(
             lambda: any(d.content.turn.status == "completed" for d in _turns(platform))
