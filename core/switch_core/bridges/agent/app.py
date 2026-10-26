@@ -41,6 +41,7 @@ from switch_core.logging_context import log_context
 from switch_core.observability.http import MetricsMiddleware
 from switch_core.refusal_breaker import RefusalBreaker
 from switch_core.request_context import RequestContextMiddleware
+from switch_core.request_validation import public_errors
 from switch_core.room_service import RoomService
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.sessions.errors import SessionError
@@ -80,14 +81,16 @@ async def log_http_exceptions(request: Request, exc: HTTPException) -> JSONRespo
 async def log_validation_errors(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
+    # The log gets what the response gets and no more: the body that was sent,
+    # or an error's `input`, would put message text and secrets in the logs.
+    errors = public_errors(exc)
     logger.warning(
-        "%s %s → 422 validation: errors=%s body=%r",
+        "%s %s → 422 validation: errors=%s",
         request.method,
         request.url.path,
-        exc.errors(),
-        exc.body,
+        errors,
     )
-    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+    return JSONResponse(status_code=422, content={"detail": errors})
 
 
 def create_agent_bridge_app(
