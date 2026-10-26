@@ -39,3 +39,4 @@ export function installSourcesDiffer(
     reported !== null && installedHere(reported, localStatus) !== installedHere(null, localStatus)
   );
 }
+
