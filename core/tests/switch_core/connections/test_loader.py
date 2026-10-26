@@ -1046,3 +1046,64 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_read_url_accepts_same_origin_and_path_with_different_query(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+            '    - name: example\n      url: "https://mcp.example.test/v1/mcp"\n'
+            '      read_url: "https://mcp.example.test/v1/mcp?read_only=true"\n',
+        ),
+    )
+    catalog = load_catalog(catalog_copy)
+    assert (
+        catalog["example"].definition.mcp.servers[0].read_url
+        == "https://mcp.example.test/v1/mcp?read_only=true"
+    )
+
+
+@pytest.mark.parametrize(
+    ("bad_read_url", "message"),
+    [
+        (
+            "https://other.example.test/v1/mcp?read_only=true",
+            "same origin and path",
+        ),
+        (
+            "https://mcp.example.test/v2/mcp?read_only=true",
+            "same origin and path",
+        ),
+        (
+            "https://mcp.example.test/v1/mcp",
+            "differ from url by query parameters",
+        ),
+    ],
+)
+def test_rejects_invalid_read_url(catalog_copy, bad_read_url, message):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+            f'    - name: example\n      url: "https://mcp.example.test/v1/mcp"\n'
+            f'      read_url: "{bad_read_url}"\n',
+        ),
+    )
+    with pytest.raises(CatalogError, match=message):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_read_url_without_write_level(catalog_copy):
+    read_only_entry = OAUTH_ENTRY.replace(
+        '  write: { scopes: ["read:items", "write:items"] }\n', ""
+    ).replace(
+        '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+        '    - name: example\n      url: "https://mcp.example.test/v1/mcp"\n'
+        '      read_url: "https://mcp.example.test/v1/mcp?read_only=true"\n',
+    )
+    _write_example(catalog_copy, read_only_entry)
+    with pytest.raises(
+        CatalogError, match="an entry with read_url needs a write access level"
+    ):
+        load_catalog(catalog_copy)

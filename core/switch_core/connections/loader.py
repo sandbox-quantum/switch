@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -41,7 +42,7 @@ MINTED_MAX_LIFETIME = 3600
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
-FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 # A skill describes tasks, tools and limits. How a credential reaches the agent
 # is its host's business, and a skill that names one invites the agent to go
 # looking for it.
@@ -353,9 +354,25 @@ class McpServer(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     name: str = Field(pattern=SLUG_PATTERN)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    read_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] | None = (
         Field(default=None, min_length=1)
     )
+
+    @model_validator(mode="after")
+    def _validate_read_url(self) -> "McpServer":
+        if self.read_url is not None:
+            url_parts = urlsplit(self.url)
+            read_parts = urlsplit(self.read_url)
+            if (
+                url_parts.scheme != read_parts.scheme
+                or url_parts.netloc != read_parts.netloc
+                or url_parts.path != read_parts.path
+            ):
+                raise ValueError("read_url must have the same origin and path as url")
+            if not read_parts.query or read_parts.query == url_parts.query:
+                raise ValueError("read_url must differ from url by query parameters")
+        return self
 
 
 class ConnectionMcp(BaseModel):
@@ -586,6 +603,11 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError("only an api_key entry's MCP servers name headers")
             if self.cli is not None and self.cli.env is not None:
                 raise ValueError("only an api_key entry's tool takes env templates")
+        if self.mcp is not None and any(
+            server.read_url is not None for server in self.mcp.servers
+        ):
+            if self.access is None or self.access.write is None:
+                raise ValueError("an entry with read_url needs a write access level")
         return self
 
     def _check_api_key(self) -> None:

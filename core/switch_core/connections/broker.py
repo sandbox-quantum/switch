@@ -1148,7 +1148,12 @@ class ServiceBroker:
                         else [
                             {
                                 "name": server.name,
-                                "url": server.url,
+                                "url": (
+                                    server.read_url
+                                    if grant.access == "read"
+                                    and server.read_url is not None
+                                    else server.url
+                                ),
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }
