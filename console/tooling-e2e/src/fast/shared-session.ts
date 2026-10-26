@@ -23,9 +23,11 @@ const marks = (detail: SharedSessionDetail): Record<string, string | null> =>
  *    the harness signs in as: base the session in a room, share a second room;
  * 2. the agent operations, as an agent the admin owns (so it acts with the
  *    admin's rights): share and isolate a room, move the home, stop sharing,
- *    and read what each room spent;
- * 3. an agent with no owner is refused, since only the agent's owner or an
- *    admin may change it.
+ *    and read what each room spent.
+ *
+ * Who may change the settings (the agent's owner or a workspace admin) is
+ * covered by core's unit tests: every agent the harness registers acts for the
+ * same admin, so it has no stranger to refuse.
  */
 export const sharedSession: FastScenario = {
   header: {
@@ -104,14 +106,5 @@ export const sharedSession: FastScenario = {
     expect(sharing.shared).toBe(false);
     expect(sharing.home_room).toBeNull();
     log(`${buddy.name} moved the home, isolated a room and stopped the sharing`);
-
-    // ── an agent with no owner may not ──────────────────────────────────────
-    const stranger = await fixtures.agent('stranger');
-    await expect(
-      switchClient.callOperation(stranger, 'update_shared_session', {
-        agent_name: lead.name,
-        home_room_id: hub.id,
-      })
-    ).rejects.toThrow();
   },
 };
