@@ -151,6 +151,15 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **Every way of setting a password now applies the same rules.** Signup
+  already required 8 characters and at most 72 bytes. Changing your own
+  password checked only the 8 characters, and an admin creating a user checked
+  nothing, so a short or empty password went through, and a long passphrase
+  was saved as just its first 72 bytes, the most bcrypt reads. Both now refuse
+  what signup refuses, saying why. Creating a user also trims, lowercases and
+  checks the email the way signup does, so the same address with a stray
+  space no longer makes a second account. Passwords already saved still work
+  (#1035).
 - **Full garbage collections no longer stall the server for hundreds of
   milliseconds.** Once boot has built what lasts for the life of the process
   (modules, the ORM's mappers, the app's routes), the server freezes it out of

@@ -1338,17 +1338,7 @@ export async function createUser(
   password: string,
   role: string,
 ): Promise<UserInfo> {
-  const res = await fetch(`${BASE}/users`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name, email, password, role }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as UserInfo;
+  return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────

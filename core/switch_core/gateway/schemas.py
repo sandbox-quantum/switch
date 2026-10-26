@@ -846,8 +846,8 @@ def _bcrypt_sized_validator(password: str) -> str:
 
 
 # Every password the server is asked to store: long enough to mean something,
-# and short enough that the bcrypt hash (which caps input at 72 bytes by its
-# digest construction) never sees the request fail on the API's behalf.
+# and no longer than the 72 bytes bcrypt reads. bcrypt 4 ignores the rest, so a
+# longer password would be stored as its first 72 bytes; bcrypt 5 raises.
 Password = Annotated[
     str,
     StringConstraints(min_length=PASSWORD_MIN_LENGTH),
