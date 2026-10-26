@@ -5,12 +5,13 @@ import logging
 import re
 import secrets
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from switch_core.addressing import (
     AddressingPolicy,
@@ -31,7 +32,7 @@ from switch_core.agent_icon import (
 )
 from switch_core.aliases import check_alias_collisions, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.authz import Action, Principal, require, require_manage
+from switch_core.authz import Action, Principal, can, require, require_manage
 from switch_core.bridges.agent.api.session_reporter import SessionReporter
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.mediation import MediationService
@@ -3734,10 +3735,12 @@ class AgentCore:
     ) -> dict[str, Any]:
         """Create a directed link from source_room_id → target_room_id.
 
-        Requires write access to the source room.
+        Requires write access to the source room and read access to the
+        target, whose name and description the link shows.
         """
         async with self.session_factory() as session:
             await self._require_room_action(session, agent_id, source_room_id, "write")
+            await self._require_room_action(session, agent_id, target_room_id, "read")
             result = await self.resource_service.attach_linked_room(
                 session,
                 source_room_id=source_room_id,
@@ -3774,32 +3777,50 @@ class AgentCore:
     async def list_all_rooms(
         self, agent_id: str, *, include_archived: bool = False
     ) -> list[Room]:
-        """List all rooms (moderation only).
+        """List the rooms the agent may see: those its owner may read, plus
+        those it is a member of.
 
         Archived rooms are excluded unless `include_archived` is set.
         """
         async with self.session_factory() as session:
-            rooms = await self.room_store.get_all(
-                session, include_archived=include_archived
+            return await self._rooms_visible_to(
+                session, agent_id, include_archived=include_archived
             )
-        return rooms
+
+    async def _rooms_visible_to(
+        self, session: AsyncSession, agent_id: str, *, include_archived: bool
+    ) -> list[Room]:
+        """The rooms the agent's owner may read, plus those the agent is in."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        principal = Principal(owner_id, owner_is_admin)
+        member_of = {
+            r.id
+            for r in await self.room_store.get_rooms_for_agent(
+                session, agent_id, include_archived=include_archived
+            )
+        }
+        rooms = await self.room_store.get_all(
+            session, include_archived=include_archived
+        )
+        return [r for r in rooms if r.id in member_of or can(principal, "read", r)]
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.
 
         Returns dicts of ``{id, name, description, parent_group_id, room_count,
         path}`` where `path` is the root-first ancestry (e.g. "Parent / Child")
-        and `room_count` is the number of rooms directly in that group.
+        and `room_count` is the number of rooms directly in that group that
+        the agent may see.
         """
         async with self.session_factory() as session:
             result = await session.execute(select(RoomGroup))
             groups = list(result.scalars().all())
-            count_rows = await session.execute(
-                select(Room.group_id, func.count(Room.id))
-                .where(Room.group_id.is_not(None))
-                .group_by(Room.group_id)
+            visible = await self._rooms_visible_to(
+                session, agent_id, include_archived=True
             )
-            counts = {gid: c for gid, c in count_rows.all() if gid is not None}
+        counts = Counter(r.group_id for r in visible if r.group_id is not None)
 
         by_id = {g.id: g for g in groups}
 
@@ -3858,9 +3879,18 @@ class AgentCore:
         (a path, bare name or id). Returns the new group's detail dict.
 
         Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
-        the parent already has a group with this name.
+        the parent already has a group with this name, and PermissionError
+        unless the agent's owner administers the workspace: groups are shared
+        and have no owner of their own.
         """
         async with self.session_factory() as session:
+            _agent, _owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if not owner_is_admin:
+                raise PermissionError(
+                    "Only a workspace admin's agent can create room groups."
+                )
             parent_group_id = await self._resolve_group_name(session, parent_group_name)
             group = await self.room_group_store.create(
                 session,
@@ -3887,7 +3917,7 @@ class AgentCore:
         self, agent_id: str, group_id: str
     ) -> dict[str, Any]:
         """Return one room group's detail: its fields, ancestry path, the rooms
-        directly in it, and its immediate child groups.
+        directly in it that the agent may see, and its immediate child groups.
 
         Raises ValueError if the group does not exist.
         """
@@ -3896,11 +3926,12 @@ class AgentCore:
             if group is None:
                 raise ValueError(f"Room group not found: {group_id}")
 
-            member_room_rows = await session.execute(
-                select(Room.id, Room.name).where(Room.group_id == group_id)
-            )
             member_rooms = [
-                {"id": rid, "name": rname} for rid, rname in member_room_rows.all()
+                {"id": r.id, "name": r.name}
+                for r in await self._rooms_visible_to(
+                    session, agent_id, include_archived=True
+                )
+                if r.group_id == group_id
             ]
 
             child_rows = await session.execute(

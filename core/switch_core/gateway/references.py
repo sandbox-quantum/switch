@@ -18,6 +18,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
+    readable_room_ids,
     require_room_access,
 )
 from switch_core.gateway.dependencies import (
@@ -414,6 +415,7 @@ async def list_rooms_for_reference(
     reference_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
@@ -429,7 +431,12 @@ async def list_rooms_for_reference(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     rows = await resource_service.list_rooms_for_reference(session, reference_id)
-    return [ResourceRoom(room_id=rid, room_name=name) for rid, name in rows]
+    readable = await readable_room_ids(session, room_store, user, is_admin)
+    return [
+        ResourceRoom(room_id=rid, room_name=name)
+        for rid, name in rows
+        if rid in readable
+    ]
 
 
 @router.get("/rooms/{room_id}/references")

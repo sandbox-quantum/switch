@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -32,6 +33,26 @@ from switch_core.telemetry.ages import UNKNOWN_AGE, age_days
 router = APIRouter()
 
 
+def _require_group_admin(is_admin: bool) -> None:
+    """Groups are shared by the whole workspace and have no owner, so only a
+    workspace admin may create, change or delete one. Filing a room one can
+    write into an existing group stays open to everyone."""
+    if not is_admin:
+        raise HTTPException(
+            status_code=403, detail="Only a workspace admin can manage room groups."
+        )
+
+
+async def _readable_room_counts(
+    session: AsyncSession, room_store: RoomStore, user: User, is_admin: bool
+) -> Counter[str]:
+    """Rooms directly in each group, counting only rooms `user` may read."""
+    rooms = await room_store.list_readable(
+        session, user.id, is_admin=is_admin, include_archived=True
+    )
+    return Counter(r.group_id for r in rooms if r.group_id is not None)
+
+
 def _to_detail(group: RoomGroup, room_count: int) -> RoomGroupDetail:
     return RoomGroupDetail(
         id=group.id,
@@ -48,10 +69,12 @@ def _to_detail(group: RoomGroup, room_count: int) -> RoomGroupDetail:
 async def list_room_groups(
     session: Annotated[AsyncSession, Depends(get_session)],
     room_group_store: Annotated[RoomGroupStore, Depends(get_room_group_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomGroupDetail]:
     groups = await room_group_store.get_all(session)
-    counts = await room_group_store.get_room_counts(session)
+    counts = await _readable_room_counts(session, room_store, user, is_admin)
     return [_to_detail(g, counts.get(g.id, 0)) for g in groups]
 
 
@@ -61,7 +84,9 @@ async def create_room_group(
     session: Annotated[AsyncSession, Depends(get_session)],
     room_group_store: Annotated[RoomGroupStore, Depends(get_room_group_store)],
     _user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGroupDetail:
+    _require_group_admin(is_admin)
     try:
         group = await room_group_store.create(
             session,
@@ -89,8 +114,11 @@ async def patch_room_group(
     req: RoomGroupUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     room_group_store: Annotated[RoomGroupStore, Depends(get_room_group_store)],
-    _user: Annotated[User, Depends(get_current_user)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomGroupDetail:
+    _require_group_admin(is_admin)
     # Only reparent when the client actually sent `parent_group_id` (so we can
     # tell "make top-level" (null) apart from "leave the parent alone" (absent)).
     reparent = "parent_group_id" in req.model_fields_set
@@ -112,7 +140,7 @@ async def patch_room_group(
             raise HTTPException(status_code=404, detail=str(e)) from e
         raise HTTPException(status_code=400, detail=str(e)) from e
     await session.commit()
-    counts = await room_group_store.get_room_counts(session)
+    counts = await _readable_room_counts(session, room_store, user, is_admin)
     return _to_detail(group, counts.get(group.id, 0))
 
 
@@ -162,7 +190,9 @@ async def delete_room_group(
     session: Annotated[AsyncSession, Depends(get_session)],
     room_group_store: Annotated[RoomGroupStore, Depends(get_room_group_store)],
     _user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> Response:
+    _require_group_admin(is_admin)
     # Read before the delete: afterwards there is nothing left to say how much
     # was filed under it, which is the difference between tidying up an empty
     # group and dismantling a working one.

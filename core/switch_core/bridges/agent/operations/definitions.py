@@ -1455,9 +1455,10 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 @operation
 async def list_all_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of). Use `list_rooms` instead to see only the rooms this
-    agent is assigned to.
+    """List the rooms on this Switch instance this agent may see: every room
+    its owner can read (public rooms and the owner's own; all rooms for a
+    workspace admin) plus the rooms it is a member of. Use `list_rooms`
+    instead to see only the rooms this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
@@ -1516,7 +1517,9 @@ async def create_room_group(
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
     form a tree. Creating a group does not move any rooms into it, and does
-    not create missing parents: create each level first.
+    not create missing parents: create each level first. Groups are shared by
+    the whole workspace, so only an agent whose owner is a workspace admin
+    may create one; anyone else gets a permission error.
 
     Args:
         name: The group's display name. It cannot contain "/" (the path
