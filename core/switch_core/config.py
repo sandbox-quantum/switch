@@ -524,13 +524,15 @@ class SwitchConfig(BaseSettings):
     # Whether agents and people may be drawn by outside avatar services. An
     # agent with no icon of its own wears a face from api.dicebear.com seeded
     # with its name, and a person relayed from another platform a lettered
-    # badge from ui-avatars.com with their name in the URL. Slack, Discord and
-    # Teams clients load those URLs, so the services see the name and each
-    # reader's address; the Mattermost adapter loads them from this server.
+    # badge from ui-avatars.com with their name in the URL, so the services
+    # see the name. Slack, Discord and Teams fetch the image on their own
+    # servers and serve their copy, the Mattermost adapter fetches it from this
+    # server, and Switch Console loads it on each user's machine.
     # False sends no such URL anywhere, stored ones included: each platform
-    # shows its own default icon, new agents get no generated icon, setting an
-    # icon on one of those services is refused, and Switch Console stops
-    # drawing them for this server's agents.
+    # shows its own default icon (a Mattermost bot keeps the image it already
+    # has), new agents get no generated icon, setting an icon on one of those
+    # services is refused, and Switch Console stops drawing them for this
+    # server's agents.
     third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"
