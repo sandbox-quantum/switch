@@ -90,10 +90,10 @@ describe('CodexAdapter', () => {
     expect(error).toBeInstanceOf(Error);
     const message = (error as Error).message;
     expect(message).toContain(CODEX_SIGN_IN_REQUIRED);
-    expect(message).toContain('does not copy keyring entries');
+    expect(message).toContain('OS keyring');
     expect(message).toContain('cli_auth_credentials_store = "file"');
-    expect(message).toContain('start a new Switch session');
-    expect(message).toContain('plaintext in auth.json');
+    expect(message).toContain('start a new session');
+    expect(message).toContain('plaintext');
     expect(servers).toHaveLength(1);
     expect(servers[0].received.map((m) => m.method)).toEqual([
       'initialize',

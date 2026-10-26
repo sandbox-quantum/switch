@@ -1977,12 +1977,13 @@ version of their own to them without also giving them a release of their own.
 - **A Codex session explains why a keyring login is not available to it.**
   Each session runs in its own Codex home, which receives the machine's
   `auth.json` but not a login stored in the OS keyring, so a machine signed in
-  with keyring storage failed with only "Sign in on the execution machine with
-  codex login". The error now says that a keyring login may not reach the
-  isolated session, and gives the workaround when your credential policy allows
-  it: switch Codex to file storage, which keeps the credentials in plaintext
-  `auth.json`, sign in again and start a new session. Keyring logins are still
-  not supported in Switch sessions (#1048).
+  with keyring storage (`cli_auth_credentials_store = "keyring"` or `"auto"`)
+  failed with only "Sign in on the execution machine with codex login" while
+  `codex login status` said it was signed in. The error now says that sessions
+  cannot use a keyring login, and gives the workaround where plaintext
+  credentials are acceptable: switch Codex to file storage, sign in again and
+  start a new session. Keyring logins are still not supported in Switch
+  sessions (#1048).
 
 ### [0.40.1] - 2026-10-21
 

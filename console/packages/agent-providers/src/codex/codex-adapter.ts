@@ -69,18 +69,17 @@ const CLIENT_NAME = 'switch-console';
 const CLIENT_VERSION = '0.1.0';
 
 /**
- * A session runs in its own CODEX_HOME, which receives the execution machine's
- * auth.json but not its keyring entry, so a keyring login reads as signed out
- * here even though `codex login status` reports it.
+ * Codex keys a keyring login by its CODEX_HOME path, and a session runs in its
+ * own CODEX_HOME that receives only the execution machine's auth.json, so a
+ * keyring login reads as signed out here even though `codex login status`
+ * reports it.
  */
 export const CODEX_SIGN_IN_REQUIRED =
-  'Sign in on the execution machine with codex login. If you are already signed in with ' +
-  'keyring credential storage (including auto when it selects the keyring), this isolated ' +
-  'session may not be able to use that login: Switch copies auth.json into each session’s ' +
-  'Codex home but does not copy keyring entries. Workaround, if your credential policy ' +
-  'permits: set cli_auth_credentials_store = "file" in the execution machine’s Codex ' +
-  'config.toml, sign in again with the same login method and CODEX_HOME, then start a new ' +
-  'Switch session. File storage keeps the credentials in plaintext in auth.json.';
+  'Sign in on the execution machine with codex login. If Codex says you are already signed in, ' +
+  'your login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"), ' +
+  'which Switch sessions cannot use: they get the login only from auth.json. If plaintext ' +
+  'credentials are acceptable, set cli_auth_credentials_store = "file" in the Codex config.toml ' +
+  'on the execution machine, run codex login again and start a new session.';
 
 /**
  * `multi_agent_v2` ships stable but off, and it is what puts `spawn_agent` in
