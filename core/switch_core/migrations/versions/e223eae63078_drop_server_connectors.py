@@ -8,10 +8,6 @@ drops what only it used, now that no release still serving reads it:
 - `server_connectors`, and the row-level security policy that goes with it;
 - `tenant_of_server_connector`, one of the `SECURITY DEFINER` lookups that are
   the whole exemption from row-level security (`db/tenant_lookup.py`);
-- the registration key each connector minted to register its agents, the
-  connector's own and those of connectors removed earlier, which removing one
-  never deleted. Such a key can still register agents over HTTP, and nothing
-  holds it any more, so it is deleted rather than left live;
 - each connector's row in `ownership_leases` (kind `connector`), which no
   process will claim or release again.
 
@@ -19,13 +15,27 @@ The agents a connector registered are left in place. Deleting an agent takes
 its client, its room memberships and its handle on each chat platform with it
 (`AgentCore.delete_agent`), which is not a statement to repeat here. Nothing
 can drive them now, so each is logged by workspace and name for an operator
-to delete from the gateway, and the connector's id comes off its metadata. The
-gateway still shows each as `server-side:opencode`, its connector type.
+to delete from the gateway. The connector's id stays in their metadata, the
+one durable record of where they came from, and the gateway shows each as
+`server-side:<type>`.
+
+The keys go out of use without going away. A connector minted a registration
+key to register its agents, and removing a connector never deleted it; each
+agent it registered has an agent key of its own. Nothing holds any of them,
+yet each still authenticates, so each is retired the way a stale bootstrap
+key is (`registration_bootstrap.RETIRED_KEY_TYPE`): it stops authenticating
+exactly as deletion would, and the row stays on the API Keys page with a
+label that says why. A registration key is found by its connector's row, or
+by the `server-connector:` label every connector gave its key, which is what
+finds those of connectors already removed.
+
+Everything is logged once it has run, since a statement that fails rolls back
+the lot.
 
 The downgrade puts the table, its policy and the lookup back as they were,
-empty: the connectors, their keys and the mark on their agents are not
-restored. The DDL is a verbatim copy of what the earlier revisions built, for
-the same reason every revision in this chain copies rather than imports.
+empty: the connectors are not restored, and the keys stay retired. The DDL is
+a verbatim copy of what the earlier revisions built, for the same reason
+every revision in this chain copies rather than imports.
 
 Revision ID: e223eae63078
 Revises: f68b679599ab
@@ -46,7 +56,7 @@ revision: str = "e223eae63078"
 down_revision: str | None = "f68b679599ab"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
-# Contracting: it drops a table and a lookup, and deletes keys. It ships a
+# Contracting: it drops a table and a lookup, and retires keys. It ships a
 # release after the code that used them went.
 expand_only: bool = False
 
@@ -86,6 +96,11 @@ CONNECTOR_AGENT = (
 # already gone as well as those of the ones still here.
 CONNECTOR_KEY_LABEL = "server-connector:"
 
+# `registration_bootstrap.RETIRED_KEY_TYPE`, copied: not a type any bearer
+# authentication accepts.
+RETIRED_KEY_TYPE = "retired"
+RETIRED_LABEL_SUFFIX = " (retired: its server-side connector is gone)"
+
 
 def upgrade() -> None:
     bind = op.get_bind()
@@ -99,6 +114,36 @@ def upgrade() -> None:
             )
         )
     ]
+    retired = [
+        row.label
+        for row in bind.execute(
+            sa.text(
+                "UPDATE api_keys k SET type = :retired, label = k.label || :suffix "
+                "WHERE (k.type = 'registration' AND (k.label LIKE :minted "
+                "OR EXISTS (SELECT 1 FROM server_connectors c "
+                "WHERE c.tenant_id = k.tenant_id AND c.api_key_id = k.id))) "
+                "OR (k.type = 'agent' AND EXISTS (SELECT 1 FROM agents a "
+                f"WHERE a.tenant_id = k.tenant_id AND a.api_key_id = k.id "
+                f"AND {CONNECTOR_AGENT})) "
+                "RETURNING k.label"
+            ),
+            {
+                "retired": RETIRED_KEY_TYPE,
+                "suffix": RETIRED_LABEL_SUFFIX,
+                "minted": f"{CONNECTOR_KEY_LABEL}%",
+            },
+        )
+    ]
+    op.execute("DELETE FROM ownership_leases WHERE kind = 'connector'")
+    op.execute(DROP_TENANT_OF_SERVER_CONNECTOR)
+    op.drop_table(TABLE)
+
+    if retired:
+        logger.warning(
+            "Retired the keys server-side connectors and their agents held; "
+            "they no longer authenticate and stay on the API Keys page: %s",
+            ", ".join(sorted(retired)),
+        )
     if stranded:
         logger.warning(
             "Server-side connectors are gone, and nothing can run the agents "
@@ -106,33 +151,6 @@ def upgrade() -> None:
             "Delete these from the gateway (workspace/agent): %s",
             ", ".join(stranded),
         )
-    op.execute(
-        "UPDATE agents a SET metadata = a.metadata - 'server_connector_id' "
-        f"WHERE {CONNECTOR_AGENT}"
-    )
-
-    op.drop_constraint("fk_server_connectors_api_key", TABLE, type_="foreignkey")
-    deleted = [
-        row.label
-        for row in bind.execute(
-            sa.text(
-                "DELETE FROM api_keys k WHERE k.type = 'registration' AND ("
-                "k.label LIKE :minted OR EXISTS (SELECT 1 FROM server_connectors c "
-                "WHERE c.tenant_id = k.tenant_id AND c.api_key_id = k.id)"
-                ") RETURNING k.label"
-            ),
-            {"minted": f"{CONNECTOR_KEY_LABEL}%"},
-        )
-    ]
-    if deleted:
-        logger.warning(
-            "Deleted the registration keys server-side connectors minted, "
-            "including those of connectors removed before: %s",
-            ", ".join(sorted(deleted)),
-        )
-    op.execute("DELETE FROM ownership_leases WHERE kind = 'connector'")
-    op.execute(DROP_TENANT_OF_SERVER_CONNECTOR)
-    op.drop_table(TABLE)
 
 
 def downgrade() -> None:
