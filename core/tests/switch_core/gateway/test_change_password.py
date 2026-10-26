@@ -192,6 +192,58 @@ class TestPasswordChangeIsRefused:
         assert response.status_code == 403
         assert await _stored_hash(session_factory, user_id) is None
 
+    async def test_an_overlong_new_password_is_422_and_writes_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        email = "ed@example.invalid"
+        user_id = await _seed_user(session_factory, email=email, password=_OLD_PASSWORD)
+        before = await _stored_hash(session_factory, user_id)
+
+        async with _client(_app(session_factory), user_id, email) as client:
+            response = await client.put(
+                "/auth/me/password",
+                json={
+                    "current_password": _OLD_PASSWORD,
+                    "new_password": "correct horse battery staple " * 3,
+                },
+            )
+
+        assert response.status_code == 422, response.text
+        assert await _stored_hash(session_factory, user_id) == before
+
+
+class TestPasswordSavedOverTheLimit:
+    """An account whose password was saved before the 72-byte limit, and so is
+    longer than it, is not locked out: login and the current password are never
+    held to the limit, only a password about to be stored."""
+
+    _LONG = "correct horse battery staple " * 3
+
+    async def test_it_still_logs_in_and_can_be_changed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        email = "fi@example.invalid"
+        user_id = await _seed_user(session_factory, email=email, password=self._LONG)
+        app = _app(session_factory)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as anonymous:
+            logged_in = await anonymous.post(
+                "/auth/login", json={"email": email, "password": self._LONG}
+            )
+        async with _client(app, user_id, email) as client:
+            changed = await client.put(
+                "/auth/me/password",
+                json={"current_password": self._LONG, "new_password": _NEW_PASSWORD},
+            )
+
+        assert logged_in.status_code == 200, logged_in.text
+        assert changed.status_code == 200, changed.text
+        assert verify_password(
+            _NEW_PASSWORD, await _stored_hash(session_factory, user_id)
+        )
+
 
 class TestSchemaValidation:
     """No database needed: the length floor is the schema's, not the route's."""

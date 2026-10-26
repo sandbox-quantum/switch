@@ -837,11 +837,12 @@ class UserResponse(BaseModel):
 
 
 PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_BYTES = 72
 
 
 def _bcrypt_sized_validator(password: str) -> str:
-    if len(password.encode()) > 72:
-        raise ValueError("Password must be at most 72 bytes.")
+    if len(password.encode()) > PASSWORD_MAX_BYTES:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_BYTES} bytes.")
     return password
 
 
@@ -854,10 +855,10 @@ Password = Annotated[
     AfterValidator(_bcrypt_sized_validator),
 ]
 
-# Anywhere a person's address is accepted as input, it is trimmed, lowercased
-# and shape-checked the way `/auth/signup` treats it, so the same address
-# arriving through signup, the admin user list or any later form resolves to
-# one account, not near-duplicates.
+# The address an account is created with, trimmed, lowercased and
+# shape-checked, so the same address arriving through signup or the admin user
+# list resolves to one account, not near-duplicates. Login does not use it: an
+# account whose address does not fit the shape must still be able to sign in.
 Email = Annotated[
     str,
     StringConstraints(
