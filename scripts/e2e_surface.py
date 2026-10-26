@@ -90,8 +90,6 @@ _COLLABORATORS = (
     "bridge_store",
     "client_lifecycle",
     "collab_lifecycle",
-    "connector_lifecycle",
-    "connector_store",
     "event_buffer",
     "session_factory",
     "user_store",

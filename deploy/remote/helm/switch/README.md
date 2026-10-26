@@ -160,9 +160,8 @@ example), leave `tls.enabled` false and annotate.
 
 **switch-core can run more than one replica.** `switchCore.replicaCount` sets
 how many. Shared state lives in the database: replicas signal each other through
-Postgres notifications, and each bridge's listener and outbound relay, each
-server connector and each command reader is owned by one replica at a time
-through a lease. That includes the shared Discord gateway connection of the
+Postgres notifications, and each bridge's listener and outbound relay and each
+command reader is owned by one replica at a time through a lease. That includes the shared Discord gateway connection of the
 distributed Discord app, whose Discord bridges run beside it on the same
 replica, and each Teams bridge's Graph subscriptions, which only the replica
 holding the bridge makes and renews. Any replica can hold any client's

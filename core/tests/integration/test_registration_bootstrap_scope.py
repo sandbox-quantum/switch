@@ -9,8 +9,8 @@ deployment secret to bring up their own agent got an agent that could bypass
 deployment, not just their own.
 
 This test registers an agent the same way a standalone agent does — presenting
-REGISTRATION_TOKEN to `register_agent_with_token` — and proves the resulting
-agent is owned by a dedicated, non-admin account instead.
+REGISTRATION_TOKEN to `POST /agents` — and proves the resulting agent is owned
+by a dedicated, non-admin account instead.
 """
 
 from __future__ import annotations

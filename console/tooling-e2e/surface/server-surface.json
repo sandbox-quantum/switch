@@ -120,11 +120,6 @@
       ]
     },
     {
-      "route": "DELETE /gateway/connectors/{connector_id}",
-      "auth": "session",
-      "flags": []
-    },
-    {
       "route": "DELETE /gateway/documents/{document_id}",
       "auth": "session",
       "flags": []
@@ -434,21 +429,6 @@
       "flags": [
         "service_connections"
       ]
-    },
-    {
-      "route": "GET /gateway/connectors",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "GET /gateway/connectors/types",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "GET /gateway/connectors/{connector_id}",
-      "auth": "session",
-      "flags": []
     },
     {
       "route": "GET /gateway/docs",
@@ -1029,11 +1009,6 @@
       "flags": [
         "service_connections"
       ]
-    },
-    {
-      "route": "POST /gateway/connectors",
-      "auth": "session",
-      "flags": []
     },
     {
       "route": "POST /gateway/documents",

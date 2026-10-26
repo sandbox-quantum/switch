@@ -427,7 +427,7 @@ switchCore:
     # The package's SHA-256, 64 lowercase hex characters.
     sha256: ""
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
-  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # a Mattermost server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
   # cloud metadata addresses are refused even when listed. The bundled
   # Mattermost (mattermost.enabled) is added automatically.
@@ -664,13 +664,13 @@ switchCore:
     # default.
     port: 8081
   # How many switch-core pods to run. Every pod serves the API and holds client
-  # connections. Each bridge's listener and outbound relay, each server
-  # connector and each command reader runs on one pod at a time, through
-  # leases in the database, and each message is routed to its agents as it is
-  # written, so any pod can take any request. So does the deployment's shared
-  # Discord gateway connection (the distributed Discord app), with its Discord
-  # bridges on the same pod, and each Teams bridge's Graph subscriptions, made
-  # and renewed by the pod that holds the bridge.
+  # connections. Each bridge's listener and outbound relay and each command
+  # reader runs on one pod at a time, through leases in the database, and
+  # each message is routed to its agents as it is written, so any pod can take
+  # any request. So does the deployment's shared Discord gateway connection
+  # (the distributed Discord app), with its Discord bridges on the same pod,
+  # and each Teams bridge's Graph subscriptions, made and renewed by the pod
+  # that holds the bridge.
   #
   # One replica is replaced (Recreate): the old pod stops before the new one
   # starts, so an upgrade has a short outage. More than one rolls (see
@@ -701,7 +701,7 @@ switchCore:
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
   # How long the kubelet waits after SIGTERM before killing the pod. On SIGTERM
-  # switch-core hands the bridges, connectors and readers it owns to the other
+  # switch-core hands the bridges and readers it owns to the other
   # pods (up to 10s), releases its lease (up to 1s), keeps serving for 5s while
   # the Service stops routing to it (only with more than one replica), stops
   # the bridges it still runs (giving one still starting up to 5s) and gives

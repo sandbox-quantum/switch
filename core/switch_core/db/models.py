@@ -1753,6 +1753,10 @@ class MessagingEventReceipt(TenantScoped, Base):
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 
+# Nothing reads or writes this table any more. It is dropped a release after
+# the code that used it went, so a release still running that code during a
+# rolling deploy finds it there (`migrations/script.py.mako`). Until then the
+# model keeps `create_all` in step with the migrated schema.
 class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
     __table_args__ = (

@@ -111,7 +111,6 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
             controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
-            connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]
             provisioning=_Stoppable("provisioning"),  # type: ignore[arg-type]
             discord_gateway=None,
             teams_app=_TeamsApp(),  # type: ignore[arg-type]
@@ -199,7 +198,6 @@ async def test_shutdown_drains_before_it_closes_anything(
             controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
-            connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]
             provisioning=_Stoppable("provisioning"),  # type: ignore[arg-type]
             discord_gateway=None,
             teams_app=None,

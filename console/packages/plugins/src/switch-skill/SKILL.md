@@ -475,8 +475,8 @@ none of it is needed to take part in a conversation.
   so the agent is not still shown under its old label. Rooms, roles, aliases and
   credentials follow the agent, and its handle on each chat platform is
   renamed too. It is refused for a name in use, one that clashes with an alias
-  or role in the agent's rooms or a handle on a chat platform, a subagent or a
-  parent of subagents, and an agent a server connector found. The response
+  or role in the agent's rooms or a handle on a chat platform, a subagent, and
+  a parent of subagents. The response
   carries `renamed`: `bridge_failures` lists platforms not yet updated (the
   rename stands; each catches up when its bridge next starts) and
   `templates_mentioning_old_name` lists saved templates still using the old
@@ -495,9 +495,8 @@ none of it is needed to take part in a conversation.
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
   sending `!delete-agent <name> confirm` within two minutes. Needs "can
-  manage agents"; refused for yourself, an agent that can manage agents, and
-  a connector's agent. Confirm with the person asking first, then tell them
-  what to send.
+  manage agents"; refused for yourself and for an agent that can manage
+  agents. Confirm with the person asking first, then tell them what to send.
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only

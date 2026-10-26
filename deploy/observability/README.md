@@ -125,6 +125,6 @@ own counters show one total. Pick the deployment with `env` and `service`. It
 needs a build that tags points with `pod_name`; earlier builds show one
 unsplit series.
 
-`dashboard.json` sums per-pod gauges (consumers, connectors, pool, memory) so
+`dashboard.json` sums per-pod gauges (consumers, pool, memory) so
 its totals stay totals with several pods, and the pool-saturation monitor
 alerts per pod, since one pod can exhaust its pool while the others idle.

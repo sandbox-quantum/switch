@@ -10,9 +10,9 @@ foundation: see [`service-connections-v2.md`](service-connections-v2.md).
 The target contract is `controller-contract-v1.md`; its §5 is amended alongside
 this spec, and the deviations are listed below.
 
-"Connector" already means something else in Core (`agents.connector_type`,
-`bridges/agent/server_connectors/`), so this feature says **service** and
-**service connection** throughout: in tables, routes, code and screens.
+"Connector" already means something else in Core (`agents.connector_type`),
+so this feature says **service** and **service connection** throughout: in
+tables, routes, code and screens.
 
 ## Shape
 

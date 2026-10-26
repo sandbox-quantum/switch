@@ -26,8 +26,6 @@ def _app(**overrides: object) -> object:
         bridge_store=MagicMock(),
         client_lifecycle=MagicMock(),
         collab_lifecycle=MagicMock(),
-        connector_lifecycle=MagicMock(),
-        connector_store=MagicMock(),
         event_buffer=MagicMock(),
         session_factory=MagicMock(),
         user_store=MagicMock(),

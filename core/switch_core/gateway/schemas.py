@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -796,29 +797,6 @@ class LinkedIdentity(BaseModel):
     external_username: str
 
 
-# ── Server-Side Connectors ──────────────────────────────────────────────────
-
-
-class ConnectorTypeInfo(BaseModel):
-    key: str
-    config_schema: dict[str, Any]
-
-
-class CreateConnectorRequest(BaseModel):
-    type: str
-    display_name: str
-    connection_config: dict[str, object]
-
-
-class ConnectorDetail(BaseModel):
-    connector_id: str
-    connector_type: str
-    display_name: str
-    status: str
-    agent_names: list[str]
-    created_at: str
-
-
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 
@@ -835,19 +813,50 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_BYTES = 72
+
+
+def _bcrypt_sized_validator(password: str) -> str:
+    if len(password.encode()) > PASSWORD_MAX_BYTES:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_BYTES} bytes.")
+    return password
+
+
+# Every password the server is asked to store: long enough to mean something,
+# and no longer than the 72 bytes bcrypt reads. bcrypt 4 ignores the rest, so a
+# longer password would be stored as its first 72 bytes; bcrypt 5 raises.
+Password = Annotated[
+    str,
+    StringConstraints(min_length=PASSWORD_MIN_LENGTH),
+    AfterValidator(_bcrypt_sized_validator),
+]
+
+# The address an account is created with, trimmed, lowercased and
+# shape-checked, so the same address arriving through signup or the admin user
+# list resolves to one account, not near-duplicates. Login does not use it: an
+# account whose address does not fit the shape must still be able to sign in.
+Email = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
+
+
 class CreateUserRequest(BaseModel):
     name: str
-    email: str
-    password: str
+    email: Email
+    password: Password
     role: str = "user"
-
-
-PASSWORD_MIN_LENGTH = 8
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    new_password: Password
 
 
 class DeleteAccountRequest(BaseModel):
@@ -859,29 +868,14 @@ class DeleteAccountRequest(BaseModel):
 
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    email: Annotated[
-        str,
-        StringConstraints(
-            strip_whitespace=True,
-            to_lower=True,
-            max_length=320,
-            pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
-        ),
-    ]
-    password: str = Field(min_length=PASSWORD_MIN_LENGTH)
+    email: Email
+    password: Password
     display_name: (
         Annotated[
             str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
         ]
         | None
     ) = None
-
-    @field_validator("password")
-    @classmethod
-    def bcrypt_sized(cls, password: str) -> str:
-        if len(password.encode()) > 72:
-            raise ValueError("Password must be at most 72 bytes.")
-        return password
 
 
 class SignupMachine(BaseModel):

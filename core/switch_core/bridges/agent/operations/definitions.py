@@ -2200,8 +2200,8 @@ async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
     minutes; otherwise it lapses. Confirm with the person asking before you
     call this, and tell them what to send.
 
-    Refused for an agent of another owner, yourself, an agent that can manage
-    agents, and one a server connector found.
+    Refused for an agent of another owner, yourself, and an agent that can
+    manage agents.
 
     Args:
         agent_id: The agent to delete (`id` from `list_agents`).
@@ -2262,8 +2262,8 @@ async def update_agent_detail(
             notes-writer); otherwise the label stays. Rooms, roles, aliases and
             credentials follow; its handle on each chat platform is renamed
             too. Refused for a name in use, one that clashes with an alias or
-            role in its rooms or a handle on a chat platform, a subagent or a
-            parent of subagents, and an agent a server connector found.
+            role in its rooms or a handle on a chat platform, a subagent, and a
+            parent of subagents.
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
         icon_url: An https link to its icon; "" clears it. A server with

@@ -524,14 +524,6 @@ CONSUMERS_RUNNING = _spec(
     "another platform) run no loop and are not counted. A collaboration "
     "bridge's workspace consumer counts under switch.bridges.running.",
 )
-CONNECTORS_RUNNING = _spec(
-    "switch.connectors.running",
-    "gauge",
-    "{connector}",
-    "Server-side connectors running. Started fire-and-forget with each failure "
-    "logged and stepped over, so one short of the configured count is a dead "
-    "agent host nothing else reports.",
-)
 
 # ── Service tokens ───────────────────────────────────────────────────────────
 # `connector` is a catalog slug ("unknown" for a name the catalog does not
@@ -674,7 +666,6 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_CONNECTIONS_OPENED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
-        CONNECTORS_RUNNING,
         SERVICE_TOKEN_REQUESTS,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,

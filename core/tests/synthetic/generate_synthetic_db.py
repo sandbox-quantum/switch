@@ -116,13 +116,11 @@ PACKAGE_DOCUMENTS = 20
 # Tables that were empty (or a single bootstrap row) in the measured
 # production shape. Kept at that order of magnitude rather than invented,
 # and held fixed regardless of --scale-factor: a bigger deployment does not
-# have more feature-flag rows or more "the one active package" rows, these
-# are singleton config tables rather than volume tables.
+# have more "the one active package" rows, these are singleton config tables
+# rather than volume tables.
 PACKAGES = 1
 ROOM_PACKAGES = 1
 ROOM_DOCUMENTS = 1
-SERVER_CONNECTORS = 1
-FEATURE_FLAGS = 1
 
 _WORDS = [
     "lorem",
@@ -324,8 +322,6 @@ async def generate(dsn: str, scale: float) -> None:
         packages_n = PACKAGES
         room_packages_n = ROOM_PACKAGES
         room_documents_n = ROOM_DOCUMENTS
-        server_connectors_n = SERVER_CONNECTORS
-        feature_flags_n = FEATURE_FLAGS
 
         pool = IdPool()
         t0 = time.monotonic()
@@ -1024,29 +1020,6 @@ async def generate(dsn: str, scale: float) -> None:
                 ["room_id", "document_id"],
                 [(room_ids[0], document_ids[0])] if room_documents_n else [],
             )
-
-        # ── server_connectors / feature_flags ────────────────────────────
-        await _copy(
-            conn,
-            "server_connectors",
-            ["id", "type", "display_name", "api_key_id", "status"],
-            [
-                (
-                    _rand_id("connector", i),
-                    "resource",
-                    f"Synthetic Connector {i}",
-                    api_key_ids[0],
-                    "active",
-                )
-                for i in range(server_connectors_n)
-            ],
-        )
-        await _copy(
-            conn,
-            "feature_flags",
-            ["key", "enabled"],
-            [("synthetic-flag", True)] if feature_flags_n else [],
-        )
 
         elapsed = time.monotonic() - t0
         print(f"Generated synthetic database in {elapsed:.1f}s.")

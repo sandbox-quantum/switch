@@ -163,8 +163,6 @@ def _probes(agents_connected: Any) -> RuntimeProbes:
         bridges_running_by_platform=lambda: {},
         bridges_configured=lambda: 0,
         consumers_running=lambda: 0,
-        connectors_running=lambda: 0,
-        connectors_configured=lambda: 0,
         agents_connected=agents_connected,
         pool_stats=lambda: None,
         room_cache_stats=lambda: RoomCacheStats(bytes=0, rooms=0, rows=0),
