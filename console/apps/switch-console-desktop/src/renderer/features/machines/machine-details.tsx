@@ -272,7 +272,7 @@ function AgentsSection({
                   className="min-w-0 flex-1 truncate font-[Menlo,ui-monospace,monospace] text-[11.5px] text-[var(--fg-dim)]"
                   title={folder ?? undefined}
                 >
-                  {folder ?? ''}
+                  {folder ? shortFolder(folder, machine.workspacesDir) : ''}
                 </span>
                 <span className="shrink-0 text-[var(--fg-dim)]">
                   {providerDisplayName(agent.definition.provider) ?? agent.definition.provider}
@@ -413,4 +413,15 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
       <dd className="mt-0.5 truncate text-[13px] text-foreground">{children}</dd>
     </div>
   );
+}
+
+/**
+ * An agent's working folder as its row shows it: inside the machine's
+ * workspaces folder, which the page shows once above, only the part after it;
+ * anywhere else, the whole path.
+ */
+export function shortFolder(folder: string, workspacesDir: string | null): string {
+  if (workspacesDir && folder.startsWith(`${workspacesDir}/`))
+    return `…/${folder.slice(workspacesDir.length + 1)}`;
+  return folder;
 }

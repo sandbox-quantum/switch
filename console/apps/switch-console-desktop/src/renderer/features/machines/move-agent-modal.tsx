@@ -22,7 +22,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import type { ManagedAgentView, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import { MachineIcon, TonePill } from './machine-marks';
-import { machineKindLabel, moveTarget } from './machine-state';
+import { machineKindLabel, type MoveTarget, moveTarget } from './machine-state';
 
 type Props = BaseModalProps<void> & { agent: ManagedAgentView };
 
@@ -46,9 +46,17 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const label = managedAgentLabel(agent);
   const provider = agent.definition.provider;
-  const others = (machines.data ?? []).filter(
-    (machine) => machine.id !== agent.machine?.id && machine.state !== 'revoked'
-  );
+  // The ones it can go to first: with fifty machines, the offline ones would bury them.
+  const others = (machines.data ?? [])
+    .filter((machine) => machine.id !== agent.machine?.id && machine.state !== 'revoked')
+    .map((machine) => ({ machine, target: moveTarget(machine, provider) }))
+    .sort(
+      (a, b) =>
+        Number(b.target.selectable) - Number(a.target.selectable) ||
+        Number(b.machine.local?.kind === 'this-computer') -
+          Number(a.machine.local?.kind === 'this-computer') ||
+        a.machine.name.localeCompare(b.machine.name)
+    );
   const folder = agent.status?.directory ?? agent.definition.directory;
 
   const move = async () => {
@@ -89,11 +97,11 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
           <p className="text-sm text-foreground-muted">You have no other machine to move it to.</p>
         ) : (
           <div role="radiogroup" className="max-h-[360px] space-y-2 overflow-y-auto">
-            {others.map((machine) => (
+            {others.map(({ machine, target }) => (
               <TargetRow
                 key={machine.id}
                 machine={machine}
-                provider={provider}
+                target={target}
                 picked={picked === machine.id}
                 onPick={() => setPicked(machine.id)}
               />
@@ -127,16 +135,16 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
 
 function TargetRow({
   machine,
-  provider,
+  target,
   picked,
   onPick,
 }: {
   machine: OwnedMachine;
-  provider: string;
+  target: MoveTarget;
   picked: boolean;
   onPick: () => void;
 }) {
-  const target = moveTarget(machine, provider);
+  const thisComputer = machine.local?.kind === 'this-computer';
   const online = machine.state === 'online';
   return (
     <button
@@ -166,9 +174,11 @@ function TargetRow({
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm text-foreground">
-            {machine.local?.kind === 'this-computer' ? 'This computer' : machine.name}
+            {thisComputer ? 'This computer' : machine.name}
           </span>
-          <TonePill tone="idle" dot={false} label={machineKindLabel(machine).split(' · ')[0]!} />
+          {!thisComputer && (
+            <TonePill tone="idle" dot={false} label={machineKindLabel(machine).split(' · ')[0]!} />
+          )}
           <TonePill tone={online ? 'ok' : 'problem'} label={online ? 'Online' : 'Offline'} />
         </span>
         <span className={cn('mt-0.5 block truncate text-xs', LINE_TEXT[target.tone])}>

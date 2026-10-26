@@ -226,8 +226,8 @@ function MachineProviderRow({
 
 /** Where a provider's sign-in on the machine comes from, in a few words. */
 function signInSource(source: 'local' | 'sealed', machine: MachineDetail): string {
-  if (source === 'sealed') return 'sent from Switch Console';
+  if (source === 'sealed') return 'login sent from Switch Console';
   return machine.local?.kind === 'this-computer'
-    ? "this computer's sign-in"
-    : 'signed in on the machine';
+    ? "this computer's own login"
+    : "the machine's own login";
 }
