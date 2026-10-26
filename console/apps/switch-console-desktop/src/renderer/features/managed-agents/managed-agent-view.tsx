@@ -188,7 +188,7 @@ function ManagedAgentActionItems({ agent }: { agent: ManagedAgentView }) {
       )}
       <DropdownMenuItem disabled={busy} onClick={() => showMoveModal({ agent })}>
         <ArrowRightLeft className="size-4" />
-        Move to another machine…
+        Move to another device…
       </DropdownMenuItem>
       {!chatsOn && (
         <>

@@ -65,13 +65,17 @@ export function lastContact(machine: MachineDetail, now: Date): string | null {
   return times[0] ?? null;
 }
 
-/** What the machine is to this person: this computer, an SSH host of theirs, or how it runs. */
+/**
+ * The device type, as the person tells devices apart: this computer, an SSH
+ * host this Console set up, the Switch cloud machine, another computer running
+ * Switch Console, or a standalone machine running the agents controller.
+ */
 export function machineKindLabel(machine: Pick<MachineDetail, 'local' | 'cloud' | 'kind'>): string {
   if (machine.local?.kind === 'this-computer') return 'This computer';
-  if (machine.local?.kind === 'ssh-host') return `SSH host · ${machine.local.sshHost}`;
+  if (machine.local?.kind === 'ssh-host') return 'SSH host';
   if (machine.cloud) return 'Switch cloud';
-  if (machine.kind === 'console') return 'Switch Console';
-  return 'Agents controller';
+  if (machine.kind === 'console') return 'Computer';
+  return 'Standalone machine';
 }
 
 const OS_NAMES: Record<string, string> = {
@@ -178,33 +182,6 @@ export function resourceLabel(
 ): string | null {
   if (total <= 0) return null;
   return `${format(free)} free of ${format(total)}`;
-}
-
-/**
- * The machines whose name, description or kind contains `query`, ignoring
- * case. An empty query keeps them all.
- */
-export function filterMachines(machines: MachineDetail[], query: string): MachineDetail[] {
-  const needle = query.trim().toLowerCase();
-  if (needle === '') return machines;
-  return machines.filter((machine) =>
-    [machine.name, machine.description, machineKindLabel(machine)].some((text) =>
-      text?.toLowerCase().includes(needle)
-    )
-  );
-}
-
-/**
- * One line saying what the machine is and what it runs, for its row in the
- * list: its kind, its operating system and how many agents are on it.
- */
-export function machineSummary(machine: MachineDetail, agentCount: number): string {
-  const os = machine.platform
-    ? (OS_NAMES[machine.platform.os.toLowerCase()] ?? machine.platform.os)
-    : null;
-  const agents =
-    agentCount === 0 ? 'No agents' : `${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}`;
-  return [machineKindLabel(machine), os, agents].filter(Boolean).join(' · ');
 }
 
 /** Something about the machine to act on or wait for, shown above its details. */

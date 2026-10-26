@@ -6,13 +6,11 @@ import type {
 import {
   arrangeMachines,
   controllerRelease,
-  filterMachines,
   lastContact,
   machineCategory,
   machineConnection,
   machineNotices,
   moveTarget,
-  machineSummary,
   platformLabel,
   sessionsLabel,
 } from './machine-state';
@@ -141,42 +139,6 @@ describe('arrangeMachines', () => {
     ]);
     expect(live.map((m) => m.id)).toEqual(['z-laptop', 'a-online', 'b-offline']);
     expect(removed.map((m) => m.id)).toEqual(['gone']);
-  });
-});
-
-describe('filterMachines', () => {
-  const machines = [
-    machine({ id: 'm1', name: 'build-box', description: 'The GPU one' }),
-    machine({ id: 'm2', name: 'laptop', local: { kind: 'this-computer' } }),
-  ];
-
-  it('keeps them all for an empty query', () => {
-    expect(filterMachines(machines, '  ')).toEqual(machines);
-  });
-
-  it('matches the name, the description and the kind, ignoring case', () => {
-    expect(filterMachines(machines, 'BUILD').map((m) => m.id)).toEqual(['m1']);
-    expect(filterMachines(machines, 'gpu').map((m) => m.id)).toEqual(['m1']);
-    expect(filterMachines(machines, 'this computer').map((m) => m.id)).toEqual(['m2']);
-  });
-});
-
-describe('machineSummary', () => {
-  it('says what it is, its OS and how many agents it runs', () => {
-    expect(
-      machineSummary(
-        machine({
-          id: 'm1',
-          local: { kind: 'this-computer' },
-          platform: { os: 'darwin', osVersion: '25.6.0', arch: 'arm64' },
-        }),
-        2
-      )
-    ).toBe('This computer · macOS · 2 agents');
-  });
-
-  it('leaves out an OS it never reported and names an empty machine in words', () => {
-    expect(machineSummary(machine({ id: 'm1' }), 0)).toBe('Agents controller · No agents');
   });
 });
 

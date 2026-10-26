@@ -5,7 +5,6 @@ import { chatView } from '@renderer/features/chats/chat-view';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
 import { locationView } from '@renderer/features/locations/view';
 import { machineView } from '@renderer/features/machines/machine-view';
-import { machinesView } from '@renderer/features/machines/machines-view';
 import { managedAgentView } from '@renderer/features/managed-agents/managed-agent-view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
@@ -40,7 +39,6 @@ export const views = {
   server: serverView,
   managedServer: managedServerView,
   serverAgents: serverAgentsView,
-  machines: machinesView,
   machine: machineView,
   connectors: connectorsView,
   serverRooms: serverRoomsView,

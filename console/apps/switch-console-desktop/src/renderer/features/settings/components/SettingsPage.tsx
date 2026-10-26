@@ -1,5 +1,6 @@
 import React, { useCallback } from 'react';
 import { MigrationSettingsPage } from '@renderer/features/agent-migration/migration-settings-page';
+import { DevicesSettingsPage } from '@renderer/features/machines/devices-settings-page';
 import { RemoteHostsSettingsPage } from '@renderer/features/remote-hosts/views/remote-hosts-view';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarMenu } from '@renderer/lib/components/page-layout';
@@ -27,6 +28,7 @@ export type SettingsPageTab =
   | 'browser'
   | 'interface'
   | 'remote-hosts'
+  | 'devices'
   | 'managed-agents'
   | 'docs';
 
@@ -80,6 +82,7 @@ const TAB_CONTENT: Partial<Record<SettingsPageTab, () => React.ReactNode>> = {
   'clis-models': () => <AgentsSettingsPage />,
   interface: () => <InterfaceSettingsPage />,
   'remote-hosts': () => <RemoteHostsSettingsPage />,
+  devices: () => <DevicesSettingsPage />,
   'managed-agents': () => <MigrationSettingsPage />,
 };
 
@@ -117,14 +120,17 @@ export function SettingsPage({
     // Switch Console v0 hides Account, Integrations, Connections (SSH), and Browser tabs.
     { id: 'general', label: 'General' },
     { id: 'clis-models', label: 'Agent providers' },
+    { id: 'devices', label: 'Devices' },
     { id: 'remote-hosts', label: 'Remote hosts' },
     { id: 'managed-agents', label: 'Managed agents' },
     { id: 'interface', label: 'Interface' },
     { id: 'docs', label: 'Docs', isExternal: true },
   ];
-  const tabs = allTabs.filter((tab) => agentManagement || tab.id !== 'managed-agents');
+  const needsAgentManagement = (tab: SettingsPageTab) =>
+    tab === 'managed-agents' || tab === 'devices';
+  const tabs = allTabs.filter((tab) => agentManagement || !needsAgentManagement(tab.id));
 
-  const shownTab = !agentManagement && activeTab === 'managed-agents' ? 'general' : activeTab;
+  const shownTab = !agentManagement && needsAgentManagement(activeTab) ? 'general' : activeTab;
   const currentContent = TAB_CONTENT[shownTab]?.();
 
   return (

@@ -6,14 +6,14 @@ import {
   loginKindsFor,
 } from '@renderer/features/locations/components/add-agent-modal/give-machine-login';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
-import {
-  ProviderStatusRow,
-  ReportedProviderLine,
-} from '@renderer/lib/components/provider-status-row';
+import { agoLabel } from '@renderer/features/switch-servers/server-times';
+import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { reportedHeadline } from '@renderer/lib/components/reported-provider';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { Button } from '@renderer/lib/ui/button';
+import { cn } from '@renderer/utils/utils';
 import type {
   MachineDetail,
   MachineProviderDetail,
@@ -22,7 +22,9 @@ import {
   isValidProviderId,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
-import { CollapsibleSection } from './collapsible-section';
+import { Card } from './detail-card';
+import { TonePill } from './machine-marks';
+import type { MachineTone } from './machine-state';
 
 /** How often a recheck is asked about while the machine works on it. */
 const RECHECK_POLL_MS = 1_500;
@@ -45,27 +47,37 @@ export function MachineProviders({
   const missing = machine.providers.filter((p) => p.problem === 'not installed');
   const thisComputer = machine.local?.kind === 'this-computer';
 
-  // Folded at first: a provider that cannot run agents is already raised in a
-  // notice above the details, so the list is reference.
   return (
-    <CollapsibleSection title="Providers" defaultOpen={false}>
+    <Card title="AI providers">
       {machine.providers.length === 0 ? (
-        <p className="py-[9px] text-[13px] text-[var(--fg-dim)]">Not reported yet.</p>
+        <p className="text-[13px] text-[var(--fg-dim)]">Not reported yet.</p>
       ) : (
-        <div className="-mx-3 mt-1">
-          {[...installed, ...missing].map((provider) => (
-            <MachineProviderRow
-              key={provider.provider}
-              serverId={serverId}
-              machine={machine}
-              provider={provider}
-            />
-          ))}
-        </div>
+        <table className="w-full table-fixed text-[13px]">
+          <thead>
+            <tr className="text-left text-[12px] text-[var(--fg-dim)]">
+              <th className="w-[18%] pb-2 font-normal">Provider</th>
+              <th className="w-[17%] pb-2 font-normal">Installed</th>
+              <th className="w-[15%] pb-2 font-normal">Sign-in</th>
+              <th className="pb-2 font-normal">Where the sign-in comes from</th>
+              <th className="w-[13%] pb-2 font-normal">Last checked</th>
+              <th className="w-[150px] pb-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {[...installed, ...missing].map((provider) => (
+              <MachineProviderRow
+                key={provider.provider}
+                serverId={serverId}
+                machine={machine}
+                provider={provider}
+              />
+            ))}
+          </tbody>
+        </table>
       )}
       {missing.length > 0 &&
         (thisComputer ? (
-          <p className="mt-1 text-[13px] text-[var(--fg-dim)]">
+          <p className="mt-2 text-[12px] text-[var(--fg-dim)]">
             Install providers on this computer from{' '}
             <button
               type="button"
@@ -77,12 +89,12 @@ export function MachineProviders({
             .
           </p>
         ) : (
-          <p className="mt-1 text-[13px] text-[var(--fg-dim)]">
+          <p className="mt-2 text-[12px] text-[var(--fg-dim)]">
             Switch cannot install a provider on {machine.name}: install its CLI there, then recheck
             it here.
           </p>
         ))}
-    </CollapsibleSection>
+    </Card>
   );
 }
 
@@ -149,36 +161,43 @@ function MachineProviderRow({
       : null;
 
   return (
-    <div>
-      <ProviderStatusRow
-        providerId={provider.provider}
-        name={name}
-        meta={provider.version ?? undefined}
-        installed={installed}
-        status={
-          <span
-            title={
-              [
-                provider.detail,
-                provider.checkedAt
-                  ? `Checked ${new Date(provider.checkedAt).toLocaleString()}`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(' · ') || undefined
-            }
-          >
-            <ReportedProviderLine reported={provider} checking={checking} />
-            {!checking && provider.authSource && (
-              <span className="text-xs text-foreground-muted">
-                {' · '}
-                {signInSource(provider.authSource, machine)}
-              </span>
-            )}
+    <>
+      <tr className="border-t-[0.5px] border-[var(--hair-soft)]">
+        <td className="py-1.5">
+          <span className="flex items-center gap-2 truncate text-foreground">
+            <AgentIcon id={provider.provider} size={14} />
+            {name}
           </span>
-        }
-        actions={
-          <>
+        </td>
+        <td
+          className={cn('truncate py-1.5', installed ? 'text-foreground' : 'text-[var(--fg-dim)]')}
+        >
+          {installed
+            ? `Installed${provider.version ? ` · v${provider.version}` : ''}`
+            : 'Not installed'}
+        </td>
+        <td className="py-1.5" title={provider.detail ?? undefined}>
+          {!installed ? (
+            <span className="text-[var(--fg-dim)]">—</span>
+          ) : checking ? (
+            <span className="text-[var(--fg-dim)]">Checking…</span>
+          ) : (
+            <TonePill tone={signInTone(provider)} dot={false} label={reportedHeadline(provider)} />
+          )}
+        </td>
+        <td className="truncate py-1.5 text-foreground">
+          {installed && provider.ready && provider.authSource
+            ? signInSource(provider.authSource, machine)
+            : '—'}
+        </td>
+        <td
+          className="truncate py-1.5 text-[var(--fg-dim)]"
+          title={provider.checkedAt ? new Date(provider.checkedAt).toLocaleString() : undefined}
+        >
+          {provider.checkedAt ? agoLabel(provider.checkedAt, new Date()) : '—'}
+        </td>
+        <td className="py-1.5">
+          <div className="flex items-center justify-end gap-1">
             {canGive && (
               <Button
                 size="sm"
@@ -202,32 +221,41 @@ function MachineProviderRow({
                 Recheck
               </Button>
             )}
-          </>
-        }
-      />
-      {failure && (
-        <p role="alert" className="px-3 pb-2 text-xs text-foreground-error">
-          {failure}
-        </p>
+          </div>
+        </td>
+      </tr>
+      {(failure || (giving && known !== null)) && (
+        <tr>
+          <td colSpan={6} className="pb-3">
+            {failure && (
+              <p role="alert" className="text-xs text-foreground-error">
+                {failure}
+              </p>
+            )}
+            {giving && known !== null && (
+              <GiveMachineLogin
+                serverId={serverId}
+                machine={machine}
+                provider={known}
+                onClose={() => setGiving(false)}
+              />
+            )}
+          </td>
+        </tr>
       )}
-      {giving && known !== null && (
-        <div className="px-3 pb-3">
-          <GiveMachineLogin
-            serverId={serverId}
-            machine={machine}
-            provider={known}
-            onClose={() => setGiving(false)}
-          />
-        </div>
-      )}
-    </div>
+    </>
   );
+}
+
+/** The sign-in pill's tone: signed in, a check still to come, or signed out. */
+function signInTone(provider: MachineProviderDetail): MachineTone {
+  if (provider.ready) return 'ok';
+  if (provider.problem === 'login not checked yet') return 'idle';
+  return 'warning';
 }
 
 /** Where a provider's sign-in on the machine comes from, in a few words. */
 function signInSource(source: 'local' | 'sealed', machine: MachineDetail): string {
-  if (source === 'sealed') return 'login sent from Switch Console';
-  return machine.local?.kind === 'this-computer'
-    ? "this computer's own login"
-    : "the machine's own login";
+  if (source === 'sealed') return 'Sent from Switch Console';
+  return machine.local?.kind === 'this-computer' ? "This computer's sign-in" : 'On the device';
 }

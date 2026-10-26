@@ -27,7 +27,7 @@ type Props = BaseModalProps<void> & {
   currentDescription: string | null;
 };
 
-/** Renames one of the person's machines and changes its description; an empty description clears it. */
+/** Renames one of the person's devices and changes its description; an empty description clears it. */
 export function RenameMachineModal({
   serverId,
   machineId,
@@ -70,7 +70,7 @@ export function RenameMachineModal({
       await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
       onSuccess();
     } catch (err) {
-      setError(failureText(err, 'Could not save the machine.'));
+      setError(failureText(err, 'Could not save the device.'));
       setSaving(false);
     }
   };
@@ -78,7 +78,7 @@ export function RenameMachineModal({
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>Rename machine</DialogTitle>
+        <DialogTitle>Rename device</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <FieldGroup>
@@ -93,7 +93,7 @@ export function RenameMachineModal({
               autoFocus
             />
             {trimmedName.length === 0 && (
-              <p className="mt-1 text-xs text-destructive">A machine needs a name.</p>
+              <p className="mt-1 text-xs text-destructive">A device needs a name.</p>
             )}
             {nameTooLong && (
               <p className="mt-1 text-xs text-destructive">
@@ -106,7 +106,7 @@ export function RenameMachineModal({
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this machine is for"
+              placeholder="What this device is for"
               rows={3}
             />
             {descriptionTooLong && (

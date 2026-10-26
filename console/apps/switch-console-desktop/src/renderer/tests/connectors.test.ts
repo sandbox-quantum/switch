@@ -776,49 +776,22 @@ describe('with the service_connections flag off', () => {
       managed: false,
       serviceConnections: false,
       administers: true,
-      agentManagement: false,
     });
     expect(shown).not.toContain('connectors');
     expect(shown).not.toContain('admin');
     expect(
-      workspaceNavViews({
-        managed: true,
-        serviceConnections: true,
-        administers: true,
-        agentManagement: false,
-      })
+      workspaceNavViews({ managed: true, serviceConnections: true, administers: true })
     ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates', 'admin']);
   });
 
   it('shows Admin only to whoever administers the workspace or runs its server', () => {
     expect(
-      workspaceNavViews({
-        managed: false,
-        serviceConnections: true,
-        administers: false,
-        agentManagement: false,
-      })
+      workspaceNavViews({ managed: false, serviceConnections: true, administers: false })
     ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates']);
     // The server's status lives under Admin, for whoever runs it, flag or role aside.
     expect(
-      workspaceNavViews({
-        managed: true,
-        serviceConnections: false,
-        administers: false,
-        agentManagement: false,
-      })
+      workspaceNavViews({ managed: true, serviceConnections: false, administers: false })
     ).toEqual(['server', 'serverAgents', 'serverRooms', 'templates', 'admin']);
-  });
-
-  it('shows Your Machines after Your Agents only where the server runs agent management', () => {
-    expect(
-      workspaceNavViews({
-        managed: false,
-        serviceConnections: false,
-        administers: false,
-        agentManagement: true,
-      })
-    ).toEqual(['server', 'serverAgents', 'machines', 'serverRooms', 'templates']);
   });
 
   it('opens Admin on its sections, or on the server’s status where there are none to use', () => {

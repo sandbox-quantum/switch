@@ -50,7 +50,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Add a machine</DialogTitle>
+        <DialogTitle>Add a device</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         <DialogDescription>
@@ -73,7 +73,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Defaults to the machine's host name"
+                  placeholder="Defaults to the device's host name"
                 />
                 {nameTooLong && (
                   <p className="mt-1 text-xs text-destructive">
@@ -99,7 +99,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
             {issued.loopback && (
               <p className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground-muted">
                 This server is at {issued.serverUrl}, which only this computer can reach. Another
-                machine needs an address it can reach Switch at: change <code>--server</code> to
+                device needs an address it can reach Switch at: change <code>--server</code> to
                 that.
               </p>
             )}
@@ -113,7 +113,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
                 <CommandBlock
                   title="Install, enroll and start"
                   command={installCommand(issued.serverUrl, issued.code, machine)}
-                  note="Installs the newest controller with npm, enrolls the machine, and runs the controller as a service of your user."
+                  note="Installs the newest controller with npm, enrolls the device, and runs the controller as a service of your user."
                 />
                 <CommandBlock
                   title="Already installed"
@@ -125,8 +125,8 @@ export function AddMachineModal({ serverId, onClose }: Props) {
 
             <p className="text-xs text-foreground-muted">
               The code is single use and valid until{' '}
-              {new Date(issued.expiresAt).toLocaleTimeString()}. The machine shows up in Your
-              Machines once its controller reports; if it does not, run{' '}
+              {new Date(issued.expiresAt).toLocaleTimeString()}. The device shows up in Settings →
+              Devices once its controller reports; if it does not, run{' '}
               <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH can
               also join without this: create an agent on it, and Switch Console sets its controller
               up.

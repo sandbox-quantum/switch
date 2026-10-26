@@ -1,13 +1,4 @@
-import {
-  Bot,
-  DoorOpen,
-  FileText,
-  House,
-  type LucideIcon,
-  Plug,
-  Server,
-  ShieldCheck,
-} from 'lucide-react';
+import { Bot, DoorOpen, FileText, House, type LucideIcon, Plug, ShieldCheck } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
@@ -34,8 +25,6 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { currentView } = useWorkspaceSlots();
   const { params: homeParams } = useParams('server');
   const { params: agentsParams } = useParams('serverAgents');
-  const { params: machinesParams } = useParams('machines');
-  const { params: machineParams } = useParams('machine');
   const { params: roomsParams } = useParams('serverRooms');
   const { params: connectorsParams } = useParams('connectors');
   const { params: templatesParams } = useParams('templates');
@@ -43,8 +32,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: managedServerParams } = useParams('managedServer');
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
-  const flags = useFeatureFlags(active?.id ?? null);
-  const serviceConnections = flags.service_connections;
+  const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
   const warningCount =
     health.data?.agents.filter((agent) => connectionNeedsAttention(agent.state)).length ?? 0;
   if (!active) return null;
@@ -64,18 +52,12 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   > = {
     server: { icon: House, label: 'Home', params: homeParams },
     serverAgents: { icon: Bot, label: 'Your Agents', params: agentsParams },
-    machines: { icon: Server, label: 'Your Machines', params: machinesParams },
     serverRooms: { icon: DoorOpen, label: 'Your Rooms', params: roomsParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
   };
-  const shown = workspaceNavViews({
-    managed: active.managed,
-    serviceConnections,
-    administers,
-    agentManagement: flags.agent_management,
-  });
+  const shown = workspaceNavViews({ managed: active.managed, serviceConnections, administers });
 
   return (
     <SidebarMenu className="flex flex-col gap-[2px] px-2 pt-2">
@@ -87,9 +69,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
             isActive={
               view === 'admin'
                 ? onAdmin || onStatus
-                : view === 'machines' && isCurrentView(currentView, 'machine')
-                  ? machineParams?.serverId === active.id
-                  : isCurrentView(currentView, view) && params?.serverId === active.id
+                : isCurrentView(currentView, view) && params?.serverId === active.id
             }
             onClick={() => navigate(view === 'admin' ? adminTarget : view, { serverId: active.id })}
             className={cn(frozen && view !== 'admin' && FROZEN)}

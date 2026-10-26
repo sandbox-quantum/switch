@@ -80,13 +80,16 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Move {label} to another machine</DialogTitle>
+        <DialogTitle>Move {label} to another device</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-3 pt-0">
         <DialogDescription>
-          {label} stops on {agent.machine?.name ?? 'its machine'} and starts on the machine you
-          pick. Its chats, rooms and settings stay the same.
+          {label} stops on {agent.machine?.name ?? 'its device'} and starts on the device you pick.
+          Its chats, rooms and settings stay the same.
         </DialogDescription>
+        <p id="move-to-label" className="text-[12px] text-foreground-muted">
+          Move to
+        </p>
         {machines.error ? (
           <p role="alert" className="text-sm text-destructive">
             {failureText(machines.error, 'Could not read your machines.')}
@@ -94,9 +97,13 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
         ) : machines.data === undefined ? (
           <Spinner />
         ) : others.length === 0 ? (
-          <p className="text-sm text-foreground-muted">You have no other machine to move it to.</p>
+          <p className="text-sm text-foreground-muted">You have no other device to move it to.</p>
         ) : (
-          <div role="radiogroup" className="max-h-[360px] space-y-2 overflow-y-auto">
+          <div
+            role="radiogroup"
+            aria-labelledby="move-to-label"
+            className="max-h-[360px] space-y-2 overflow-y-auto"
+          >
             {others.map(({ machine, target }) => (
               <TargetRow
                 key={machine.id}
@@ -112,7 +119,7 @@ export function MoveAgentModal({ agent, onSuccess, onClose }: Props) {
           <Info className="mt-px size-3.5 shrink-0" />
           <span>
             Files in its working folder{folder ? ` (${folder})` : ''} don&apos;t move. Anything it
-            needs from there must be on the new machine.
+            needs from there must be on the new device.
           </span>
         </p>
         {error && (
@@ -176,9 +183,7 @@ function TargetRow({
           <span className="truncate text-sm text-foreground">
             {thisComputer ? 'This computer' : machine.name}
           </span>
-          {!thisComputer && (
-            <TonePill tone="idle" dot={false} label={machineKindLabel(machine).split(' · ')[0]!} />
-          )}
+          {!thisComputer && <TonePill tone="idle" dot={false} label={machineKindLabel(machine)} />}
           <TonePill tone={online ? 'ok' : 'problem'} label={online ? 'Online' : 'Offline'} />
         </span>
         <span className={cn('mt-0.5 block truncate text-xs', LINE_TEXT[target.tone])}>

@@ -21,16 +21,16 @@ const MachineTitlebar = observer(function MachineTitlebar() {
     <ServerSectionTitlebar
       serverId={params.serverId}
       icon={Server}
-      label="Your Machines"
-      onSectionClick={() => navigate('machines', { serverId: params.serverId })}
+      label="Devices"
+      onSectionClick={() => navigate('settings', { tab: 'devices' })}
       item={{ label: params.name }}
     />
   );
 });
 
 /**
- * One of the person's machines, with everything it last reported. Read from
- * the same list as the machines page: the server has no call for one machine.
+ * One of the person's devices, with everything it last reported. Read from
+ * the same list as Settings → Devices: the server has no call for one machine.
  */
 const MachinePanel = observer(function MachinePanel() {
   const { params } = useParams('machine');
@@ -42,7 +42,7 @@ const MachinePanel = observer(function MachinePanel() {
   return (
     <div className="relative z-10 flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-        <div className="mx-auto w-full max-w-[720px] px-6 pt-10 pb-10">
+        <div className="mx-auto w-full max-w-[1080px] px-6 pt-10 pb-10">
           {machines.error && !(server && isFrozenServer(server)) ? (
             <p role="alert" className="text-sm text-destructive">
               {failureText(machines.error, 'Could not load this machine.')}
@@ -55,7 +55,7 @@ const MachinePanel = observer(function MachinePanel() {
             </ServerTableEmpty>
           ) : !machine ? (
             <ServerTableEmpty>
-              {params.name} is no longer one of your machines on {server?.name ?? 'this server'}.
+              {params.name} is no longer one of your devices on {server?.name ?? 'this server'}.
             </ServerTableEmpty>
           ) : (
             <MachineDetails
