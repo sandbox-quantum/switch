@@ -1,0 +1,50 @@
+slug: pagerduty
+name: PagerDuty
+category: Incident management
+description: Read incidents, services and on-call schedules, and acknowledge or resolve incidents, with your PagerDuty key.
+enabled: true
+adapter: api_key
+# PagerDuty's hosted MCP server takes OAuth only with a static client, and has
+# no dynamic registration, so a person pastes a User API key instead. A user
+# key acts as that person, with their role's permissions; an account-wide
+# (General Access) key would act as no one, and some tools need a user.
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: User API key
+        secret: true
+        help: My Profile, User Settings, Create API User Token. It acts as you.
+      - name: region
+        label: Service region
+        secret: false
+        help: pagerduty.com for US accounts, eu.pagerduty.com for EU accounts.
+        choices:
+          - pagerduty.com
+          - eu.pagerduty.com
+    # Reads the person the key belongs to; a General Access key has no user
+    # and is refused here, which is what we want.
+    identity:
+      method: GET
+      url: "https://api.{region}/users/me"
+      headers:
+        Authorization: "Token token={api_key}"
+        Accept: "application/vnd.pagerduty+json;version=2"
+      account_id: user.id
+      label: user.email
+    help_url: https://support.pagerduty.com/main/docs/api-access-keys
+# A key does not expire, and only PagerDuty can revoke it, so it is never
+# handed to an agent: whatever runs beside the agent could keep it for good.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # The hosted server's tools are browse_* (read) and manage_* (write); a
+    # User API key reaches both, as far as the person's role allows. PagerDuty
+    # offers no read-only user key, so the description and skill say it writes.
+    - name: pagerduty
+      url: "https://mcp.{region}/mcp"
+      headers:
+        Authorization: "Token token={api_key}"
+tools: { mode: pass_through }

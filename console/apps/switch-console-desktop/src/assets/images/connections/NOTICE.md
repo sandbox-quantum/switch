@@ -12,7 +12,7 @@ embedded raster data. The single-colour marks draw in `currentColor`, and
 one-colour black or white version on the theme where the colour would not
 stand out from the tile.
 
-All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
+All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and `pagerduty.svg`, fetched 2026-10-26.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
@@ -28,6 +28,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
 | `linear.svg` | Linear | Simple Icons 16.33.0, `linear` | CC0-1.0 | `#5E6AD2` |
 | `box.svg` | Box | Simple Icons 16.33.0, `box` | CC0-1.0; guidelines https://www.box.com/en-gb/about-us/press | `#0061D5`, white in dark theme |
 | `airtable.svg` | Airtable | Simple Icons 16.33.0, `airtable` | CC0-1.0 | black in light theme, `#18BFFF` in dark theme |
+| `pagerduty.svg` | PagerDuty | Simple Icons 16.33.0, `pagerduty` | CC0-1.0; guidelines https://www.pagerduty.com/brand/ | `#06AC38` |
 | `vercel.svg` | Vercel | Simple Icons 16.33.0, `vercel` | CC0-1.0; guidelines https://vercel.com/geist/brands | theme foreground |
 | `canva.svg` | Canva | Canva "Icon logo" from https://www.canva.dev/assets/connect/Canva-logos.zip | Canva Connect brand guidelines (https://www.canva.dev/docs/connect/guidelines/brand/) permit the unmodified icon logo in an integration's UI; gradient ids renamed only | full colour, unmodified |
 
