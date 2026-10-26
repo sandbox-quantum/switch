@@ -348,20 +348,27 @@ async def connect_to_room(
     caller = caller_session()
     displaced_session_id = None
     evicted_connection_id = None
-    sharer = protocol.connections.share_holder(agent_id, room.id)
-    if sharer is not None and (caller is None or caller.id != sharer):
-        # The room shares this agent's session, which answers it from the
-        # home room: a second session here would answer as the same agent.
-        raise ValueError(
-            f"Room {room.name} shares this agent's session, which answers it "
-            "from its home room, so another session can't connect to it. To "
-            "give the room a session of its own, its owner or a workspace "
-            "admin can isolate it first (`!session @agent isolated` there)."
-        )
-    # The shared session itself already answers for the room, and moving its
-    # placement here would take it out of its home room: nothing moves.
-    already_answering = sharer is not None
-    if not controller_backed and not already_answering:
+
+    def refuse_second_session() -> bool:
+        """Raise when the room shares this agent's session and the caller is
+        another session; True when the caller is that shared session, which
+        already answers for the room from its home room, so nothing moves."""
+        sharer = protocol.connections.share_holder(agent_id, room.id)
+        if sharer is not None and (caller is None or caller.id != sharer):
+            # A second session here would answer as the same agent.
+            raise ValueError(
+                f"Room {room.name} shares this agent's session, which answers it "
+                "from its home room, so another session can't connect to it. To "
+                "give the room a session of its own, its owner or a workspace "
+                "admin can isolate it first (`!session @agent isolated` there)."
+            )
+        return sharer is not None
+
+    if controller_backed:
+        # Nothing is placed or claimed here, so the copy this process holds
+        # is enough to refuse on.
+        refuse_second_session()
+    else:
         async with protocol.connections.slots(agent_id):
             # Routing is where events actually go, so moving it on a bind that
             # then fails would send them somewhere the session is not — and the
@@ -372,36 +379,47 @@ async def connect_to_room(
             # process holding the caller's connection is told: its stream may
             # be parked waiting for exactly this room.
             async with protocol.connections.recorded(agent_id):
-                if caller is not None:
-                    previous, displaced_session_id = protocol.connections.place_session(
-                        agent_id, caller.id, room.id, key
+                # Judged on the shares just read from every process: this
+                # process's copy may not have heard of one made through another.
+                already_answering = refuse_second_session()
+                if not already_answering:
+                    if caller is not None:
+                        previous, displaced_session_id = (
+                            protocol.connections.place_session(
+                                agent_id, caller.id, room.id, key
+                            )
+                        )
+                    else:
+                        previous = rooms_on_caller_connection(protocol, agent_id, key)
+
+                    evicted_connection_id = claim_room_on_caller_connection(
+                        protocol, agent_id, key, room.id
                     )
-                else:
-                    previous = rooms_on_caller_connection(protocol, agent_id, key)
+                    for departed in previous - {room.id}:
+                        release_room_on_caller_connection(
+                            protocol, agent_id, key, departed
+                        )
+            # The shared session already answers for the room, and moving its
+            # placement here would take it out of its home room: nothing moves.
+            if not already_answering:
+                # Connecting is how an agent's occupancy of a room changes
+                # hands, and the occupant is the one whose reading clears that
+                # room's unread count. The connection underneath cannot stand
+                # in for it: sessions of one agent share it, and each of them
+                # is in a room of its own.
+                reader = counting_reader()
+                if reader is not None:
+                    await protocol.event_buffer.hand_counting_to(
+                        require_tenant_id(), agent_id, reader, room.id
+                    )
 
-                evicted_connection_id = claim_room_on_caller_connection(
-                    protocol, agent_id, key, room.id
+                await bind_room_for_connectionless_caller(
+                    protocol,
+                    agent_id=agent_id,
+                    connection_id=key,
+                    room_id=room.id,
+                    connection_model=profile.connection_model,
                 )
-                for departed in previous - {room.id}:
-                    release_room_on_caller_connection(protocol, agent_id, key, departed)
-
-            # Connecting is how an agent's occupancy of a room changes hands, and
-            # the occupant is the one whose reading clears that room's unread
-            # count. The connection underneath cannot stand in for it: sessions of
-            # one agent share it, and each of them is in a room of its own.
-            reader = counting_reader()
-            if reader is not None:
-                await protocol.event_buffer.hand_counting_to(
-                    require_tenant_id(), agent_id, reader, room.id
-                )
-
-            await bind_room_for_connectionless_caller(
-                protocol,
-                agent_id=agent_id,
-                connection_id=key,
-                room_id=room.id,
-                connection_model=profile.connection_model,
-            )
 
     return {
         "agent_id": agent_id,

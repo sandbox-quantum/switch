@@ -14,6 +14,7 @@ every room-scoped call into "several rooms, pick one".
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -403,6 +404,45 @@ async def test_a_room_sharing_a_session_refuses_another_session(
         await definitions.connect_to_room("room-c", include_general_instructions=False)
     assert registry.session_room(AGENT, "lead") == ROOM_A
     assert registry.session_in_room(AGENT, "room-c") == "lead"
+
+
+@pytest.mark.asyncio
+async def test_a_share_made_through_another_process_is_judged_on_the_reread(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This process's copy may not have heard of a share made through another
+    one yet. Connecting re-reads what every process recorded before it moves
+    anything (`recorded`), so the refusal and the shared session's no-op are
+    judged on that, not on the copy."""
+    connection = _open(registry)
+    registry.replace_placements(connection, {"lead": ROOM_A})
+    plain_recorded = registry.recorded
+
+    @asynccontextmanager
+    async def rereading(agent_id: str) -> AsyncIterator[None]:
+        # What the re-read finds: the share another process recorded.
+        registry.replace_placements(connection, {"lead": ROOM_A}, {"lead": ["room-c"]})
+        async with plain_recorded(agent_id):
+            yield
+
+    monkeypatch.setattr(registry, "recorded", rereading)
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    assert registry.share_holder(AGENT, "room-c") is None
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("other", None)):
+        with pytest.raises(ValueError, match="shares this agent's session"):
+            await definitions.connect_to_room(
+                "room-c", include_general_instructions=False
+            )
+    assert registry.session_room(AGENT, "other") is None
+
+    # Seen from a copy without the share again, the shared session itself
+    # still stays in its home room.
+    registry.replace_placements(connection, {"lead": ROOM_A})
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("lead", ROOM_A)):
+        await definitions.connect_to_room("room-c", include_general_instructions=False)
+    assert registry.session_room(AGENT, "lead") == ROOM_A
 
 
 class _UncountedBuffer:
