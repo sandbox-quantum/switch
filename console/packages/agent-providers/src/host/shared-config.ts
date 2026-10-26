@@ -135,6 +135,8 @@ export async function prepareSharedConfig(
   const notices: string[] = [];
   let agentApiUrl = process.env.SWITCH_API_ENDPOINT;
   let token = process.env.SWITCH_API_TOKEN;
+  // The Codex home whose keyring login the session is handed (`CodexKeyringLogin`).
+  let codexKeyringHome: string | null = null;
   const input = structuredClone(config.start.input);
   if (config.execution) {
     const execution = config.execution;
@@ -157,13 +159,17 @@ export async function prepareSharedConfig(
       execution.inheritEnv
     );
     input.env = { ...inherited, ...input.env };
-    if (config.start.provider === 'codex')
-      input.env.CODEX_HOME = await prepareCodexSessionHome({
+    if (config.start.provider === 'codex') {
+      const sourceHome = input.env.CODEX_HOME || join(homedir(), '.codex');
+      const prepared = await prepareCodexSessionHome({
         root: join(root, 'provider-home'),
         sessionId: config.session.sessionId,
-        sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
+        sourceHome,
         config: execution.codexConfig,
       });
+      input.env.CODEX_HOME = prepared.home;
+      if (prepared.keyringLogin) codexKeyringHome = sourceHome;
+    }
     // The skills of the agent's grants join the context for every provider
     // but OpenCode, which loads them as files (`adapterFor`), as it does the
     // Switch skill. Added here rather than saved with the session, so a
@@ -217,7 +223,7 @@ export async function prepareSharedConfig(
     ...input,
     connectorMcpServers: Object.keys(vendors),
   };
-  return { agentApiUrl, token, input: started, notices };
+  return { agentApiUrl, token, input: started, notices, codexKeyringHome };
 }
 
 /**

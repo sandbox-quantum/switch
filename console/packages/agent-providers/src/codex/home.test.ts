@@ -23,7 +23,8 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     sourceHome,
     config: 'model = "test-model"',
   };
-  const home = await prepareCodexSessionHome(input);
+  const { home, keyringLogin } = await prepareCodexSessionHome(input);
+  expect(keyringLogin).toBe(false);
   expect(parse(await readFile(join(home, 'config.toml'), 'utf8'))).toEqual({
     model: 'test-model',
     model_reasoning_effort: 'high',
@@ -36,26 +37,41 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     expect((await stat(join(home, 'auth.json'))).mode & 0o777).toBe(0o600);
   await writeFile(join(home, 'auth.json'), 'refreshed-fixture');
   await mkdir(join(home, 'sessions'));
-  expect(await prepareCodexSessionHome(input)).toBe(home);
+  expect(await prepareCodexSessionHome(input)).toEqual({ home, keyringLogin: false });
   expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe('refreshed-fixture');
   expect(await readFile(join(sourceHome, 'config.toml'), 'utf8')).toBe(
     'model_reasoning_effort = "high"'
   );
   const other = await prepareCodexSessionHome({ ...input, sessionId: 'other' });
-  expect(other).not.toBe(home);
+  expect(other.home).not.toBe(home);
 });
 
-it('allows native environment or keychain authentication when no login file exists', async () => {
+it('hands the session a keyring login when the source home has no auth.json', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
   roots.push(root);
-  await expect(
-    prepareCodexSessionHome({
-      root,
-      sessionId: 'session',
-      sourceHome: join(root, 'missing'),
-      config: '',
-    })
-  ).resolves.toEqual(expect.any(String));
+  const { home, keyringLogin } = await prepareCodexSessionHome({
+    root,
+    sessionId: 'session',
+    sourceHome: join(root, 'missing'),
+    config: '',
+  });
+  expect(keyringLogin).toBe(true);
+  expect(await readdir(home)).not.toContain('auth.json');
+});
+
+it('drops a login copied before the machine moved its own to the keyring', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+  roots.push(root);
+  const sourceHome = join(root, 'source');
+  await mkdir(sourceHome);
+  await writeFile(join(sourceHome, 'auth.json'), 'fixture-login');
+  const input = { root: join(root, 'sessions'), sessionId: 'session', sourceHome, config: '' };
+  const { home } = await prepareCodexSessionHome(input);
+  await writeFile(join(home, '.switch-auth-source'), 'fixture-fingerprint');
+  await rm(join(sourceHome, 'auth.json'));
+  expect(await prepareCodexSessionHome(input)).toEqual({ home, keyringLogin: true });
+  expect(await readdir(home)).not.toContain('auth.json');
+  expect(await readdir(home)).not.toContain('.switch-auth-source');
 });
 
 it('removes a Switch skill file an earlier build left in the session home', async () => {
@@ -67,7 +83,7 @@ it('removes a Switch skill file an earlier build left in the session home', asyn
     sourceHome: join(root, 'missing'),
     config: '',
   };
-  const home = await prepareCodexSessionHome(input);
+  const { home } = await prepareCodexSessionHome(input);
   await mkdir(join(home, 'skills/switch'), { recursive: true });
   await writeFile(join(home, 'skills/switch/SKILL.md'), 'old copy');
   await prepareCodexSessionHome(input);
@@ -80,7 +96,7 @@ it('links the user’s own Codex skills into a session home that has no skills f
   const sourceHome = join(root, 'source');
   await mkdir(join(sourceHome, 'skills', '.system'), { recursive: true });
   await writeFile(join(sourceHome, 'skills', '.system', 'SKILL.md'), 'system skill');
-  const home = await prepareCodexSessionHome({
+  const { home } = await prepareCodexSessionHome({
     root: join(root, 'sessions'),
     sessionId: 'session',
     sourceHome,

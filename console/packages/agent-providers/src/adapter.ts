@@ -95,6 +95,26 @@ export interface ProviderSessionStartInput {
   /** The definition of {@link agentName}, handed to the vendor directly instead
    * of read from its own files. */
   agentDefinition?: AgentLaunchDefinition;
+  /**
+   * Codex only: the session has no auth.json, so an API key the execution
+   * machine's Codex keeps in the OS keyring is handed to it as it starts.
+   */
+  codexKeyringLogin?: CodexKeyringLogin;
+}
+
+/**
+ * Where a Codex session's keyring login comes from (`codex/keyring-login.ts`).
+ * It lives only in the session host's memory: `redact` is a function, so it
+ * never reaches a configuration file, and the key itself is read anew each
+ * time the session's Codex starts.
+ */
+export interface CodexKeyringLogin {
+  /** The execution machine's own Codex home, whose login is in the keyring. */
+  home: string;
+  /** The environment Codex reads that login with. */
+  env: Record<string, string>;
+  /** Called with the key as soon as it is read, so everything the host records scrubs it. */
+  redact: (secret: string) => void;
 }
 
 export interface ProviderSession {

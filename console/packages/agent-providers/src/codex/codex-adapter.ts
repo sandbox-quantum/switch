@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 import {
+  type CodexKeyringLogin,
   type ModelSelection,
   type ProviderAdapter,
   type ProviderCapabilities,
@@ -35,6 +36,7 @@ import {
 import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
 import { featureArgs, mcpServerConfigArgs, tomlString } from './config-args';
 import { mapCodexItem } from './item-mapping';
+import { CODEX_KEYRING_READ_TIMEOUT_MS, readCodexKeyringApiKey } from './keyring-login';
 import {
   CODEX_CLIENT_METHODS,
   CODEX_CLIENT_NOTIFICATIONS,
@@ -68,19 +70,30 @@ const PROVIDER = 'codex';
 const CLIENT_NAME = 'switch-console';
 const CLIENT_VERSION = '0.1.0';
 
+export const CODEX_SIGN_IN_REQUIRED = 'Sign in on the execution machine with codex login.';
+
 /**
- * Codex keys a keyring login by its CODEX_HOME path, and a session runs in its
- * own CODEX_HOME that receives only the execution machine's auth.json, so a
- * keyring login reads as signed out here even though `codex login status`
- * reports it.
+ * Signed out with no auth.json on the machine: Codex reads a keyring login as
+ * signed out when the keyring refuses it, so that is the likely cause when
+ * `codex login status` disagrees.
  */
-export const CODEX_SIGN_IN_REQUIRED =
-  'Sign in on the execution machine with codex login. If Codex says you are already signed in, ' +
-  'your login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"), ' +
-  'which Switch sessions cannot use: they get the login only from auth.json. Unless your ' +
-  'organization enforces the keyring, set cli_auth_credentials_store = "file" in the Codex ' +
-  'config.toml on the execution machine, which keeps the login in plaintext, then run codex ' +
-  'login again and start a new session.';
+export const CODEX_KEYRING_SIGN_IN_REQUIRED =
+  `${CODEX_SIGN_IN_REQUIRED} If Codex there says it is already signed in, it could not read ` +
+  'the login it keeps in the OS keyring: the keychain may be locked, or access to its ' +
+  '"Codex Auth" item may have been denied.';
+
+/**
+ * Where a session that is handed a keyring login keeps it: in the memory of
+ * its own Codex process, never in a file or the keyring. Given on the command
+ * line, it outranks the user's and the project's configuration, and survives
+ * Codex falling back to its defaults over a configuration it cannot read.
+ */
+const EPHEMERAL_LOGIN_ARGS = ['-c', 'cli_auth_credentials_store="ephemeral"'];
+
+const accountSchema = z.object({
+  account: z.unknown().nullable(),
+  requiresOpenaiAuth: z.boolean(),
+});
 
 /**
  * `multi_agent_v2` ships stable but off, and it is what puts `spawn_agent` in
@@ -366,7 +379,14 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const mode = threadModeConfig(input.runtimeMode, input.cwd);
     const mcp = mcpServerConfigArgs(input.mcpServers, input.connectorMcpServers, input.runtimeMode);
-    const args = ['app-server', ...featureArgs(this.features), ...mode.configArgs, ...mcp.args];
+    const keyringLogin = input.codexKeyringLogin;
+    const args = [
+      'app-server',
+      ...featureArgs(this.features),
+      ...mode.configArgs,
+      ...mcp.args,
+      ...(keyringLogin ? EPHEMERAL_LOGIN_ARGS : []),
+    ];
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
       args,
@@ -406,10 +426,13 @@ export class CodexAdapter implements ProviderAdapter {
       };
       await client.request(CODEX_CLIENT_METHODS.initialize, initializeParams);
       client.notify(CODEX_CLIENT_NOTIFICATIONS.initialized, null);
-      const account = z
-        .object({ account: z.unknown().nullable(), requiresOpenaiAuth: z.boolean() })
-        .parse(await client.request('account/read', { refreshToken: false }));
-      if (!account.account && account.requiresOpenaiAuth) throw new Error(CODEX_SIGN_IN_REQUIRED);
+      const account = accountSchema.parse(
+        await client.request('account/read', { refreshToken: false })
+      );
+      if (!account.account && account.requiresOpenaiAuth) {
+        if (!keyringLogin) throw new Error(CODEX_SIGN_IN_REQUIRED);
+        await this.signInFromKeyring(client, input.cwd, keyringLogin);
+      }
 
       const configured = await configuredSandbox(input.env.CODEX_HOME);
       const sandbox = sandboxFor(input.runtimeMode, configured);
@@ -666,6 +689,40 @@ export class CodexAdapter implements ProviderAdapter {
       threadId: resumeThreadId,
       excludeTurns: true,
     });
+  }
+
+  /**
+   * Hands the session's Codex the API key the machine's Codex keeps in the OS
+   * keyring. Codex saves a login where its configuration says, so the key is
+   * sent only once this process confirms it keeps logins in memory: a managed
+   * configuration or an administrator's requirements outrank the command line.
+   */
+  private async signInFromKeyring(
+    client: StdioJsonRpcClient,
+    cwd: string,
+    login: CodexKeyringLogin
+  ): Promise<void> {
+    const { config } = z
+      .object({ config: z.object({ cli_auth_credentials_store: z.unknown() }) })
+      .parse(await client.request('config/read', { cwd }));
+    const store = config.cli_auth_credentials_store;
+    if (store !== 'ephemeral')
+      throw new Error(
+        `Codex's configuration on the execution machine sets cli_auth_credentials_store to ${JSON.stringify(store ?? null)} for this session where Switch asked for "ephemeral" (an administrator's managed configuration or requirements can do this), so Switch did not hand the session the API key from the OS keyring: Codex would have saved another copy of it.`
+      );
+    const apiKey = await readCodexKeyringApiKey(
+      this.binaryPath,
+      login,
+      CODEX_KEYRING_READ_TIMEOUT_MS
+    );
+    if (apiKey === null) throw new Error(CODEX_KEYRING_SIGN_IN_REQUIRED);
+    login.redact(apiKey);
+    await client.request('account/login/start', { type: 'apiKey', apiKey });
+    const { account } = accountSchema.parse(
+      await client.request('account/read', { refreshToken: false })
+    );
+    if (!z.object({ type: z.literal('apiKey') }).safeParse(account).success)
+      throw new Error('Codex did not take the API key handed over from the OS keyring.');
   }
 
   private async trySteer(

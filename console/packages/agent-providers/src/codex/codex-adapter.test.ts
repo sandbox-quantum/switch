@@ -81,25 +81,23 @@ describe('CodexAdapter', () => {
     expect(servers[0].received.some((m) => m.method === 'thread/start')).toBe(false);
   });
 
-  it('explains that an isolated session cannot use a keyring login, and the file workaround', async () => {
+  it('asks for a sign-in, and reads no keyring, when the session had an auth.json to copy', async () => {
     account = null;
     const exited = vi.fn();
     const failed = start();
     servers.at(-1)?.on('exit', exited);
     const error = await failed.catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(Error);
-    const message = (error as Error).message;
-    expect(message).toContain(CODEX_SIGN_IN_REQUIRED);
-    expect(message).toContain('OS keyring');
-    expect(message).toContain('cli_auth_credentials_store = "file"');
-    expect(message).toContain('start a new session');
-    expect(message).toContain('plaintext');
+    expect((error as Error).message.endsWith(`Error: ${CODEX_SIGN_IN_REQUIRED}`)).toBe(true);
     expect(servers).toHaveLength(1);
     expect(servers[0].received.map((m) => m.method)).toEqual([
       'initialize',
       'initialized',
       'account/read',
     ]);
+    expect((servers[0] as unknown as { spawnArgs: string[] }).spawnArgs.join(' ')).not.toContain(
+      'cli_auth_credentials_store'
+    );
     expect(exited).toHaveBeenCalled();
   });
 
