@@ -749,7 +749,7 @@ async def read_context(
     reader = counting_reader()
     # A room this session answers from its home room is its own to clear, as
     # the room it is connected to is. Decided from the agent's settings, so it
-    # holds whether the session's watcher or its agents controller placed it.
+    # holds whether the session's watcher or its agent controller placed it.
     answers_here = (
         reader is not None
         and reader.is_session

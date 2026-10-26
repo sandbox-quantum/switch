@@ -448,7 +448,7 @@ async def test_a_shared_session_reading_a_room_it_answers_clears_that_room(
 ) -> None:
     """A room sharing the agent's session is the home session's to clear,
     whoever held its count before, and with no share recorded for it (an
-    agents controller places sessions without telling Switch)."""
+    agent controller places sessions without telling Switch)."""
     protocol.shared_from_home = {OTHER_ROOM}
     buffer = protocol.event_buffer
     await buffer.hand_counting_to(

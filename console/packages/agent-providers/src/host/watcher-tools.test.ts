@@ -272,6 +272,17 @@ it('reads the instructions of the room a session attends, without moving it', as
   );
   expect(calls.connect).toHaveBeenCalledTimes(3);
   expect(placements.roomOf('session')).toBe('elsewhere');
+
+  // A room the session answers from its home room is read the same way.
+  await placements.share('session', 'room');
+  calls.connect.mockResolvedValue({
+    content: [{ type: 'text', text: '{}' }],
+    structuredContent: { instructions: 'Shared room rules.' },
+  });
+  await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
+    instructions: 'Shared room rules.',
+  });
+  expect(placements.roomOf('session')).toBe('elsewhere');
 });
 
 describe('a move behind an agent controller, whose relay names each call’s room', () => {

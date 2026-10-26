@@ -8,9 +8,7 @@ describe('roomSharingLabel', () => {
   const sharing = { homeRoomId: 'hub', sharedRoomIds: ['a', 'b'] };
 
   it('says the session is based here, in the home room', () => {
-    expect(roomSharingLabel(sharing, 'hub', name)).toBe(
-      'Shared session, based here · 3 rooms'
-    );
+    expect(roomSharingLabel(sharing, 'hub', name)).toBe('Shared session, based here · 3 rooms');
   });
 
   it('names the home room from a room that shares it', () => {

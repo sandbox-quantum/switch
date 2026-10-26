@@ -222,7 +222,7 @@ export function sessionToolAnswerer(deps: {
   };
 
   /**
-   * The instructions of the room the session attends, read through
+   * The instructions of a room the session attends or answers for, read through
    * `connect_to_room`, which for an agent whose controller places its sessions
    * checks membership and returns the room's context without claiming
    * anything. Called directly rather than as the session's own connect: that
@@ -234,11 +234,14 @@ export function sessionToolAnswerer(deps: {
     catalog: SwitchToolCatalog,
     ask: Extract<HostAsk, { type: 'room-instructions' }>
   ): Promise<{ instructions: string }> => {
-    const attended = deps.placements.roomOf(caller.sessionId);
-    if (attended !== ask.roomId)
+    // A room it answers from its home room through a share counts: its
+    // messages are this session's to answer.
+    if (!deps.placements.serves(caller.sessionId, ask.roomId)) {
+      const attended = deps.placements.roomOf(caller.sessionId);
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its instructions were not read.`
       );
+    }
     const result = await catalog.call(await context(caller), 'connect_to_room', {
       room_id: ask.roomId,
       include_general_instructions: false,

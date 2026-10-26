@@ -1396,7 +1396,7 @@ it('still answers the asking room when the agent posted only somewhere else', as
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);
   await host.command(roomMessage('elsewhere', null));
-  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
   expect(host.activeOriginRoom()).toBe('room');
   host.agentPostedToRoom('another-room');
   emit({
@@ -1406,7 +1406,7 @@ it('still answers the asking room when the agent posted only somewhere else', as
     message: 'boom',
     usage: [],
   });
-  await waitFor(() => expect(reply).toHaveBeenCalledOnce());
+  await until(() => expect(reply).toHaveBeenCalledOnce());
   expect(reply).toHaveBeenCalledWith({
     roomId: 'room',
     threadId: null,
