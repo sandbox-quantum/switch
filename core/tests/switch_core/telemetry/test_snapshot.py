@@ -1186,7 +1186,7 @@ class TestNormalising:
         this build has not registered is still a bridge."""
         assert normalise_platform("slack") == "slack"
         assert normalise_platform(None) == "none"
-        assert normalise_platform("irc") == "unknown"
+        assert normalise_platform("xmpp") == "unknown"
 
     def test_a_runtime_switch_does_not_know_becomes_other(self) -> None:
         assert normalise_known_agent_type({"known_agent_type": "codex"}) == "codex"

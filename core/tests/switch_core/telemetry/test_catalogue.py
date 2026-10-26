@@ -120,7 +120,7 @@ class TestThePropertySetIsExact:
 class TestValuesAreClosed:
     def test_a_value_outside_its_set_is_refused(self) -> None:
         payload = _valid_payload("bridge_connected")
-        payload["bridge_platform"] = "irc"
+        payload["bridge_platform"] = "xmpp"
         with pytest.raises(TelemetryCatalogueError, match="expected one of"):
             validate("bridge_connected", payload)  # type: ignore[arg-type]
 
