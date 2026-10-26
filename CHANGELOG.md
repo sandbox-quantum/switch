@@ -48,13 +48,15 @@ version of their own to them without also giving them a release of their own.
 - **A refused request is no longer repeated back.** When the gateway or the
   agent API refused a request as invalid, the 422 repeated what was sent: a
   password too short to accept, or the whole body, password included, when
-  another field was missing. Anything that records error responses (APM,
-  proxies, browser HAR captures) could end up holding passwords and tokens.
-  Each error now says only where and what is wrong (`type`, `loc` and `msg`),
-  and the agent API no longer writes the request body to its log. A script
-  that read `input` or `ctx` from a 422 will find them gone. A validation
-  rule that raised its own error on the agent API now answers 422 rather than
-  500.
+  another field was missing. Registering or editing a Slack, Discord or Teams
+  connection with a config that did not fit quoted part of its bot token or
+  secret, and on an edit that could be the stored token, which nothing else
+  returns. Anything that records error responses (APM, proxies, browser HAR
+  captures) could end up holding passwords and tokens. Each error now says
+  only where and what is wrong (`type`, `loc` and `msg`), and the agent API no
+  longer writes the request body to its log. A script that read `input` or
+  `ctx` from a 422 will find them gone. A validation rule that raised its own
+  error on the agent API now answers 422 rather than 500.
 - **Agents are no longer handed a key that never expires.** Datadog connects
   with an API key and an application key that do not expire and that only
   Datadog can revoke, and an agent granted Datadog was handed both. Switch now

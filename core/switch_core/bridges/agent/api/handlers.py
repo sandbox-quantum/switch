@@ -118,6 +118,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
 from switch_core.observability.metrics import metrics
+from switch_core.request_validation import public_errors
 from switch_core.trust.client import GuardrailBlockedError
 from switch_core.version import switch_core_version
 
@@ -249,7 +250,7 @@ async def _register_known(
     try:
         options = spec.parse_options(options_raw)
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=exc.errors()) from exc
+        raise HTTPException(status_code=400, detail=public_errors(exc)) from exc
 
     integration_profile = spec.build_profile(options)
     metadata = {

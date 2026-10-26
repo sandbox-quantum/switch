@@ -70,6 +70,7 @@ from switch_core.gateway.schemas import (
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
+from switch_core.request_validation import public_errors
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,7 @@ async def register_known_agent(
     try:
         options = spec.parse_options(req.options)
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=exc.errors()) from exc
+        raise HTTPException(status_code=400, detail=public_errors(exc)) from exc
 
     integration_profile = spec.build_profile(options)
     metadata = {
@@ -329,7 +330,7 @@ async def register_known_subagents(
         try:
             options = spec.parse_options(d.options)
         except ValidationError as exc:
-            raise HTTPException(status_code=400, detail=exc.errors()) from exc
+            raise HTTPException(status_code=400, detail=public_errors(exc)) from exc
         integration_profile = spec.build_profile(options)
         metadata = {
             "known_agent_type": req.agent_type,
@@ -405,7 +406,7 @@ async def update_agent_options(
     except AgentOptionsNotEditable as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=exc.errors()) from exc
+        raise HTTPException(status_code=400, detail=public_errors(exc)) from exc
     await session.commit()
 
     md = agent.metadata_ if isinstance(agent.metadata_, dict) else {}
