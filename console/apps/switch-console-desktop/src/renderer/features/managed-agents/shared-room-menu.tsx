@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
+import type { ReactElement } from 'react';
 import { sharedSessionKey } from '@renderer/features/locations/components/settings-view/sections/shared-session-settings-section';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -40,7 +40,8 @@ export function SharedRoomMenu({
   mark: 'home' | 'shared' | null | undefined;
   /** Whether the agent has a shared session at all. */
   hasHome: boolean;
-  children: ReactNode;
+  /** The room's row: drawn as the menu's trigger, taking its props and ref. */
+  children: ReactElement;
 }) {
   const queryClient = useQueryClient();
   const act = async (change: () => Promise<void>) => {
@@ -64,7 +65,7 @@ export function SharedRoomMenu({
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger render={children} />
       <ContextMenuContent>
         {mark !== 'home' && (
           <ContextMenuItem onClick={() => void setHome(roomId)}>
