@@ -93,6 +93,19 @@ export function classifyDockerError(error: unknown): {
 }
 
 /**
+ * The last line logged about Docker being unusable. A page waiting on Docker
+ * asks every few seconds while it is down, and a line each time a failure
+ * changes says as much as a line on every check.
+ */
+let lastUnavailableLog: string | null = null;
+
+function logUnavailable(message: string, context?: Record<string, unknown>): void {
+  if (message === lastUnavailableLog) return;
+  lastUnavailableLog = message;
+  log.info(message, context);
+}
+
+/**
  * Detect whether Docker is usable: the CLI resolves AND the daemon answers.
  * `docker version --format {{.Server.Version}}` fails (non-zero exit) when the
  * daemon is unreachable, which is exactly the signal we want — a plain
@@ -115,10 +128,11 @@ export async function detectDocker(): Promise<DockerAvailability> {
     }
     const compose = await detectCompose();
     if (compose !== null) return compose;
+    lastUnavailableLog = null;
     return { available: true, version };
   } catch (error) {
     const { reason, detail } = classifyDockerError(error);
-    log.info(`local-switch-server: docker unavailable (${reason})`);
+    logUnavailable(`local-switch-server: docker unavailable (${reason})`);
     return { available: false, reason, detail };
   }
 }
@@ -137,7 +151,7 @@ async function detectCompose(): Promise<DockerAvailability | null> {
     await execFileAsync(dockerExecutable(), ['compose', 'version'], { timeout: 15_000 });
     return null;
   } catch (error) {
-    log.info('local-switch-server: docker compose unavailable', { error: String(error) });
+    logUnavailable('local-switch-server: docker compose unavailable', { error: String(error) });
     return {
       available: false,
       reason: 'not-installed',

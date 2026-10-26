@@ -115,3 +115,16 @@ reporting the container's limit would make this alertable properly.
 deliberately unpanelled — it is a curiosity for a service like this one, not a
 signal. It is there for the day someone is chasing a memory question and wants
 it.
+
+## Across pods
+
+`multi-pod-dashboard.json` shows switch-core per pod (`pod_name`), to see
+whether work is shared between pods and whether anything is handled twice.
+Gauges are split by pod; platform events, messages and the database server's
+own counters show one total. Pick the deployment with `env` and `service`. It
+needs a build that tags points with `pod_name`; earlier builds show one
+unsplit series.
+
+`dashboard.json` sums per-pod gauges (consumers, connectors, pool, memory) so
+its totals stay totals with several pods, and the pool-saturation monitor
+alerts per pod, since one pod can exhaust its pool while the others idle.

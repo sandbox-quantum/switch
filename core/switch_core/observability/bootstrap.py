@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
@@ -252,6 +253,7 @@ def start_observability(
         commit_sha=switch_core_commit(),
         repository_url=switch_core_repository_url(),
         instance_id=process_id,
+        pod_name=config.pod_name or socket.gethostname(),
     )
 
     if config.otlp_metrics_enabled:

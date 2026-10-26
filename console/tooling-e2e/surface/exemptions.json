@@ -14,7 +14,8 @@
     "GET /gateway/service-connections/{service}/flows/callback": "Needs the third-party service's own sign-in page in a browser.",
     "POST /gateway/auth/oidc/exchange": "Needs a code from a live OIDC sign-in; the harness signs in with a password.",
     "POST /gateway/hosted-controller/machines/{machine_id}/observation": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has.",
-    "POST /gateway/hosted-controller/machines/{machine_id}/prepare": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has."
+    "POST /gateway/hosted-controller/machines/{machine_id}/prepare": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has.",
+    "WS /gateway/changes/ws": "Console's change-notice socket. What it sends is covered by core's test_changes_socket.py, and the session probe checks it refuses a handshake without a session; no scenario drives Console's lists yet."
   },
   "unauthenticated": {
     "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",

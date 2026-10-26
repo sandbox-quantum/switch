@@ -32,7 +32,7 @@ import {
   urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
-import { recheckDocker } from './docker-recheck';
+import { DOCKER_RECHECK_MS, recheckDocker } from './docker-recheck';
 import { LinkAccountsStep } from './link-accounts-step';
 import { localServerStore } from './local-server-store';
 import { LogTail } from './log-tail';
@@ -152,9 +152,6 @@ const CHOICE_FOR_STEP: Record<Step, AddServerChoiceName | null> = {
   signIn: null,
   linkAccounts: null,
 };
-
-/** How often the local setup step asks again for a Docker that wasn't answering. */
-const DOCKER_RECHECK_MS = 3000;
 
 export const AddServerModal = observer(function AddServerModal(props: Props) {
   const isEdit = props.serverId != null;

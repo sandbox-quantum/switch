@@ -25,6 +25,21 @@ export function installedHere(
   return reported ? reported.problem !== 'not installed' : localStatus === 'available';
 }
 
+/**
+ * Whether the controller's report and Console's own check disagree on whether
+ * a provider is installed. The Installation section under the status still
+ * goes by Console's own check, since that is what installs and updates, so
+ * when they disagree it says whose answer each one is.
+ */
+export function installSourcesDiffer(
+  reported: MachineProvider | null,
+  localStatus: string | undefined
+): boolean {
+  return (
+    reported !== null && installedHere(reported, localStatus) !== installedHere(null, localStatus)
+  );
+}
+
 /** The line Settings shows for a provider the controller reported on, worded as Console's own check words it. */
 export function reportedHeadline(reported: MachineProvider): string {
   if (reported.ready) return 'Signed in';

@@ -284,6 +284,16 @@ describe('what each person is told about a connector that cannot be used', () =>
       )
     ).toBe('connect');
   });
+
+  it('offers no way to connect or replace a key Switch never hands to agents', () => {
+    const key = entry({
+      auth_type: 'api_key',
+      unavailable_reason: 'Datadog keys do not expire.',
+      unavailable_code: 'key_never_expires',
+    });
+    expect(profileConnectAction(key)).toBeNull();
+    expect(profileConnectAction({ ...key, status: 'connected' })).toBeNull();
+  });
 });
 
 describe('the Yours and Discover tabs', () => {
@@ -744,6 +754,9 @@ describe('an admin switching a service off', () => {
     expect(
       workspaceSwitchNote({ enabled: true, updated_by_name: null, updated_at: null }, at)
     ).toBe('On by default.');
+    expect(
+      workspaceSwitchNote({ enabled: false, updated_by_name: null, updated_at: null }, at)
+    ).toBe('Off by default.');
     expect(
       workspaceSwitchNote({ enabled: false, updated_by_name: 'Ada', updated_at: 'T' }, at)
     ).toBe('Switched off by Ada, at T.');

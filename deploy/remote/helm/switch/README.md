@@ -200,9 +200,11 @@ stored in the database.
 
 An agent with no icon of its own is drawn by api.dicebear.com with its name as
 the seed, and a person relayed from another platform by ui-avatars.com with their
-name in the URL. Slack, Discord and Teams clients load those images, so the
-services see the name and each reader's address; the Mattermost bridge loads them
-from switch-core. To send no such URL:
+name in the URL, so the services see the name. Slack and Discord fetch the image
+on their own servers and serve their copy, Teams draws it inside each card (some
+Teams clients may load it from the service directly), the Mattermost bridge
+fetches it from switch-core, and Switch Console loads it on each user's machine.
+To send no such URL:
 
 ```yaml
 switchCore:
@@ -211,11 +213,11 @@ switchCore:
 ```
 
 Each platform then shows its own default icon (Slack the app's icon, Discord its
-default avatar, Teams no image), icons already stored on those services are
-withheld too, and new agents get no generated icon. Setting an icon on one of
-those services is refused with the reason. Switch Console asks the server and
-stops drawing them for its agents. An icon an owner set on any other host is
-unaffected.
+default avatar, Teams no image; a Mattermost bot keeps the image it already has),
+icons already stored on those services are withheld too, and new agents get no
+generated icon. Setting an icon on one of those services is refused with the
+reason. Switch Console asks the server and stops drawing them for its agents. An
+icon an owner set on any other host is unaffected.
 
 ## Follow the conversation
 

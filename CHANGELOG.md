@@ -44,6 +44,29 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **Agents are no longer handed a key that never expires.** Datadog connects
+  with an API key and an application key that do not expire and that only
+  Datadog can revoke, and an agent granted Datadog was handed both. Switch now
+  refuses: Datadog can no longer be connected or granted, and an agent with an
+  existing Datadog grant is told why when it asks. A Datadog connection made
+  before can still be disconnected; revoke the keys in Datadog if they were
+  ever granted to an agent.
+- **Service connections start off in a new workspace.** A workspace created
+  from now on has every service connection switched off until a workspace
+  admin switches each on under Connectors. Workspaces that already had members
+  keep every service on by default, as before, along with every switch an
+  admin already set.
+- **A Google Workspace token is never handed out with more than an hour
+  left,** and one Google issues for longer is refused.
+- **Withdrawing access says what it could not take back.** Removing a grant,
+  disconnecting, or switching a service off for the workspace cannot revoke an
+  Atlassian or Google Workspace token already given to an agent, since that
+  token is the owner's own. The change now marks those tokens withdrawn and
+  its warning names the service and the time until which they may keep
+  working: up to an hour for Google Workspace, and up to eight hours for
+  Atlassian, whose tokens cannot be asked for shorter.
+
 #### Added
 - **Templates carry packages.** A room in a template takes `packages:`, a list
   of packages that already exist, by `id` or by `name`, attached when the room
@@ -58,6 +81,13 @@ version of their own to them without also giving them a release of their own.
   itself up, its rules with the people, agents and rooms they name. So an
   agent can tell someone who may answer its questions and approvals instead
   of guessing. Another agent sees only the kind.
+- **Console hears when your managed agents or machines change.** A signed-in
+  user's Console opens one WebSocket per workspace (`/gateway/changes/ws`), and
+  switch-core tells it when one of their managed agents or machines changed, so
+  Console reads it again instead of polling. A notice names a kind and an id
+  and carries nothing else. Notices travel between replicas on the signal bus,
+  so a change made through one pod reaches a Console connected to another
+  (#717).
 - **The Airtable connection.** A person connects Airtable from Switch Console,
   choosing at Airtable's consent screen which bases and workspaces to share,
   and a granted agent reads and updates records and comments in them, as that
@@ -88,6 +118,14 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Agents and controllers are pinged every 10 seconds instead of every 2.**
+  A connection is now declared dead after 30 seconds without a beat, up from
+  6, so a client that goes away holds its room slot and shows online for up to
+  30 seconds. The interval is advertised on every open, so clients follow it
+  without an update. The agent auth cache now gives each entry a random 80 to
+  120% of `AGENT_AUTH_CACHE_TTL_SECONDS`, so entries filled together after a
+  restart do not all expire together, and that setting must stay below 25
+  seconds (the 30 second heartbeat TTL, less the jitter) or startup refuses it.
 - **Following the conversation is described the same way everywhere, and the
   chart can turn it on.** The feature added in 0.31.0 is off unless
   `follow_the_conversation` is among the enabled feature flags
@@ -113,6 +151,13 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **Full garbage collections no longer stall the server for hundreds of
+  milliseconds.** Once boot has built what lasts for the life of the process
+  (modules, the ORM's mappers, the app's routes), the server freezes it out of
+  garbage collection, so a full pass walks only what was made since. The
+  clients and bridges started after that stay collectable, since replicas hand
+  them to one another. The dashboard's pause chart now shows the average pause
+  next to p99, as Datadog keeps the average for longer.
 - **Agents no longer read offline while their replica shuts down.** With several
   replicas, a stopping replica released its lease before its 5 s drain, so for
   up to about 6 s the other replicas counted its connected agents as gone: `@role`
@@ -140,6 +185,10 @@ version of their own to them without also giving them a release of their own.
   an agent writing a template did not know they existed or what shape they
   take. It now gives each one's fields, a sentence on what it does, and a
   short example.
+- **switch-buddy no longer says the Mattermost switch waits for a server
+  restart.** Turning it on starts Mattermost straight away on a running local
+  server, but switch-buddy's instructions still said it took effect at the next
+  start, which sent people to restart the server for nothing (#1021).
 - **The Teams command menu fits Teams' limit again.** Switch's own Teams app
   listed thirteen commands, one more than Teams allows, once `/remove-agent`
   joined it. Both Teams apps now offer the same twelve: `/remove-agent` is in,
@@ -1933,6 +1982,10 @@ version of their own to them without also giving them a release of their own.
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
 
 #### Changed
+- **Managed agents and machines update when the server says they changed.**
+  Against a server that pushes change notices, Console reads those lists
+  again when told to, and otherwise only every five minutes instead of every
+  15 to 30 seconds; against one that does not, it polls as before (#717).
 - **One name for the controller.** Console, the Gateway and the docs say
   "agent controller" everywhere, matching the `switch-agent-controller`
   package, instead of a mix of "agent controller" and "agents controller".
@@ -1941,11 +1994,35 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Settings → Agent providers keeps this computer's report current.** It
+  prefers the report from the server Console is on, rereads it while open and
+  after the controller reports again, and the install section says so when
+  Console's own check disagrees with the controller's.
+- **The local Switch server starts on Intel Macs without Homebrew.**
+  cryptography publishes no wheel for Intel Macs, so the Intel build of
+  Console compiled its own against the build machine's Homebrew OpenSSL, and
+  on a Mac without Homebrew the server failed to start with `Library not
+  loaded: /usr/local/opt/openssl@3/lib/libssl.3.dylib`. The bundled
+  cryptography now carries its own OpenSSL, as cryptography's wheels for Apple
+  silicon do, and a macOS build fails if anything in the local server links a
+  library that is neither macOS's nor shipped with it.
 - **Setting up a server notices Docker once it starts.** "Set up a server on
   this computer" checked for Docker only when the step opened, so installing or
   starting Docker meanwhile left the setup skipping Mattermost until you went
   back. It now checks again every few seconds, and when Console regains focus,
   while Docker isn't answering.
+- **Starting Docker with the server page open now enables the Mattermost
+  switch.** The server page checked for Docker only when it opened, so Docker
+  Desktop started afterwards left the switch greyed out until you left the
+  page and came back. It now checks again the way the setup step does. A
+  running server whose Mattermost was left out or failed to start, because
+  Docker was off, shows the switch off, so turning it on brings Mattermost up
+  without a restart (#1021).
+- **A local Mattermost shows up as soon as it is ready.** When the Mattermost
+  beside a local server finished setting up, pages already open kept showing no
+  Mattermost and asked you to link an account until the server was restarted.
+  They now refresh the messaging apps and linked accounts the moment it is up
+  (#1021).
 - **Agents say who can answer their questions and approvals.** The Switch
   skill said a request card needed the owner's linked identity and room
   membership. Its addressing policy decides, and agents now read theirs with
@@ -3936,9 +4013,10 @@ tags; see RELEASING.md.
   signed in.** `claude auth status` only says a login or key is present, so a
   key left by an old install read as signed in while every session failed.
   When setting up, on a recheck, and whenever a login was not yet known to
-  work, the controller now sends Claude Code one short test prompt and reports
-  what it said if it fails. A Claude Code too old to have `auth status` is
-  reported as such instead of as a check that never finished.
+  work, the controller now sends Claude Code one short test prompt, with the
+  person's hooks off and stdin closed, and reports what it said if it fails,
+  from its result, its `errors` or its stderr. A Claude Code too old to have
+  `auth status` is reported as such instead of as a check that never finished.
 - **A controller updates to the release Switch names while sessions sit idle.**
   It waited until no session existed on the machine, and a session connected to
   a room counted even with nothing to do, so a machine with long-lived sessions

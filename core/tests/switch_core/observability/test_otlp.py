@@ -107,6 +107,93 @@ def test_resource_names_the_process_so_pods_report_apart():
     assert resource.attributes()["service.instance.id"] == "switch-core-7d9f-abcd1234"
 
 
+def test_every_point_names_its_pod_as_a_tag():
+    """Datadog makes point attributes tags but not resource ones, so two pods'
+    gauges would otherwise land in one series and overwrite each other. The
+    pod, not the process: the process id changes on every restart."""
+    resource = OtlpResource(
+        service_name="switch-core",
+        service_version="1.2.3",
+        environment="pilot",
+        deployment_id=RESOURCE.deployment_id,
+        commit_sha=None,
+        repository_url=None,
+        instance_id="switch-core-7d9f-abcd1234",
+        pod_name="switch-core-7d9f",
+    )
+    gauge = MetricPayload(
+        name="switch.agents.connected",
+        unit="{agent}",
+        description="Agents connected.",
+        kind="gauge",
+        numbers=[NumberPoint(attributes={"transport": "websocket"}, value=7.0)],
+        histograms=(),
+    )
+    histogram = MetricPayload(
+        name="switch.db.pool.wait.duration",
+        unit="ms",
+        description="Pool waits.",
+        kind="histogram",
+        numbers=(),
+        histograms=[
+            HistogramPoint(
+                attributes={},
+                count=1,
+                total=3.0,
+                bucket_counts=[1, 0],
+                bounds=[5.0],
+            )
+        ],
+    )
+    payload = build_metrics_payload(
+        [gauge, _sum_metric(), histogram], resource, START_NANOS, END_NANOS
+    )
+    metrics = payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+
+    for points in (
+        metrics[0]["gauge"]["dataPoints"],
+        metrics[1]["sum"]["dataPoints"],
+        metrics[2]["histogram"]["dataPoints"],
+    ):
+        tags = {a["key"]: a["value"] for a in points[0]["attributes"]}
+        assert tags["pod_name"] == {"stringValue": "switch-core-7d9f"}
+    gauge_tags = {a["key"] for a in metrics[0]["gauge"]["dataPoints"][0]["attributes"]}
+    assert gauge_tags == {"transport", "pod_name"}
+
+
+def test_a_metric_attribute_cannot_take_the_pod_tag_s_name():
+    resource = OtlpResource(
+        service_name="switch-core",
+        service_version=None,
+        environment=None,
+        deployment_id=RESOURCE.deployment_id,
+        commit_sha=None,
+        repository_url=None,
+        instance_id="switch-core-7d9f-abcd1234",
+        pod_name="switch-core-7d9f",
+    )
+    gauge = MetricPayload(
+        name="switch.leases.held",
+        unit="{lease}",
+        description="Leases.",
+        kind="gauge",
+        numbers=[NumberPoint(attributes={"pod_name": "other"}, value=1.0)],
+        histograms=(),
+    )
+
+    with pytest.raises(ValueError, match="pod_name"):
+        build_metrics_payload([gauge], resource, START_NANOS, END_NANOS)
+
+
+def test_points_carry_no_pod_for_a_resource_without_one():
+    payload = build_metrics_payload([_sum_metric()], RESOURCE, START_NANOS, END_NANOS)
+    point = payload["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["sum"][
+        "dataPoints"
+    ][0]
+
+    assert [a["key"] for a in point["attributes"]] == ["route"]
+
+
 def test_resource_names_the_commit_it_was_built_from():
     resource = OtlpResource(
         service_name="switch-core",

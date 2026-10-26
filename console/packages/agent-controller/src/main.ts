@@ -50,6 +50,8 @@ import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from '
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
 import { definitionProblem } from './reconcile';
+import { TRUSTED_RELEASE_KEYS } from './release-keys';
+import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { isManagedRelease, readCurrent, throughCurrent } from './releases';
 import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
 import { AgentRuntimes } from './runtimes';
@@ -74,7 +76,9 @@ import {
   type ReleaseInstaller,
   ReleasesDirInstaller,
   runInstallCommand,
+  SELF_UPDATE_OFF,
   SelfUpdater,
+  selfUpdateTurnedOff,
   unavailableInstaller,
 } from './self-update';
 import {
@@ -127,7 +131,7 @@ Commands:
   run [--data-dir <dir>] [--shared-host-bundle <path>]
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin] [--agent-runtime default|separate-user]
-      [--releases-dir <dir> | --updated-by-console]
+      [--releases-dir <dir> | --updated-by-console] [--no-self-update]
       Run the agents assigned to this machine and report their status.
       --agent-runtime separate-user runs every agent as a Linux user of its
       own, as set up by install-service --separate-users.
@@ -139,7 +143,10 @@ Commands:
       the releases Switch names, beside the ones before.
       --updated-by-console, which Switch Console passes to a controller it
       runs on an SSH host, says Console updates it: it follows no release
-      Switch names, and tells Switch so. --provider-seed <file> takes the
+      Switch names, and tells Switch so. --no-self-update (or
+      SWITCH_CONTROLLER_SELF_UPDATE=off in the environment or the env file)
+      turns following the release Switch names off on this machine; it
+      reports why when Switch names another. --provider-seed <file> takes the
       provider checks precheck wrote, so the first report carries them.
   precheck --out <file> --probe-dir <dir> [--shared-host-bundle <path>]
       Check every provider's installation and sign-in as run would, with no
@@ -185,7 +192,8 @@ Commands:
       --check only says whether there is one.
 
 When Switch names a release for this controller, run installs it once no
-session runs and exits 7 for its service to start it again on it.
+session runs and exits 7 for its service to start it again on it. run and
+update install only a release signed with a key built into this controller.
 
 run, install-service and doctor --env-file read NAME=value lines (as for
 systemd's EnvironmentFile) into the agents' environment: provider API keys, or
@@ -467,6 +475,7 @@ async function runCommand(args: string[]): Promise<number> {
       'agent-runtime': { type: 'string' },
       'releases-dir': { type: 'string' },
       'updated-by-console': { type: 'boolean' },
+      'no-self-update': { type: 'boolean' },
       'provider-seed': { type: 'string' },
     },
     strict: true,
@@ -486,6 +495,7 @@ async function runCommand(args: string[]): Promise<number> {
   // Before anything reads the environment: the agents inherit it.
   const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
   Object.assign(process.env, fromFile);
+  const selfUpdateOff = selfUpdateTurnedOff(values['no-self-update'] === true, process.env);
   const controllerId = values['controller-id'];
   if ((controllerId === undefined) !== (values.server === undefined))
     throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
@@ -568,16 +578,19 @@ async function runCommand(args: string[]): Promise<number> {
       updatedBy === 'self'
         ? new SelfUpdater({
             version: VERSION,
-            installer: await installerFor(
-              separateUsers,
-              releasesDir,
-              updateNpm(dataDir),
-              process.platform
-            ),
+            installer: selfUpdateOff
+              ? unavailableInstaller(SELF_UPDATE_OFF)
+              : await installerFor(
+                  separateUsers,
+                  releasesDir,
+                  updateNpm(dataDir),
+                  process.platform
+                ),
             download: (release, signal) =>
               downloadVerified({
                 fetch,
                 release,
+                keys: TRUSTED_RELEASE_KEYS,
                 dir: updatesDir(dataDir),
                 maxBytes: MAX_PACKAGE_BYTES,
                 signal,
@@ -1111,15 +1124,26 @@ async function updateCommand(args: string[]): Promise<number> {
     throw new ConfigurationError(
       `This controller runs from ${prefix}, a releases directory install-service set up: it installs the release Switch names itself, once no session is mid-turn. To install another by hand, install it with npm and run install-service again.`
     );
+  assertTrustedKeys(TRUSTED_RELEASE_KEYS);
   const dataDir = resolveDataDir(values['data-dir']);
   process.stdout.write(`Installing ${latest.version} from ${latest.packageUrl}\n`);
-  const { file } = await downloadPackage({
+  const { file, sha256 } = await downloadPackage({
     fetch,
     url: latest.packageUrl,
     dir: updatesDir(dataDir),
     maxBytes: MAX_PACKAGE_BYTES,
     signal: null,
   });
+  const keyId = await verifyDownloadedRelease({
+    fetch,
+    file,
+    url: latest.packageUrl,
+    version: latest.version,
+    sha256,
+    keys: TRUSTED_RELEASE_KEYS,
+    signal: null,
+  });
+  process.stdout.write(`The package is signed with trusted release key ${keyId}.\n`);
   try {
     await npmInstall(updateNpm(dataDir), prefix, file, null);
   } catch (error) {

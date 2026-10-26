@@ -10,7 +10,7 @@ import { AgentSheetHeaderSection } from './AgentSheetHeaderSection';
 import { InstalledAgentContent } from './InstalledAgentContent';
 import { InstallSection } from './InstallSection';
 import { ThisComputerProviderStatus } from './this-computer-provider-status';
-import { installedHere, reportedProvider } from './this-computer-status';
+import { installedHere, installSourcesDiffer, reportedProvider } from './this-computer-status';
 
 interface AgentDetailSheetProps {
   agentId: string | null;
@@ -29,7 +29,9 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
   const { value: storedConfig, isOverridden, isLoading, update, reset } = useAgentSettings(agentId);
 
   const { data: report } = useThisComputerReport();
-  const isInstalled = installedHere(reportedProvider(report, agentId), agentPayload?.status);
+  const reported = reportedProvider(report, agentId);
+  const isInstalled = installedHere(reported, agentPayload?.status);
+  const sourcesDiffer = installSourcesDiffer(reported, agentPayload?.status);
 
   return (
     <>
@@ -41,6 +43,13 @@ const AgentDetailSheetContent = observer(function AgentDetailSheetContent({
             <ThisComputerProviderStatus providerId={asAgentProviderId(agentId)} />
             <Field>
               <Label>Installation</Label>
+              {sourcesDiffer && (
+                <p className="text-xs text-foreground-muted">
+                  What Console finds on its own PATH, used to install and update. The status above
+                  is what this computer’s agents controller reported to Switch, and it looks in
+                  places Console may not.
+                </p>
+              )}
               <InstallSection
                 agentId={agentId}
                 agentPayload={agentPayload}

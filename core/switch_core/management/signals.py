@@ -22,6 +22,12 @@ run by a controller connected to any process then reads as live in every one,
 and a connection this process holds that another process has since replaced
 or taken up is closed `taken_over`.
 
+Each change to a controller's connection is also told to the controller's
+owner, whose Console shows the machine as connected or not
+(`switch_core.user_changes`). The process that made the change reads the
+owner from the controller's row once it has committed (`_tell_owner`), and
+publishes the notice for every process to hand to the owner's sockets.
+
 Nothing here depends on a signal arriving. When the signal connection comes
 back, every binding and every controller's connection is read again and every
 controller held here is re-nudged from the database, so one that missed a
@@ -47,6 +53,7 @@ from switch_core.management.bindings import (
 )
 from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.tenant_context import no_tenant
+from switch_core.user_changes import MACHINE
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -66,6 +73,7 @@ if TYPE_CHECKING:
     )
     from switch_core.management.notifier import ControllerNotifier
     from switch_core.signals import SignalBus
+    from switch_core.user_changes import UserChangePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +103,7 @@ class ControllerSignals:
         rooms: RoomStore,
         processes: SwitchCoreProcessStore,
         clock: Callable[[], datetime],
+        user_changes: UserChangePublisher,
     ) -> None:
         self.notifier = notifier
         # The process this is, as signals and the rows naming a holder call it.
@@ -108,6 +117,7 @@ class ControllerSignals:
         self._rooms = rooms
         self._processes = processes
         self._clock = clock
+        self._user_changes = user_changes
         # What each controller has been nudged with from this process, so the
         # periodic re-check tells a held controller only what is new to it.
         self._nudged_revision: dict[str, int] = {}
@@ -122,6 +132,9 @@ class ControllerSignals:
         self._connections_owed = bus.pending_work(
             "controller connections", self._read_connection_of
         )
+        # Controllers, by (tenant id, controller id), whose connection this
+        # process changed and whose owner has still to be told.
+        self._owners_owed = bus.pending_work("controller owners", self._tell_owner)
         bus.handle(ASSIGNMENT_CHANGED_SIGNAL, self._on_assignment_changed)
         bus.handle(OPERATION_PENDING_SIGNAL, self._on_operation_pending)
         bus.handle(REVOKED_SIGNAL, self._on_revoked)
@@ -176,6 +189,19 @@ class ControllerSignals:
         on it."""
         self._bus.publish(
             CONNECTION_CHANGED_SIGNAL, tenant_id=tenant_id, controller_id=controller_id
+        )
+        self._owners_owed.add((tenant_id, controller_id))
+
+    async def _tell_owner(self, key: tuple[str, str]) -> None:
+        """Tell the controller's owner that its machine changed. Their
+        Console reads the machine again, so the notice carries nothing else."""
+        tenant_id, controller_id = key
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            controller = await self._controllers.get(session, tenant_id, controller_id)
+        if controller is None:
+            return
+        self._user_changes.publish(
+            tenant_id, controller.owner_id, MACHINE, controller_id
         )
 
     # ── Receiving, in every other process ─────────────────────────────────────

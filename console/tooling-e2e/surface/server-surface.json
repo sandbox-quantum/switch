@@ -1403,6 +1403,11 @@
       "flags": [
         "service_connections"
       ]
+    },
+    {
+      "route": "WS /gateway/changes/ws",
+      "auth": "session",
+      "flags": []
     }
   ]
 }

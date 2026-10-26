@@ -131,6 +131,10 @@ REVOCATION_BUDGET_SECONDS = 10.0
 REVOCATION_CLAIM = timedelta(seconds=90)
 VENDOR_CALL_SECONDS = 8
 ACCESS_WARNING = "Some access already given out may remain for up to 1 hour."
+UNREVOCABLE_UNKNOWN = (
+    "Some access already given to agents cannot be taken back and may keep "
+    "working until it expires."
+)
 SWITCHED_OFF = "Switched off on this server."
 # Why a connection needs reconnecting: the operator replaced the app it
 # signed in through.
@@ -155,6 +159,9 @@ UnavailableCode = Literal[
     "not_set_up",
     # It can be connected but not granted: its app is missing a part.
     "not_fully_set_up",
+    # Its credential (a pasted key) never expires, so it is never handed to
+    # an agent, and there is nothing to connect it for.
+    "key_never_expires",
 ]
 
 
@@ -250,6 +257,19 @@ def _passes_through(entry: Connection) -> bool:
     """Whether `entry` hands its agents the owner's own token."""
     token = entry.definition.token
     return token is not None and token.kind == "pass_through"
+
+
+def _issued_to_agents(entry: Connection) -> bool:
+    """Whether `entry`'s credential expires, so it may be handed to an agent."""
+    token = entry.definition.token
+    return token is not None and token.issued_to_agents
+
+
+def _never_expires(name: str) -> str:
+    return (
+        f"{name} keys do not expire and only {name} can revoke them, so Switch "
+        "does not hand them to agents."
+    )
 
 
 def _level_reach(entry: Connection, access: AccessLevel) -> dict[str, Any] | None:
@@ -448,10 +468,11 @@ class ServiceBroker:
             )
 
     async def workspace_disabled(self, session: AsyncSession) -> set[str]:
-        """The services a workspace admin switched off; none with the gate off."""
+        """The services off in this workspace, by an admin's switch or the
+        workspace's default; none with the gate off."""
         if not self._workspace_gate:
             return set()
-        return await self._workspace_services.disabled_services(session)
+        return await self._workspace_services.disabled_services(session, self._catalog)
 
     def _adapter(self, service: str) -> ServiceAdapter:
         """The adapter that issues for `service`, or the refusal saying why not."""
@@ -505,6 +526,8 @@ class ServiceBroker:
         self._require_switched_on(service)
         await self.require_workspace_enabled(session, service)
         name = entry.definition.name
+        if not _issued_to_agents(entry):
+            raise ServiceError(403, FORBIDDEN, _never_expires(name), retryable=False)
         tenant_id = require_tenant_id()
         agent = await session.scalar(
             select(Agent)
@@ -698,6 +721,23 @@ class ServiceBroker:
             raise ServiceError(403, FORBIDDEN, str(error), retryable=False) from None
         definition = self._entry(service).definition
         policy = self._token_policy(service)
+        if policy.max_lifetime is None:
+            raise ServiceError(
+                403, FORBIDDEN, _never_expires(definition.name), retryable=False
+            )
+        max_lifetime = timedelta(seconds=policy.max_lifetime)
+        if policy.kind == "pass_through" and (
+            issued.token != access.token or issued.expires_at != access.expires_at
+        ):
+            # The lifetime checked below must be the vendor's own: the agent
+            # holds the owner's token for as long as the vendor honours it.
+            raise ServiceError(
+                500,
+                INTERNAL,
+                f"{definition.name} handed out a token other than the owner's, or "
+                "with another expiry, so it was not handed out.",
+                retryable=False,
+            )
         if policy.kind == "pass_through" and issued.revocable:
             # The owner's own token: revoking it would end their connection,
             # so it is never kept to revoke, nor taken back here.
@@ -708,12 +748,27 @@ class ServiceBroker:
                 "so it was not handed out.",
                 retryable=False,
             )
+        if (
+            policy.kind == "pass_through"
+            and issued.expires_at > datetime.now(UTC) + max_lifetime + TOKEN_LEEWAY
+        ):
+            # The owner's token outlives the cap only until enough of it has
+            # run down, so asking again later succeeds. Nothing was handed out,
+            # so there is nothing to discard or record.
+            raise ServiceError(
+                503,
+                INTERNAL,
+                f"{definition.name}'s current token lasts longer than "
+                f"{_lifetime_words(policy.max_lifetime)}, so it is not handed "
+                "out until it has less than that left.",
+                retryable=True,
+            )
         try:
             now = datetime.now(UTC)
             if not (
                 now + TOKEN_LEEWAY
                 < issued.expires_at
-                <= now + timedelta(seconds=policy.max_lifetime) + TOKEN_LEEWAY
+                <= now + max_lifetime + TOKEN_LEEWAY
             ):
                 raise ServiceError(
                     500,
@@ -1062,6 +1117,10 @@ class ServiceBroker:
             if grant.service in switched_off:
                 continue
             entry = self._catalog.get(grant.service)
+            # Nor is one whose credential never expires: every token request
+            # for it is refused, so the session gets none of its tools.
+            if entry is not None and not _issued_to_agents(entry):
+                continue
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
             cli = None if entry is None else entry.definition.cli
@@ -1104,12 +1163,13 @@ class ServiceBroker:
         return grants
 
     def connectable(self, service: str) -> bool:
-        """Whether a person can connect `service` here: it has an adapter and
-        is not switched off."""
+        """Whether a person can connect `service` here: it has an adapter, is
+        not switched off, and what it connects could be handed to an agent."""
         entry = self._catalog.get(service)
         return (
             entry is not None
             and entry.definition.enabled
+            and _issued_to_agents(entry)
             and service in self._adapters
             and service not in self._disabled
         )
@@ -1157,6 +1217,8 @@ class ServiceBroker:
         reason = self._disabled.get(service)
         if reason is not None:
             return Unavailable("switched_off", reason)
+        if not _issued_to_agents(entry):
+            return Unavailable("key_never_expires", _never_expires(name))
         oauth = entry.definition.auth.oauth
         if (
             oauth is not None
@@ -1453,10 +1515,9 @@ class ServiceBroker:
         await session.commit()
         if not narrowed:
             return grant, None
-        pending = await self.revoke_pending(
+        return grant, await self.revoke_withdrawn(
             session, (ServiceTokenIssuance.grant_id == grant_id,)
         )
-        return grant, ACCESS_WARNING if pending else None
 
     async def connect(
         self,
@@ -1481,8 +1542,11 @@ class ServiceBroker:
         sign-in, and the old sign-in itself when it is not the new one.
         Commits `session`; returns a warning naming what could not be revoked.
         """
-        name = self._entry(service).definition.name
+        entry = self._entry(service)
+        name = entry.definition.name
         self._require_switched_on(service)
+        if not _issued_to_agents(entry):
+            raise ServiceError(403, FORBIDDEN, _never_expires(name), retryable=False)
         try:
             await self.require_workspace_enabled(session, service)
         except ServiceError as refusal:
@@ -1555,8 +1619,9 @@ class ServiceBroker:
                     f"{name} could not revoke the old sign-in. Revoke it in your "
                     f"{name} settings."
                 )
-        if await self.revoke_pending(session, issued_on_it):
-            warnings.append(ACCESS_WARNING)
+        withdrawn = await self.revoke_withdrawn(session, issued_on_it)
+        if withdrawn is not None:
+            warnings.append(withdrawn)
         return " ".join(warnings) or None
 
     async def _revoke_unkept(
@@ -1598,7 +1663,8 @@ class ServiceBroker:
         and the secret a connection keeps. Connect it with `connect`, at
         `KEY_CONSENT`: a key reaches whatever its vendor let it, so the
         connection's level is the highest a grant can take."""
-        definition = self._entry(service).definition
+        entry = self._entry(service)
+        definition = entry.definition
         self._require_switched_on(service)
         if definition.adapter != "api_key":
             raise ServiceError(
@@ -1606,6 +1672,10 @@ class ServiceBroker:
                 NOT_FOUND,
                 f"{definition.name} is not connected with a key.",
                 retryable=False,
+            )
+        if not _issued_to_agents(entry):
+            raise ServiceError(
+                403, FORBIDDEN, _never_expires(definition.name), retryable=False
             )
         adapter = self._adapters.get(service)
         if not isinstance(adapter, ApiKeyAdapter):
@@ -1710,10 +1780,9 @@ class ServiceBroker:
             details={"service": service},
         )
         await session.commit()
-        pending = await self.revoke_pending(
+        return await self.revoke_withdrawn(
             session, (ServiceTokenIssuance.grant_id == grant_id,)
         )
-        return ACCESS_WARNING if pending else None
 
     async def disconnect(
         self, session: AsyncSession, user_id: str, service: str
@@ -1818,13 +1887,64 @@ class ServiceBroker:
                     f"{name} could not revoke the sign-in. Revoke it in your "
                     f"{name} settings."
                 )
-        if removed and await self.revoke_pending(
-            session, (ServiceTokenIssuance.owner_id == user_id,)
-        ):
-            warnings.append(ACCESS_WARNING)
+        if removed:
+            withdrawn = await self.revoke_withdrawn(
+                session,
+                (
+                    ServiceTokenIssuance.owner_id == user_id,
+                    ServiceTokenIssuance.service.in_(
+                        [service for service, _ in removed]
+                    ),
+                ),
+            )
+            if withdrawn is not None:
+                warnings.append(withdrawn)
         return " ".join(warnings) or None
 
     # ── Revocation and retention ─────────────────────────────────────────────
+
+    async def revoke_withdrawn(
+        self, session: AsyncSession, conditions: tuple[Any, ...]
+    ) -> str | None:
+        """After an access change has committed: revoke what it withdrew, and
+        say what could not be taken back.
+
+        A token its vendor can revoke that is still pending is retried by the
+        periodic tick, and lives an hour at most. One no vendor can revoke
+        alone (the owner's own, passed through) stays valid until it expires;
+        the warning names the service and when.
+        """
+        pending = await self.revoke_pending(session, conditions)
+        warnings = [ACCESS_WARNING] if pending else []
+        unrevocable = sorted(
+            slug for slug, entry in self._catalog.items() if _passes_through(entry)
+        )
+        try:
+            async with tenant_session(
+                self._session_factory, require_tenant_id()
+            ) as own:
+                withdrawn = await self._store.withdrawn_until(
+                    own, unrevocable, conditions
+                )
+                await own.commit()
+        except Exception as error:
+            logger.error(
+                "Could not read which withdrawn service tokens are still valid: "
+                "error_type=%s",
+                type(error).__name__,
+            )
+            warnings.append(UNREVOCABLE_UNKNOWN)
+            return " ".join(warnings)
+        if withdrawn:
+            names = " and ".join(
+                self._catalog[slug].definition.name for slug in sorted(withdrawn)
+            )
+            until = max(withdrawn.values()).astimezone(UTC)
+            warnings.append(
+                f"{names} access already given to agents cannot be taken back "
+                f"and may keep working until {until:%Y-%m-%d %H:%M} UTC."
+            )
+        return " ".join(warnings) or None
 
     async def revoke_pending(
         self, session: AsyncSession, conditions: tuple[Any, ...]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import logging
 import os
@@ -221,6 +222,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
+from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -1012,8 +1014,17 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
+    # Change notices for signed-in users' Consoles (`gateway/changes.py`): the
+    # sockets this process holds, reached from every process over the bus.
+    user_changes = LocalUserChanges()
+    user_change_publisher = SignalUserChanges(local=user_changes, bus=signal_bus)
     management = create_management(
-        config, session_factory, connections.controllers, signal_bus, process_lease
+        config,
+        session_factory,
+        connections.controllers,
+        signal_bus,
+        process_lease,
+        user_change_publisher,
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
@@ -1225,6 +1236,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             if config.invite_email_enabled
             else None
         ),
+        user_changes=user_changes,
         chat_service=chat_service,
         connector_apps=connector_apps,
         config=config,
@@ -1457,6 +1469,11 @@ async def run(config: SwitchConfig, process_id: str) -> None:
 
     agent_bridge_app.router.lifespan_context = lifespan  # type: ignore[assignment]
 
+    # Before the runtime starts: what follows is the clients, bridges and work
+    # this process owns, which ownership hands to another replica as replicas
+    # come and go, so it must stay collectable.
+    _freeze_boot_objects()
+
     # ── Start runtime ────────────────────────────────────────────────────────
     await client_lifecycle.start_all()
     # Before the bridges start, so none on a shared app runs without the
@@ -1592,6 +1609,32 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # uvicorn returns once its own part is done, while `_shutdown` is still
     # stopping the rest; returning here would end the loop under it.
     await _begin_shutdown.finish()
+
+
+def _freeze_boot_objects() -> None:
+    """Take everything boot created out of the garbage collector's way.
+
+    A full collection walks every tracked object while holding the interpreter
+    lock, and most of the heap is what boot built and keeps for the life of the
+    process: modules, the ORM's mappers, the app's routes. Walking that once a
+    minute is what stalls the event loop for hundreds of milliseconds.
+    `gc.freeze` moves it to a permanent generation the collector skips, so
+    full collections only walk what was allocated since.
+
+    Called before the runtime starts, not once it is serving. A frozen object
+    is still freed when its last reference goes, but one caught in a reference
+    cycle never is, and the clients and bridges a process runs are full of
+    cycles (tasks, callbacks, sessions). With several replicas, ownership moves
+    that work between processes whenever one joins or leaves, so freezing it
+    would keep every client and bridge this process started at boot alive
+    after it hands them over.
+    """
+    gc.collect()
+    gc.freeze()
+    logger.info(
+        "Froze %d objects created during boot out of garbage collection.",
+        gc.get_freeze_count(),
+    )
 
 
 async def _seed_admin_and_bootstrap_key(

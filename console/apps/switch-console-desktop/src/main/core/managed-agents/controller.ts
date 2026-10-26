@@ -44,7 +44,7 @@ import type {
 } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { ownedMachines, thisComputerReport } from './owned-machines';
+import { ownedMachines, preferredFirst, thisComputerReport } from './owned-machines';
 
 async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
   const [thisComputer, hosts] = await Promise.all([
@@ -135,11 +135,17 @@ export const managedAgentsController = createRPCController({
 
   /**
    * This computer's providers as its controller last reported them to a
-   * server it runs for; null when it runs for none, or none has a report,
-   * and Console's own check is what there is to go by.
+   * server it runs for, `preferServerId` (the one Console is on now) first
+   * when it is one; null when it runs for none, or none has a report, and
+   * Console's own check is what there is to go by.
    */
-  thisComputerProviders: async (): Promise<ThisComputerReport | null> =>
-    thisComputerReport(await embeddedControllerService.runningServerIds(), machinesOn),
+  thisComputerProviders: async (
+    preferServerId: string | null = null
+  ): Promise<ThisComputerReport | null> =>
+    thisComputerReport(
+      preferredFirst(await embeddedControllerService.runningServerIds(), preferServerId),
+      machinesOn
+    ),
 
   /**
    * Gives one of the owner's machines a provider login, sealed here to the

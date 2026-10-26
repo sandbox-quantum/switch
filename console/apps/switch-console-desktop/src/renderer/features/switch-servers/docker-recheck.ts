@@ -1,5 +1,8 @@
 type FocusTarget = Pick<EventTarget, 'addEventListener' | 'removeEventListener'>;
 
+/** How often a page waiting on Docker asks again for one that wasn't answering. */
+export const DOCKER_RECHECK_MS = 3000;
+
 /**
  * Asks for Docker again until stopped: `everyMs` after each check finishes, and
  * at once when the window regains focus. A check can take seconds while Docker

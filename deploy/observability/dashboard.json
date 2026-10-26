@@ -19,7 +19,7 @@
     {
       "definition": {
         "type": "note",
-        "content": "**Is it working?** Each dependency reports 1 when its last check passed and 0 when it failed. Only the database takes the server out of service \u2014 switch-core runs as a single replica, so failing readiness empties the service rather than shifting traffic. A crashed bridge is a real fault that is deliberately not fatal.",
+        "content": "**Is it working?** Each dependency reports 1 when its last check passed and 0 when it failed. Only the database takes a pod out of service. With one replica that empties the service; with several, traffic moves to the pods that still pass. A crashed bridge is a real fault that is deliberately not fatal.",
         "background_color": "blue",
         "font_size": "14",
         "text_align": "left",
@@ -111,7 +111,7 @@
         "title": "Consumers running (read loops)",
         "requests": [
           {
-            "q": "avg:switch.consumers.running{$env,$service}",
+            "q": "sum:switch.consumers.running{$env,$service}",
             "aggregator": "last"
           }
         ],
@@ -458,15 +458,15 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.db.pool.in_use{$env,$service}",
+            "q": "sum:switch.db.pool.in_use{$env,$service}",
             "display_type": "area"
           },
           {
-            "q": "avg:switch.db.pool.size{$env,$service}",
+            "q": "sum:switch.db.pool.size{$env,$service}",
             "display_type": "line"
           },
           {
-            "q": "avg:switch.db.pool.overflow{$env,$service}",
+            "q": "sum:switch.db.pool.overflow{$env,$service}",
             "display_type": "line"
           }
         ]
@@ -509,7 +509,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "avg:switch.runtime.memory_rss{$env,$service}",
+            "q": "sum:switch.runtime.memory_rss{$env,$service}",
             "display_type": "area"
           }
         ]
@@ -547,7 +547,7 @@
         "show_legend": false,
         "requests": [
           {
-            "q": "avg:switch.runtime.open_fds{$env,$service}",
+            "q": "sum:switch.runtime.open_fds{$env,$service}",
             "display_type": "line"
           }
         ]
@@ -562,7 +562,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Garbage-collection pause p99 / max (ms) by generation. Needs distribution mapping, see README",
+        "title": "Garbage-collection pause p99 / avg (ms) by generation. Needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -570,7 +570,7 @@
             "display_type": "line"
           },
           {
-            "q": "max:switch.runtime.gc_pause{$env,$service} by {generation}",
+            "q": "avg:switch.runtime.gc_pause{$env,$service} by {generation}",
             "display_type": "bars"
           }
         ]
@@ -672,7 +672,7 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "avg:switch.connectors.running{$env,$service}",
+            "q": "sum:switch.connectors.running{$env,$service}",
             "display_type": "line"
           }
         ]
@@ -1106,11 +1106,11 @@
         "show_legend": true,
         "requests": [
           {
-            "q": "max:switch.delivery_cache.bytes{$env,$service}",
+            "q": "sum:switch.delivery_cache.bytes{$env,$service}",
             "display_type": "line"
           },
           {
-            "q": "max:switch.delivery_cache.rooms{$env,$service}",
+            "q": "sum:switch.delivery_cache.rooms{$env,$service}",
             "display_type": "line"
           }
         ]

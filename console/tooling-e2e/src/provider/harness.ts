@@ -120,7 +120,10 @@ async function createOnController(
     provider,
     model: provider === 'claude' ? CLAUDE_MODEL : null,
     instructions: AGENT_INSTRUCTIONS,
-    // The `approval` scenario needs the session to ask before running a tool.
+    // The `approval` and `interrupt` scenarios need the session to ask before
+    // running a tool. Auto mode, on unless a definition says otherwise, lets
+    // the provider run what it judges safe without asking.
+    auto_mode: false,
     auto_approve: false,
     directory: env.provider.agentRepoDir,
   };

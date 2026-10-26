@@ -320,17 +320,26 @@ class TokenPolicy(BaseModel):
     `minted`: made for the one issue and narrowed to the grant (GitHub's
     installation tokens). `pass_through`: the owner's own access token, shared
     by every agent they grant, which can be neither narrowed nor revoked per
-    agent. `max_lifetime`, in seconds, is the longest the vendor's token may
-    live; a longer one is refused.
+    agent. `max_lifetime`, in seconds, is the longest the credential handed
+    out may stay valid at the vendor; one valid for longer is refused. It is
+    null for a credential that never expires (a pasted key): Switch could
+    neither take such a credential back nor wait for it to lapse, so it is
+    never handed to an agent.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     kind: Literal["minted", "pass_through"]
-    max_lifetime: int = Field(ge=300, le=7 * 24 * 3600)
+    max_lifetime: Annotated[int, Field(ge=300, le=7 * 24 * 3600)] | None
+
+    @property
+    def issued_to_agents(self) -> bool:
+        return self.max_lifetime is not None
 
     @model_validator(mode="after")
     def _minted_within_the_hour(self) -> "TokenPolicy":
-        if self.kind == "minted" and self.max_lifetime > MINTED_MAX_LIFETIME:
+        if self.kind == "minted" and (
+            self.max_lifetime is None or self.max_lifetime > MINTED_MAX_LIFETIME
+        ):
             raise ValueError(
                 f"a minted token lives at most {MINTED_MAX_LIFETIME} seconds"
             )
@@ -594,11 +603,11 @@ class ConnectionDefinition(BaseModel):
         if self.enabled and (self.auth.api_key is None or not (self.mcp or self.cli)):
             raise ValueError("an api_key entry needs auth.api_key, and mcp or cli")
         if self.token is not None and (
-            self.token.kind != "pass_through" or self.token.max_lifetime > 3600
+            self.token.kind != "pass_through" or self.token.max_lifetime is not None
         ):
             raise ValueError(
-                "an api_key entry passes the key through, handed out for at most "
-                "an hour at a time"
+                "a key does not expire, so it is never handed to an agent: "
+                "token is { kind: pass_through, max_lifetime: null }"
             )
         if self.access is not None:
             raise ValueError("a key reaches whatever its vendor let it: no access")
@@ -681,6 +690,8 @@ class ConnectionDefinition(BaseModel):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
         if self.token is not None and self.token.kind != "pass_through":
             raise ValueError("the oauth adapter passes the owner's token through")
+        if self.token is not None and self.token.max_lifetime is None:
+            raise ValueError("an OAuth access token expires: name its max_lifetime")
         if self.tools is not None and self.tools.mode != "pass_through":
             raise ValueError("an oauth entry's tools pass through until classified")
         if self.access is not None and any(

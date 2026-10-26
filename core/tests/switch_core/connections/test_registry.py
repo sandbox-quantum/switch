@@ -279,15 +279,34 @@ def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
     tmp_path: Path, session_factory
 ) -> None:
     broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, None)
+    atlassian = broker.unavailable("atlassian")
+    assert atlassian is not None
+    assert (atlassian.code, atlassian.reason) == (
+        "not_set_up",
+        "Atlassian is not set up on this server.",
+    )
+    assert broker.server_setup_needed("atlassian") is False
+    asana = broker.unavailable("asana")
+    assert asana is not None and asana.code == "coming_soon"
+
+
+def test_a_key_that_never_expires_is_neither_connected_nor_granted(
+    tmp_path: Path, session_factory
+) -> None:
+    catalog = _catalog(tmp_path, STATIC)
+    adapters = build_adapters(
+        catalog, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    broker = _broker(catalog, session_factory, adapters, None)
     datadog = broker.unavailable("datadog")
     assert datadog is not None
     assert (datadog.code, datadog.reason) == (
-        "not_set_up",
-        "Datadog is not set up on this server.",
+        "key_never_expires",
+        "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+        "does not hand them to agents.",
     )
+    assert broker.connectable("datadog") is False
     assert broker.server_setup_needed("datadog") is False
-    asana = broker.unavailable("asana")
-    assert asana is not None and asana.code == "coming_soon"
 
 
 def test_a_replaced_adapter_is_used_at_once(tmp_path: Path, session_factory) -> None:

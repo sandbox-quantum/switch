@@ -1,3 +1,6 @@
+import { randomBytes } from "node:crypto";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type { Environment, SwitchEnv } from "../core/env.ts";
 import { assertAllowed } from "../core/guard.ts";
 import type { IssuedSecrets } from "../core/secrets.ts";
@@ -47,6 +50,7 @@ export interface ManagedAgentDefinition {
   provider: string;
   model: string | null;
   instructions: string;
+  auto_mode: boolean;
   auto_approve: boolean;
   directory: string | null;
 }
@@ -266,6 +270,7 @@ export class SwitchClient {
     path: string,
     cookie: string | null,
   ): Promise<RouteProbe> {
+    if (method === "WS") return this.upgradeProbe(path, cookie);
     assertAllowed(this.environment, method, path);
     const tag = this.requestId();
     const response = await fetch(`${this.apiUrl}${path}`, {
@@ -284,6 +289,49 @@ export class SwitchClient {
       contentType: response.headers.get("content-type") ?? "",
       requestId: tag["X-Request-Id"] ?? null,
     };
+  }
+
+  /**
+   * A WebSocket route's answer to its opening handshake: `fetch` cannot send
+   * an upgrade, so this is the raw HTTP request a client's socket starts with.
+   * A refused handshake answers with an ordinary status (401 without a
+   * session); an accepted one answers 101, and the socket is dropped at once.
+   */
+  private upgradeProbe(path: string, cookie: string | null): Promise<RouteProbe> {
+    // The handshake is a GET, and a refused one changes nothing.
+    assertAllowed(this.environment, "GET", path);
+    const tag = this.requestId();
+    const url = new URL(`${this.apiUrl}${path}`);
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    return new Promise((resolve, reject) => {
+      const request = send(url, {
+        headers: {
+          Connection: "Upgrade",
+          Upgrade: "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
+          ...(cookie === null ? {} : { Cookie: cookie }),
+          ...tag,
+        },
+        timeout: 30_000,
+      });
+      const requestId = tag["X-Request-Id"] ?? null;
+      request.on("response", (response) => {
+        response.resume();
+        resolve({
+          status: response.statusCode ?? 0,
+          contentType: response.headers["content-type"] ?? "",
+          requestId,
+        });
+      });
+      request.on("upgrade", (response, socket) => {
+        socket.destroy();
+        resolve({ status: response.statusCode ?? 101, contentType: "", requestId });
+      });
+      request.on("timeout", () => request.destroy(new Error(`No answer to the handshake on ${path}`)));
+      request.on("error", reject);
+      request.end();
+    });
   }
 
   /**

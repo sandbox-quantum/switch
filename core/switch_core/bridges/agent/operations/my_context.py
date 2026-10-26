@@ -92,8 +92,9 @@ async def get_my_context() -> dict[str, Any]:
         set up; `unavailable_code` says why not, one of "switched_off" (its
         operator turned it off), "needs_https" (it can't work on this
         server), "app_not_set_up" (its operator can set it up under Admin →
-        Connector apps in Switch Console), "not_set_up" or
-        "not_fully_set_up";
+        Connector apps in Switch Console), "not_set_up",
+        "not_fully_set_up" or "key_never_expires" (it connects with a key
+        that never expires, which Switch does not hand to agents);
         `connection` is your owner's: "not_connected", "active",
         "needs_reauthorization" or "error". `agents_using` names your owner's
         agents granted it. Empty when this server has service connections off.

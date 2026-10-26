@@ -41,7 +41,7 @@ from unittest.mock import MagicMock
 
 from fastapi import FastAPI
 from fastapi.dependencies.models import Dependant
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 from starlette.routing import Route
 
@@ -56,6 +56,7 @@ from switch_core.gateway.auth import (
     get_current_user,
     get_current_user_in_transaction,
 )
+from switch_core.gateway.changes import get_socket_caller
 from switch_core.gateway.hosted_controller import controller_session
 from switch_core.management.wiring import mount_gateway_routes
 
@@ -72,6 +73,7 @@ SESSION_DEPENDENCIES: frozenset[Callable[..., Any]] = frozenset(
         get_authenticated_user_id,
         get_authenticated_session,
         get_authenticated_caller,
+        get_socket_caller,
     }
 )
 
@@ -102,6 +104,7 @@ _COLLABORATORS = (
     "budget_store",
     "resource_service",
     "protocol",
+    "user_changes",
 )
 
 
@@ -168,8 +171,8 @@ OPERATOR_TOKEN_DEPENDENCIES: frozenset[Callable[..., Any]] = frozenset(
 )
 
 
-def _auth(route: Route) -> str:
-    if not isinstance(route, APIRoute):
+def _auth(route: Route | APIWebSocketRoute) -> str:
+    if not isinstance(route, (APIRoute, APIWebSocketRoute)):
         return "none"
     calls = set(_dependency_calls(route.dependant))
     if calls & SESSION_DEPENDENCIES:
@@ -183,6 +186,14 @@ def _routes_by_key(app: FastAPI) -> dict[str, str]:
     """Each route's `METHOD /gateway/path`, and what it authenticates with."""
     routes: dict[str, str] = {}
     for route in app.routes:
+        if isinstance(route, APIWebSocketRoute):
+            # `WS`, not a method: the socket is opened by an HTTP upgrade, and
+            # a session socket refuses one without a session with the same 401.
+            key = f"WS /gateway{route.path_format}"
+            if key in routes:
+                raise ValueError(f"Gateway route {key} is mounted twice.")
+            routes[key] = _auth(route)
+            continue
         if not isinstance(route, Route):
             raise TypeError(
                 f"Gateway route {route!r} is a {type(route).__name__}, which this "
