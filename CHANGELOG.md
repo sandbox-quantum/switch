@@ -158,8 +158,9 @@ version of their own to them without also giving them a release of their own.
   was saved as just its first 72 bytes, the most bcrypt reads. Both now refuse
   what signup refuses, saying why. Creating a user also trims, lowercases and
   checks the email the way signup does, so the same address with a stray
-  space no longer makes a second account. Passwords already saved still work
-  (#1035).
+  space no longer makes a second account, and an address with no dot in its
+  domain is refused. A script that creates users through `POST /users` gets a
+  422 for either. Passwords already saved still work (#1035).
 - **Full garbage collections no longer stall the server for hundreds of
   milliseconds.** Once boot has built what lasts for the life of the process
   (modules, the ORM's mappers, the app's routes), the server freezes it out of
