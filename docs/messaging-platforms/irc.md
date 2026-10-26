@@ -79,4 +79,8 @@ channels limited to registered users (`+R`/`+r` or an invite list).
   the second at registration.
 
 Under several Switch processes, only the one holding the bridge connects to
-the network; the others pass their messages to it.
+the network. The others pass it whatever needs the connection: messages,
+channels to create or join, and invitations. A new room's channel is named the
+same whichever process asks, so the room is made at once. If that name turns
+out to be someone else's channel, the holder leaves it and logs why, as it
+can no longer refuse the request that asked for it.

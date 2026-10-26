@@ -520,6 +520,141 @@ async def test_a_quiet_copy_hands_sends_to_the_holder(ircd: FakeIrcd) -> None:
         await holder.stop()
 
 
+async def quiet_copy(
+    ircd: FakeIrcd, rec: Recorder, relayed: list[dict[str, str]]
+) -> IrcAdapter:
+    """A second pod's copy of the bridge: it never connects, and hands the
+    holder what only the holder can do."""
+    quiet = IrcAdapter(config=make_config(), opener=ircd.opener)
+    quiet.set_listening(False)
+    quiet.set_holder_relay(relayed.append)
+    await quiet.start(
+        rec.on_message,
+        rec.on_command,
+        rec.on_agent_joined,
+        rec.on_user_joined,
+        rec.on_app_joined,
+    )
+    return quiet
+
+
+async def test_a_quiet_copy_creates_channels_through_the_holder(
+    ircd: FakeIrcd,
+) -> None:
+    relayed: list[dict[str, str]] = []
+    rec = Recorder()
+    quiet = await quiet_copy(ircd, rec, relayed)
+    holder = await started(ircd, rec)
+    try:
+        channel_id = await quiet.create_channel(
+            "Release Planning!", "Plan v3", channel_type="channel_private"
+        )
+        # The same id the holder would have answered with.
+        assert channel_id == "#release-planning"
+        assert ircd.connections == 1
+        assert relayed == [
+            {
+                "kind": "create",
+                "channel": "#release-planning",
+                "topic": "Plan v3",
+                "channel_type": "channel_private",
+            }
+        ]
+        await holder.receive_relayed(relayed[0])
+        assert await ircd.wait_for("JOIN #release-planning")
+        assert await ircd.wait_for("MODE #release-planning +is")
+        assert await ircd.wait_for("TOPIC #release-planning :Plan v3")
+        # Made by Switch, so no room is made a second time from the join.
+        assert not rec.app_joins
+    finally:
+        await holder.stop()
+
+
+async def test_a_relayed_create_leaves_someones_channel_alone(
+    ircd: FakeIrcd,
+) -> None:
+    ircd.members["#ops"] = ["alice"]
+    relayed: list[dict[str, str]] = []
+    rec = Recorder()
+    quiet = await quiet_copy(ircd, rec, relayed)
+    holder = await started(ircd, rec)
+    try:
+        assert await quiet.create_channel("ops", "") == "#ops"
+        # The holder refuses as it would have for itself, and does not raise
+        # into the signal bus that carried the request.
+        await holder.receive_relayed(relayed[0])
+        assert await ircd.wait_for("PART #ops")
+    finally:
+        await holder.stop()
+
+
+async def test_a_quiet_copy_invites_through_the_holder(ircd: FakeIrcd) -> None:
+    relayed: list[dict[str, str]] = []
+    rec = Recorder()
+    quiet = await quiet_copy(ircd, rec, relayed)
+    holder = await started(ircd, rec, channels="#ops")
+    try:
+        await rec.until(lambda: rec.app_joins)
+        failed = await quiet.add_users_to_channel(
+            "#ops", ["dave", "erin", "not a nick"], ["d1", "e1", "x y"]
+        )
+        # Only the nicknames IRC could never invite fail; the rest go on.
+        assert failed == ["x y"]
+        assert relayed == [{"kind": "invite", "channel": "#ops", "nicks": "dave\nerin"}]
+        await holder.receive_relayed(relayed[0])
+        assert await ircd.wait_for("INVITE dave #ops")
+        assert await ircd.wait_for("INVITE erin #ops")
+    finally:
+        await holder.stop()
+
+
+async def test_a_quiet_copy_with_nobody_to_invite_relays_nothing(
+    ircd: FakeIrcd,
+) -> None:
+    relayed: list[dict[str, str]] = []
+    quiet = await quiet_copy(ircd, Recorder(), relayed)
+    assert await quiet.add_users_to_channel("#ops", ["not a nick"], ["x y"]) == ["x y"]
+    assert await quiet.add_users_to_channel("dave", ["dave"], ["d1"]) == ["d1"]
+    assert relayed == []
+
+
+async def test_a_quiet_copy_hands_subscriptions_to_the_holder(
+    ircd: FakeIrcd,
+) -> None:
+    relayed: list[dict[str, str]] = []
+    rec = Recorder()
+    quiet = await quiet_copy(ircd, rec, relayed)
+    holder = await started(ircd, rec)
+    try:
+        await quiet.ensure_channel_subscriptions(
+            [("#bound", "channel_public"), ("dave", "direct"), ("#two", "group")]
+        )
+        assert relayed == [{"kind": "join", "channels": "#bound\n#two"}]
+        await holder.receive_relayed(relayed[0])
+        assert await ircd.wait_for("JOIN #bound")
+        assert await ircd.wait_for("JOIN #two")
+        # Wanted on the holder now, so a reconnect joins them again.
+        assert {"#bound", "#two"} <= set(holder._wanted)
+        # Nothing to hand over when no channel is bound.
+        await quiet.ensure_channel_subscriptions([("dave", "direct")])
+        assert len(relayed) == 1
+    finally:
+        await holder.stop()
+
+
+async def test_the_holder_ignores_a_relayed_request_it_does_not_know(
+    ircd: FakeIrcd,
+) -> None:
+    rec = Recorder()
+    holder = await started(ircd, rec)
+    try:
+        before = len(ircd.lines)
+        await holder.receive_relayed({"kind": "mystery"})
+        assert len(ircd.lines) == before
+    finally:
+        await holder.stop()
+
+
 async def test_sending_while_disconnected_says_so() -> None:
     adapter = IrcAdapter(config=make_config())
     with pytest.raises(BridgeOperationError, match="not connected"):

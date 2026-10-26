@@ -358,11 +358,22 @@ class IrcAdapter(PlatformAdapter):
         self, channels: list[tuple[str, str]]
     ) -> None:
         # The channels of bound rooms: be in them, now and after reconnecting.
-        for channel_id, _channel_type in channels:
-            if is_channel(channel_id):
+        wanted = [c for c, _channel_type in channels if is_channel(c)]
+        if not self._listening:
+            # Only the holder is in the channels: hand it the list. Kept here
+            # too, so this copy is ready should it take the bridge over.
+            for channel_id in wanted:
                 self._wanted.setdefault(normalize_target(channel_id), channel_id)
-                if self._client is not None and channel_id not in self._joined:
-                    await self._client.send("JOIN", channel_id)
+            if wanted:
+                self._hand_to_holder({"kind": "join", "channels": "\n".join(wanted)})
+            return
+        await self._join_wanted(wanted)
+
+    async def _join_wanted(self, channel_ids: list[str]) -> None:
+        for channel_id in channel_ids:
+            self._wanted.setdefault(normalize_target(channel_id), channel_id)
+            if self._client is not None and channel_id not in self._joined:
+                await self._client.send("JOIN", channel_id)
 
     # ── Inbound ───────────────────────────────────────────────────────────
 
@@ -589,11 +600,29 @@ class IrcAdapter(PlatformAdapter):
         return f"irc:{uuid.uuid4()}"
 
     async def receive_relayed(self, request: Mapping[str, str]) -> None:
-        if request.get("kind") != "send":
+        """Work a quiet copy in another process handed here, the holder: each
+        the call that copy would have made had it held the connection."""
+        kind = request.get("kind")
+        if kind == "send":
+            label = (await self.agent_rendering(request["sender"])).field_label
+            await self._post(request["channel"], label, request["content"])
+        elif kind == "join":
+            await self._join_wanted(_lines(request.get("channels", "")))
+        elif kind == "create":
+            try:
+                await self._create_on_server(
+                    request["channel"],
+                    request.get("topic", ""),
+                    _relayed_channel_type(request.get("channel_type")),
+                )
+            except BridgeOperationError as exc:
+                # The quiet copy has answered already; all that is left to do
+                # is say so here.
+                logger.warning("Creating a relayed IRC channel failed: %s", exc)
+        elif kind == "invite":
+            await self._invite(request["channel"], _lines(request.get("nicks", "")))
+        else:
             await super().receive_relayed(request)
-            return
-        label = (await self.agent_rendering(request["sender"])).field_label
-        await self._post(request["channel"], label, request["content"])
 
     async def _post(self, channel_id: str, label: str, content: str) -> None:
         client = self._require_client()
@@ -639,10 +668,33 @@ class IrcAdapter(PlatformAdapter):
         *,
         channel_type: ChannelType = "channel_public",
     ) -> str:
-        client = self._require_client()
         slug = _CHANNEL_NAME_RE.sub("-", name.lower()).strip("-")[:48] or "switch"
         channel = f"#{slug}"
+        if not self._listening:
+            # Only the holder has a connection: it joins and sets the channel
+            # up. The name is the same whichever process asks, so the room can
+            # be made with it now.
+            channel_id = normalize_target(channel)
+            self._wanted.setdefault(channel_id, channel)
+            self._hand_to_holder(
+                {
+                    "kind": "create",
+                    "channel": channel,
+                    "topic": topic,
+                    "channel_type": channel_type,
+                }
+            )
+            return channel_id
+        return await self._create_on_server(channel, topic, channel_type)
+
+    async def _create_on_server(
+        self, channel: str, topic: str, channel_type: ChannelType
+    ) -> str:
+        client = self._require_client()
         channel_id = normalize_target(channel)
+        if channel_id in self._joined:
+            # Already in it: made earlier, or asked for twice.
+            return channel_id
         future: asyncio.Future[list[str]] = asyncio.get_running_loop().create_future()
         self._join_waiters[channel_id] = (future, [])
         self._creating.add(channel_id)
@@ -686,18 +738,37 @@ class IrcAdapter(PlatformAdapter):
         user_names: list[str],
         user_external_ids: list[str],
     ) -> list[str]:
-        client = self._client
-        if client is None or not is_channel(channel_id):
+        if not is_channel(channel_id):
             return list(user_external_ids)
-        target = self._joined.get(channel_id, channel_id)
+        nicks: list[str] = []
         failed: list[str] = []
         for name, external_id in zip(user_names, user_external_ids, strict=False):
             nick = name if is_valid_nick(name) else external_id
-            if not is_valid_nick(nick):
+            if is_valid_nick(nick):
+                nicks.append(nick)
+            else:
                 failed.append(external_id)
-                continue
-            await client.send("INVITE", nick, target)
+        if not nicks:
+            return failed
+        if not self._listening:
+            # Only the holder is in the channel to invite from: hand it over.
+            self._hand_to_holder(
+                {"kind": "invite", "channel": channel_id, "nicks": "\n".join(nicks)}
+            )
+            return failed
+        if self._client is None:
+            return list(user_external_ids)
+        await self._invite(channel_id, nicks)
         return failed
+
+    async def _invite(self, channel_id: str, nicks: list[str]) -> None:
+        client = self._client
+        if client is None:
+            logger.warning("Not connected; cannot invite %s to %s", nicks, channel_id)
+            return
+        target = self._joined.get(channel_id, channel_id)
+        for nick in nicks:
+            await client.send("INVITE", nick, target)
 
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         self._agents[normalize_target(agent.name)] = agent.name
@@ -708,6 +779,16 @@ class IrcAdapter(PlatformAdapter):
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:
         # IRC shows one nickname for all of them; Switch's room knows who.
         return []
+
+
+def _lines(value: str) -> list[str]:
+    return [line for line in value.split("\n") if line]
+
+
+def _relayed_channel_type(value: str | None) -> ChannelType:
+    if value in ("channel_public", "channel_private", "group", "direct"):
+        return value  # type: ignore[return-value]
+    return "channel_public"
 
 
 async def _ignore(_message: IrcMessage) -> None:
