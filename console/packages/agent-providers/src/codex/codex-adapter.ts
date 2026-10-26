@@ -77,9 +77,10 @@ const CLIENT_VERSION = '0.1.0';
 export const CODEX_SIGN_IN_REQUIRED =
   'Sign in on the execution machine with codex login. If Codex says you are already signed in, ' +
   'your login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"), ' +
-  'which Switch sessions cannot use: they get the login only from auth.json. If plaintext ' +
-  'credentials are acceptable, set cli_auth_credentials_store = "file" in the Codex config.toml ' +
-  'on the execution machine, run codex login again and start a new session.';
+  'which Switch sessions cannot use: they get the login only from auth.json. Unless your ' +
+  'organization enforces the keyring, set cli_auth_credentials_store = "file" in the Codex ' +
+  'config.toml on the execution machine, which keeps the login in plaintext, then run codex ' +
+  'login again and start a new session.';
 
 /**
  * `multi_agent_v2` ships stable but off, and it is what puts `spawn_agent` in

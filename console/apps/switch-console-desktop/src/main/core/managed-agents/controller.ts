@@ -305,6 +305,13 @@ async function loginToGive(
     );
   const credential = await readLocalProviderSignIn(provider, localProviderAuthPath(provider));
   if (!credential)
-    throw new Error(`This computer is not signed in to ${provider}. Sign in here first.`);
+    throw new Error(
+      provider === 'codex'
+        ? 'This computer is not signed in to codex. Sign in here first. If Codex says you are ' +
+            'already signed in, its login is likely in the OS keyring, which cannot be given to ' +
+            'another machine: unless your organization enforces the keyring, set ' +
+            'cli_auth_credentials_store = "file" in the Codex config.toml and sign in again.'
+        : `This computer is not signed in to ${provider}. Sign in here first.`
+    );
   return { kind: 'auth-json', credential };
 }

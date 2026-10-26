@@ -1980,10 +1980,12 @@ version of their own to them without also giving them a release of their own.
   with keyring storage (`cli_auth_credentials_store = "keyring"` or `"auto"`)
   failed with only "Sign in on the execution machine with codex login" while
   `codex login status` said it was signed in. The error now says that sessions
-  cannot use a keyring login, and gives the workaround where plaintext
-  credentials are acceptable: switch Codex to file storage, sign in again and
-  start a new session. Keyring logins are still not supported in Switch
-  sessions (#1048).
+  cannot use a keyring login, and gives the workaround for a machine whose
+  organization does not enforce the keyring: switch Codex to file storage,
+  which keeps the login in plaintext, sign in again and start a new session.
+  Giving this computer's Codex login to a machine says the same instead of
+  "This computer is not signed in to codex". Keyring logins are still not
+  supported in Switch sessions (#1048).
 
 ### [0.40.1] - 2026-10-21
 
