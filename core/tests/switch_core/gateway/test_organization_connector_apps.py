@@ -132,7 +132,7 @@ class TestOnlyOrgAdmins:
         self, world: World, session_factory
     ) -> None:
         await _install(world)
-        owner = await _user(session_factory, "owner", member_role="owner")
+        owner = await _user(session_factory, "owner", member_role="admin")
         operator = await _user(session_factory, "operator", role="admin")
         async with world.harness.client() as client:
             answers = [

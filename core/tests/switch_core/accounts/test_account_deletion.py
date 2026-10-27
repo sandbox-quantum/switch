@@ -247,20 +247,20 @@ async def test_the_servers_admin_account_is_refused(
         assert "administrator" in (await deletion.refusal(session, admin, []) or "")
 
 
-async def test_the_only_owner_of_a_shared_workspace_is_refused(
+async def test_the_only_admin_of_a_shared_workspace_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
         owner = await _user(session, "owner")
         other = await _user(session, "other")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, owner, "admin")
         await _member(session, TENANT_ZERO_ID, other, "member")
         await session.commit()
         reason = await deletion.refusal(
-            session, owner, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, owner, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
-    assert reason is not None and "only owner of Acme" in reason
+    assert reason is not None and "only admin of Acme" in reason
 
 
 async def _organization_role(session: AsyncSession, user: User, role: str) -> None:
@@ -279,12 +279,12 @@ async def test_the_only_org_admin_of_an_organization_with_others_is_refused(
         admin = await _user(session, "org-admin")
         other = await _user(session, "other")
         await _member(session, TENANT_ZERO_ID, admin, "admin")
-        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "admin")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "member")
         await session.commit()
         reason = await deletion.refusal(
-            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only organization admin" in reason
 
@@ -298,7 +298,7 @@ async def test_an_org_admin_of_another_organization_does_not_count(
         other = await _user(session, "other")
         elsewhere = await _user(session, "elsewhere")
         await _member(session, TENANT_ZERO_ID, admin, "admin")
-        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "admin")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "member")
         session.add(Organization(id="org-elsewhere", slug="org-elsewhere", name="Else"))
@@ -310,7 +310,7 @@ async def test_an_org_admin_of_another_organization_does_not_count(
         )
         await session.commit()
         reason = await deletion.refusal(
-            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is not None and "only organization admin" in reason
 
@@ -323,12 +323,12 @@ async def test_an_org_admin_with_another_org_admin_beside_them_is_not_refused(
         admin = await _user(session, "org-admin")
         other = await _user(session, "other")
         await _member(session, TENANT_ZERO_ID, admin, "admin")
-        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "admin")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "org_admin")
         await session.commit()
         reason = await deletion.refusal(
-            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
     assert reason is None
 
@@ -339,7 +339,7 @@ async def test_a_connected_workspace_nobody_else_is_in_is_refused(
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
         alone = await _user(session, "alone")
-        await _member(session, TENANT_ZERO_ID, alone, "owner")
+        await _member(session, TENANT_ZERO_ID, alone, "admin")
         session.add(
             MessagingInstall(
                 tenant_id=TENANT_ZERO_ID,
@@ -352,7 +352,7 @@ async def test_a_connected_workspace_nobody_else_is_in_is_refused(
         )
         await session.commit()
         reason = await deletion.refusal(
-            session, alone, [Workspace(TENANT_ZERO_ID, "Solo", "owner")]
+            session, alone, [Workspace(TENANT_ZERO_ID, "Solo", "admin")]
         )
     assert reason is not None and "Slack" in reason
 
@@ -364,7 +364,7 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
     async with session_factory() as session:
         owner = await _user(session, "owner")
         leaving = await _user(session, "leaving")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, owner, "admin")
         await _member(session, TENANT_ZERO_ID, leaving, "member")
         agent = await _agent(session, TENANT_ZERO_ID, leaving, "helper")
         invitation = await _invitation(session, TENANT_ZERO_ID, leaving)
@@ -499,11 +499,11 @@ async def test_a_workspace_left_empty_stays_with_nothing_pointing_at_the_person(
         user_id = alone.id
         await session.commit()
     async with tenant_session(session_factory, solo) as session:
-        await _member(session, solo, alone, "owner")
+        await _member(session, solo, alone, "admin")
         await _invitation(session, solo, alone)
         await session.commit()
 
-    workspaces = [Workspace(solo, "Solo", "owner")]
+    workspaces = [Workspace(solo, "Solo", "admin")]
     async with session_factory() as session:
         user = await session.get(User, user_id)
         assert user is not None

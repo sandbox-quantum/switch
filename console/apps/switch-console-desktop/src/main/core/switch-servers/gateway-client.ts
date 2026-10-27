@@ -684,7 +684,9 @@ type TenantJson = {
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
-  if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
+  // A server from before `owner` merged into `admin` still reports it.
+  if (raw === 'owner') return 'admin';
+  if (raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
 }
 

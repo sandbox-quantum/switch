@@ -97,7 +97,7 @@ class TestWhoMayManageInstalls:
     async def test_a_workspace_owner_who_is_not_an_operator_may(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        user_id = await _member(session_factory, name="owner", role="owner")
+        user_id = await _member(session_factory, name="owner", role="admin")
         response = await _list_installs(session_factory, user_id, "owner")
         assert response.status_code == 200, response.text
         assert response.json() == {"installs": []}

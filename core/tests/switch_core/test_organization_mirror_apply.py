@@ -155,13 +155,13 @@ class _World:
                 TenantMember(
                     tenant_id=world.joined,
                     user_id=world.ada,
-                    role="owner" if ada_owns_joined else "member",
+                    role="admin" if ada_owns_joined else "member",
                 )
             )
             if not ada_owns_joined:
                 session.add(
                     TenantMember(
-                        tenant_id=world.joined, user_id=world.bea, role="owner"
+                        tenant_id=world.joined, user_id=world.bea, role="admin"
                     )
                 )
             for tenant_id in (world.joined, world.reached):
@@ -373,7 +373,7 @@ class TestConflicts:
             },
         ) in await _organization_events(owner, world.organization_id)
 
-    async def test_a_workspace_left_with_no_owner_is_recorded(
+    async def test_a_workspace_left_with_no_admin_is_recorded(
         self, rls_harness: RLSHarness
     ) -> None:
         owner = rls_harness.owner
@@ -387,7 +387,7 @@ class TestConflicts:
             OrganizationAuditAction.DIRECTORY_CONFLICT,
             {
                 "source": "directory_event",
-                "kind": "workspace_left_without_owner",
+                "kind": "workspace_left_without_admin",
                 "workspace": world.joined,
             },
         ) in await _organization_events(owner, world.organization_id)
@@ -468,6 +468,6 @@ class TestARetryAfterAFailure:
         ]
         assert sorted(conflicts) == [
             "agents_left_with_owner",
-            "workspace_left_without_owner",
+            "workspace_left_without_admin",
         ]
         assert await _role(owner, world.organization_id, world.ada) is None

@@ -105,7 +105,7 @@ does, and there is no polling tool to call.
 
 - **Messages addressed to you** — `[Switch] <sender> addressed you in room
   <room> (message_id …[, thread_id …]):`, the sender named with their role in
-  the room's workspace when Switch knows it (`ada (workspace owner)`), read as
+  the room's workspace when Switch knows it (`ada (workspace admin)`), read as
   the message arrived, then the sender's own text between a
   matching `BEGIN SWITCH MESSAGE <nonce>` / `END SWITCH MESSAGE <nonce>` pair,
   then a parenthetical naming any downloaded attachments. Everything between

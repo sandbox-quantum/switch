@@ -349,7 +349,7 @@ async def _make_agent_with_key(
 
 
 class TestCreateTenant:
-    async def test_creating_a_tenant_makes_the_caller_its_owner(
+    async def test_creating_a_tenant_makes_the_caller_its_admin(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
@@ -364,12 +364,12 @@ class TestCreateTenant:
         assert response.status_code == 201, response.text
         body = response.json()
         assert body["slug"] == "acme-corp"
-        assert body["role"] == "owner"
+        assert body["role"] == "admin"
 
         async with session_factory() as session:
             membership = await session.get(TenantMember, (body["id"], user_id))
             assert membership is not None
-            assert membership.role == "owner"
+            assert membership.role == "admin"
 
     async def test_creating_a_tenant_switches_the_caller_into_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -400,7 +400,7 @@ class TestCreateTenant:
             response = await client.post("/tenants", json={"name": "First Light"})
 
         assert response.status_code == 201, response.text
-        assert response.json()["role"] == "owner"
+        assert response.json()["role"] == "admin"
         assert _tenant_claim(response) == response.json()["id"]
 
     async def test_a_taken_slug_gets_a_suffix_rather_than_a_409(
@@ -654,7 +654,7 @@ class TestWorkspaceCreationLimit:
         async with session_factory() as session:
             owned = await session.scalars(
                 select(TenantMember).where(
-                    TenantMember.user_id == user_id, TenantMember.role == "owner"
+                    TenantMember.user_id == user_id, TenantMember.role == "admin"
                 )
             )
             assert len(owned.all()) == 1
@@ -730,7 +730,7 @@ class TestWorkspaceCreationLimit:
         # `users.role == "admin"` is the deployment operator bit, and this
         # bound is about self-service. An operator provisioning workspaces for
         # other people is exactly who it must not stop — the same bypass
-        # `authz.administers_tenant` and `authz.owns_tenant` already give them.
+        # `authz.administers_tenant` already gives them.
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
             session_factory,
@@ -812,12 +812,12 @@ class TestInvitationAuthorisation:
         async with tenant_session(session_factory, TENANT_B) as scoped:
             assert await InvitationStore().list_for_tenant(scoped) == []
 
-    async def test_an_owner_can_mint_an_invitation_to_their_own_tenant(
+    async def test_an_admin_can_mint_an_invitation_to_their_own_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
-            session_factory, name="a-owner", tenant_id=TENANT_A, role="owner"
+            session_factory, name="a-owner", tenant_id=TENANT_A, role="admin"
         )
         token = _token(user_id, "a-owner@example.invalid", TENANT_A)
 
@@ -841,7 +841,7 @@ class TestInvitationAuthorisation:
         bound belongs on the schema, where it is a 422 with a field name."""
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
-            session_factory, name="time-lord", tenant_id=TENANT_A, role="owner"
+            session_factory, name="time-lord", tenant_id=TENANT_A, role="admin"
         )
         token = _token(user_id, "time-lord@example.invalid", TENANT_A)
 
@@ -862,7 +862,7 @@ class TestInvitationAuthorisation:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
-            session_factory, name="a-owner", tenant_id=TENANT_A, role="owner"
+            session_factory, name="a-owner", tenant_id=TENANT_A, role="admin"
         )
         token = _token(user_id, "a-owner@example.invalid", TENANT_A)
 
@@ -875,109 +875,73 @@ class TestInvitationAuthorisation:
         assert response.status_code == status, response.text
 
 
-class TestOwnershipIsOwnerOnly:
-    """Who owns a workspace is decided by its owners, not by its admins.
+class TestOneAdminRole:
+    """`owner` merged into `admin`: every admin runs the workspace, other
+    admins included, and a workspace always keeps at least one."""
 
-    An `admin` runs the workspace; only an `owner` moves the ownership set.
-    The distinction exists because a last-owner guard cannot see a sequence:
-    each request below is individually safe — two owners stand at every
-    step — and together they hand the workspace to someone the founder never
-    promoted.
-    """
-
-    async def test_an_admin_cannot_take_the_workspace_from_its_owner(
+    async def test_an_admin_can_demote_and_remove_another_admin(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
-        founder_id = await _make_member(
-            session_factory, name="founder-owner", tenant_id=TENANT_A, role="owner"
-        )
         admin_id = await _make_member(
-            session_factory, name="ambitious-admin", tenant_id=TENANT_A, role="admin"
+            session_factory, name="admin-one", tenant_id=TENANT_A, role="admin"
         )
-        token = _token(admin_id, "ambitious-admin@example.invalid", TENANT_A)
+        other_id = await _make_member(
+            session_factory, name="admin-two", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "admin-one@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
-            promote_self = await client.patch(
-                f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "owner"}
+            demote = await client.patch(
+                f"/tenants/{TENANT_A}/members/{other_id}", json={"role": "member"}
             )
-            demote_founder = await client.patch(
-                f"/tenants/{TENANT_A}/members/{founder_id}", json={"role": "member"}
-            )
-            remove_founder = await client.delete(
-                f"/tenants/{TENANT_A}/members/{founder_id}"
-            )
+            remove = await client.delete(f"/tenants/{TENANT_A}/members/{other_id}")
 
-        assert promote_self.status_code == 403, promote_self.text
-        assert demote_founder.status_code == 403, demote_founder.text
-        assert remove_founder.status_code == 403, remove_founder.text
+        assert demote.status_code == 200, demote.text
+        assert demote.json()["role"] == "member"
+        assert remove.status_code == 200, remove.text
 
-        async with session_factory() as session:
-            founder = await session.get(TenantMember, (TENANT_A, founder_id))
-            admin = await session.get(TenantMember, (TENANT_A, admin_id))
-            assert founder is not None and founder.role == "owner"
-            assert admin is not None and admin.role == "admin"
-
-    async def test_an_admin_cannot_mint_an_owner_invitation(
+    async def test_a_client_asking_for_owner_gets_admin(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Otherwise the escalation above is the same three steps with a link
-        in the middle: invite an accomplice as owner, then let them do it."""
+        """A Console from before the merge still offers `owner`."""
         await _make_tenant(session_factory, TENANT_A)
-        await _make_member(
-            session_factory, name="quiet-owner", tenant_id=TENANT_A, role="owner"
-        )
         admin_id = await _make_member(
-            session_factory, name="inviting-admin", tenant_id=TENANT_A, role="admin"
-        )
-        token = _token(admin_id, "inviting-admin@example.invalid", TENANT_A)
-
-        async with _client(_app(session_factory), token) as client:
-            refused = await client.post(
-                f"/tenants/{TENANT_A}/invitations", json={"role": "owner"}
-            )
-            allowed = await client.post(
-                f"/tenants/{TENANT_A}/invitations", json={"role": "admin"}
-            )
-
-        assert refused.status_code == 403, refused.text
-        assert allowed.status_code == 201, allowed.text
-
-        async with tenant_session(session_factory, TENANT_A) as scoped:
-            roles = [i.role for i in await InvitationStore().list_for_tenant(scoped)]
-        assert roles == ["admin"]
-
-    async def test_an_owner_can_do_all_of_it(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        """The guard is narrower authority, not a locked door: everything the
-        admin was refused above succeeds for an owner."""
-        await _make_tenant(session_factory, TENANT_A)
-        owner_id = await _make_member(
-            session_factory, name="real-owner", tenant_id=TENANT_A, role="owner"
+            session_factory, name="old-console", tenant_id=TENANT_A, role="admin"
         )
         member_id = await _make_member(
             session_factory, name="promoted", tenant_id=TENANT_A, role="member"
         )
-        token = _token(owner_id, "real-owner@example.invalid", TENANT_A)
+        token = _token(admin_id, "old-console@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             promote = await client.patch(
                 f"/tenants/{TENANT_A}/members/{member_id}", json={"role": "owner"}
             )
-            demote = await client.patch(
-                f"/tenants/{TENANT_A}/members/{member_id}", json={"role": "member"}
-            )
             invite = await client.post(
                 f"/tenants/{TENANT_A}/invitations", json={"role": "owner"}
             )
-            remove = await client.delete(f"/tenants/{TENANT_A}/members/{member_id}")
 
         assert promote.status_code == 200, promote.text
-        assert promote.json()["role"] == "owner"
-        assert demote.status_code == 200, demote.text
+        assert promote.json()["role"] == "admin"
         assert invite.status_code == 201, invite.text
-        assert remove.status_code == 200, remove.text
+        assert invite.json()["role"] == "admin"
+
+    async def test_an_unknown_role_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        admin_id = await _make_member(
+            session_factory, name="typo", tenant_id=TENANT_A, role="admin"
+        )
+        token = _token(admin_id, "typo@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.post(
+                f"/tenants/{TENANT_A}/invitations", json={"role": "superadmin"}
+            )
+
+        assert response.status_code == 400, response.text
 
 
 class TestInvitationLifecycle:
@@ -1012,7 +976,7 @@ class TestInvitationLifecycle:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
         )
         _id, token = await self._mint(
             session_factory, tenant_id=TENANT_A, admin_id=admin_id, role="admin"
@@ -1049,7 +1013,7 @@ class TestInvitationLifecycle:
         """
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="link-sharer", tenant_id=TENANT_A, role="owner"
+            session_factory, name="link-sharer", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, token = await self._mint(
             session_factory, tenant_id=TENANT_A, admin_id=admin_id, uses_remaining=2
@@ -1080,7 +1044,7 @@ class TestInvitationLifecycle:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="inviter2", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter2", tenant_id=TENANT_A, role="admin"
         )
         _id, token = await self._mint(
             session_factory, tenant_id=TENANT_A, admin_id=admin_id, uses_remaining=1
@@ -1116,7 +1080,7 @@ class TestInvitationLifecycle:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="revoker", tenant_id=TENANT_A, role="owner"
+            session_factory, name="revoker", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, token = await self._mint(
             session_factory, tenant_id=TENANT_A, admin_id=admin_id
@@ -1144,7 +1108,7 @@ class TestInvitationLifecycle:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="expiry-setter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="expiry-setter", tenant_id=TENANT_A, role="admin"
         )
         _id, token = await self._mint(
             session_factory,
@@ -1180,7 +1144,7 @@ class TestInvitationLifecycle:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="picky-inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="picky-inviter", tenant_id=TENANT_A, role="admin"
         )
         _id, token = await self._mint(
             session_factory,
@@ -1211,7 +1175,7 @@ class TestInvitationLifecycle:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="picky-inviter2", tenant_id=TENANT_A, role="owner"
+            session_factory, name="picky-inviter2", tenant_id=TENANT_A, role="admin"
         )
         _id, token = await self._mint(
             session_factory,
@@ -1261,10 +1225,10 @@ class TestInvitationsAddressedToMe:
         for tenant_id in (TENANT_A, TENANT_C):
             await _make_tenant(session_factory, tenant_id)
         inviter_a = await _make_member(
-            session_factory, name="Ada", tenant_id=TENANT_A, role="owner"
+            session_factory, name="Ada", tenant_id=TENANT_A, role="admin"
         )
         inviter_c = await _make_member(
-            session_factory, name="Cy", tenant_id=TENANT_C, role="owner"
+            session_factory, name="Cy", tenant_id=TENANT_C, role="admin"
         )
         wanted_a, _ = await self._mint(
             session_factory,
@@ -1287,7 +1251,7 @@ class TestInvitationsAddressedToMe:
             email="someone-else@example.invalid",
         )
         inviter_b = await _make_member(
-            session_factory, name="Bo", tenant_id=TENANT_B, role="owner"
+            session_factory, name="Bo", tenant_id=TENANT_B, role="admin"
         )
         await self._mint(
             session_factory,
@@ -1314,7 +1278,7 @@ class TestInvitationsAddressedToMe:
         invitee_id, cookie = await self._invitee(session_factory, "joiner")
         await _make_tenant(session_factory, TENANT_A)
         inviter = await _make_member(
-            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, _ = await self._mint(
             session_factory,
@@ -1350,7 +1314,7 @@ class TestInvitationsAddressedToMe:
         _invitee_id, cookie = await self._invitee(session_factory, "id-guesser")
         await _make_tenant(session_factory, TENANT_A)
         inviter = await _make_member(
-            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, _ = await self._mint(
             session_factory, tenant_id=TENANT_A, admin_id=inviter
@@ -1374,7 +1338,7 @@ class TestInvitationsAddressedToMe:
         _invitee_id, cookie = await self._invitee(session_factory, "not-them")
         await _make_tenant(session_factory, TENANT_A)
         inviter = await _make_member(
-            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, _ = await self._mint(
             session_factory,
@@ -1398,7 +1362,7 @@ class TestInvitationsAddressedToMe:
         for tenant_id in (TENANT_A, TENANT_C):
             await _make_tenant(session_factory, tenant_id)
         inviter = await _make_member(
-            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, _ = await self._mint(
             session_factory,
@@ -1423,7 +1387,7 @@ class TestInvitationsAddressedToMe:
         _invitee_id, cookie = await self._invitee(session_factory, "too-late")
         await _make_tenant(session_factory, TENANT_A)
         inviter = await _make_member(
-            session_factory, name="inviter", tenant_id=TENANT_A, role="owner"
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
         )
         invitation_id, _ = await self._mint(
             session_factory,
@@ -1451,7 +1415,7 @@ class TestMemberRoutes:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="list-owner", tenant_id=TENANT_A, role="owner"
+            session_factory, name="list-owner", tenant_id=TENANT_A, role="admin"
         )
         await _make_member(
             session_factory, name="list-member", tenant_id=TENANT_A, role="member"
@@ -1463,14 +1427,14 @@ class TestMemberRoutes:
 
         assert response.status_code == 200, response.text
         roles = {row["name"]: row["role"] for row in response.json()}
-        assert roles == {"list-owner": "owner", "list-member": "member"}
+        assert roles == {"list-owner": "admin", "list-member": "member"}
 
     async def test_listing_flags_the_bootstrap_owner_as_a_service_account(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
-        owner_id = await _make_member(
-            session_factory, name="Agent Bootstrap", tenant_id=TENANT_A, role="owner"
+        admin_id = await _make_member(
+            session_factory, name="Agent Bootstrap", tenant_id=TENANT_A, role="admin"
         )
         bootstrap_id = await _make_member(
             session_factory, name="robot", tenant_id=TENANT_A, role="member"
@@ -1480,7 +1444,7 @@ class TestMemberRoutes:
             assert bootstrap is not None
             bootstrap.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
             await session.commit()
-        token = _token(owner_id, "Agent Bootstrap@example.invalid", TENANT_A)
+        token = _token(admin_id, "Agent Bootstrap@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             response = await client.get(f"/tenants/{TENANT_A}/members")
@@ -1489,12 +1453,12 @@ class TestMemberRoutes:
         flags = {row["name"]: row["service_account"] for row in response.json()}
         assert flags == {"Agent Bootstrap": False, "robot": True}
 
-    async def test_the_last_owner_cannot_be_demoted(
+    async def test_the_last_admin_cannot_be_demoted(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="sole-owner", tenant_id=TENANT_A, role="owner"
+            session_factory, name="sole-owner", tenant_id=TENANT_A, role="admin"
         )
         token = _token(owner_id, "sole-owner@example.invalid", TENANT_A)
 
@@ -1508,17 +1472,17 @@ class TestMemberRoutes:
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, owner_id))
             assert membership is not None
-            assert membership.role == "owner"
+            assert membership.role == "admin"
 
-    async def test_an_owner_can_be_demoted_when_another_owner_remains(
+    async def test_an_admin_can_be_demoted_when_another_admin_remains(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="owner-one", tenant_id=TENANT_A, role="owner"
+            session_factory, name="owner-one", tenant_id=TENANT_A, role="admin"
         )
         other_owner_id = await _make_member(
-            session_factory, name="owner-two", tenant_id=TENANT_A, role="owner"
+            session_factory, name="owner-two", tenant_id=TENANT_A, role="admin"
         )
         token = _token(owner_id, "owner-one@example.invalid", TENANT_A)
 
@@ -1531,12 +1495,12 @@ class TestMemberRoutes:
         assert response.status_code == 200, response.text
         assert response.json()["role"] == "member"
 
-    async def test_the_last_owner_cannot_be_removed(
+    async def test_the_last_admin_cannot_be_removed(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="undeletable-owner", tenant_id=TENANT_A, role="owner"
+            session_factory, name="undeletable-owner", tenant_id=TENANT_A, role="admin"
         )
         token = _token(owner_id, "undeletable-owner@example.invalid", TENANT_A)
 
@@ -1553,7 +1517,7 @@ class TestMemberRoutes:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="remover", tenant_id=TENANT_A, role="owner"
+            session_factory, name="remover", tenant_id=TENANT_A, role="admin"
         )
         target_id = await _make_member(
             session_factory, name="removed", tenant_id=TENANT_A, role="member"
@@ -1654,7 +1618,7 @@ class TestMemberRoutes:
         """
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="key-remover", tenant_id=TENANT_A, role="owner"
+            session_factory, name="key-remover", tenant_id=TENANT_A, role="admin"
         )
         target_id = await _make_member(
             session_factory, name="key-holder", tenant_id=TENANT_A, role="member"
@@ -1686,7 +1650,7 @@ class TestMemberRoutes:
         """
         await _make_tenant(session_factory, TENANT_A)
         owner_id = await _make_member(
-            session_factory, name="agent-remover", tenant_id=TENANT_A, role="owner"
+            session_factory, name="agent-remover", tenant_id=TENANT_A, role="admin"
         )
         target_id = await _make_member(
             session_factory, name="agent-owner", tenant_id=TENANT_A, role="member"
@@ -1798,7 +1762,7 @@ class TestCurrentTenantRoute:
             session_factory, name="current-member", tenant_id=TENANT_A, role="member"
         )
         async with session_factory() as session:
-            session.add(TenantMember(tenant_id=TENANT_B, user_id=user_id, role="owner"))
+            session.add(TenantMember(tenant_id=TENANT_B, user_id=user_id, role="admin"))
             await session.commit()
         token = _token(user_id, "current-member@example.invalid", TENANT_A)
 
@@ -1818,9 +1782,9 @@ class TestCurrentTenantRoute:
 
     @pytest.mark.parametrize(
         ("role", "user_role"),
-        [("admin", "user"), ("owner", "user"), ("member", "admin")],
+        [("admin", "user"), ("member", "admin")],
     )
-    async def test_an_admin_owner_or_operator_is_told_they_administer_it(
+    async def test_an_admin_or_operator_is_told_they_administer_it(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         role: str,
@@ -1967,33 +1931,35 @@ class TestOrganizationAdmins:
     async def test_an_org_admin_manages_members_as_a_workspace_admin_does(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        """Admin-level, not owner-level: the ownership set is still the
-        workspace owners' own."""
+        """Including other admins, as any admin may; and like them, not the
+        workspace's last admin of its own, whom the organization's admin does
+        not stand in for."""
         admin_id = await _make_unaffiliated_user(
             session_factory, name="org-admin", role="user"
         )
         await self._organization_of(
             session_factory, TENANT_A, members={admin_id: "org_admin"}
         )
-        member_id = await _make_member(
-            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        first_id = await _make_member(
+            session_factory, name="ws-admin-1", tenant_id=TENANT_A, role="admin"
         )
-        owner_id = await _make_member(
-            session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
+        last_id = await _make_member(
+            session_factory, name="ws-admin-2", tenant_id=TENANT_A, role="admin"
         )
         token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             demoted = await client.patch(
-                f"/tenants/{TENANT_A}/members/{member_id}", json={"role": "member"}
+                f"/tenants/{TENANT_A}/members/{first_id}", json={"role": "member"}
             )
-            owner = await client.patch(
-                f"/tenants/{TENANT_A}/members/{owner_id}", json={"role": "member"}
+            last = await client.patch(
+                f"/tenants/{TENANT_A}/members/{last_id}", json={"role": "member"}
             )
 
         assert demoted.status_code == 200, demoted.text
         assert demoted.json()["role"] == "member"
-        assert owner.status_code == 403
+        assert last.status_code == 409, last.text
+        assert last.json()["detail"] == "Cannot demote the last admin"
 
     @pytest.mark.parametrize("method", ["patch", "delete"])
     async def test_a_workspace_cannot_demote_or_remove_an_org_admin(
@@ -2004,11 +1970,11 @@ class TestOrganizationAdmins:
         organization_id = await self._organization_of(
             session_factory, TENANT_A, members={}
         )
-        owner_id = await _make_member(
-            session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
+        workspace_admin_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
         )
         admin_id = await _make_member(
-            session_factory, name="org-admin", tenant_id=TENANT_A, role="owner"
+            session_factory, name="org-admin", tenant_id=TENANT_A, role="admin"
         )
         async with session_factory() as session:
             session.add(
@@ -2017,7 +1983,7 @@ class TestOrganizationAdmins:
                 )
             )
             await session.commit()
-        token = _token(owner_id, "ws-owner@example.invalid", TENANT_A)
+        token = _token(workspace_admin_id, "ws-admin@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
             if method == "patch":
@@ -2033,7 +1999,7 @@ class TestOrganizationAdmins:
         assert "organization" in response.json()["detail"]
         async with session_factory() as session:
             membership = await session.get(TenantMember, (TENANT_A, admin_id))
-        assert membership is not None and membership.role == "owner"
+        assert membership is not None and membership.role == "admin"
 
 
 class TestUsageRoute:
@@ -2115,7 +2081,7 @@ class TestUsageRoute:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
-            session_factory, name="usage-naive", tenant_id=TENANT_A, role="owner"
+            session_factory, name="usage-naive", tenant_id=TENANT_A, role="admin"
         )
         token = _token(user_id, "usage-naive@example.invalid", TENANT_A)
 
@@ -2133,7 +2099,7 @@ class TestUsageRoute:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
-            session_factory, name="usage-empty", tenant_id=TENANT_A, role="owner"
+            session_factory, name="usage-empty", tenant_id=TENANT_A, role="admin"
         )
         token = _token(user_id, "usage-empty@example.invalid", TENANT_A)
         window = _window()
@@ -2278,7 +2244,7 @@ class TestBudgetRoutes:
         _, token = await self._admin(session_factory, "budget-foreign")
         await _make_tenant(session_factory, TENANT_B)
         their_owner = await _make_member(
-            session_factory, name="budget-theirs", tenant_id=TENANT_B, role="owner"
+            session_factory, name="budget-theirs", tenant_id=TENANT_B, role="admin"
         )
         their_agent, _, _ = await _make_agent_with_key(
             session_factory, tenant_id=TENANT_B, owner_id=their_owner
@@ -2387,7 +2353,7 @@ class TestInvitationEmail:
     ) -> str:
         await _make_tenant(session_factory, TENANT_A)
         user_id = await _make_member(
-            session_factory, name=name, tenant_id=TENANT_A, role="owner"
+            session_factory, name=name, tenant_id=TENANT_A, role="admin"
         )
         return _token(user_id, f"{name}@example.invalid", TENANT_A)
 
@@ -2519,7 +2485,7 @@ class TestInvitationEmail:
             session.add(operator)
             await session.flush()
             session.add(
-                TenantMember(tenant_id=TENANT_A, user_id=operator.id, role="owner")
+                TenantMember(tenant_id=TENANT_A, user_id=operator.id, role="admin")
             )
             await session.commit()
             operator_id = operator.id

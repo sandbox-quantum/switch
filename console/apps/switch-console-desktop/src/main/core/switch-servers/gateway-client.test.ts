@@ -2618,7 +2618,7 @@ describe('organizations', () => {
     id: 't1',
     slug: 'acme',
     name: 'Acme',
-    role: 'owner',
+    role: 'admin',
     organization_id: 'o1',
     organization_role: 'org_admin',
   };
@@ -2626,7 +2626,7 @@ describe('organizations', () => {
     id: 't1',
     slug: 'acme',
     name: 'Acme',
-    role: 'owner',
+    role: 'admin',
     organizationId: 'o1',
     organizationRole: 'org_admin',
   };
@@ -2705,7 +2705,7 @@ describe('organizations', () => {
       id: 't1',
       slug: 'acme',
       name: 'Acme',
-      role: 'owner',
+      role: 'admin',
       organizationId: null,
       organizationRole: null,
     });
@@ -4060,5 +4060,31 @@ describe('fetchAgentIconChoices', () => {
       choices: ['https://example.com/a.png'],
       thirdPartyAvatarsEnabled: true,
     });
+  });
+});
+
+describe('fetchTenants', () => {
+  beforeEach(() => {
+    getSessionCookie.mockResolvedValue('switch_session=fresh');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads a workspace owner on a server from before the merge as an admin', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse([
+          { id: 't1', slug: 'acme', name: 'Acme', role: 'owner' },
+          { id: 't2', slug: 'beta', name: 'Beta', role: 'member' },
+        ])
+      )
+    );
+
+    const tenants = await fetchTenants(SERVER);
+
+    expect(tenants.map((t) => t.role)).toEqual(['admin', 'member']);
   });
 });

@@ -1815,7 +1815,7 @@ class AgentRecipient:
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
     ) -> str | None:
         """The sending person's role in this workspace, read as the message
-        arrives: "owner", "admin" or "member". None for an agent, the
+        arrives: "admin" or "member". None for an agent, the
         platform, or a person no Switch user has claimed.
 
         Read fresh for every message, so an agent can rely on it over what it

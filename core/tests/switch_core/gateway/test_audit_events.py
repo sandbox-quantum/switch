@@ -42,7 +42,7 @@ async def _owner(
 ) -> tuple[str, str]:
     await _make_tenant(session_factory, tenant_id)
     owner_id = await _make_member(
-        session_factory, name=name, tenant_id=tenant_id, role="owner"
+        session_factory, name=name, tenant_id=tenant_id, role="admin"
     )
     return owner_id, _token(owner_id, f"{name}@example.invalid", tenant_id)
 

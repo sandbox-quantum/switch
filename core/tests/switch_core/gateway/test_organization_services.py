@@ -134,7 +134,7 @@ async def _events(session_factory) -> list[OrganizationAuditEvent]:
 
 class TestWhoMayCall:
     async def test_a_workspace_owner_is_refused(self, harness: Harness) -> None:
-        owner = await _person(harness.session_factory, "owner", member_role="owner")
+        owner = await _person(harness.session_factory, "owner", member_role="admin")
         answers = [
             await _call(harness, owner, "GET", ORGANIZATION),
             await _call(

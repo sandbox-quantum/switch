@@ -168,7 +168,7 @@ class TestAgentInheritsOwnerTenantScopedAdmin:
         """
         svc = _service(session_factory)
         owner = await _make_user(session_factory, "workspace-owner")
-        await _membership(session_factory, TENANT_ZERO_ID, owner, "owner")
+        await _membership(session_factory, TENANT_ZERO_ID, owner, "admin")
         someone_else = await _make_user(session_factory, "tenant-zero-room-owner")
         agent_id = await _register(svc, "owner-agent", owner)
         room_id = await _private_room(session_factory, TENANT_ZERO_ID, someone_else)
@@ -185,7 +185,7 @@ class TestAgentInheritsOwnerTenantScopedAdmin:
         svc = _service(session_factory)
         await _make_tenant(session_factory, TENANT_B)
         owner = await _make_user(session_factory, "cross-tenant-owner")
-        await _membership(session_factory, TENANT_ZERO_ID, owner, "owner")
+        await _membership(session_factory, TENANT_ZERO_ID, owner, "admin")
         await _membership(session_factory, TENANT_B, owner, "member")
         someone_else = await _make_user(session_factory, "tenant-b-room-owner")
         agent_id = await _register(svc, "cross-tenant-agent", owner)

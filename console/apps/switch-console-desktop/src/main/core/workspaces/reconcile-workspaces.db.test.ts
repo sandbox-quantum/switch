@@ -115,7 +115,7 @@ describe('reconcile-workspaces', () => {
    */
   it('claims the server’s existing workspace for its sole membership', async () => {
     const before = await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
-    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'admin')]);
 
     await reconcileServerWorkspaces('srv-1');
 
@@ -125,7 +125,7 @@ describe('reconcile-workspaces', () => {
     // name this id, and a replacement would detach every one of them.
     expect(found[0]!.id).toBe(before.id);
     expect(found[0]!.tenantId).toBe('t-1');
-    expect(found[0]!.role).toBe('owner');
+    expect(found[0]!.role).toBe('admin');
   });
 
   it('records each workspace’s organization, its name and the account’s role in it', async () => {
@@ -228,7 +228,7 @@ describe('reconcile-workspaces', () => {
       id: 't-1',
       slug: 't-1',
       name: 'Default',
-      role: 'owner',
+      role: 'admin',
       organizationId: 'o-1',
       organizationName: 'Acme',
       organizationRole: 'org_admin',
@@ -254,7 +254,7 @@ describe('reconcile-workspaces', () => {
     // The placeholder is left alone, so the agents and selection naming it stay put.
     expect((await listWorkspacesForServer('srv-1')).map((w) => w.id)).toEqual([placeholder.id]);
 
-    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'admin')]);
     await reconcileServerWorkspaces('srv-1');
 
     expect(listServersWithoutMembership()).toEqual([]);
@@ -395,7 +395,7 @@ describe('reconcile-workspaces', () => {
       id: 't-1',
       slug: 't-1',
       name: 'Default',
-      role: 'owner',
+      role: 'admin',
       organizationId: null,
       organizationName: null,
       organizationRole: null,
@@ -541,13 +541,13 @@ describe('reconcile-workspaces', () => {
       id: 't-previous',
       slug: 't-previous',
       name: 'Previous account’s',
-      role: 'owner',
+      role: 'admin',
       organizationId: null,
       organizationName: null,
       organizationRole: null,
     });
     await setActiveWorkspaceId(previous.id);
-    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'admin')]);
 
     await reconcileServerWorkspaces('srv-1');
 

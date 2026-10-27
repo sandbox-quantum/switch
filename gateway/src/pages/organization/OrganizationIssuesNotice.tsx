@@ -8,8 +8,8 @@ function describe(issue: OrganizationIssue): string {
   switch (issue.kind) {
     case "no_org_admin":
       return "Nobody is an admin of this organization. Make one of its members an organization admin below.";
-    case "workspace_without_owner":
-      return `${workspace} has no owner. Make one of its members owner in that workspace's members.`;
+    case "workspace_without_admin":
+      return `${workspace} has no admin. Make one of its members an admin in that workspace's members.`;
     case "agents_without_acting_owner":
       return (
         `In ${workspace}, these agents are owned by someone who is no longer in the ` +

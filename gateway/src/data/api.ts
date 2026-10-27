@@ -1139,7 +1139,7 @@ export interface AuthConfig {
 
 // ── Session and workspaces ──────────────────────────────────────────────────
 
-export type TenantRole = "owner" | "admin" | "member";
+export type TenantRole = "admin" | "member";
 
 export type OrganizationRole = "org_admin" | "member";
 
@@ -1374,7 +1374,7 @@ export async function removeOrganizationMember(
 // Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
 export type OrganizationIssueKind =
   | "no_org_admin"
-  | "workspace_without_owner"
+  | "workspace_without_admin"
   | "agents_without_acting_owner"
   | "directory_organization_deleted";
 

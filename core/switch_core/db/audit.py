@@ -104,7 +104,7 @@ class OrganizationIssueKind(StrEnum):
     hand as `OrganizationIssueKind` in the gateway's `data/api.ts`."""
 
     NO_ORG_ADMIN = "no_org_admin"
-    WORKSPACE_WITHOUT_OWNER = "workspace_without_owner"
+    WORKSPACE_WITHOUT_ADMIN = "workspace_without_admin"
     AGENTS_WITHOUT_ACTING_OWNER = "agents_without_acting_owner"
     DIRECTORY_ORGANIZATION_DELETED = "directory_organization_deleted"
 
