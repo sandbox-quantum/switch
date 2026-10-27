@@ -33,13 +33,14 @@ const CONNECT = /switch-bench-connect:(\S+)/;
 
 /**
  * Where the room prompt names the message it carries, whether it was
- * addressed to the agent or routed to it by Switch's decision service. Only
+ * addressed to the agent, routed to it by Switch's decision service, or
+ * delivered to it as the room's triage agent while auto-route was unavailable. Only
  * the reply's own body uses it, so the driver can correlate the reply it sees
  * arrive with the message it answers; the room the reply lands in is Switch's
  * choice.
  */
 const ORIGIN =
-  /(?:addressed you|posted) in room (\S+) (?:without tagging anyone, and Switch picked you to answer )?\(message_id ([^,\s)]+)/;
+  /(?:addressed you|posted) in room (\S+) (?:without tagging anyone, and (?:Switch picked you to answer|auto-route was unavailable, so it came to you as the room's triage agent) )?\(message_id ([^,\s)]+)/;
 
 /** How long a refused `post_message` is tried again before the turn gives up. */
 const REPLY_RETRY_MS = 90_000;

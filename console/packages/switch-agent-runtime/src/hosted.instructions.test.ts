@@ -60,4 +60,5 @@ it('tells the session a message Switch routed to it may not be its to answer', (
   expect(line, 'routed messages are not described').toBeDefined();
   expect(line).toContain('without tagging anyone');
   expect(line).toContain('stay silent');
+  expect(line).toContain("room's triage agent");
 });

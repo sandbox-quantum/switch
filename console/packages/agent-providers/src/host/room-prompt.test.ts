@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FALLBACK_NOTE,
   REPLY_REMINDER,
   ROUTED_NOTE,
   roomCommand,
@@ -103,5 +104,47 @@ describe('a room command', () => {
     expect(roomMessageSchema.parse(event).payload.routed).toBeUndefined();
     const fromOldServer = { ...event, payload: { ...event.payload, routed: null } };
     expect(text(fromOldServer)).toContain('[Switch] Owner addressed you');
+  });
+
+  it('frames a message the decision service picked the same whether or not the reason is given', () => {
+    const decided = {
+      ...event,
+      payload: { ...event.payload, routed: true, routed_reason: 'decided' },
+    };
+    const said = text(decided);
+    expect(said).toContain('without tagging anyone, and Switch picked you to answer');
+    expect(said).toContain(ROUTED_NOTE);
+    expect(said).not.toContain(FALLBACK_NOTE);
+  });
+
+  it("says a fallback came to the agent as the room's triage agent, and that it may stay silent", () => {
+    const fallback = {
+      ...event,
+      payload: { ...event.payload, routed: true, routed_reason: 'fallback' },
+    };
+    const said = text(fallback);
+    expect(said).toContain(
+      "[Switch] Owner posted in room !room:example.test without tagging anyone, and auto-route was unavailable, so it came to you as the room's triage agent (message_id $m, thread_id none):"
+    );
+    expect(said).not.toContain('Switch picked you');
+    expect(said).not.toContain(ROUTED_NOTE);
+    expect(said).toContain(FALLBACK_NOTE);
+    expect(FALLBACK_NOTE).toContain('auto-route was unavailable');
+    expect(FALLBACK_NOTE).toContain('stay silent');
+    expect(said.indexOf(FALLBACK_NOTE)).toBeGreaterThan(said.indexOf('END SWITCH MESSAGE'));
+    expect(said.endsWith(REPLY_REMINDER)).toBe(true);
+  });
+
+  it('reads a routing reason it does not know as Switch’s pick, rather than losing the message', () => {
+    const unknown = {
+      ...event,
+      payload: { ...event.payload, routed: true, routed_reason: 'something_new' },
+    };
+    const parsed = roomMessageSchema.parse(unknown);
+    expect(parsed.payload.routed_reason).toBeNull();
+    const said = text(unknown);
+    expect(said).toContain('without tagging anyone, and Switch picked you to answer');
+    expect(said).toContain(ROUTED_NOTE);
+    expect(said).not.toContain(FALLBACK_NOTE);
   });
 });
