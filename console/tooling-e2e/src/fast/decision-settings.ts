@@ -60,8 +60,8 @@ export const decisionSettings: FastScenario = {
       expect(effective.backend).toBe('none');
       expect(effective.available).toBe(false);
 
-      const agent = await fixtures.agent('dr');
-      const room = await fixtures.internalRoom('dr', [agent]);
+      const agent = await fixtures.agent('dragent');
+      const room = await fixtures.internalRoom('drroom', [agent]);
       const off = await switchClient.setRoomAutoRoute(room.id, { on: false });
       expect(off.on).toBe(false);
       expect(off.available).toBe(false);
