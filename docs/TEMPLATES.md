@@ -442,6 +442,7 @@ room:
   packages:        [ {id: package id} or {name: package name} ]
   docs:            [ ... ]
   aliases:         { agent name: alias }
+  sessions:        { agent name: home | shared | isolated }
 ```
 
 The same shape `POST /rooms/from-yaml` accepts and `GET /rooms/{id}/yaml`
@@ -459,6 +460,15 @@ creates a new one (private unless `read_visibility` / `write_visibility` say
 otherwise). `docs:` are documents created in the room, each
 `{name, description, instructions, content}`. An exported room writes roles
 and docs in full and references by `id`.
+
+`sessions:` sets up a shared session, where one session of an agent answers
+several rooms. `home` bases the agent's shared session in this room, `shared`
+has this room answer from it, and `isolated` gives this room a session of its
+own. Each agent it names must be in the room's `agents:`, and the person
+running the template must own the agent or be an admin. A setting that can't
+be made is reported with the result, and the room is created anyway. An
+exported room writes `sessions:` for each of its agents that has a shared
+session.
 
 `agents:` names agents that exist on the server, plus the ones this
 document creates by the text written as their `name`. `users:` names people

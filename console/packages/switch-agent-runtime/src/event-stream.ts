@@ -719,13 +719,19 @@ export class SwitchEventStream {
    * up to `PLACEMENTS_WAIT_MS` for the stream to be attached, then refuses.
    * Raises on any answer but success; a takeover also stands the stream down.
    */
-  async replacePlacements(placements: Record<string, string>): Promise<void> {
+  async replacePlacements(
+    placements: Record<string, string>,
+    shares: Record<string, string[]> = {}
+  ): Promise<void> {
     if (!(await this.attached()))
       throw new Error('the connection to Switch is not open, so it cannot take placements');
     const generation = this.generation;
     const resp = await this.post('connection/placements', {
       connection_id: this.deps.connectionId,
       placements,
+      // Only when there are any, so a server that predates shared sessions is
+      // never sent a field it does not know.
+      ...(Object.keys(shares).length ? { shares } : {}),
       generation,
     });
     if (resp.ok) return;

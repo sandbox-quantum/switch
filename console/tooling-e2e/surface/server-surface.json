@@ -23,6 +23,7 @@
     "get_role_detail",
     "get_room_detail",
     "get_room_group_detail",
+    "get_room_usage",
     "get_template",
     "get_template_guide",
     "invite_agent_to_room",
@@ -52,11 +53,13 @@
     "save_template",
     "send_targeted_message",
     "set_agent_service",
+    "set_room_session",
     "unarchive_room",
     "unlink_rooms",
     "update_agent_detail",
     "update_room",
     "update_room_document",
+    "update_shared_session",
     "update_template"
   ],
   "gatewayRoutes": [
@@ -1298,11 +1301,21 @@
       "flags": []
     },
     {
+      "route": "PUT /gateway/agents/{agent_id}/rooms/{room_id}/session",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PUT /gateway/agents/{agent_id}/service-grants/{service}",
       "auth": "session",
       "flags": [
         "service_connections"
       ]
+    },
+    {
+      "route": "PUT /gateway/agents/{agent_id}/shared-session",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "PUT /gateway/auth/me/password",

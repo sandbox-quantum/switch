@@ -17,6 +17,7 @@ import {
   roomControlRefusal,
 } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
+import { postedToRoom } from './room-posts';
 import {
   planAttachments,
   roomCommand,
@@ -165,25 +166,26 @@ export function sessionBusy(
 }
 
 /**
- * The Switch tools that put something the agent wrote in front of a room: a
- * turn that called one of them has answered. Each posts to the room the
- * session is connected to (only `send_attachment` can name another), so a
- * call counts whichever room it reached.
+ * A room control names the session's generation and turn as `current`:
+ * Switch keeps neither, so the host puts in its own. Null for an interrupt
+ * with no turn running, which has nothing to stop, and for one from a room
+ * whose work is not what is running: a session answering several rooms stops
+ * only the asking room's turn.
  */
-export const ROOM_POSTING_TOOLS = new Set([
-  'post_message',
-  'send_targeted_message',
-  'send_attachment',
-]);
-
-/** Whether a Switch tool result is a post that landed. */
-export function postedToRoom(name: string, result: unknown): boolean {
-  if (!ROOM_POSTING_TOOLS.has(name)) return false;
-  return (
-    typeof result === 'object' &&
-    result !== null &&
-    (result as { isError?: unknown }).isError !== true
-  );
+export function resolveCurrent(
+  command: Command,
+  snapshot: { session: { epoch: string }; turns: { turnId: string; status: string }[] },
+  originOf: (turnId: string) => { roomId: string | null } | null
+): Command | null {
+  const resolved =
+    command.epoch === CURRENT ? { ...command, epoch: snapshot.session.epoch } : command;
+  if (resolved.body.type !== 'turn.interrupt' || resolved.body.turnId !== CURRENT) return resolved;
+  const running = snapshot.turns.find((turn) => turn.status === 'running');
+  if (!running) return null;
+  const asking = resolved.origin?.roomId;
+  const runningFor = originOf(running.turnId)?.roomId;
+  if (asking && runningFor && asking !== runningFor) return null;
+  return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
 }
 
 class TransportError extends Error {}
@@ -417,8 +419,10 @@ export async function runSharedHost(
     const hosted = host;
     stopHearingTools =
       parentChannel?.onToolAnswered((name, result) => {
-        if (postedToRoom(name, result)) hosted.agentPostedToRoom();
+        const posted = postedToRoom(name, result);
+        if (posted) hosted.agentPostedToRoom(posted.roomId);
       }) ?? null;
+    parentChannel?.setToolOrigin(() => hosted.activeOriginRoom());
 
     options.serviceNotices.attach((message) => host!.serviceFallback(message));
 
@@ -535,21 +539,8 @@ export async function runSharedHost(
     };
 
     // ── What reaches the host ────────────────────────────────────────────────
-    /**
-     * A room control names the session's generation and turn as `current`:
-     * Switch keeps neither, so the host puts in its own. Null for an
-     * interrupt with no turn running, which has nothing to stop.
-     */
-    const current = (command: Command): Command | null => {
-      const snapshot = host!.snapshot();
-      const resolved =
-        command.epoch === CURRENT ? { ...command, epoch: snapshot.session.epoch } : command;
-      if (resolved.body.type !== 'turn.interrupt' || resolved.body.turnId !== CURRENT)
-        return resolved;
-      const running = snapshot.turns.find((turn) => turn.status === 'running');
-      if (!running) return null;
-      return { ...resolved, body: { ...resolved.body, turnId: running.turnId } };
-    };
+    const current = (command: Command): Command | null =>
+      resolveCurrent(command, host!.snapshot(), (turnId) => host!.originOf(turnId));
     // ── Rejoining the room after a room reset or compaction ─────────────────
     type Followup = Extract<(typeof state.journal.records)[number], { type: 'followup' }>;
     const followups = (): Followup[] =>
@@ -705,7 +696,7 @@ export async function runSharedHost(
         return `The command is not readable: ${parsed.error.message}`;
       }
       const command = current(parsed.data);
-      if (!command) return 'There is no turn running to interrupt.';
+      if (!command) return 'There is no turn running for this room to interrupt.';
       if (command.sessionId !== options.session.sessionId) {
         console.warn(`Ignoring command ${command.commandId}, which is for another session.`);
         return 'The command is for another session.';
@@ -1001,6 +992,7 @@ export async function runSharedHost(
     if (!signal.aborted) failure ??= error;
   } finally {
     stopHearingTools?.();
+    options.parent?.setToolOrigin(() => null);
     stopped.abort();
     await reporting;
     try {

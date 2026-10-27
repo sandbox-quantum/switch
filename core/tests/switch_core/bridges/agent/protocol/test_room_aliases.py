@@ -60,6 +60,9 @@ class _FakeRoomStore:
     async def list_aliases(self, session: Any, room_id: str) -> dict[str, str]:
         return dict(self._aliases)
 
+    async def sharing_agent_ids(self, session: Any, room_id: str) -> set[str]:
+        return set()
+
     async def set_alias(
         self, session: Any, room_id: str, agent_id: str, alias: str | None
     ) -> None:
@@ -154,8 +157,10 @@ async def _noop_get_by_bridge(session: Any, bridge_id: str) -> list[Any]:
 
 
 _AGENTS = {
-    "a1": SimpleNamespace(id="a1", name="claude-code.alice", owner_id=None),
-    "a2": SimpleNamespace(id="a2", name="moderator", owner_id=None),
+    "a1": SimpleNamespace(
+        id="a1", name="claude-code.alice", owner_id=None, home_room_id=None
+    ),
+    "a2": SimpleNamespace(id="a2", name="moderator", owner_id=None, home_room_id=None),
 }
 
 

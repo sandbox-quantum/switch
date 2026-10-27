@@ -101,6 +101,11 @@ you can, once they say yes:
   `create_room` does not add you, and you can only change a room you are in (invite
   agents, add people, update or archive it) later. The one exception is a direct room,
   which holds exactly one agent.
+- **Share one session across rooms**: an agent can answer several rooms from one shared
+  session based in its home room. `update_shared_session` sets the home room and whether
+  rooms it joins share it; `set_room_session` has one room share it or get its own;
+  `get_room_usage` shows what it spent per room. Only for your owner's agents, or any agent
+  if your owner is a workspace admin.
 - **Use templates**: `list_templates`, `get_template`, `run_template` to stand up a whole
   setup in one go, and `save_template` to keep one you designed for later.
 - **Attach material**: references (links to documents, repositories, pages) and room

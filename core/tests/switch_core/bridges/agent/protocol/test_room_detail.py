@@ -60,6 +60,9 @@ class _FakeRoomStore:
     async def list_aliases(self, session: Any, room_id: str) -> dict[str, str]:
         return {}
 
+    async def sharing_agent_ids(self, session: Any, room_id: str) -> set[str]:
+        return set()
+
     async def update_fields(
         self,
         session: Any,
@@ -194,8 +197,8 @@ class TestGetRoomDetail:
             room=room,
             agent_ids=["agent-1", "agent-2"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice"),
-                "agent-2": SimpleNamespace(name="moderator"),
+                "agent-1": SimpleNamespace(name="claude-code.alice", home_room_id=None),
+                "agent-2": SimpleNamespace(name="moderator", home_room_id=None),
             },
             statuses={
                 "agent-1": AgentStatus.LIVE,
@@ -252,7 +255,9 @@ class TestGetRoomDetail:
         svc = _build_service(
             room=room,
             agent_ids=["agent-1"],
-            agents={"agent-1": SimpleNamespace(name="claude-code.alice")},
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", home_room_id=None)
+            },
             roles=roles,
         )
 
@@ -266,7 +271,9 @@ class TestGetRoomDetail:
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(
+                    name="claude-code.alice", owner_id=None, home_room_id=None
+                )
             },
         )
 
@@ -280,7 +287,9 @@ class TestGetRoomDetail:
             agent_ids=["agent-1"],
             client_ids=["client-a", "client-b", "client-unknown"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(
+                    name="claude-code.alice", owner_id=None, home_room_id=None
+                )
             },
             bridges={"bridge-1": SimpleNamespace(display_name="Mattermost")},
             ext_users={
@@ -307,7 +316,9 @@ class TestUpdateRoom:
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(
+                    name="claude-code.alice", owner_id=None, home_room_id=None
+                )
             },
         )
 
@@ -342,7 +353,9 @@ class TestUpdateRoom:
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(
+                    name="claude-code.alice", owner_id=None, home_room_id=None
+                )
             },
         )
 
@@ -362,7 +375,9 @@ class TestSetRoomArchived:
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(
+                    name="claude-code.alice", owner_id=None, home_room_id=None
+                )
             },
         )
 
@@ -380,7 +395,9 @@ class TestSetRoomArchived:
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(
+                    name="claude-code.alice", owner_id=None, home_room_id=None
+                )
             },
         )
 

@@ -105,15 +105,24 @@ export function openRoomInMessagingApp(roomKey: string): void {
  */
 export function groupByRoom(
   sessions: SessionStore[],
-  alwaysShow: string[] = []
+  alwaysShow: string[] = [],
+  { withShares = true }: { withShares?: boolean } = {}
 ): [string, SessionStore[]][] {
   const groups = new Map<string, SessionStore[]>();
   for (const key of alwaysShow) groups.set(key, []);
   for (const session of sessions) {
     const key = sessionRoomId(session) ?? UNASSIGNED_ROOM_KEY;
-    const list = groups.get(key);
-    if (list) list.push(session);
-    else groups.set(key, [session]);
+    // A shared session is listed under its home room and, where rooms are the
+    // subject, under each room it answers from there (as a pointer row).
+    const keys = [
+      key,
+      ...(withShares ? roomConnectionsStore.sharedRoomsForSession(session.data.id) : []),
+    ];
+    for (const roomKey of new Set(keys)) {
+      const list = groups.get(roomKey);
+      if (list) list.push(session);
+      else groups.set(roomKey, [session]);
+    }
   }
   return [...groups.entries()].sort(([a], [b]) => {
     if (a === UNASSIGNED_ROOM_KEY) return 1;

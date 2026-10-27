@@ -55,6 +55,7 @@ from switch_core.db.models import (
     Room,
     RoomGroup,
     User,
+    room_agents,
     room_documents,
     room_references,
 )
@@ -172,6 +173,10 @@ class UsageCounts:
     package_count: int = 0
     room_group_count: int = 0
     api_key_count: int = 0
+    # Agents with a shared session (a home room), and the rooms other than
+    # home that share one: whether one session answering several rooms is used.
+    shared_session_agent_count: int = 0
+    shared_session_room_count: int = 0
 
     def as_event_properties(self, *, session_live_count: int) -> dict[str, float]:
         """Flatten to exactly the properties `usage_snapshot` declares."""
@@ -227,6 +232,8 @@ class UsageCounts:
             "package_count": self.package_count,
             "room_group_count": self.room_group_count,
             "api_key_count": self.api_key_count,
+            "shared_session_agent_count": self.shared_session_agent_count,
+            "shared_session_room_count": self.shared_session_room_count,
         }
         for platform, count in self.connector_counts.items():
             properties[connector_count_property(platform)] = count
@@ -695,6 +702,25 @@ async def _collect_resource_counts(
                 .where(table.tenant_id == tenant_id),
             ),
         )
+
+    counts.shared_session_agent_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(Agent)
+        .where(Agent.tenant_id == tenant_id, Agent.home_room_id.is_not(None)),
+    )
+    counts.shared_session_room_count += await _scalar(
+        session,
+        select(func.count())
+        .select_from(room_agents)
+        .join(Agent, Agent.id == room_agents.c.agent_id)
+        .where(
+            room_agents.c.tenant_id == tenant_id,
+            room_agents.c.shared_session.is_(True),
+            Agent.home_room_id.is_not(None),
+            Agent.home_room_id != room_agents.c.room_id,
+        ),
+    )
 
     for junction, column, name in (
         (room_references, "reference_id", "reference_attached_count"),

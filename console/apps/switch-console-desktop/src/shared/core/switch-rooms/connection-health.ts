@@ -16,6 +16,8 @@ export type RoomHealthSnapshot = {
   agents: AgentConnectionHealth[];
   /** Session id → room id, as the agents' room watchers route now. */
   placements: Record<string, string>;
+  /** Shared room id → the session answering it from its home room. */
+  shares?: Record<string, string>;
 };
 export const connectionLabels: Record<AgentConnectionState, string> = {
   connected: 'Connected',

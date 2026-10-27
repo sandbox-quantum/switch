@@ -35,6 +35,7 @@ from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_usage_store import RoomUsageStore
 from switch_core.db.stores.session_activity_store import (
     TURN_ITEM_ID,
     AgentSessionActivityStore,
@@ -154,6 +155,7 @@ class AgentSessionActivityService:
         self._approvals = ApprovalRequestStore()
         self._activity = AgentSessionActivityStore()
         self._usage = UsageStore()
+        self._room_usage = RoomUsageStore()
         self._rooms = RoomStore()
         self._external_users = ExternalUserStore()
         self._addressing = AddressingResolver(
@@ -259,6 +261,8 @@ class AgentSessionActivityService:
                     await self._meter_turn(db, tenant_id, agent_id)
                 if status in TURN_ENDED and prior_status not in TURN_ENDED:
                     await self._meter_tokens(db, tenant_id, agent_id, usage)
+                    if room_id is not None:
+                        await self._meter_room(db, tenant_id, agent_id, room_id, usage)
             return moved
 
     async def _meter_turn(
@@ -313,6 +317,34 @@ class AgentSessionActivityService:
                         model=spend.model,
                         amount=amount,
                     )
+
+    async def _meter_room(
+        self,
+        db: AsyncSession,
+        tenant_id: str,
+        agent_id: str,
+        room_id: str,
+        usage: list[TokenSpend],
+    ) -> None:
+        """Charge an ended turn, and what it spent, to the room that started
+        it, so an agent answering several rooms can be costed per room."""
+        spends: list[TokenSpend | None] = [*sorted(usage, key=lambda s: s.model)] or [
+            None
+        ]
+        for index, spend in enumerate(spends):
+            await self._room_usage.record(
+                db,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                room_id=room_id,
+                model=spend.model if spend else "",
+                # One turn, however many models it used.
+                turns=1 if index == 0 else 0,
+                input_tokens=spend.input_tokens if spend else 0,
+                output_tokens=spend.output_tokens if spend else 0,
+                cache_read_tokens=spend.cache_read_tokens if spend else 0,
+                cache_write_tokens=spend.cache_write_tokens if spend else 0,
+            )
 
     @staticmethod
     async def _agent_client_id(db: AsyncSession, tenant_id: str, agent_id: str) -> str:

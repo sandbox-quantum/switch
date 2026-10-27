@@ -76,11 +76,16 @@ export type SessionRequest = z.infer<typeof sessionRequestSchema>;
 export const hostAskSchema = z.discriminatedUnion('type', [
   /** The Switch tools, as MCP lists them. */
   z.object({ type: z.literal('tools') }),
-  /** One tool call, answered with the MCP tool result. */
+  /**
+   * One tool call, answered with the MCP tool result. `originRoomId` is the
+   * room the running turn's message came from, when a room message started
+   * it: where a reply belongs when the agent does not name a room.
+   */
   z.object({
     type: z.literal('tool'),
     name: z.string().min(1),
     arguments: z.record(z.string(), z.unknown()),
+    originRoomId: z.string().min(1).optional(),
   }),
   /**
    * The host's own post, as the agent, to the room a turn was started from:
@@ -710,6 +715,11 @@ export type ParentChannel = {
    * the caller does. Returns the unsubscribe.
    */
   onToolAnswered: (listener: (name: string, result: unknown) => void) => () => void;
+  /**
+   * Name the room each tool call's turn came from (`originRoomId`), read as
+   * the call goes up. Unset, calls carry none.
+   */
+  setToolOrigin: (origin: () => string | null) => void;
   /** Say whether the session is busy, and why; `barrier` answers a `busyBarrier`. */
   busy: (state: BusyState, barrier: number | null) => void;
   /** Answer each `busyBarrier` with this, once it resolves. */
@@ -759,6 +769,7 @@ export function connectParent(port: ParentPort): ParentChannel {
   let serving = true;
   let nextAsk = 0;
   const toolListeners = new Set<(name: string, result: unknown) => void>();
+  let toolOrigin: (() => string | null) | null = null;
   const asks = new Map<
     number,
     {
@@ -840,7 +851,10 @@ export function connectParent(port: ParentPort): ParentChannel {
       redactionHandler = handler;
       if (sharedEarly.length) handler(sharedEarly.splice(0));
     },
-    ask: (ask) => {
+    ask: (rawAsk) => {
+      const origin = rawAsk.type === 'tool' && !rawAsk.originRoomId ? toolOrigin?.() : null;
+      const ask: HostAsk =
+        origin && rawAsk.type === 'tool' ? { ...rawAsk, originRoomId: origin } : rawAsk;
       if (!port.connected)
         return Promise.reject(new Error('The parent process is gone, so nothing can answer.'));
       const id = nextAsk++;
@@ -867,6 +881,9 @@ export function connectParent(port: ParentPort): ParentChannel {
     onToolAnswered: (listener) => {
       toolListeners.add(listener);
       return () => toolListeners.delete(listener);
+    },
+    setToolOrigin: (origin) => {
+      toolOrigin = origin;
     },
     close: () => {
       serving = false;

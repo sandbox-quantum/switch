@@ -14,7 +14,7 @@ unrestricted deployment) run on is exempt from row-level security.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
@@ -38,6 +38,7 @@ from switch_core.db.models import (
     AgentConnectionRoom,
     AgentSessionCommandRelay,
     AgentSessionPlacement,
+    AgentSessionShare,
     SwitchCoreProcess,
 )
 
@@ -77,6 +78,9 @@ class AgentSlotRows:
     stored_claims: dict[str, str]
     # Session -> (room, the connection that placed it), as stored.
     stored_placements: dict[str, tuple[str, str]]
+    # Shared room -> (the session answering for it from its home room, the
+    # connection that placed that session), as stored.
+    stored_shares: dict[str, tuple[str, str]] = field(default_factory=dict)
 
     def live_connections(self) -> list[ConnectionRow]:
         return [row for row in self.connections.values() if row.live]
@@ -87,6 +91,15 @@ class AgentSlotRows:
             room_id: connection_id
             for room_id, connection_id in self.stored_claims.items()
             if (row := self.connections.get(connection_id)) is not None and row.live
+        }
+
+    def shares(self) -> dict[str, tuple[str, str]]:
+        """The shares that count: those of a placement that counts."""
+        placements = self.placements()
+        return {
+            room_id: shared
+            for room_id, shared in self.stored_shares.items()
+            if placements.get(shared[0], (None, None))[1] == shared[1]
         }
 
     def placements(self) -> dict[str, tuple[str, str]]:
@@ -146,6 +159,7 @@ class AgentConnectionStore:
             AgentConnectionRecord.agent_id == agent_id,
             AgentConnectionRoom.agent_id == agent_id,
             AgentSessionPlacement.agent_id == agent_id,
+            AgentSessionShare.agent_id == agent_id,
             process_id=process_id,
             lease_ttl=lease_ttl,
         )
@@ -168,6 +182,7 @@ class AgentConnectionStore:
             AgentConnectionRecord.tenant_id == tenant_id,
             AgentConnectionRoom.tenant_id == tenant_id,
             AgentSessionPlacement.tenant_id == tenant_id,
+            AgentSessionShare.tenant_id == tenant_id,
             process_id=process_id,
             lease_ttl=lease_ttl,
         )
@@ -178,6 +193,7 @@ class AgentConnectionStore:
         connections_where: ColumnElement[bool],
         claims_where: ColumnElement[bool],
         placements_where: ColumnElement[bool],
+        shares_where: ColumnElement[bool],
         *,
         process_id: str,
         lease_ttl: timedelta,
@@ -253,6 +269,16 @@ class AgentConnectionStore:
         )
         for agent_id, session_id, room_id, connection_id in placements.all():
             of(agent_id).stored_placements[session_id] = (room_id, connection_id)
+        shares = await session.execute(
+            select(
+                AgentSessionShare.agent_id,
+                AgentSessionShare.room_id,
+                AgentSessionShare.session_id,
+                AgentSessionShare.connection_id,
+            ).where(shares_where)
+        )
+        for agent_id, room_id, session_id, connection_id in shares.all():
+            of(agent_id).stored_shares[room_id] = (session_id, connection_id)
         return by_agent
 
     async def record_open(
@@ -308,11 +334,16 @@ class AgentConnectionStore:
         agent_id: str,
         claims: dict[str, str],
         placements: dict[str, tuple[str, str]],
+        shares: dict[str, tuple[str, str]] | None = None,
     ) -> None:
-        """Make these the agent's claims and placements. Called with the
-        agent locked (`lock_agent`), from a state read under the same lock."""
+        """Make these the agent's claims, placements and shares. Called with
+        the agent locked (`lock_agent`), from a state read under the same
+        lock."""
         await session.execute(
             delete(AgentConnectionRoom).where(AgentConnectionRoom.agent_id == agent_id)
+        )
+        await session.execute(
+            delete(AgentSessionShare).where(AgentSessionShare.agent_id == agent_id)
         )
         await session.execute(
             delete(AgentSessionPlacement).where(
@@ -344,6 +375,20 @@ class AgentConnectionStore:
                         "connection_id": connection_id,
                     }
                     for session_id, (room_id, connection_id) in placements.items()
+                ],
+            )
+        if shares:
+            await session.execute(
+                insert(AgentSessionShare),
+                [
+                    {
+                        "tenant_id": tenant_id,
+                        "agent_id": agent_id,
+                        "room_id": room_id,
+                        "session_id": session_id,
+                        "connection_id": connection_id,
+                    }
+                    for room_id, (session_id, connection_id) in shares.items()
                 ],
             )
 

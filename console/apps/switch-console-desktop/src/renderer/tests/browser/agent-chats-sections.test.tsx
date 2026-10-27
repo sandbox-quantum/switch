@@ -1,4 +1,5 @@
-import { act } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -147,6 +148,11 @@ afterEach(() => {
   container.remove();
 });
 
+/** Draws `ui` with the query client the app provides; a room's shared-session
+ * menu reads it. */
+const render = (ui: ReactNode) =>
+  root.render(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
+
 /** The section buttons under the agent's profile, by their labels. */
 const navButtons = () => [
   ...container.querySelectorAll<HTMLButtonElement>('[role="toolbar"][aria-label="Agent"] button'),
@@ -156,7 +162,7 @@ const navItem = (label: string) =>
   navButtons().find((button) => button.getAttribute('aria-label') === label)!;
 
 it("puts Connectors under the agent's profile, before Agent settings, and opens it there", async () => {
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Connectors', 'Agent settings']);
   expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('false');
 
@@ -177,7 +183,7 @@ it("puts Connectors under the agent's profile, before Agent settings, and opens 
 
 it("shows the agent's name and where it runs at the top of its column", async () => {
   await act(async () =>
-    root.render(
+    render(
       <AgentChats
         agent={{
           ...AGENT,
@@ -194,7 +200,7 @@ it("shows the agent's name and where it runs at the top of its column", async ()
 it('calls the machine "This computer" when the agent runs here, keeping its name on hover', async () => {
   machine.thisComputer = true;
   await act(async () =>
-    root.render(
+    render(
       <AgentChats
         agent={{
           ...AGENT,
@@ -216,14 +222,14 @@ it('calls the machine "This computer" when the agent runs here, keeping its name
 });
 
 it('says so when the agent has no machine', async () => {
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(container.textContent).toContain('No machine');
 });
 
 it("leaves Connections out for an agent whose grants aren't yours, keeping service access in settings", async () => {
   grants.data = null;
   navigation.reset({ ...navigation.params(), section: 'connections' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Agent settings']);
   expect(container.querySelector('[data-testid="connections"]')).toBeNull();
 
@@ -235,7 +241,7 @@ it("leaves Connections out for an agent whose grants aren't yours, keeping servi
 
 it('leaves Connections out when the server has service connections off', async () => {
   flags.service_connections = false;
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Agent settings']);
 });
 
@@ -257,7 +263,7 @@ it('opens a room in the right pane as the room view draws it, keeping its row se
   rooms.list = [room('room-1', 'design'), room('room-2', 'launch')];
   rooms.bridges = { 'room-1': 'mattermost', 'room-2': 'mattermost' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
 
   const pane = embeddedRoom()!;
   expect(pane).not.toBeNull();
@@ -283,7 +289,7 @@ it('lets the room go when a section is picked or the page is left', async () => 
   rooms.list = [room('room-1', 'design')];
   rooms.bridges = { 'room-1': 'mattermost' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(roomEmbedSlotStore.slot?.roomId).toBe('room-1');
 
   await act(async () => navItem('Agent settings').click());
@@ -304,7 +310,7 @@ it("opens a room whose platform can't be drawn here on its settings", async () =
   rooms.list = [room('room-1', 'design'), room('room-2', 'agents-only')];
   rooms.bridges = { 'room-1': 'slack' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(embeddedRoom()?.textContent).toBe('Settings of room-1');
 
   await act(async () => roomRow('agents-only').click());

@@ -737,6 +737,22 @@ class Agent(TenantScoped, Base):
     can_manage_agents: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Shared session (CHOO-3725): one session of the agent, based in its home
+    # room, answers in every room that shares it. NULL means the agent shares
+    # no session: each room gets its own, as for any agent. Which of its other
+    # rooms share it is `room_agents.shared_session`; see
+    # `switch_core.shared_session`.
+    home_room_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Whether a room the agent is added to shares its session unless the person
+    # adding it chooses isolated.
+    shared_by_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    # An agent built to work across rooms: every room it is in shares its
+    # session, and no room can be made isolated.
+    sharing_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -874,6 +890,15 @@ room_agents = Table(
     # Room-scoped alias: `@<alias>` addresses this agent in this room exactly
     # like its real name. Null when the agent has no alias here.
     Column("alias", Text, nullable=True),
+    # Whether this room shares the agent's session (CHOO-3725): a mention here
+    # reaches its shared session in its home room. Only meaningful while the
+    # agent has a home room; see `switch_core.shared_session`.
+    Column(
+        "shared_session",
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+    ),
     ForeignKeyConstraint(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
@@ -2960,6 +2985,46 @@ class AgentSessionPlacement(TenantScoped, Base):
     connection_id: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class AgentSessionShare(TenantScoped, Base):
+    """A room one of an agent's sessions answers for from its home room: a
+    shared room of an agent with a shared session (`switch_core.shared_session`).
+
+    The session's own placement is its home room, in `agent_session_placements`;
+    each row here adds one room it also covers. A room is covered once per
+    agent, by a placement or a share, never both. The share belongs to the
+    connection that placed the session and goes with that connection's row.
+    """
+
+    __tablename__ = "agent_session_shares"
+    __table_args__ = (
+        Index("ix_agent_session_shares_tenant_id", "tenant_id"),
+        Index("ix_agent_session_shares_connection_id", "connection_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_agent_session_shares_agent",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_agent_session_shares_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "connection_id"],
+            ["agent_connections.tenant_id", "agent_connections.id"],
+            name="fk_agent_session_shares_connection",
+            ondelete="CASCADE",
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    room_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    connection_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class AgentSessionCommandRelay(TenantScoped, Base):
     """A session command waiting for the process that can deliver it.
 
@@ -3507,6 +3572,40 @@ class UsageMetric(StrEnum):
     OUTPUT_TOKENS = "output_tokens"
     CACHE_READ_TOKENS = "cache_read_tokens"
     CACHE_WRITE_TOKENS = "cache_write_tokens"
+
+
+class RoomTokenUsage(TenantScoped, Base):
+    """What an agent's turns spent for each room, one row per hour and model.
+
+    Kept to see what an agent costs per room, chiefly one whose shared session
+    answers several (`switch_core.shared_session`). A turn is charged to the
+    room whose message started it, even when what it carried in its context
+    came from other rooms. No foreign keys, so a count outlives the room and
+    agent it names, as `TenantUsage` does.
+    """
+
+    __tablename__ = "room_token_usage"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "agent_id", "room_id", "bucket_start", "model"
+        ),
+    )
+
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    turns: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    cache_write_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
 
 
 class TenantUsage(TenantScoped, Base):

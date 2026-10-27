@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ExternalLink, FileText, Link2, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { sharedSessionKey } from '@renderer/features/locations/components/settings-view/sections/shared-session-settings-section';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -30,6 +31,7 @@ import type {
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
+import { roomSharingLabel } from './room-sharing-label';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -392,7 +394,7 @@ const ParticipantList = observer(function ParticipantList({
   room,
 }: {
   workspaceId: string;
-  room: Pick<RemoteRoomDetail, 'agentIds' | 'connectedUserNames'>;
+  room: Pick<RemoteRoomDetail, 'id' | 'agentIds' | 'connectedUserNames'>;
 }) {
   // Names for agents belonging to other installs, which this computer has no
   // local record of. Shares its key with the rest of the app, so it is usually
@@ -409,6 +411,7 @@ const ParticipantList = observer(function ParticipantList({
           mark={<AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />}
           name={agentNameFor(agentId, workspaceId, remoteById)}
           detail={agentKindFor(agentId, workspaceId, remoteById)}
+          extra={<AgentSharingLine workspaceId={workspaceId} agentId={agentId} roomId={room.id} />}
         />
       ))}
       {room.connectedUserNames.map((name) => (
@@ -431,10 +434,13 @@ function ParticipantCard({
   mark,
   name,
   detail,
+  extra,
 }: {
   mark: React.ReactNode;
   name: string;
   detail: string;
+  /** A further line under the detail, such as how the agent shares its session. */
+  extra?: React.ReactNode;
 }) {
   return (
     <div className="flex items-center gap-3 rounded-[10px] border border-border bg-[var(--surface-2)] px-3.5 py-3">
@@ -442,10 +448,43 @@ function ParticipantCard({
       <div className="flex min-w-0 flex-col">
         <span className="truncate text-sm font-medium text-foreground">{name}</span>
         <span className="truncate text-xs text-foreground-muted">{detail}</span>
+        {extra}
       </div>
     </div>
   );
 }
+
+/**
+ * Where an agent's shared session is based and how many rooms it answers, when
+ * it answers this room from one. Nothing for an agent with no shared session,
+ * or a room with a session of its own.
+ */
+const AgentSharingLine = observer(function AgentSharingLine({
+  workspaceId,
+  agentId,
+  roomId,
+}: {
+  workspaceId: string;
+  agentId: string;
+  roomId: string;
+}) {
+  const { data: sharing } = useQuery({
+    queryKey: sharedSessionKey(workspaceId, agentId),
+    queryFn: () => rpc.workspaces.getSharedSession({ workspaceId, agentId }),
+  });
+  const label = roomSharingLabel(
+    sharing,
+    roomId,
+    (id) => switchRoomsStore.roomSummaryById(id)?.name ?? 'another room'
+  );
+  if (!label) return null;
+  return (
+    <span className="flex min-w-0 items-start gap-1 text-xs text-foreground-muted">
+      <Link2 className="mt-0.5 size-3 shrink-0" aria-hidden />
+      <span>{label}</span>
+    </span>
+  );
+});
 
 /**
  * Search this computer's agents and put one in the room.

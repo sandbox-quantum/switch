@@ -45,6 +45,8 @@ def _client(
     enqueue: list[Any],
     placed: str | None = None,
     relayed: list[Any] | None = None,
+    home_room_id: str | None = None,
+    sharing_agents: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> SimpleNamespace:
     """Minimal AgentRecipient stand-in for _dispatch_control_command."""
 
@@ -52,6 +54,8 @@ def _client(
         id="agent-1",
         tenant_id="tenant-1",
         name="cc",
+        display_name=None,
+        home_room_id=home_room_id,
         metadata_={},
         integration_profile={
             "command_capabilities": {
@@ -88,9 +92,18 @@ def _client(
         enqueue.append((a, k))
         return len(enqueue)
 
+    async def _sharing_agent_ids(_s: Any, _room_id: str) -> set[str]:
+        return set(sharing_agents)
+
+    async def _get_room(_s: Any, room_id: str) -> Any:
+        return SimpleNamespace(id=room_id, name="Hub")
+
     return SimpleNamespace(
         agent=agent,
         _fresh_agent=_fresh_agent,
+        _room_store=SimpleNamespace(
+            sharing_agent_ids=_sharing_agent_ids, get=_get_room
+        ),
         _resolve_room_meta=_resolve_room_meta,
         session_factory=_session_factory,
         tenant_id="tenant-1",
@@ -427,3 +440,78 @@ def test_an_interrupt_names_the_current_turn() -> None:
         requester_name="louisa",
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
+
+
+@pytest.mark.asyncio
+async def test_a_reset_from_a_room_sharing_the_session_points_at_its_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reset clears the shared session for every room it answers, so only
+    its home room may ask for one."""
+    reply = _Reply()
+    enqueue: list[Any] = []
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+    _patch_runtime(
+        monkeypatch, status=AgentStatus.LIVE, control_capabilities={"reset": True}
+    )
+
+    await _cmd_reset(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=enqueue,
+            placed="lead",
+            relayed=relayed,
+            home_room_id="room-hub",
+            sharing_agents={"agent-1"},
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event(),
+        False,
+    )
+
+    assert len(reply.bodies) == 1
+    assert "based in **Hub**" in reply.bodies[0]
+    assert "@" not in reply.bodies[0]
+    assert relayed == []
+    assert enqueue == []
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_from_a_room_sharing_the_session_is_relayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interrupting stops only the asking room's work, which the session's
+    host decides; Switch relays it as for any room."""
+    reply = _Reply()
+    relayed: list[Any] = []
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "slack"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+
+    await commands._cmd_interrupt(
+        _client(
+            reply,
+            command_level="session_dependent",
+            enqueue=[],
+            placed="lead",
+            relayed=relayed,
+            home_room_id="room-hub",
+            sharing_agents={"agent-1"},
+        ),
+        SimpleNamespace(room_id="!m:server"),
+        _event("interrupt"),
+        False,
+    )
+
+    assert len(relayed) == 1
+    assert relayed[0]["sessionId"] == "lead"
+    assert relayed[0]["origin"]["roomId"] == "room-1"
+    # It does not claim to have stopped work another room asked for.
+    assert reply.bodies == [
+        "Asked to stop any work for this room. Work for its other rooms carries on."
+    ]

@@ -110,10 +110,14 @@ class Process:
         async def require_room_member(agent_id: str, room_id: str) -> Any:
             return SimpleNamespace(id=room_id)
 
+        async def check_shares(*_args: Any) -> None:
+            return None
+
         return SimpleNamespace(
             connections=self.registry,
             event_buffer=self.buffer,
             require_room_member=require_room_member,
+            check_shares=check_shares,
         )
 
 
@@ -263,6 +267,36 @@ async def _place(
         agent=_Agent(),  # type: ignore[arg-type]
         protocol=process.protocol,
     )
+
+
+class TestSharedSessions:
+    async def test_a_shared_room_reaches_the_other_process(
+        self, processes: tuple[Process, Process]
+    ) -> None:
+        """Whichever process writes a message in a shared room must find the
+        home session answering it there, or it starts a second session."""
+        a, b = processes
+        conn = await _open(a, scope="all")
+        answer = await connection_placements(
+            AGENT,
+            ConnectionPlacementsRequest(
+                connection_id=CONN,
+                placements={"lead": ROOM},
+                shares={"lead": [OTHER_ROOM]},
+                generation=conn.stream_generation,
+            ),
+            agent=_Agent(),  # type: ignore[arg-type]
+            protocol=a.protocol,
+        )
+        assert answer["shares"] == {"lead": [OTHER_ROOM]}
+
+        await _eventually(
+            lambda: b.registry.session_in_room(AGENT, OTHER_ROOM) == "lead"
+        )
+        assert b.registry.session_room(AGENT, "lead") == ROOM
+
+        await _place(a, conn.stream_generation, {"lead": ROOM})
+        await _eventually(lambda: b.registry.session_in_room(AGENT, OTHER_ROOM) is None)
 
 
 class TestPresence:

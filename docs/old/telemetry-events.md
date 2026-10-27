@@ -387,6 +387,8 @@ never invisible.
 | `package_count` | number | packages |
 | `room_group_count` | number | room groups |
 | `api_key_count` | number | API keys |
+| `shared_session_agent_count` | number | agents with a shared session (a home room) |
+| `shared_session_room_count` | number | rooms other than home that share an agent's session |
 
 Per-platform counts are separate properties rather than one map because the
 platform set is closed and small, and because Amplitude charts a property far
@@ -769,6 +771,8 @@ This is what each carries.
 | `room_link_removed` | none |
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
+| `shared_session_home_changed` | `home` (`set` \| `moved` \| `cleared`); `via` (`command` \| `agent_tool` \| `console` \| `template`) |
+| `shared_session_room_changed` | `shared` (boolean); `via` (`command` \| `agent_tool` \| `console` \| `template`) |
 | `room_users_added` | `user_count` (number) |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
@@ -1064,6 +1068,13 @@ reason.
   and which template stay in the server log.
 - `room_link_created` / `room_link_removed`, `room_role_defined` /
   `room_role_deleted`, `room_users_added`.
+- `shared_session_home_changed` / `shared_session_room_changed` — one
+  session of an agent answering several rooms: its home room set, moved or
+  cleared, and a room switched between sharing it and having its own. `via`
+  says which surface made the change (a room command, an agent's tool, Switch
+  Console, a template), so adoption can be told apart from automation. With
+  the snapshot's two counts, they show whether the feature is used, and how
+  widely.
 - `reference_detached_from_room` / `document_detached_from_room` /
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.

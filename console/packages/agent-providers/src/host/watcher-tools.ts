@@ -12,6 +12,7 @@ import {
 import { z } from 'zod';
 import type { PlacementMap, SessionPlacements } from './placements';
 import type { Redactions } from './redaction';
+import { POSTED_ROOM_META, ROOM_POSTING_TOOLS } from './room-posts';
 import { issueServiceToken, readServiceGrants } from './service-access';
 import { AgentServiceTokens } from './service-tokens';
 import type { AskHandler, Caller, HostAsk } from './session-channel';
@@ -102,11 +103,16 @@ export function sessionToolAnswerer(deps: {
     const roomId = args.room_id;
     const ctx = await context(caller);
     if (typeof roomId !== 'string' || !roomId) return catalog.call(ctx, 'connect_to_room', args);
+    // A room this session already answers from its home room: Switch connects
+    // nothing, and the session stays placed at home.
+    if (deps.placements.sharerOf(roomId) === caller.sessionId)
+      return catalog.call(ctx, 'connect_to_room', args);
     const before = deps.placements.snapshot();
+    const beforeShares = deps.placements.sharesSnapshot();
     const { displaced } = await deps.placements.place(caller.sessionId, roomId);
     const result = await catalog.call(ctx, 'connect_to_room', args);
     if (result.isError) {
-      await deps.placements.restore(before);
+      await deps.placements.restore(before, beforeShares);
       return result;
     }
     try {
@@ -140,9 +146,8 @@ export function sessionToolAnswerer(deps: {
 
   /**
    * Posts, as the session, a reply its turn left unposted. Only into the room
-   * the turn came from, and only while the session still attends it: a post
-   * goes to whichever room the session holds, and one it has moved to since
-   * did not ask.
+   * the turn came from, and only while the session still answers for it: one
+   * it has moved away from since did not ask.
    */
   const roomReply = async (
     caller: Caller,
@@ -150,20 +155,23 @@ export function sessionToolAnswerer(deps: {
     ask: Extract<HostAsk, { type: 'room-reply' }>
   ): Promise<null> => {
     const attended = deps.placements.roomOf(caller.sessionId);
-    if (attended !== ask.roomId)
+    if (!deps.placements.serves(caller.sessionId, ask.roomId))
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
       );
     const posted = await catalog.call(await context(caller), 'post_message', {
       body: deps.redactions.text(ask.body),
       ...(ask.threadId ? { thread_id: ask.threadId } : {}),
+      // Named only when it is not where a post goes anyway, so a server that
+      // predates naming a room is never asked to.
+      ...(attended === ask.roomId ? {} : { room_id: ask.roomId }),
     });
     if (posted.isError) throw new Error(resultText(posted));
     return null;
   };
 
   /**
-   * The instructions of the room the session attends, read through
+   * The instructions of a room the session attends or answers for, read through
    * `connect_to_room`, which for an agent whose controller places its sessions
    * checks membership and returns the room's context without claiming
    * anything. Called directly rather than as the session's own connect: that
@@ -175,11 +183,14 @@ export function sessionToolAnswerer(deps: {
     catalog: SwitchToolCatalog,
     ask: Extract<HostAsk, { type: 'room-instructions' }>
   ): Promise<{ instructions: string }> => {
-    const attended = deps.placements.roomOf(caller.sessionId);
-    if (attended !== ask.roomId)
+    // A room it answers from its home room through a share counts: its
+    // messages are this session's to answer.
+    if (!deps.placements.serves(caller.sessionId, ask.roomId)) {
+      const attended = deps.placements.roomOf(caller.sessionId);
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its instructions were not read.`
       );
+    }
     const result = await catalog.call(await context(caller), 'connect_to_room', {
       room_id: ask.roomId,
       include_general_instructions: false,
@@ -191,6 +202,33 @@ export function sessionToolAnswerer(deps: {
     return { instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim() };
   };
 
+  /**
+   * A post, sent to the room its turn came from when the agent named none and
+   * that room is one the session answers for other than where a post goes
+   * anyway; the result says which room it reached (`POSTED_ROOM_META`), so the
+   * session can tell whether the asking room got its answer.
+   */
+  const post = async (
+    caller: Caller,
+    catalog: SwitchToolCatalog,
+    name: string,
+    args: Record<string, unknown>,
+    originRoomId: string | undefined
+  ): Promise<ToolResult & { _meta?: Record<string, unknown> }> => {
+    const attended = deps.placements.roomOf(caller.sessionId);
+    const named = typeof args.room_id === 'string' && args.room_id ? args.room_id : null;
+    const toOrigin =
+      !named &&
+      originRoomId !== undefined &&
+      originRoomId !== attended &&
+      deps.placements.serves(caller.sessionId, originRoomId);
+    const sent = toOrigin ? { ...args, room_id: originRoomId } : args;
+    const result = await catalog.call(await context(caller), name, sent);
+    const reached = named ?? (toOrigin ? originRoomId : attended);
+    if (result.isError || !reached) return result;
+    return { ...result, _meta: { [POSTED_ROOM_META]: reached } };
+  };
+
   return async (caller, ask) => {
     if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
     const catalog = await tools();
@@ -199,6 +237,8 @@ export function sessionToolAnswerer(deps: {
     if (ask.type === 'room-instructions') return roomInstructions(caller, catalog, ask);
     const args = deps.redactions.value(ask.arguments);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
+    if (ROOM_POSTING_TOOLS.has(ask.name))
+      return post(caller, catalog, ask.name, args, ask.originRoomId);
     return catalog.call(await context(caller), ask.name, args);
   };
 }
@@ -354,6 +394,11 @@ export const watcherHealthSchema = z.object({
   /** Session id → room id, as the watcher routes now. Empty while it is not running. */
   placements: z.record(z.string(), z.string()),
   /**
+   * Shared room id → the session answering it from its home room. Absent from
+   * a watcher too old to report it.
+   */
+  shares: z.record(z.string(), z.string()).optional(),
+  /**
    * The agent's sessions whose host runs here and is mid-turn, or has not yet
    * said whether it is. Absent from a watcher too old to report it.
    */
@@ -451,6 +496,7 @@ export class WatcherControl {
     state?: WatcherState;
     detail?: string | null;
     placements?: PlacementMap;
+    shares?: Record<string, string>;
     busy?: string[];
   }): void {
     const state = change.state ?? this.current.state;
@@ -460,6 +506,11 @@ export class WatcherControl {
       detail: change.detail !== undefined ? change.detail : same ? this.current.detail : null,
       since: same ? this.current.since : new Date().toISOString(),
       placements: change.placements ? { ...change.placements } : this.current.placements,
+      ...(change.shares
+        ? { shares: { ...change.shares } }
+        : this.current.shares
+          ? { shares: this.current.shares }
+          : {}),
       ...(change.busy
         ? { busy: [...change.busy].sort() }
         : this.current.busy
@@ -470,6 +521,7 @@ export class WatcherControl {
       same &&
       next.detail === this.current.detail &&
       samePlacements(next.placements, this.current.placements) &&
+      samePlacements(next.shares ?? {}, this.current.shares ?? {}) &&
       sameList(next.busy, this.current.busy)
     )
       return;

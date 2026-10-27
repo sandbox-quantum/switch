@@ -7,11 +7,12 @@ import secrets
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 
+from switch_core import shared_session
 from switch_core.addressing import (
     AddressingPolicy,
     can_address,
@@ -110,6 +111,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_usage_store import RoomUsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -127,6 +129,7 @@ from switch_core.room_wide_mention import (
     room_wide_mention_content,
 )
 from switch_core.sessions.attachments import normalise_mime_type
+from switch_core.shared_session import describe_sharing
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import normalise_known_agent_type
@@ -1489,6 +1492,11 @@ class AgentCore:
                 for holder in holder_ids
             }
             alias_by_agent = await self.room_store.list_aliases(session, room_id)
+            sharing_by_agent = shared_session.sharing_marks(
+                agents,
+                await self.room_store.sharing_agent_ids(session, room_id),
+                room_id,
+            )
         result: list[ParticipantDescriptor] = []
         for agent in agents:
             result.append(
@@ -1501,6 +1509,7 @@ class AgentCore:
                     status=statuses[agent.id],
                     room_role=room_role_by_agent.get(agent.id),
                     alias=alias_by_agent.get(agent.id),
+                    shared_session=sharing_by_agent.get(agent.id),
                 )
             )
         for user in external_users:
@@ -2965,28 +2974,37 @@ class AgentCore:
         room_id: str,
         agent_name: str,
         include_subagents: bool = False,
+        shared: bool | None = None,
     ) -> None:
         """Invite an agent to a room. Requires room membership (or owner/admin).
 
         When ``include_subagents`` is set, the invited agent's subagents
         (child agents) are added alongside it.
+
+        ``shared`` chooses whether the room shares the agent's session; None
+        leaves it to the agent's default. Choosing is changing the agent's
+        settings, so it needs the same right as ``set_room_session``.
         """
         include_for: list[str] | None = None
         async with self.session_factory() as session:
             await self._require_room_roster_change(session, agent_id, room_id)
-            if include_subagents:
+            if include_subagents or shared is not None:
                 target = await self.agent_store.get_by_name(session, agent_name)
                 if target is None:
                     raise ValueError(
                         f"Failed to invite agent: unknown agent {agent_name}"
                     )
-                include_for = [target.id]
+                if include_subagents:
+                    include_for = [target.id]
+                if shared is not None:
+                    await self._require_sharing_authority(session, agent_id, target)
         try:
             await self.room_service.add_agents_to_room(
                 room_id,
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
                 added_by_kind="agent",
+                shared=shared,
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e
@@ -3132,6 +3150,186 @@ class AgentCore:
             raise ValueError(f"Room not found: {room_id}")
         require(Principal(owner_id, owner_is_admin), action, room)
         return room
+
+    async def _require_sharing_authority(
+        self, session: AsyncSession, agent_id: str, target: Agent
+    ) -> None:
+        """Refuse unless the calling agent acts for `target`'s owner or a
+        workspace admin: the only people who may change which rooms share an
+        agent's session."""
+        _caller, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        if owner_is_admin or (owner_id is not None and owner_id == target.owner_id):
+            return
+        raise PermissionError(shared_session.NOT_PERMITTED)
+
+    async def update_shared_session(
+        self,
+        agent_id: str,
+        target_name: str,
+        *,
+        home_room_id: str | None = None,
+        clear_home: bool = False,
+        shared_by_default: bool | None = None,
+        locked: bool | None = None,
+    ) -> dict[str, Any]:
+        """Change an agent's shared-session settings on the caller's behalf,
+        and return them as `describe_sharing` does. Owner or admin only."""
+        async with self.session_factory() as session:
+            target = await self.agent_store.get_by_name(session, target_name)
+            if target is None:
+                raise ValueError(f"Unknown agent: {target_name}")
+            await self._require_sharing_authority(session, agent_id, target)
+            home_before = target.home_room_id
+            await shared_session.set_sharing_defaults(
+                session,
+                self.room_store,
+                self.agent_store,
+                target,
+                shared_by_default=shared_by_default,
+                locked=locked,
+            )
+            if clear_home:
+                await shared_session.set_home_room(
+                    session, self.room_store, self.agent_store, target, None
+                )
+            elif home_room_id is not None:
+                await shared_session.set_home_room(
+                    session, self.room_store, self.agent_store, target, home_room_id
+                )
+            await session.commit()
+            await session.refresh(target)
+            shared_session.report_home_change(
+                self.telemetry, home_before, target.home_room_id, "agent_tool"
+            )
+            return await self._describe_sharing(session, target)
+
+    async def set_room_session(
+        self, agent_id: str, room_id: str, target_name: str, value: bool
+    ) -> dict[str, Any]:
+        """Make a room share an agent's session, or isolate it there, on the
+        caller's behalf. Owner or admin only."""
+        async with self.session_factory() as session:
+            target = await self.agent_store.get_by_name(session, target_name)
+            if target is None:
+                raise ValueError(f"Unknown agent: {target_name}")
+            await self._require_sharing_authority(session, agent_id, target)
+            await shared_session.set_room_shared(
+                session, self.room_store, target, room_id, value
+            )
+            await session.commit()
+            shared_session.report_room_change(self.telemetry, value, "agent_tool")
+            return await self._describe_sharing(session, target)
+
+    async def room_usage(
+        self, agent_id: str, target_name: str, days: int
+    ) -> dict[str, Any]:
+        """What `target_name`'s turns spent per room per day over the last
+        `days` days, on the caller's behalf. Its owner or an admin only."""
+        if not 1 <= days <= 90:
+            raise ValueError("days must be between 1 and 90")
+        async with self.session_factory() as session:
+            target = await self.agent_store.get_by_name(session, target_name)
+            if target is None:
+                raise ValueError(f"Unknown agent: {target_name}")
+            _caller, owner_id, owner_is_admin = await self._resolve_acting_identity(
+                session, agent_id
+            )
+            if not owner_is_admin and (owner_id is None or owner_id != target.owner_id):
+                raise PermissionError(
+                    "Only the agent's owner or a workspace admin can read what it spent."
+                )
+            since = datetime.now(UTC) - timedelta(days=days)
+            spends = await RoomUsageStore().by_room_and_day(
+                session, tenant_id=target.tenant_id, agent_id=target.id, since=since
+            )
+            rooms = await self.room_store.get_many(
+                session, {spend.room_id for spend in spends}
+            )
+        return {
+            "agent": target.name,
+            "days": days,
+            "rooms": [
+                {
+                    "room_id": spend.room_id,
+                    "room_name": rooms[spend.room_id].name
+                    if spend.room_id in rooms
+                    else None,
+                    "day": spend.day,
+                    "turns": spend.turns,
+                    "input_tokens": spend.input_tokens,
+                    "output_tokens": spend.output_tokens,
+                    "cache_read_tokens": spend.cache_read_tokens,
+                    "cache_write_tokens": spend.cache_write_tokens,
+                }
+                for spend in spends
+            ],
+        }
+
+    async def answers_from_home(
+        self, agent_id: str, bound_rooms: set[str], room_id: str
+    ) -> bool:
+        """Whether a session bound to `bound_rooms` answers `room_id` from the
+        agent's home room: it is in the home room, and `room_id` shares the
+        agent's session."""
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None or agent.home_room_id not in bound_rooms:
+                return False
+            sharing = await shared_session.sharing_of(session, self.room_store, agent)
+        return sharing.covers(room_id)
+
+    async def check_shares(
+        self,
+        agent_id: str,
+        placements: dict[str, str],
+        shares: dict[str, list[str]],
+    ) -> str | None:
+        """Why a watcher may not place these shares, or None when it may: each
+        sharing session must be placed in the agent's home room, and each room
+        it shares must be one the agent's settings share."""
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, agent_id)
+            if agent is None:
+                return f"Unknown agent: {agent_id}"
+            sharing = await shared_session.sharing_of(session, self.room_store, agent)
+        for session_id, rooms in shares.items():
+            if not rooms:
+                continue
+            if sharing.home_room_id is None:
+                return "this agent has no shared session: it has no home room"
+            if placements.get(session_id) != sharing.home_room_id:
+                return (
+                    f"session {session_id} is not placed in the agent's home room "
+                    f"{sharing.home_room_id}, so it cannot share rooms"
+                )
+            isolated = sorted(
+                r for r in rooms if r == sharing.home_room_id or not sharing.covers(r)
+            )
+            if isolated:
+                return (
+                    f"room(s) {', '.join(isolated)} do not share this agent's session"
+                )
+        return None
+
+    async def _describe_sharing(
+        self, session: AsyncSession, agent: Agent
+    ) -> dict[str, Any]:
+        sharing = await shared_session.sharing_of(session, self.room_store, agent)
+        names = {
+            room.id: room.name
+            for room in (
+                await self.room_store.get_many(
+                    session,
+                    {
+                        *sharing.other_room_ids,
+                        *([sharing.home_room_id] if sharing.home_room_id else []),
+                    },
+                )
+            ).values()
+        }
+        return describe_sharing(sharing, names)
 
     async def _require_room_roster_change(
         self, session: AsyncSession, agent_id: str, room_id: str
@@ -3953,10 +4151,17 @@ class AgentCore:
             client_ids = await self.room_store.get_client_ids(session, room_id)
 
             id_to_name: dict[str, str] = {}
+            room_agents_found: list[Agent] = []
             for aid in agent_ids:
                 agent = await self.agent_store.get(session, aid)
                 if agent:
                     id_to_name[aid] = agent.name
+                    room_agents_found.append(agent)
+            sharing_by_agent_id = shared_session.sharing_marks(
+                room_agents_found,
+                await self.room_store.sharing_agent_ids(session, room_id),
+                room_id,
+            )
 
             bridge_display_name: str | None = None
             connected_user_names: list[str] = []
@@ -4019,6 +4224,9 @@ class AgentCore:
                 id_to_name[aid] for aid in join_listener_ids if aid in id_to_name
             ],
             aliases=aliases,
+            shared_sessions={
+                id_to_name[aid]: mark for aid, mark in sharing_by_agent_id.items()
+            },
             roles=roles,
             archived=room.archived_at is not None,
         )

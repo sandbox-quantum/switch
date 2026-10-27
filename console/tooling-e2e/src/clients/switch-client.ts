@@ -30,6 +30,14 @@ export interface RegisteredAgent extends AgentRef {
   apiKey: string;
 }
 
+/** The shared-session part of the gateway's agent detail. */
+export interface SharedSessionDetail {
+  home_room_id: string | null;
+  shared_by_default: boolean;
+  sharing_locked: boolean;
+  rooms: { room_id: string; shared_session: "home" | "shared" | null }[];
+}
+
 export interface RoomSummary {
   id: string;
   name: string;
@@ -393,7 +401,7 @@ export class SwitchClient {
   async registerAgentAsUser(params: {
     name: string;
     description: string;
-  }): Promise<AgentRef> {
+  }): Promise<RegisteredAgent> {
     const body = await this.gateway<{ id: string; api_key: string }>(
       "POST",
       "/agents/register",
@@ -405,7 +413,54 @@ export class SwitchClient {
       },
     );
     this.issued.record(body.api_key);
-    return { id: body.id, name: params.name };
+    return { id: body.id, name: params.name, apiKey: body.api_key };
+  }
+
+  /**
+   * `PUT /gateway/agents/{id}/shared-session` — set where an agent's shared
+   * session is based (`homeRoomId`, or `clearHome` to stop it sharing) and its
+   * defaults for new rooms. Returns the agent's detail as the server now holds
+   * it: its home room and, per room, whether that room shares the session.
+   */
+  async updateSharedSession(
+    agentId: string,
+    change: {
+      homeRoomId?: string;
+      clearHome?: boolean;
+      sharedByDefault?: boolean;
+      locked?: boolean;
+    },
+  ): Promise<SharedSessionDetail> {
+    return this.gateway<SharedSessionDetail>(
+      "PUT",
+      `/agents/${agentId}/shared-session`,
+      {
+        ...(change.homeRoomId !== undefined
+          ? { home_room_id: change.homeRoomId }
+          : {}),
+        ...(change.clearHome ? { clear_home: true } : {}),
+        ...(change.sharedByDefault !== undefined
+          ? { shared_by_default: change.sharedByDefault }
+          : {}),
+        ...(change.locked !== undefined ? { locked: change.locked } : {}),
+      },
+    );
+  }
+
+  /**
+   * `PUT /gateway/agents/{id}/rooms/{room}/session` — have one room share the
+   * agent's session, or give it a session of its own.
+   */
+  async setRoomSession(
+    agentId: string,
+    roomId: string,
+    shared: boolean,
+  ): Promise<SharedSessionDetail> {
+    return this.gateway<SharedSessionDetail>(
+      "PUT",
+      `/agents/${agentId}/rooms/${roomId}/session`,
+      { shared },
+    );
   }
 
   /** `GET /gateway/feature-flags` — the flags this deployment has turned on. */

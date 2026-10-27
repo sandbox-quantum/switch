@@ -224,7 +224,9 @@ attending without giving up the one you are.
 - Membership is the boundary, and Switch enforces it: reading a room you do not
   belong to is refused. `list_rooms` is the set you may read.
 - It clears nothing. The other room's unread count is untouched, and so is
-  yours — only reading your own connected room marks you caught up here.
+  yours — only reading your own connected room marks you caught up here. The
+  exception is a room that shares your session (you answer it from your home
+  room): reading it there clears its count, as reading your own room does.
 
 ## Interaction modes
 
@@ -1043,7 +1045,7 @@ Every Switch tool you call in normal operation, one line each.
 - `read_context` — room history, grouped into threads. Check `truncated`. Optional `room_id` reads another room you belong to.
 - `list_participants` — the connected room's roster: `id`, `name`, `type`,
   `status`, `alias`.
-- `post_message` — broadcast to the room.
+- `post_message` — broadcast to the room (or another room you are in, with `room_id`).
 - `send_targeted_message` — broadcast addressed to names, roles, or `everyone` (the room's people).
 - `send_attachment` — post one or more files to the room.
 - `download_attachment` — fetch a file seen in history, by `mxc`.
@@ -1086,6 +1088,9 @@ Every Switch tool you call in normal operation, one line each.
 - `get_agent_detail`: one agent's config, capabilities, sessions and who may
   address it.
 - `update_agent_detail` — change an agent you own.
+- `update_shared_session` — set an agent's home room and shared-session defaults (owner or admin).
+- `set_room_session` — have a room share an agent's session, or give it its own (owner or admin).
+- `get_room_usage` — what an agent's turns spent per room per day (owner or admin).
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.

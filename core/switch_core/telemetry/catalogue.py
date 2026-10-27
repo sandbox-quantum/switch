@@ -260,6 +260,8 @@ _SNAPSHOT_COUNTS = (
     "document_attached_count",
     "package_count",
     "room_group_count",
+    "shared_session_agent_count",
+    "shared_session_room_count",
     "api_key_count",
 )
 
@@ -530,6 +532,17 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "room_link_created": {},
     "room_link_removed": {},
     "room_role_defined": {"exclusive": BOOLEAN},
+    # Shared sessions: an agent's home room set (`moved` when it had one) or
+    # cleared, and a room switched between sharing it and its own session.
+    # `via` is the surface the change came through.
+    "shared_session_home_changed": {
+        "home": one_of("set", "moved", "cleared"),
+        "via": one_of("command", "agent_tool", "console", "template"),
+    },
+    "shared_session_room_changed": {
+        "shared": BOOLEAN,
+        "via": one_of("command", "agent_tool", "console", "template"),
+    },
     "room_role_deleted": {},
     "room_users_added": {"user_count": NUMBER},
     # The inverse of the attaches: tried and dropped, as against never used.

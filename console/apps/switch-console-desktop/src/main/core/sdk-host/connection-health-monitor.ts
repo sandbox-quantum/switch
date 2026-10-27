@@ -242,6 +242,7 @@ export class ConnectionHealthMonitor {
     const now = this.deps.now();
     const agents: AgentConnectionHealth[] = [];
     const placements: Record<string, string> = {};
+    const shares: Record<string, string> = {};
     let recheck: number | null = null;
     for (const [agentId, { source, error }] of entries) {
       if (!source) {
@@ -257,6 +258,7 @@ export class ConnectionHealthMonitor {
           since: Date.parse(source.health.since),
         };
         Object.assign(placements, source.health.placements);
+        Object.assign(shares, source.health.shares ?? {});
       } else if (source.unreachable) report = { kind: 'unreachable', ...source.unreachable };
       else throw new Error(`Agent ${agentId}'s room watcher was never asked for its state.`);
       const shown = classifyWatcher({ stopped: stopped.includes(agentId), report, now });
@@ -275,7 +277,7 @@ export class ConnectionHealthMonitor {
         serverId,
         setTimeout(() => this.changed(serverId), Math.max(0, recheck - now))
       );
-    return { agents, placements };
+    return { agents, placements, ...(Object.keys(shares).length ? { shares } : {}) };
   }
 }
 

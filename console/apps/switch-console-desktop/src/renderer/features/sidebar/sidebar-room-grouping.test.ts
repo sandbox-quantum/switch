@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 
 const associatedRoomForSession = vi.hoisted(() => vi.fn());
+const sharedRoomsForSession = vi.hoisted(() => vi.fn((_id: string): string[] => []));
 
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: vi.fn() }, rpc: {} }));
 vi.mock('@renderer/features/switch-rooms/switch-rooms-store', () => ({
-  switchRoomsStore: { associatedRoomForSession },
+  switchRoomsStore: { associatedRoomForSession, sharedRoomsForSession },
 }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: { roomNameById: (id: string) => id },
@@ -50,5 +51,32 @@ describe('groupByRoom', () => {
     expect(groupByRoom([session('s1')], ['room-a']).map(([key, s]) => [key, s.length])).toEqual([
       ['room-a', 1],
     ]);
+  });
+
+  it('lists a shared session under its home room and each room it answers from there', () => {
+    associatedRoomForSession.mockImplementation((id: string) => (id === 'lead' ? 'home' : 'own'));
+    sharedRoomsForSession.mockImplementation((id: string) => (id === 'lead' ? ['work'] : []));
+
+    expect(
+      groupByRoom([session('lead'), session('other')]).map(([key, s]) => [
+        key,
+        s.map((one) => one.data.id),
+      ])
+    ).toEqual([
+      ['home', ['lead']],
+      ['own', ['other']],
+      ['work', ['lead']],
+    ]);
+    sharedRoomsForSession.mockImplementation(() => []);
+  });
+
+  it('lists a shared session only under its home room where the agent is the subject', () => {
+    associatedRoomForSession.mockImplementation(() => 'home');
+    sharedRoomsForSession.mockImplementation(() => ['work']);
+
+    expect(groupByRoom([session('lead')], [], { withShares: false }).map(([key]) => key)).toEqual([
+      'home',
+    ]);
+    sharedRoomsForSession.mockImplementation(() => []);
   });
 });

@@ -1,4 +1,4 @@
-import { MessageSquare } from 'lucide-react';
+import { Link2, MessageSquare } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { SessionActionsMenu } from '@renderer/features/sessions/components/session-actions-menu';
@@ -11,10 +11,13 @@ import { useSessionActionProps } from '@renderer/features/sessions/use-session-a
 import { SessionIssueIndicator } from '@renderer/features/sidebar/session-issue-indicator';
 import { SessionSidebarTrailingSlot } from '@renderer/features/sidebar/session-sidebar-agent-status';
 import { SessionRoomConnection } from '@renderer/features/switch-rooms/session-room-connection';
+import { switchRoomsStore as roomConnectionsStore } from '@renderer/features/switch-rooms/switch-rooms-store';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useWorkspaceSlots } from '@renderer/lib/layout/workspace-slots';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import { SidebarMenuAction, SidebarMenuRow } from './sidebar-primitives';
+import { roomLabel } from './sidebar-room-grouping';
 import { depthIndent } from './sidebar-store';
 
 interface SidebarSessionItemProps {
@@ -25,6 +28,10 @@ interface SidebarSessionItemProps {
   /** Tree depth of this row (ignored for the pinned strip). Drives the row's
    * left indent so a session aligns with the other entities at its depth. */
   depth?: number;
+  /** The room this row is listed under, where rows are grouped by room. */
+  roomKey?: string;
+  /** Another session of the agent answers this row's room now. */
+  superseded?: boolean;
 }
 
 export const SidebarSessionItem = observer(function SidebarSessionItem({
@@ -32,6 +39,8 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
   locationId,
   rowVariant = 'underLocation',
   depth = 0,
+  roomKey,
+  superseded = false,
 }: SidebarSessionItemProps) {
   const { navigate } = useNavigate();
   const [actionsOpen, setActionsOpen] = useState(false);
@@ -45,6 +54,13 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
   const sessionManager = getSessionManagerStore(locationId);
 
   const sessionName = session.data.title;
+  // A shared session answers several rooms from its home room. Under the home
+  // room it carries a tag naming them; under one of the others it is a muted
+  // pointer back to home. A room's earlier session, now superseded by a shared
+  // one, is dimmed.
+  const shares = roomConnectionsStore.sharedRoomsForSession(sessionId);
+  const home = roomConnectionsStore.associatedRoomForSession(sessionId);
+  const pointer = roomKey !== undefined && shares.includes(roomKey) && home !== null;
 
   const handleProvision = () => {
     if (session.state !== 'unprovisioned' || session.phase !== 'idle') return;
@@ -81,15 +97,43 @@ export const SidebarSessionItem = observer(function SidebarSessionItem({
             aria-label={`Open session ${sessionName || 'session'}`}
             className="gap-1 overflow-hidden"
           >
-            <span
-              className={cn(
-                'min-w-0 truncate text-left transition-colors',
-                session.isBootstrapping && 'text-foreground/40'
-              )}
-            >
-              {sessionName}
-            </span>
+            {pointer ? (
+              <span className="min-w-0 truncate text-left text-foreground-muted">
+                answers from {roomLabel(home)}
+              </span>
+            ) : (
+              <span
+                className={cn(
+                  'min-w-0 truncate text-left transition-colors',
+                  (session.isBootstrapping || superseded) && 'text-foreground/40'
+                )}
+              >
+                {sessionName}
+              </span>
+            )}
           </SidebarMenuAction>
+          {!pointer && shares.length > 0 && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label={`Shared session: ${shares.length + 1} rooms`}
+                    className="flex shrink-0 items-center gap-0.5 text-[11px] text-foreground-muted"
+                  >
+                    <Link2 className="size-3" />
+                    {shares.length + 1}
+                  </span>
+                }
+              />
+              <TooltipContent>
+                Shared session, answering{' '}
+                {[home, ...shares]
+                  .filter(Boolean)
+                  .map((room) => roomLabel(room!))
+                  .join(', ')}
+              </TooltipContent>
+            </Tooltip>
+          )}
           <SessionIssueIndicator sessionId={sessionId} />
           {'agentId' in session.data && (
             <SessionRoomConnection compact sessionId={sessionId} agentId={session.data.agentId} />

@@ -80,6 +80,8 @@ import {
   type MessagingAppInstall,
   type MessagingApps,
   type RemoteAgentRoom,
+  type AgentSharedSession,
+  type AgentSharedSessionChange,
   type RemoteAgentSummary,
   type RemoteBridge,
   type RemoteBridgeType,
@@ -1174,6 +1176,7 @@ export async function fetchAgentRooms(
       archived: boolean;
       status: string;
       room_role: string | null;
+      shared_session?: 'home' | 'shared' | null;
     }>;
   };
   return (json.rooms ?? []).map((r) => ({
@@ -1182,7 +1185,80 @@ export async function fetchAgentRooms(
     archived: r.archived,
     status: r.status,
     roomRole: r.room_role,
+    sharedSession: r.shared_session ?? null,
   }));
+}
+
+/**
+ * An agent's shared session, from `GET /agents/{id}`: its home room, the
+ * other rooms sharing it, and the defaults for rooms it joins. A server from before shared sessions reports
+ * none.
+ */
+export async function fetchSharedSession(
+  server: SwitchServer,
+  agentId: string
+): Promise<AgentSharedSession> {
+  const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as {
+    home_room_id?: string | null;
+    shared_by_default?: boolean;
+    sharing_locked?: boolean;
+    rooms?: { room_id?: string; shared_session?: string | null }[];
+  };
+  const homeRoomId = json.home_room_id ?? null;
+  return {
+    homeRoomId,
+    sharedRoomIds: homeRoomId
+      ? (json.rooms ?? [])
+          .filter((r) => r.shared_session === 'shared' && typeof r.room_id === 'string')
+          .map((r) => r.room_id as string)
+      : [],
+    sharedByDefault: json.shared_by_default === true,
+    locked: json.sharing_locked === true,
+  };
+}
+
+/**
+ * Change an agent's shared session (`PUT /agents/{id}/shared-session`). Only
+ * its owner or an admin may; a refusal, or a home room the agent is not in,
+ * surfaces as a `GatewayError`.
+ */
+export async function updateSharedSession(
+  server: SwitchServer,
+  agentId: string,
+  change: AgentSharedSessionChange
+): Promise<void> {
+  await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}/shared-session`, {
+    authenticated: true,
+    method: 'PUT',
+    body: {
+      ...(change.homeRoomId === null ? { clear_home: true } : {}),
+      ...(change.homeRoomId ? { home_room_id: change.homeRoomId } : {}),
+      ...(change.sharedByDefault === undefined
+        ? {}
+        : { shared_by_default: change.sharedByDefault }),
+      ...(change.locked === undefined ? {} : { locked: change.locked }),
+    },
+  });
+}
+
+/**
+ * Have a room share an agent's session, or give it its own
+ * (`PUT /agents/{id}/rooms/{room}/session`). Owner or admin only.
+ */
+export async function updateRoomSession(
+  server: SwitchServer,
+  agentId: string,
+  roomId: string,
+  shared: boolean
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/rooms/${encodeURIComponent(roomId)}/session`,
+    { authenticated: true, method: 'PUT', body: { shared } }
+  );
 }
 
 /**

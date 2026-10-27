@@ -48,6 +48,8 @@ const streams = vi.hoisted(() => [] as SwitchEventStreamDeps[]);
 const declarations = vi.hoisted(() => [] as boolean[]);
 /** Every placements map the watcher stated to Switch, in order. */
 const published = vi.hoisted(() => [] as Record<string, string>[]);
+/** The shares stated with each of those maps: session → rooms it answers from home. */
+const publishedShares = vi.hoisted(() => [] as Record<string, string[]>[]);
 const placementsRefusal = vi.hoisted(() => ({ error: null as Error | null }));
 vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
   const original = await importOriginal<typeof runtime>();
@@ -62,8 +64,12 @@ vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
       setSpawnCapable(capable: boolean): void {
         declarations.push(capable);
       }
-      async replacePlacements(placements: Record<string, string>): Promise<void> {
+      async replacePlacements(
+        placements: Record<string, string>,
+        shares: Record<string, string[]> = {}
+      ): Promise<void> {
         published.push(structuredClone(placements));
+        publishedShares.push(structuredClone(shares));
         if (placementsRefusal.error) throw placementsRefusal.error;
       }
     },
@@ -75,6 +81,7 @@ afterEach(async () => {
   streams.length = 0;
   declarations.length = 0;
   published.length = 0;
+  publishedShares.length = 0;
   placementsRefusal.error = null;
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -2337,8 +2344,14 @@ it('stops starting a session whose host failed, keeps its message, and tells its
     // Told at once rather than after the wait for a host to come up.
     expect(Date.now() - started).toBeLessThan(5000);
     const sessionId = placementsOf(published).room!;
-    expect(calls.map((call) => call.name)).toEqual(['get_agent_detail', 'send_targeted_message']);
-    expect(calls[1]).toEqual({
+    // The first read asks whether the room shares the agent's session; the
+    // second, whose owner to tell.
+    expect(calls.map((call) => call.name)).toEqual([
+      'get_agent_detail',
+      'get_agent_detail',
+      'send_targeted_message',
+    ]);
+    expect(calls[2]).toEqual({
       name: 'send_targeted_message',
       session: sessionId,
       body: {
@@ -2491,5 +2504,157 @@ it('tells the room once a session keeps not taking a message, instead of startin
     abort.abort();
     await run;
     vi.useRealTimers();
+  }
+});
+
+/** A Switch whose agent has a shared session based in `home`, shared with `shared`. */
+function sharingSwitch(sharing: { home: string; shared: string[] }) {
+  vi.stubGlobal('fetch', async (url: string) => {
+    const name = String(url).split('/ops/')[1] ?? '';
+    if (name === 'get_agent_detail')
+      return new Response(
+        JSON.stringify({
+          result: {
+            owner_name: 'ada',
+            home_room_id: sharing.home,
+            rooms: [
+              { room_id: sharing.home, shared_session: 'home' },
+              ...sharing.shared.map((room_id) => ({ room_id, shared_session: 'shared' })),
+            ],
+          },
+        })
+      );
+    return new Response(JSON.stringify({ result: { event_id: 'posted' } }));
+  });
+}
+
+it('answers a shared room from the session in its home room, and an isolated room on its own', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-shared-rooms-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  sharingSwitch({ home: 'home', shared: ['work'] });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'home'));
+    await eventually(() => settled(root));
+    const lead = placementsOf(published).home!;
+
+    await streams[0]!.onEvent!(addressed(2, 'work'));
+    await eventually(() => settled(root));
+    expect(placementsOf(published)).toEqual({ home: lead });
+    expect(publishedShares.at(-1)).toEqual({ [lead]: ['work'] });
+    await eventually(() => hosts.to(join(root, lead)).length === 2);
+
+    await streams[0]!.onEvent!(addressed(3, 'elsewhere'));
+    await eventually(() => settled(root));
+    const own = placementsOf(published).elsewhere!;
+    expect(own).not.toBe(lead);
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('starts the home session for a message in a shared room when none is running', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-shared-start-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  sharingSwitch({ home: 'home', shared: ['work'] });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'work'));
+    await eventually(() => settled(root));
+    const lead = placementsOf(published).home!;
+    expect(lead).toBeTruthy();
+    expect(placementsOf(published).work).toBeUndefined();
+    expect(publishedShares.at(-1)).toEqual({ [lead]: ['work'] });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
+it('hands a room shared again from the session it had while isolated to the home one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-reshare-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const hosts = sessionHosts();
+  const sharing = { home: 'home', shared: [] as string[] };
+  vi.stubGlobal('fetch', async (url: string) => {
+    const name = String(url).split('/ops/')[1] ?? '';
+    if (name === 'get_agent_detail')
+      return new Response(
+        JSON.stringify({
+          result: {
+            home_room_id: sharing.home,
+            rooms: [
+              { room_id: 'home', shared_session: 'home' },
+              ...sharing.shared.map((room_id) => ({ room_id, shared_session: 'shared' })),
+            ],
+          },
+        })
+      );
+    return new Response(JSON.stringify({ result: { event_id: 'posted' } }));
+  });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] });
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await streams[0]!.onEvent!(addressed(1, 'home'));
+    await eventually(() => settled(root));
+    const lead = placementsOf(published).home!;
+    // Isolated: work gets a session of its own.
+    await streams[0]!.onEvent!(addressed(2, 'work'));
+    await eventually(() => settled(root));
+    const own = placementsOf(published).work!;
+    expect(own).not.toBe(lead);
+
+    // Shared again (after the cached settings expire): the home session answers.
+    sharing.shared = ['work'];
+    vi.setSystemTime(Date.now() + 60_000);
+    await streams[0]!.onEvent!(addressed(3, 'work'));
+    await eventually(() => settled(root));
+    expect(placementsOf(published)).toEqual({ home: lead });
+    expect(publishedShares.at(-1)).toEqual({ [lead]: ['work'] });
+  } finally {
+    abort.abort();
+    await run;
   }
 });

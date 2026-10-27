@@ -121,6 +121,10 @@ existing agent may stand in for it.
   aliases: {agent key or name: alias}   # @alias addresses it in this room
   packages: [{id: package id} or {name: package name}]   # packages that
                                  # exist, attached as they are
+  sessions: {agent key or name: home | shared | isolated}
+                                 # home: the agent's shared session is based
+                                 # here; shared: this room answers from it;
+                                 # isolated: this room gets its own session
   kickoff: text                  # posted once the room exists
   group: <group key>             # when the template has a group
 

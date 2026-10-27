@@ -639,6 +639,11 @@ class AgentConnectionRegistry:
         # replaced wholesale, and a placement another connection takes is
         # reported to the one that lost it.
         self._placement_owners: dict[str, dict[str, str]] = {}
+        # The rooms a placed session also answers for, from its home room:
+        # shared room -> session (`switch_core.shared_session`). A share goes
+        # with its session's placement, and belongs to that placement's owner.
+        # A room is covered once per agent, by a placement or a share.
+        self._session_shares: dict[str, dict[str, str]] = {}
         # Agents run by an agent controller hold no connection here: their
         # presence is their controller's. Every presence question below asks
         # it first for those agents, and this registry for the rest.
@@ -1100,12 +1105,21 @@ class AgentConnectionRegistry:
         )
         if displaced is not None:
             self._unplace(agent_id, displaced, room_id, taker=owner)
+        # A room another session answered for as a share is this session's now.
+        self._session_shares.get(agent_id, {}).pop(room_id, None)
+        left = {previous} - {room_id} if previous else set()
+        if left:
+            # Its shares were answered from the room it is leaving.
+            left |= self._drop_shares(agent_id, session_id)
         placed[session_id] = room_id
         owners[session_id] = owner
-        return ({previous} - {room_id} if previous else set()), displaced
+        return left, displaced
 
     def replace_placements(
-        self, conn: AgentConnection, placements: dict[str, str]
+        self,
+        conn: AgentConnection,
+        placements: dict[str, str],
+        shares: dict[str, list[str]] | None = None,
     ) -> list[Released]:
         """Make `placements` the whole of this connection's session placements.
 
@@ -1116,10 +1130,22 @@ class AgentConnectionRegistry:
         is unplaced, and that connection is told. Returns what other
         connections lost.
 
-        The rooms must be distinct, since one session of an agent acts in a
-        room; membership is the caller's to check.
+        `shares` names, per placed session, the rooms it also answers for
+        from its home room (`switch_core.shared_session`), taken the same way.
+
+        The rooms must be distinct, placed and shared alike, since one session
+        of an agent acts in a room; membership, and whether a room may share a
+        session, are the caller's to check.
         """
-        rooms = list(placements.values())
+        shares = shares or {}
+        for session_id in shares:
+            if session_id not in placements:
+                raise ValueError(
+                    f"session {session_id} shares rooms but is placed in none; "
+                    "a shared session answers from its home room"
+                )
+        shared_rooms = [room for rooms_ in shares.values() for room in rooms_]
+        rooms = [*placements.values(), *shared_rooms]
         if len(set(rooms)) != len(rooms):
             twice = sorted({room for room in rooms if rooms.count(room) > 1})
             raise ValueError(
@@ -1130,8 +1156,14 @@ class AgentConnectionRegistry:
         placed = self._session_rooms.setdefault(agent_id, {})
         owners = self._placement_owners.setdefault(agent_id, {})
 
+        shared = self._session_shares.setdefault(agent_id, {})
+
         mine = [session for session, owner in owners.items() if owner == conn.id]
         previous_rooms = {placed[session] for session in mine if session in placed}
+        for room_id, session in list(shared.items()):
+            if session in mine:
+                previous_rooms.add(room_id)
+                del shared[room_id]
         for session in mine:
             placed.pop(session, None)
             owners.pop(session, None)
@@ -1147,8 +1179,29 @@ class AgentConnectionRegistry:
                 lost = self._unplace(agent_id, occupant, room_id, taker=conn.id)
                 if lost is not None:
                     released.append(lost)
+            holder = shared.get(room_id)
+            if holder is not None:
+                lost = self._unshare(agent_id, holder, room_id, taker=conn.id)
+                if lost is not None:
+                    released.append(lost)
             placed[session_id] = room_id
             owners[session_id] = conn.id
+
+        for session_id, rooms_ in shares.items():
+            for room_id in rooms_:
+                occupant = next(
+                    (other for other, room in placed.items() if room == room_id), None
+                )
+                if occupant is not None:
+                    lost = self._unplace(agent_id, occupant, room_id, taker=conn.id)
+                    if lost is not None:
+                        released.append(lost)
+                holder = shared.get(room_id)
+                if holder is not None and holder != session_id:
+                    lost = self._unshare(agent_id, holder, room_id, taker=conn.id)
+                    if lost is not None:
+                        released.append(lost)
+                shared[room_id] = session_id
 
         for room_id in sorted(set(rooms)):
             evicted = self.claim_room(conn, room_id, takeover=True)
@@ -1171,7 +1224,27 @@ class AgentConnectionRegistry:
         other than the taker, which is then told.
         """
         self._session_rooms.get(agent_id, {}).pop(session_id, None)
-        owner = self._placement_owners.get(agent_id, {}).pop(session_id, None)
+        owner = self._placement_owners.get(agent_id, {}).get(session_id)
+        # Its shares were answered from the room it lost.
+        dropped = self._drop_shares(agent_id, session_id)
+        self._placement_owners.get(agent_id, {}).pop(session_id, None)
+        if owner is None or owner == taker:
+            return None
+        loser = self._by_id.get(owner)
+        if loser is None or loser.agent_id != agent_id:
+            return None
+        for shared_room in sorted(dropped):
+            self._notify_released(loser, shared_room, session_id)
+        self._notify_released(loser, room_id, session_id)
+        return Released(connection_id=loser.id, room_id=room_id, session_id=session_id)
+
+    def _unshare(
+        self, agent_id: str, session_id: str, room_id: str, *, taker: str
+    ) -> Released | None:
+        """Take a shared room off the session answering for it, on behalf of
+        `taker`; the release when another live connection placed it."""
+        self._session_shares.get(agent_id, {}).pop(room_id, None)
+        owner = self._placement_owners.get(agent_id, {}).get(session_id)
         if owner is None or owner == taker:
             return None
         loser = self._by_id.get(owner)
@@ -1179,6 +1252,14 @@ class AgentConnectionRegistry:
             return None
         self._notify_released(loser, room_id, session_id)
         return Released(connection_id=loser.id, room_id=room_id, session_id=session_id)
+
+    def _drop_shares(self, agent_id: str, session_id: str) -> set[str]:
+        """Forget every room `session_id` answered for as a share; the rooms."""
+        shared = self._session_shares.get(agent_id, {})
+        dropped = {room for room, holder in shared.items() if holder == session_id}
+        for room in dropped:
+            del shared[room]
+        return dropped
 
     def _notify_released(
         self, conn: AgentConnection, room_id: str, session_id: str | None
@@ -1204,6 +1285,9 @@ class AgentConnectionRegistry:
     def _placed_by(self, conn: AgentConnection, room_id: str) -> str | None:
         """The session this connection placed in the room, if any."""
         owners = self._placement_owners.get(conn.agent_id, {})
+        holder = self._session_shares.get(conn.agent_id, {}).get(room_id)
+        if holder is not None and owners.get(holder) == conn.id:
+            return holder
         return next(
             (
                 session_id
@@ -1232,10 +1316,15 @@ class AgentConnectionRegistry:
         return dict(self._session_rooms.get(agent_id, {}))
 
     def placed_rooms(self, agent_id: str) -> set[str]:
-        return set(self._session_rooms.get(agent_id, {}).values())
+        """Every room one of the agent's sessions acts in: placed or shared."""
+        return set(self._session_rooms.get(agent_id, {}).values()) | set(
+            self._session_shares.get(agent_id, {})
+        )
 
     def session_in_room(self, agent_id: str, room_id: str) -> str | None:
-        return next(
+        """The session acting in the room: placed there, or answering for it
+        from its home room."""
+        placed = next(
             (
                 session_id
                 for session_id, room in self._session_rooms.get(agent_id, {}).items()
@@ -1243,6 +1332,28 @@ class AgentConnectionRegistry:
             ),
             None,
         )
+        return placed or self._session_shares.get(agent_id, {}).get(room_id)
+
+    def share_holder(self, agent_id: str, room_id: str) -> str | None:
+        """The session answering for `room_id` from its home room, if any."""
+        return self._session_shares.get(agent_id, {}).get(room_id)
+
+    def shared_rooms(self, agent_id: str, session_id: str) -> set[str]:
+        """The rooms `session_id` answers for from its home room."""
+        return {
+            room
+            for room, holder in self._session_shares.get(agent_id, {}).items()
+            if holder == session_id
+        }
+
+    def connection_shares(self, conn: AgentConnection) -> dict[str, list[str]]:
+        """The shares of the sessions this connection placed, per session."""
+        owners = self._placement_owners.get(conn.agent_id, {})
+        out: dict[str, list[str]] = {}
+        for room, holder in sorted(self._session_shares.get(conn.agent_id, {}).items()):
+            if owners.get(holder) == conn.id:
+                out.setdefault(holder, []).append(room)
+        return out
 
     def relay_session_command(self, agent_id: str, frame: dict[str, Any]) -> bool:
         """Hand a session command to the agent's watcher stream. False if none is attached.
@@ -1430,9 +1541,10 @@ class AgentConnectionRegistry:
 
     def slot_state(
         self, agent_id: str
-    ) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
-        """The agent's claims (room to connection) and placements (session to
-        room and the connection that placed it), as they stand here."""
+    ) -> tuple[dict[str, str], dict[str, tuple[str, str]], dict[str, tuple[str, str]]]:
+        """The agent's claims (room to connection), placements (session to
+        room and the connection that placed it) and shares (shared room to
+        session and the connection that placed it), as they stand here."""
         claims: dict[str, str] = {}
         now = time.monotonic()
         # A live claimant first, so that a room a lapsed connection still
@@ -1458,7 +1570,12 @@ class AgentConnectionRegistry:
             for session_id, room_id in self._session_rooms.get(agent_id, {}).items()
             if session_id in owners
         }
-        return claims, placements
+        shares = {
+            room_id: (session_id, owners[session_id])
+            for room_id, session_id in self._session_shares.get(agent_id, {}).items()
+            if session_id in owners and session_id in placements
+        }
+        return claims, placements, shares
 
     def incarnations_held_here(self, agent_id: str) -> dict[str, int]:
         return {conn.id: conn.stream_generation for conn in self.held_here(agent_id)}
@@ -1539,6 +1656,13 @@ class AgentConnectionRegistry:
         else:
             self._session_rooms.pop(agent_id, None)
             self._placement_owners.pop(agent_id, None)
+        shares = rows.shares()
+        if shares:
+            self._session_shares[agent_id] = {
+                room_id: session_id for room_id, (session_id, _) in shares.items()
+            }
+        else:
+            self._session_shares.pop(agent_id, None)
         if not self._by_agent.get(agent_id) and not placements:
             self._agent_tenants.pop(agent_id, None)
         return closed

@@ -32,6 +32,15 @@ def follow_ups_enabled_in(metadata: dict | None) -> bool:
     return (metadata or {}).get(FOLLOW_UPS_OFF_KEY) is not True
 
 
+def _joins_shared(defaults: tuple[bool, bool] | None, chosen: bool | None) -> bool:
+    """Whether a room an agent is added to shares its session: always for a locked
+    agent, else the choice made when adding it, else the agent's default."""
+    by_default, locked = defaults or (False, False)
+    if locked:
+        return True
+    return by_default if chosen is None else chosen
+
+
 def main_agent_in(metadata: dict | None) -> str | None:
     """The main agent a room's metadata names, if any."""
     value = (metadata or {}).get(MAIN_AGENT_KEY)
@@ -251,6 +260,11 @@ class RoomStore:
         await session.execute(
             delete(room_agents).where(room_agents.c.room_id == room_id)
         )
+        # An agent whose shared session was based here shares none now: its
+        # other rooms get sessions of their own until someone picks a new home.
+        await session.execute(
+            update(Agent).where(Agent.home_room_id == room_id).values(home_room_id=None)
+        )
         room = await session.get(Room, room_id)
         if room:
             await session.delete(room)
@@ -312,16 +326,24 @@ class RoomStore:
         agent_ids: list[str],
         *,
         join_event_listeners: set[str] | None = None,
+        shared: dict[str, bool] | None = None,
     ) -> None:
         """Add agents to a room.
 
         `join_event_listeners` is the subset of `agent_ids` that should receive
         `room_join` events in this room. Any agent not in that set keeps the
         column default (off) — agents are opted in to join events explicitly.
+
+        `shared` chooses, per agent id, whether the room shares that agent's
+        session. An agent it leaves out gets its own default; a locked agent
+        always shares. Choosing isolated for a locked agent is the caller's to
+        refuse beforehand (`switch_core.shared_session.check_join_choice`).
         """
         if not agent_ids:
             return
         listeners = join_event_listeners or set()
+        chosen = shared or {}
+        defaults = await self._sharing_defaults(session, agent_ids)
         await session.execute(
             insert(room_agents),
             [
@@ -329,11 +351,77 @@ class RoomStore:
                     "room_id": room_id,
                     "agent_id": aid,
                     "receives_join_events": aid in listeners,
+                    "shared_session": _joins_shared(defaults.get(aid), chosen.get(aid)),
                 }
                 for aid in agent_ids
             ],
         )
         await session.flush()
+
+    async def _sharing_defaults(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> dict[str, tuple[bool, bool]]:
+        """agent id → (shared_by_default, sharing_locked)."""
+        result = await session.execute(
+            select(Agent.id, Agent.shared_by_default, Agent.sharing_locked).where(
+                Agent.id.in_(list(agent_ids))
+            )
+        )
+        return {aid: (bool(default), bool(locked)) for aid, default, locked in result}
+
+    async def set_shared(
+        self, session: AsyncSession, room_id: str, agent_id: str, value: bool
+    ) -> None:
+        """Make `room_id` share `agent_id`'s session, or isolate it there.
+
+        Raises ValueError if the agent is not a member of the room.
+        """
+        result = await session.execute(
+            update(room_agents)
+            .where(
+                room_agents.c.room_id == room_id,
+                room_agents.c.agent_id == agent_id,
+            )
+            .values(shared_session=value)
+        )
+        if not result.rowcount:  # type: ignore[attr-defined]
+            raise ValueError(f"Agent {agent_id} is not a member of room {room_id}")
+        await session.flush()
+
+    async def set_shared_everywhere(self, session: AsyncSession, agent_id: str) -> None:
+        """Make every room `agent_id` is in share its session (locking it)."""
+        await session.execute(
+            update(room_agents)
+            .where(room_agents.c.agent_id == agent_id)
+            .values(shared_session=True)
+        )
+        await session.flush()
+
+    async def shared_room_ids(self, session: AsyncSession, agent_id: str) -> list[str]:
+        """Ids of the rooms marked as sharing `agent_id`'s session."""
+        result = await session.execute(
+            select(room_agents.c.room_id).where(
+                room_agents.c.agent_id == agent_id,
+                room_agents.c.shared_session.is_(True),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def sharing_agent_ids(self, session: AsyncSession, room_id: str) -> set[str]:
+        """Ids of the agents in `room_id` that have it marked as sharing their
+        session.
+
+        The mark alone: whether the agent shares a session at all (has a home
+        room) is
+        `switch_core.shared_session`'s to decide.
+        """
+        result = await session.execute(
+            select(room_agents.c.agent_id).where(
+                room_agents.c.room_id == room_id,
+                room_agents.c.shared_session.is_(True),
+            )
+        )
+        return set(result.scalars().all())
 
     async def set_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str, value: bool
@@ -395,6 +483,13 @@ class RoomStore:
         room = await session.get(Room, room_id)
         if room is not None and main_agent_in(room.metadata_) in agent_ids:
             await self.set_main_agent(session, room_id, None)
+        # An agent that leaves its home room stops sharing: its session has
+        # nowhere to be based until someone picks a new home.
+        await session.execute(
+            update(Agent)
+            .where(Agent.id.in_(agent_ids), Agent.home_room_id == room_id)
+            .values(home_room_id=None)
+        )
         await session.flush()
 
     async def get_rooms_for_agent(
@@ -702,6 +797,15 @@ class RoomStore:
             raise ValueError(f"Room not found: {room_id}")
         if archived:
             room.archived_at = datetime.now(UTC)  # type: ignore[assignment]
+            # Nobody uses an archived room, so a shared session based there
+            # would answer from nowhere: its agents stop sharing, and their
+            # rooms get sessions of their own until someone picks a new home.
+            # Unarchiving does not restore it.
+            await session.execute(
+                update(Agent)
+                .where(Agent.home_room_id == room_id)
+                .values(home_room_id=None)
+            )
         else:
             room.archived_at = None
         await session.flush()

@@ -231,7 +231,7 @@ class SharedConnections:
             # set from it: a claim of a connection this process has closed,
             # and not yet recorded as closed, is in the rows but not here,
             # and a connection opening again on that id must not inherit it.
-            slots_recorded = (rows.claims(), rows.placements())
+            slots_recorded = (rows.claims(), rows.placements(), rows.shares())
             held_before = registry.incarnations_held_here(agent_id)
             opened: list[AgentConnection] = []
             try:
@@ -264,13 +264,14 @@ class SharedConnections:
                         # through a process this one has not heard from.
                         raise UnknownConnectionError(conn.id)
                 if slots_after != slots_recorded:
-                    claims, placements = slots_after
+                    claims, placements, shares = slots_after
                     await self._store.replace_slots(
                         session,
                         tenant_id=tenant_id,
                         agent_id=agent_id,
                         claims=claims,
                         placements=placements,
+                        shares=shares,
                     )
                 await session.commit()
             except BaseException:

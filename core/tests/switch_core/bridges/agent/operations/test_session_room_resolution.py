@@ -14,6 +14,7 @@ every room-scoped call into "several rooms, pick one".
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -30,6 +31,7 @@ from switch_core.bridges.agent.operations.callctx import (
 from switch_core.bridges.agent.operations.context import (
     bound_rooms,
     init_operations_protocol,
+    posting_room,
     require_connected_room,
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -376,6 +378,69 @@ async def test_evicting_another_connection_still_names_the_connection(
     assert "connection connection-old" in result["warning"]
 
 
+@pytest.mark.asyncio
+async def test_a_room_sharing_a_session_refuses_another_session(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shared room is answered by the session in the agent's home room: a
+    second session connecting there would answer as the same agent."""
+    connection = _open(registry)
+    registry.replace_placements(connection, {"lead": ROOM_A}, {"lead": ["room-c"]})
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("other", None)):
+        with pytest.raises(ValueError, match="shares this agent's session"):
+            await definitions.connect_to_room(
+                "room-c", include_general_instructions=False
+            )
+
+    # The shared session itself connects without leaving its home room.
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("lead", ROOM_A)):
+        await definitions.connect_to_room("room-c", include_general_instructions=False)
+    assert registry.session_room(AGENT, "lead") == ROOM_A
+    assert registry.session_in_room(AGENT, "room-c") == "lead"
+
+
+@pytest.mark.asyncio
+async def test_a_share_made_through_another_process_is_judged_on_the_reread(
+    registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This process's copy may not have heard of a share made through another
+    one yet. Connecting re-reads what every process recorded before it moves
+    anything (`recorded`), so the refusal and the shared session's no-op are
+    judged on that, not on the copy."""
+    connection = _open(registry)
+    registry.replace_placements(connection, {"lead": ROOM_A})
+    plain_recorded = registry.recorded
+
+    @asynccontextmanager
+    async def rereading(agent_id: str) -> AsyncIterator[None]:
+        # What the re-read finds: the share another process recorded.
+        registry.replace_placements(connection, {"lead": ROOM_A}, {"lead": ["room-c"]})
+        async with plain_recorded(agent_id):
+            yield
+
+    monkeypatch.setattr(registry, "recorded", rereading)
+    monkeypatch.setattr(definitions, "build_room_instructions", lambda *a, **kw: "")
+    init_operations_protocol(_protocol_for(registry, "room-c"))
+
+    assert registry.share_holder(AGENT, "room-c") is None
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("other", None)):
+        with pytest.raises(ValueError, match="shares this agent's session"):
+            await definitions.connect_to_room(
+                "room-c", include_general_instructions=False
+            )
+    assert registry.session_room(AGENT, "other") is None
+
+    # Seen from a copy without the share again, the shared session itself
+    # still stays in its home room.
+    registry.replace_placements(connection, {"lead": ROOM_A})
+    with tenant_scope(TENANT_ZERO_ID), call_context(_caller("lead", ROOM_A)):
+        await definitions.connect_to_room("room-c", include_general_instructions=False)
+    assert registry.session_room(AGENT, "lead") == ROOM_A
+
+
 class _UncountedBuffer:
     """Takes the hand-over of a room's unread count and keeps none of it."""
 
@@ -450,3 +515,26 @@ def _protocol_for(
         ),
         list_room_roles=_returning([]),
     )
+
+
+@pytest.mark.asyncio
+async def test_a_post_can_name_a_room_the_agent_belongs_to() -> None:
+    """A shared session answers in the room that asked without moving there:
+    a named room wins over the bound one, but only for a member."""
+    checked: list[tuple[str, str]] = []
+
+    async def require_room_member(agent_id: str, room_id: str) -> None:
+        checked.append((agent_id, room_id))
+        if room_id != ROOM_B:
+            raise PermissionError("not a member")
+
+    init_operations_protocol(SimpleNamespace(require_room_member=require_room_member))  # type: ignore[arg-type]
+    try:
+        with call_context(_caller("session-a", ROOM_A)):
+            assert await posting_room(None) == ROOM_A
+            assert await posting_room(ROOM_B) == ROOM_B
+            with pytest.raises(PermissionError):
+                await posting_room("room-c")
+    finally:
+        init_operations_protocol(None)  # type: ignore[arg-type]
+    assert checked == [(AGENT, ROOM_B), (AGENT, "room-c")]
