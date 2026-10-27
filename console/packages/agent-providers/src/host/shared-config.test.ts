@@ -213,6 +213,7 @@ it('gives Codex the Switch skill as instructions, like the other providers', asy
 
 it('hands a Codex session the keyring login of a home with no auth.json, with only what reading it needs', async () => {
   vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus');
+  vi.stubEnv('XDG_RUNTIME_DIR', '/run/user/1000');
   const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
   try {
     const source = join(root, 'codex-source');
@@ -233,6 +234,7 @@ it('hands a Codex session the keyring login of a home with no auth.json, with on
     expect(login?.env).toEqual({
       PATH: '/usr/bin',
       DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      XDG_RUNTIME_DIR: '/run/user/1000',
     });
     login?.redact('fixture-secret');
     expect(redact).toHaveBeenCalledWith('fixture-secret');
