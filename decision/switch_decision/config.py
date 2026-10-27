@@ -66,7 +66,7 @@ def load_settings() -> Settings:
         aws_profile=os.environ.get("AWS_PROFILE") or None,
         confidence_threshold=threshold,
         timeout_s=float(os.environ.get("DECISION_TIMEOUT_S", "30")),
-        history_limit=int(os.environ.get("DECISION_HISTORY_LIMIT", "30")),
+        history_limit=int(os.environ.get("DECISION_HISTORY_LIMIT", "8")),
         with_reason=os.environ.get("DECISION_WITH_REASON", "1") != "0",
         service_token=os.environ.get("DECISION_SERVICE_TOKEN") or None,
         bedrock_enabled=_flag("DECISION_BEDROCK_ENABLED"),

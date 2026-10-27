@@ -67,3 +67,8 @@ def test_bedrock_model_setting_is_the_bedrock_default(monkeypatch):
 def test_bedrock_enabled_flag(monkeypatch, value, enabled):
     monkeypatch.setenv("DECISION_BEDROCK_ENABLED", value)
     assert load_settings().bedrock_enabled is enabled
+
+
+def test_history_limit_defaults_to_eight(monkeypatch):
+    monkeypatch.delenv("DECISION_HISTORY_LIMIT", raising=False)
+    assert load_settings().history_limit == 8
