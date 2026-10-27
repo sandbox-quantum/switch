@@ -3,40 +3,52 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import httpx
 
-from switch_core.config import SwitchConfig
-from switch_core.decision.client import DecisionClient
+from switch_core.decision.client import SETTINGS_CACHE_SECONDS, DynamicDecisionClient
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import DECISION_ROUTING
+from switch_core.outbound import guarded_async_client
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from switch_core.config import SwitchConfig
+    from switch_core.telemetry import TelemetryService
 
 logger = logging.getLogger(__name__)
 
 
 def build_decision_client(
     config: SwitchConfig,
-) -> tuple[DecisionClient, httpx.AsyncClient] | None:
-    """The decision client, and its HTTP client so `main` can close it; None
-    when this server does not route by decision, because the flag is off or
-    no endpoint is configured. The second is said in the log, since a room's
-    `!auto-route` is then refused."""
-    if not config.decision_routing_enabled:
-        return None
-    if config.decision_endpoint_url is None:
+    session_factory: async_sessionmaker[AsyncSession],
+    telemetry: TelemetryService | None,
+) -> DynamicDecisionClient:
+    """The decision client; `main` closes it (`aclose`). A workspace's own
+    endpoint is reached through the server's outbound policy
+    (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`), the server's decision service directly.
+
+    Built whether or not the `decision_routing` flag is on: workspace admins
+    can set up and test a backend before the flag goes on. Only with it on is
+    the client handed to the router."""
+    if config.decision_routing_enabled and config.decision_endpoint_url is None:
         logger.warning(
-            "The %r feature flag is on but DECISION_ENDPOINT_URL is not set: no "
-            "message is routed by decision, and `!auto-route` says the server "
-            "has no decision service.",
+            "The %r feature flag is on but DECISION_ENDPOINT_URL is not set: "
+            "there is no server default, so auto-route is unavailable in every "
+            "workspace whose admins have not chosen a decision service in "
+            "Switch Console (Admin → Decision routing), and Haiku is not offered.",
             DECISION_ROUTING,
         )
-        return None
-    http_client = httpx.AsyncClient()
-    return (
-        DecisionClient(
-            endpoint_url=config.decision_endpoint_url,
-            api_key=config.decision_api_key,
-            timeout_seconds=config.decision_timeout_seconds,
-            client=http_client,
-        ),
-        http_client,
+    return DynamicDecisionClient(
+        session_factory=session_factory,
+        availability=DecisionAvailability.from_config(config),
+        keyring=config.keyring,
+        client=httpx.AsyncClient(),
+        guarded_client=guarded_async_client(config.outbound_policy),
+        outbound_policy=config.outbound_policy,
+        timeout_seconds=config.decision_timeout_seconds,
+        telemetry=telemetry,
+        cache_seconds=SETTINGS_CACHE_SECONDS,
     )

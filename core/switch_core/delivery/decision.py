@@ -2,17 +2,21 @@
 rule delivered to anyone.
 
 In a room with automatic routing on (`!auto-route on`, on a server with the
-`decision_routing` feature and a `DECISION_ENDPOINT_URL`), a person's text
-message that names nobody and that no follow-up or assigned agent took is
-marked undecided as it is written (`MessageRouter._follow_the_conversation`).
-It passed the same filters as a follow-up (`may_follow`): a person sent it, it
-has no `@` in it, it is not Switch's own or another app's, it is not in a
-direct room, and it is not thanks or praise (`is_small_talk`).
+`decision_routing` feature, in a workspace with a decision backend:
+`decision/settings.py`), a person's text message that names nobody and that
+no follow-up or assigned agent took is marked undecided as it is written
+(`MessageRouter._follow_the_conversation`). It passed the same filters as a
+follow-up (`may_follow`): a person sent it, it has no `@` in it, it is not
+Switch's own or another app's, it is not in a direct room, and it is not
+thanks or praise (`is_small_talk`). In a workspace with no backend nothing is
+marked, and rooms behave as they do without auto-route.
 
-Once the message has committed, the router asks the decision service about
-it, in the room's after-commit queue (`_AfterCommit`), so a slow or failed
-decision never holds up the write, and decisions in a room are made in the
-order of its messages:
+Marking it writes a `pending_decisions` row in the transaction that writes
+the message, so a decision survives a restart. Once the message has
+committed, the process that wrote it is woken to decide it, and every process
+sweeps for waiting rows (`MessageRouter.decide_pending`), so a slow or failed
+decision never holds up the write, and a room's messages are decided in
+order:
 
 1. The candidates are the room's agents other than the sender whose
    addressing policy and budget let the sender through, as for a mention,
@@ -21,18 +25,22 @@ order of its messages:
    session closed before the call.
 3. When it names a candidate, the agent is checked once more, after the
    call: still in the room, its policy and budget still letting the sender
-   through. Then the person's own message is stored as the agent's own event,
-   addressed and marked `routed`, under the message's key and place in the
-   room. It doesn't count as the person addressing the agent, so the person's
-   next untagged message is decided again rather than followed up.
+   through. Then, in one transaction, the pending row is deleted and the
+   person's own message is stored as the agent's own event, addressed and
+   marked routed (`routed_reason: "decided"`), under the message's key and
+   place in the room, so it is never delivered twice. It doesn't count as the
+   person addressing the agent, so the person's next untagged message is
+   decided again rather than followed up.
 
-Nobody receives the message when the service names nobody, when it cannot be
-asked (a timeout, a connection error, an error response or a malformed one:
-logged as a warning), or when it names an agent that was not a candidate
-(logged as an error). Every decision is logged at INFO.
-
-The queue is in memory, so a decision still waiting when the process stops
-is not made.
+Nobody receives the message when the service names nobody. When the service
+fails (a timeout, a connection error, an error response, a malformed one, or
+one naming an agent that was not a candidate), the room is told auto-route is
+unavailable (`DECISION_NOTICE`), at most once an hour, and the message goes
+to the room's triage agent if it has one (`!auto-route fallback @agent`),
+through the same checks, marked `routed_reason: "fallback"`; otherwise to
+nobody. A message still waiting after `DECISION_PENDING_MAX_AGE_SECONDS` is
+dropped and logged rather than answered late. Every decision is logged at
+INFO.
 """
 
 from __future__ import annotations
@@ -65,6 +73,12 @@ if TYPE_CHECKING:
     from switch_core.delivery.conversation import RoomConversation
     from switch_core.delivery.recipient import AgentRecipient, RoomMember
     from switch_core.transport.types import InboundMessage
+
+# What the room is told when its decision backend fails, at most once every
+# `DECISION_NOTICE_EVERY_SECONDS` (room metadata `decision_notice_at`), and
+# never for a decision of nobody.
+DECISION_NOTICE = "Auto-route is unavailable right now; tag an agent to reach it."
+DECISION_NOTICE_EVERY_SECONDS = 3600
 
 # The most of a thread's latest messages, and of the room's latest top-level
 # messages, sent as context: enough to see who is talking to whom, and short

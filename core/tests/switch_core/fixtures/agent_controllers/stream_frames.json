@@ -57,7 +57,8 @@
           "opening_message": null,
           "sender_role": null,
           "switch_notice": null,
-          "routed": false
+          "routed": false,
+          "routed_reason": null
         },
         "sequence": 1,
         "missed": {

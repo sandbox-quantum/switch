@@ -92,6 +92,29 @@ class RoomSummary(BaseModel):
     is_console_chat: bool = False
 
 
+class RoomAutoRoute(BaseModel):
+    """A room's auto-route (`decision/room.py`): `on` is the room's switch,
+    the same one `!auto-route` sets; `available` whether it can act in the
+    room (the server's flag and the workspace's decision backend), with
+    `reason` saying why not and who can fix it; `fallback_agent` the id of
+    the room's triage agent, if any, and `fallback_agent_name` its name."""
+
+    on: bool
+    available: bool
+    reason: str | None
+    fallback_agent: str | None
+    fallback_agent_name: str | None
+
+
+class RoomAutoRouteRequest(BaseModel):
+    """`PUT /rooms/{id}/auto-route`. Either field may be left out to leave it
+    as it is. `fallback_agent` is the id of an agent in the room (its name
+    or alias here is accepted too); null clears it."""
+
+    on: bool | None = None
+    fallback_agent: str | None = None
+
+
 class RoomDetail(RoomSummary):
     transport_room_id: str
     # Deprecated alias of `transport_room_id`, sent for the compatibility
@@ -117,6 +140,7 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
+    auto_route: RoomAutoRoute
 
 
 class RoomCreateRequest(BaseModel):
@@ -1636,6 +1660,125 @@ class BudgetResponse(BaseModel):
 
 
 # ── Switch Trust ──────────────────────────────────────────────────────────────
+
+
+DecisionBackendName = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+
+
+class DecisionEffective(BaseModel):
+    """What a workspace's rooms use now: its own choice, or the server
+    default, or nothing. `available` folds in the server's flag."""
+
+    backend: DecisionBackendName
+    endpoint: str | None
+    threshold: float | None
+    available: bool
+    reason: str | None
+
+
+class DecisionWorkspaceSettings(BaseModel):
+    """The workspace's saved choice. The key is never returned: only whether
+    one is set, its last four characters, and whether this server can still
+    decrypt it."""
+
+    backend: DecisionBackendName
+    endpoint: str | None
+    threshold: float | None
+    has_api_key: bool
+    api_key_last4: str | None
+    api_key_unreadable: bool
+    updated_at: str
+
+
+class DecisionServerDefault(BaseModel):
+    configured: bool
+    endpoint: str | None
+    has_api_key: bool
+
+
+class DecisionOptions(BaseModel):
+    """Which Haiku backends the server offers: both need the server's
+    decision service, and Bedrock also `DECISION_BEDROCK_ENABLED`."""
+
+    haiku_anthropic: bool
+    haiku_bedrock: bool
+
+
+class DecisionSettingsResponse(BaseModel):
+    source: Literal["workspace", "server_default"]
+    effective: DecisionEffective
+    workspace: DecisionWorkspaceSettings | None
+    server_default: DecisionServerDefault
+    options: DecisionOptions
+
+
+class DecisionSettingsUpdateRequest(BaseModel):
+    """`api_key` omitted keeps the stored key when the backend stays the
+    same; `clear_api_key` drops it. A key is the bearer token for an
+    `endpoint`, and the Anthropic key for `haiku_anthropic`."""
+
+    backend: DecisionBackendName
+    endpoint: str | None = None
+    api_key: str | None = None
+    clear_api_key: bool = False
+    threshold: float | None = Field(default=None, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _validate(self) -> DecisionSettingsUpdateRequest:
+        if self.api_key is not None and not self.api_key.strip():
+            raise ValueError(
+                "api_key must not be blank; omit it to keep the stored key, or "
+                "set clear_api_key"
+            )
+        if self.backend == "endpoint":
+            value = self.endpoint
+            if value is None or not value.strip():
+                raise ValueError("a self-hosted endpoint needs its URL")
+            if value != value.strip():
+                raise ValueError("endpoint has leading or trailing whitespace")
+            parts = urlsplit(value)
+            if parts.scheme not in ("http", "https"):
+                raise ValueError("endpoint must be an http(s) URL")
+            if not parts.netloc:
+                raise ValueError("endpoint must include a host")
+        return self
+
+
+class DecisionSettingsTestRequest(DecisionSettingsUpdateRequest):
+    """The PUT body, or `backend: "default"` to test the server default with
+    the server's own endpoint and key, never the workspace's."""
+
+    backend: DecisionBackendName | Literal["default"]  # type: ignore[assignment]
+
+
+TestErrorCode = Literal[
+    "unreachable",
+    "timeout",
+    "unauthorized",
+    "key_refused",
+    "bad_answer",
+    "backend_unavailable",
+    "not_configured",
+    "refused",
+]
+
+
+class DecisionTestError(BaseModel):
+    code: TestErrorCode
+    message: str
+
+
+class DecisionTestResponse(BaseModel):
+    """The sample decision's pick (`agent`, None for nobody), confidence and
+    latency, or why there was none."""
+
+    ok: bool
+    agent: str | None
+    model_choice: str | None
+    confidence: float | None
+    latency_ms: int | None
+    backend: str | None
+    error: DecisionTestError | None
 
 
 class TrustSettingsResponse(BaseModel):

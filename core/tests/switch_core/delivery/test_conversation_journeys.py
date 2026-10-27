@@ -26,15 +26,22 @@ from switch_core.bridges.agent.commands import (
     _cmd_follow_ups,
     _cmd_unassign_agent,
 )
-from switch_core.clients.admin_messages import ADMIN_MARKER, AUTO_REPLY_FLAG
+from switch_core.clients.admin_messages import (
+    ADMIN_MARKER,
+    AUTO_REPLY_FLAG,
+    AdminMessageType,
+    admin_extra_content,
+)
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import AgentEventRow, Client, ClientRoom, Message, Room
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.decision.client import DecisionClient
+from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.conversation import ConversationSettings
 from switch_core.transport import RoomRef
 from tests.routing import Process, process_on
@@ -54,7 +61,7 @@ class Journey:
         self,
         world: World,
         settings: ConversationSettings,
-        decisions: DecisionClient | None = None,
+        decisions: DynamicDecisionClient | None = None,
     ) -> None:
         self.world = world
         self.settings = settings
@@ -64,6 +71,8 @@ class Journey:
         self.clients: dict[str, Client] = {}
         self.at: dict[str, float] = {}
         self.notices: list[str] = []
+        # What Switch told the room on its own: "auto-route is unavailable".
+        self.room_notices: list[str] = []
 
     async def start(self) -> Journey:
         world = self.world
@@ -84,7 +93,17 @@ class Journey:
                 self.clients[name] = client
                 session.add(ClientRoom(client_id=client.id, room_id=room.id))
             await session.commit()
+        self.process.router.use_notices(self._room_notice)
         return self
+
+    async def _room_notice(self, _tenant_id: str, _room: str, body: str) -> None:
+        self.room_notices.append(body)
+        await self.process.say(
+            self.room,
+            body,
+            sender=self.clients["admin"],
+            extra_content=admin_extra_content(AdminMessageType.AUTO_ROUTE_UNAVAILABLE),
+        )
 
     async def _set_the_clock(self, at: float) -> None:
         async with self.world.session_factory() as session:
@@ -171,8 +190,17 @@ class Journey:
             client_store=ClientStore(),
             _connections=SimpleNamespace(live_connection_ids=lambda: set()),
             _follow_the_conversation_enabled=True,
-            _decision_routing_enabled=self.decisions is not None,
-            _decision_endpoint_configured=self.decisions is not None,
+            _decision_availability=(
+                self.decisions.availability
+                if self.decisions is not None
+                else DecisionAvailability(
+                    enabled=False,
+                    server=ServerDefault(
+                        endpoint_url=None, api_key=None, bedrock_enabled=False
+                    ),
+                    store=DecisionSettingsStore(),
+                )
+            ),
         )
 
     async def command(self, who: str, command: str, args: str, *, at: float) -> str:

@@ -89,12 +89,15 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.pending_decision_store import Pending, PendingDecisionStore
 from switch_core.db.stores.room_store import (
+    auto_route_fallback_in,
     auto_route_on_in,
     follow_ups_enabled_in,
     main_agent_in,
 )
 from switch_core.db.stores.template_install_store import TemplateInstallStore
+from switch_core.decision.client import Decided, Unavailable
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
@@ -103,7 +106,11 @@ from switch_core.delivery.conversation import (
     is_small_talk,
     may_follow,
 )
-from switch_core.delivery.decision import decision_request
+from switch_core.delivery.decision import (
+    DECISION_NOTICE,
+    DECISION_NOTICE_EVERY_SECONDS,
+    decision_request,
+)
 from switch_core.delivery.recipient import (
     NOTHING,
     AgentRecipient,
@@ -137,7 +144,7 @@ if TYPE_CHECKING:
     from switch_core.db.stores.budget_store import BudgetStanding, BudgetStore
     from switch_core.db.stores.client_store import ClientStore
     from switch_core.db.stores.message_store import MessageStore
-    from switch_core.decision.client import DecisionClient
+    from switch_core.decision.client import DynamicDecisionClient
     from switch_core.transport.port import MessageTransport
 
 logger = logging.getLogger(__name__)
@@ -153,6 +160,14 @@ ATTACHMENT_GROUP_TIMEOUT_SECONDS = 5.0
 # that wrote a post's first file also sets a timer for its deadline; this is
 # what decides a post whose writer has stopped since.
 GROUP_SWEEP_SECONDS = 5.0
+
+# How often every process looks for messages waiting for a decision, for one
+# whose process stopped before deciding it. The process that wrote a message
+# starts deciding it as soon as the message commits.
+DECISION_SWEEP_SECONDS = 5.0
+
+# The most rooms one pass decides at once, one message each.
+_DECISION_BATCH = 20
 
 # The one custom event an agent can be part of. The rest (reports,
 # observations) are the platform's own bookkeeping and are nobody's own event.
@@ -309,6 +324,7 @@ class RoomReads:
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
                 auto_route_on=auto_route_on_in(room.metadata_),
+                auto_route_fallback_agent_id=auto_route_fallback_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
                 console_chat="chat_operation_id" in (room.metadata_ or {}),
             ),
@@ -530,9 +546,9 @@ class _Plan:
     arrival: AgentRecipient | None = None
     group: _GroupStep | None = None
     # A message no rule delivered, which the decision service is asked about
-    # once it has committed (`delivery/decision.py`): the room's conversation
-    # as the rules read it for the message.
-    undecided: RoomConversation | None = None
+    # once it has committed (`delivery/decision.py`): recorded in
+    # `pending_decisions` with the message.
+    undecided: bool = False
 
 
 class Routed:
@@ -611,18 +627,8 @@ class Routed:
                     _bind(arrival, lambda _row: arrival.greet(), row),
                 )
             )
-        if plan.undecided is not None:
-            assert isinstance(row, InboundMessage)
-            tenant_id, room_id = reads.tenant_id, reads.room_id
-            conversation = plan.undecided
-            work.append(
-                (
-                    f"Asking the decision service about message {row.event_id}",
-                    lambda: router.route_undecided(
-                        tenant_id, room_id, conversation, row
-                    ),
-                )
-            )
+        if plan.undecided:
+            router.wake_decisions(reads.tenant_id)
         if work:
             router.after_commit(reads.tenant_id, reads.room_id, work)
 
@@ -723,8 +729,7 @@ class _Unwritten:
 
 
 class _AfterCommit:
-    """The replies and reports routed rows owe, and the questions they leave
-    for the decision service (`delivery/decision.py`), run once each row's
+    """The replies and reports routed rows owe, run once each row's
     transaction has committed.
 
     Off the writer's path, as the consumers it replaced ran them: whoever
@@ -798,15 +803,26 @@ class MessageRouter:
         client_store: ClientStore,
         budget_store: BudgetStore,
         conversation: ConversationRules,
-        decisions: DecisionClient | None,
+        decisions: DynamicDecisionClient | None,
+        decision_max_age_seconds: float,
     ) -> None:
-        """`decisions` is the decision service, None when this server does
-        not route by decision: the `decision_routing` flag is off or no
-        endpoint is configured."""
+        """`decisions` is the decision client, None when this server does
+        not route by decision (the `decision_routing` flag is off). A message
+        still waiting for a decision after `decision_max_age_seconds` is
+        dropped."""
         self.services = services
         self._messages = message_store
         self._conversation = conversation
         self._decisions = decisions
+        self._decision_max_age_seconds = decision_max_age_seconds
+        self._pending = PendingDecisionStore()
+        # How the room is told auto-route is unavailable: as Switch's admin
+        # client, which the client factory builds after this router.
+        self._notices: Callable[[str, str, str], Awaitable[None]] | None = None
+        # The pass deciding each tenant's waiting messages in this process,
+        # and the tenants woken again while theirs ran.
+        self._decision_runs: dict[str, asyncio.Task[None]] = {}
+        self._decision_again: set[str] = set()
         self._client_store = client_store
         self._budget_store = budget_store
         self._transports: Callable[[Actor[ClientConfig]], MessageTransport] | None = (
@@ -820,6 +836,11 @@ class MessageRouter:
         self._after = _AfterCommit()
         self._timers: set[asyncio.TimerHandle] = set()
         self._flushes: set[asyncio.Task[None]] = set()
+
+    def use_notices(self, post: Callable[[str, str, str], Awaitable[None]]) -> None:
+        """How a room is told auto-route is unavailable: `post(tenant_id,
+        transport_room_id, body)` posts an admin notice there."""
+        self._notices = post
 
     def use_transports(
         self, transport_for: Callable[[Actor[ClientConfig]], MessageTransport]
@@ -928,6 +949,14 @@ class MessageRouter:
         deadline_in: float | None = None
         stored: list[str] = []
         if reads is not None:
+            if plan.undecided:
+                await self._pending.add(
+                    session,
+                    tenant_id=tenant_id,
+                    room_id=room_id,
+                    room_seq=message.seq,
+                    message_key=message.transport_event_id,
+                )
             if plan.group is not None:
                 deadline_in = await self._step_group(session, reads, plan, row)
             stored = await self._store_own_events(session, reads, plan.deliveries, row)
@@ -1174,13 +1203,14 @@ class MessageRouter:
             rules.settings, channel_type=meta.channel_type, message=message
         ):
             return _Plan()
+        auto_routes = await self._auto_routes(session, reads)
         conversation = rules.for_message(
             addressing=reads.addressing,
             room_id=reads.room_id,
             channel_type=meta.channel_type,
             follow_ups_enabled=meta.follow_ups_enabled,
             main_agent_id=meta.main_agent_id,
-            auto_route_on=self._auto_routes(meta),
+            auto_route_on=auto_routes,
             message=message,
         )
         deliveries: list[tuple[AgentRecipient, Delivery]] = []
@@ -1193,130 +1223,402 @@ class MessageRouter:
             delivery = await recipient.decide_follow_up(session, event, decision)
             if delivery.own_event is not None:
                 deliveries.append((recipient, delivery))
-        if not deliveries and await self._asks_for_a_decision(
-            session, meta, conversation
+        if (
+            not deliveries
+            and auto_routes
+            and await self._asks_for_a_decision(session, conversation)
         ):
-            return _Plan(undecided=conversation)
+            return _Plan(undecided=True)
         return _Plan(deliveries=deliveries)
 
-    def _auto_routes(self, meta: RoomMeta) -> bool:
+    async def _auto_routes(self, session: AsyncSession, reads: RoomReads) -> bool:
         """Whether messages in the room go to the decision service: the room
-        turned it on, and this server can ask one."""
-        return meta.auto_route_on and self._decisions is not None
+        turned it on, the server routes by decision, and the room's workspace
+        has a decision backend (`decision/settings.py`). A workspace with none
+        keeps today's behaviour, follow-ups in threads included."""
+        return (
+            reads.meta.auto_route_on
+            and self._decisions is not None
+            and await self._decisions.available(session, reads.tenant_id)
+        )
 
+    @staticmethod
     async def _asks_for_a_decision(
-        self, session: AsyncSession, meta: RoomMeta, conversation: RoomConversation
+        session: AsyncSession, conversation: RoomConversation
     ) -> bool:
         """Whether a message that has passed `may_follow` and that no rule
-        delivered is one to ask the decision service about: in a room routing
-        by decision, a person's message with text that is not small talk."""
+        delivered, in a room routing by decision, is one to ask the decision
+        service about: a person's message with text that is not small talk."""
         body = conversation.message.body
         return (
-            self._auto_routes(meta)
-            and bool(body.strip())
+            bool(body.strip())
             and not is_small_talk(body)
             and await conversation.from_a_person(session)
         )
 
-    async def route_undecided(
-        self,
-        tenant_id: str,
-        room_id: str,
-        conversation: RoomConversation,
-        row: InboundMessage,
-    ) -> None:
-        """Ask the decision service who answers `row`, a message no rule
-        delivered, and deliver it to the agent it names
-        (`delivery/decision.py`). Run once the row has committed, in the
-        room's after-commit queue."""
+    # ── Deciding what no rule delivered (`delivery/decision.py`) ──────────────
+
+    def wake_decisions(self, tenant_id: str) -> None:
+        """Decide the tenant's waiting messages now, in the background: a
+        message marked undecided has just committed. A pass already running
+        for the tenant runs once more instead."""
+        if self._decisions is None:
+            return
+        if tenant_id in self._decision_runs:
+            self._decision_again.add(tenant_id)
+            return
+        self._decision_runs[tenant_id] = asyncio.get_running_loop().create_task(
+            self._decide_pending_logged(tenant_id), context=contextvars.Context()
+        )
+
+    async def _decide_pending_logged(self, tenant_id: str) -> None:
+        try:
+            while True:
+                self._decision_again.discard(tenant_id)
+                try:
+                    await self.decide_pending(tenant_id)
+                except Exception:
+                    metrics().increment(ROUTING_FAILURES, {"stage": "decision"})
+                    logger.error(
+                        "Could not decide the waiting messages of tenant %s; the "
+                        "next sweep tries again",
+                        tenant_id,
+                        exc_info=True,
+                    )
+                if tenant_id not in self._decision_again:
+                    return
+        finally:
+            self._decision_runs.pop(tenant_id, None)
+
+    async def decide_pending(self, tenant_id: str) -> int:
+        """Decide the tenant's messages waiting for the decision service, and
+        return how many were settled.
+
+        Every process runs this, woken when a message it wrote commits and on
+        a sweep (`DECISION_SWEEP_SECONDS`), so a message whose process stopped
+        is decided by another, or by the same after a restart. Rows older than
+        `DECISION_PENDING_MAX_AGE_SECONDS` are dropped first. Each pass claims
+        the oldest waiting message of up to `_DECISION_BATCH` rooms and decides
+        them side by side, a room's messages in order. A message that fails
+        to be decided for a reason other than the service keeps its claim
+        until the lease lapses, so it does not hold up the rest.
+        """
+        decisions = self._decisions
+        if decisions is None:
+            return 0
+        factory = self.services.session_factory
+        async with tenant_session(factory, tenant_id) as session:
+            expired = await self._pending.expire(
+                session,
+                tenant_id=tenant_id,
+                max_age_seconds=self._decision_max_age_seconds,
+            )
+            await session.commit()
+        for pending in expired:
+            logger.warning(
+                "Decision routing: room=%s message=%s outcome=expired reason=it "
+                "waited more than %ss for a decision (the server was down or "
+                "busy), so no agent receives it",
+                pending.room_id,
+                pending.message_key,
+                self._decision_max_age_seconds,
+            )
+        settled = 0
+        lease = decisions.timeout_seconds * 2 + 30
+        while True:
+            async with tenant_session(factory, tenant_id) as session:
+                claimed = await self._pending.claim(
+                    session,
+                    tenant_id=tenant_id,
+                    lease_seconds=lease,
+                    limit=_DECISION_BATCH,
+                )
+                await session.commit()
+            if not claimed:
+                return settled
+            outcomes = await asyncio.gather(
+                *(self._decide_claimed(tenant_id, pending) for pending in claimed),
+                return_exceptions=True,
+            )
+            for pending, outcome in zip(claimed, outcomes, strict=True):
+                if isinstance(outcome, BaseException):
+                    metrics().increment(ROUTING_FAILURES, {"stage": "decision"})
+                    logger.error(
+                        "Could not decide message %s in room %s; it is tried "
+                        "again once its claim lapses, until it expires",
+                        pending.message_key,
+                        pending.room_id,
+                        exc_info=outcome,
+                    )
+                else:
+                    settled += 1
+
+    async def _decide_claimed(self, tenant_id: str, pending: Pending) -> None:
+        """Ask the decision service about one claimed message and settle it:
+        deliver it to the agent the service names, to the room's triage agent
+        when the service fails, or to nobody."""
         decisions = self._decisions
         assert decisions is not None
-        async with tenant_session(self.services.session_factory, tenant_id) as session:
-            now = await self._reads_now(session, tenant_id, room_id)
-            room = await session.get(Room, room_id)
-            if now is None or room is None:
-                return
-            candidates = [
-                recipient
-                for recipient in self._others(now, row)
-                if await recipient.admits(session, row)
-            ]
-            if not candidates:
-                logger.info(
-                    "Decision routing: room=%s message=%s no agent here may "
-                    "answer the sender; the decision service is not asked",
-                    room_id,
-                    row.event_id,
+        room_id = pending.room_id
+        with log_context(room_id=room_id):
+            async with tenant_session(
+                self.services.session_factory, tenant_id
+            ) as session:
+                reads = await self._reads_now(session, tenant_id, room_id)
+                message = await session.scalar(
+                    select(Message).where(
+                        Message.room_id == room_id, Message.seq == pending.room_seq
+                    )
                 )
-                return
-            request = await decision_request(
-                session,
-                room=room,
-                members=now.members,
-                roles=await now.role_names(session),
-                conversation=conversation,
-                message=row,
-                candidates=candidates,
-            )
-        answer = await decisions.decide(request, room_id=room_id)
-        if answer is None:
-            return
-        logger.info(
-            "Decision routing: room=%s message=%s candidates=%d choice=%s "
-            "model_choice=%s confidence=%s threshold=%s latency_ms=%s model=%s",
-            room_id,
-            row.event_id,
-            len(candidates),
-            answer.agent or "nobody",
-            answer.model_choice,
-            answer.confidence,
-            answer.threshold,
-            answer.latency_ms,
-            answer.model,
-        )
-        if answer.agent is None:
-            return
-        async with tenant_session(self.services.session_factory, tenant_id) as session:
-            now = await self._reads_now(session, tenant_id, room_id)
-            chosen = next(
-                (
+                room = await session.get(Room, room_id)
+                row = (
+                    to_inbound(message, [], transport_room_id=reads.transport_room_id)
+                    if reads is not None and message is not None
+                    else None
+                )
+                if reads is None or room is None or not isinstance(row, InboundMessage):
+                    await self._settle(
+                        tenant_id, pending, "the room or message is gone"
+                    )
+                    return
+                if not reads.meta.auto_route_on:
+                    await self._settle(tenant_id, pending, "auto-route was turned off")
+                    return
+                candidates = [
                     recipient
-                    for recipient in (self._others(now, row) if now else [])
-                    if recipient.agent.name == answer.agent
-                ),
-                None,
+                    for recipient in self._others(reads, row)
+                    if await recipient.admits(session, row)
+                ]
+                if not candidates:
+                    await self._settle(
+                        tenant_id,
+                        pending,
+                        "no agent here may answer the sender, so the decision "
+                        "service is not asked",
+                    )
+                    return
+                assert message is not None
+                conversation = self._conversation.for_message(
+                    addressing=reads.addressing,
+                    room_id=room_id,
+                    channel_type=reads.meta.channel_type,
+                    follow_ups_enabled=reads.meta.follow_ups_enabled,
+                    main_agent_id=reads.meta.main_agent_id,
+                    auto_route_on=True,
+                    message=ConversationMessage(
+                        event_id=row.event_id,
+                        sender=row.sender,
+                        body=row.body or "",
+                        content=row.content,
+                        thread_root_id=row.thread_root_id,
+                        # A `DateTime` column, typed `str` on the model.
+                        sent_at=cast("datetime", message.sent_at),
+                    ),
+                )
+                request = await decision_request(
+                    session,
+                    room=room,
+                    members=reads.members,
+                    roles=await reads.role_names(session),
+                    conversation=conversation,
+                    message=row,
+                    candidates=candidates,
+                )
+                fallback_id = reads.meta.auto_route_fallback_agent_id
+                transport_room_id = reads.transport_room_id
+            outcome = await decisions.decide(
+                request, tenant_id=tenant_id, room_id=room_id
             )
-            if chosen is None:
-                logger.info(
-                    "Decision routing: room=%s message=%s agent=%s outcome="
-                    "dropped_not_member reason=the agent left the room before "
-                    "the message could be delivered",
-                    room_id,
-                    row.event_id,
-                    answer.agent,
+            if isinstance(outcome, Unavailable):
+                await self._settle(
+                    tenant_id,
+                    pending,
+                    "the workspace has no decision service now, so it is not asked",
                 )
                 return
-            delivery = await chosen.decide_routed(session, row)
-        if delivery.own_event is None:
-            return
-        own = delivery.own_event(row)
-        await self.services.event_buffer.enqueue(
-            tenant_id,
-            chosen.agent.id,
-            room_id,
-            own.event,
-            room_seq=own.room_seq,
-            message_key=own.message_key,
-        )
+            if isinstance(outcome, Decided):
+                answer = outcome.answer
+                logger.info(
+                    "Decision routing: room=%s message=%s candidates=%d choice=%s "
+                    "model_choice=%s confidence=%s threshold=%s latency_ms=%s "
+                    "model=%s backend=%s",
+                    room_id,
+                    row.event_id,
+                    len(candidates),
+                    answer.agent or "nobody",
+                    answer.model_choice,
+                    answer.confidence,
+                    answer.threshold,
+                    outcome.latency_ms,
+                    answer.model,
+                    outcome.backend,
+                )
+                chosen_name = answer.agent
+                await self._deliver_decided(
+                    tenant_id,
+                    pending,
+                    row,
+                    pick=(
+                        None
+                        if chosen_name is None
+                        else lambda recipient: recipient.agent.name == chosen_name
+                    ),
+                    reason="decided",
+                    transport_room_id=transport_room_id,
+                    notice=False,
+                )
+                return
+            if fallback_id is None:
+                logger.info(
+                    "Decision routing: room=%s message=%s outcome=nobody "
+                    "reason=the decision service failed (%s) and the room has "
+                    "no triage agent",
+                    room_id,
+                    row.event_id,
+                    outcome.reason,
+                )
+            await self._deliver_decided(
+                tenant_id,
+                pending,
+                row,
+                pick=(
+                    None
+                    if fallback_id is None
+                    else lambda recipient: recipient.agent.id == fallback_id
+                ),
+                reason="fallback",
+                transport_room_id=transport_room_id,
+                notice=True,
+            )
+
+    async def _settle(self, tenant_id: str, pending: Pending, why: str) -> None:
+        """Settle a waiting message with no delivery, saying why."""
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            await self._pending.finish(session, tenant_id=tenant_id, pending=pending)
+            await session.commit()
         logger.info(
-            "Decision routing: room=%s message=%s agent=%s outcome=delivered",
-            room_id,
-            row.event_id,
-            chosen.agent.name,
+            "Decision routing: room=%s message=%s outcome=nobody reason=%s",
+            pending.room_id,
+            pending.message_key,
+            why,
         )
-        if delivery.after is not None:
-            await chosen.actor.connect()
-            await delivery.after(row)
+
+    async def _deliver_decided(
+        self,
+        tenant_id: str,
+        pending: Pending,
+        row: InboundMessage,
+        *,
+        pick: Callable[[AgentRecipient], bool] | None,
+        reason: Literal["decided", "fallback"],
+        transport_room_id: str,
+        notice: bool,
+    ) -> None:
+        """Settle a decided message: in one transaction, delete its pending
+        row and store the picked agent's own event, marked `routed_reason`,
+        once the agent is checked again (still in the room, its policy and
+        budget letting the sender through). With `notice`, the backend failed,
+        and the room is told at most once an hour (`DECISION_NOTICE_AT_KEY`).
+
+        A row another process settled already, after this one's claim lapsed,
+        is left alone: its delivery is that process's.
+        """
+        room_id = pending.room_id
+        chosen: AgentRecipient | None = None
+        delivery: Delivery | None = None
+        stored = False
+        tell_room = False
+        async with tenant_session(self.services.session_factory, tenant_id) as session:
+            if not await self._pending.finish(
+                session, tenant_id=tenant_id, pending=pending
+            ):
+                await session.rollback()
+                logger.info(
+                    "Decision routing: room=%s message=%s was settled by another "
+                    "process meanwhile; not delivered again",
+                    room_id,
+                    row.event_id,
+                )
+                return
+            if pick is not None:
+                reads = await self._reads_now(session, tenant_id, room_id)
+                chosen = next(
+                    (
+                        recipient
+                        for recipient in (self._others(reads, row) if reads else [])
+                        if pick(recipient)
+                    ),
+                    None,
+                )
+                if chosen is None:
+                    logger.info(
+                        "Decision routing: room=%s message=%s routed_reason=%s "
+                        "outcome=dropped_not_member reason=the agent is not in "
+                        "the room",
+                        room_id,
+                        row.event_id,
+                        reason,
+                    )
+                else:
+                    delivery = await chosen.decide_routed(session, row, reason)
+                    if delivery.own_event is not None:
+                        own = delivery.own_event(row)
+                        stored = (
+                            await self.services.event_buffer.store(
+                                session,
+                                tenant_id=tenant_id,
+                                agent_id=chosen.agent.id,
+                                client_id=chosen.client_id,
+                                room_id=room_id,
+                                event=own.event,
+                                room_seq=own.room_seq,
+                                message_key=own.message_key,
+                            )
+                            is not None
+                        )
+            if notice:
+                tell_room = await self.services.room_store.claim_decision_notice(
+                    session, room_id, every_seconds=DECISION_NOTICE_EVERY_SECONDS
+                )
+            await session.commit()
+        if stored:
+            assert chosen is not None and delivery is not None
+            self.services.event_buffer.ring(chosen.agent.id)
+            logger.info(
+                "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
+                "outcome=delivered",
+                room_id,
+                row.event_id,
+                chosen.agent.name,
+                reason,
+            )
+            if delivery.after is not None:
+                await chosen.actor.connect()
+                await delivery.after(row)
+        if tell_room:
+            await self._tell_room(tenant_id, room_id, transport_room_id)
+
+    async def _tell_room(
+        self, tenant_id: str, room_id: str, transport_room_id: str
+    ) -> None:
+        """Post the "auto-route is unavailable" notice. Best effort: the
+        message is settled either way, and a notice that cannot be posted is
+        logged."""
+        if self._notices is None:
+            logger.warning(
+                "Decision routing: room=%s could not be told auto-route is "
+                "unavailable: no admin client posts notices in this process",
+                room_id,
+            )
+            return
+        try:
+            await self._notices(tenant_id, transport_room_id, DECISION_NOTICE)
+        except Exception:
+            logger.warning(
+                "Decision routing: room=%s could not be told auto-route is unavailable",
+                room_id,
+                exc_info=True,
+            )
 
     async def _reads_now(
         self, session: AsyncSession, tenant_id: str, room_id: str
@@ -1832,13 +2134,17 @@ class MessageRouter:
         self._after.add(tenant_id, room_id, work)
 
     async def idle(self) -> None:
-        """Wait for the replies already owed, and posts already being decided,
-        to be done."""
+        """Wait for the replies already owed, and posts and messages already
+        being decided, to be done."""
         while True:
             await self._after.idle()
-            if not self._flushes:
+            if not self._flushes and not self._decision_runs:
                 return
-            await asyncio.gather(*list(self._flushes), return_exceptions=True)
+            await asyncio.gather(
+                *list(self._flushes),
+                *list(self._decision_runs.values()),
+                return_exceptions=True,
+            )
 
     def close(self) -> None:
         """Stop the timers set for posts' deadlines. The sweep in every

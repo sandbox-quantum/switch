@@ -259,6 +259,17 @@ out-of-step setting, with the restart offered. "No" is written down
 explicitly rather than left out, because a stack started under a "yes" would
 otherwise keep the setting it started with.
 
+What that server reports is its own catalogue (`docs/old/telemetry-events.md`),
+held to the same rule: counts, durations and closed values, never a room,
+agent, person or message. Auto-route is an example: each decision the server
+asks a decision service for reports only which kind of backend answered
+(`server_default`, `endpoint`, `haiku_anthropic` or `haiku_bedrock`), whether
+it picked an agent or nobody, its confidence in tenths and its latency
+(`decision_made`), or why it failed (`decision_failed`: `timeout`,
+`unreachable`, `error_status`, `bad_answer`, `key_unreadable`,
+`endpoint_refused`). Which agent was
+picked, in which room, for which message, is never sent.
+
 Three limits are stated in the app rather than left to be discovered.
 
 - **The server reads the setting when it starts.** Changing the answer while it

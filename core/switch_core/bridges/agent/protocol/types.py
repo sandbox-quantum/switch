@@ -243,10 +243,14 @@ class MessagePayload(BaseModel):
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.
     switch_notice: str | None = None
-    # True when the message tagged nobody and the decision service picked
-    # this agent to answer it (`delivery/decision.py`). Such a message is
-    # always addressed, so every host wakes for it.
+    # True when the message tagged nobody and Switch routed it to this agent
+    # (`delivery/decision.py`). Such a message is always addressed, so every
+    # host wakes for it. `routed_reason` says why: "decided", the decision
+    # service picked this agent; "fallback", the decision service was
+    # unavailable and this agent is the room's triage agent. None when not
+    # routed.
     routed: bool = False
+    routed_reason: Literal["decided", "fallback"] | None = None
 
 
 class CommandPayload(BaseModel):

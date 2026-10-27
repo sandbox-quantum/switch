@@ -79,7 +79,7 @@ You need one Slack app for the whole bridge. There are two ways to create it —
             { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false },
             { "command": "/follow-ups", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },
-            { "command": "/auto-route", "description": "Let Switch pick the agent to answer messages that tag nobody", "usage_hint": "on | off", "should_escape": false },
+            { "command": "/auto-route", "description": "Let Switch pick the agent to answer messages that tag nobody", "usage_hint": "on | off | fallback @agent", "should_escape": true },
             { "command": "/assign-agent", "description": "Send every message in this room to one agent", "usage_hint": "@agent-name", "should_escape": true },
             { "command": "/unassign-agent", "description": "Stop sending every message to the assigned agent", "should_escape": false }
         ]

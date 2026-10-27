@@ -54,7 +54,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.usage_store import UsageStore
-from switch_core.decision.client import DecisionClient
+from switch_core.decision.client import DynamicDecisionClient
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import MessageRouter
@@ -198,7 +198,7 @@ def router_on(
     connections: AgentConnectionRegistry | None = None,
     telemetry: RecordedTelemetry | None = None,
     conversation: ConversationSettings | None = None,
-    decisions: DecisionClient | None = None,
+    decisions: DynamicDecisionClient | None = None,
 ) -> MessageRouter:
     """A router on the test database with real stores. A test that has no
     agent in its rooms can write through it with nothing else set up.
@@ -239,6 +239,7 @@ def router_on(
             room_role_store=RoomRoleStore(),
         ),
         decisions=decisions,
+        decision_max_age_seconds=120,
     )
 
 
@@ -248,7 +249,7 @@ def process_on(
     rooms: RoomAnnouncements | None = None,
     connections: AgentConnectionRegistry | None = None,
     conversation: ConversationSettings | None = None,
-    decisions: DecisionClient | None = None,
+    decisions: DynamicDecisionClient | None = None,
 ) -> Process:
     """A process's routing on the test database: real stores, its own
     registry and buffer, telemetry that records. A test of presence across

@@ -43,11 +43,19 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.room_store import auto_route_fallback_in
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.room import (
+    AutoRouteRefused,
+    auto_route_state,
+    room_agent,
+    set_auto_route_fallback,
+    set_auto_route_on,
+)
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.transport import RoomRef
@@ -896,11 +904,6 @@ _AUTO_ROUTE_FLAG_OFF = (
     "`!auto-route` has no effect here. Agents only get messages that mention "
     "them, follow-ups, or every message when they are the room's assigned agent."
 )
-_AUTO_ROUTE_NO_ENDPOINT = (
-    "This Switch server has no decision service configured, so `!auto-route` "
-    "has no effect here and nothing was changed. Whoever runs the server sets "
-    "it up with `DECISION_ENDPOINT_URL`."
-)
 _AUTO_ROUTE_ON = (
     "Automatic routing is **on** in this room. When a message tags nobody and "
     "no follow-up or assigned agent picks it up, Switch asks a decision service "
@@ -913,6 +916,11 @@ _AUTO_ROUTE_OFF = (
     "reaches an agent only as a follow-up or through an assigned agent. Turn it "
     "on with `!auto-route on`."
 )
+_AUTO_ROUTE_USAGE = (
+    "Usage: `!auto-route on`, `!auto-route off`, `!auto-route` to see which it "
+    "is, or `!auto-route fallback @agent` / `!auto-route fallback off` to name "
+    "or clear the room's triage agent."
+)
 
 
 async def _cmd_auto_route(
@@ -922,37 +930,126 @@ async def _cmd_auto_route(
     _is_direct: bool,
 ) -> None:
     host = cast("CommandConsumer", client)
-    if not host._decision_routing_enabled:
+    availability = host._decision_availability
+    if not availability.enabled:
         await _reply(client, room, event, _AUTO_ROUTE_FLAG_OFF)
-        return
-    if not host._decision_endpoint_configured:
-        await _reply(client, room, event, _AUTO_ROUTE_NO_ENDPOINT)
         return
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
         await _reply(client, room, event, "Room not found.")
         return
 
-    choice = event.args.strip().lower()
-    if choice not in ("", "on", "off"):
-        await _reply(
-            client,
-            room,
-            event,
-            "Usage: `!auto-route on`, `!auto-route off`, or `!auto-route` to see "
-            "which it is.",
-        )
+    words = event.args.split()
+    choice = words[0].lower() if words else ""
+    if choice == "fallback":
+        await _auto_route_fallback(client, room, event, meta.room_id, words[1:])
+        return
+    if choice not in ("", "on", "off") or len(words) > 1:
+        await _reply(client, room, event, _AUTO_ROUTE_USAGE)
         return
 
     async with client.session_factory() as session:
+        row = await session.get(Room, meta.room_id)
+        if row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
         if choice:
-            await client._room_store.set_auto_route_on(
-                session, meta.room_id, choice == "on"
-            )
+            try:
+                await set_auto_route_on(
+                    session, availability, client._room_store, row, choice == "on"
+                )
+            except AutoRouteRefused as refused:
+                await _reply(client, room, event, f"{refused} Nothing was changed.")
+                return
             await session.commit()
-        on = await client._room_store.auto_route_on(session, meta.room_id)
+            await session.refresh(row)
+        state = await auto_route_state(session, availability, row)
+        fallback = (
+            await client._agent_store.get(session, state.fallback_agent)
+            if state.fallback_agent is not None
+            else None
+        )
 
-    await _reply(client, room, event, _AUTO_ROUTE_ON if on else _AUTO_ROUTE_OFF)
+    body = _AUTO_ROUTE_ON if state.on else _AUTO_ROUTE_OFF
+    if state.on and fallback is not None:
+        body += (
+            f" While the decision service is failing, those messages go to "
+            f"**{_label(fallback)}**, the room's triage agent."
+        )
+    if state.on and not state.available:
+        body += f" It can't act right now: {state.reason}"
+    await _reply(client, room, event, body)
+
+
+async def _auto_route_fallback(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    room_id: str,
+    args: list[str],
+) -> None:
+    """`!auto-route fallback [@agent|off]`: show, name or clear the room's
+    triage agent, which gets what auto-route could not decide because the
+    decision service failed."""
+    async with client.session_factory() as session:
+        row = await session.get(Room, room_id)
+        if row is None:
+            await _reply(client, room, event, "Room not found.")
+            return
+        if not args:
+            current = auto_route_fallback_in(row.metadata_)
+            agent = (
+                await client._agent_store.get(session, current)
+                if current is not None
+                else None
+            )
+            await _reply(
+                client,
+                room,
+                event,
+                f"While the decision service is failing, messages auto-route "
+                f"could not decide go to **{_label(agent)}**. Clear it with "
+                "`!auto-route fallback off`."
+                if current is not None
+                else "This room has no triage agent: while the decision service "
+                "is failing, messages auto-route could not decide go to nobody. "
+                "Name one with `!auto-route fallback @agent`.",
+            )
+            return
+        if len(args) > 1:
+            await _reply(client, room, event, _AUTO_ROUTE_USAGE)
+            return
+        handle = args[0]
+        target: Agent | None = None
+        if handle.lower() != "off":
+            target = await room_agent(session, room_id, handle)
+            if target is None:
+                await _reply(
+                    client,
+                    room,
+                    event,
+                    f"No agent named `{handle.removeprefix('@')}` in this room. "
+                    "Run `!list-agents`.",
+                )
+                return
+        try:
+            await set_auto_route_fallback(session, client._room_store, row, target)
+        except AutoRouteRefused as refused:
+            await _reply(client, room, event, f"{refused} Nothing was changed.")
+            return
+        await session.commit()
+
+    await _reply(
+        client,
+        room,
+        event,
+        f"**{_label(target)}** is now this room's triage agent: while the "
+        "decision service is failing, messages auto-route could not decide go "
+        "to it, marked as a fallback."
+        if target is not None
+        else "This room no longer has a triage agent: while the decision "
+        "service is failing, messages auto-route could not decide go to nobody.",
+    )
 
 
 async def _cmd_assign_agent(
@@ -2142,10 +2239,13 @@ COMMANDS: list[Command] = [
     Command(
         "auto-route",
         "Let Switch pick the agent to answer messages that tag nobody, using a "
-        "decision service. Usage: `!auto-route on`, `!auto-route off`, or "
-        "`!auto-route`.",
+        "decision service. Usage: `!auto-route on`, `!auto-route off`, "
+        "`!auto-route`, or `!auto-route fallback @agent|off` for the agent that "
+        "gets them while the decision service is failing.",
         _cmd_auto_route,
-        args_spec=(CommandArg("state", "on or off", required=False),),
+        args_spec=(
+            CommandArg("state", "on, off, or fallback @agent|off", required=False),
+        ),
         admin_owned=True,
     ),
     Command(

@@ -44,6 +44,7 @@ from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connector_apps import router as connector_apps_router
+from switch_core.gateway.decision_settings import router as decision_settings_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
@@ -218,6 +219,7 @@ def create_gateway_app(
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
+    app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,

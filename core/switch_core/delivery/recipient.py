@@ -605,7 +605,13 @@ class AgentRecipient:
         )
         notice = await self._switch_notice(session) if addressed else None
         own_event = _message_own_event(
-            meta, event, thread_id, self.agent.id, sender_role, notice, routed=False
+            meta,
+            event,
+            thread_id,
+            self.agent.id,
+            sender_role,
+            notice,
+            routed_reason=None,
         )
 
         async def after(row: InboundEvent) -> None:
@@ -683,7 +689,7 @@ class AgentRecipient:
                 self.agent.id,
                 sender_role,
                 notice,
-                routed=False,
+                routed_reason=None,
             ),
             after=after,
         )
@@ -696,12 +702,16 @@ class AgentRecipient:
         return (await self._gate_addressed(session, agent, event, self._meta)).addressed
 
     async def decide_routed(
-        self, session: AsyncSession, event: InboundMessage
+        self,
+        session: AsyncSession,
+        event: InboundMessage,
+        reason: Literal["decided", "fallback"],
     ) -> Delivery:
-        """The agent's own event for a message the decision service picked it
-        to answer (`delivery/decision.py`), decided once the message has
-        committed: when its addressing policy and budget still let the sender
-        through.
+        """The agent's own event for a message routed to it once the message
+        has committed (`delivery/decision.py`): the decision service picked it
+        (`decided`), or the service failed and it is the room's triage agent
+        (`fallback`). Only when its addressing policy and budget let the
+        sender through.
 
         As quiet as a follow-up, for the same reason: the sender asked no one
         in particular. A refusal is logged rather than posted, and an agent
@@ -712,12 +722,13 @@ class AgentRecipient:
         gate = await self._gate_addressed(session, agent, event, meta)
         if not gate.addressed:
             logger.info(
-                "Decision routing: room=%s message=%s agent=%s outcome="
-                "dropped_not_permitted reason=the sender may no longer instruct "
-                "this agent, or it is over budget",
+                "Decision routing: room=%s message=%s agent=%s routed_reason=%s "
+                "outcome=dropped_not_permitted reason=the sender may not "
+                "instruct this agent, or it is over budget",
                 meta.room_id,
                 event.event_id,
                 agent.name,
+                reason,
             )
             return NOTHING
 
@@ -735,7 +746,7 @@ class AgentRecipient:
                 self.agent.id,
                 sender_role,
                 notice,
-                routed=True,
+                routed_reason=reason,
             ),
             after=after,
         )
@@ -1868,11 +1879,11 @@ def _message_own_event(
     sender_role: str | None,
     switch_notice: str | None,
     *,
-    routed: bool,
+    routed_reason: Literal["decided", "fallback"] | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
     """How an agent's own event for a message is built once the message is
-    written. `routed` marks a message the decision service picked the agent
-    to answer."""
+    written. `routed_reason` marks a message Switch routed to the agent after
+    it tagged nobody (`delivery/decision.py`)."""
     sender_name = event.sender_name
     if not sender_name:
         sender_name = event.sender
@@ -1895,7 +1906,7 @@ def _message_own_event(
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
             switch_notice=switch_notice,
-            routed=routed,
+            routed_reason=routed_reason,
         )
         # Serialising runs once per agent per message, so only when it will
         # be seen.

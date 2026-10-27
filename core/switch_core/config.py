@@ -243,12 +243,21 @@ class SwitchConfig(BaseSettings):
 
     # Decision routing (feature flag `decision_routing`): the decision service
     # Switch asks who should answer a message no rule delivered to anyone
-    # (`POST {DECISION_ENDPOINT_URL}`). With no endpoint, `!auto-route` says so
-    # and no message is ever sent anywhere. The key, when set, is sent as a
-    # bearer token.
+    # (`POST {DECISION_ENDPOINT_URL}`). These are the server default, used by
+    # every workspace that has not chosen a backend of its own in Switch
+    # Console (`decision_settings`); with no endpoint and no choice, auto-route
+    # is unavailable in that workspace and no message is sent anywhere. The
+    # key, when set, is sent as a bearer token. The timeout applies to every
+    # workspace's backend.
     decision_endpoint_url: str | None = None
     decision_api_key: str | None = None
     decision_timeout_seconds: float = 5.0
+    # Whether a workspace may choose Haiku on Amazon Bedrock, which runs in the
+    # server's decision service on the server's own AWS credentials.
+    decision_bedrock_enabled: bool = False
+    # A message still waiting for a decision after this long (a restart, a
+    # long outage) is dropped and logged rather than answered late.
+    decision_pending_max_age_seconds: int = Field(default=120, ge=1, le=3600)
 
     @field_validator("decision_endpoint_url", "decision_api_key", mode="before")
     @classmethod
