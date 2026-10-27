@@ -771,14 +771,17 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors and Admin out of the nav', () => {
+  it('leaves Connectors out of the nav, and Admin to the workspace’s admins for decision routing', () => {
     const shown = workspaceNavViews({
       managed: false,
       serviceConnections: false,
       administers: true,
     });
     expect(shown).not.toContain('connectors');
-    expect(shown).not.toContain('admin');
+    expect(shown).toContain('admin');
+    expect(
+      workspaceNavViews({ managed: false, serviceConnections: false, administers: false })
+    ).not.toContain('admin');
     expect(
       workspaceNavViews({ managed: true, serviceConnections: true, administers: true })
     ).toEqual(['server', 'serverAgents', 'serverRooms', 'connectors', 'templates', 'admin']);
@@ -795,19 +798,10 @@ describe('with the service_connections flag off', () => {
   });
 
   it('opens Admin on its sections, or on the server’s status where there are none to use', () => {
-    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: false })).toBe(
-      'admin'
-    );
-    expect(adminNavTarget({ serviceConnections: false, administers: true, frozen: false })).toBe(
-      'managedServer'
-    );
-    expect(adminNavTarget({ serviceConnections: true, administers: false, frozen: false })).toBe(
-      'managedServer'
-    );
+    expect(adminNavTarget({ administers: true, frozen: false })).toBe('admin');
+    expect(adminNavTarget({ administers: false, frozen: false })).toBe('managedServer');
     // While the server can't answer, its status is the only entry that works.
-    expect(adminNavTarget({ serviceConnections: true, administers: true, frozen: true })).toBe(
-      'managedServer'
-    );
+    expect(adminNavTarget({ administers: true, frozen: true })).toBe('managedServer');
   });
 
   it('has no page to show, rather than an empty one', () => {

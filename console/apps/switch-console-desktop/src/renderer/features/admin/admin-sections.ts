@@ -1,4 +1,4 @@
-export type AdminSection = 'connectors' | 'apps';
+export type AdminSection = 'connectors' | 'decision' | 'apps';
 
 /**
  * An entry in the Admin page's side menu: one of the page's own sections, or
@@ -11,6 +11,7 @@ export type AdminScope = 'workspace' | 'server';
 
 export const ADMIN_MENU_LABELS = {
   connectors: 'Connectors',
+  decision: 'Decision routing',
   apps: 'Connector apps',
   status: 'Status',
 } as const satisfies Record<AdminMenuItem, string>;
@@ -21,24 +22,33 @@ export type AdminGroup = { scope: AdminScope; items: AdminMenuItem[] };
  * The Admin menu's entries the signed-in account may use, grouped by what
  * they reach. Each is there only for the role that may use it, so nobody is
  * shown a control the server would refuse: the workspace's connector
- * switches are its admins' (the server's operator administers every
- * workspace), and the apps connectors sign in through are the operator's
- * alone, both only where the server has service connections on. A server
- * this Console runs has its status here for whoever runs it, whatever their
- * role on it: it is started, stopped and updated on their own computer or
- * host. A group with nothing in it is left out.
+ * switches and its decision routing are its admins' (the server's operator
+ * administers every workspace), and the apps connectors sign in through are
+ * the operator's alone. The two about connectors are there only where the
+ * server has service connections on; decision routing is not about
+ * connectors, so it is there either way. None of them is there while a server
+ * this Console runs can't answer. A server this Console runs has its status here for
+ * whoever runs it, whatever their role on it: it is started, stopped and
+ * updated on their own computer or host. A group with nothing in it is left
+ * out.
  */
 export function adminGroups(person: {
   administers: boolean;
   operator: boolean;
   serviceConnections: boolean;
   managed: boolean;
+  frozen: boolean;
 }): AdminGroup[] {
-  const { serviceConnections } = person;
+  // While a server this Console runs can't answer, its status is all that works.
+  const serviceConnections = person.serviceConnections && !person.frozen;
+  const administers = person.administers && !person.frozen;
   const groups: AdminGroup[] = [
     {
       scope: 'workspace',
-      items: serviceConnections && person.administers ? ['connectors'] : [],
+      items: [
+        ...(serviceConnections && administers ? (['connectors'] as const) : []),
+        ...(administers ? (['decision'] as const) : []),
+      ],
     },
     {
       scope: 'server',

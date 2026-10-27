@@ -31,6 +31,7 @@ const featureFlags = vi.hoisted(() => ({
   })),
 }));
 const switchServers = vi.hoisted(() => ({
+  getDecisionSettings: vi.fn(),
   getConnectorApps: vi.fn(),
   checkConnectorApp: vi.fn(),
   saveConnectorApp: vi.fn(),
@@ -187,7 +188,7 @@ it('lists its sections under what they reach, and each service as a tile with wh
   expect(workspaces.getWorkspaceServices).toHaveBeenCalledWith('workspace');
   expect(page.textContent).toContain('Choose which services people in Acme can connect');
   const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeConnectors');
+  expect(workspace.textContent).toBe('Workspace · AcmeConnectorsDecision routing');
   expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Connectors');
   expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
   expect(tiles(page)!.textContent).toContain('3 members connected · 2 agents use it');
@@ -280,6 +281,64 @@ it('tells someone who administers nothing whom to ask, asking the server nothing
     expect(page.textContent).toContain('Ask a workspace admin to change these.')
   );
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
+  expect(page.textContent).not.toContain('Decision routing');
+  expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
+});
+
+it('gives the workspace’s admins Decision routing under Workspace, with service connections off too', async () => {
+  featureFlags.get.mockResolvedValueOnce({
+    success: true,
+    data: {
+      serverId: 'server',
+      flags: { service_connections: false },
+      fetchedAt: 1,
+      error: null,
+    },
+  });
+  switchServers.getDecisionSettings.mockResolvedValue({
+    kind: 'loaded',
+    settings: {
+      source: 'server_default',
+      effective: {
+        backend: 'endpoint',
+        endpoint: 'http://decision:8230',
+        threshold: null,
+        available: true,
+        reason: null,
+      },
+      workspace: null,
+      serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
+      options: { haikuAnthropic: true, haikuBedrock: false },
+    },
+  });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('This workspace uses the server default')
+  );
+  expect(switchServers.getDecisionSettings).toHaveBeenCalledWith('workspace');
+  const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
+  expect(workspace.textContent).toBe('Workspace · AcmeDecision routing');
+  expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Decision routing');
+  expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
+});
+
+it('opens Decision routing from its menu entry beside Connectors', async () => {
+  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
+  switchServers.getDecisionSettings.mockResolvedValue({ kind: 'forbidden' });
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  const entry = [...page.querySelectorAll<HTMLElement>('nav button')].find(
+    (button) => button.textContent === 'Decision routing'
+  )!;
+  await act(async () => entry.click());
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'Only an admin of this workspace can view or change its decision routing.'
+    )
+  );
 });
 
 function connectorApp(overrides: Partial<ConnectorApp>): ConnectorApp {

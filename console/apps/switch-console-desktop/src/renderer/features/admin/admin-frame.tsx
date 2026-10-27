@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import type { ReactNode } from 'react';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
+import { isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import {
   administersWorkspaceInScope,
@@ -25,11 +26,13 @@ const WIDTH = 1120;
 
 /** The Admin menu's entries for the signed-in account on `serverId`. */
 export function adminGroupsInScope(serverId: string, serviceConnections: boolean): AdminGroup[] {
+  const server = switchServersStore.servers.find((s) => s.id === serverId);
   return adminGroups({
     administers: administersWorkspaceInScope(serverId),
     operator: operatesServer(serverId),
     serviceConnections,
-    managed: switchServersStore.servers.find((s) => s.id === serverId)?.managed ?? false,
+    managed: server?.managed ?? false,
+    frozen: server ? isFrozenServer(server) : false,
   });
 }
 

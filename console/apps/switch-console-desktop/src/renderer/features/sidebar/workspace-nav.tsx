@@ -41,7 +41,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
 
   const administers = administersWorkspaceInScope(active.id);
   // Admin also holds the status of a server this Console runs, a view of its own.
-  const adminTarget = adminNavTarget({ serviceConnections, administers, frozen });
+  const adminTarget = adminNavTarget({ administers, frozen });
   const onAdmin = isCurrentView(currentView, 'admin') && adminParams?.serverId === active.id;
   const onStatus =
     isCurrentView(currentView, 'managedServer') && managedServerParams?.serverId === active.id;

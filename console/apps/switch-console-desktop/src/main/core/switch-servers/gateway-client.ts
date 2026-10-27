@@ -76,6 +76,11 @@ import {
   type ChannelRetirement,
   type ChatClaim,
   type ConnectedChat,
+  type DecisionBackend,
+  type DecisionSettings,
+  type DecisionSettingsInput,
+  type DecisionTestInput,
+  type DecisionTestOutcome,
   type DeleteBridgeResult,
   type LinkedIdentity,
   type MessagingAppInstall,
@@ -91,6 +96,7 @@ import {
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
   type RetireOutcome,
+  type RoomAutoRoute,
   type SwitchAuthConfig,
   type SwitchServer,
   type SwitchServerDeclaration,
@@ -529,6 +535,137 @@ export async function clearTrustSettings(server: SwitchServer): Promise<TrustSet
     method: 'DELETE',
   });
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+type DecisionSettingsJson = {
+  source: 'workspace' | 'server_default';
+  effective: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    available: boolean;
+    reason: string | null;
+  };
+  workspace: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    has_api_key: boolean;
+    api_key_last4: string | null;
+    api_key_unreadable: boolean;
+    updated_at: string;
+  } | null;
+  server_default: { configured: boolean; endpoint: string | null; has_api_key: boolean };
+  options: { haiku_anthropic: boolean; haiku_bedrock: boolean };
+};
+
+function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
+  const { workspace } = json;
+  return {
+    source: json.source,
+    effective: {
+      backend: json.effective.backend,
+      endpoint: json.effective.endpoint,
+      threshold: json.effective.threshold,
+      available: json.effective.available,
+      reason: json.effective.reason,
+    },
+    workspace:
+      workspace === null
+        ? null
+        : {
+            backend: workspace.backend,
+            endpoint: workspace.endpoint,
+            threshold: workspace.threshold,
+            hasApiKey: workspace.has_api_key,
+            apiKeyLast4: workspace.api_key_last4,
+            apiKeyUnreadable: workspace.api_key_unreadable,
+            updatedAt: workspace.updated_at,
+          },
+    serverDefault: {
+      configured: json.server_default.configured,
+      endpoint: json.server_default.endpoint,
+      hasApiKey: json.server_default.has_api_key,
+    },
+    options: {
+      haikuAnthropic: json.options.haiku_anthropic,
+      haikuBedrock: json.options.haiku_bedrock,
+    },
+  };
+}
+
+/** The wire body `PUT /decision-settings` and its test take; a field left
+ * unset is left out, so the stored key survives a save that doesn't name one. */
+function decisionSettingsBody(input: DecisionTestInput): Record<string, unknown> {
+  if (input.backend === 'default') return { backend: 'default' };
+  return {
+    backend: input.backend,
+    ...(input.endpoint !== undefined ? { endpoint: input.endpoint } : {}),
+    ...(input.apiKey !== undefined ? { api_key: input.apiKey } : {}),
+    ...(input.clearApiKey !== undefined ? { clear_api_key: input.clearApiKey } : {}),
+    ...(input.threshold !== undefined ? { threshold: input.threshold } : {}),
+  };
+}
+
+/** The decision routing settings of the workspace the session selects, its
+ * admins only (`GET /decision-settings`). */
+export async function fetchDecisionSettings(server: SwitchServer): Promise<DecisionSettings> {
+  const res = await gatewayFetch(server, '/decision-settings', { authenticated: true });
+  return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+/** Save the selected workspace's decision routing settings (`PUT /decision-settings`). */
+export async function updateDecisionSettings(
+  server: SwitchServer,
+  input: DecisionSettingsInput
+): Promise<DecisionSettings> {
+  const res = await gatewayFetch(server, '/decision-settings', {
+    authenticated: true,
+    method: 'PUT',
+    body: decisionSettingsBody(input),
+  });
+  return mapDecisionSettings((await res.json()) as DecisionSettingsJson);
+}
+
+/** Return the selected workspace to the server default (`DELETE /decision-settings`,
+ * which answers 204), then read the settings back as they now stand. */
+export async function clearDecisionSettings(server: SwitchServer): Promise<DecisionSettings> {
+  await gatewayFetch(server, '/decision-settings', { authenticated: true, method: 'DELETE' });
+  return fetchDecisionSettings(server);
+}
+
+type DecisionTestJson = {
+  ok: boolean;
+  agent: string | null;
+  model_choice: string | null;
+  confidence: number | null;
+  latency_ms: number | null;
+  backend: string | null;
+  error: { code: string; message: string } | null;
+};
+
+/** Run one sample decision against unsaved values, or the server default
+ * (`POST /decision-settings/test`). A failed decision is an answer, not an
+ * error: it comes back with `ok` false. */
+export async function testDecisionSettings(
+  server: SwitchServer,
+  input: DecisionTestInput
+): Promise<DecisionTestOutcome> {
+  const res = await gatewayFetch(server, '/decision-settings/test', {
+    authenticated: true,
+    method: 'POST',
+    body: decisionSettingsBody(input),
+  });
+  const json = (await res.json()) as DecisionTestJson;
+  return {
+    ok: json.ok,
+    agent: json.agent,
+    modelChoice: json.model_choice,
+    confidence: json.confidence,
+    latencyMs: json.latency_ms,
+    backend: json.backend,
+    error: json.error === null ? null : { code: json.error.code, message: json.error.message },
+  };
 }
 
 type ServerDeclarationJson = {
@@ -2939,7 +3076,28 @@ type RoomDetailJson = RoomSummaryJson & {
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
   linked_channel_name?: string | null;
+  /** Absent from a server that predates decision routing. */
+  auto_route?: RoomAutoRouteJson;
 };
+
+type RoomAutoRouteJson = {
+  on: boolean;
+  available: boolean;
+  reason: string | null;
+  fallback_agent: string | null;
+  /** Absent from a server that predates it. */
+  fallback_agent_name?: string | null;
+};
+
+function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
+  return {
+    on: json.on,
+    available: json.available,
+    reason: json.reason,
+    fallbackAgent: json.fallback_agent,
+    fallbackAgentName: json.fallback_agent_name ?? null,
+  };
+}
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
   return {
@@ -2949,6 +3107,7 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
     linkedChannelName: r.linked_channel_name ?? null,
+    ...(r.auto_route ? { autoRoute: mapRoomAutoRoute(r.auto_route) } : {}),
   };
 }
 
@@ -3008,6 +3167,27 @@ export async function updateRoom(
     body: changes,
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Change a room's auto-route setting (`PUT /rooms/{id}/auto-route`), the same
+ * store `!auto-route` writes; a field left out is left alone. Answers with the
+ * setting as it now stands.
+ */
+export async function setRoomAutoRoute(
+  server: SwitchServer,
+  roomId: string,
+  changes: { on?: boolean; fallbackAgent?: string | null }
+): Promise<RoomAutoRoute> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/auto-route`, {
+    authenticated: true,
+    method: 'PUT',
+    body: {
+      ...(changes.on !== undefined ? { on: changes.on } : {}),
+      ...(changes.fallbackAgent !== undefined ? { fallback_agent: changes.fallbackAgent } : {}),
+    },
+  });
+  return mapRoomAutoRoute((await res.json()) as RoomAutoRouteJson);
 }
 
 /**

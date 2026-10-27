@@ -11,6 +11,7 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import {
   withReachableServerWorkspaceSession,
+  withReachableWorkspaceSession,
   withServerWorkspaceSession,
 } from '@main/core/workspaces/workspace-session';
 import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
@@ -28,7 +29,9 @@ import {
   normaliseServerUrl,
   type AddServerParams,
   type BundledChatSignIn,
+  type ClearDecisionSettingsResult,
   type ClearTrustSettingsResult,
+  type FetchDecisionSettingsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
@@ -39,6 +42,10 @@ import {
   type SwitchServer,
   type UpdateServerParams,
   type UpdateServerResult,
+  type TestDecisionSettingsParams,
+  type TestDecisionSettingsResult,
+  type UpdateDecisionSettingsParams,
+  type UpdateDecisionSettingsResult,
   type UpdateTrustSettingsParams,
   type UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
@@ -54,6 +61,12 @@ import {
   signup,
 } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
+import {
+  clearDecisionSettingsOnServer,
+  fetchDecisionSettingsFromServer,
+  testDecisionSettingsOnServer,
+  updateDecisionSettingsOnServer,
+} from './decision-settings';
 import {
   getConnectionCatalog,
   getGitHubConnection,
@@ -503,6 +516,36 @@ export const switchServersController = createRPCController({
 
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
+
+  /**
+   * A workspace's decision routing settings, its admins only. Scoped to the
+   * workspace named, not the server: each workspace chooses its own decision
+   * backend, so the call runs with that workspace's tenant selected.
+   */
+  getDecisionSettings: (workspaceId: string): Promise<FetchDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchDecisionSettingsFromServer),
+
+  updateDecisionSettings: ({
+    workspaceId,
+    ...input
+  }: UpdateDecisionSettingsParams): Promise<UpdateDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      updateDecisionSettingsOnServer(server, input)
+    ),
+
+  /** Return the workspace to the server's default decision backend. */
+  clearDecisionSettings: (workspaceId: string): Promise<ClearDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, clearDecisionSettingsOnServer),
+
+  /** Run one sample decision against the unsaved values, or the server
+   * default, nothing stored. */
+  testDecisionSettings: ({
+    workspaceId,
+    ...input
+  }: TestDecisionSettingsParams): Promise<TestDecisionSettingsResult> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      testDecisionSettingsOnServer(server, input)
+    ),
 
   /**
    * The apps connectors sign in through, for the server's operator: not

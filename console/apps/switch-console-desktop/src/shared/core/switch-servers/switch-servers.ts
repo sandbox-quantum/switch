@@ -362,6 +362,36 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   channelOnDelete?: ChannelRetirement | null;
   /** The name of the platform channel the room is linked to, as Switch last saw it; null when it has not. */
   linkedChannelName: string | null;
+  /** Whether untagged messages here are routed by the workspace's decision
+   * service. Undefined from a server that predates decision routing. */
+  autoRoute?: RoomAutoRoute;
+};
+
+/**
+ * A room's auto-route setting (`!auto-route`) and whether it can take effect:
+ * `available` is false when the server has the feature off or the room's
+ * workspace has no decision backend, and `reason` then says what is missing
+ * and who can fix it.
+ */
+export type RoomAutoRoute = {
+  on: boolean;
+  available: boolean;
+  reason: string | null;
+  /** The id of the agent that gets undecided messages while the decision
+   * service is failing; null when nobody does. */
+  fallbackAgent: string | null;
+  /** That agent's name, for display; null when there is none, or from a
+   * server that predates it. */
+  fallbackAgentName: string | null;
+};
+
+/** A change to a room's auto-route setting (`PUT /rooms/{id}/auto-route`);
+ * a field left out is left alone. */
+export type SetRoomAutoRouteParams = {
+  workspaceId: string;
+  roomId: string;
+  on?: boolean;
+  fallbackAgent?: string | null;
 };
 
 /** What deleting a room does to its platform channel when asked to retire it
@@ -760,6 +790,129 @@ export type ClearTrustSettingsResult =
   | { kind: 'cleared'; settings: TrustSettings }
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+/**
+ * Who decides an untagged message in a workspace's auto-route rooms: nobody
+ * (`none`), a self-hosted decision endpoint, or Haiku run inside the server's
+ * decision service, through the Anthropic API or Amazon Bedrock.
+ */
+export type DecisionBackend = 'none' | 'endpoint' | 'haiku_anthropic' | 'haiku_bedrock';
+
+/**
+ * A workspace's decision routing settings (`GET /decision-settings`), read for
+ * the workspace the session selects. A workspace with no saved choice uses the
+ * server's default, from its environment; `source` says which applies and
+ * `effective` what that comes to.
+ *
+ * The key is never returned: `hasApiKey`/`apiKeyLast4` only confirm one is
+ * stored, and `apiKeyUnreadable` says the server can no longer decrypt it.
+ */
+export type DecisionSettings = {
+  source: 'workspace' | 'server_default';
+  effective: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    available: boolean;
+    /** Why auto-route is unavailable, in the server's words; null when it is available. */
+    reason: string | null;
+  };
+  /** Null while the workspace uses the server default. */
+  workspace: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    hasApiKey: boolean;
+    apiKeyLast4: string | null;
+    apiKeyUnreadable: boolean;
+    updatedAt: string;
+  } | null;
+  serverDefault: { configured: boolean; endpoint: string | null; hasApiKey: boolean };
+  /** Which Haiku backends the server can run: both need its decision service,
+   * and Bedrock also its operator's say-so. */
+  options: { haikuAnthropic: boolean; haikuBedrock: boolean };
+};
+
+/**
+ * The values a workspace admin saves or tests (`PUT /decision-settings`,
+ * `POST /decision-settings/test`). `apiKey` left unset keeps whatever key is
+ * stored, so re-saving the endpoint or threshold doesn't force re-entering
+ * the secret; `clearApiKey` removes it.
+ */
+export type DecisionSettingsInput = {
+  backend: DecisionBackend;
+  endpoint?: string | null;
+  apiKey?: string;
+  clearApiKey?: boolean;
+  threshold?: number | null;
+};
+
+/** Outcome of loading a workspace's decision settings. Its admins only, so a
+ * member who isn't one gets `forbidden` rather than an empty form. */
+export type FetchDecisionSettingsResult =
+  | { kind: 'loaded'; settings: DecisionSettings }
+  /** The server predates per-workspace decision settings. */
+  | { kind: 'unsupported' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+export type UpdateDecisionSettingsParams = { workspaceId: string } & DecisionSettingsInput;
+
+/** What a test runs against: unsaved values, or `default` for the server's
+ * own default, tested with its own endpoint and key and never the
+ * workspace's stored key. */
+export type DecisionTestInput = DecisionSettingsInput | { backend: 'default' };
+
+export type TestDecisionSettingsParams = { workspaceId: string } & DecisionTestInput;
+
+/** Outcome of saving a workspace's decision settings; `invalid` carries the
+ * server's own sentence (a threshold out of range, a bad URL, Bedrock not allowed). */
+export type UpdateDecisionSettingsResult =
+  | { kind: 'saved'; settings: DecisionSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Outcome of returning a workspace to the server default (`DELETE /decision-settings`),
+ * with the settings as they now stand. */
+export type ClearDecisionSettingsResult =
+  | { kind: 'cleared'; settings: DecisionSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+export type DecisionTestErrorCode =
+  | 'unreachable'
+  | 'timeout'
+  | 'unauthorized'
+  | 'key_refused'
+  | 'bad_answer'
+  | 'backend_unavailable'
+  | 'not_configured';
+
+/** One sample decision run against unsaved values: the pick (null for none),
+ * its confidence and latency, or why it failed. */
+export type DecisionTestOutcome = {
+  ok: boolean;
+  agent: string | null;
+  modelChoice: string | null;
+  confidence: number | null;
+  latencyMs: number | null;
+  backend: string | null;
+  error: { code: DecisionTestErrorCode | string; message: string } | null;
+};
+
+/** Outcome of asking the server to test decision settings. A failed test is
+ * still `tested`, with the failure in the outcome; the other kinds are about
+ * the request itself. */
+export type TestDecisionSettingsResult =
+  | { kind: 'tested'; outcome: DecisionTestOutcome }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
   | { kind: 'error'; message: string };
 
 /** A bridged (external) human identity on a server. The `users` dimension of an

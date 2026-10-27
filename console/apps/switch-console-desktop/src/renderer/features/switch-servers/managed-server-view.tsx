@@ -31,11 +31,7 @@ import {
   stopManagedServer,
 } from './managed-server-actions';
 import { WorkingSpinner } from './managed-server-dot';
-import {
-  type ManagedServerState,
-  isFrozenServer,
-  managedServerState,
-} from './managed-server-state';
+import { type ManagedServerState, managedServerState } from './managed-server-state';
 import { managedTelemetryNotice } from './managed-telemetry-notice';
 import { remoteServerStore } from './remote-server-store';
 import { serverIcon } from './server-icon';
@@ -129,7 +125,7 @@ const ManagedServerInAdmin = observer(function ManagedServerInAdmin({
   server: SwitchServer;
 }) {
   const serviceConnections = useFeatureFlags(server.id).service_connections;
-  const groups = adminGroupsInScope(server.id, serviceConnections && !isFrozenServer(server));
+  const groups = adminGroupsInScope(server.id, serviceConnections);
   return (
     <AdminFrame serverId={server.id} groups={groups} active="status">
       <ManagedServerPage server={server} />
