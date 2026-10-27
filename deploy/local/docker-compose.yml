@@ -182,7 +182,9 @@ services:
       - --port
       - "8300"
       - -c
-      - "8192"
+      - "16384"
+      - -np
+      - "4"
       - --jinja
     volumes:
       - decision-models:/models:ro
@@ -209,7 +211,9 @@ services:
       - -ngl
       - "99"
       - -c
-      - "8192"
+      - "16384"
+      - -np
+      - "4"
       - --jinja
     # The decision service reaches whichever model server runs at one name.
     networks:
