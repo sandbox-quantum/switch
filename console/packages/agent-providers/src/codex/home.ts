@@ -23,8 +23,10 @@ export function withManagedCodexSandbox(config: string, runtimeMode: RuntimeMode
 /**
  * Native rollouts remain in the persistent session directory on the execution
  * host. `keyringLogin` is set when the source home has no auth.json to copy:
- * the session's login, if Codex has one, is then in the OS keyring, and is
- * handed over as the session starts (`CodexKeyringLogin`).
+ * the machine's login, if Codex has one, is then in the OS keyring, and a
+ * session with no login of its own is handed it as it starts
+ * (`CodexKeyringLogin`). A copy the session already has is left alone, since
+ * Codex may still read it.
  */
 export async function prepareCodexSessionHome(input: {
   root: string;
@@ -37,12 +39,7 @@ export async function prepareCodexSessionHome(input: {
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
   const keyringLogin = !(await isFile(join(input.sourceHome, 'auth.json')));
-  // A copy left from when the machine kept its login in a file: a session
-  // handed a keyring login never reads it, so it is only a plaintext secret.
-  if (keyringLogin)
-    for (const name of ['auth.json', '.switch-auth-source'])
-      await rm(join(home, name), { force: true });
-  else await copyCodexAuthenticationOnce(home, input.sourceHome);
+  if (!keyringLogin) await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
   // The session host registers its own `switch` server; an entry of that name
@@ -69,7 +66,7 @@ async function isFile(path: string): Promise<boolean> {
     return (await stat(path)).isFile();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
+    throw new Error('Could not load the execution-host Codex login.', { cause: error });
   }
 }
 

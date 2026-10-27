@@ -96,8 +96,9 @@ export interface ProviderSessionStartInput {
    * of read from its own files. */
   agentDefinition?: AgentLaunchDefinition;
   /**
-   * Codex only: the session has no auth.json, so an API key the execution
-   * machine's Codex keeps in the OS keyring is handed to it as it starts.
+   * Codex only: the execution machine's Codex home has no auth.json, so a
+   * session with no login of its own is handed the API key that Codex keeps
+   * in the OS keyring as it starts.
    */
   codexKeyringLogin?: CodexKeyringLogin;
 }

@@ -59,7 +59,7 @@ it('hands the session a keyring login when the source home has no auth.json', as
   expect(await readdir(home)).not.toContain('auth.json');
 });
 
-it('drops a login copied before the machine moved its own to the keyring', async () => {
+it('leaves a copied login alone when the machine moves its own to the keyring', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
   roots.push(root);
   const sourceHome = join(root, 'source');
@@ -67,11 +67,10 @@ it('drops a login copied before the machine moved its own to the keyring', async
   await writeFile(join(sourceHome, 'auth.json'), 'fixture-login');
   const input = { root: join(root, 'sessions'), sessionId: 'session', sourceHome, config: '' };
   const { home } = await prepareCodexSessionHome(input);
-  await writeFile(join(home, '.switch-auth-source'), 'fixture-fingerprint');
   await rm(join(sourceHome, 'auth.json'));
+  // Codex may still read the copy; the adapter decides once it has asked.
   expect(await prepareCodexSessionHome(input)).toEqual({ home, keyringLogin: true });
-  expect(await readdir(home)).not.toContain('auth.json');
-  expect(await readdir(home)).not.toContain('.switch-auth-source');
+  expect(await readFile(join(home, 'auth.json'), 'utf8')).toBe('fixture-login');
 });
 
 it('removes a Switch skill file an earlier build left in the session home', async () => {

@@ -5,7 +5,6 @@ import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
-import { keyringBusEnvironment } from '../codex/keyring-login';
 import { ActivityReporter, type Report } from './activity-reporter';
 import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './attachments';
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
@@ -1109,15 +1108,10 @@ export async function hostSessionProcess(input: {
       mcp.spec,
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
-      { ...vendors.specs, ...clis.specs }
+      { ...vendors.specs, ...clis.specs },
+      (secret) => redactions.add(secret)
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
-    if (prepared.codexKeyringHome)
-      prepared.input.codexKeyringLogin = {
-        home: prepared.codexKeyringHome,
-        env: { ...keyringBusEnvironment(process.env), ...prepared.input.env },
-        redact: (secret) => redactions.add(secret),
-      };
     // The people watching see it as a notice; the agent reads it with the
     // context it resumes under, so it does not go looking for tools it no
     // longer has.

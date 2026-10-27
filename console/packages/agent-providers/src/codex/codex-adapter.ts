@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
@@ -379,19 +379,29 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const mode = threadModeConfig(input.runtimeMode, input.cwd);
     const mcp = mcpServerConfigArgs(input.mcpServers, input.connectorMcpServers, input.runtimeMode);
+    const args = ['app-server', ...featureArgs(this.features), ...mode.configArgs, ...mcp.args];
+    const env = { ...input.env, ...mcp.env };
     const keyringLogin = input.codexKeyringLogin;
-    const args = [
-      'app-server',
-      ...featureArgs(this.features),
-      ...mode.configArgs,
-      ...mcp.args,
-      ...(keyringLogin ? EPHEMERAL_LOGIN_ARGS : []),
-    ];
+    let handOver = false;
+    if (keyringLogin) {
+      try {
+        handOver = await this.lacksOwnLogin(args, input.cwd, env);
+      } catch (cause) {
+        throw new ProviderSessionError(
+          PROVIDER,
+          input.sessionId,
+          `could not check the codex login: ${String(cause)}`,
+          { cause }
+        );
+      }
+      if (this.sessions.has(input.sessionId))
+        throw new ProviderSessionError(PROVIDER, input.sessionId, 'session already started');
+    }
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
-      args,
+      args: handOver ? [...args, ...EPHEMERAL_LOGIN_ARGS] : args,
       cwd: input.cwd,
-      env: { ...input.env, ...mcp.env },
+      env,
       logger: this.logger,
       onExit: (reason) => this.handleProcessExit(input.sessionId, reason),
     });
@@ -430,7 +440,7 @@ export class CodexAdapter implements ProviderAdapter {
         await client.request('account/read', { refreshToken: false })
       );
       if (!account.account && account.requiresOpenaiAuth) {
-        if (!keyringLogin) throw new Error(CODEX_SIGN_IN_REQUIRED);
+        if (!keyringLogin || !handOver) throw new Error(CODEX_SIGN_IN_REQUIRED);
         await this.signInFromKeyring(client, input.cwd, keyringLogin);
       }
 
@@ -449,7 +459,9 @@ export class CodexAdapter implements ProviderAdapter {
       const opened = await this.openThread(client, config, input.resume?.nativeSessionId);
       state.threadId = opened.thread.id;
     } catch (cause) {
-      this.sessions.delete(input.sessionId);
+      // A start stopped part-way (reset while it waited on the keyring, say)
+      // may already have been replaced under the same id.
+      if (this.sessions.get(input.sessionId) === state) this.sessions.delete(input.sessionId);
       await client.dispose();
       if (
         input.resume &&
@@ -689,6 +701,51 @@ export class CodexAdapter implements ProviderAdapter {
       threadId: resumeThreadId,
       excludeTurns: true,
     });
+  }
+
+  /**
+   * Whether a session that could be handed a keyring login has no login of
+   * its own, asked of its Codex as configured. A copy of the machine's old
+   * auth.json, or a login Codex saved for the session itself, keeps working
+   * and is left alone; a copy that no longer works is only a plaintext secret
+   * then, and is removed. Only the account cached at startup is read, so this
+   * refreshes nothing.
+   */
+  private async lacksOwnLogin(
+    args: string[],
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<boolean> {
+    const probe = new StdioJsonRpcClient({
+      command: this.binaryPath,
+      args,
+      cwd,
+      env,
+      logger: noopLogger,
+      onExit: () => {},
+    });
+    try {
+      await probe.request(CODEX_CLIENT_METHODS.initialize, {
+        clientInfo: { name: CLIENT_NAME, title: 'Switch Console', version: CLIENT_VERSION },
+      });
+      probe.notify(CODEX_CLIENT_NOTIFICATIONS.initialized, null);
+      const account = accountSchema.parse(
+        await probe.request('account/read', { refreshToken: false })
+      );
+      if (account.account || !account.requiresOpenaiAuth) return false;
+    } catch (error) {
+      throw new Error(`${String(error)}${probe.stderr ? `\n${probe.stderr}` : ''}`, {
+        cause: error,
+      });
+    } finally {
+      await probe.dispose().catch((error: unknown) =>
+        this.logger.warn('The Codex that checked a session login did not stop.', {
+          error: String(error),
+        })
+      );
+    }
+    if (env.CODEX_HOME) await rm(join(env.CODEX_HOME, 'auth.json'), { force: true });
+    return true;
   }
 
   /**

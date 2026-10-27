@@ -26,19 +26,8 @@ const authStatusSchema = z.object({
   authToken: z.string().nullish(),
 });
 
-/**
- * What Codex on Linux reaches the Secret Service by, from the session host's
- * own environment: sessions are not given the session bus, and only the Codex
- * that reads the login needs it. Untested on Linux so far.
- */
-export function keyringBusEnvironment(hostEnv: NodeJS.ProcessEnv): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const name of ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR']) {
-    const value = hostEnv[name];
-    if (value) env[name] = value;
-  }
-  return env;
-}
+/** A refusal worded here, passed on as it is. */
+class KeyringLoginError extends Error {}
 
 function loginKind(type: string): string {
   return type === 'chatgpt' ? 'ChatGPT' : `a ${type} login`;
@@ -68,7 +57,7 @@ export async function readCodexKeyringApiKey(
     await stat(login.home);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+    throw new Error('Could not load the execution-host Codex login.', { cause: error });
   }
   // Run in the home rather than the agent's directory, so no project
   // configuration changes where this Codex reads its login.
@@ -85,7 +74,7 @@ export async function readCodexKeyringApiKey(
     timer = setTimeout(
       () =>
         reject(
-          new Error(
+          new KeyringLoginError(
             `Codex on the execution machine did not read its login from the OS keyring within ${timeoutMs / 1000} seconds. The keychain may be locked, or the system may be waiting for someone at that machine to let Codex use its "Codex Auth" keychain item; start the session again once it can.`
           )
         ),
@@ -94,9 +83,24 @@ export async function readCodexKeyringApiKey(
   });
   try {
     return await Promise.race([readApiKey(client), timeout]);
+  } catch (error) {
+    if (error instanceof KeyringLoginError) throw error;
+    const output = client.stderr.trim();
+    throw new Error(
+      `Codex on the execution machine could not report its login: ${error instanceof Error ? error.message : String(error)}${output ? `\n${output}` : ''}`,
+      { cause: error }
+    );
   } finally {
     clearTimeout(timer);
-    await client.dispose();
+    // Whatever was read, or went wrong, is the answer: a reader that will not
+    // stop is reported, not put in its place.
+    await client
+      .dispose()
+      .catch((error: unknown) =>
+        console.warn(
+          `The Codex that read a keyring login did not stop: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
   }
 }
 
@@ -108,7 +112,7 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
   );
   if (!account) return null;
   if (account.type !== 'apiKey')
-    throw new Error(
+    throw new KeyringLoginError(
       `Codex on the execution machine is signed in with ${loginKind(account.type)} and has no auth.json, so its login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"). A Switch session can take a login from the keyring only when it is an API key. ${CODEX_FILE_STORE_WORKAROUND}`
     );
   let status: z.infer<typeof authStatusSchema>;
@@ -118,14 +122,14 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
     );
   } catch (error) {
     if (error instanceof JsonRpcError && error.code === METHOD_NOT_FOUND)
-      throw new Error(
+      throw new KeyringLoginError(
         `This version of Codex cannot hand Switch the API key it keeps in the OS keyring: it no longer answers getAuthStatus. ${CODEX_FILE_STORE_WORKAROUND}`,
         { cause: error }
       );
     throw error;
   }
   if (status.authMethod !== 'apikey' || !status.authToken)
-    throw new Error(
+    throw new KeyringLoginError(
       `Codex on the execution machine reported an API-key login but did not hand over the key. ${CODEX_FILE_STORE_WORKAROUND}`
     );
   return status.authToken;

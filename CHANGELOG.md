@@ -2009,9 +2009,10 @@ version of their own to them without also giving them a release of their own.
   another keyring entry, and a changed key is picked up at the next start. A
   ChatGPT login in the keyring cannot be handed over, and the session says so
   with the file-storage workaround; it also refuses to hand over the key when an
-  administrator's Codex configuration would have it saved elsewhere. A login a
-  session copied while the machine still had an `auth.json` is removed once
-  the machine no longer has one.
+  administrator's Codex configuration would have it saved elsewhere. A session
+  that still has a working login of its own, such as one it copied while the
+  machine had an `auth.json`, starts as before; a copy that no longer works is
+  removed.
 
 #### Changed
 - **Managed agents and machines update when the server says they changed.**

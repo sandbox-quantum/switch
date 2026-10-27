@@ -115,4 +115,29 @@ describe.skipIf(unavailable)('Codex keyring login handoff (real codex)', () => {
         expect((await readFile(file)).includes(FAKE_KEY), file).toBe(false);
     }
   );
+
+  it('leaves a session that still has a working copied login as it was', async () => {
+    const copied = join(root, 'session-with-copy');
+    await mkdir(copied);
+    await writeFile(join(copied, 'config.toml'), 'cli_auth_credentials_store = "file"\n');
+    const copy = JSON.stringify({ OPENAI_API_KEY: 'sk-fake-switch-copied-login-0000' });
+    await writeFile(join(copied, 'auth.json'), copy);
+    const adapter = createCodexAdapter();
+    const redact = vi.fn();
+    try {
+      await adapter.startSession({
+        sessionId: 'keyring-copy',
+        cwd: work,
+        runtimeMode: 'full-access',
+        env: { ...env(), CODEX_HOME: copied },
+        mcpServers: {},
+        connectorMcpServers: [],
+        codexKeyringLogin: { home: sourceHome, env: env(), redact },
+      });
+      expect(redact).not.toHaveBeenCalled();
+    } finally {
+      await adapter.stopAll();
+    }
+    expect(await readFile(join(copied, 'auth.json'), 'utf8')).toBe(copy);
+  });
 });
