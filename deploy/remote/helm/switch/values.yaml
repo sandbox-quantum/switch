@@ -894,7 +894,9 @@ decision:
       - -ngl
       - "99"
       - -c
-      - "8192"
+      - "16384"
+      - -np
+      - "4"
       - --jinja
     # The weights, downloaded into the PVC by an init container when the file
     # is not there yet. Changing them downloads the new file on the next start.
