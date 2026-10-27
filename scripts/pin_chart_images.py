@@ -10,7 +10,8 @@ it, and what runs is reproducible from that one pin.
 
 Two charts are published:
 
-* `switch` (deploy/remote/helm/switch): switch-core, gateway and setup.
+* `switch` (deploy/remote/helm/switch): switch-core, gateway, setup and the
+  optional decision service (switch-decision).
 * `switch-hosted-controller` (deploy/hosted/chart): the controller that runs
   Switch cloud machines, and its one image.
 
@@ -37,6 +38,11 @@ Subcommands:
   image of that chart — recognised by repository name, whatever registry it
   names — renders from the pinning registry and by digest, all of them are
   present, and the chart renders nothing else from the pinning registry.
+  An image marked `optional` (rendered only with an optional workload on) may
+  be missing from a render.
+* `covered --chart <name>` reads the image references `verify` printed for all
+  of the chart's renders and fails unless every image of the chart is among
+  them, so an optional image is still checked in some render.
 * `record` writes the pins (images and charts) as JSON for whatever promotes the
   build next, and as a Markdown table for the run summary.
 
@@ -48,6 +54,7 @@ Usage:
     python scripts/pin_chart_images.py pin ... --placeholder-digests
     helm template x <chart> | python scripts/pin_chart_images.py verify --chart switch \\
         --registry ghcr.io/<owner>
+    cat <refs of every render> | python scripts/pin_chart_images.py covered --chart switch
     python scripts/pin_chart_images.py record --digests-dir <dir> --registry ghcr.io/<owner> \\
         --version <version> --channel <channel> --commit <sha> \\
         --chart-digest switch=sha256:… --chart-digest switch-hosted-controller=sha256:… \\
@@ -79,6 +86,10 @@ class Image:
     values_key: str
     dockerfile: str
     context: str
+    # Rendered only when an optional workload is switched on (decision.enabled,
+    # say), so a render may leave it out; `covered` still requires it in at
+    # least one of the chart's renders.
+    optional: bool
 
 
 @dataclass(frozen=True)
@@ -120,19 +131,33 @@ CHARTS: dict[str, Chart] = {
 # is built.
 IMAGES: dict[str, Image] = {
     "switch-core": Image(
-        "switch", "switchCore", "deploy/shared_resources/images/Dockerfile.switch", "."
+        "switch",
+        "switchCore",
+        "deploy/shared_resources/images/Dockerfile.switch",
+        ".",
+        False,
     ),
     "gateway": Image(
-        "switch", "gateway", "deploy/shared_resources/images/Dockerfile.gateway", "."
+        "switch",
+        "gateway",
+        "deploy/shared_resources/images/Dockerfile.gateway",
+        ".",
+        False,
     ),
     "setup": Image(
-        "switch", "setup", "deploy/shared_resources/images/Dockerfile.setup", "."
+        "switch", "setup", "deploy/shared_resources/images/Dockerfile.setup", ".", False
+    ),
+    # The decision service behind auto-route; the chart runs it with
+    # decision.enabled.
+    "switch-decision": Image(
+        "switch", "decision", "decision/Dockerfile", "decision", True
     ),
     "switch-hosted-controller": Image(
         "switch-hosted-controller",
         "image",
         "deploy/hosted/controller/Dockerfile",
         "deploy/hosted/controller",
+        False,
     ),
 }
 
@@ -291,7 +316,11 @@ def verify(chart: str, rendered: str, registry: str) -> list[str]:
             problems.append(
                 f"{ref}: not an image of the {chart} chart; add it to IMAGES if it should be"
             )
-    absent = sorted(set(images) - seen)
+    absent = sorted(
+        name
+        for name, image in images.items()
+        if name not in seen and not image.optional
+    )
     if absent:
         problems.append(f"missing from the rendered chart: {absent}")
     if problems:
@@ -301,6 +330,22 @@ def verify(chart: str, rendered: str, registry: str) -> list[str]:
             + f"\nrendered images: {refs}"
         )
     return ours
+
+
+def covered(chart: str, refs: str) -> None:
+    """Raise unless every image of the chart is among `refs`, one per line.
+
+    `refs` is what `verify` printed for all of the chart's renders together, so
+    an optional image left out of one render must still be in another.
+    """
+    images = images_of(chart)
+    seen = {_repository(ref).rsplit("/", 1)[-1] for ref in refs.split()}
+    absent = sorted(set(images) - seen)
+    if absent:
+        raise PinError(
+            f"no render of the {chart} chart has {absent}; switch on the workload "
+            "that runs it in a render's values (Chart.renders)"
+        )
 
 
 def record(
@@ -392,6 +437,12 @@ def main(argv: list[str]) -> int:
     p_verify.add_argument("--chart", required=True, choices=sorted(CHARTS))
     p_verify.add_argument("--registry", required=True)
 
+    p_covered = sub.add_parser(
+        "covered",
+        help="check the image refs `verify` printed for every render (stdin) cover the chart",
+    )
+    p_covered.add_argument("--chart", required=True, choices=sorted(CHARTS))
+
     p_record = sub.add_parser(
         "record", help="write the pins as JSON and a Markdown summary"
     )
@@ -451,6 +502,8 @@ def main(argv: list[str]) -> int:
         elif args.command == "verify":
             for ref in verify(args.chart, sys.stdin.read(), args.registry):
                 print(ref)
+        elif args.command == "covered":
+            covered(args.chart, sys.stdin.read())
         else:
             pins, summary = record(
                 read_digests(args.digests_dir),

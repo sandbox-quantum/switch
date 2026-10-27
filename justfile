@@ -56,6 +56,32 @@ down:
 reset:
     docker compose -f deploy/local/docker-compose.yml --project-directory . down -v
 
+# Start the decision service auto-route asks (with its model server), on CPU or,
+# with `just decision-up gpu`, an NVIDIA GPU on Linux. Weights download once
+# into a volume. docs/old/LOCAL_DEVELOPMENT.md, "Auto-route locally".
+decision-up mode="cpu":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{mode}}" in
+      cpu) profile=decision ;;
+      gpu) profile=decision-gpu ;;
+      *) echo "usage: just decision-up [cpu|gpu]" >&2; exit 2 ;;
+    esac
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile "$profile" up -d --build --wait decision
+    port="${DECISION_PORT:-8230}"
+    echo "Decision service: http://localhost:$port (curl http://localhost:$port/health)"
+    if [ "$profile" = decision ]; then
+      echo "⚠ CPU model server: each decision takes several seconds, well over the"
+      echo "  one-second target a GPU meets. Fine for trying auto-route out."
+    fi
+    echo "Point switch-core at it in .env, then restart 'just run':"
+    echo "  DECISION_ENDPOINT_URL=http://localhost:$port"
+    echo "  DECISION_TIMEOUT_SECONDS=30"
+    echo "  FEATURE_FLAGS_ENABLED=follow_the_conversation,decision_routing (plus any you had)"
+
+decision-down:
+    docker compose -f deploy/local/docker-compose.yml --project-directory . --profile decision --profile decision-gpu stop decision decision-model decision-model-gpu
+
 # ── Run switch-core locally ────────────────────────────────────────────────────
 # The Python project lives in core/; `--project core` selects that environment
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer

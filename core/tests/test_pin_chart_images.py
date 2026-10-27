@@ -26,9 +26,10 @@ DIGESTS = {
     "switch-core": "sha256:" + "a" * 64,
     "gateway": "sha256:" + "b" * 64,
     "setup": "sha256:" + "c" * 64,
+    "switch-decision": "sha256:" + "e" * 64,
     "switch-hosted-controller": "sha256:" + "f" * 64,
 }
-SWITCH_IMAGES = ("switch-core", "gateway", "setup")
+SWITCH_IMAGES = ("switch-core", "gateway", "setup", "switch-decision")
 
 
 def _load(name: str) -> ModuleType:
@@ -108,6 +109,10 @@ def test_pins_every_first_party_image_in_the_real_values_file() -> None:
     )
     assert pinned["gateway"]["image"] == f"gateway:1.2.3@{DIGESTS['gateway']}"
     assert pinned["setup"]["image"] == f"setup:1.2.3@{DIGESTS['setup']}"
+    assert (
+        pinned["decision"]["image"]
+        == f"switch-decision:1.2.3@{DIGESTS['switch-decision']}"
+    )
 
 
 def test_changes_only_the_pinned_lines() -> None:
@@ -119,7 +124,7 @@ def test_changes_only_the_pinned_lines() -> None:
         for a, b in zip(original.splitlines(), pinned.splitlines(), strict=True)
         if a != b
     ]
-    assert len(changed) == 4  # the registry, then one image line per image
+    assert len(changed) == 5  # the registry, then one image line per image
     # Pull policy is left to the chart, which derives it from the digest.
     assert yaml.safe_load(pinned)["switchCore"]["imagePullPolicy"] == ""
 
@@ -235,6 +240,19 @@ def test_verify_rejects_a_render_missing_an_image() -> None:
     rendered = "---\n".join([_pod(_pinned("switch-core")), _pod(_pinned("gateway"))])
     with pytest.raises(pin_chart_images.PinError, match="setup"):
         pin_chart_images.verify("switch", rendered, "ghcr.io/acme")
+
+
+def test_verify_accepts_a_render_without_an_optional_image_but_covered_does_not() -> (
+    None
+):
+    refs = pin_chart_images.verify("switch", _render(), "ghcr.io/acme")
+    with pytest.raises(pin_chart_images.PinError, match="switch-decision"):
+        pin_chart_images.covered("switch", "\n".join(refs))
+
+    with_decision = pin_chart_images.verify(
+        "switch", _render(_pinned("switch-decision")), "ghcr.io/acme"
+    )
+    pin_chart_images.covered("switch", "\n".join([*refs, *with_decision]))
 
 
 def test_record_lists_every_image_and_chart() -> None:
