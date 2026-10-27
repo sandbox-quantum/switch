@@ -1018,3 +1018,12 @@ class TestAWorkspaceWithNoBackend:
         assert await room.reached(told) == set()
         assert room.room_notices == [DECISION_NOTICE]
         assert "refused by the server's outbound policy" in caplog.text
+
+
+def test_a_claim_lasts_the_decision_timeout_plus_a_margin():
+    """After a crash a claimed message waits out the lease, so the lease must
+    stay well inside the default two-minute age limit."""
+    from switch_core.delivery.router import decision_lease_seconds
+
+    assert decision_lease_seconds(5) == 15
+    assert decision_lease_seconds(30) == 40

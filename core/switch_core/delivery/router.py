@@ -177,6 +177,12 @@ _COMMAND_EVENT = "com.switch.command"
 _INSTALLS = TemplateInstallStore()
 
 
+def decision_lease_seconds(timeout_seconds: float) -> float:
+    """How long a worker's claim on a pending decision lasts: the decision
+    call's timeout plus a margin for the delivery that follows it."""
+    return timeout_seconds + 10
+
+
 class RoomReads:
     """What deciding one row reads about its room, read once and shared by
     every agent the row is decided for.
@@ -1324,7 +1330,11 @@ class MessageRouter:
                 self._decision_max_age_seconds,
             )
         settled = 0
-        lease = decisions.timeout_seconds * 2 + 30
+        # Long enough to cover one decision call (they run side by side), and
+        # no longer: after a crash, a claimed message waits out the lease
+        # before another worker takes it, and DECISION_PENDING_MAX_AGE_SECONDS
+        # counts from when it was posted.
+        lease = decision_lease_seconds(decisions.timeout_seconds)
         while True:
             async with tenant_session(factory, tenant_id) as session:
                 claimed = await self._pending.claim(
