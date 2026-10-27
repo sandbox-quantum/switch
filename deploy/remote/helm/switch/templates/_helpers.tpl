@@ -377,6 +377,47 @@ Other service hostnames (used in env vars and init containers).
 {{- include "switch.fullname" . }}-mattermost
 {{- end }}
 
+{{- define "switch.decisionHost" -}}
+{{- include "switch.fullname" . }}-decision
+{{- end }}
+
+{{/*
+DECISION_ENDPOINT_URL for switch-core: the chart's own decision service when
+decision.enabled, else switchCore.decision.endpointUrl (empty: none, and
+auto-route is unavailable until a workspace admin sets a backend up).
+*/}}
+{{- define "switch.decisionEndpointUrl" -}}
+{{- if .Values.decision.enabled -}}
+{{- if .Values.switchCore.decision.endpointUrl -}}
+{{- fail (printf "decision.enabled runs the decision service in this release and points switch-core at it, but switchCore.decision.endpointUrl is also set (%q). Clear one of them." .Values.switchCore.decision.endpointUrl) -}}
+{{- end -}}
+{{- printf "http://%s:%v" (include "switch.decisionHost" .) .Values.decision.port -}}
+{{- else -}}
+{{- .Values.switchCore.decision.endpointUrl -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether workspaces may choose Haiku on Bedrock (DECISION_BEDROCK_ENABLED).
+Non-empty for yes, nothing for no.
+*/}}
+{{- define "switch.decisionBedrockEnabled" -}}
+{{- if or .Values.switchCore.decision.bedrockEnabled (and .Values.decision.enabled .Values.decision.bedrock.enabled) -}}
+{{- if not (include "switch.decisionEndpointUrl" .) -}}
+{{- fail "switchCore.decision.bedrockEnabled needs a decision service to run Haiku on Bedrock in: set decision.enabled or switchCore.decision.endpointUrl." -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Decision pod selector labels, shared by its Deployment, Service and
+NetworkPolicy.
+*/}}
+{{- define "switch.decisionSelectorLabels" -}}
+{{- include "switch.selectorLabels" (dict "Release" .Release "component" "decision") }}
+{{- end }}
+
 {{/*
 Public origin of the Teams bridge listener: the value the bridge's
 public_base_url must be set to.
@@ -841,6 +882,21 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: FOLLOW_THE_CONVERSATION_WINDOW_SECONDS
   value: {{ .Values.switchCore.followTheConversation.windowSeconds | quote }}
 {{- end }}
+{{- if and (has "decision_routing" .Values.switchCore.featureFlags.enabled) (not (has "follow_the_conversation" .Values.switchCore.featureFlags.enabled)) }}
+{{- fail "The decision_routing feature flag needs follow_the_conversation in switchCore.featureFlags.enabled as well; switch-core refuses to start without it." }}
+{{- end }}
+{{- with include "switch.decisionEndpointUrl" . }}
+- name: DECISION_ENDPOINT_URL
+  value: {{ . | quote }}
+{{- end }}
+{{- if include "switch.decisionBedrockEnabled" . }}
+- name: DECISION_BEDROCK_ENABLED
+  value: "true"
+{{- end }}
+{{- with .Values.switchCore.decision.timeoutSeconds }}
+- name: DECISION_TIMEOUT_SECONDS
+  value: {{ . | quote }}
+{{- end }}
 {{- if not (or .Values.gateway.enabled .Values.switchCore.serveDashboard) }}
 {{- fail "gateway.enabled and switchCore.serveDashboard are both off, so nothing serves the operator dashboard. Turn one of them on." }}
 {{- end }}
@@ -1108,4 +1164,15 @@ Usage: {{ include "switch.waitForHttp" (dict "name" "gateway" "url" "http://host
 - name: wait-for-{{ .name }}
   image: busybox:1.36
   command: ["sh", "-c", "until wget -q --spider {{ .url }}; do echo 'waiting for {{ .name }}...'; sleep 2; done"]
+{{- end }}
+
+{{/*
+The weights file name inside /models: decision.modelServer.model.file.
+*/}}
+{{- define "switch.decisionModelFile" -}}
+{{- $file := required "decision.modelServer.model.file is required" .Values.decision.modelServer.model.file -}}
+{{- if contains "/" $file -}}
+{{- fail (printf "decision.modelServer.model.file must be a file name, not a path: %q" $file) -}}
+{{- end -}}
+{{- $file -}}
 {{- end }}

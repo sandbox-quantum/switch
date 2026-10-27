@@ -224,10 +224,36 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
   their migrations differently cannot break each other's database this
   way. Delete that directory to start the Console from scratch.
 
+## Auto-route locally
+
+Auto-route (the `decision_routing` feature flag) asks a decision service who
+should answer an untagged message. `just decision-up` starts one beside the
+stack: the decision service on `:8230` (`DECISION_PORT` to change it) and a
+llama.cpp server for its model, Qwen3.5-4B in 4-bit, whose weights (about
+2.7 GB) download once into the `decision-models` volume. It is the compose
+`decision` profile; `just decision-up gpu` is the `decision-gpu` profile, for
+Linux with an NVIDIA GPU and the NVIDIA Container Toolkit.
+
+switch-core runs on the host, so point it at the service in `.env` and
+restart `just run`:
+
+```bash
+FEATURE_FLAGS_ENABLED=follow_the_conversation,decision_routing
+DECISION_ENDPOINT_URL=http://localhost:8230
+DECISION_TIMEOUT_SECONDS=30
+```
+
+On CPU each decision takes several seconds, far over the one-second target a
+GPU meets, so raise the timeout as above. It is fine for trying auto-route
+out, not for judging its latency. Another model is `DECISION_MODEL_URL`,
+`DECISION_MODEL_FILE` and `DECISION_MODEL` (plus `HF_TOKEN` for a gated one).
+`just decision-down` stops it. `decision/README.md` covers the service itself.
+
 ## Other useful recipes
 
 | Command | What it does |
 | --- | --- |
+| `just decision-up [gpu]` / `just decision-down` | Start / stop the decision service for auto-route (see above) |
 | `just local-cloud` / `just local-cloud-console` | Run switch-core as a stand-in for Switch Cloud, and the Console pointed at it (see above) |
 | `just format` / `just check` | Format with ruff / lint-check in CI mode (no changes) |
 | `just typecheck` | mypy over `core/switch_core/` |

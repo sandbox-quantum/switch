@@ -1,0 +1,213 @@
+{{- if .Values.decision.enabled }}
+{{- $d := .Values.decision }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "switch.decisionHost" . }}
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.decisionSelectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One GPU and a ReadWriteOnce weights volume: the old pod lets go of both
+  # before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "switch.decisionSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "switch.labels" . | nindent 8 }}
+        {{- include "switch.decisionSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- if .Values.global.imagePullSecrets }}
+      {{- include "switch.imagePullSecrets" . | nindent 6 }}
+      {{- end }}
+      serviceAccountName: {{ include "switch.decisionHost" . }}
+      securityContext:
+        # The decision image's user; the downloader writes the weights as it.
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $d.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $d.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $d.modelServer.enabled }}
+      initContainers:
+        # Downloads the weights into the volume unless they are already there,
+        # resuming a download a restart interrupted.
+        - name: download-model
+          image: {{ $d.modelServer.model.downloaderImage }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              target="/models/$MODEL_FILE"
+              if [ -s "$target" ]; then
+                echo "have $MODEL_FILE"
+              else
+                echo "downloading $MODEL_URL"
+                set -- -fsSL --retry 5 --retry-delay 10 -C - -o "$target.partial"
+                if [ -n "${HF_TOKEN:-}" ]; then
+                  set -- "$@" -H "Authorization: Bearer $HF_TOKEN"
+                fi
+                curl "$@" "$MODEL_URL"
+                mv "$target.partial" "$target"
+              fi
+              if [ -n "$MODEL_SHA256" ]; then
+                echo "$MODEL_SHA256  $target" | sha256sum -c -
+              fi
+          env:
+            - name: MODEL_URL
+              value: {{ required "decision.modelServer.model.url is required" $d.modelServer.model.url | quote }}
+            - name: MODEL_FILE
+              value: {{ include "switch.decisionModelFile" . | quote }}
+            - name: MODEL_SHA256
+              value: {{ $d.modelServer.model.sha256 | quote }}
+            {{- with $d.modelServer.model.hfTokenSecret.name }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $d.modelServer.model.hfTokenSecret.key }}
+            {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+          volumeMounts:
+            - name: weights
+              mountPath: /models
+      {{- end }}
+      containers:
+        - name: decision
+          image: {{ include "switch.image" (dict "global" .Values.global "image" $d.image) }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" $d.imagePullPolicy "image" $d.image) }}
+          ports:
+            - name: http
+              containerPort: {{ $d.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ $d.port | quote }}
+            - name: DECISION_BACKEND
+              value: {{ $d.backend | quote }}
+            {{- with $d.model }}
+            - name: DECISION_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if $d.modelServer.enabled }}
+            - name: LLAMACPP_URL
+              value: "http://127.0.0.1:{{ $d.modelServer.port }}"
+            {{- end }}
+            {{- with $d.confidenceThreshold }}
+            - name: DECISION_CONFIDENCE_THRESHOLD
+              value: {{ . | quote }}
+            {{- end }}
+            - name: DECISION_BEDROCK_ENABLED
+              value: {{ ternary "1" "0" $d.bedrock.enabled | quote }}
+            {{- with $d.bedrock.model }}
+            - name: DECISION_BEDROCK_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $d.bedrock.region }}
+            - name: AWS_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $d.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # /health is 503 while the model server is down or still loading, so
+          # the Service sends nothing to a pod that cannot answer.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # Not /health: a model server still loading is no reason to restart
+          # this container.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $d.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+        {{- if $d.modelServer.enabled }}
+        - name: model-server
+          image: {{ $d.modelServer.image }}
+          imagePullPolicy: {{ $d.modelServer.imagePullPolicy }}
+          {{- with $d.modelServer.args }}
+          args:
+            {{- range . }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: MODEL_PATH
+              value: "/models/{{ include "switch.decisionModelFile" . }}"
+          ports:
+            - name: model
+              containerPort: {{ $d.modelServer.port }}
+              protocol: TCP
+          # llama.cpp's /health is 503 until the model is loaded.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: model
+            periodSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: model
+            periodSeconds: 20
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $d.modelServer.resources | nindent 12 }}
+          volumeMounts:
+            - name: weights
+              mountPath: /models
+              readOnly: true
+        {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if $d.modelServer.enabled }}
+        - name: weights
+          persistentVolumeClaim:
+            claimName: {{ include "switch.decisionHost" . }}-weights
+        {{- end }}
+{{- end }}

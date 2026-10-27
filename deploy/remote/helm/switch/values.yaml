@@ -410,6 +410,22 @@ switchCore:
     # people mention the agent again. FOLLOW_THE_CONVERSATION_WINDOW_SECONDS,
     # 1 to 3600.
     windowSeconds: 300
+  # Auto-route's server default: the decision service switch-core asks who
+  # should answer an untagged message in a room with auto-route on (the
+  # "decision_routing" feature flag, featureFlags.enabled below). Every
+  # workspace that has not chosen its own backend in Switch Console's Decision
+  # routing settings uses it. With decision.enabled (below) the chart runs the
+  # service itself and points switch-core at it; leave endpointUrl empty then.
+  # Set endpointUrl instead to use a decision service run elsewhere.
+  decision:
+    # DECISION_ENDPOINT_URL, e.g. http://switch-decision.decision.svc:8230.
+    endpointUrl: ""
+    # DECISION_BEDROCK_ENABLED: workspaces may choose Claude Haiku on Amazon
+    # Bedrock, which runs inside the decision service on its own AWS
+    # credentials. With decision.enabled, decision.bedrock.enabled sets this.
+    bedrockEnabled: false
+    # DECISION_TIMEOUT_SECONDS; empty keeps switch-core's default.
+    timeoutSeconds: ""
   # The agent controller release switch-core tells every controller to run
   # (CONTROLLER_RELEASE_VERSION / _URL / _SHA256), except Switch Console's own,
   # which updates with Console. A controller that runs
@@ -438,7 +454,7 @@ switchCore:
   # them while the server runs. An unknown flag stops switch-core at startup.
   # Known flags: ecosystem.show_owners, agent_management, switch_cloud,
   # hosted_agents, service_connections, agent_chats, follow_the_conversation,
-  # switch_buddy.
+  # switch_buddy, decision_routing.
   featureFlags:
     enabled: []
   # Invitation e-mails. When enabled, an invitation addressed to an e-mail is
@@ -804,6 +820,119 @@ mattermost:
     limits:
       memory: "512Mi"
       cpu: "500m"
+
+# ── Decision service (auto-route) ─────────────────────────────────────────────
+# The service switch-core asks who should answer an untagged message in a room
+# with auto-route on. Off by default. When on, the chart runs one pod with two
+# containers, points switch-core at it (DECISION_ENDPOINT_URL; leave
+# switchCore.decision.endpointUrl empty) and admits only switch-core to it:
+#
+#   decision      the switch-decision image: POST /decide and GET /health on
+#                 `port`. CPU only. The Service exposes this port and no other.
+#   model-server  the self-hosted decision model (llama.cpp's server by
+#                 default), reached by the decision container on localhost. Its
+#                 weights are downloaded at first start into a PVC, never baked
+#                 into an image.
+#
+# The default model needs one NVIDIA GPU (an L4 answers in well under a
+# second): the model server requests nvidia.com/gpu, so the cluster needs the
+# NVIDIA device plugin and a GPU node; point nodeSelector/tolerations at it.
+# Turn on the "decision_routing" and "follow_the_conversation" feature flags
+# (switchCore.featureFlags.enabled) for auto-route to be offered in rooms.
+decision:
+  enabled: false
+  image: switch-decision:latest
+  # Empty: IfNotPresent when the image is pinned by digest (as in a published
+  # chart), Always otherwise. Set it to override.
+  imagePullPolicy: ""
+  port: 8230
+  # DECISION_BACKEND: llamacpp reads the model server's probabilities over the
+  # candidate agents. systemone, anthropic and bedrock are the others; with
+  # anthropic or bedrock, turn modelServer.enabled off and pass their settings
+  # in `env`.
+  backend: llamacpp
+  # DECISION_MODEL, the name /health reports and the decision log records.
+  model: qwen3.5-4b-q4_k_m
+  # DECISION_CONFIDENCE_THRESHOLD; empty keeps the service's default (0.6).
+  confidenceThreshold: ""
+  # Claude Haiku on Amazon Bedrock as a per-workspace choice. Sets
+  # DECISION_BEDROCK_ENABLED on the service and on switch-core. Bedrock is
+  # called with the pod's AWS credentials: on EKS, an IAM role allowing
+  # bedrock:InvokeModel on Haiku, through serviceAccount.annotations.
+  bedrock:
+    enabled: false
+    # DECISION_BEDROCK_MODEL and AWS_REGION; empty keeps the service's default.
+    model: ""
+    region: ""
+  # Extra container env for the decision container (DECISION_TIMEOUT_S,
+  # DECISION_HISTORY_LIMIT, SYSTEMONE_URL, ...), as Kubernetes env entries.
+  env: []
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+  # The model server, a sidecar in the decision pod. Any server with llama.cpp's
+  # OpenAI-compatible API and GET /health works; swap image and args for
+  # another (a SystemOne server for Strands Decider or Clef, say, with
+  # backend: systemone and SYSTEMONE_URL in env).
+  modelServer:
+    enabled: true
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    imagePullPolicy: IfNotPresent
+    port: 8300
+    # $(MODEL_PATH) is /models/<model.file>, expanded by Kubernetes.
+    args:
+      - -m
+      - $(MODEL_PATH)
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8300"
+      - -ngl
+      - "99"
+      - -c
+      - "8192"
+      - --jinja
+    # The weights, downloaded into the PVC by an init container when the file
+    # is not there yet. Changing them downloads the new file on the next start.
+    model:
+      url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
+      file: Qwen3.5-4B-Q4_K_M.gguf
+      # Optional hex SHA-256 of the file, checked after the download.
+      sha256: ""
+      # A Secret holding a Hugging Face token, for a gated model (one whose
+      # licence the token's account has accepted). Empty name: no token.
+      hfTokenSecret:
+        name: ""
+        key: HF_TOKEN
+      downloaderImage: curlimages/curl:8.11.1
+    resources:
+      requests:
+        memory: "8Gi"
+        cpu: "2"
+        nvidia.com/gpu: 1
+      limits:
+        memory: "14Gi"
+        nvidia.com/gpu: 1
+  # The weights volume. Empty storageClass uses global.storageClass.
+  persistence:
+    size: 20Gi
+    storageClass: ""
+  nodeSelector: {}
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  serviceAccount:
+    # e.g. eks.amazonaws.com/role-arn for Bedrock through IRSA.
+    annotations: {}
+  # Admit only this release's switch-core pods to the decision port. Needs a
+  # CNI that enforces NetworkPolicy; without one it is accepted and ignored.
+  networkPolicy:
+    enabled: true
 
 # ── Setup Job ─────────────────────────────────────────────────────────────────
 setup:

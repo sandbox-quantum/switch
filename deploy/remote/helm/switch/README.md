@@ -240,6 +240,60 @@ while every gap in it, from a person's request to the agent's answer and from
 that answer to their next message, is within the window; after a break, people
 mention the agent again.
 
+## Auto-route and the decision service
+
+Off by default. With the `decision_routing` feature flag on (it needs
+`follow_the_conversation` too), a room with auto-route on asks a decision
+service who should answer a message that names nobody and that no follow-up
+rule delivered. The chart can run that service itself:
+
+```yaml
+switchCore:
+  featureFlags:
+    enabled: ["follow_the_conversation", "decision_routing"]
+decision:
+  enabled: true
+  nodeSelector:
+    nvidia.com/gpu.present: "true"   # whatever labels your GPU nodes carry
+```
+
+With `decision.enabled` the chart renders one Deployment (the `decision`
+container, plus the `model-server` sidecar serving the model), a ClusterIP
+Service on port 8230, a PVC the weights are downloaded into at first start, a
+ServiceAccount, and a NetworkPolicy that admits only this release's switch-core
+pods to port 8230. It sets `DECISION_ENDPOINT_URL` on switch-core to the
+Service, so every workspace's Decision routing settings in Switch Console show
+it as the server default with no further setup.
+
+- **GPU.** The default model (Qwen3.5-4B, 4-bit, on llama.cpp's CUDA server)
+  requests `nvidia.com/gpu: 1`, so the cluster needs the NVIDIA device plugin
+  and a GPU node. The pod tolerates the usual `nvidia.com/gpu` taint; set
+  `decision.nodeSelector` (and `decision.tolerations`) for your nodes. One
+  NVIDIA L4 answers in well under a second.
+- **The model.** `decision.modelServer.image`, `.args` and `.model` (a download
+  URL, the file name, an optional SHA-256, and an optional Secret with a
+  Hugging Face token for a gated model) are all values, so another server with
+  the same API can be swapped in. `decision.model` is the name the service
+  reports. The image is pinned like the chart's other first-party images.
+- **Haiku on Bedrock.** `decision.bedrock.enabled` lets workspaces choose Claude
+  Haiku on Amazon Bedrock (`DECISION_BEDROCK_ENABLED` on the service and on
+  switch-core). The service calls Bedrock with the pod's credentials: give it
+  a role through `decision.serviceAccount.annotations` (on EKS,
+  `eks.amazonaws.com/role-arn` for an IAM role allowing `bedrock:InvokeModel`
+  on Haiku). Without a GPU, set `decision.modelServer.enabled: false` and
+  `decision.backend` to `anthropic` or `bedrock`.
+- **Other settings.** `decision.env` passes anything else in the service's
+  environment (`DECISION_TIMEOUT_S`, `DECISION_HISTORY_LIMIT`, …).
+- **The NetworkPolicy** needs a CNI that enforces it. Turn it off with
+  `decision.networkPolicy.enabled: false` only if something else restricts who
+  reaches the service: it has no key of its own in this setup.
+
+To use a decision service run elsewhere instead, leave `decision.enabled` off
+and set `switchCore.decision.endpointUrl` (and `bedrockEnabled` if that service
+allows Bedrock). Setting both is refused at render time. With neither,
+auto-route is unavailable until a workspace admin sets up a backend in Switch
+Console. `switchCore.decision.timeoutSeconds` sets `DECISION_TIMEOUT_SECONDS`.
+
 ## Agent management
 
 Managed agents, and the agent controllers that run them on users' machines, are
