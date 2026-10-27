@@ -1,13 +1,12 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { CodexKeyringLogin, HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
-import { prepareCodexSessionHome } from '../codex/home';
+import { codexSourceHome, prepareCodexSessionHome } from '../codex/home';
 import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
@@ -161,7 +160,7 @@ export async function prepareSharedConfig(
     );
     input.env = { ...inherited, ...input.env };
     if (config.start.provider === 'codex') {
-      const sourceHome = resolve(input.env.CODEX_HOME || join(homedir(), '.codex'));
+      const sourceHome = codexSourceHome(input.env, process.cwd());
       const prepared = await prepareCodexSessionHome({
         root: join(root, 'provider-home'),
         sessionId: config.session.sessionId,

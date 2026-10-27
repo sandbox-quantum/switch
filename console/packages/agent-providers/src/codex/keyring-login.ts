@@ -16,6 +16,25 @@ export const CODEX_FILE_STORE_WORKAROUND =
   'Codex config.toml on the execution machine, which keeps the login in plaintext, then run codex ' +
   'login again and start a new session.';
 
+/**
+ * Where a session that is handed a keyring login keeps it: in the memory of
+ * its own Codex process, never in a file or the keyring. Given on the command
+ * line, it outranks the user's and the project's configuration, and survives
+ * Codex falling back to its defaults over a configuration it cannot read.
+ */
+export const CODEX_EPHEMERAL_LOGIN_ARGS = ['-c', 'cli_auth_credentials_store="ephemeral"'];
+
+/** Where the Codex behind `client` keeps logins, as its configuration for `cwd` resolves it. */
+export async function readCodexCredentialStore(
+  client: StdioJsonRpcClient,
+  cwd: string
+): Promise<unknown> {
+  const { config } = z
+    .object({ config: z.object({ cli_auth_credentials_store: z.unknown() }) })
+    .parse(await client.request('config/read', { cwd }));
+  return config.cli_auth_credentials_store;
+}
+
 const accountSchema = z.object({
   account: z.object({ type: z.string() }).nullable(),
   requiresOpenaiAuth: z.boolean(),

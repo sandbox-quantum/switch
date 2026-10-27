@@ -36,7 +36,12 @@ import {
 import { CumulativeUsage, mergeUsage, type UsageCounts } from '../usage';
 import { featureArgs, mcpServerConfigArgs, tomlString } from './config-args';
 import { mapCodexItem } from './item-mapping';
-import { CODEX_KEYRING_READ_TIMEOUT_MS, readCodexKeyringApiKey } from './keyring-login';
+import {
+  CODEX_EPHEMERAL_LOGIN_ARGS,
+  CODEX_KEYRING_READ_TIMEOUT_MS,
+  readCodexCredentialStore,
+  readCodexKeyringApiKey,
+} from './keyring-login';
 import {
   CODEX_CLIENT_METHODS,
   CODEX_CLIENT_NOTIFICATIONS,
@@ -81,14 +86,6 @@ export const CODEX_KEYRING_SIGN_IN_REQUIRED =
   `${CODEX_SIGN_IN_REQUIRED} If Codex there says it is already signed in, it could not read ` +
   'the login it keeps in the OS keyring: the keychain may be locked, or access to its ' +
   '"Codex Auth" item may have been denied.';
-
-/**
- * Where a session that is handed a keyring login keeps it: in the memory of
- * its own Codex process, never in a file or the keyring. Given on the command
- * line, it outranks the user's and the project's configuration, and survives
- * Codex falling back to its defaults over a configuration it cannot read.
- */
-const EPHEMERAL_LOGIN_ARGS = ['-c', 'cli_auth_credentials_store="ephemeral"'];
 
 const accountSchema = z.object({
   account: z.unknown().nullable(),
@@ -442,7 +439,7 @@ export class CodexAdapter implements ProviderAdapter {
     }
     const client = new StdioJsonRpcClient({
       command: this.binaryPath,
-      args: handOver ? [...args, ...EPHEMERAL_LOGIN_ARGS] : args,
+      args: handOver ? [...args, ...CODEX_EPHEMERAL_LOGIN_ARGS] : args,
       cwd: input.cwd,
       env,
       logger: this.logger,
@@ -825,10 +822,7 @@ export class CodexAdapter implements ProviderAdapter {
     cwd: string,
     login: CodexKeyringLogin
   ): Promise<void> {
-    const { config } = z
-      .object({ config: z.object({ cli_auth_credentials_store: z.unknown() }) })
-      .parse(await client.request('config/read', { cwd }));
-    const store = config.cli_auth_credentials_store;
+    const store = await readCodexCredentialStore(client, cwd);
     if (store !== 'ephemeral')
       throw new Error(
         `Codex's configuration on the execution machine sets cli_auth_credentials_store to ${JSON.stringify(store ?? null)} for this session where Switch asked for "ephemeral" (an administrator's managed configuration or requirements can do this), so Switch did not hand the session the API key from the OS keyring: Codex would have saved another copy of it.`
