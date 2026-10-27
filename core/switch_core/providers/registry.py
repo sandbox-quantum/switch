@@ -154,6 +154,19 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="kiro",
+        label="Kiro CLI",
+        sign_in_command="kiro-cli login",
+        tools=(
+            ToolSpec(name="shell", description="Executes shell commands"),
+            ToolSpec(name="read", description="Reads files and directories"),
+            ToolSpec(name="write", description="Creates and edits files"),
+            ToolSpec(name="subagent", description="Delegates a task to subagents"),
+            ToolSpec(name="web_search", description="Performs web searches"),
+            ToolSpec(name="web_fetch", description="Fetches web pages"),
+        ),
+    ),
 )
 
 
