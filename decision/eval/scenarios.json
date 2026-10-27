@@ -1,0 +1,45 @@
+{
+  "room": {"name": "eng-team", "instructions": "Team channel for the web product. billing-bot handles customer escalations about money."},
+  "agents": [
+    {"name": "deploy-bot", "description": "Runs and watches CI and deployments; investigates failed builds and deploys, reruns pipelines.", "role": "release"},
+    {"name": "billing-bot", "description": "Handles pricing, plans, invoices, refunds and payment problems."},
+    {"name": "docs-bot", "description": "Writes and updates product documentation pages and guides."}
+  ],
+  "scenarios": [
+    {"id": "deploy-failed", "expect": ["deploy-bot"], "message": {"sender": "alice", "text": "Can someone check why last night's deploy failed?"}},
+    {"id": "double-charge", "expect": ["billing-bot"], "message": {"sender": "carol", "text": "We got charged twice on the March invoice, who can look into it?"}},
+    {"id": "docs-outdated", "expect": ["docs-bot"], "message": {"sender": "bob", "text": "The API page in the docs still shows the old auth flow"}},
+    {"id": "thanks", "expect": [null],
+     "recent": [
+       {"sender": "alice", "text": "Can someone check why last night's deploy failed?"},
+       {"sender": "deploy-bot", "sender_kind": "agent", "text": "The migration step timed out; I reran it and the deploy is green now.", "addressed": ["alice"]}
+     ],
+     "message": {"sender": "alice", "text": "thanks!"}},
+    {"id": "person-to-person", "expect": [null], "message": {"sender": "alice", "text": "Bob, are you joining standup in 5?"}},
+    {"id": "lunch", "expect": [null], "message": {"sender": "carol", "text": "lunch anyone? thinking tacos"}},
+    {"id": "weather", "expect": [null], "message": {"sender": "bob", "text": "what's the weather going to be like in London tomorrow?"}},
+    {"id": "thread-continue-deploy", "expect": ["deploy-bot"],
+     "thread": [
+       {"sender": "alice", "text": "Staging deploy is stuck on the build step"},
+       {"sender": "deploy-bot", "sender_kind": "agent", "text": "The build cache looks corrupted; the step keeps restoring a stale layer.", "addressed": ["alice"]}
+     ],
+     "message": {"sender": "alice", "text": "ok can you rerun it with the cache cleared?", "thread_id": "t1"}},
+    {"id": "escalation-room-rule", "expect": ["billing-bot"], "message": {"sender": "dave", "text": "A customer is really upset about how their cancellation was handled"}},
+    {"id": "follow-on-docs", "expect": ["docs-bot"],
+     "recent": [
+       {"sender": "alice", "text": "docs-bot please draft a getting-started guide for the CLI", "addressed": ["docs-bot"]},
+       {"sender": "docs-bot", "sender_kind": "agent", "text": "Drafted it: covers install, login and the first command.", "addressed": ["alice"]}
+     ],
+     "message": {"sender": "alice", "text": "one more thing, add a section on rate limits"}},
+    {"id": "build-green", "expect": ["deploy-bot"], "message": {"sender": "bob", "text": "is the main build green yet?"}},
+    {"id": "named-person-no-at", "expect": [null], "message": {"sender": "carol", "text": "bob can you approve my PR when you get a sec"}},
+    {"id": "plans-question", "expect": ["billing-bot"], "message": {"sender": "erin", "text": "what's the difference between the Team and Business plans?"}},
+    {"id": "ambiguous-pricing-docs", "expect": ["billing-bot", "docs-bot"], "message": {"sender": "alice", "text": "the pricing page needs updating for the new Business plan"}},
+    {"id": "people-discussing-deploy", "expect": [null],
+     "recent": [
+       {"sender": "alice", "text": "bob, did you see the deploy failed earlier?", "addressed": ["bob"]},
+       {"sender": "bob", "text": "yeah I'm on it, it's the flaky migration again"}
+     ],
+     "message": {"sender": "alice", "text": "cool, ping me if you need a hand"}}
+  ]
+}
