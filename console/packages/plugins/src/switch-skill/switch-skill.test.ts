@@ -19,4 +19,13 @@ describe('switch skill', () => {
     expect(text).toContain('`!auto-route off`');
     expect(text).toMatch(/not really yours to answer.*stay silent/);
   });
+
+  it("describes each workspace's decision service, the room notice and the triage agent", () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('Switch Console → Admin → Decision routing');
+    expect(text).toContain('Auto-route is unavailable right now; tag an agent to reach it.');
+    expect(text).toContain('`!auto-route fallback @agent`');
+    expect(text).toContain('`!auto-route fallback off`');
+    expect(text).toContain('came to you as the room\'s triage agent');
+  });
 });

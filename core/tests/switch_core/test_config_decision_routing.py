@@ -1,7 +1,10 @@
-"""Decision routing's settings: the `decision_routing` flag, the decision
-service's endpoint, key and timeout."""
+"""Decision routing's settings: the `decision_routing` flag, the server
+default decision service's endpoint, key and timeout, whether workspaces may
+choose Bedrock, and how long a decision may wait."""
 
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -25,6 +28,9 @@ _BASE_KWARGS = dict(
 
 _BOTH = f"{FOLLOW_THE_CONVERSATION},{DECISION_ROUTING}"
 
+# The client reads no settings until it decides, which these tests never do.
+_NO_DB: Any = None
+
 
 @pytest.fixture(autouse=True)
 def _no_ambient_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -33,6 +39,8 @@ def _no_ambient_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         "DECISION_ENDPOINT_URL",
         "DECISION_API_KEY",
         "DECISION_TIMEOUT_SECONDS",
+        "DECISION_BEDROCK_ENABLED",
+        "DECISION_PENDING_MAX_AGE_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -48,7 +56,11 @@ def test_off_by_default_with_nothing_configured() -> None:
     assert config.decision_endpoint_url is None
     assert config.decision_api_key is None
     assert config.decision_timeout_seconds == 5.0
-    assert build_decision_client(config) is None
+    assert config.decision_bedrock_enabled is False
+    assert config.decision_pending_max_age_seconds == 120
+    client = build_decision_client(config, _NO_DB, None)
+    assert client.availability.enabled is False
+    assert client.server.configured is False
 
 
 def test_the_flag_needs_follow_the_conversation() -> None:
@@ -67,9 +79,31 @@ def test_on_with_follow_the_conversation() -> None:
     assert config.decision_routing_enabled
     assert config.decision_endpoint_url == "http://127.0.0.1:8100/decide"
     assert config.decision_api_key == "placeholder"
-    built = build_decision_client(config)
-    assert built is not None
-    assert built[0].endpoint_url == "http://127.0.0.1:8100/decide"
+    client = build_decision_client(config, _NO_DB, None)
+    assert client.availability.enabled
+    assert client.server.endpoint_url == "http://127.0.0.1:8100/decide"
+    assert client.server.api_key == "placeholder"
+    assert client.timeout_seconds == 2.5
+    assert client.server.haiku_anthropic and not client.server.haiku_bedrock
+
+
+def test_bedrock_and_the_wait_are_settings() -> None:
+    config = _config(
+        feature_flags_enabled=_BOTH,
+        decision_endpoint_url="http://127.0.0.1:8100/decide",
+        decision_bedrock_enabled=True,
+        decision_pending_max_age_seconds=30,
+    )
+
+    client = build_decision_client(config, _NO_DB, None)
+    assert client.server.haiku_bedrock
+    assert config.decision_pending_max_age_seconds == 30
+
+
+@pytest.mark.parametrize("seconds", [0, 3601])
+def test_the_wait_is_bounded(seconds: int) -> None:
+    with pytest.raises(ValidationError, match="decision_pending_max_age_seconds"):
+        _config(decision_pending_max_age_seconds=seconds)
 
 
 @pytest.mark.parametrize("timeout", [0, -1])
@@ -93,12 +127,14 @@ def test_blank_settings_are_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.decision_api_key is None
 
 
-def test_the_flag_without_an_endpoint_routes_nothing_and_says_so(
+def test_the_flag_without_an_endpoint_says_workspaces_must_choose(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     config = _config(feature_flags_enabled=_BOTH)
 
     with caplog.at_level("WARNING"):
-        assert build_decision_client(config) is None
+        client = build_decision_client(config, _NO_DB, None)
 
+    assert client.server.configured is False
     assert "DECISION_ENDPOINT_URL is not set" in caplog.text
+    assert "Admin → Decision routing" in caplog.text
