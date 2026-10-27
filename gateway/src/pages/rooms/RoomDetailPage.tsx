@@ -57,6 +57,7 @@ import {
   formatDateTime,
   titleCase,
 } from "../../theme/hootFormat";
+import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
@@ -130,6 +131,13 @@ export default function RoomDetailPage() {
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
+        {room.auto_route && (
+          <>
+            {/* Auto-route is the room owner's and the workspace admins' to change. */}
+            <RoomAutoRouteSection room={room} autoRoute={room.auto_route} canManage={canManage} />
+            <Divider />
+          </>
+        )}
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
