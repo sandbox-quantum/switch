@@ -16,6 +16,8 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import Message
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
+from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.room_service import RoomCreateConfig
 from switch_core.trust.client import (
     GuardrailBlockedError,
@@ -90,8 +92,13 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         connections=AgentConnectionRegistry(),
         frontend_base_url=session_env.config.dashboard_base_url,
         follow_the_conversation_enabled=False,
-        decision_routing_enabled=False,
-        decision_endpoint_configured=False,
+        decision_availability=DecisionAvailability(
+            enabled=False,
+            server=ServerDefault(
+                endpoint_url=None, api_key=None, bedrock_enabled=False
+            ),
+            store=DecisionSettingsStore(),
+        ),
     )
     await harness.client_lifecycle.ensure_system_client("admin")
 

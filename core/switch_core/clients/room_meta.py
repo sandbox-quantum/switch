@@ -23,6 +23,9 @@ class RoomMeta(BaseModel):
     # Whether a message no rule delivers is sent to the decision service
     # (`!auto-route`), read with the room from its metadata.
     auto_route_on: bool = False
+    # The agent that gets what auto-route could not decide because the
+    # decision service failed (`!auto-route fallback`), if any.
+    auto_route_fallback_agent_id: str | None = None
     # `{agent_id, body}`: what that agent says as it joins, in place of its
     # usual greeting (a Switch Console chat's opening message).
     agent_greeting: dict[str, str] | None = None

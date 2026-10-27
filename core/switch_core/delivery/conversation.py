@@ -307,6 +307,12 @@ class RoomConversation:
         self._channel_rows: list[Message] | None = None
         self._agent_names: set[str] | None = None
 
+    @property
+    def auto_route_on(self) -> bool:
+        """Whether the room routes by decision: the decision service is asked
+        about a message these rules deliver to nobody."""
+        return self._auto_route_on
+
     async def decide(
         self, session: AsyncSession, *, agent: Agent, agent_user_id: str
     ) -> ConversationDecision:
