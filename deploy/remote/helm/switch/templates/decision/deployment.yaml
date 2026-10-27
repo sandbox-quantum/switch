@@ -1,5 +1,11 @@
 {{- if .Values.decision.enabled }}
 {{- $d := .Values.decision }}
+{{- $ms := $d.modelServer }}
+{{- $kind := "" }}
+{{- if $ms.enabled }}
+{{- $kind = include "switch.decisionModelServerKind" . }}
+{{- end }}
+{{- $backend := include "switch.decisionBackend" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,7 +33,8 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "switch.decisionHost" . }}
       securityContext:
-        # The decision image's user; the downloader writes the weights as it.
+        # The decision images' user; the model server or the downloader writes
+        # the weights as it.
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
@@ -40,12 +47,13 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if $d.modelServer.enabled }}
+      {{- if eq $kind "llamacpp" }}
+      {{- $llama := $ms.llamacpp }}
       initContainers:
         # Downloads the weights into the volume unless they are already there,
         # resuming a download a restart interrupted.
         - name: download-model
-          image: {{ $d.modelServer.model.downloaderImage }}
+          image: {{ $llama.model.downloaderImage }}
           command: ["sh", "-c"]
           args:
             - |
@@ -67,17 +75,13 @@ spec:
               fi
           env:
             - name: MODEL_URL
-              value: {{ required "decision.modelServer.model.url is required" $d.modelServer.model.url | quote }}
+              value: {{ required "decision.modelServer.llamacpp.model.url is required" $llama.model.url | quote }}
             - name: MODEL_FILE
               value: {{ include "switch.decisionModelFile" . | quote }}
             - name: MODEL_SHA256
-              value: {{ $d.modelServer.model.sha256 | quote }}
-            {{- with $d.modelServer.model.hfTokenSecret.name }}
-            - name: HF_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ . }}
-                  key: {{ $d.modelServer.model.hfTokenSecret.key }}
+              value: {{ $llama.model.sha256 | quote }}
+            {{- with include "switch.decisionHfToken" . }}
+            {{- . | trim | nindent 12 }}
             {{- end }}
           securityContext:
             runAsNonRoot: true
@@ -109,14 +113,17 @@ spec:
             - name: PORT
               value: {{ $d.port | quote }}
             - name: DECISION_BACKEND
-              value: {{ $d.backend | quote }}
-            {{- with $d.model }}
+              value: {{ $backend | quote }}
+            {{- with include "switch.decisionModel" . }}
             - name: DECISION_MODEL
               value: {{ . | quote }}
             {{- end }}
-            {{- if $d.modelServer.enabled }}
+            {{- if eq $kind "strands" }}
+            - name: SYSTEMONE_URL
+              value: "http://127.0.0.1:{{ $ms.strands.port }}/v1/systemone"
+            {{- else if eq $kind "llamacpp" }}
             - name: LLAMACPP_URL
-              value: "http://127.0.0.1:{{ $d.modelServer.port }}"
+              value: "http://127.0.0.1:{{ $ms.llamacpp.port }}"
             {{- end }}
             {{- with $d.confidenceThreshold }}
             - name: DECISION_CONFIDENCE_THRESHOLD
@@ -161,11 +168,65 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-        {{- if $d.modelServer.enabled }}
+        {{- if eq $kind "strands" }}
+        {{- $st := $ms.strands }}
         - name: model-server
-          image: {{ $d.modelServer.image }}
-          imagePullPolicy: {{ $d.modelServer.imagePullPolicy }}
-          {{- with $d.modelServer.args }}
+          image: {{ include "switch.image" (dict "global" .Values.global "image" $st.image) }}
+          imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" $st.imagePullPolicy "image" $st.image) }}
+          {{- with $st.args }}
+          # Appended to the image's `strands-decider serve` command.
+          args:
+            {{- range . }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- end }}
+          env:
+            - name: STRANDS_CHECKPOINT
+              value: {{ required "decision.modelServer.strands.checkpoint is required" $st.checkpoint | quote }}
+            - name: STRANDS_MODEL_NAME
+              value: {{ required "decision.modelServer.strands.modelName is required" $st.modelName | quote }}
+            {{- with include "switch.decisionHfToken" . }}
+            {{- . | trim | nindent 12 }}
+            {{- end }}
+            {{- with $st.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: model
+              containerPort: {{ $st.port }}
+              protocol: TCP
+          # The port opens only once the checkpoint is downloaded (first start)
+          # and loaded, which takes minutes.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: model
+            periodSeconds: {{ $st.startupProbe.periodSeconds }}
+            failureThreshold: {{ $st.startupProbe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: model
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml $st.resources | nindent 12 }}
+          # Hugging Face's cache (HF_HOME): written on the first start.
+          volumeMounts:
+            - name: weights
+              mountPath: /models
+        {{- else if eq $kind "llamacpp" }}
+        {{- $llama := $ms.llamacpp }}
+        - name: model-server
+          image: {{ $llama.image }}
+          imagePullPolicy: {{ $llama.imagePullPolicy }}
+          {{- with $llama.args }}
           args:
             {{- range . }}
             - {{ . | quote }}
@@ -176,15 +237,15 @@ spec:
               value: "/models/{{ include "switch.decisionModelFile" . }}"
           ports:
             - name: model
-              containerPort: {{ $d.modelServer.port }}
+              containerPort: {{ $llama.port }}
               protocol: TCP
           # llama.cpp's /health is 503 until the model is loaded.
           startupProbe:
             httpGet:
               path: /health
               port: model
-            periodSeconds: 5
-            failureThreshold: 120
+            periodSeconds: {{ $llama.startupProbe.periodSeconds }}
+            failureThreshold: {{ $llama.startupProbe.failureThreshold }}
           livenessProbe:
             httpGet:
               path: /health
@@ -196,7 +257,7 @@ spec:
             capabilities:
               drop: ["ALL"]
           resources:
-            {{- toYaml $d.modelServer.resources | nindent 12 }}
+            {{- toYaml $llama.resources | nindent 12 }}
           volumeMounts:
             - name: weights
               mountPath: /models
@@ -205,7 +266,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-        {{- if $d.modelServer.enabled }}
+        {{- if $ms.enabled }}
         - name: weights
           persistentVolumeClaim:
             claimName: {{ include "switch.decisionHost" . }}-weights

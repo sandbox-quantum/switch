@@ -27,9 +27,16 @@ DIGESTS = {
     "gateway": "sha256:" + "b" * 64,
     "setup": "sha256:" + "c" * 64,
     "switch-decision": "sha256:" + "e" * 64,
+    "switch-decision-strands": "sha256:" + "9" * 64,
     "switch-hosted-controller": "sha256:" + "f" * 64,
 }
-SWITCH_IMAGES = ("switch-core", "gateway", "setup", "switch-decision")
+SWITCH_IMAGES = (
+    "switch-core",
+    "gateway",
+    "setup",
+    "switch-decision",
+    "switch-decision-strands",
+)
 
 
 def _load(name: str) -> ModuleType:
@@ -52,7 +59,11 @@ def test_the_image_table_matches_the_dockerfiles_and_values() -> None:
         values = yaml.safe_load((REPO_ROOT / chart.path / "values.yaml").read_text())
         assert (REPO_ROOT / image.dockerfile).is_file(), name
         assert (REPO_ROOT / image.context).is_dir(), name
-        assert image.values_key in values, name
+        node = values
+        for key in image.values_key.split("."):
+            assert key in node, (name, image.values_key)
+            node = node[key]
+        assert "image" in node or "repository" in node, name
     assert set(pin_chart_images.images_of("switch")) == set(SWITCH_IMAGES)
 
 
@@ -113,6 +124,13 @@ def test_pins_every_first_party_image_in_the_real_values_file() -> None:
         pinned["decision"]["image"]
         == f"switch-decision:1.2.3@{DIGESTS['switch-decision']}"
     )
+    # Nested: the model server's image, not llama.cpp's beside it.
+    model_server = pinned["decision"]["modelServer"]
+    assert (
+        model_server["strands"]["image"]
+        == f"switch-decision-strands:1.2.3@{DIGESTS['switch-decision-strands']}"
+    )
+    assert model_server["llamacpp"]["image"] == "ghcr.io/ggml-org/llama.cpp:server-cuda"
 
 
 def test_changes_only_the_pinned_lines() -> None:
@@ -124,7 +142,7 @@ def test_changes_only_the_pinned_lines() -> None:
         for a, b in zip(original.splitlines(), pinned.splitlines(), strict=True)
         if a != b
     ]
-    assert len(changed) == 5  # the registry, then one image line per image
+    assert len(changed) == 6  # the registry, then one image line per image
     # Pull policy is left to the chart, which derives it from the digest.
     assert yaml.safe_load(pinned)["switchCore"]["imagePullPolicy"] == ""
 
@@ -207,6 +225,45 @@ def _render(*extra: str) -> str:
     )
 
 
+def test_pins_a_nested_key_only_inside_its_own_block() -> None:
+    values = (
+        "a:\n"
+        "  image: top\n"
+        "  b:\n"
+        "    image: b\n"
+        "    c:\n"
+        "      # a comment\n"
+        "      image: old\n"
+        "\n"
+        "    other:\n"
+        "      image: other\n"
+        "  c:\n"
+        "    image: not-this-c\n"
+    )
+    lines = values.splitlines(keepends=True)
+    pin_chart_images._set_child(lines, "a.b.c", "image", '"new"')
+    assert yaml.safe_load("".join(lines)) == {
+        "a": {
+            "image": "top",
+            "b": {"image": "b", "c": {"image": "new"}, "other": {"image": "other"}},
+            "c": {"image": "not-this-c"},
+        }
+    }
+    with pytest.raises(pin_chart_images.PinError, match="no key 'd'"):
+        pin_chart_images._set_child(lines, "a.d", "image", "x")
+    with pytest.raises(pin_chart_images.PinError, match="a.b.other.tag"):
+        pin_chart_images._set_child(lines, "a.b.other", "tag", "x")
+
+
+def test_the_strands_model_server_is_built_for_amd64_only() -> None:
+    matrix = {
+        image.dockerfile: (image.platforms, image.large)
+        for image in pin_chart_images.IMAGES.values()
+    }
+    assert matrix["decision/model-servers/strands/Dockerfile"] == ("linux/amd64", True)
+    assert matrix["decision/Dockerfile"] == ("linux/amd64,linux/arm64", False)
+
+
 def test_verify_accepts_a_fully_pinned_render() -> None:
     assert len(pin_chart_images.verify("switch", _render(), "ghcr.io/acme")) == 3
 
@@ -252,7 +309,15 @@ def test_verify_accepts_a_render_without_an_optional_image_but_covered_does_not(
     with_decision = pin_chart_images.verify(
         "switch", _render(_pinned("switch-decision")), "ghcr.io/acme"
     )
-    pin_chart_images.covered("switch", "\n".join([*refs, *with_decision]))
+    with pytest.raises(pin_chart_images.PinError, match="switch-decision-strands"):
+        pin_chart_images.covered("switch", "\n".join([*refs, *with_decision]))
+
+    with_model_server = pin_chart_images.verify(
+        "switch",
+        _render(_pinned("switch-decision"), _pinned("switch-decision-strands")),
+        "ghcr.io/acme",
+    )
+    pin_chart_images.covered("switch", "\n".join([*refs, *with_model_server]))
 
 
 def test_record_lists_every_image_and_chart() -> None:
