@@ -162,7 +162,10 @@ def test_strands_decider_is_the_default_model_server() -> None:
 
     server = by_name["model-server"]
     # Its own first-party image, which the release pins by digest.
-    assert server["image"] == "switch-decision-strands:latest"
+    # By tag here, by digest once the release (or CI's placeholder pin) has
+    # pinned it: either way, the strands model-server image.
+    repository = server["image"].split("@")[0].rsplit(":", 1)[0]
+    assert repository.rsplit("/", 1)[-1] == "switch-decision-strands", server["image"]
     assert env_of(server) == {
         "STRANDS_CHECKPOINT": "StrandsAgents/strands-decider-E4B-gemma4-v1-2610",
         "STRANDS_MODEL_NAME": "strands-decider-E4B",
