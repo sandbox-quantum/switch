@@ -160,6 +160,13 @@ export interface AcpProviderHooks {
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**
+   * A permission request restated in ACP's own terms before anything decides
+   * it, for an agent whose requests say less than they mean: a tool call kind
+   * left as `other`, or an `allow_always` the agent keeps past the session.
+   * Returns a new request and leaves the one given unchanged.
+   */
+  permissionRequest?(request: AcpPermissionRequest): AcpPermissionRequest;
+  /**
    * A permission request the vendor uses for something else (a question, say).
    * Return undefined to let the adapter treat it as a permission request.
    */

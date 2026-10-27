@@ -101,6 +101,7 @@ Add hooks only for what really differs:
 | `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…). Without it, tools on registered servers still ask for permission. |
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `permission` | A permission request the vendor uses for something else, such as Antigravity's questions. |
+| `permissionRequest` | A permission request that says less than it means, restated before the policy decides it: Goose types every tool as `other` and keeps `allow_always` past the session. |
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
 

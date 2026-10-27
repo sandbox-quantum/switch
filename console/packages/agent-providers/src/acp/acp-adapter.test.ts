@@ -274,6 +274,50 @@ it('approves without asking in full access, approves only edits in auto-accept-e
   }
 });
 
+it('decides a permission request as the hooks restate it', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    permissionRequest: (request) => ({
+      ...request,
+      toolCall: {
+        ...request.toolCall,
+        kind: request.toolCall.title === 'edits' ? 'edit' : 'execute',
+      },
+      options: request.options.filter((option) => option.kind !== 'allow_always'),
+    }),
+  };
+  const { adapter, events, server } = await start(hooks, { runtimeMode: 'auto-accept-edits' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const options = [
+    { optionId: 'always', name: 'Always', kind: 'allow_always' },
+    { optionId: 'once', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'no', name: 'Reject', kind: 'reject_once' },
+  ];
+  for (const [id, title] of [
+    [80, 'edits'],
+    [81, 'runs'],
+  ] as const)
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: `c${id}`, kind: 'other', title },
+        options,
+      },
+    });
+  await flush();
+  expect(server.received.find((m) => m.id === 80)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  const opened = events.filter((e) => e.type === 'request.opened');
+  expect(opened).toHaveLength(1);
+  const request = opened[0];
+  if (request?.type !== 'request.opened') throw new Error('No approval');
+  expect(request.requestType).toBe('command_execution_approval');
+  expect(request.options.map((o) => o.decision)).toEqual(['accept', 'decline', 'cancel']);
+});
+
 it('lets vendor extensions ask questions and add items, and cancels them outside a turn', async () => {
   const hooks: AcpProviderHooks = {
     ...dummy,

@@ -29,6 +29,7 @@ protocols. These five adapters are the only Console session runtime.
 | `codex` | `codex app-server` JSON-RPC over stdio | The Codex SDK wraps `codex exec`, which cannot answer approvals. app-server can, and supports `turn/steer`, `thread/resume` and `turn/interrupt`. |
 | `antigravity` | `agy acp` (Google's Antigravity CLI), ACP over stdio, on the generic ACP adapter; a legacy `antigravity-acp` install still runs | Native sessions, resume, model selection, MCP registration, approvals, and questions as ACP form elicitations. |
 | `cursor` | `agent acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model catalogue, MCP registration and approvals, plus Cursor's question, plan, todo and task extensions. |
+| `goose` | `goose acp`, ACP over stdio, on the generic ACP adapter | Native sessions, model selection through a `model` config option, MCP registration and approvals; hooks for its configuration check, its permission levels and its tool metadata. |
 | any new ACP CLI | ACP over stdio, on the generic ACP adapter | Write hooks, not an adapter: see [Add an agent provider](../../docs/add-an-agent-provider.md). |
 
 ## Rules for an adapter
@@ -72,7 +73,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Goose run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -86,7 +87,8 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`,
+`src/goose/goose-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -127,3 +129,19 @@ requests whose tool call id starts with `interaction_`, and its old sign-in
 check; its sign-in command is `antigravity-acp --login`, and Update installs
 `agy` over it. Native session ids are stored with an `acp:` prefix; a
 conversation saved by the retired CLI runtime starts fresh.
+
+**Goose** runs `goose acp` on the model provider its owner chose with
+`goose configure` (or `GOOSE_PROVIDER` and `GOOSE_MODEL`). Goose has no
+account of its own, so its sign-in check reads `goose info --verbose` and
+reports a Goose with no provider as unconfigured. The handshake cannot tell,
+since Goose lists its `goose-provider` auth method either way, and
+`goose info --check` would send a model request; a bad key fails the first
+turn instead. Its modes are permission levels and a session starts in `auto`
+unless told otherwise, so every session is put in `auto` (full access),
+`smart_approve` (auto, Goose's own reviewer) or `approve`. Goose saves
+`allow_always` to its `permission.yaml`, where it skips the question in every
+later session, so that option is never offered; and its permission requests
+type every tool as `other`, so its `permissionRequest` hook types the
+developer tools (`shell`, `write`, `edit`) from the titles Goose gives them.
+A tool on an MCP server is named `<server>__<tool>`, with the server in
+`_meta.goose.toolCall.extensionName`, and `delegate` runs a subagent.
