@@ -104,6 +104,32 @@ it('asks for a fresh conversation when the agent cannot resume', async () => {
   );
 });
 
+it('uses a verified HTTP MCP capability only when the agent omits its advertisement', async () => {
+  const mcpServers = {
+    switch: {
+      transport: 'http' as const,
+      url: 'http://localhost:8000/mcp',
+      headers: { Authorization: 'Bearer synthetic' },
+    },
+  };
+  await expect(start(dummy, { mcpServers })).rejects.toThrow('does not declare MCP over HTTP');
+  const hooks = { ...dummy, mcpCapabilities: { http: true } };
+  const { adapter, server } = await start(hooks, { mcpServers });
+  expect(server.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [
+      {
+        name: 'switch',
+        type: 'http',
+        url: 'http://localhost:8000/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer synthetic' }],
+      },
+    ],
+  });
+  await adapter.stopSession('s');
+  agent.capabilities = { mcpCapabilities: { http: false } };
+  await expect(start(hooks, { mcpServers })).rejects.toThrow('does not declare MCP over HTTP');
+});
+
 it('selects models through the models list when the agent offers no model config option', async () => {
   agent.session = { models: { availableModels: [{ modelId: 'fast', name: 'Fast' }] } };
   const { adapter, server } = await start();
