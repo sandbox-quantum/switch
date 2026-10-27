@@ -207,7 +207,10 @@ async def test_no_server_default_offers_no_haiku_and_says_why(
         body = (await client.get("/decision-settings")).json()
         haiku = await client.put(
             "/decision-settings",
-            json={"backend": "haiku_anthropic", "api_key": "fake-key"},
+            json={
+                "backend": "haiku_anthropic",
+                "api_key": "fake-key",
+            },
         )
 
     assert body["effective"]["available"] is False
@@ -269,7 +272,7 @@ async def test_haiku_needs_a_key_new_or_kept_for_the_same_backend(
         )
         await client.put(
             "/decision-settings",
-            json={"backend": "haiku_anthropic", "api_key": "fake-key-1234"},
+            json={"backend": "haiku_anthropic", "api_key": "fake-1234"},
         )
         kept = await client.put(
             "/decision-settings",

@@ -26,6 +26,6 @@ describe('switch skill', () => {
     expect(text).toContain('Auto-route is unavailable right now; tag an agent to reach it.');
     expect(text).toContain('`!auto-route fallback @agent`');
     expect(text).toContain('`!auto-route fallback off`');
-    expect(text).toContain('came to you as the room\'s triage agent');
+    expect(text).toContain("came to you as the room's triage agent");
   });
 });
