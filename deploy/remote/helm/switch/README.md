@@ -265,16 +265,41 @@ pods to port 8230. It sets `DECISION_ENDPOINT_URL` on switch-core to the
 Service, so every workspace's Decision routing settings in Switch Console show
 it as the server default with no further setup.
 
-- **GPU.** The default model (Qwen3.5-4B, 4-bit, on llama.cpp's CUDA server)
-  requests `nvidia.com/gpu: 1`, so the cluster needs the NVIDIA device plugin
-  and a GPU node. The pod tolerates the usual `nvidia.com/gpu` taint; set
-  `decision.nodeSelector` (and `decision.tolerations`) for your nodes. One
-  NVIDIA L4 answers in well under a second.
-- **The model.** `decision.modelServer.image`, `.args` and `.model` (a download
-  URL, the file name, an optional SHA-256, and an optional Secret with a
-  Hugging Face token for a gated model) are all values, so another server with
-  the same API can be swapped in. `decision.model` is the name the service
-  reports. The image is pinned like the chart's other first-party images.
+- **The model.** `decision.modelServer.kind` picks the model server:
+  - `strands` (default): **Strands Decider 4B** (the E4B checkpoint) on its own
+    server image, `switch-decision-strands`, which the release builds and pins
+    like the chart's other first-party images. On one NVIDIA L4 it scored
+    92/100 on our routing scenarios with 2 wrong picks, at 0.27 s median.
+  - `llamacpp`: **Qwen3.5-4B** (4-bit) on llama.cpp's CUDA server: 88/100 with
+    9 wrong picks, at 0.16 s median, in a smaller footprint (8 GiB of RAM).
+
+  The decision service's backend and model name follow the kind
+  (`systemone` and `strands-decider-E4B`, or `llamacpp` and
+  `qwen3.5-4b-q4_k_m`); `decision.backend` and `decision.model` override them.
+  Each kind's image, arguments, probes and resources are under
+  `decision.modelServer.strands` or `decision.modelServer.llamacpp`.
+- **GPU and memory.** Either model server requests `nvidia.com/gpu: 1`, so the
+  cluster needs the NVIDIA device plugin and a GPU node. The pod tolerates the
+  usual `nvidia.com/gpu` taint; set `decision.nodeSelector` (and
+  `decision.tolerations`) for your nodes. Strands Decider 4B also requests
+  24Gi of memory to load its 16 GB of bf16 weights, so give it a node with
+  32 GiB (an AWS g6.2xlarge, one L4). The image needs an NVIDIA driver for
+  CUDA 13.0 (580 or later).
+- **Weights and the first start.** Nothing is baked into an image. Strands
+  Decider downloads its checkpoint and base model (about 17 GB) from Hugging
+  Face into the PVC (`decision.persistence.size`, 40Gi) on its first start,
+  then loads them; the port opens only once the model is loaded. Its startup
+  probe allows 30 minutes (`decision.modelServer.strands.startupProbe`), and
+  the decision service reports not ready until then. Later starts only load
+  the weights, a few minutes. For Qwen, an init container downloads the GGUF
+  file (`decision.modelServer.llamacpp.model`: URL, file name, optional
+  SHA-256) first. `decision.modelServer.hfTokenSecret` names a Secret with a
+  Hugging Face token, for a gated checkpoint or higher Hub rate limits.
+- **Licence.** Strands Decider is Apache-2.0, but its 4B checkpoint is built on
+  Google's Gemma 4 (`google/gemma-4-E4B-it`), whose terms apply to anyone
+  deploying it. The chart downloads the weights at deploy time from Hugging
+  Face; Switch does not redistribute them. Choose `llamacpp` if those terms
+  don't suit you.
 - **Haiku on Bedrock.** `decision.bedrock.enabled` lets workspaces choose Claude
   Haiku on Amazon Bedrock (`DECISION_BEDROCK_ENABLED` on the service and on
   switch-core). The service calls Bedrock with the pod's credentials: give it

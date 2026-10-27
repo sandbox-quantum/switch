@@ -1167,12 +1167,66 @@ Usage: {{ include "switch.waitForHttp" (dict "name" "gateway" "url" "http://host
 {{- end }}
 
 {{/*
-The weights file name inside /models: decision.modelServer.model.file.
+The weights file name inside /models: decision.modelServer.llamacpp.model.file.
 */}}
 {{- define "switch.decisionModelFile" -}}
-{{- $file := required "decision.modelServer.model.file is required" .Values.decision.modelServer.model.file -}}
+{{- $file := required "decision.modelServer.llamacpp.model.file is required" .Values.decision.modelServer.llamacpp.model.file -}}
 {{- if contains "/" $file -}}
-{{- fail (printf "decision.modelServer.model.file must be a file name, not a path: %q" $file) -}}
+{{- fail (printf "decision.modelServer.llamacpp.model.file must be a file name, not a path: %q" $file) -}}
 {{- end -}}
 {{- $file -}}
+{{- end }}
+
+{{/*
+Which model server runs beside the decision service: decision.modelServer.kind,
+strands or llamacpp.
+*/}}
+{{- define "switch.decisionModelServerKind" -}}
+{{- $kind := .Values.decision.modelServer.kind -}}
+{{- if not (has $kind (list "strands" "llamacpp")) -}}
+{{- fail (printf "decision.modelServer.kind must be strands or llamacpp, not %q" $kind) -}}
+{{- end -}}
+{{- $kind -}}
+{{- end }}
+
+{{/*
+DECISION_BACKEND: decision.backend, or else the API the model server speaks
+(systemone for strands, llamacpp for llamacpp). Without a model server there is
+nothing to derive it from, so it must be set (anthropic or bedrock).
+*/}}
+{{- define "switch.decisionBackend" -}}
+{{- $d := .Values.decision -}}
+{{- if $d.backend -}}
+{{- $d.backend -}}
+{{- else if $d.modelServer.enabled -}}
+{{- ternary "systemone" "llamacpp" (eq (include "switch.decisionModelServerKind" .) "strands") -}}
+{{- else -}}
+{{- fail "decision.backend is required when decision.modelServer.enabled is false: anthropic or bedrock, say." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+DECISION_MODEL: decision.model, or else the model server's modelName. Empty
+(without a model server) keeps the service's default for its backend.
+*/}}
+{{- define "switch.decisionModel" -}}
+{{- $d := .Values.decision -}}
+{{- if $d.model -}}
+{{- $d.model -}}
+{{- else if $d.modelServer.enabled -}}
+{{- (get $d.modelServer (include "switch.decisionModelServerKind" .)).modelName -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+HF_TOKEN env entry from decision.modelServer.hfTokenSecret, or nothing.
+*/}}
+{{- define "switch.decisionHfToken" -}}
+{{- with .Values.decision.modelServer.hfTokenSecret.name }}
+- name: HF_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ . }}
+      key: {{ $.Values.decision.modelServer.hfTokenSecret.key }}
+{{- end }}
 {{- end }}

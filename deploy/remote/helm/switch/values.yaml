@@ -829,14 +829,16 @@ mattermost:
 #
 #   decision      the switch-decision image: POST /decide and GET /health on
 #                 `port`. CPU only. The Service exposes this port and no other.
-#   model-server  the self-hosted decision model (llama.cpp's server by
-#                 default), reached by the decision container on localhost. Its
-#                 weights are downloaded at first start into a PVC, never baked
-#                 into an image.
+#   model-server  the self-hosted decision model (modelServer.kind: Strands
+#                 Decider 4B by default, or Qwen3.5-4B on llama.cpp), reached
+#                 by the decision container on localhost. Its weights are
+#                 downloaded at first start into a PVC, never baked into an
+#                 image.
 #
-# The default model needs one NVIDIA GPU (an L4 answers in well under a
-# second): the model server requests nvidia.com/gpu, so the cluster needs the
-# NVIDIA device plugin and a GPU node; point nodeSelector/tolerations at it.
+# The model server needs one NVIDIA GPU (an L4 answers in well under a
+# second): it requests nvidia.com/gpu, so the cluster needs the NVIDIA device
+# plugin and a GPU node; point nodeSelector/tolerations at it. Strands Decider
+# 4B also requests 24Gi of memory, so the node needs 32 GiB (a g6.2xlarge).
 # Turn on the "decision_routing" and "follow_the_conversation" feature flags
 # (switchCore.featureFlags.enabled) for auto-route to be offered in rooms.
 decision:
@@ -846,13 +848,14 @@ decision:
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
   port: 8230
-  # DECISION_BACKEND: llamacpp reads the model server's probabilities over the
-  # candidate agents. systemone, anthropic and bedrock are the others; with
-  # anthropic or bedrock, turn modelServer.enabled off and pass their settings
-  # in `env`.
-  backend: llamacpp
+  # DECISION_BACKEND. Empty: the API the model server speaks (systemone for
+  # modelServer.kind strands, llamacpp for llamacpp). To run without a GPU,
+  # turn modelServer.enabled off and set anthropic or bedrock (their settings
+  # in `env`).
+  backend: ""
   # DECISION_MODEL, the name /health reports and the decision log records.
-  model: qwen3.5-4b-q4_k_m
+  # Empty: the model server's modelName.
+  model: ""
   # DECISION_CONFIDENCE_THRESHOLD; empty keeps the service's default (0.6).
   confidenceThreshold: ""
   # Claude Haiku on Amazon Bedrock as a per-workspace choice. Sets
@@ -874,54 +877,99 @@ decision:
     limits:
       memory: "1Gi"
       cpu: "1000m"
-  # The model server, a sidecar in the decision pod. Any server with llama.cpp's
-  # OpenAI-compatible API and GET /health works; swap image and args for
-  # another (a SystemOne server for Strands Decider or Clef, say, with
-  # backend: systemone and SYSTEMONE_URL in env).
+  # The model server, a sidecar in the decision pod on one GPU, reached on
+  # localhost. Its weights live in the PVC below, downloaded on the first start.
   modelServer:
     enabled: true
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    imagePullPolicy: IfNotPresent
-    port: 8300
-    # $(MODEL_PATH) is /models/<model.file>, expanded by Kubernetes.
-    args:
-      - -m
-      - $(MODEL_PATH)
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8300"
-      - -ngl
-      - "99"
-      - -c
-      - "16384"
-      - -np
-      - "4"
-      - --jinja
-    # The weights, downloaded into the PVC by an init container when the file
-    # is not there yet. Changing them downloads the new file on the next start.
-    model:
-      url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
-      file: Qwen3.5-4B-Q4_K_M.gguf
-      # Optional hex SHA-256 of the file, checked after the download.
-      sha256: ""
-      # A Secret holding a Hugging Face token, for a gated model (one whose
-      # licence the token's account has accepted). Empty name: no token.
-      hfTokenSecret:
-        name: ""
-        key: HF_TOKEN
-      downloaderImage: curlimages/curl:8.11.1
-    resources:
-      requests:
-        memory: "8Gi"
-        cpu: "2"
-        nvidia.com/gpu: 1
-      limits:
-        memory: "14Gi"
-        nvidia.com/gpu: 1
+    # strands: Strands Decider 4B (E4B), the default. 92/100 on our routing
+    #   scenarios with 2 wrong picks, 0.27 s median on one NVIDIA L4. Needs a
+    #   24 GB GPU and about 24 GiB of RAM to load (a g6.2xlarge, say).
+    # llamacpp: Qwen3.5-4B in 4-bit on the llama.cpp server. 88/100 with 9
+    #   wrong picks, 0.16 s; a smaller footprint (8 GiB of RAM).
+    kind: strands
+    # A Secret holding a Hugging Face token (key below), passed to whichever
+    # model server downloads: for a gated checkpoint (one whose licence the
+    # token's account has accepted) or higher Hub rate limits. Empty name: none.
+    hfTokenSecret:
+      name: ""
+      key: HF_TOKEN
+    strands:
+      # The release pins this image (switch-decision-strands) by digest.
+      image: switch-decision-strands:latest
+      # Empty: IfNotPresent when pinned by digest, Always otherwise.
+      imagePullPolicy: ""
+      port: 8400
+      # The Hugging Face checkpoint, downloaded into the PVC (HF_HOME) on the
+      # first start with its base model (google/gemma-4-E4B-it, about 16 GB,
+      # under the Gemma terms). Later starts only load it.
+      checkpoint: StrandsAgents/strands-decider-E4B-gemma4-v1-2610
+      # --model-name, and DECISION_MODEL unless `model` above is set.
+      modelName: strands-decider-E4B
+      # Extra arguments for `strands-decider serve` (e.g. --max-batch 8).
+      args: []
+      # Extra container env, as Kubernetes env entries.
+      env: []
+      # The port opens only once the model is loaded: the first start
+      # downloads about 16 GB and then loads it (a few minutes with 32 GiB of
+      # RAM). 10 s x 180 allows 30 minutes before the container is restarted.
+      startupProbe:
+        periodSeconds: 10
+        failureThreshold: 180
+      resources:
+        requests:
+          memory: "24Gi"
+          cpu: "2"
+          nvidia.com/gpu: 1
+        limits:
+          memory: "28Gi"
+          nvidia.com/gpu: 1
+    llamacpp:
+      image: ghcr.io/ggml-org/llama.cpp:server-cuda
+      imagePullPolicy: IfNotPresent
+      port: 8300
+      # DECISION_MODEL unless `model` above is set.
+      modelName: qwen3.5-4b-q4_k_m
+      # $(MODEL_PATH) is /models/<model.file>, expanded by Kubernetes.
+      args:
+        - -m
+        - $(MODEL_PATH)
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8300"
+        - -ngl
+        - "99"
+        - -c
+        - "16384"
+        - -np
+        - "4"
+        - --jinja
+      # The weights, downloaded into the PVC by an init container when the
+      # file is not there yet. Changing them downloads the new file on the
+      # next start.
+      model:
+        url: https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf
+        file: Qwen3.5-4B-Q4_K_M.gguf
+        # Optional hex SHA-256 of the file, checked after the download.
+        sha256: ""
+        downloaderImage: curlimages/curl:8.11.1
+      # llama.cpp's /health is 503 until the model is loaded (seconds).
+      startupProbe:
+        periodSeconds: 5
+        failureThreshold: 120
+      resources:
+        requests:
+          memory: "8Gi"
+          cpu: "2"
+          nvidia.com/gpu: 1
+        limits:
+          memory: "14Gi"
+          nvidia.com/gpu: 1
   # The weights volume. Empty storageClass uses global.storageClass.
+  # 40Gi holds Strands Decider's Hugging Face cache (about 17 GB) with room
+  # for a second checkpoint; Qwen's file is 2.7 GB.
   persistence:
-    size: 20Gi
+    size: 40Gi
     storageClass: ""
   nodeSelector: {}
   tolerations:

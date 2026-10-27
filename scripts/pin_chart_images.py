@@ -11,7 +11,8 @@ it, and what runs is reproducible from that one pin.
 Two charts are published:
 
 * `switch` (deploy/remote/helm/switch): switch-core, gateway, setup and the
-  optional decision service (switch-decision).
+  optional decision service (switch-decision), with its Strands Decider model
+  server (switch-decision-strands).
 * `switch-hosted-controller` (deploy/hosted/chart): the controller that runs
   Switch cloud machines, and its one image.
 
@@ -28,8 +29,9 @@ Subcommands:
 * `images` prints the image build matrix as JSON; `charts` prints the charts.
 * `pin --chart <name>` rewrites that chart's `values.yaml` in place, in the
   chart's `pin_style`. The switch chart gets `global.imageRegistry` and
-  `<name>:<version>@sha256:…` per image (it pulls a digest-pinned image
-  `IfNotPresent` on its own); the hosted controller chart gets
+  `<name>:<version>@sha256:…` per image, at `<values_key>.image`, where
+  `values_key` may be a dotted path to a nested mapping (it pulls a
+  digest-pinned image `IfNotPresent` on its own); the hosted controller chart gets
   `image.repository` and `image.digest`, so its image renders as
   `<registry>/<name>@sha256:…`, with no tag. The edit is
   line-based so the file's comments, which are the chart's documentation under
@@ -77,12 +79,15 @@ from typing import Any, Literal
 
 import yaml
 
+MULTI_ARCH = "linux/amd64,linux/arm64"
+
 
 @dataclass(frozen=True)
 class Image:
     chart: str
-    # Top-level values key holding the image; what goes under it is the
-    # chart's `pin_style`.
+    # Values key holding the image: a top-level key, or a dotted path to a
+    # nested mapping ("decision.modelServer.strands"). What goes under it is
+    # the chart's `pin_style`.
     values_key: str
     dockerfile: str
     context: str
@@ -90,6 +95,12 @@ class Image:
     # say), so a render may leave it out; `covered` still requires it in at
     # least one of the chart's renders.
     optional: bool
+    # What the release builds it for.
+    platforms: str = MULTI_ARCH
+    # A multi-GB image (CUDA and PyTorch): the release frees the runner's disk
+    # before building it and keeps it out of the GitHub Actions layer cache,
+    # whose 10 GB per repository it would fill on its own.
+    large: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +163,18 @@ IMAGES: dict[str, Image] = {
     "switch-decision": Image(
         "switch", "decision", "decision/Dockerfile", "decision", True
     ),
+    # Strands Decider's model server, beside the decision service when
+    # decision.modelServer.kind is strands (the default). NVIDIA GPUs on x86
+    # only, so amd64 alone.
+    "switch-decision-strands": Image(
+        "switch",
+        "decision.modelServer.strands",
+        "decision/model-servers/strands/Dockerfile",
+        "decision/model-servers/strands",
+        True,
+        platforms="linux/amd64",
+        large=True,
+    ),
     "switch-hosted-controller": Image(
         "switch-hosted-controller",
         "image",
@@ -170,43 +193,58 @@ def images_of(chart: str) -> dict[str, Image]:
 
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 PLACEHOLDER_DIGEST = "sha256:" + "0" * 64
-TOP_LEVEL_KEY = re.compile(r"^([A-Za-z0-9_]+):\s*(#.*)?$")
 
 
 class PinError(Exception):
     pass
 
 
-def _set_child(lines: list[str], parent: str, child: str, value: str) -> None:
-    """Set `parent.child` to `value`, where `parent` is a top-level mapping key.
-
-    Exactly one `child` line at two-space indent must sit inside `parent`'s
-    block; anything else means the values file changed shape under the pinner,
-    which must fail rather than pin the wrong line or nothing at all.
-    """
-    start = None
-    for i, line in enumerate(lines):
-        m = TOP_LEVEL_KEY.match(line)
-        if m and m.group(1) == parent:
-            if start is not None:
-                raise PinError(f"top-level key {parent!r} appears more than once")
-            start = i
-    if start is None:
-        raise PinError(f"no top-level key {parent!r}")
-
-    end = len(lines)
+def _block_end(lines: list[str], start: int, indent: int) -> int:
+    """The line after the block opened by `lines[start]`, a key at `indent`."""
     for i in range(start + 1, len(lines)):
-        line = lines[i]
-        if line and not line[0].isspace() and not line.startswith("#"):
-            end = i
-            break
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(lines[i]) - len(lines[i].lstrip(" ")) <= indent:
+            return i
+    return len(lines)
 
-    pattern = re.compile(rf"^  {re.escape(child)}:(\s.*)?$")
+
+def _set_child(lines: list[str], parent: str, child: str, value: str) -> None:
+    """Set `parent.child` to `value`; `parent` is a top-level mapping key or a
+    dotted path to a nested mapping (two-space indent per level).
+
+    Each key on the path, and the `child` line, must appear exactly once at its
+    indent inside its parent's block; anything else means the values file
+    changed shape under the pinner, which must fail rather than pin the wrong
+    line or nothing at all.
+    """
+    start, end = -1, len(lines)
+    for depth, key in enumerate(parent.split(".")):
+        pattern = re.compile(rf"^{' ' * (2 * depth)}{re.escape(key)}:\s*(#.*)?$")
+        hits = [
+            i for i in range(start + 1, end) if pattern.match(lines[i].rstrip("\n"))
+        ]
+        where = ".".join(parent.split(".")[:depth]) or "the top level"
+        if not hits:
+            raise PinError(f"no key {key!r} in {where}")
+        if len(hits) > 1:
+            raise PinError(f"key {key!r} appears more than once in {where}")
+        start, end = hits[0], _block_end(lines, hits[0], 2 * depth)
+
+    indent = " " * (2 * len(parent.split(".")))
+    pattern = re.compile(rf"^{indent}{re.escape(child)}:(\s.*)?$")
     hits = [i for i in range(start + 1, end) if pattern.match(lines[i].rstrip("\n"))]
     if len(hits) != 1:
         raise PinError(f"expected one {parent}.{child} line, found {len(hits)}")
     newline = "\n" if lines[hits[0]].endswith("\n") else ""
-    lines[hits[0]] = f"  {child}: {value}{newline}"
+    lines[hits[0]] = f"{indent}{child}: {value}{newline}"
+
+
+def _lookup(values: Any, path: str) -> Any:
+    for key in path.split("."):
+        values = values[key]
+    return values
 
 
 def _check_digests(digests: dict[str, str]) -> None:
@@ -265,7 +303,7 @@ def pin(
 
     loaded = yaml.safe_load(pinned)
     for (parent, child), value in expected.items():
-        if loaded[parent][child] != value:
+        if _lookup(loaded, parent)[child] != value:
             raise PinError(f"pinned values do not read back {parent}.{child}")
     return pinned
 
@@ -467,6 +505,8 @@ def main(argv: list[str]) -> int:
                             "image": name,
                             "dockerfile": image.dockerfile,
                             "context": image.context,
+                            "platforms": image.platforms,
+                            "large": image.large,
                         }
                         for name, image in IMAGES.items()
                     ]

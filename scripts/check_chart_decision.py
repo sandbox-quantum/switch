@@ -2,7 +2,8 @@
 """Render the switch chart with its decision service off and on, and check it.
 
 The decision service (auto-route) is optional in the chart. Off, nothing of it
-renders and switch-core gets no endpoint. On, the chart runs it, points
+renders and switch-core gets no endpoint. On, the chart runs it beside its
+model server (Strands Decider by default, or Qwen on llama.cpp), points
 switch-core at it and admits only switch-core to it. An endpoint run elsewhere
 can be named instead, but not as well as the chart's own. These are the
 promises deploy/remote/helm/switch/README.md makes about `decision.*`; a render
@@ -118,12 +119,7 @@ def test_on_runs_the_service_and_points_switch_core_at_it() -> None:
     } in pod["tolerations"]
     by_name = containers(deployment)
     assert set(by_name) == {"decision", "model-server"}
-    assert env_of(by_name["decision"])["LLAMACPP_URL"] == "http://127.0.0.1:8300"
-    assert env_of(by_name["decision"])["DECISION_BACKEND"] == "llamacpp"
-    gpu = by_name["model-server"]["resources"]
-    assert gpu["limits"]["nvidia.com/gpu"] == 1
     assert "nvidia.com/gpu" not in by_name["decision"]["resources"].get("limits", {})
-    assert [c["name"] for c in pod["initContainers"]] == ["download-model"]
     assert {
         v["name"]: v["persistentVolumeClaim"]["claimName"]
         for v in pod["volumes"]
@@ -150,6 +146,105 @@ def test_on_runs_the_service_and_points_switch_core_at_it() -> None:
             "ports": [{"protocol": "TCP", "port": 8230}],
         }
     ]
+
+
+def test_strands_decider_is_the_default_model_server() -> None:
+    docs = render("--set", "decision.enabled=true", *FLAGS)
+    objects = decision_objects(docs)
+    pod = objects["Deployment"]["spec"]["template"]["spec"]
+    by_name = containers(objects["Deployment"])
+
+    env = env_of(by_name["decision"])
+    assert env["DECISION_BACKEND"] == "systemone"
+    assert env["SYSTEMONE_URL"] == "http://127.0.0.1:8400/v1/systemone"
+    assert env["DECISION_MODEL"] == "strands-decider-E4B"
+    assert "LLAMACPP_URL" not in env
+
+    server = by_name["model-server"]
+    # Its own first-party image, which the release pins by digest.
+    assert server["image"] == "switch-decision-strands:latest"
+    assert env_of(server) == {
+        "STRANDS_CHECKPOINT": "StrandsAgents/strands-decider-E4B-gemma4-v1-2610",
+        "STRANDS_MODEL_NAME": "strands-decider-E4B",
+    }
+    assert [p["containerPort"] for p in server["ports"]] == [8400]
+    resources = server["resources"]
+    assert resources["limits"]["nvidia.com/gpu"] == 1
+    assert resources["requests"]["memory"] == "24Gi"
+
+    # It downloads its own weights into the Hugging Face cache on the volume,
+    # so no init container and a writable mount; the first start downloads
+    # and loads about 16 GB, so the startup probe waits at least 20 minutes.
+    assert "initContainers" not in pod
+    assert server["volumeMounts"] == [{"name": "weights", "mountPath": "/models"}]
+    probe = server["startupProbe"]
+    assert probe["httpGet"] == {"path": "/health", "port": "model"}
+    assert probe["periodSeconds"] * probe["failureThreshold"] >= 20 * 60
+
+
+def test_qwen_on_llama_cpp_is_the_alternative() -> None:
+    docs = render(
+        "--set", "decision.enabled=true", "--set", "decision.modelServer.kind=llamacpp"
+    )
+    objects = decision_objects(docs)
+    pod = objects["Deployment"]["spec"]["template"]["spec"]
+    by_name = containers(objects["Deployment"])
+    env = env_of(by_name["decision"])
+    assert env["DECISION_BACKEND"] == "llamacpp"
+    assert env["DECISION_MODEL"] == "qwen3.5-4b-q4_k_m"
+    assert env["LLAMACPP_URL"] == "http://127.0.0.1:8300"
+    assert "SYSTEMONE_URL" not in env
+
+    server = by_name["model-server"]
+    assert server["image"] == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    assert env_of(server) == {"MODEL_PATH": "/models/Qwen3.5-4B-Q4_K_M.gguf"}
+    assert server["resources"]["limits"]["nvidia.com/gpu"] == 1
+    assert server["volumeMounts"] == [
+        {"name": "weights", "mountPath": "/models", "readOnly": True}
+    ]
+    assert [c["name"] for c in pod["initContainers"]] == ["download-model"]
+    assert "PersistentVolumeClaim" in objects
+
+
+def test_the_hugging_face_token_reaches_whichever_server_downloads() -> None:
+    token = "decision.modelServer.hfTokenSecret.name=hf"
+    secret_ref = {"secretKeyRef": {"name": "hf", "key": "HF_TOKEN"}}
+
+    def hf_token(container: dict[str, Any]) -> Any:
+        return next(
+            e.get("valueFrom") for e in container["env"] if e["name"] == "HF_TOKEN"
+        )
+
+    strands = decision_objects(render("--set", "decision.enabled=true", "--set", token))
+    assert hf_token(containers(strands["Deployment"])["model-server"]) == secret_ref
+
+    llama = decision_objects(
+        render(
+            "--set",
+            "decision.enabled=true",
+            "--set",
+            "decision.modelServer.kind=llamacpp",
+            "--set",
+            token,
+        )
+    )
+    init = llama["Deployment"]["spec"]["template"]["spec"]["initContainers"][0]
+    assert hf_token(init) == secret_ref
+
+
+def test_backend_and_model_can_be_overridden() -> None:
+    docs = render(
+        "--set",
+        "decision.enabled=true",
+        "--set",
+        "decision.model=my-decider",
+        "--set",
+        "decision.modelServer.strands.checkpoint=acme/my-decider",
+    )
+    by_name = containers(decision_objects(docs)["Deployment"])
+    assert env_of(by_name["decision"])["DECISION_MODEL"] == "my-decider"
+    assert env_of(by_name["decision"])["DECISION_BACKEND"] == "systemone"
+    assert env_of(by_name["model-server"])["STRANDS_CHECKPOINT"] == "acme/my-decider"
 
 
 def test_bedrock_and_the_pod_role() -> None:
@@ -186,6 +281,10 @@ def test_without_a_model_server_there_is_no_gpu_or_volume() -> None:
     pod = objects["Deployment"]["spec"]["template"]["spec"]
     assert [c["name"] for c in pod["containers"]] == ["decision"]
     assert "initContainers" not in pod
+    env = env_of(pod["containers"][0])
+    assert env["DECISION_BACKEND"] == "anthropic"
+    assert "DECISION_MODEL" not in env
+    assert "SYSTEMONE_URL" not in env and "LLAMACPP_URL" not in env
 
 
 def test_network_policy_can_be_left_out() -> None:
@@ -231,13 +330,25 @@ def test_refuses_contradictions() -> None:
         "--set",
         "decision.enabled=true",
         "--set",
-        "decision.modelServer.model.file=../x.gguf",
+        "decision.modelServer.kind=llamacpp",
+        "--set",
+        "decision.modelServer.llamacpp.model.file=../x.gguf",
+    )
+    assert "must be strands or llamacpp" in render_error(
+        "--set", "decision.enabled=true", "--set", "decision.modelServer.kind=vllm"
+    )
+    assert "decision.backend is required" in render_error(
+        "--set", "decision.enabled=true", "--set", "decision.modelServer.enabled=false"
     )
 
 
 TESTS: list[Callable[[], None]] = [
     test_off_by_default_renders_nothing_and_sets_no_endpoint,
     test_on_runs_the_service_and_points_switch_core_at_it,
+    test_strands_decider_is_the_default_model_server,
+    test_qwen_on_llama_cpp_is_the_alternative,
+    test_the_hugging_face_token_reaches_whichever_server_downloads,
+    test_backend_and_model_can_be_overridden,
     test_bedrock_and_the_pod_role,
     test_without_a_model_server_there_is_no_gpu_or_volume,
     test_network_policy_can_be_left_out,

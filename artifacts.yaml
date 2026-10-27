@@ -122,6 +122,14 @@ artifacts:
     version_from: switch-core
     published_as: switch-decision
 
+  switch-decision-strands:
+    description: >-
+      The model server for Strands Decider, the decision service's default
+      model in the Helm chart. NVIDIA GPU, amd64 only; its weights download on
+      first start, never baked in.
+    version_from: switch-core
+    published_as: switch-decision-strands
+
   helm-chart:
     description: >-
       The Kubernetes chart. Its values.yaml is a consumer-facing interface —

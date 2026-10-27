@@ -27,6 +27,7 @@ export const ARTIFACT_VERSIONS = {
   gateway: '0.31.0',
   setup: '0.31.0',
   'switch-decision': '0.31.0',
+  'switch-decision-strands': '0.31.0',
   'helm-chart': '0.31.0',
   'hosted-controller': '0.31.0',
   'hosted-controller-chart': '0.31.0',

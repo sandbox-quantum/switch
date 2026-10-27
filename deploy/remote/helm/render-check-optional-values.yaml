@@ -19,6 +19,5 @@ decision:
   bedrock:
     enabled: true
   modelServer:
-    model:
-      hfTokenSecret:
-        name: render-check-hf-token
+    hfTokenSecret:
+      name: render-check-hf-token
