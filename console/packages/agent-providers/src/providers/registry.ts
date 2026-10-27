@@ -7,6 +7,7 @@ import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
 import { createCodexAdapter } from '../codex/codex-adapter';
 import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { cursorAcp } from '../cursor/cursor-adapter';
+import { deepseekHarnessAcp } from '../deepseek-harness/deepseek-harness-acp';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
@@ -100,6 +101,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
+  acpProviderRuntime(deepseekHarnessAcp),
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));
