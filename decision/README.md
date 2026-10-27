@@ -66,7 +66,7 @@ switch-core talks only to this contract; the backend behind it is configuration.
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama |
 | `DECISION_CONFIDENCE_THRESHOLD` | `0.6` | 0 to 1; a request can override it |
 | `DECISION_TIMEOUT_S` | `30` | per backend call |
-| `DECISION_HISTORY_LIMIT` | `30` | recent and thread messages kept |
+| `DECISION_HISTORY_LIMIT` | `8` | recent and thread messages kept, each (8 recent + 8 thread). Measured on an L4: a room at switch-core's full limits took 0.55 s with 30 and 0.23 s with 8, with the same accuracy |
 | `DECISION_WITH_REASON` | `1` | `0` drops the reason from Haiku's tool call |
 | `DECISION_SERVICE_TOKEN` | unset | bearer token for everything but `/health` |
 | `DECISION_BEDROCK_ENABLED` | unset | `1` lets a request choose `bedrock` |
