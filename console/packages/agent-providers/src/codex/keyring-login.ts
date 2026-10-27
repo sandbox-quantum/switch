@@ -10,6 +10,19 @@ import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio
 export const CODEX_KEYRING_READ_TIMEOUT_MS = 30_000;
 
 const METHOD_NOT_FOUND = -32601;
+const INVALID_REQUEST = -32600;
+
+/**
+ * Whether Codex refused a request for a method it does not have. Codex
+ * answers that with -32600 ("unknown variant"), not JSON-RPC's -32601.
+ */
+export function isUnknownCodexMethod(error: unknown): boolean {
+  return (
+    error instanceof JsonRpcError &&
+    (error.code === METHOD_NOT_FOUND ||
+      (error.code === INVALID_REQUEST && error.message.includes('unknown variant')))
+  );
+}
 
 export const CODEX_FILE_STORE_WORKAROUND =
   'Unless your organization enforces the keyring, set cli_auth_credentials_store = "file" in the ' +
@@ -40,7 +53,7 @@ const accountSchema = z.object({
   requiresOpenaiAuth: z.boolean(),
 });
 
-const authStatusSchema = z.object({
+export const codexAuthStatusSchema = z.object({
   authMethod: z.string().nullable(),
   authToken: z.string().nullish(),
 });
@@ -134,13 +147,13 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
     throw new KeyringLoginError(
       `Codex on the execution machine is signed in with ${loginKind(account.type)} and has no auth.json, so its login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"). A Switch session can take a login from the keyring only when it is an API key. ${CODEX_FILE_STORE_WORKAROUND}`
     );
-  let status: z.infer<typeof authStatusSchema>;
+  let status: z.infer<typeof codexAuthStatusSchema>;
   try {
-    status = authStatusSchema.parse(
+    status = codexAuthStatusSchema.parse(
       await client.request('getAuthStatus', { includeToken: true, refreshToken: false })
     );
   } catch (error) {
-    if (error instanceof JsonRpcError && error.code === METHOD_NOT_FOUND)
+    if (isUnknownCodexMethod(error))
       throw new KeyringLoginError(
         `This version of Codex cannot hand Switch the API key it keeps in the OS keyring: it no longer answers getAuthStatus. ${CODEX_FILE_STORE_WORKAROUND}`,
         { cause: error }

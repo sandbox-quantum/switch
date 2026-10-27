@@ -2118,11 +2118,13 @@ version of their own to them without also giving them a release of their own.
   login only from `auth.json`. The check now reports a login sessions cannot
   reach as not signed in, and says why: a ChatGPT login or a Bedrock key
   Codex keeps in the keyring, an `auth.json` Codex ignores because it is set
-  to use the keyring, and an API key in the keyring when an administrator's
-  Codex configuration stops Switch handing it to sessions. It names the Codex
-  home it checked and, where it helps, the switch to file storage. Otherwise
-  an API key in the keyring still counts as signed in, since sessions are
-  handed it. The provider status card and the warning beside an agent now
+  to use the keyring, and an API key in the keyring that Codex will not hand
+  over or that an administrator's Codex configuration stops Switch handing to
+  sessions. It gives the switch to file storage where that helps and names
+  the Codex home it checked, and when it cannot tell, it says so and why.
+  Otherwise an API key in the keyring still counts as signed in, since
+  sessions are handed it. The provider status card and the warning beside an
+  agent now
   show what the check said when a provider is not signed in, instead of a
   generic line.
 - **Settings → Agent providers keeps this computer's report current.** It
