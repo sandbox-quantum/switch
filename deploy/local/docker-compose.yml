@@ -134,6 +134,134 @@ services:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:1025:1025"
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:8025:8025"
 
+  # ── Decision service (auto-route) ───────────────────────────────────────────
+  # `just decision-up`, or `--profile decision` (CPU, any machine) or
+  # `--profile decision-gpu` (Linux with an NVIDIA GPU and the NVIDIA Container
+  # Toolkit). Either starts the decision service on :8230 and a llama.cpp
+  # server for its model, with the weights downloaded once into the
+  # `decision-models` volume. switch-core runs on the host, so point it at the
+  # service in .env (see .env.example, "Decision routing"):
+  #   DECISION_ENDPOINT_URL=http://localhost:8230
+  #   DECISION_TIMEOUT_SECONDS=30
+  # On CPU each decision takes several seconds (far over the one-second target
+  # a GPU meets), hence the longer timeout; fine for trying auto-route out.
+  decision-model-download:
+    image: curlimages/curl:8.11.1
+    profiles: ["decision", "decision-gpu"]
+    # The fresh named volume is root's.
+    user: "0:0"
+    environment:
+      MODEL_URL: ${DECISION_MODEL_URL:-https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf}
+      MODEL_FILE: ${DECISION_MODEL_FILE:-Qwen3.5-4B-Q4_K_M.gguf}
+      # Only for a gated model (one whose licence your Hugging Face account
+      # has accepted).
+      HF_TOKEN: ${HF_TOKEN:-}
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        target="/models/$$MODEL_FILE"
+        if [ -s "$$target" ]; then echo "have $$MODEL_FILE"; exit 0; fi
+        echo "downloading $$MODEL_URL"
+        set -- -fsSL --retry 5 --retry-delay 10 -C - -o "$$target.partial"
+        if [ -n "$$HF_TOKEN" ]; then set -- "$$@" -H "Authorization: Bearer $$HF_TOKEN"; fi
+        curl "$$@" "$$MODEL_URL"
+        mv "$$target.partial" "$$target"
+    volumes:
+      - decision-models:/models
+
+  decision-model:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["decision"]
+    command:
+      - -m
+      - /models/${DECISION_MODEL_FILE:-Qwen3.5-4B-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8300"
+      - -c
+      - "8192"
+      - --jinja
+    volumes:
+      - decision-models:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8300/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    depends_on:
+      decision-model-download:
+        condition: service_completed_successfully
+
+  decision-model-gpu:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    profiles: ["decision-gpu"]
+    command:
+      - -m
+      - /models/${DECISION_MODEL_FILE:-Qwen3.5-4B-Q4_K_M.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8300"
+      - -ngl
+      - "99"
+      - -c
+      - "8192"
+      - --jinja
+    # The decision service reaches whichever model server runs at one name.
+    networks:
+      default:
+        aliases: [decision-model]
+    volumes:
+      - decision-models:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8300/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    depends_on:
+      decision-model-download:
+        condition: service_completed_successfully
+
+  decision:
+    build:
+      context: decision
+      dockerfile: Dockerfile
+    image: switch-decision:local
+    profiles: ["decision", "decision-gpu"]
+    ports:
+      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${DECISION_PORT:-8230}:8230"
+    environment:
+      DECISION_BACKEND: llamacpp
+      DECISION_MODEL: ${DECISION_MODEL:-qwen3.5-4b-q4_k_m}
+      LLAMACPP_URL: http://decision-model:8300
+      # A CPU decision takes seconds; the service's own model-server timeout.
+      DECISION_TIMEOUT_S: "60"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8230/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      decision-model:
+        condition: service_healthy
+        required: false
+      decision-model-gpu:
+        condition: service_healthy
+        required: false
+
 volumes:
   pgdata:
   mmdata:
+  decision-models:
