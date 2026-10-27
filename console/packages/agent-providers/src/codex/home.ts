@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, lstat, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import type { RuntimeMode } from '../adapter';
 import { linkHomeAsset, linkSkills, optionalText } from '../host/provider-home';
@@ -62,13 +62,21 @@ export async function prepareCodexSessionHome(input: {
   return { home, keyringLogin };
 }
 
+export const codexHomeNotAbsolute = (home: string) =>
+  `Set CODEX_HOME to an absolute path. It is ${JSON.stringify(home)}, which Codex reads from whichever directory it starts in, so Switch cannot tell which Codex home its sessions would use.`;
+
 /**
- * The Codex home a session takes its login and configuration from, with a
- * relative CODEX_HOME taken from `base`. Sign-in checks resolve it here too,
- * so they look where sessions do.
+ * The Codex home a session takes its login and configuration from; sign-in
+ * checks look here too. A relative CODEX_HOME is refused rather than
+ * resolved: Codex reads one from whichever directory it starts in, and
+ * Console, the agent controller, a session's host and the Codex a check runs
+ * each start in a different one, so no one resolution would be the home both
+ * sessions and the check mean.
  */
-export function codexSourceHome(env: Record<string, string>, base: string): string {
-  return resolve(base, env.CODEX_HOME || join(homedir(), '.codex'));
+export function codexSourceHome(env: Record<string, string>): string {
+  const configured = env.CODEX_HOME;
+  if (configured && !isAbsolute(configured)) throw new Error(codexHomeNotAbsolute(configured));
+  return configured || join(homedir(), '.codex');
 }
 
 /** Whether a Codex home keeps its login in auth.json, the only form a session copies. */

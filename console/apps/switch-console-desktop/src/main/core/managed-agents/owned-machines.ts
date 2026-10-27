@@ -33,6 +33,7 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
     ready: problem === null,
     problem,
     detail: problem === null ? null : report.problem,
+    loginHelps: report.loginHelps,
   };
 }
 

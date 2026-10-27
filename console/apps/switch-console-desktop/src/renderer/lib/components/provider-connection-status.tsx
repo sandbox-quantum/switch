@@ -101,9 +101,12 @@ export function ProviderConnectionStatus({
         ? 'Could not reach this host. Check the connection and try again.'
         : (data?.message ?? null);
   // Only a CLI that answered "signed out" (or "no backend") is fixed by its
-  // login command. An unknown status means the check itself could not run,
-  // and the reason says what to do instead.
-  const loginMayHelp = data?.status === 'unauthenticated' || data?.status === 'unconfigured';
+  // login command, and not when the check says signing in would not help. An
+  // unknown status means the check itself could not run, and the reason says
+  // what to do instead.
+  const loginMayHelp =
+    (data?.status === 'unauthenticated' || data?.status === 'unconfigured') &&
+    data.loginHelps !== false;
   const Icon = checking ? Loader2 : ready ? CheckCircle2 : CircleAlert;
   const tone = checking || ready ? 'text-foreground-muted' : 'text-foreground-warning';
   if (compact)

@@ -230,6 +230,23 @@ describe('providerStatusFrom', () => {
     models: [],
   });
 
+  it('says when signing in would not fix the login, and only then', () => {
+    const pinned = {
+      status: 'unauthenticated' as const,
+      message: 'An administrator pins where Codex keeps logins.',
+      models: [],
+      loginHelps: false,
+    };
+    expect(providerStatusFrom('codex', located, pinned, at)).toMatchObject({
+      auth: 'missing',
+      auth_problem: 'An administrator pins where Codex keeps logins.',
+      login_helps: false,
+    });
+    expect(
+      providerStatusFrom('codex', located, readiness('unauthenticated'), at)
+    ).not.toHaveProperty('login_helps');
+  });
+
   it('maps a missing CLI and each readiness answer', () => {
     expect(providerStatusFrom('claude', null, null, at)).toMatchObject({
       installed: false,

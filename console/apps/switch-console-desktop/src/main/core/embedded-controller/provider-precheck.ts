@@ -29,6 +29,8 @@ export type PrecheckedProvider = {
   auth: 'ok' | 'expired' | 'missing' | 'unknown';
   /** Why its login does not work, in the controller's words; null when it said nothing. */
   problem: string | null;
+  /** False when signing in with the provider's login command would not fix `problem`. */
+  loginHelps: boolean;
 };
 
 /** A check older than this is made again when asked; the controller takes none older either. */
@@ -103,7 +105,14 @@ export class ProviderPrecheck {
     return entries.flatMap((entry): PrecheckedProvider[] => {
       const status = (entry as { status?: Record<string, unknown> }).status;
       if (!status) return [];
-      const { provider, installed, auth, checked_at: checkedAt, auth_problem: said } = status;
+      const {
+        provider,
+        installed,
+        auth,
+        checked_at: checkedAt,
+        auth_problem: said,
+        login_helps: loginHelps,
+      } = status;
       if (
         typeof provider !== 'string' ||
         typeof installed !== 'boolean' ||
@@ -115,7 +124,13 @@ export class ProviderPrecheck {
       const at = Date.parse(checkedAt);
       if (!(at >= this.startedAt! - 1000) || this.deps.now() - at >= FRESH_MS) return [];
       return [
-        { provider, installed, auth, problem: typeof said === 'string' && said ? said : null },
+        {
+          provider,
+          installed,
+          auth,
+          problem: typeof said === 'string' && said ? said : null,
+          loginHelps: loginHelps !== false,
+        },
       ];
     });
   }

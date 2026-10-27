@@ -2124,9 +2124,16 @@ version of their own to them without also giving them a release of their own.
   the Codex home it checked, and when it cannot tell, it says so and why.
   Otherwise an API key in the keyring still counts as signed in, since
   sessions are handed it. The provider status card and the warning beside an
-  agent now
-  show what the check said when a provider is not signed in, instead of a
-  generic line.
+  agent now show what the check said when a provider is not signed in,
+  instead of a generic line.
+- **Console stops offering a sign-in that cannot help.** When a provider's
+  check says signing in would not fix it (an administrator pinning where
+  Codex keeps logins, say), the status card, Settings → Agent providers and
+  switch-buddy show why instead of the login command or a Sign in button.
+- **A relative `CODEX_HOME` is refused.** Codex reads one from whichever
+  directory it starts in, which differed between Console's check and
+  Switch's sessions, so the two could look at different Codex homes. Both
+  now say to set an absolute path, and a session will not start with one.
 - **Settings → Agent providers keeps this computer's report current.** It
   prefers the report from the server Console is on, rereads it while open and
   after the controller reports again, and the install section says so when
@@ -4128,6 +4135,10 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **A provider report says when signing in would not help.** A provider
+  whose check says its login command would not fix the problem is reported
+  with `login_helps: false` beside `auth_problem`, so Console does not offer
+  the command. Absent otherwise, as before.
 - **Provider logins given to the machine, on demand.** The controller makes an
   X25519 keypair at enrollment (or on its next run, for one enrolled before)
   and registers the public half. When its owner gives the machine a login

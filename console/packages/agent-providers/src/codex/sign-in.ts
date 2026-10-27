@@ -1,5 +1,11 @@
 import { z } from 'zod';
-import { readiness, signInWith, type ProviderReadiness, type SignInCheckInput } from '../readiness';
+import {
+  loginWontHelp,
+  readiness,
+  signInWith,
+  type ProviderReadiness,
+  type SignInCheckInput,
+} from '../readiness';
 import { noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 import { codexSourceHome, hasCodexAuthFile } from './home';
 import {
@@ -50,9 +56,17 @@ const accountSchema = z.object({
 type HandOver = { handOver: string };
 
 export async function checkCodexSignIn(input: SignInCheckInput): Promise<ProviderReadiness> {
+  let sourceHome: string;
+  try {
+    sourceHome = codexSourceHome(input.env);
+  } catch (error) {
+    // Sessions refuse it the same way, and no sign-in changes it.
+    return loginWontHelp(readiness('unauthenticated', describe(error)));
+  }
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
+  // The home this Codex read the login from, as Codex resolved it, when it says.
   const found = await withAppServer(input, [], deadline, (client, codexHome) =>
-    machineLogin(input, client, codexHome)
+    machineLogin(input, client, codexHome ?? sourceHome)
   );
   // Asked only once the first Codex has stopped, within the same deadline.
   return 'handOver' in found ? handOverStore(input, deadline, found.handOver) : found;
@@ -68,7 +82,7 @@ export async function checkCodexSignIn(input: SignInCheckInput): Promise<Provide
 async function machineLogin(
   input: SignInCheckInput,
   client: StdioJsonRpcClient,
-  codexHome: string | null
+  home: string
 ): Promise<ProviderReadiness | HandOver> {
   const { account, requiresOpenaiAuth } = accountSchema.parse(
     await client.request('account/read', { refreshToken: false })
@@ -78,8 +92,6 @@ async function machineLogin(
   // Bedrock on AWS's own credentials keeps nothing in Codex's login store.
   if (account.type === 'amazonBedrock' && account.usesCodexManagedCredentials === false)
     return readiness('authenticated', 'Signed in.');
-  // The home this Codex read the login from, as Codex resolved it.
-  const home = codexHome ?? codexSourceHome(input.env, input.cwd);
   let inFile: boolean;
   try {
     inFile = await hasCodexAuthFile(home);
@@ -137,7 +149,7 @@ async function handOverStore(
   }
   return store === 'ephemeral'
     ? readiness('authenticated', 'Signed in.')
-    : readiness('unauthenticated', codexKeyringStorePinned(home, store));
+    : loginWontHelp(readiness('unauthenticated', codexKeyringStorePinned(home, store)));
 }
 
 function describe(error: unknown): string {

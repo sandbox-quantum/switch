@@ -3747,6 +3747,8 @@ export type ControllerProviderReport = {
   auth: 'ok' | 'expired' | 'missing' | 'unknown';
   /** Why its login does not work, in the controller's words; null when it said nothing. */
   problem: string | null;
+  /** False when signing in with the provider's login command would not fix `problem`. */
+  loginHelps: boolean;
 };
 
 /** A managed agent as the owner's list shows it. */
@@ -3978,7 +3980,10 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   if (!Array.isArray(providers)) return [];
   return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
     if (!entry || typeof entry !== 'object') return [];
-    const { provider, installed, auth, auth_problem } = entry as Record<string, unknown>;
+    const { provider, installed, auth, auth_problem, login_helps } = entry as Record<
+      string,
+      unknown
+    >;
     if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
     const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
     return [
@@ -3987,6 +3992,8 @@ function providerReports(status: unknown): ControllerProviderReport[] {
         installed,
         auth: known ?? 'unknown',
         problem: typeof auth_problem === 'string' && auth_problem ? auth_problem : null,
+        // A controller older than the field says nothing, as before.
+        loginHelps: login_helps !== false,
       },
     ];
   });

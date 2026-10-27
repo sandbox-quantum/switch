@@ -211,6 +211,8 @@ export const providerStatusSchema = z.object({
   version_problem: z.string().max(300).optional(),
   /** Why the provider's login does not work, or a login given to the machine is not used, in so many words. */
   auth_problem: z.string().max(300).optional(),
+  /** False when signing in with the provider's login command would not fix what `auth_problem` says. */
+  login_helps: z.boolean().optional(),
 });
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
 

@@ -82,7 +82,7 @@ describe('managedAgentState', () => {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true }],
   acceptsLogins: false,
   cloud: false,
   workspacesDir: null,
@@ -137,7 +137,15 @@ describe('machineProblem', () => {
     expect(
       machineProblem(AGENT, {
         ...LAPTOP,
-        providers: [{ provider: 'claude', ready: false, problem: 'not logged in', detail: null }],
+        providers: [
+          {
+            provider: 'claude',
+            ready: false,
+            problem: 'not logged in',
+            detail: null,
+            loginHelps: true,
+          },
+        ],
       })
     ).toBe('Claude Code is not ready on laptop: not logged in.');
   });

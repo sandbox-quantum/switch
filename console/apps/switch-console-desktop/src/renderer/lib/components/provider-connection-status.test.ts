@@ -60,6 +60,22 @@ it('suggests signing in when the CLI says it is signed out', () => {
   expect(render(false)).toContain('claude auth login');
 });
 
+it('does not suggest signing in when the check says it would not help', () => {
+  const pinned = 'An administrator pins where Codex keeps logins.';
+  query.data = {
+    installed: true,
+    status: 'unauthenticated',
+    message: pinned,
+    models: [],
+    loginHelps: false,
+  };
+
+  const html = render(false);
+
+  expect(html).toContain(pinned);
+  expect(html).not.toContain('claude auth login');
+});
+
 it('says why a sign-in sessions cannot use counts as signed out', () => {
   const keyring = 'The login is in the OS keyring, which sessions cannot use.';
   query.data = { installed: true, status: 'unauthenticated', message: keyring, models: [] };

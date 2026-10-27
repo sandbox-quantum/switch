@@ -144,6 +144,26 @@ export function SelectedPanel({
         </>
       );
     case 'sign-in': {
+      if (!provider.loginHelps)
+        return (
+          <>
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">
+                {provider.name} can’t be used on this computer yet
+              </p>
+              {provider.detail && (
+                <p className="text-xs text-foreground-warning">{provider.detail}</p>
+              )}
+            </div>
+            <div>
+              <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
+                {busy === 'check' && <Spinner className="size-3.5" />}
+                Check again
+              </Button>
+            </div>
+            {checked && <p className="text-xs text-foreground-muted">{checked}</p>}
+          </>
+        );
       const running = login !== null && login.ended === null;
       const links = login ? linksIn(login.lines) : [];
       return (

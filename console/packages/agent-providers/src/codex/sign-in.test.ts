@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as Protocol from '../transport/stdio-json-rpc';
 import { JsonRpcError } from '../transport/stdio-json-rpc';
+import { codexHomeNotAbsolute } from './home';
 import {
   checkCodexSignIn,
   codexKeyringApiKeyWithheld,
@@ -145,7 +146,24 @@ it('reports an API key in the keyring as unusable when the session store is pinn
     status: 'unauthenticated',
     message: codexKeyringStorePinned(home, 'keyring'),
     models: [],
+    // No sign-in changes what an administrator pinned.
+    loginHelps: false,
   });
+});
+
+it('refuses a relative CODEX_HOME before starting Codex, as sessions do', async () => {
+  expect(await check({ CODEX_HOME: '.codex-work' })).toEqual({
+    status: 'unauthenticated',
+    message: codexHomeNotAbsolute('.codex-work'),
+    models: [],
+    loginHelps: false,
+  });
+  expect(codex.events).toEqual([]);
+});
+
+it('leaves signing in on offer where it is the last step of the fix', async () => {
+  codex.account = CHATGPT;
+  expect(await check()).not.toHaveProperty('loginHelps');
 });
 
 it('names a missing store as null rather than guessing at one', async () => {

@@ -160,7 +160,7 @@ export async function prepareSharedConfig(
     );
     input.env = { ...inherited, ...input.env };
     if (config.start.provider === 'codex') {
-      const sourceHome = codexSourceHome(input.env, process.cwd());
+      const sourceHome = codexSourceHome(input.env);
       const prepared = await prepareCodexSessionHome({
         root: join(root, 'provider-home'),
         sessionId: config.session.sessionId,
