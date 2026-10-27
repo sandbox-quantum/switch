@@ -42,8 +42,8 @@ def main() -> int:
     correct = routed = routed_right = 0
     for s in data["scenarios"]:
         body = {
-            "room": data["room"],
-            "agents": data["agents"],
+            "room": s.get("room", data["room"]),
+            "agents": s.get("agents", data["agents"]),
             "message": s["message"],
             "recent": s.get("recent", []),
             "thread": s.get("thread", []),
