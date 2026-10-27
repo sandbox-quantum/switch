@@ -135,12 +135,20 @@ services:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:8025:8025"
 
   # ── Decision service (auto-route) ───────────────────────────────────────────
-  # `just decision-up`, or `--profile decision` (CPU, any machine) or
-  # `--profile decision-gpu` (Linux with an NVIDIA GPU and the NVIDIA Container
-  # Toolkit). Either starts the decision service on :8230 and a llama.cpp
-  # server for its model, with the weights downloaded once into the
-  # `decision-models` volume. switch-core runs on the host, so point it at the
-  # service in .env (see .env.example, "Decision routing"):
+  # `just decision-up [cpu|gpu|strands]`, or one of these profiles. Each starts
+  # the decision service on :8230 and a model server beside it:
+  #   decision              Qwen3.5-4B on llama.cpp, on CPU (any machine). The
+  #                         local default.
+  #   decision-gpu          the same on an NVIDIA GPU.
+  #   decision-strands-gpu  Strands Decider 4B, the production default (the
+  #                         Helm chart's): more accurate, but it needs an NVIDIA
+  #                         GPU with 24 GB, about 24 GiB of free RAM to load,
+  #                         and the first start downloads about 17 GB.
+  # The GPU profiles need Linux, an NVIDIA GPU and the NVIDIA Container
+  # Toolkit; there is no GPU passthrough on macOS. Weights download once into
+  # a volume (`decision-models`, or `decision-hf` for Strands). switch-core
+  # runs on the host, so point it at the service in .env (see .env.example,
+  # "Decision routing"):
   #   DECISION_ENDPOINT_URL=http://localhost:8230
   #   DECISION_TIMEOUT_SECONDS=30
   # On CPU each decision takes several seconds (far over the one-second target
@@ -238,7 +246,35 @@ services:
       decision-model-download:
         condition: service_completed_successfully
 
-  decision:
+  # Strands Decider 4B's model server (decision-strands-gpu). The checkpoint
+  # and its Gemma 4 base download from Hugging Face into `decision-hf` on the
+  # first start, then load; the port opens only once the model is loaded, so
+  # allow several minutes (much longer on the first start). HF_TOKEN is
+  # optional: for a gated checkpoint or higher Hub rate limits.
+  decision-model-strands:
+    build:
+      context: decision/model-servers/strands
+    image: switch-decision-strands:local
+    profiles: ["decision-strands-gpu"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - decision-hf:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8400/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30m
+
+  decision: &decision
     build:
       context: decision
       dockerfile: Dockerfile
@@ -265,7 +301,21 @@ services:
         condition: service_healthy
         required: false
 
+  # The decision service in front of Strands Decider: the same image, speaking
+  # SystemOne to its model server.
+  decision-strands:
+    <<: *decision
+    profiles: ["decision-strands-gpu"]
+    environment:
+      DECISION_BACKEND: systemone
+      DECISION_MODEL: strands-decider-E4B
+      SYSTEMONE_URL: http://decision-model-strands:8400/v1/systemone
+    depends_on:
+      decision-model-strands:
+        condition: service_healthy
+
 volumes:
   pgdata:
   mmdata:
   decision-models:
+  decision-hf:
