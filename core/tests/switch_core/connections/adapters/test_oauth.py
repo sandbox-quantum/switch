@@ -212,6 +212,22 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert vendor.identity_calls == [("GET", b"")]
+
+    async def test_posts_the_identity_calls_static_body(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    method: GET\n",
+                "    method: POST\n    body: { query: '{ me { id email } }' }\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        [(method, body)] = vendor.identity_calls
+        assert method == "POST"
+        assert json.loads(body) == {"query": "{ me { id email } }"}
 
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}

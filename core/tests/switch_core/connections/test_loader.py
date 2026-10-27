@@ -547,6 +547,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -619,6 +620,24 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth.revocation_url == "https://auth.example.test/revoke"
 
 
+def test_loads_an_identity_call_that_posts_a_static_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n    url: https://api.example.test/me\n",
+            "    method: POST\n    url: https://api.example.test/graphql\n"
+            "    body: { query: '{ me { id email } }' }\n",
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.url) == (
+        "POST",
+        "https://api.example.test/graphql",
+    )
+    assert identity.body == {"query": "{ me { id email } }"}
+
+
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
@@ -629,10 +648,18 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
+        ),
+        ("    method: GET\n", "", "method"),
+        ("    method: GET\n", "    method: PUT\n", "method"),
+        ("    method: GET\n", "    method: POST\n", "sends a body"),
+        (
+            "    method: GET\n",
+            "    method: GET\n    body: { query: '{ me { id } }' }\n",
+            "sends a body",
         ),
         (
             "mcp:\n  servers:\n"
