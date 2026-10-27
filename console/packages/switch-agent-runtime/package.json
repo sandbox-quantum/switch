@@ -1,6 +1,6 @@
 {
   "name": "@sandboxaq/switch-agent-runtime",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "description": "Switch agent protocol client, and the Switch tool surface a session host serves",
   "license": "Apache-2.0",
