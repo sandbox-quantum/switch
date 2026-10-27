@@ -32,6 +32,39 @@ With no `DECISION_ENDPOINT_URL`, there is no server default: auto-route is
 unavailable in every workspace until its admins choose a backend, and Haiku is
 not offered (it runs in the server's decision service).
 
+### The model behind the server default
+
+The bundled Helm chart runs **Strands Decider 4B** (AWS's Strands Decider,
+the checkpoint built on Google's Gemma 4 E4B) on one NVIDIA GPU, beside the
+decision service. It was chosen on a benchmark of 100 routing scenarios in
+four rooms with overlapping agents, a third of them messages nobody should
+answer, run on one NVIDIA L4:
+
+| Model | Correct | Wrong picks | Stayed quiet when it shouldn't have | Median |
+| --- | --- | --- | --- | --- |
+| Strands Decider 4B | 92 | 2 | 6 | 0.27 s |
+| Qwen3.5-4B, 4-bit (llama.cpp) | 88 | 9 | 3 | 0.16 s |
+| Claude Haiku 5.5 (40-scenario subset, for scale) | 38/40 | 0 | 2 | 1.5 s |
+
+The four-point gap is within noise at 100 scenarios; the wrong picks decide
+it. A wrong pick is the failure people notice, an agent jumping into a
+conversation that was not for it, and most of Qwen's were exactly that
+(answering a message meant for a named person, or people talking among
+themselves). Strands Decider's misses are the quiet kind: it stays out, its
+confidence usually just under the 0.6 threshold.
+
+- **Switching to Qwen** is one chart value, `decision.modelServer.kind:
+  llamacpp`, which runs Qwen3.5-4B on llama.cpp's CUDA server instead (smaller:
+  8 GiB of RAM rather than 24). Local compose uses Qwen by default, because it
+  runs on a CPU; see `docs/old/LOCAL_DEVELOPMENT.md`.
+- **Licence.** Strands Decider is Apache-2.0, but its 4B checkpoint is built on
+  Google's Gemma 4 (`google/gemma-4-E4B-it`), whose terms apply to whoever
+  deploys it. The weights download from Hugging Face at deploy time, into the
+  deployment's own volume; Switch does not redistribute them.
+- **Hardware.** One NVIDIA GPU with 24 GB (an L4) and a node with 32 GiB of
+  RAM (an AWS g6.2xlarge): the 16 GB of bf16 weights pass through memory while
+  they load. With 16 GiB the model took about 10 minutes to start.
+
 ## Each workspace's choice
 
 A workspace's admins (its owners and admins, and the server operator) choose

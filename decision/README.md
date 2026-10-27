@@ -9,6 +9,43 @@ the model's confidence clears a threshold.
 It is a small FastAPI app (`switch_decision`). It holds no state and keeps no
 message content after answering.
 
+## The default model
+
+Production runs **Strands Decider 4B** (`StrandsAgents/strands-decider-E4B-gemma4-v1-2610`,
+served as `strands-decider-E4B`) on one NVIDIA GPU, through the `systemone`
+backend. The Helm chart's default (`decision.modelServer.kind: strands`) runs
+it in a sidecar from the `switch-decision-strands` image
+(`model-servers/strands/`). Local compose keeps **Qwen3.5-4B** on llama.cpp as
+its default, because that one runs on a CPU.
+
+Measured on one NVIDIA L4 (AWS g6.xlarge, eu-west-3) over 100 routing
+scenarios (`eval/scenarios_hard.json` and `eval/scenarios_extra60.json`, the
+60 written blind to the results), threshold 0.6:
+
+| Model | Correct | Wrong picks | Stayed quiet wrongly | p50 / p95 |
+|---|---|---|---|---|
+| Strands Decider 4B (bf16) | **92/100** | **2** | 6 | 0.27 / 0.30 s |
+| Qwen3.5-4B Q4_K_M (llama.cpp) | 88/100 | 9 | 3 | 0.16 / 0.17 s |
+
+The wrong picks decide it: an agent answering a message that was not for it
+is the failure people notice, and most of Qwen's errors were that (a question
+for a named person, people talking among themselves). Strands Decider's misses
+sat at 0.51–0.61 confidence, just under the threshold.
+
+- **Licence.** `strands-decider` is Apache-2.0, but the 4B checkpoint is built
+  on Google's Gemma 4 (`google/gemma-4-E4B-it`), whose terms apply to whoever
+  deploys it. Nothing is baked into the image: the weights download from
+  Hugging Face at deploy time into the deployment's own volume, and Switch does
+  not redistribute them.
+- **Hardware.** A GPU with 24 GB (an L4), an NVIDIA driver for CUDA 13.0 (580
+  or later), and 32 GiB of RAM on the host: the 16 GB of bf16 weights pass
+  through memory while loading. With 16 GiB, start-up took about 10.5 minutes;
+  the server's port opens only once the model is loaded.
+- **Switching to Qwen:** `decision.modelServer.kind: llamacpp` in the chart.
+  The service needs nothing else: the backend (`llamacpp`) and model name
+  follow the kind. In compose, Qwen is the `decision` and `decision-gpu`
+  profiles, Strands Decider the `decision-strands-gpu` profile.
+
 ## Contract
 
 switch-core talks only to this contract; the backend behind it is configuration.
@@ -49,8 +86,8 @@ switch-core talks only to this contract; the backend behind it is configuration.
 
 | `DECISION_BACKEND` | What it calls | Default `DECISION_MODEL` |
 |---|---|---|
-| `llamacpp` (default) | a llama.cpp server; reads the probabilities of the option letters from the first token | `qwen3.5-4b-q4_k_m` |
-| `systemone` | a SystemOne-API server (Clef-flash, Strands Decider) | `clef-flash` |
+| `llamacpp` (the image's default) | a llama.cpp server; reads the probabilities of the option letters from the first token | `qwen3.5-4b-q4_k_m` |
+| `systemone` | a SystemOne-API server: Strands Decider (the chart's default, `DECISION_MODEL=strands-decider-E4B`) or Clef-flash | `clef-flash` |
 | `anthropic` | Claude Haiku on the Anthropic API, forced to call a pick tool; thinking off | `claude-haiku-5-5` |
 | `bedrock` | a model on Amazon Bedrock through Converse, forced to call the same tool | `us.anthropic.claude-haiku-5-5-v1:0` |
 | `ollama` | an Ollama model forced into JSON, kept for comparison | `qwen3.5:9b` |
@@ -91,8 +128,30 @@ uv run pytest
 ## Run with Docker
 
 The `switch-decision` image is CPU-only and holds no model weights. The model
-runs in its own container: on a GPU host, the llama.cpp server image with the
-weights in a volume.
+runs in its own container, with the weights in a volume.
+
+Strands Decider (Linux, an NVIDIA GPU with 24 GB, the NVIDIA Container
+Toolkit). `switch-decision-strands` serves on :8400; the first start
+downloads the checkpoint and its base model (about 17 GB) into `/models`.
+`HF_TOKEN` is optional; arguments after the image name are appended to
+`strands-decider serve`:
+
+```
+docker build -t switch-decision-strands decision/model-servers/strands/
+docker run -d --gpus all -v decision-hf:/models -p 8400:8400 switch-decision-strands
+docker run -d -p 8230:8230 \
+  --add-host=host.docker.internal:host-gateway \
+  -e DECISION_BACKEND=systemone -e DECISION_MODEL=strands-decider-E4B \
+  -e SYSTEMONE_URL=http://host.docker.internal:8400/v1/systemone \
+  switch-decision
+```
+
+The image pins `strands-decider==0.2.0` and every dependency by hash
+(`model-servers/strands/requirements.txt`, compiled from `requirements.in`
+with the command at its top). `STRANDS_CHECKPOINT` and `STRANDS_MODEL_NAME`
+choose another checkpoint.
+
+Qwen3.5-4B on the llama.cpp server image:
 
 ```
 docker build -t switch-decision decision/
@@ -136,8 +195,10 @@ accuracy and the median and maximum latency.
 
 On the 40-scenario hard set:
 
-- **Qwen3.5-4B (4-bit) via llama.cpp:** 34/40, 0.61 s median on an Apple M4 Pro.
+- **On one NVIDIA L4:** Strands Decider 4B 36/40 at 0.20 s median, Qwen3.5-4B
+  (4-bit) 34/40 at 0.15 s, Strands Decider 2B 29/40 at 0.11 s. The
+  100-scenario comparison is under "The default model" above.
 - **Haiku 5.5 via the Anthropic API:** 39/40, 1.4–1.6 s median, about 2.7 s
   p95. About 0.65 s of each call is fixed API and network overhead.
-- **On one NVIDIA L4:** an estimated 0.1–0.4 s for the small models. Not yet
-  measured.
+- **On an Apple M4 Pro (no NVIDIA GPU):** Qwen3.5-4B 34/40 at 0.61 s median;
+  Strands Decider 4B 36/40 at 1.06 s, and it needs 16 GB of the Mac's memory.
