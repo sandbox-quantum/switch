@@ -67,11 +67,12 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |
 | antigravity (ACP) | antigravity-acp 1.1.1 | 9/10 (2026-10-11) | `subagent` is skipped: `invoke_subagent` runs past the 300 s deadline, on main's adapter as on the generic one. `mcp-registered` passes on the generic adapter and timed out on main's. |
 | cursor (ACP) | 2026.10.01 | not recorded | The account used hit Cursor's usage limit, so no model turn ran. Set `CURSOR_API_KEY` in the shell to run the suite with a key; the test passes it through. |
+| grok-build (ACP) | not recorded | not recorded | Conformance suite probes `grok` CLI via `grok agent stdio`. Skips `user-input`, `steer-mid-turn`, and `subagent` pending upstream xAI protocol capability verification. |
 | antigravity (retired `agy` adapter, kept for history) | 1.2.4 | 7/10 | Headless `agy` has no prompt channel at all: a tool that needs permission is auto-denied, so `approval-required` and `approval-declined` are skipped and the mode emits a `runtime.warning` at session start. `ask_question` is skipped by the CLI, so `user-input` is skipped. No steering — a mid-turn message queues as its own turn. No in-process cancel: an interrupt kills the process and the next turn respawns on `--conversation`. File tools run in the CLI's own scratch workspace unless `--add-dir <cwd>` is passed. Attachments are passed as file paths in the prompt text: the stream-json input accepts `text` blocks only and rejects `image`. Outside `full-access` a staged attachment is unreadable until its directory is passed as another `--add-dir`, which only takes effect at launch, so such a turn respawns first. A file the `download_attachment` Switch tool fetches lands under `~/.switch/sessions/<runtime pid>/media`, a directory named after a process the adapter never sees and created mid-turn, so outside `full-access` the session is given `~/.switch/sessions` at spawn and those downloads are readable without a respawn. |
 
 ## ACP providers
 
-Cursor and Antigravity run on one adapter, `src/acp/acp-adapter.ts`, which
+Cursor, Antigravity and Grok Build run on one adapter, `src/acp/acp-adapter.ts`, which
 covers the protocol and chooses behaviour from what the agent advertises in
 `initialize` and `session/new`:
 
@@ -85,7 +86,7 @@ covers the protocol and chooses behaviour from what the agent advertises in
   the agent (or its hooks) says it takes them, else as `resource_link`.
 
 Everything else that differs between CLIs is in its hooks file
-(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`):
+(`src/cursor/cursor-adapter.ts`, `src/antigravity/antigravity-adapter.ts`, `src/grok-build/grok-build-acp.ts`):
 binary and arguments, the `authenticate` method, the mode for each runtime
 mode, how a tool call names its MCP server, sign-in checks, and vendor
 extensions.
@@ -108,3 +109,7 @@ call id starts with `interaction_`. Native session ids are stored with an
 `acp:` prefix; a conversation saved by the retired `agy` runtime starts fresh.
 Its sign-in check reads `authMethods` from the handshake and never calls
 `authenticate`, which would open a browser.
+
+**Grok Build** connects through `grok agent stdio`, authenticating via `XAI_API_KEY` or
+interactive login (`grok auth login`). It supports ACP sessions with approvals,
+permissions, and session continuation.
