@@ -19,13 +19,13 @@ export function appView(session: Session | null, pendingInvite: string | null): 
 }
 
 /** May this session administer the workspace it is in? The operator bit, or
- * owner/admin of the current workspace — the same rule the server applies
+ * admin of the current workspace — the same rule the server applies
  * (`require_tenant_admin`). */
 export function canAdminTenant(session: Session | null): boolean {
   if (session === null) return false;
   if (session.user.is_operator) return true;
   const role = session.tenant?.role;
-  return role === "owner" || role === "admin";
+  return role === "admin";
 }
 
 const INVITE_KEY = "switch.pendingInvite";
@@ -66,14 +66,6 @@ export function inviteTokenFrom(input: string): string | null {
  * it in the request body. */
 export function inviteUrl(origin: string, token: string): string {
   return `${origin}/invite#token=${encodeURIComponent(token)}`;
-}
-
-/** May this session change who owns the workspace — grant or revoke the
- * owner role? Narrower than `canAdminTenant`, matching the server's
- * `owns_tenant`. */
-export function ownsTenant(session: Session | null): boolean {
-  if (session === null) return false;
-  return session.user.is_operator || session.tenant?.role === "owner";
 }
 
 export interface DeliveryNotice {

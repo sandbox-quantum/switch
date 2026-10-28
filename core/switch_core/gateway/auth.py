@@ -789,23 +789,6 @@ async def get_tenant_is_admin(
     return is_admin
 
 
-async def get_tenant_is_owner(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[User, Depends(get_current_user)],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-) -> bool:
-    """Whether `user` may decide who owns the tenant this request is bound to.
-
-    Strictly narrower than ``get_tenant_is_admin`` — see
-    ``authz.owns_tenant``. A route that changes the ownership set needs both:
-    ``require_tenant_admin`` to get in, this to make the call. Ends its read's
-    transaction for the same reason ``get_tenant_is_admin`` does.
-    """
-    is_owner = await user_store.owns(session, user)
-    await session.commit()
-    return is_owner
-
-
 async def require_tenant_admin(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
@@ -843,7 +826,7 @@ async def require_room_access(
     a different admin bit than the one its own dependencies resolved.
 
     This is the widest of the tenant-admin gates: `authz.can` short-circuits
-    on the admin bit, so a workspace owner or admin passes it for every room
+    on the admin bit, so a workspace admin passes it for every room
     in their workspace, private ones included. See the phase 2 design note on
     what that grant covers.
     """

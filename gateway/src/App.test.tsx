@@ -6,7 +6,7 @@ import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
 
-const acme: TenantMembership = { id: "t1", slug: "acme", name: "Acme", role: "owner" };
+const acme: TenantMembership = { id: "t1", slug: "acme", name: "Acme", role: "admin" };
 const beta: TenantMembership = { id: "t2", slug: "beta", name: "Beta Co", role: "member" };
 
 function session(overrides: Partial<Session>): Session {

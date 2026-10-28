@@ -61,7 +61,7 @@ function workspace(id: string, serverId: string) {
     name: 'Weekend Robotics',
     tenantId: 't1',
     slug: 'weekend-robotics',
-    role: 'owner' as const,
+    role: 'admin' as const,
     createdAt: '',
     updatedAt: '',
   };

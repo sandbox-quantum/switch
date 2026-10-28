@@ -167,7 +167,7 @@ export const workspaces = sqliteTable(
     slug: text('slug'),
     /**
      * The caller's role in the workspace as the gateway last reported it
-     * (`owner` / `admin` / `member`). Null for a tenant-less workspace, where
+     * (`admin` / `member`). Null for a tenant-less workspace, where
      * the notion does not apply.
      */
     role: text('role').$type<WorkspaceRole>(),

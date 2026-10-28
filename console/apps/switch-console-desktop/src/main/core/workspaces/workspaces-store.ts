@@ -17,7 +17,9 @@ function mapRow(row: WorkspaceRow): Workspace {
     name: row.name,
     tenantId: row.tenantId ?? null,
     slug: row.slug ?? null,
-    role: row.role ?? null,
+    // A row written before `owner` merged into `admin` holds `owner` until the
+    // next reconcile rewrites it.
+    role: (row.role as string | null) === 'owner' ? 'admin' : (row.role ?? null),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

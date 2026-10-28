@@ -478,7 +478,7 @@ describe('selecting a server', () => {
   async function seedWorkspace(
     id: string,
     tenantId: string | null,
-    role: 'owner' | 'member' | null = 'member'
+    role: 'admin' | 'member' | null = 'member'
   ): Promise<void> {
     await fixture.db.insert(workspaces).values({ id, serverId: 'srv-1', name: id, tenantId, role });
   }

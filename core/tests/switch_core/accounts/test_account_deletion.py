@@ -243,20 +243,20 @@ async def test_the_servers_admin_account_is_refused(
         assert "administrator" in (await deletion.refusal(session, admin, []) or "")
 
 
-async def test_the_only_owner_of_a_shared_workspace_is_refused(
+async def test_the_only_admin_of_a_shared_workspace_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
         owner = await _user(session, "owner")
         other = await _user(session, "other")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, owner, "admin")
         await _member(session, TENANT_ZERO_ID, other, "member")
         await session.commit()
         reason = await deletion.refusal(
-            session, owner, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+            session, owner, [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
         )
-    assert reason is not None and "only owner of Acme" in reason
+    assert reason is not None and "only admin of Acme" in reason
 
 
 async def test_a_connected_workspace_nobody_else_is_in_is_refused(
@@ -265,7 +265,7 @@ async def test_a_connected_workspace_nobody_else_is_in_is_refused(
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
         alone = await _user(session, "alone")
-        await _member(session, TENANT_ZERO_ID, alone, "owner")
+        await _member(session, TENANT_ZERO_ID, alone, "admin")
         session.add(
             MessagingInstall(
                 tenant_id=TENANT_ZERO_ID,
@@ -278,7 +278,7 @@ async def test_a_connected_workspace_nobody_else_is_in_is_refused(
         )
         await session.commit()
         reason = await deletion.refusal(
-            session, alone, [Workspace(TENANT_ZERO_ID, "Solo", "owner")]
+            session, alone, [Workspace(TENANT_ZERO_ID, "Solo", "admin")]
         )
     assert reason is not None and "Slack" in reason
 
@@ -290,7 +290,7 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
     async with session_factory() as session:
         owner = await _user(session, "owner")
         leaving = await _user(session, "leaving")
-        await _member(session, TENANT_ZERO_ID, owner, "owner")
+        await _member(session, TENANT_ZERO_ID, owner, "admin")
         await _member(session, TENANT_ZERO_ID, leaving, "member")
         agent = await _agent(session, TENANT_ZERO_ID, leaving, "helper")
         invitation = await _invitation(session, TENANT_ZERO_ID, leaving)
@@ -425,11 +425,11 @@ async def test_a_workspace_left_empty_stays_with_nothing_pointing_at_the_person(
         user_id = alone.id
         await session.commit()
     async with tenant_session(session_factory, solo) as session:
-        await _member(session, solo, alone, "owner")
+        await _member(session, solo, alone, "admin")
         await _invitation(session, solo, alone)
         await session.commit()
 
-    workspaces = [Workspace(solo, "Solo", "owner")]
+    workspaces = [Workspace(solo, "Solo", "admin")]
     async with session_factory() as session:
         user = await session.get(User, user_id)
         assert user is not None

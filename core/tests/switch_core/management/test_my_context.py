@@ -301,12 +301,12 @@ async def test_an_admin_is_told_so(harness: Harness, client: httpx.AsyncClient) 
     async with harness.session_factory() as session:
         membership = await session.get(TenantMember, (TENANT_ZERO_ID, ada_id))
         assert membership is not None
-        membership.role = "owner"
+        membership.role = "admin"
         await session.commit()
 
     person = (await _context(client, buddy_id, key))["person"]
 
-    assert person["workspace_role"] == "owner"
+    assert person["workspace_role"] == "admin"
     assert person["workspace_admin"] is True
 
 

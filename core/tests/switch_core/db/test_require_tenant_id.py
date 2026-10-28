@@ -154,7 +154,7 @@ class TestMembershipNeedsOneToo:
                 )
                 assert list(memberships.scalars()) == [TENANT_ZERO_ID]
 
-    async def test_an_admin_joins_as_owner(
+    async def test_an_operator_joins_as_admin(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         async with session_factory() as session:
@@ -165,4 +165,4 @@ class TestMembershipNeedsOneToo:
                 roles = await session.execute(
                     select(TenantMember.role).where(TenantMember.user_id == user.id)
                 )
-                assert list(roles.scalars()) == ["owner"]
+                assert list(roles.scalars()) == ["admin"]

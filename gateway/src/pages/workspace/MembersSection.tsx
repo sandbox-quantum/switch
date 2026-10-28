@@ -30,13 +30,12 @@ interface Props {
   tenantId: string;
   selfId: string;
   canAdmin: boolean;
-  isOwner: boolean;
 }
 
 /** An admin may manage members and admins; only an owner may grant the owner
  * role or touch an existing owner. The server enforces the same, and refuses
  * the last owner — its message is shown as is. */
-export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: Props) {
+export default function MembersSection({ tenantId, selfId, canAdmin }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -62,8 +61,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
-    const mayManage = (row: MemberRow) => canAdmin && (isOwner || row.role !== "owner");
-    const roles: TenantRole[] = isOwner ? ["owner", "admin", "member"] : ["admin", "member"];
+    const roles: TenantRole[] = ["admin", "member"];
     return [
       {
         field: "name",
@@ -78,7 +76,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         headerName: "Role",
         width: 150,
         renderCell: ({ row }) =>
-          mayManage(row) ? (
+          canAdmin ? (
             <Select
               size="small"
               value={row.role}
@@ -117,7 +115,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
         width: 60,
         sortable: false,
         renderCell: ({ row }) =>
-          mayManage(row) && row.user_id !== selfId ? (
+          canAdmin && row.user_id !== selfId ? (
             <Tooltip title="Remove from workspace">
               <span>
                 <IconButton
@@ -133,7 +131,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
           ) : null,
       },
     ];
-  }, [act, busy, canAdmin, isOwner, selfId, tenantId]);
+  }, [act, busy, canAdmin, selfId, tenantId]);
 
   return (
     <Stack spacing={1.5}>

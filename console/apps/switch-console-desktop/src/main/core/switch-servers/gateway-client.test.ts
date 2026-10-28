@@ -101,6 +101,7 @@ const {
   registerKnownAgent,
   updateAgentDisplayName,
   renameAgent,
+  fetchTenants,
   updateBridge,
   AgentManagementUnavailableError,
   enrollConsoleController,
@@ -3473,5 +3474,31 @@ describe('fetchAgentIconChoices', () => {
       choices: ['https://example.com/a.png'],
       thirdPartyAvatarsEnabled: true,
     });
+  });
+});
+
+describe('fetchTenants', () => {
+  beforeEach(() => {
+    getSessionCookie.mockResolvedValue('switch_session=fresh');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads a workspace owner on a server from before the merge as an admin', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        jsonResponse([
+          { id: 't1', slug: 'acme', name: 'Acme', role: 'owner' },
+          { id: 't2', slug: 'beta', name: 'Beta', role: 'member' },
+        ])
+      )
+    );
+
+    const tenants = await fetchTenants(SERVER);
+
+    expect(tenants.map((t) => t.role)).toEqual(['admin', 'member']);
   });
 });

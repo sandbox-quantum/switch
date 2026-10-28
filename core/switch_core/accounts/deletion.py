@@ -200,12 +200,12 @@ class AccountDeletion:
             alone = all(member.id == user.id for member, _ in members)
             if (
                 not alone
-                and workspace.role == "owner"
-                and await self.users.count_owners(session) <= 1
+                and workspace.role == "admin"
+                and await self.users.lock_admins(session) <= 1
             ):
                 return (
-                    f"You're the only owner of {workspace.name}, which has other "
-                    "members. Make one of them an owner first."
+                    f"You're the only admin of {workspace.name}, which has other "
+                    "members. Make one of them an admin first."
                 )
             if alone:
                 platform = await session.scalar(
@@ -307,6 +307,7 @@ class AccountDeletion:
             await self._revoke_controllers(tenant_id, user_id, controller_ids)
 
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._still_not_the_last_admin(session, user_id, workspace)
             successor = await self._successor(session, user_id)
             try:
                 removed_services = await self.broker.remove_connections(
@@ -363,18 +364,37 @@ class AccountDeletion:
                     warning,
                 )
 
+    async def _still_not_the_last_admin(
+        self, session: AsyncSession, user_id: str, workspace: Workspace
+    ) -> None:
+        """Check `refusal`'s last-admin rule again, in the transaction that
+        removes the membership and with the admin rows locked: another admin
+        may have been demoted or removed since `refusal` read them."""
+        if workspace.role != "admin":
+            return
+        members = await self.users.list_tenant_members(session)
+        if all(member.id == user_id for member, _ in members):
+            return
+        if await self.users.lock_admins(session) <= 1:
+            raise RuntimeError(
+                f"Stopped deleting user {user_id} part-way: they became the only "
+                f"admin of workspace {workspace.id}, which has other members, after "
+                "the deletion was checked. Their agents there are already deleted; "
+                "make another member an admin and delete the account again."
+            )
+
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
         """Who takes over what the workspace still needs from this person: an
-        owner, else an admin, else nobody when they are alone in it."""
+        admin, else nobody when no other admin is in it."""
         ranked = sorted(
             (
                 (membership.role, member.id)
                 for member, membership in await self.users.list_tenant_members(session)
                 if member.id != user_id
             ),
-            key=lambda entry: {"owner": 0, "admin": 1}.get(entry[0], 2),
+            key=lambda entry: 0 if entry[0] == "admin" else 1,
         )
-        if not ranked or ranked[0][0] not in {"owner", "admin"}:
+        if not ranked or ranked[0][0] != "admin":
             return None
         return ranked[0][1]
 

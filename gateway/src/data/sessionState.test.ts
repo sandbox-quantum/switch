@@ -7,7 +7,6 @@ import {
   deliveryNotice,
   inviteTokenFrom,
   inviteUrl,
-  ownsTenant,
   readPendingInvite,
   storePendingInvite,
 } from "./sessionState";
@@ -49,26 +48,21 @@ describe("appView", () => {
   });
 });
 
-describe("canAdminTenant and ownsTenant", () => {
+describe("canAdminTenant", () => {
   it("follows the workspace role", () => {
     expect(canAdminTenant(session())).toBe(false);
     expect(canAdminTenant(session({ tenant: { ...acme, role: "admin" } }))).toBe(true);
-    expect(canAdminTenant(session({ tenant: { ...acme, role: "owner" } }))).toBe(true);
-    expect(ownsTenant(session({ tenant: { ...acme, role: "admin" } }))).toBe(false);
-    expect(ownsTenant(session({ tenant: { ...acme, role: "owner" } }))).toBe(true);
   });
 
-  it("grants both to an operator whatever the role", () => {
+  it("is granted to an operator whatever the role", () => {
     const operator = session({
       user: { id: "u1", name: "Op", email: "op@example.com", is_operator: true },
     });
     expect(canAdminTenant(operator)).toBe(true);
-    expect(ownsTenant(operator)).toBe(true);
   });
 
-  it("grants neither with no session or no workspace", () => {
+  it("is not granted with no session or no workspace", () => {
     expect(canAdminTenant(null)).toBe(false);
-    expect(ownsTenant(null)).toBe(false);
     expect(canAdminTenant(session({ tenant: null, state: "needs_workspace" }))).toBe(false);
   });
 });

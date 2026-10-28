@@ -9,7 +9,7 @@
  */
 
 /** The caller's standing in a workspace, as the gateway reports it. */
-export type WorkspaceRole = 'owner' | 'admin' | 'member';
+export type WorkspaceRole = 'admin' | 'member';
 
 /** A workspace on a registered Switch server. */
 export type Workspace = {
@@ -42,7 +42,7 @@ export type Workspace = {
  * messaging apps — which the gateway also enforces.
  */
 export function administersWorkspace(workspace: Workspace): boolean {
-  return workspace.role === 'owner' || workspace.role === 'admin';
+  return workspace.role === 'admin';
 }
 
 /**

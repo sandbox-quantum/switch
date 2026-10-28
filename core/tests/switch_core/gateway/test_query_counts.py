@@ -158,7 +158,7 @@ class _Seed:
             session.add(user)
             await session.flush()
             session.add(
-                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="owner")
+                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="admin")
             )
             await session.commit()
             return user

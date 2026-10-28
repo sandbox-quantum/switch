@@ -387,7 +387,7 @@ describe('inviting people from the switcher', () => {
       [server('srv-1', 'Acme')],
       [
         workspace('ws-a', 'srv-1', { role: 'admin' }),
-        workspace('ws-b', 'srv-1', { role: 'owner' }),
+        workspace('ws-b', 'srv-1', { role: 'admin' }),
       ],
       'ws-a'
     );
@@ -640,7 +640,7 @@ describe('the server switcher on a build without Switch Cloud', () => {
   it('lists servers, not workspaces, and offers no workspace actions', async () => {
     await openSwitcher(
       [server('srv-1', 'Acme'), server('srv-2', 'Local dev')],
-      [workspace('ws-a', 'srv-1', { role: 'owner' }), workspace('ws-c', 'srv-2')],
+      [workspace('ws-a', 'srv-1', { role: 'admin' }), workspace('ws-c', 'srv-2')],
       'ws-a',
       'Switch server'
     );

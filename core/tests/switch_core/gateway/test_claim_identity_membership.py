@@ -79,7 +79,7 @@ async def _setup(
         session.add(external_user)
         admin = await _make_user(session, tenant_id=TENANT_ZERO_ID, role="admin")
         member = await _make_user(session, tenant_id=TENANT_ZERO_ID, role="member")
-        outsider = await _make_user(session, tenant_id=other_tenant, role="owner")
+        outsider = await _make_user(session, tenant_id=other_tenant, role="admin")
         await session.commit()
         return bridge.id, external_user, admin, member, outsider
 

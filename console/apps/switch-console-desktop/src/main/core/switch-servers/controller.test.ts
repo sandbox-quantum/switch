@@ -476,10 +476,10 @@ describe('createWorkspace', () => {
   });
 
   it('returns the local row for the workspace the gateway minted', async () => {
-    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'admin' });
     listWorkspacesForServer.mockResolvedValue([
       workspaceRow({ id: 'ws-1', tenantId: 't1' }),
-      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Acme', role: 'owner' }),
+      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Acme', role: 'admin' }),
     ]);
 
     const created = await switchServersController.createWorkspace({
@@ -498,7 +498,7 @@ describe('createWorkspace', () => {
    * success the install has no trace of.
    */
   it('raises when the reconcile that records the workspace fails', async () => {
-    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'admin' });
     reconcileServerWorkspaces.mockRejectedValue(new Error('the gateway stopped answering'));
 
     await expect(
@@ -511,7 +511,7 @@ describe('createWorkspace', () => {
   // nothing, would leave the app scoped to a workspace that is not the one just
   // made — so it says so instead.
   it('raises when the new workspace did not land locally', async () => {
-    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'admin' });
     listWorkspacesForServer.mockResolvedValue([workspaceRow({ id: 'ws-1', tenantId: 't1' })]);
 
     await expect(

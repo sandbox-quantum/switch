@@ -57,9 +57,9 @@ async def get_my_context() -> dict[str, Any]:
 
         `you`: {name, can_manage_agents}, the agent making the call.
         `person`: your owner, {name, email, workspace_role, workspace_admin,
-        runs_server}. `workspace_role` is "owner", "admin" or "member".
+        runs_server}. `workspace_role` is "admin" or "member".
         `workspace_admin` is whether they may set up messaging apps and invite
-        people: an owner or admin of the workspace, or the server's own
+        people: an admin of the workspace, or the server's own
         administrator, which `runs_server` marks.
         `workspace`: {id, name, members}.
         `server`: {kind, version, features}. `kind` is "switch_cloud",
@@ -157,7 +157,7 @@ async def get_my_context() -> dict[str, Any]:
         }
         bridges = await protocol.bridge_store.get_all(session)
 
-    admin = role in {"owner", "admin"} or owner.role == "admin"
+    admin = role == "admin" or owner.role == "admin"
     port = management_port()
     managed = (
         {

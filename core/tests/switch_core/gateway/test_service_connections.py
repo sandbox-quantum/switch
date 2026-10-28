@@ -437,7 +437,7 @@ class TestMemberRemoval:
     ) -> None:
         await _make_tenant(session_factory, TENANT_A)
         admin_id = await _make_member(
-            session_factory, name="svc-admin", tenant_id=TENANT_A, role="owner"
+            session_factory, name="svc-admin", tenant_id=TENANT_A, role="admin"
         )
         member_id = await _make_member(
             session_factory, name="svc-member", tenant_id=TENANT_A, role="member"

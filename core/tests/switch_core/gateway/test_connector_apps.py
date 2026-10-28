@@ -331,7 +331,7 @@ async def operator(session_factory) -> User:
 
 
 class TestOnlyTheOperator:
-    @pytest.mark.parametrize("member_role", ["member", "admin", "owner"])
+    @pytest.mark.parametrize("member_role", ["member", "admin"])
     async def test_everyone_else_is_refused_on_every_route(
         self, world: World, session_factory, member_role: str
     ) -> None:

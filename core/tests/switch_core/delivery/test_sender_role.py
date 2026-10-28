@@ -41,7 +41,7 @@ async def test_a_person_is_named_by_their_role_now(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session:
-        olivia = await _member(session, "olivia", "owner")
+        olivia = await _member(session, "olivia", "admin")
         person = SenderPrincipal("user", "client-1", [olivia.id], None)
 
         assert (
@@ -51,7 +51,7 @@ async def test_a_person_is_named_by_their_role_now(
                 "@olivia:test",
                 {},
             )
-            == "owner"
+            == "admin"
         )
 
         membership = await session.get(TenantMember, (TENANT_ZERO_ID, olivia.id))
