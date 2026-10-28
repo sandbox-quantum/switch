@@ -23,6 +23,7 @@ import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
 import {
   type BridgeDetail,
+  type BridgeUpdateInput,
   beginAppInstall,
   updateBridge,
 } from "../../data/api";
@@ -53,6 +54,7 @@ export default function CollaborationsPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [installTarget, setInstallTarget] = useState<BridgeDetail | null>(null);
   const [teamsTarget, setTeamsTarget] = useState<BridgeDetail | null>(null);
@@ -83,24 +85,42 @@ export default function CollaborationsPage() {
     }
   }, [deleteTarget, refetch]);
 
-  const handleToggleGreetings = useCallback(
-    async (bridgeId: string, enabled: boolean) => {
+  const saveBridgeSetting = useCallback(
+    async (bridgeId: string, update: BridgeUpdateInput, failure: string) => {
       setSavingId(bridgeId);
-      await updateBridge(bridgeId, { agent_greetings_enabled: enabled });
-      setSavingId(null);
-      refetch();
+      setSaveError(null);
+      try {
+        await updateBridge(bridgeId, update);
+        refetch();
+      } catch (e) {
+        // The switches show the row's stored value, so a failed save leaves
+        // them where they were — as long as the person is told why.
+        setSaveError(e instanceof Error ? e.message : failure);
+      } finally {
+        setSavingId(null);
+      }
     },
     [refetch],
   );
 
+  const handleToggleGreetings = useCallback(
+    (bridgeId: string, enabled: boolean) =>
+      saveBridgeSetting(
+        bridgeId,
+        { agent_greetings_enabled: enabled },
+        "Could not save the agent greetings setting",
+      ),
+    [saveBridgeSetting],
+  );
+
   const handleToggleChannelCreation = useCallback(
-    async (bridgeId: string, enabled: boolean) => {
-      setSavingId(bridgeId);
-      await updateBridge(bridgeId, { channel_creation_enabled: enabled });
-      setSavingId(null);
-      refetch();
-    },
-    [refetch],
+    (bridgeId: string, enabled: boolean) =>
+      saveBridgeSetting(
+        bridgeId,
+        { channel_creation_enabled: enabled },
+        "Could not save the channel creation setting",
+      ),
+    [saveBridgeSetting],
   );
 
   // Re-approval is the same install flow the "Add to..." button starts: the
@@ -269,6 +289,12 @@ export default function CollaborationsPage() {
           </Button>
         )}
       </Stack>
+
+      {saveError && (
+        <Alert severity="error" sx={{ mb: 1 }} onClose={() => setSaveError(null)}>
+          {saveError}
+        </Alert>
+      )}
 
       {approveError && (
         <Alert severity="error" sx={{ mb: 1 }} onClose={() => setApproveError(null)}>

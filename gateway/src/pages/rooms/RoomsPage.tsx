@@ -3,7 +3,15 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import UnarchiveOutlined from "@mui/icons-material/UnarchiveOutlined";
-import { Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Stack,
+  Typography,
+} from "@mui/material";
 import type { GridColDef, GridRowId } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
@@ -47,6 +55,7 @@ export default function RoomsPage() {
   const filters = useRoomFilterState();
   const [selected, setSelected] = useState<GridRowId[]>([]);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const { data: rooms, loading, refetch } = useRooms(
     filters.debouncedSearch || undefined,
@@ -74,24 +83,41 @@ export default function RoomsPage() {
 
   const handleToggleArchive = useCallback(
     async (roomId: string, archived: boolean) => {
-      if (archived) {
-        await unarchiveRoom(roomId);
-      } else {
-        await archiveRoom(roomId);
+      setActionError(null);
+      try {
+        if (archived) {
+          await unarchiveRoom(roomId);
+        } else {
+          await archiveRoom(roomId);
+        }
+        refetch();
+      } catch (e) {
+        // A refusal (no write access, room gone) or a failed request used to
+        // vanish into an unhandled rejection, leaving the click looking dead.
+        setActionError(
+          e instanceof Error ? e.message : "Could not change the room's archive state",
+        );
       }
-      refetch();
     },
     [refetch],
   );
 
   const handleBulkArchive = useCallback(async () => {
     setBusy(true);
-    const ids = selected.map(String);
-    // Active view → archive the selection; Archived view → unarchive it.
-    await bulkArchiveRooms(ids, !viewingArchived);
-    setSelected([]);
-    setBusy(false);
-    refetch();
+    setActionError(null);
+    try {
+      // Active view → archive the selection; Archived view → unarchive it.
+      await bulkArchiveRooms(selected.map(String), !viewingArchived);
+      setSelected([]);
+      refetch();
+    } catch (e) {
+      // Keep the selection: the same rooms are still the ones to retry.
+      setActionError(
+        e instanceof Error ? e.message : "Could not update the selected rooms",
+      );
+    } finally {
+      setBusy(false);
+    }
   }, [selected, viewingArchived, refetch]);
 
   const columns = useMemo<GridColDef<RoomSummary>[]>(
@@ -240,6 +266,12 @@ export default function RoomsPage() {
           </Button>
         </Stack>
       </Stack>
+
+      {actionError && (
+        <Alert severity="error" sx={{ mb: 1 }} onClose={() => setActionError(null)}>
+          {actionError}
+        </Alert>
+      )}
 
       <RoomFilters rooms={rooms ?? []} groups={groupList} state={filters} />
 

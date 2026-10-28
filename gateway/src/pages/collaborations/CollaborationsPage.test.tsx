@@ -23,6 +23,7 @@ vi.mock("../../data/api", async (importOriginal) => {
   return {
     ...actual,
     beginAppInstall: vi.fn(),
+    updateBridge: vi.fn(),
   };
 });
 
@@ -279,5 +280,53 @@ describe("CollaborationsPage", () => {
     render(<CollaborationsPage />);
 
     expect(screen.getByText("Microsoft Teams")).toBeTruthy();
+  });
+
+  it("says why an agent-greetings toggle did not save", async () => {
+    setup();
+    vi.mocked(api.updateBridge).mockRejectedValue(
+      new Error("You do not have permission to change this connection."),
+    );
+    render(<CollaborationsPage />);
+
+    // The first switch on the row is Agent greetings.
+    fireEvent.click(screen.getAllByRole("switch")[0]);
+
+    expect(
+      await screen.findByText("You do not have permission to change this connection."),
+    ).toBeTruthy();
+  });
+
+  it("says why a channel-creation toggle did not save", async () => {
+    setup();
+    vi.mocked(api.updateBridge).mockRejectedValue(new Error("Switch could not reach Microsoft."));
+    render(<CollaborationsPage />);
+
+    // The second switch on the row is Channel creation.
+    fireEvent.click(screen.getAllByRole("switch")[1]);
+
+    expect(await screen.findByText("Switch could not reach Microsoft.")).toBeTruthy();
+  });
+
+  it("saves a greetings toggle and reloads the row", async () => {
+    setup();
+    const refetch = vi.fn();
+    vi.mocked(hooks.useBridges).mockReturnValue({
+      data: [bridge()],
+      loading: false,
+      error: null,
+      refetch,
+    });
+    vi.mocked(api.updateBridge).mockResolvedValue(bridge({ agent_greetings_enabled: false }));
+    render(<CollaborationsPage />);
+
+    fireEvent.click(screen.getAllByRole("switch")[0]);
+
+    await waitFor(() =>
+      expect(api.updateBridge).toHaveBeenCalledWith("b1", {
+        agent_greetings_enabled: false,
+      }),
+    );
+    expect(refetch).toHaveBeenCalled();
   });
 });
