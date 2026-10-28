@@ -232,14 +232,18 @@ it('says it cannot tell when Codex does not say what a Bedrock login runs on', a
   expect((await check()).status).toBe('authenticated');
 });
 
-it('says what went wrong when the Codex home cannot be checked', async () => {
-  await rm(home, { recursive: true });
-  await writeFile(home, 'not a directory');
-  codex.account = CHATGPT;
-  const result = await check();
-  expect(result.status).toBe('unknown');
-  expect(result.message).toContain('ENOTDIR');
-});
+// A file where the home should be reads as ENOENT on Windows, not ENOTDIR.
+it.skipIf(process.platform === 'win32')(
+  'says what went wrong when the Codex home cannot be checked',
+  async () => {
+    await rm(home, { recursive: true });
+    await writeFile(home, 'not a directory');
+    codex.account = CHATGPT;
+    const result = await check();
+    expect(result.status).toBe('unknown');
+    expect(result.message).toContain('ENOTDIR');
+  }
+);
 
 it('looks in the home Codex reports reading the login from', async () => {
   const reported = join(root, 'reported-home');
