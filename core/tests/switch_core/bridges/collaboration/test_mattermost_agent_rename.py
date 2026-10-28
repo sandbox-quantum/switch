@@ -81,10 +81,12 @@ class _RecordingBot:
     def login(self) -> None:
         return None
 
-    async def init_websocket(self, handler: Any) -> None:
+    def init_websocket(self, handler: Any) -> None:
+        """As `mattermostdriver.Driver.init_websocket`: synchronous, running
+        the thread's current event loop while the socket is open."""
         self.handler = handler
         self.ready.set()
-        await asyncio.Event().wait()
+        asyncio.get_event_loop().run_until_complete(asyncio.Event().wait())
 
 
 def _adapter(

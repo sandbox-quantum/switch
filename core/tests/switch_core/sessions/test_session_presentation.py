@@ -1,5 +1,6 @@
+import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -7,6 +8,7 @@ from switch_core.sessions.contract import TurnUpsert
 from switch_core.sessions.presentation import (
     activity_error_summary,
     notification_recipient,
+    request_card_recipient,
 )
 
 
@@ -158,3 +160,198 @@ async def test_an_unknown_asker_reaches_the_owner():
         == "UOWNER"
     )
     assert db.scalar.call_count == 1
+
+
+# ── Who a request card in a thread names ─────────────────────────────────────
+
+OWNER_ACCOUNT = SimpleNamespace(
+    external_user_id="UOWNER", transport_user_id="@owner:switch"
+)
+ASKER_ACCOUNT = SimpleNamespace(
+    external_user_id="UASKER", transport_user_id="@asker:switch"
+)
+
+
+def _found(*rows):
+    """A db whose successive account lookups find these rows (None: no account,
+    a list: several accounts)."""
+    db = AsyncMock()
+    results = []
+    for row in rows:
+        result = MagicMock()
+        accounts = row if isinstance(row, list) else [] if row is None else [row]
+        result.first.return_value = accounts[0] if accounts else None
+        result.all.return_value = accounts
+        results.append(result)
+    db.execute.side_effect = results
+    return db
+
+
+def _sql(db, call: int) -> str:
+    return str(
+        db.execute.call_args_list[call]
+        .args[0]
+        .compile(compile_kwargs={"literal_binds": True})
+    )
+
+
+class MayAnswer:
+    """The answer check, admitting only the room identities it is given."""
+
+    def __init__(self, *admitted: str) -> None:
+        self.admitted = set(admitted)
+        self.asked: list[str] = []
+
+    async def __call__(self, sender: str) -> bool:
+        self.asked.append(sender)
+        return sender in self.admitted
+
+
+async def test_a_threaded_card_names_the_owner_when_the_asker_may_not_answer():
+    """On the default policy only the owner may answer, so the asker is
+    checked, refused, and the owner is named: naming the asker would ping a
+    person who cannot press anything on the card."""
+    db = _found(ASKER_ACCOUNT, OWNER_ACCOUNT)
+    may_answer = MayAnswer("@owner:switch")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        == "UOWNER"
+    )
+    assert may_answer.asked == ["@asker:switch", "@owner:switch"]
+    query = _sql(db, 1)
+    assert "external_user_claims.user_id = 'owner'" in query
+    assert "external_users.bridge_id = 'bridge'" in query
+    assert "client_rooms.room_id = 'room'" in query
+    assert db.execute.call_count == 2
+
+
+async def test_an_asker_who_may_answer_is_named_before_the_owner():
+    """The asker is the one waiting on the card, so when the policy lets them
+    answer they are named, and the owner is not looked up at all."""
+    db = _found(ASKER_ACCOUNT, OWNER_ACCOUNT)
+    may_answer = MayAnswer("@asker:switch", "@owner:switch")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        == "UASKER"
+    )
+    assert may_answer.asked == ["@asker:switch"]
+    query = _sql(db, 0)
+    assert "clients.matrix_user_id = '@asker:switch'" in query
+    assert "external_users.bridge_id = 'bridge'" in query
+    assert "client_rooms.room_id = 'room'" in query
+    assert db.execute.call_count == 1
+
+
+async def test_an_owner_is_named_by_the_one_linked_account_that_may_answer():
+    """A person can link several accounts on one bridge, and a policy can
+    admit just one of them, so every account is tried before giving up."""
+    other = SimpleNamespace(
+        external_user_id="UOWNER_OLD", transport_user_id="@owner-old:switch"
+    )
+    db = _found(None, [other, OWNER_ACCOUNT])
+    may_answer = MayAnswer("@owner:switch")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        == "UOWNER"
+    )
+    assert may_answer.asked == ["@owner-old:switch", "@owner:switch"]
+    assert db.execute.call_count == 2
+
+
+async def test_an_asker_who_is_the_owner_is_not_asked_twice():
+    db = _found(OWNER_ACCOUNT, [OWNER_ACCOUNT])
+    may_answer = MayAnswer()
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@owner:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        is None
+    )
+    assert may_answer.asked == ["@owner:switch"]
+    assert db.execute.call_count == 2
+
+
+async def test_an_owner_with_no_account_here_is_not_named(caplog):
+    db = _found(None, None)
+    caplog.set_level(logging.INFO, logger="switch_core.sessions.presentation")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=MayAnswer("@owner:switch"),
+        )
+        is None
+    )
+    assert "no linked account" in caplog.text
+    assert "names nobody" in caplog.text
+
+
+async def test_an_asker_who_may_not_answer_is_not_named():
+    db = _found(ASKER_ACCOUNT, None)
+    may_answer = MayAnswer()
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id="@asker:switch",
+            agent=SimpleNamespace(name="agent", owner_id="owner"),
+            may_answer=may_answer,
+        )
+        is None
+    )
+    assert may_answer.asked == ["@asker:switch"]
+
+
+async def test_an_ownerless_agent_with_no_known_asker_names_nobody(caplog):
+    db = _found()
+    caplog.set_level(logging.INFO, logger="switch_core.sessions.presentation")
+
+    assert (
+        await request_card_recipient(
+            db,
+            bridge_id="bridge",
+            room_id="room",
+            actor_id=None,
+            agent=SimpleNamespace(name="agent", owner_id=None),
+            may_answer=MayAnswer(),
+        )
+        is None
+    )
+    db.execute.assert_not_called()
+    assert "names nobody" in caplog.text

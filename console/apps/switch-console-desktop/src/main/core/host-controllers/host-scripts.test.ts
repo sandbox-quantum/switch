@@ -278,7 +278,7 @@ describe('the detached supervisor', () => {
 describe('the systemd unit', () => {
   it('runs the controller with the host’s PATH and restarts it only on exit code 1', () => {
     const unit = systemdUnit({
-      description: 'Switch agents controller',
+      description: 'Switch agent controller',
       node: '/usr/bin/node',
       bundle: '/home/ada/.local/state/switch/sdk-host/agent-controller-x.mjs',
       dataDir: '/home/ada/.local/state/switch/agent-controller/console-server-1',

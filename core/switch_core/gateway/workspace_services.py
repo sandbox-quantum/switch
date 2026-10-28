@@ -1,11 +1,15 @@
 """A workspace admin's switch for each catalog service, for the whole workspace.
 
-On by default: a service with no setting is usable. Switched off, nobody in the
+Off by default: a service no admin has switched takes the workspace's default
+(`Tenant.services_on_by_default`), off for every workspace made since services
+started off and on for those that had members by then. Off, nobody in the
 workspace can connect it, grant it or be issued a token for it, and it drops
 out of the grants every agent's session reads, so the session's host restarts
 it without the service within about half a minute. Grants are kept, so
 switching it back on returns them. A token already handed out may be used
-until that restart; one the vendor can revoke (GitHub's) is revoked here.
+until that restart; one the vendor can revoke (GitHub's) is revoked here, and
+one no vendor can revoke alone is marked withdrawn and stays valid until it
+expires, which the answer's warning says.
 """
 
 from __future__ import annotations
@@ -18,11 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.connections.broker import (
-    ACCESS_WARNING,
-    ServiceBroker,
-    get_service_broker,
-)
+from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.connections.loader import CATALOG
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -57,6 +57,7 @@ async def list_workspace_services(
     """Every catalog service that can be connected, whether the workspace has
     it on, and who it reaches: what an admin weighs before switching it off."""
     settings = await STORE.list_settings(session)
+    on_by_default = await STORE.on_by_default(session)
     names = {
         user.id: user.name
         for user in await session.scalars(
@@ -78,7 +79,7 @@ async def list_workspace_services(
             {
                 "slug": definition.slug,
                 "name": definition.name,
-                "enabled": setting is None or setting.enabled,
+                "enabled": on_by_default if setting is None else setting.enabled,
                 "updated_by_name": (
                     None if setting is None else names.get(setting.updated_by)
                 ),
@@ -107,7 +108,8 @@ async def set_workspace_service(
 
     Off queues every live token this workspace was issued for it, in the same
     transaction, and revokes them before answering; `warning` says when some
-    could not be revoked yet, which the periodic tick keeps trying.
+    could not be revoked yet, which the periodic tick keeps trying, and until
+    when those no vendor can revoke alone stay valid.
     """
     entry = CATALOG.get(service)
     if entry is None or not entry.definition.enabled:
@@ -130,9 +132,7 @@ async def set_workspace_service(
         details={"service": service},
     )
     await session.commit()
-    pending = not body.enabled and await broker.revoke_pending(session, issued_for_it)
-    return {
-        "slug": service,
-        "enabled": body.enabled,
-        "warning": ACCESS_WARNING if pending else None,
-    }
+    warning = (
+        None if body.enabled else await broker.revoke_withdrawn(session, issued_for_it)
+    )
+    return {"slug": service, "enabled": body.enabled, "warning": warning}

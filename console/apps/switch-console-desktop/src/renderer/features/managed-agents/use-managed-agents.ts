@@ -8,16 +8,38 @@ import { events, rpc } from '@renderer/lib/ipc';
 import { chatActivityChannel, chatMessageChannel } from '@shared/core/chats/chatEvents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
+import { MANAGED_AGENTS_KEY } from './use-managed-agents-key';
+import { useUserChangesLive } from './use-user-changes';
 
-export const MANAGED_AGENTS_KEY = 'managed-agents';
+export { MANAGED_AGENTS_KEY };
 
 /**
- * How often the list is read again on its own. Changes made from this Console
- * (an edit, a new agent, a move) refresh it straight away, and react-query
- * reads it again when the window regains focus and pauses while it is hidden,
- * so this only bounds how long a change made elsewhere takes to show.
+ * How often the list is read again on its own, against a server that does not
+ * push changes (`useUserChangesLive`). One that does tells Console when to
+ * read it, so it is read only every `PUSHED_RECONCILE_MS`. Changes made from
+ * this Console (an edit, a new agent, a move) refresh it straight away either
+ * way, and react-query reads it again when the window regains focus.
  */
 const MANAGED_AGENTS_REFRESH_MS = 30_000;
+/** The machines list's polling rate against a server that does not push changes. */
+const MACHINES_REFRESH_MS = 15_000;
+/**
+ * How often a list is read again while the server pushes changes. A notice
+ * can be lost without the socket closing: the pod that made the change died
+ * before it published it, or an older pod made it during a rolling deploy and
+ * publishes nothing. Nothing on the server can tell, so this bounds how long a
+ * list can stay stale.
+ */
+const PUSHED_RECONCILE_MS = 5 * 60_000;
+
+/**
+ * The polling rate for a list, given whether the server pushes changes. A read
+ * that failed is tried again at the polling rate even while the socket is up,
+ * since no notice may come to retry it.
+ */
+export function refreshEvery(pollMs: number, pushed: boolean, failed: boolean): number {
+  return pushed && !failed ? PUSHED_RECONCILE_MS : pollMs;
+}
 
 /** How soon after an agent's activity in a chat the list is read again. */
 const AGENT_ACTIVITY_REFRESH_MS = 1_500;
@@ -45,6 +67,7 @@ export function useManagedAgents(serverId: string | null) {
   // The list is the workspace's, not the server's: switching workspace on the
   // same server has to read it again rather than show the last one.
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const pushed = useUserChangesLive(signedIn ? serverId : null);
   const managementOn = useFeatureFlags(serverId).agent_management;
   useEffect(
     () =>
@@ -89,7 +112,7 @@ export function useManagedAgents(serverId: string | null) {
     // switch-buddy included, until something remounted the list.
     refetchInterval: (query) =>
       query.state.data !== null
-        ? MANAGED_AGENTS_REFRESH_MS
+        ? refreshEvery(MANAGED_AGENTS_REFRESH_MS, pushed, query.state.status === 'error')
         : managementOn
           ? MANAGEMENT_UNAVAILABLE_RETRY_MS
           : false,
@@ -99,6 +122,7 @@ export function useManagedAgents(serverId: string | null) {
 
 /** The signed-in user's machines on the server, with what each reported; null without agent management. */
 export function useOwnedMachines(serverId: string) {
+  const pushed = useUserChangesLive(serverId);
   return useQuery({
     queryKey: [
       MANAGED_AGENTS_KEY,
@@ -107,7 +131,8 @@ export function useOwnedMachines(serverId: string) {
       workspacesStore.idOnServerInScope(serverId),
     ],
     queryFn: () => rpc.managedAgents.machines(serverId),
-    refetchInterval: 15000,
+    refetchInterval: (query) =>
+      refreshEvery(MACHINES_REFRESH_MS, pushed, query.state.status === 'error'),
   });
 }
 
@@ -133,6 +158,7 @@ export function useMachineLabel(agent: ManagedAgentView): string | null {
 
 /** The owner's machines on the server, with what each last reported. Null without agent management. */
 export function useManagedMachines(serverId: string) {
+  const pushed = useUserChangesLive(serverId);
   return useQuery({
     queryKey: [
       MANAGED_AGENTS_KEY,
@@ -141,7 +167,12 @@ export function useManagedMachines(serverId: string) {
       workspacesStore.idOnServerInScope(serverId),
     ],
     queryFn: () => rpc.managedAgents.machines(serverId),
-    refetchInterval: (query) => (query.state.data ? 5000 : false),
+    // The same rate as `useOwnedMachines`: they share the key, so the faster
+    // of two different intervals would win for both.
+    refetchInterval: (query) =>
+      query.state.data
+        ? refreshEvery(MACHINES_REFRESH_MS, pushed, query.state.status === 'error')
+        : false,
     retry: false,
   });
 }

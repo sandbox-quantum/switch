@@ -3,14 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.server_connectors.lifecycle import (
-    ServerSideConnectorLifecycleService,
-)
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
 )
@@ -33,7 +31,6 @@ from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -41,12 +38,12 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
 from switch_core.gateway.collaborations import router as collaborations_router
 from switch_core.gateway.connection_catalog import router as connection_catalog_router
 from switch_core.gateway.connector_apps import router as connector_apps_router
-from switch_core.gateway.connectors import router as connectors_router
 from switch_core.gateway.dependencies import init_dependencies
 from switch_core.gateway.documents import router as documents_router
 from switch_core.gateway.ecosystem import router as ecosystem_router
@@ -80,9 +77,11 @@ from switch_core.gateway.workspace_services import (
 )
 from switch_core.keys import Purpose
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
+from switch_core.user_changes import LocalUserChanges
 
 
 def create_gateway_app(
@@ -94,8 +93,6 @@ def create_gateway_app(
     bridge_store: CollaborationBridgeStore,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    connector_lifecycle: ServerSideConnectorLifecycleService,
-    connector_store: ServerConnectorStore,
     event_buffer: EventBuffer,
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -110,6 +107,7 @@ def create_gateway_app(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    user_changes: LocalUserChanges,
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
@@ -122,8 +120,6 @@ def create_gateway_app(
         bridge_store=bridge_store,
         client_lifecycle=client_lifecycle,
         collab_lifecycle=collab_lifecycle,
-        connector_lifecycle=connector_lifecycle,
-        connector_store=connector_store,
         event_buffer=event_buffer,
         session_factory=session_factory,
         user_store=user_store,
@@ -138,6 +134,7 @@ def create_gateway_app(
         protocol=protocol,
         install_service=install_service,
         invite_mailer=invite_mailer,
+        user_changes=user_changes,
         config=config,
     )
 
@@ -192,6 +189,7 @@ def create_gateway_app(
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
 
+    app.add_exception_handler(RequestValidationError, validation_error_response)
     app.add_exception_handler(SessionError, session_error_response)
     app.add_exception_handler(ChatError, chat_error_response)
     app.include_router(
@@ -201,6 +199,7 @@ def create_gateway_app(
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
     app.include_router(agents_router, prefix="/agents", tags=["agents"])
@@ -210,7 +209,6 @@ def create_gateway_app(
     app.include_router(
         teams_placements_router, prefix="/collaborations", tags=["collaborations"]
     )
-    app.include_router(connectors_router, prefix="/connectors", tags=["connectors"])
     app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
     app.include_router(references_router, tags=["references"])
     app.include_router(room_links_router, tags=["linked-rooms"])

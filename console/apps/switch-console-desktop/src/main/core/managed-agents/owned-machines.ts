@@ -66,6 +66,17 @@ export function ownedMachines(
 }
 
 /**
+ * `serverIds` with `preferred` moved to the front when it is among them: the
+ * server Console is on now, whose report is the one its screens are about,
+ * since controllers on different servers can each say something different.
+ */
+export function preferredFirst(serverIds: readonly string[], preferred: string | null): string[] {
+  return preferred && serverIds.includes(preferred)
+    ? [preferred, ...serverIds.filter((serverId) => serverId !== preferred)]
+    : [...serverIds];
+}
+
+/**
  * What this computer's controller last reported to the first of `serverIds`
  * that has a report from it, online: Console's own check of the providers
  * is only the fallback, since this report is what Switch decides by. Null

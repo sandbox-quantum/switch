@@ -20,7 +20,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 import httpx
 
@@ -299,7 +299,9 @@ class FakeOAuthServer:
     The MCP server's metadata is where `resource_metadata_path` says, which
     its 401 names (`advertise`). A registered client signs in only on a
     redirect it registered, port included, and a public client is given a
-    secret it never needs, as some vendors do.
+    secret it never needs, as some vendors do. `register_as` registers a
+    client to authenticate otherwise than it asked, and the answer leaves the
+    method out unless `answer_names_method`.
     """
 
     def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
@@ -313,6 +315,11 @@ class FakeOAuthServer:
         self.clients: dict[str, str | None] = {STATIC_CLIENT_ID: STATIC_CLIENT_SECRET}
         # A registered client's redirects; the static client's are not checked.
         self.registered_redirects: dict[str, list[str]] = {}
+        # How each registered client authenticates; the static client, any
+        # way the metadata lists.
+        self.registered_methods: dict[str, str] = {}
+        self.register_as: str | None = None
+        self.answer_names_method = True
         self.authorizations: list[dict[str, str]] = []
         self.registrations: list[dict[str, Any]] = []
         self.codes: dict[str, _Code] = {}
@@ -332,6 +339,10 @@ class FakeOAuthServer:
             "revocation_endpoint": f"{ISSUER}/revoke",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": [
+                "client_secret_post",
+                "client_secret_basic",
+            ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
 
@@ -421,17 +432,40 @@ class FakeOAuthServer:
             return None
         return self.live_access.get(header.removeprefix("Bearer "))
 
-    def _client_ok(self, form: dict[str, str]) -> bool:
-        client_id = form.get("client_id")
+    def _client_ok(self, request: httpx.Request, form: dict[str, str]) -> bool:
+        """A known client, with its secret where it has one, sent one way
+        only: the way it registered, or for the static client one the
+        metadata lists, Basic where it lists none (RFC 8414 §2)."""
+        header = request.headers.get("authorization", "")
+        basic: tuple[str, str] | None = None
+        if header.startswith("Basic "):
+            pair = base64.b64decode(header.removeprefix("Basic ")).decode()
+            user, _, password = pair.partition(":")
+            # Each half was form-urlencoded (RFC 6749 §2.3.1).
+            basic = (unquote_plus(user), unquote_plus(password))
+            if "client_secret" in form or form.get("client_id", basic[0]) != basic[0]:
+                return False
+        client_id = form.get("client_id") if basic is None else basic[0]
         if client_id not in self.clients:
             return False
         secret = self.clients[client_id]
-        return secret is None or form.get("client_secret") == secret
+        if secret is None:
+            return True
+        methods = (
+            [self.registered_methods[client_id]]
+            if client_id in self.registered_methods
+            else self.metadata.get(
+                "token_endpoint_auth_methods_supported", ["client_secret_basic"]
+            )
+        )
+        if basic is not None:
+            return "client_secret_basic" in methods and basic[1] == secret
+        return "client_secret_post" in methods and form.get("client_secret") == secret
 
     def _token(self, request: httpx.Request) -> httpx.Response:
         form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
         self.token_requests.append(form)
-        if not self._client_ok(form):
+        if not self._client_ok(request, form):
             return _json(401, {"error": "invalid_client"})
         if form.get("grant_type") == "authorization_code":
             pending = self.codes.pop(form.get("code", ""), None)
@@ -462,12 +496,23 @@ class FakeOAuthServer:
         body = json.loads(request.content)
         self.registrations.append(body)
         client_id = f"registered-{len(self.registrations)}"
-        public = body.get("token_endpoint_auth_method") == "none"
+        method = self.register_as or body.get(
+            "token_endpoint_auth_method", "client_secret_basic"
+        )
         secret = f"SYNTHETIC-REGISTERED-{secrets.token_hex(4)}"
-        self.clients[client_id] = None if public else secret
+        self.clients[client_id] = None if method == "none" else secret
+        self.registered_methods[client_id] = method
         self.registered_redirects[client_id] = list(body.get("redirect_uris", []))
         # Issued even to a public client, which never needs it.
-        return _json(201, {**body, "client_id": client_id, "client_secret": secret})
+        answer = {
+            **body,
+            "client_id": client_id,
+            "client_secret": secret,
+            "token_endpoint_auth_method": method,
+        }
+        if not self.answer_names_method:
+            del answer["token_endpoint_auth_method"]
+        return _json(201, answer)
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
         if self._bearer(request) is None:

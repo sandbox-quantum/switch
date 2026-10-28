@@ -47,7 +47,10 @@ from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
 )
-from switch_core.bridges.agent.protocol.agent_detail import AgentProfileUpdate
+from switch_core.bridges.agent.protocol.agent_detail import (
+    AgentProfileUpdate,
+    agent_facing_detail,
+)
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
@@ -706,8 +709,8 @@ async def read_context(
         room_id = sole_connected_room(connected)
 
     protocol = get_protocol()
-    since_ms = parse_timestamp_ms(since) if since else None
-    before_ms = parse_timestamp_ms(before) if before else None
+    since_ms = parse_timestamp_ms("since", since) if since else None
+    before_ms = parse_timestamp_ms("before", before) if before else None
 
     buffer = protocol.event_buffer
     tenant_id = require_tenant_id()
@@ -946,10 +949,13 @@ async def create_room(
         write_visibility: "public" (anyone may modify — invite, attach, edit)
             or "private" (owner/admin only). Defaults to "public". Must not be
             "public" while read_visibility is "private".
-        group_name: Optional name of an existing room group to file this room
-            under (a navigation/visualization layer surfaced in the room list
-            and graph). Must match an existing group exactly; errors if unknown
-            or ambiguous. Omit to leave the room standalone.
+        group_name: Optional existing room group to file this room under (a
+            navigation/visualization layer surfaced in the room list and
+            graph). Give its path from the top level, e.g. "Fraud/Incidents",
+            or a bare name when that name is unique; a group id also works.
+            Names match exactly. An ambiguous bare name errors with the path
+            of each match to retry with; an unknown path errors naming the
+            first segment not found. Omit to leave the room standalone.
         roles: Optional room-roles to define at creation. Each entry is
             `{"name": "...", "instructions": "...", "exclusive": bool}`.
             Roles are assumable instruction bundles agents pick up with
@@ -1481,14 +1487,17 @@ async def list_room_groups() -> list[dict[str, Any]]:
 
     Room groups are a navigation/organization layer: a room can belong to a
     group (or be standalone), and groups can nest under a parent group. Use
-    this to discover the group names you can pass as `group_name` to
-    `create_room`, or to understand how rooms are organized.
+    this to discover the groups you can pass as `group_name` to
+    `create_room`, or to understand how rooms are organized. Group names are
+    unique among siblings but may repeat under different parents, so name a
+    group by its path.
 
     Returns:
         List of {id, name, description, parent_group_id, room_count, path}
         dicts, where `path` is the group's root-first ancestry (e.g.
-        "Parent / Child") and `room_count` is the number of rooms directly in
-        the group. Sorted by path.
+        "Parent / Child", which can be passed as a group path as it is) and
+        `room_count` is the number of rooms directly in the group. Sorted by
+        path.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
@@ -1506,15 +1515,20 @@ async def create_room_group(
 
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
-    form a tree. Creating a group does not move any rooms into it.
+    form a tree. Creating a group does not move any rooms into it, and does
+    not create missing parents: create each level first.
 
     Args:
-        name: The group's display name.
+        name: The group's display name. It cannot contain "/" (the path
+            separator), and must differ from every group already under the
+            same parent (or at the top level), ignoring case; the same name
+            under a different parent is fine.
         description: Optional free-text description.
         color: Optional UI colour hint (e.g. a hex string).
-        parent_group_name: Optional name of an existing group to nest this one
-            under. Must match an existing group exactly; errors if unknown or
-            ambiguous. Omit to create a top-level group.
+        parent_group_name: Optional existing group to nest this one under,
+            given as a path such as "Fraud/Incidents", a bare name that is
+            unique, or a group id. Resolved like `create_room`'s
+            `group_name`. Omit to create a top-level group.
 
     Returns:
         {id, name, description, color, parent_group_id, room_count, path,
@@ -2146,17 +2160,33 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
         known_agent_options, agent_type, can_manage_agents,
-        integration_profile, tools, models, rooms, sessions, children}.
+        integration_profile, tools, models, rooms, sessions, children,
+        addressing}.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`; `display_name` routes nothing.
         `can_manage_agents` is whether the agent's owner lets it list their
         machines and create agents on them, where agent management runs.
+        `addressing` is who may address the agent, and so who may answer
+        its questions and approvals in a room (outside one, only its owner):
+        {policy} for another agent, {policy, rules} when you look yourself
+        up. `policy` is "owner_only" (its owner alone),
+        "owner_and_owner_agents" (its owner and any agent they own),
+        "anyone" or "custom". `rules` are the policy's rules, empty for
+        "anyone"; a sender is let in when any rule matches. Each is {rooms,
+        room_groups, users, agents, owner, owner_agents, platform}: a
+        dimension is "*" (any) or a list of {id, name}, empty meaning none,
+        with `users` named by their chat username; `owner` admits the owner
+        (`owner_name`), `owner_agents` their agents, `platform` Switch itself.
     """
     caller_id = get_agent_id()
     protocol = get_protocol()
     detail = await protocol.get_agent_detail(caller_id, agent_id)
-    return detail.model_dump()
+    addressing = await protocol.get_agent_addressing(caller_id, agent_id)
+    return {
+        **agent_facing_detail(detail),
+        "addressing": addressing.model_dump(exclude_none=True),
+    }
 
 
 @operation
@@ -2170,8 +2200,8 @@ async def request_agent_deletion(agent_id: str) -> dict[str, Any]:
     minutes; otherwise it lapses. Confirm with the person asking before you
     call this, and tell them what to send.
 
-    Refused for an agent of another owner, yourself, an agent that can manage
-    agents, and one a server connector found.
+    Refused for an agent of another owner, yourself, and an agent that can
+    manage agents.
 
     Args:
         agent_id: The agent to delete (`id` from `list_agents`).
@@ -2232,8 +2262,8 @@ async def update_agent_detail(
             notes-writer); otherwise the label stays. Rooms, roles, aliases and
             credentials follow; its handle on each chat platform is renamed
             too. Refused for a name in use, one that clashes with an alias or
-            role in its rooms or a handle on a chat platform, a subagent or a
-            parent of subagents, and an agent a server connector found.
+            role in its rooms or a handle on a chat platform, a subagent, and a
+            parent of subagents.
         description: What the agent is for.
         display_name: Human label shown next to its name; "" clears it.
         icon_url: An https link to its icon; "" clears it. A server with
@@ -2358,7 +2388,12 @@ async def update_agent_detail(
                 "templates_mentioning_old_name": result.templates_mentioning_old_name,
             }
     detail = await protocol.update_agent_detail(caller_id, agent_id, profile)
-    response = {**detail.model_dump(), "managed": managed}
+    who_may_address = await protocol.get_agent_addressing(caller_id, agent_id)
+    response = {
+        **agent_facing_detail(detail),
+        "addressing": who_may_address.model_dump(exclude_none=True),
+        "managed": managed,
+    }
     if renamed is not None:
         response["renamed"] = renamed
     return response

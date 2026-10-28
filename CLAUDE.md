@@ -82,7 +82,7 @@ just test -k "test_name"         # run specific test
 - `clients/` — room participants: `actor.py` (identity, membership, writes: `HumanActor`, `AgentActor`, `SystemActor`) and `consumer.py` (the `Consumer` delivery loop and hooks), subclassed by `CommandConsumer` (`command_consumer.py`) and `WorkspaceConsumer` (`workspace_consumer.py`)
 - `delivery/` decides who a row is for: `addressing.py` (the rules), `router.py` (`MessageRouter`, which decides every row for every agent in its room as the row is written, in the same transaction) and `recipient.py` (`AgentRecipient`, one agent's decisions and the replies posted on its behalf)
 - `bridges/` — External integrations
-  - `agent/` — Agent Bridge (HTTP API, MCP server, server-side connectors); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
+  - `agent/` — Agent Bridge (HTTP API, MCP server); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
   - `collaboration/` — Collaboration Bridge: one `CollaborationCore` per workspace, driving a `PlatformAdapter` (Slack, Mattermost, Discord, Teams, Telegram)
   - `resource/` — Resource Bridge (platform resource management)
 - `gateway/` — Management API for the frontend
@@ -107,8 +107,9 @@ its own cursor, 200 at a time. The notification is a wake-up, never the
 payload. Membership changes reach every
 process through a `NOTIFY` trigger on `client_rooms` and the signal bus
 (`signals.py`, `transport/membership_signals.py`); presence still travels over
-an in-process bus (`transport/ephemeral.py`), which is part of why switch-core
-runs as a single replica. Names such as
+an in-process bus (`transport/ephemeral.py`), so with more than one replica a
+presence update (an agent going busy, say) reaches only the clients on the
+replica that announced it. Names such as
 the `matrix_room_id` / `matrix_user_id` columns and wire fields, the
 `@localpart:server` id shape and `m.room.message` content types are kept as
 stable identifiers and wire shapes, not as a sign that Matrix is in use. In
@@ -182,6 +183,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   `core/switch_core/bridges/agent/` is right.
 - `docs/old/bridges/` — collaboration bridge setup: `README.md` plus one page each
   for Slack, Mattermost, Discord, Teams, and Telegram
+- `docs/old/airtable-setup.md` — offering Airtable on a self-hosted server:
+  registering and publishing the Airtable OAuth integration, its redirect
+  URL and scopes, saving it under Connector apps or in
+  `AIRTABLE_CLIENT_CONFIG_PATH`, and switching it off
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
 - `docs/old/google-workspace-setup.md` — offering Google Workspace on a

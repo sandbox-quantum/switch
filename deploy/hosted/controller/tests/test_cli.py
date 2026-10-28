@@ -49,6 +49,7 @@ def test_create_status_and_delete_are_keyed_by_machine_id(capsys, config_path):
     assert set(created) == {
         "machine_id",
         "instance_type",
+        "instance_type_allowed",
         "desired_state",
         "desired_revision",
         "observed_state",
@@ -174,6 +175,78 @@ def test_upgrade_moves_the_machine_onto_the_new_image(capsys, config_path):
     assert machine.previous_instance_id == "i-0123456789abcdef0"
     assert machine.data_volume_id == "vol-0123456789abcdef0"
     assert machine.instance_bundle is None
+
+
+def test_upgrade_moves_the_machine_onto_the_gateway_instance_type(tmp_path, capsys, config_path):
+    raw = json.loads(config_path.read_text())
+    raw["allowed_instance_types"] = ["m6i.large", "r7i.2xlarge"]
+    config_path.write_text(json.dumps(raw))
+    _, created = run(capsys, config_path, "create", "--instance-type", "m6i.large")
+    stopped_with_instance(config_path, created["machine_id"])
+    gateway_path = tmp_path / "gateway.json"
+    gateway_path.write_text(
+        json.dumps(
+            {
+                "origin": "https://switch.example.test",
+                "token": "SYNTHETIC-CONTROLLER-CREDENTIAL-0123456789",
+                "instance_type": "r7i.2xlarge",
+            }
+        )
+    )
+    with (
+        patch("switch_hosted_controller.cli.boto3"),
+        patch("switch_hosted_controller.cli.Ec2Cloud") as cloud,
+    ):
+        cloud.return_value.get_instance.return_value = {"State": {"Name": "terminated"}}
+        cloud.return_value.get_volume.return_value = {"State": "available", "Attachments": []}
+        code, upgraded = run(
+            capsys,
+            config_path,
+            "--gateway-config",
+            str(gateway_path),
+            "upgrade",
+            created["machine_id"],
+            "--confirm-instance-id",
+            "i-0123456789abcdef0",
+        )
+    assert code == 0
+    assert upgraded["instance_type"] == "r7i.2xlarge"
+    assert upgraded["instance_id"] is None
+
+
+def test_a_database_bound_to_the_superseded_fingerprint_still_opens(capsys, config_path):
+    config = ControllerConfig.load(config_path)
+    store = MachineStore(config.state_db_path, config.superseded_fingerprint())
+    machine_id = str(uuid.uuid4())
+    store.insert(
+        machine_id=machine_id,
+        core_revision=0,
+        instance_type="m6i.large",
+        image_id=config.image_id,
+        max_machines=config.max_machines,
+    )
+    store.close()
+
+    code, status = run(capsys, config_path, "status", machine_id)
+
+    assert code == 0
+    assert status["machine_id"] == machine_id
+
+
+def test_status_flags_a_machine_on_a_type_no_longer_allowed(capsys, config_path):
+    _, created = run(capsys, config_path, "create", "--instance-type", "m6i.large")
+    assert created["instance_type_allowed"] is True
+    raw = json.loads(config_path.read_text())
+    raw["allowed_instance_types"] = ["r7i.2xlarge"]
+    config_path.write_text(json.dumps(raw))
+
+    code, status = run(capsys, config_path, "status", created["machine_id"])
+
+    assert code == 0
+    assert status["instance_type"] == "m6i.large"
+    assert status["instance_type_allowed"] is False
+    _, listed = run(capsys, config_path, "list")
+    assert [m["instance_type_allowed"] for m in listed] == [False]
 
 
 class OneIteration:

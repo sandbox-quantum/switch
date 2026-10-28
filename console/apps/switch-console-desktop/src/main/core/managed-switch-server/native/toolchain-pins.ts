@@ -5,7 +5,8 @@
  * A download that does not match its checksum is refused rather than run: these
  * are executables, fetched over the network, that end up holding the server's
  * data. Moving a pin means moving its checksums with it, taken from the
- * publisher (uv's `.sha256` release assets, the npm registry's `dist.integrity`).
+ * publisher (uv's and OpenSSL's `.sha256` release assets, the npm registry's
+ * `dist.integrity`).
  */
 
 export type PinnedArchive = {
@@ -130,6 +131,22 @@ export function postgresArchive(platform: NativePlatform): PinnedArchive | null 
     integrity: entry.integrity,
     // `package/native/{bin,lib,share}` → `{bin,lib,share}`.
     stripComponents: 2,
+  };
+}
+
+/**
+ * OpenSSL source, for the platforms where the bundle builds cryptography
+ * itself because PyPI has no wheel for them (Intel Macs, from cryptography 49).
+ * Linked in statically, as PyPI's own wheels do; the version is the one
+ * cryptography's wheels ship. Build-time only: nothing at runtime fetches it.
+ */
+export const OPENSSL_VERSION = '4.0.3';
+
+export function opensslSourceArchive(): PinnedArchive {
+  return {
+    url: `https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz`,
+    integrity: 'sha256:325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9',
+    stripComponents: 1,
   };
 }
 

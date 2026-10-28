@@ -156,6 +156,18 @@ async def test_a_room_you_are_not_a_member_of_is_refused(
 
 
 @pytest.mark.asyncio
+async def test_a_timestamp_that_does_not_parse_is_refused_naming_it(
+    protocol: _Protocol, connected: None, caller: None
+) -> None:
+    with pytest.raises(
+        ValueError, match="'before' is not an ISO 8601 timestamp: 'yesterday'"
+    ):
+        await read_context(before="yesterday")
+
+    assert protocol.calls == []
+
+
+@pytest.mark.asyncio
 async def test_an_unconnected_caller_can_still_read_a_room_it_names(
     protocol: _Protocol, unbound_caller: None
 ) -> None:

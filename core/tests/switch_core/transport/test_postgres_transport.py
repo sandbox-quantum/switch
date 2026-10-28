@@ -135,11 +135,14 @@ async def _watched_room(transport: PostgresTransport) -> str:
 
     `receive_forever` resolves memberships against the database before it
     subscribes, so a test that sends immediately after starting it would race
-    the subscription rather than test anything.
+    the subscription rather than test anything. A room enters `_watching` when
+    it is claimed, before those reads, and `_cursors` only once it is
+    subscribed, so the cursor is what this waits for.
     """
     for _ in range(200):
-        if transport._watching:
-            return next(iter(transport._watching))
+        for room_id in transport._watching:
+            if room_id in transport._cursors:
+                return room_id
         await asyncio.sleep(0.01)
     raise AssertionError("the transport never started watching a room")
 

@@ -270,9 +270,6 @@ handled in a way that leaves no trace.
   on a platform where the app routinely sits in them (a shared Telegram bot
   with Group Privacy off). Counted instead of logged, so the drops that are
   real losses — a bridge down, a migration's window — keep their own errors.
-- **`switch.connectors.running`** — connectors start fire-and-forget, each
-  failure logged and stepped over, so one that never came up is a dead agent
-  host nothing else reports.
 
 If you add another place that catches an exception to keep something alive,
 this is the list it belongs on.

@@ -16,6 +16,7 @@ import type {
   TemplateRunResult,
 } from '@main/core/switch-servers/gateway-client';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { machineProviderOptions } from '@renderer/features/locations/components/add-agent-modal/machine-provider-picker';
 import { machineLabel } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -745,6 +746,14 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
           : machinesQuery.data === null
             ? []
             : undefined;
+      } else if (param.type === 'provider' && management) {
+        // The providers its machine last reported ready; none to go by until it has a machine.
+        const machine = setups[agentIndexOf(param)]?.machine;
+        candidates = machine
+          ? machineProviderOptions(machine)
+              .filter((option) => option.ready)
+              .map((option) => option.id)
+          : undefined;
       } else if (param.type === 'provider') {
         // The providers installed where the agent reading this param runs.
         const at = setups[agentIndexOf(param)];
@@ -1663,8 +1672,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         }
       : null;
 
-  /** The SSH host of the agent a param is read by, for a control that depends on that machine. */
+  /** The SSH host of the agent a param is read by, for a control that depends on that machine.
+   * With agent management a `location` holds one of the deployer's machines, not an SSH host. */
   const sshHostOf = (param: ParamSpec): string | null => {
+    if (management) return null;
     const location = setups[agentIndexOf(param)]?.location ?? null;
     return location === null || location === LOCAL_RUN_LOCATION ? null : location;
   };
@@ -1729,6 +1740,8 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         sshHost={sshHostOf(param)}
         hosts={allowedHosts}
         machines={machines}
+        serverId={serverId}
+        managedMachine={management ? (setups[agentIndexOf(param)]?.machine ?? null) : null}
         locationAsMachine={management}
         newRoom={newRoomForPick}
         disabled={busy}

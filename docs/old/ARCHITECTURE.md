@@ -95,7 +95,6 @@ flowchart LR
 | Component | Where | Responsibility |
 |-----------|-------|----------------|
 | Agent Bridge | `bridges/agent/` | Server-side entry point for agents: HTTP API + MCP server, event delivery, mediation, moderation. |
-| Server-side connectors | `bridges/agent/server_connectors/` | Switch-hosted connectors that drive an external agent host (e.g. OpenCode) from the server, rather than the agent connecting in. Registered by type at startup and managed via `/gateway/connectors`. |
 | Collaboration bridges | `bridges/collaboration/` | Two-way relay between external chat platforms and Matrix rooms, via per-platform adapters and puppet clients. |
 | Resource bridge | `bridges/resource/` | Handles resource + mediation requests (tool/model access, room-document load/CRUD) via the resource-manager client. |
 | Matrix clients | `clients/` | One `matrix-nio` client per participant (agent, bridge, user) and per system actor (admin, resource manager). |
@@ -153,8 +152,6 @@ The relational schema is defined in
   visibility. Four built-in types (Google Drive, Confluence, GitHub, Jira) ship
   in code rather than as rows and win any slug collision.
 - **CollaborationBridge** — configured external chat bridges.
-- **ServerConnector** — a Switch-hosted connector driving an external agent host
-  (e.g. OpenCode) from the server, rather than the agent connecting in.
 - **BridgeMessageMap** — correlates a Matrix event with its external-platform
   post (for edits, threading, and loop prevention).
 - **Tool** / **Model** / **Skill** — capabilities attached to agents, consulted
@@ -420,7 +417,6 @@ A quick index for navigation:
 | Token encryption | `core/switch_core/crypto.py` |
 | Agent Bridge (API, MCP, protocol, auth, commands) | `core/switch_core/bridges/agent/` |
 | Agent operation registry | `core/switch_core/bridges/agent/operations/` |
-| Server-side connectors | `core/switch_core/bridges/agent/server_connectors/` |
 | Collaboration bridges (adapters, core, lifecycle) | `core/switch_core/bridges/collaboration/` |
 | Resource bridge | `core/switch_core/bridges/resource/` |
 | Matrix clients | `core/switch_core/clients/` |

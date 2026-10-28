@@ -66,8 +66,8 @@ export function ServerResetSection({
           </DialogHeader>
           <DialogContentArea>
             <DialogDescription>
-              This permanently deletes this managed server and everything on it — all rooms,
-              messages, and{' '}
+              This permanently deletes this Switch server that Console runs, and everything on it —
+              all rooms, messages, and{' '}
               <strong className="text-foreground">every agent you've configured against it</strong>.
               This can't be undone. A fresh Start rebuilds an empty stack from scratch.
             </DialogDescription>

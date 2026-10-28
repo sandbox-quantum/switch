@@ -42,6 +42,7 @@ from tests.switch_core.connections.service_harness import (
     build_service_harness,
     connect,
     grant_directly,
+    services_on_by_default,
 )
 from tests.switch_core.gateway.test_tenant_api_routes import (
     TENANT_A,
@@ -506,6 +507,7 @@ class TestWorkspaceSwitch:
     async def test_the_list_says_which_services_the_workspace_has_on(
         self, gated: Harness
     ) -> None:
+        await services_on_by_default(gated.session_factory)
         owner = await add_member(gated.session_factory, "ada")
         await connect(gated.session_factory, owner.id, consent="read")
         await _switch_off(gated, "datadog", owner.id)
@@ -518,6 +520,24 @@ class TestWorkspaceSwitch:
         } == {"datadog"}
         assert entries["github"]["consent"] == "read"
         assert entries["atlassian"]["consent"] is None
+
+    async def test_a_new_workspace_reads_every_service_off_until_one_is_switched_on(
+        self, gated: Harness
+    ) -> None:
+        owner = await add_member(gated.session_factory, "ada")
+        assert all(
+            entry["workspace_enabled"] is False
+            for entry in (await _listed(gated, owner)).values()
+        )
+        async with gated.session_factory() as session:
+            await WorkspaceServiceStore().set_enabled(session, "github", True, owner.id)
+            await session.commit()
+
+        entries = await _listed(gated, owner)
+
+        assert {
+            slug for slug, entry in entries.items() if entry["workspace_enabled"]
+        } == {"github"}
 
     async def test_with_the_gate_off_every_service_reads_as_on(
         self, harness: Harness

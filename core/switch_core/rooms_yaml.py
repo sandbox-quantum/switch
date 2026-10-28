@@ -408,6 +408,28 @@ ExternalReferenceEntry = (
 )
 
 
+# A package in a room spec is always one that exists: a template attaches
+# packages but never defines or changes one, so there is no inline shape.
+
+
+class ExistingPackageById(BaseModel):
+    """Attach an existing package by id (exact, unambiguous)."""
+
+    model_config = {"extra": "forbid"}
+    id: str
+
+
+class ExistingPackageByName(BaseModel):
+    """Attach an existing package by name (resolved over the caller's owned +
+    public packages; ambiguity is an error)."""
+
+    model_config = {"extra": "forbid"}
+    name: str
+
+
+PackageEntry = ExistingPackageById | ExistingPackageByName
+
+
 class DocSpec(BaseModel):
     name: str
     description: str
@@ -428,6 +450,7 @@ class RoomSpec(BaseModel):
     users: list[str] = []
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
+    packages: list[PackageEntry] = []
     docs: list[DocSpec] = []
     # Agent name to the alias it can be addressed by in this room.
     aliases: dict[str, str] | None = None
@@ -503,6 +526,7 @@ class ProvisionResult(BaseModel):
     room_id: str
     room_name: str
     attached_reference_ids: list[str] = []
+    attached_package_ids: list[str] = []
     created_reference_ids: list[str] = []
     created_document_ids: list[str] = []
     role_names: list[str] = []
@@ -1007,6 +1031,9 @@ class RoomYamlService:
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
         )
+        attached_package_ids = await self._resolve_packages(
+            spec.packages, user_id=user_id, is_admin=is_admin
+        )
 
         config = RoomCreateConfig(
             name=spec.name,
@@ -1031,6 +1058,7 @@ class RoomYamlService:
             write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
+            package_ids=attached_package_ids or None,
             aliases=spec.aliases,
         )
         result = await self._rooms.create_room(config)
@@ -1064,6 +1092,7 @@ class RoomYamlService:
             room_id=room_id,
             room_name=result.room.name,
             attached_reference_ids=attached_ref_ids,
+            attached_package_ids=attached_package_ids,
             created_reference_ids=created_ref_ids,
             created_document_ids=created_doc_ids,
             role_names=[r.name for r in spec.roles],
@@ -1231,6 +1260,44 @@ class RoomYamlService:
                     )
                     inline.append(entry)
         return attached_ids, inline
+
+    async def _resolve_packages(
+        self, entries: list[PackageEntry], *, user_id: str, is_admin: bool
+    ) -> list[str]:
+        """Resolve the packages to attach up front, failing loud on a missing,
+        ambiguous or unreadable one, so the room is not created without it.
+        Attaching needs read access, as it does by hand."""
+        attached_ids: list[str] = []
+        async with self._session_factory() as session:
+            visible = await self._resources.list_packages_for_user(session, user_id)
+            by_name: dict[str, list[str]] = {}
+            for pkg in visible:
+                by_name.setdefault(pkg.name, []).append(pkg.id)
+            for entry in entries:
+                if isinstance(entry, ExistingPackageById):
+                    try:
+                        await self._resources.get_package_for_user(
+                            session, entry.id, user_id, is_admin=is_admin
+                        )
+                    except PermissionError as e:
+                        raise PermissionError(
+                            f"Cannot attach package {entry.id!r}: {e}"
+                        ) from e
+                    attached_ids.append(entry.id)
+                else:
+                    matches = by_name.get(entry.name, [])
+                    if not matches:
+                        raise ValueError(
+                            f"No package named {entry.name!r} is accessible"
+                        )
+                    if len(matches) > 1:
+                        raise ValueError(
+                            f"Ambiguous package name {entry.name!r}: "
+                            f"{len(matches)} matches; attach by 'id' instead"
+                        )
+                    attached_ids.append(matches[0])
+        # A package named twice (by id and by name, say) is attached once.
+        return list(dict.fromkeys(attached_ids))
 
     async def _create_inline_references(
         self,
@@ -1415,14 +1482,17 @@ class RoomYamlService:
         agents: bool = True,
         users: bool = True,
         references: bool = True,
+        packages: bool = True,
         docs: bool = True,
         roles: bool = True,
     ) -> str:
         """Read a live room back into the import surface and dump it to YAML.
 
-        References export as attach-by-``id``. Only room-scoped documents are
-        exported (as inline docs) — they are the only docs the import surface
-        can recreate. Each section can be dropped via its toggle.
+        References and packages export as attach-by-``id``. Only room-scoped
+        documents are exported (as inline docs): they are the only docs the
+        import surface can recreate. A package's own references and documents
+        are not exported, since attaching the package brings them. Each
+        section can be dropped via its toggle.
         """
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
@@ -1498,6 +1568,11 @@ class RoomYamlService:
                 refs = await self._resources.list_room_references(session, room.id)
                 if refs:
                     data["references"] = [{"id": r.id} for r in refs]
+
+            if packages:
+                pkgs = await self._resources.list_room_packages(session, room.id)
+                if pkgs:
+                    data["packages"] = [{"id": p.id} for p in pkgs]
 
             if docs:
                 room_docs = await self._resources.list_room_documents(session, room.id)

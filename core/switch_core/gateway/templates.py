@@ -13,9 +13,7 @@ already answered — agreeing right up until the day it did not.
 
 from __future__ import annotations
 
-import re
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +28,7 @@ from switch_core.authz import (
     validate_visibility_pair,
 )
 from switch_core.config import SwitchConfig
+from switch_core.content_disposition import content_disposition
 from switch_core.db.models import Template, User
 from switch_core.db.stores.template_store import (
     TemplateListing,
@@ -80,27 +79,9 @@ def _kind(value: str | None) -> str:
 router = APIRouter()
 
 
-_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
-
-
 def _size_bytes(content: str) -> int:
     """What the document weighs on the wire, not how many characters it has."""
     return len(content.encode("utf-8"))
-
-
-def _content_disposition(name: str) -> str:
-    """A download header a template name cannot break out of (RFC 6266).
-
-    The name is free text, so it may hold a quote, a newline, or a character
-    outside latin-1. Interpolated raw, the first corrupts the header, the
-    second appends one of the caller's choosing, and the third fails the whole
-    response — headers are latin-1 on the wire. So the plain `filename` is
-    reduced to an ASCII skeleton and the real name travels percent-encoded in
-    `filename*`, which is what a modern client prefers anyway.
-    """
-    stem = _UNSAFE_IN_FILENAME.sub("-", name).strip("-") or "template"
-    encoded = quote(f"{name}.yaml", safe="")
-    return f"attachment; filename=\"{stem}.yaml\"; filename*=UTF-8''{encoded}"
 
 
 def _summary(
@@ -450,7 +431,9 @@ async def get_template_content(
         content=template.content.encode("utf-8"),
         media_type="application/x-yaml",
         headers={
-            "Content-Disposition": _content_disposition(template.name),
+            "Content-Disposition": content_disposition(
+                "attachment", f"{template.name}.yaml", "template"
+            ),
             # The bytes are whatever someone uploaded, so a browser must not be
             # talked into sniffing them into something it will render.
             "X-Content-Type-Options": "nosniff",

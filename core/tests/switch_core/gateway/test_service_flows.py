@@ -681,6 +681,7 @@ class TestWorkspaceSwitch:
             workspace_gate=True,
         )
         ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, True, ada)
         async with world.harness.client() as client:
             console = Console(client, ada)
             code = await _loopback_code(world, console)
@@ -703,6 +704,7 @@ class TestWorkspaceSwitch:
     ) -> None:
         world = _world(session_factory, tmp_path / "catalog", workspace_gate=True)
         ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, True, ada)
         async with world.harness.client() as client:
             console = Console(client, ada)
             code = await _loopback_code(world, console)
@@ -712,7 +714,7 @@ class TestWorkspaceSwitch:
         assert refused.json() == {
             **WORKSPACE_REFUSAL,
             "detail": WORKSPACE_REFUSAL["detail"]
-            + " Switch could not revoke the sign-in Example just issued. Remove "
-            "Switch from your Example account's connected apps.",
+            + " Switch has stopped using the Example sign-in but cannot revoke it, "
+            "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None

@@ -63,7 +63,7 @@ export const CORE_DEPENDENCIES: DependencyDescriptor[] = [
     commands: ['node'],
     versionArgs: ['--version'],
     // The agent runtime connects over Node's built-in WebSocket (Node 22), and
-    // the agents controller Console installs for managed agents needs 22.13.
+    // the agent controller Console installs for managed agents needs 22.13.
     // A host below this shows as needing setup, and the install below upgrades it.
     minVersion: '22.13.0',
     docUrl: 'https://nodejs.org/en/download',

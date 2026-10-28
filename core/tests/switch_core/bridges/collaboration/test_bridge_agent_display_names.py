@@ -1618,8 +1618,10 @@ class _MattermostBot:
     def login(self) -> None:
         return None
 
-    async def init_websocket(self, handler: Any) -> None:
-        await asyncio.Event().wait()
+    def init_websocket(self, handler: Any) -> asyncio.AbstractEventLoop:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(asyncio.Event().wait())
+        return loop
 
 
 def _mattermost_identity_adapter(

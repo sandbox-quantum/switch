@@ -26,6 +26,20 @@ _MAX_ATTEMPTS = 2
 
 _LAST_TENANT_KEY = "last_tenant_id"
 
+# Postgres's default name for `users.email`'s unique constraint, from the
+# migration that created the table.
+_EMAIL_CONSTRAINT = "users_email_key"
+
+
+def email_taken(err: IntegrityError) -> bool:
+    """Whether `err` is another account already holding the email, rather than
+    any other integrity failure, which is a bug to let propagate and not a
+    conflict to report."""
+    # asyncpg's own exception, which carries the constraint name, is the
+    # cause of the DBAPI adapter's.
+    cause = getattr(err.orig, "__cause__", None)
+    return getattr(cause, "constraint_name", None) == _EMAIL_CONSTRAINT
+
 
 class OidcIdentityConflictError(Exception):
     """An unverified OIDC login's email already belongs to a different account.

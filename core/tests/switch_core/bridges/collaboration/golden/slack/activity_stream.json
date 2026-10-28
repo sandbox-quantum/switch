@@ -1,0 +1,121 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "recipient_team_id": "T0TEAM",
+      "recipient_user_id": "U0ASKER",
+      "task_display_mode": "plan",
+      "thread_ts": "1700000000.000100",
+      "username": "scout"
+    },
+    "method": "chat.startStream"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "chunks": [
+        {
+          "blocks": [
+            {
+              "block_id": "switch-steps-top",
+              "tasks": [
+                {
+                  "status": "in_progress",
+                  "task_id": "switch-session",
+                  "title": "Switch session"
+                },
+                {
+                  "icon": {
+                    "name": "code",
+                    "type": "icon"
+                  },
+                  "status": "in_progress",
+                  "task_id": "i1",
+                  "title": "Read README.md"
+                }
+              ],
+              "title": "Working… 3s · Running: Read README.md",
+              "type": "plan"
+            }
+          ],
+          "type": "blocks"
+        },
+        {
+          "blocks": [
+            {
+              "block_id": "switch-interrupt",
+              "elements": [
+                {
+                  "action_id": "switch:turn-interrupt",
+                  "style": "danger",
+                  "text": {
+                    "text": "Stop current work",
+                    "type": "plain_text"
+                  },
+                  "type": "button",
+                  "value": "turn-1"
+                }
+              ],
+              "type": "actions"
+            }
+          ],
+          "type": "blocks"
+        }
+      ],
+      "ts": "1800000000.000001"
+    },
+    "method": "chat.appendStream"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "chunks": [
+        {
+          "blocks": [
+            {
+              "block_id": "switch-steps-top",
+              "tasks": [
+                {
+                  "status": "complete",
+                  "task_id": "switch-session",
+                  "title": "Switch session"
+                },
+                {
+                  "icon": {
+                    "name": "code",
+                    "type": "icon"
+                  },
+                  "status": "complete",
+                  "task_id": "i1",
+                  "title": "Read README.md"
+                }
+              ],
+              "title": "Worked for 9s. 1 tool call.",
+              "type": "plan"
+            }
+          ],
+          "type": "blocks"
+        },
+        {
+          "blocks": [
+            {
+              "block_id": "switch-interrupt",
+              "type": "divider"
+            }
+          ],
+          "type": "blocks"
+        }
+      ],
+      "ts": "1800000000.000001"
+    },
+    "method": "chat.appendStream"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "ts": "1800000000.000001"
+    },
+    "method": "chat.stopStream"
+  }
+]

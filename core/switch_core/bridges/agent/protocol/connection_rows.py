@@ -99,7 +99,8 @@ WARM_SIGNAL = "agent_connections.warm"
 INCARNATION_BATCH = 32
 
 # How often beats forwarded to their holder go out, at most. A client beats
-# every two seconds and lapses after six, so this leaves the holder plenty.
+# every HEARTBEAT_INTERVAL_SECONDS and lapses after HEARTBEAT_TTL_SECONDS, so
+# this leaves the holder plenty.
 BEAT_FORWARD_SECONDS = 0.5
 
 # How often every lease is checked, so a process that died stops counting as

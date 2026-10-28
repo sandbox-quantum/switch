@@ -331,13 +331,14 @@ class PostgresTransport:
             try:
                 async with self._reading_rooms:
                     rooms = await self.joined_rooms()
+                    # Normal for a new workspace's admin client and for an
+                    # agent not placed in a room yet: an invite starts its
+                    # first room. Kept as a pointer for a client that stays
+                    # silent: membership is the client_rooms table.
                     if not rooms:
-                        logger.error(
-                            "Client %s is receiving but is a member of no room: "
-                            "it will hear nothing until something adds it to "
-                            "one. Membership is the client_rooms table, so a "
-                            "client whose rows were never written is silent "
-                            "rather than broken",
+                        logger.info(
+                            "Client %s is receiving in no room yet; it hears "
+                            "nothing until it is added to one (client_rooms)",
                             self.user_id,
                         )
                     await self._watch_joined(rooms)

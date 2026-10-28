@@ -504,7 +504,7 @@ AGENT_CONNECTIONS_OPENED = _spec(
 # `transport` is `websocket`, `sse` (an old client on the event stream, kept
 # for a compatibility window that ends when this stays at zero), `detached`
 # (the stream dropped, and the connection waits out its heartbeat window), or
-# `controller` (run by an agents controller, on that controller's connection).
+# `controller` (run by an agent controller, on that controller's connection).
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
     "gauge",
@@ -523,14 +523,6 @@ CONSUMERS_RUNNING = _spec(
     "Room consumers with a live read loop. Actors that only write (a person on "
     "another platform) run no loop and are not counted. A collaboration "
     "bridge's workspace consumer counts under switch.bridges.running.",
-)
-CONNECTORS_RUNNING = _spec(
-    "switch.connectors.running",
-    "gauge",
-    "{connector}",
-    "Server-side connectors running. Started fire-and-forget with each failure "
-    "logged and stepped over, so one short of the configured count is a dead "
-    "agent host nothing else reports.",
 )
 
 # ── Service tokens ───────────────────────────────────────────────────────────
@@ -674,7 +666,6 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_CONNECTIONS_OPENED,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
-        CONNECTORS_RUNNING,
         SERVICE_TOKEN_REQUESTS,
         RUNTIME_MEMORY_RSS,
         RUNTIME_CPU_SECONDS,

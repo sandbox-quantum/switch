@@ -1,4 +1,4 @@
-# Switch agents controller (headless)
+# Switch agent controller (headless)
 
 `switch-agent-controller` runs the Switch agents that Management assigns to this
 machine and reports their status. Run one per machine. It is the headless half of
@@ -62,8 +62,12 @@ cannot write there (Node from the system's packages installs into `/usr`), it
 installs into `~/.local` instead, without changing npm's settings, and says so
 if `~/.local/bin` is not on the PATH; the service runs the controller by its
 full path either way. `switch-agent-controller update` installs into the same
-prefix the running controller came from. The package can also be installed
-directly: `npm install --global <the release's .tgz URL>`.
+prefix the running controller came from. `install.sh`, `update` and the
+controller's own updates install only a release signed with a key built into
+them (see [Release signing](#release-signing)), with `npm install
+--ignore-scripts`. The package can also be installed directly, `npm install
+--global --ignore-scripts <the release's .tgz URL>`, but that checks no signature:
+check it yourself first, as `install.sh` does.
 
 From a checkout, build the workspace packages
 (`pnpm install && pnpm -r --filter './packages/**' run build` from `console/`) and
@@ -211,7 +215,7 @@ with systemd and polkit, each agent can instead run as a Linux user of its own,
 which sees only its own directory. Set it up once, as root, after enrolling:
 
 ```bash
-sudo npm install --global <the release's .tgz URL>   # Node and the controller system-wide
+sudo npm install --global --ignore-scripts <the release's .tgz, its signature checked>   # Node and the controller system-wide
 switch-agent-controller enroll --server https://switch.example.com --code <code>
 sudo switch-agent-controller install-service --separate-users [--env-file /etc/switch/agents.env]
 ```
@@ -359,10 +363,16 @@ than the one running (newer or older: Switch can roll back), the controller:
    of those onto it as soon as none of its sessions is mid-turn: each records
    the shared-host bundle it runs in its `health.json`). An agent host too old to report busy sessions holds it back
    while it has any session, as `sessions_running` counts them;
-2. downloads the package into `<data dir>/updates/` (at most 200 MB) and checks
-   its SHA-256 against the one Switch gave, the only one trusted; a package that
-   differs is deleted;
-3. installs it from that file, never from the URL, checks that the installed CLI
+2. downloads the package over https (an `http` URL is refused) into
+   `<data dir>/updates/` (at most 200 MB), checks its SHA-256 against the one
+   Switch gave, then fetches `<url>.sig` and checks the release signature for that
+   version and SHA-256 against the keys built into the controller (see
+   [Release signing](#release-signing)); a package that fails either check, or has
+   no signature, is deleted and the attempt reported as failed. The server alone
+   cannot make a controller install a package: only one the release workflows
+   signed;
+3. installs it from that file, never from the URL, with `npm install
+   --ignore-scripts` (no install script runs), checks that the installed CLI
    says `--version` is that version, checks again that no turn started
    meanwhile, and switches to it;
 4. exits with code `7`, and its service starts it again on the new release.
@@ -376,6 +386,15 @@ updates itself: its own (run with `--credential-stdin`) and one it starts on an
 SSH host (run with `--updated-by-console`) update when Console replaces their
 bundle. Each reports `controller.updated_by: "console"` in its status (`"self"`
 otherwise), and Switch names it no release.
+
+**Turning it off.** `SWITCH_CONTROLLER_SELF_UPDATE=off`, in the controller's
+environment or in the `--env-file` it runs with (the one `install-service
+--env-file` set up), or `run --no-self-update`, keeps the controller on the
+release it has. When Switch names another, the controller installs nothing and
+reports `update: {"target", "state": "failed", "problem"}` saying self-update is
+off, as it does for any controller that cannot update itself. `on` (or unset) is
+the default; any other value stops `run` with a configuration error. `update`
+still installs by hand.
 
 Where it installs depends on how the controller was installed:
 
@@ -391,7 +410,7 @@ Where it installs depends on how the controller was installed:
   was. A service of your user installed before releases directories updates in
   place, as below, until `install-service` is run again.
 - **A plain npm install, not run as a service:** with `npm install --global
-  --prefix <prefix>`, over the prefix the running controller came from, as `update`
+  --ignore-scripts --prefix <prefix>`, over the prefix the running controller came from, as `update`
   does. A controller run from a checkout does not update itself, and reports why,
   as does one on Windows. Under systemd (which sets `INVOCATION_ID`) or launchd
   (`--launchd`) it exits `7` to be restarted; run any other way, it installs,
@@ -403,6 +422,27 @@ a warning when a newer release exists, and `doctor` shows it. `update` refuses t
 install into a releases directory, which only its controller installs into. Run from
 the npm install, it installs there and points the service's `current` back at it when
 that is newer than what `current` names.
+
+### Release signing
+
+Every published controller release carries, beside
+`switch-agent-controller-<version>.tgz`, `switch-agent-controller-<version>.tgz.sig`:
+an Ed25519 signature, base64 on one line, of the message
+
+```
+switch-agent-controller-release-v1
+<version>
+<the package's SHA-256, lowercase hex>
+```
+
+(each line ending in a newline, the last one included). It binds the version as
+well as the bytes, so a signed package cannot be passed off as another version.
+The trusted public keys are built into the controller (`src/release-keys.ts`, with
+a copy in `install.sh` that a test keeps equal); a signature verifies when any of
+them verifies it, which is how keys are rotated (see "Release signing" in
+`RELEASING.md`). The controller (`run` and `update`) and `install.sh` refuse a
+release with no signature, a signature that does not verify, or a non-https URL,
+and install nothing at all while the list of trusted keys is empty.
 
 ### Checking a machine
 

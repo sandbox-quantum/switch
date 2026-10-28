@@ -559,7 +559,39 @@ it('turns Mattermost on for a running server without restarting it', async () =>
 
   await service.setMattermost(false);
   expect(mattermost.stop).toHaveBeenCalledWith(expect.anything(), false);
-  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: null });
+  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: 'off' });
+});
+
+it('brings up a Mattermost that failed at start when it is turned on again', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.start.mockResolvedValue({
+    result: started,
+    bringUpMattermost: () =>
+      Promise.reject(new Error('Mattermost needs Docker, which is not available.')),
+  });
+  const bringUp = vi.fn(async () => {});
+  native.launcher.mockResolvedValue(bringUp);
+  const service = new LocalServerService();
+  await boot(service);
+  await service.start();
+  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('failed'));
+
+  await service.setMattermost(true);
+
+  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('running'));
+  expect(bringUp).toHaveBeenCalledOnce();
+  expect(service.getStatus()).toMatchObject({ phase: 'running', notice: null });
+});
+
+it('says Mattermost is off when a native server starts without it', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.start.mockResolvedValue({ result: started, bringUpMattermost: null });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.start();
+
+  expect(service.getStatus()).toMatchObject({ phase: 'running', mattermostState: 'off' });
 });
 
 const exported = { dir: '/data/backups/moved', dumps: [], deployedVersion: '0.11.0' };

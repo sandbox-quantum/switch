@@ -11,7 +11,7 @@ import { reportedHeadline, reportedProvider } from './this-computer-status';
 
 /**
  * A provider's install and sign-in state on this computer, for Settings →
- * Agent providers. When this computer's agents controller reported it to
+ * Agent providers. When this computer's agent controller reported it to
  * Switch, that report is shown, the same one switch-buddy and the New agent
  * form go by; otherwise Console's own check, as before.
  */
@@ -69,7 +69,7 @@ export function ThisComputerProviderStatus({
         </Button>
       </div>
       <p className="mt-1 text-xs text-foreground-muted">
-        On this computer, as its agents controller reported it to Switch
+        On this computer, as its agent controller reported it to Switch
       </p>
       {!recheck.isPending && reported.detail && (
         <p className="mt-2 text-foreground-muted">{reported.detail}</p>
