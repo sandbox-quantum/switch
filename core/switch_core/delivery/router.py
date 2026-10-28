@@ -71,6 +71,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
+from switch_core.bridges.agent.protocol.types import AgentEvent
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig
 from switch_core.clients.admin_messages import PLATFORM_MARKER
@@ -602,6 +603,18 @@ def _bind(
     return run
 
 
+class RoutedEdit:
+    """An edit to a message and what is let go of once the edit has committed."""
+
+    def __init__(self, router: MessageRouter, stored: list[str]) -> None:
+        self._router = router
+        self._stored = stored
+
+    def committed(self) -> None:
+        for agent_id in self._stored:
+            self._router.services.event_buffer.ring(agent_id)
+
+
 class Removed:
     """An agent taken out of a room, and what is let go of once the removal
     has committed."""
@@ -879,6 +892,79 @@ class MessageRouter:
             stored=stored,
             deadline_in=deadline_in,
         )
+
+    async def store_edit(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        room_id: str,
+        transport_room_id: str,
+        transport_event_id: str,
+        new_body: str,
+        sender_client_id: str | None = None,
+        sender_name: str | None = None,
+    ) -> RoutedEdit | None:
+        message = await self._messages.update_body(
+            session, transport_event_id, new_body
+        )
+        if message is None:
+            return None
+        reads = await RoomReads.load(
+            session,
+            services=self.services,
+            client_store=self._client_store,
+            budget_store=self._budget_store,
+            tenant_id=tenant_id,
+            room_id=room_id,
+        )
+        stored: list[str] = []
+        if reads is not None:
+            row = to_inbound(
+                message,
+                [],
+                transport_room_id=transport_room_id,
+            )
+            if isinstance(row, InboundMessage):
+                plan = await self._decide(
+                    session, reads, row, sender_client_id=message.sender_client_id
+                )
+                for recipient, delivery in sorted(
+                    plan.deliveries, key=lambda decided: decided[0].agent.id
+                ):
+                    if delivery.own_event is None:
+                        continue
+                    agent_id = recipient.agent.id
+                    own = delivery.own_event(row)
+                    edit_event = AgentEvent(
+                        type="message_edit",
+                        room_id=own.event.room_id,
+                        bridge_id=own.event.bridge_id,
+                        channel_type=own.event.channel_type,
+                        payload=own.event.payload,
+                    )
+                    try:
+                        seq = await self.services.event_buffer.store(
+                            session,
+                            tenant_id=reads.tenant_id,
+                            agent_id=agent_id,
+                            client_id=recipient.client_id,
+                            room_id=reads.room_id,
+                            event=edit_event,
+                            room_seq=own.room_seq,
+                            message_key=None,
+                        )
+                        if seq is not None:
+                            stored.append(agent_id)
+                    except Exception:
+                        logger.error(
+                            "Could not store agent %s own edit event for row %s in room %s",
+                            recipient.agent.name,
+                            transport_event_id,
+                            reads.room_id,
+                            exc_info=True,
+                        )
+        return RoutedEdit(self, stored)
 
     @staticmethod
     async def _joined_since(session: AsyncSession, reads: RoomReads) -> bool:

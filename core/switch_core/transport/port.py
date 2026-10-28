@@ -116,6 +116,18 @@ class MessageTransport(Protocol):
         """
         ...
 
+    async def edit_message(
+        self,
+        room_id: str,
+        transport_event_id: str,
+        body: str,
+        *,
+        sender_name: str,
+        format: MessageFormat = "text",
+    ) -> bool:
+        """Edit the text body of an existing message. Returns whether the message was updated."""
+        ...
+
     async def send_event(
         self,
         room_id: str,

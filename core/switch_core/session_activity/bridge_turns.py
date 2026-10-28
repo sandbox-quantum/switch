@@ -114,4 +114,10 @@ def status_state(
         for item in view.items
         if item.kind == "tool-activity"
     )
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}"
+    user_revision = max(
+        (item.revision for item in view.items if item.kind == "user-message"),
+        default=1,
+    )
+    return (
+        f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}:{user_revision}"
+    )

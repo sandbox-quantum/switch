@@ -67,6 +67,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     RetireOutcome,
@@ -130,7 +131,14 @@ _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 _MEDIA_GROUP_MIN = 2
 _MEDIA_GROUP_MAX = 10
 
-_ALLOWED_UPDATES = ["message", "channel_post", "my_chat_member", "callback_query"]
+_ALLOWED_UPDATES = [
+    "message",
+    "channel_post",
+    "edited_message",
+    "edited_channel_post",
+    "my_chat_member",
+    "callback_query",
+]
 
 # What a press on a card's button hands back. Telegram allows 64 bytes for the
 # whole of it, so it holds the request token and the option's position on the
@@ -2465,6 +2473,13 @@ class TelegramAdapter(PlatformAdapter):
             await self._handle_callback_query(callback)
             return
 
+        edited_message = getattr(update, "edited_message", None) or getattr(
+            update, "edited_channel_post", None
+        )
+        if edited_message is not None:
+            await self._handle_edited_message(edited_message)
+            return
+
         message = getattr(update, "message", None) or getattr(
             update, "channel_post", None
         )
@@ -2779,6 +2794,47 @@ class TelegramAdapter(PlatformAdapter):
                     and f"@{self._bot_username}".lower() in content.lower()
                     else None
                 ),
+            )
+        )
+
+    async def _handle_edited_message(self, message: Any) -> None:
+        if self._on_message_edit is None:
+            return
+        chat = getattr(message, "chat", None)
+        if chat is None:
+            return
+        chat_id = str(chat.id)
+        author = getattr(message, "from_user", None)
+        if author is not None and author.id == self._bot_user_id:
+            return
+        if author is None:
+            return
+
+        username = self._display_name(author)
+        self._user_names[author.id] = username
+        self._username_to_id[username] = author.id
+
+        content = str(
+            getattr(message, "text", None) or getattr(message, "caption", None) or ""
+        )
+        if not content:
+            return
+
+        channel_type = self._channel_type_of(chat)
+        channel_name = getattr(chat, "title", None)
+        root_id = self._root_id_of(message)
+        message_ref = f"{chat_id}:{message.message_id}"
+
+        await self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=chat_id,
+                channel_type=channel_type,
+                sender_id=str(author.id),
+                sender_name=username,
+                content=content,
+                message_ref=message_ref,
+                root_id=root_id,
+                channel_name=channel_name,
             )
         )
 

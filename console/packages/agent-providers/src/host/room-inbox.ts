@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentBridgeEvent } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import { Journal } from './journal';
 
 export function roomInputId(event: AgentBridgeEvent): string | null {
-  if (event.type === 'message')
+  if (event.type === 'message' || event.type === 'message_edit')
     return 'addressed' in event.payload &&
       event.payload.addressed === true &&
       'message_id' in event.payload
@@ -204,7 +205,14 @@ export class SharedRoomInbox {
     event: Pick<Received, 'sequence' | 'roomId' | 'messageId' | 'event'>
   ): Promise<boolean> {
     const received = receivedSchema.parse({ type: 'received', ...event });
-    if (this.received.has(identity(received))) return false;
+    const key = identity(received);
+    const existing = this.received.get(key);
+    if (existing) {
+      if (isDeepStrictEqual(existing.event, received.event)) return false;
+      await this.journal.append({ ...received, type: 'handoff' });
+      this.hold(received);
+      return true;
+    }
     await this.journal.append({ ...received, type: 'handoff' });
     this.hold(received);
     return true;

@@ -70,6 +70,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     RetireOutcome,
@@ -2743,6 +2744,57 @@ class MattermostAdapter(PlatformAdapter):
 
     # ── WebSocket handling ───────────────────────────────────────────────────
 
+    async def _handle_post_edited(self, event: dict[str, Any]) -> None:
+        """Handle a post_edited websocket event from Mattermost."""
+        if self._on_message_edit is None:
+            return
+        data = event.get("data", {})
+        post_str = data.get("post")
+        if not post_str:
+            return
+        try:
+            post = json.loads(post_str)
+        except (json.JSONDecodeError, TypeError):
+            return
+        user_id = post.get("user_id", "")
+        if (
+            post.get("type")
+            or user_id in self._bridge_bot_ids
+            or user_id == self._admin_user_id
+        ):
+            return
+        post_id = post.get("id", "")
+        channel_id = post.get("channel_id", "")
+        message = post.get("message", "")
+        root_id = post.get("root_id", "") or None
+        mm_channel_type = data.get("channel_type", "")
+        channel_name = str(data.get("channel_display_name", "")) or None
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            return
+        ws_loop = asyncio.get_event_loop()
+        try:
+            user = await ws_loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            username: str = user.get("username", user_id)
+        except Exception:
+            logger.exception("Failed to resolve Mattermost user %s", user_id)
+            username = user_id
+        channel_type = self._to_channel_type(mm_channel_type)
+        inbound = InboundMessageEdit(
+            channel_id=channel_id,
+            channel_type=channel_type,
+            sender_id=user_id,
+            sender_name=username,
+            content=message,
+            message_ref=post_id,
+            root_id=root_id,
+            channel_name=channel_name,
+        )
+        coro = self._on_message_edit(inbound)
+        self._dispatch(coro, loop)
+
     async def _ws_handler(self, event_data: str, agent_name: str) -> None:
         try:
             event = json.loads(event_data)
@@ -2753,6 +2805,10 @@ class MattermostAdapter(PlatformAdapter):
 
         if event_type == "user_added":
             await self._handle_user_added(event)
+            return
+
+        if event_type == "post_edited":
+            await self._handle_post_edited(event)
             return
 
         if event_type != "posted":

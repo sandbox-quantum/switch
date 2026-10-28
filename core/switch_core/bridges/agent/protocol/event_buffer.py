@@ -234,7 +234,7 @@ def is_notifiable(event: AgentEvent) -> bool:
     every room wants only these, while a session in a single room wants
     everything.
     """
-    if event.type == "message":
+    if event.type in ("message", "message_edit"):
         return getattr(event.payload, "addressed", False)
     if event.type == "room_join":
         return getattr(event.payload, "listening", False)

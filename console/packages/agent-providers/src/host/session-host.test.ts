@@ -1654,3 +1654,57 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
   );
   expect(order).toEqual(['bash', 'notice', 'search', 'add_comment']);
 });
+
+it('updates a queued message in place and sends the edited prompt when the turn starts', async () => {
+  const { host, adapter, emit } = await start('claude');
+  const published: any[] = [];
+  host.onPublished((event) => published.push(event.body));
+
+  const first = message('first');
+  await host.command(first);
+  await waitFor(() => expect(adapter.sendTurn).toHaveBeenCalledWith(expect.objectContaining({ turnId: 'first' })));
+
+  const second = message('second');
+  await host.command(second);
+
+  const editedSecond: Command = {
+    ...second,
+    body: {
+      type: 'message.send',
+      delivery: 'queue',
+      text: 'Clarified instructions for second turn',
+      attachments: [],
+    },
+  };
+
+  const status = await host.command(editedSecond);
+  expect(status.status).toBe('applied');
+
+  const userSecondUpsert = published.filter(
+    (b) => b.type === 'item.upsert' && b.item.itemId === 'user-second'
+  );
+  expect(userSecondUpsert).toHaveLength(2);
+  const latestItem = userSecondUpsert[1];
+  if (latestItem.type === 'item.upsert') {
+    expect(latestItem.item.text).toBe('Clarified instructions for second turn');
+    expect(latestItem.item.revision).toBe(2);
+  }
+
+  emit({
+    type: 'turn.completed',
+    turnId: 'first',
+    outcome: 'completed',
+    message: null,
+    usage: [],
+  });
+
+  await waitFor(() =>
+    expect(adapter.sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turnId: 'second',
+        text: 'Clarified instructions for second turn',
+      })
+    )
+  );
+});
+

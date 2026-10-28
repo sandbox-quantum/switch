@@ -45,6 +45,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -3124,6 +3125,9 @@ class TeamsAdapter(PlatformAdapter):
         if activity_type == "message":
             channel_type = await self._inbound_channel_type(channel_id, chat_type)
             await self._dispatch_message(activity, channel_id, channel_type)
+        elif activity_type == "messageUpdate":
+            channel_type = await self._inbound_channel_type(channel_id, chat_type)
+            await self._dispatch_message_update(activity, channel_id, channel_type)
         elif activity_type == "conversationUpdate":
             await self._dispatch_conversation_update(activity, channel_id, chat_type)
         elif activity_type == "installationUpdate":
@@ -3544,6 +3548,47 @@ class TeamsAdapter(PlatformAdapter):
             self_mention_token=self_mention_token,
             command_text=command_text,
             is_targeted=bool((activity.get("recipient") or {}).get("isTargeted")),
+        )
+
+    async def _dispatch_message_update(
+        self, activity: dict[str, Any], channel_id: str, channel_type: ChannelType
+    ) -> None:
+        if self._on_message_edit is None:
+            return
+        activity_id = str(activity.get("id", ""))
+        if not activity_id:
+            return
+        sender = activity.get("from") or {}
+        sender_id = str(sender.get("aadObjectId") or sender.get("id") or "")
+        sender_name = await self._sender_handle(
+            sender_id, str(sender.get("name") or "")
+        )
+        raw_text = str(activity.get("text", ""))
+        text = self._clean_text(raw_text)
+        if not text:
+            return
+
+        conversation = activity.get("conversation") or {}
+        conv_id = str(conversation.get("id", ""))
+        root_id: str | None = None
+        if ";messageid=" in conv_id:
+            thread_root = conv_id.split(";messageid=", 1)[1]
+            if thread_root and thread_root != activity_id:
+                root_id = thread_root
+
+        channel_name = await self._resolve_channel_name(activity, channel_id)
+
+        await self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=channel_id,
+                channel_type=channel_type,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                content=text,
+                message_ref=activity_id,
+                root_id=root_id,
+                channel_name=channel_name,
+            )
         )
 
     async def _dispatch_card_action(
@@ -4285,7 +4330,10 @@ class TeamsAdapter(PlatformAdapter):
             return
 
         chat_message = identity.keyring.decrypt(encrypted)
-        await self._deliver_graph_message(chat_message)
+        if item.get("changeType") == "updated":
+            await self._deliver_graph_edit(chat_message)
+        else:
+            await self._deliver_graph_message(chat_message)
 
     def _owns_subscription(self, subscription_id: str) -> bool:
         return bool(subscription_id) and subscription_id in self._subscriptions.values()
@@ -4452,6 +4500,60 @@ class TeamsAdapter(PlatformAdapter):
             channel_name=None,
             self_mention_token=self_mention_token,
             command_text=command_text,
+        )
+
+    async def _deliver_graph_edit(self, chat_message: dict[str, Any]) -> None:
+        if self._on_message_edit is None:
+            return
+        if chat_message.get("messageType", "message") != "message":
+            return
+
+        message_id = str(chat_message.get("id", ""))
+        if not message_id:
+            return
+
+        sender = chat_message.get("from") or {}
+        application = sender.get("application") or {}
+        if application:
+            if str(application.get("id", "")) == self._me.app_id:
+                return
+            sender_id = str(application.get("id", ""))
+            sender_name = str(application.get("displayName") or sender_id)
+        else:
+            user = sender.get("user") or {}
+            sender_id = str(user.get("id", ""))
+            sender_name = await self._sender_handle(
+                sender_id, str(user.get("displayName") or "")
+            )
+
+        identity = chat_message.get("channelIdentity") or {}
+        channel_id = str(identity.get("channelId", ""))
+        if not channel_id:
+            return
+
+        body = chat_message.get("body") or {}
+        raw_content = str(body.get("content", ""))
+        is_html = str(body.get("contentType", "")).lower() == "html"
+        content = self._graph_text(raw_content) if is_html else raw_content
+        if not content:
+            return
+
+        reply_to = chat_message.get("replyToId")
+        root_id = str(reply_to) if reply_to and str(reply_to) != message_id else None
+
+        channel_type = await self._inbound_channel_type(channel_id, None)
+
+        await self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=channel_id,
+                channel_type=channel_type,
+                sender_id=sender_id,
+                sender_name=sender_name,
+                content=content,
+                message_ref=message_id,
+                root_id=root_id,
+                channel_name=None,
+            )
         )
 
     def _graph_self_mention_token(self, chat_message: dict[str, Any]) -> str | None:

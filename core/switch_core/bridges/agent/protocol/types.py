@@ -196,6 +196,7 @@ class RoomDetailDescriptor(BaseModel):
 
 EventType = Literal[
     "message",
+    "message_edit",
     "command",
     "room_join",
 ]
@@ -273,6 +274,7 @@ Payload = MessagePayload | CommandPayload | RoomJoinPayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
+    "message_edit": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
 }

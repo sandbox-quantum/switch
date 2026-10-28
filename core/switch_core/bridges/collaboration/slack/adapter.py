@@ -49,6 +49,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     RetireOutcome,
@@ -3374,6 +3375,9 @@ class SlackAdapter(PlatformAdapter):
         ):
             return
         subtype = event.get("subtype")
+        if subtype == "message_changed":
+            await self._handle_message_changed_event(event)
+            return
         if subtype and subtype not in self._ALLOWED_SUBTYPES:
             return
 
@@ -3400,6 +3404,62 @@ class SlackAdapter(PlatformAdapter):
             # (`collaboration_core._post_source`).
             self._seen_ts.pop(message_ts, None)
             raise
+
+    async def _handle_message_changed_event(self, event: dict[str, object]) -> None:
+        """Deliver an edit to an existing Slack message."""
+        if self._on_message_edit is None:
+            return
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        user_id = str(message.get("user") or "")
+        if user_id == self._bot_user_id or (
+            self._bot_id and message.get("bot_id") == self._bot_id
+        ):
+            return
+        channel_id = str(event.get("channel", ""))
+        message_ts = str(message.get("ts", ""))
+        if not channel_id or not message_ts:
+            return
+        text = str(message.get("text", ""))
+        if not text.strip():
+            text = self._extract_rich_text(message)
+        bot_id = str(message.get("bot_id", ""))
+        if not user_id and bot_id:
+            bot_profile = message.get("bot_profile") or {}
+            bot_name = (
+                (bot_profile.get("name") if isinstance(bot_profile, dict) else "")
+                or str(message.get("username", ""))
+                or bot_id
+            )
+            user_id = bot_id
+            user_name = bot_name
+        else:
+            user = await self._resolve_user_name(user_id) if user_id else None
+            user_name = user.name if user else user_id
+        slack_channel_type = str(event.get("channel_type", ""))
+        channel_type = self._to_channel_type(slack_channel_type)
+        message_ref = f"{channel_id}:{message_ts}"
+        thread_ts = str(message.get("thread_ts", "")) or None
+        root_id: str | None = None
+        if thread_ts and thread_ts != message_ts:
+            root_id = f"{channel_id}:{thread_ts}"
+        channel_name = await self._resolve_channel_name(channel_id)
+        self_mention = bool(self._bot_user_id) and f"<@{self._bot_user_id}>" in text
+        await self._on_message_edit(
+            InboundMessageEdit(
+                channel_id=channel_id,
+                channel_type=channel_type,
+                sender_id=user_id,
+                sender_name=user_name,
+                content=text,
+                message_ref=message_ref,
+                root_id=root_id,
+                channel_name=channel_name,
+                self_mention_token=self._bot_user_id if self_mention else None,
+                sender_is_app=bool(bot_id),
+            )
+        )
 
     async def _deliver_message_event(
         self, event: dict[str, object], channel_id: str, message_ts: str

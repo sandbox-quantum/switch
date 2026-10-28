@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     RetireOutcome,
@@ -603,6 +604,9 @@ class PlatformAdapter(ABC):
         # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
         self._listening = True
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
+        self._on_message_edit: (
+            Callable[[InboundMessageEdit], Awaitable[None]] | None
+        ) = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
         self._on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]] | None = (
             None
@@ -1869,6 +1873,12 @@ class PlatformAdapter(ABC):
         """Install the callback an adapter calls when it learns a channel's
         type from the platform, so rooms saved with a different one follow."""
         self._on_channel_type_learned = handler
+
+    def set_edit_handler(
+        self, handler: Callable[[InboundMessageEdit], Awaitable[None]]
+    ) -> None:
+        """Install the callback for an edit to an inbound message."""
+        self._on_message_edit = handler
 
     def set_interaction_handler(
         self, handler: Callable[[InboundInteraction], Awaitable[None]]

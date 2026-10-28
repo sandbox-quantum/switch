@@ -33,6 +33,7 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
 )
@@ -114,6 +115,7 @@ _InboundEventT = TypeVar(
     "_InboundEventT",
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
     InboundCommand,
     InboundAgentJoin,
     InboundUserJoin,
@@ -495,6 +497,9 @@ class CollaborationCore:
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        self._adapter.set_edit_handler(
+            self._traced("message_edit", self._handle_inbound_edit)
+        )
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
         # Provisioning that ran at start unattached would have failed, so it is
@@ -1223,6 +1228,88 @@ class CollaborationCore:
                 transport_event_id=first_event_id,
                 external_post_id=msg.message_ref,
             )
+
+    async def _handle_inbound_edit(self, edit: InboundMessageEdit) -> None:
+        logger.debug(
+            "[BRIDGE-IN] edit channel=%s message_ref=%s sender=%s content=%s",
+            edit.channel_id,
+            edit.message_ref,
+            edit.sender_name,
+            edit.content[:80],
+        )
+        room_ids = self._channel_to_room.get(edit.channel_id)
+        if room_ids is None:
+            logger.debug(
+                "[BRIDGE-IN] edit in unknown channel %s dropped", edit.channel_id
+            )
+            return
+
+        room_id, transport_room_id = room_ids
+        transport_event_id = await self._event_for_external_post(edit.message_ref)
+        if transport_event_id is None:
+            logger.debug(
+                "[BRIDGE-IN] no room event mapped for edited post %s in %s",
+                edit.message_ref,
+                transport_room_id,
+            )
+            return
+
+        mention_target: str | None = None
+        if edit.self_mention_token is not None:
+            mention_target = await self._resolve_self_mention_target(
+                InboundMessage(
+                    channel_id=edit.channel_id,
+                    channel_type=edit.channel_type,
+                    sender_id=edit.sender_id,
+                    sender_name=edit.sender_name,
+                    content=edit.content,
+                    message_ref=edit.message_ref,
+                    root_id=edit.root_id,
+                    self_mention_token=edit.self_mention_token,
+                ),
+                room_id,
+            )
+
+        await self._repair_placeholder_username(edit.sender_id, edit.sender_name)
+        human_actor = await self._ensure_human_in_room(
+            external_user_id=edit.sender_id,
+            external_username=edit.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if human_actor is None:
+            return
+
+        content = self._adapter.translate_inbound(edit.content)
+        if mention_target is not None and (
+            mention_regex(mention_target).search(strip_emphasis(content)) is None
+        ):
+            content = f"@{mention_target} {content}"
+
+        if self._trust_client is not None:
+            check = await check_message(
+                self._trust_client,
+                role="user",
+                content=content,
+                room_id=room_id,
+            )
+            if check.blocked or (
+                check.outcome == "redacted" and check.redacted_content is None
+            ):
+                logger.warning(
+                    "[BRIDGE-IN] edit from %s blocked by Switch Trust",
+                    edit.sender_name,
+                )
+                return
+            if check.redacted_content is not None:
+                content = check.redacted_content
+
+        await human_actor.edit_message(
+            transport_room_id,
+            transport_event_id,
+            content,
+            format="markdown",
+        )
 
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType

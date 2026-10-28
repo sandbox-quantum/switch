@@ -118,3 +118,19 @@ def test_a_warning_too_long_for_the_message_is_cut() -> None:
     assert len(lines) == 1
     assert len(lines[0]) <= 10
     assert lines[0].startswith("⚠️")
+
+
+def test_queued_turn_with_original_prompt_shows_standard_queued_status() -> None:
+    items = [_item(kind="user-message", status="completed", revision=1)]
+
+    lines = _status(items, "queued", tool_detail=True)
+
+    assert lines == ["**Queued. Waiting for the agent to start…**"]
+
+
+def test_queued_turn_with_edited_prompt_shows_edited_tag() -> None:
+    items = [_item(kind="user-message", status="completed", revision=2)]
+
+    lines = _status(items, "queued", tool_detail=True)
+
+    assert lines == ["**Queued (edited). Waiting for the agent to start…**"]

@@ -135,3 +135,57 @@ it('replays a release written before the delivery was acknowledged', async () =>
     { type: 'received', sequence: 4, roomId: 'room', messageId: 'message-1' },
   ]);
 });
+
+it('accepts an edit to a message and yields the updated event', async () => {
+  const { inbox } = await inboxWith([]);
+  const original = { text: 'Hello' };
+  const edited = { text: 'Hello world' };
+  expect(
+    await inbox.accept({
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'message-1',
+      event: original,
+    })
+  ).toBe(true);
+  expect(inbox.pending()).toEqual([
+    {
+      type: 'received',
+      sequence: 1,
+      roomId: 'room',
+      messageId: 'message-1',
+      event: original,
+    },
+  ]);
+
+  expect(
+    await inbox.accept({
+      sequence: 2,
+      roomId: 'room',
+      messageId: 'message-1',
+      event: original,
+    })
+  ).toBe(false);
+
+  await inbox.acknowledge({ sequence: 1, roomId: 'room', messageId: 'message-1' });
+  expect(inbox.pending()).toEqual([]);
+
+  expect(
+    await inbox.accept({
+      sequence: 3,
+      roomId: 'room',
+      messageId: 'message-1',
+      event: edited,
+    })
+  ).toBe(true);
+  expect(inbox.pending()).toEqual([
+    {
+      type: 'received',
+      sequence: 3,
+      roomId: 'room',
+      messageId: 'message-1',
+      event: edited,
+    },
+  ]);
+});
+
