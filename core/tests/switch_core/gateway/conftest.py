@@ -429,6 +429,9 @@ async def listening_processes(
     try:
         for listener in listeners:
             await asyncio.wait_for(listener.connected.wait(), _CONNECT_SECONDS)
+        # Let each listener's own connect-time resync pass before any stream
+        # subscribes, or a stream can read it after `ready`.
+        await asyncio.sleep(0.1)
         yield two_processes
     finally:
         for listener in listeners:
