@@ -3,7 +3,7 @@
 _Last checked against: 2026-08-20._
 
 Reusable ways of shaping a Switch setup, grouped by the question they answer. These are
-judgement, not mechanics — for how the tools actually work, use the connector skill you
+judgement, not mechanics — for how the tools actually work, use the Switch skill you
 already have in context.
 
 Read the group that matches the question in front of you. Most designs are a variation on
@@ -396,7 +396,7 @@ because an agent on a laptop is offline whenever the laptop is.
 **The barrier is lower than people assume, and saying so changes the answer.** You need a
 machine with an entry in your SSH config, and that is the prerequisite. Switch Console adds
 the host, works out what is missing and **installs it** — git, Node, tmux, the agent's CLI,
-the Switch connector, in dependency order — and then the agent is created exactly as a
+in dependency order — and then the agent is created exactly as a
 local one, choosing that host as the run location. No hand-provisioning, and no SSH
 credentials stored: it uses the SSH config and agent already on the machine.
 

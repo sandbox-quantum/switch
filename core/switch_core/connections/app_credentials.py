@@ -134,6 +134,15 @@ def cannot_work_here(name: str) -> str:
     )
 
 
+def needs_public_url(name: str) -> str:
+    """What members are told about a service whose sign-ins return only to
+    the server, on a server without a public address."""
+    return (
+        f"{name} can't be connected on this server: it needs the server's "
+        "public address (GATEWAY_PUBLIC_URL)."
+    )
+
+
 @dataclass(frozen=True)
 class AppSpec:
     """A catalog entry that needs an app, and what configures it."""
@@ -393,7 +402,9 @@ class ConnectorApps:
             settings = load_client_settings(oauth.client_settings, self._environ)
             if settings is None:
                 return None
-            client = OAuthClientCredentials(settings.client_id, settings.client_secret)
+            client = OAuthClientCredentials(
+                settings.client_id, settings.client_secret, authentication=None
+            )
             return _Configured(
                 values=AppValues(
                     settings.client_id, {}, {"client_secret": settings.client_secret}
@@ -460,7 +471,7 @@ class ConnectorApps:
                     raise AppLoadError("The saved client has no client secret.")
                 github_app = None
                 oauth_client = OAuthClientCredentials(
-                    row.client_id, secrets["client_secret"]
+                    row.client_id, secrets["client_secret"], authentication=None
                 )
         except AppLoadError as error:
             logger.error(

@@ -782,6 +782,9 @@ class DiscordAdapter(PlatformAdapter):
     def set_on_attached(self, callback: Callable[[], None]) -> None:
         self._on_attached = callback
 
+    def awaiting_shared_connection(self) -> bool:
+        return not self._owns_connection and self._connection is None
+
     def attach_shared_connection(self, connection: DiscordConnection) -> None:
         """Attach the shared Gateway connection to an inert shared bridge.
 

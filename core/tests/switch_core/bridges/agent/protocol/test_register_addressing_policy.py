@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-from types import SimpleNamespace
-
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import (
@@ -14,38 +11,11 @@ from switch_core.addressing import (
     parse_policy,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.db.models import TENANT_ZERO_ID, ApiKey
 from tests.switch_core.bridges.agent.protocol.registration_harness import (
-    PROFILE,
     make_owner,
     make_service,
     register,
 )
-
-
-async def _seed_registration_key(
-    session_factory: async_sessionmaker[AsyncSession], owner_id: str, token: str
-) -> None:
-    """A real `api_keys` row for `token`.
-
-    `register_agent_with_token` resolves the token's tenant through
-    `tenant_of_api_key` — a `SECURITY DEFINER` SQL function reading the real
-    table — before it ever reaches `svc.api_key_store`, which these tests
-    stub (`_stub_key`) to control the row `register_agent_with_token` sees
-    once the tenant is known. Stubbing the store cannot stand in for this
-    row too: the tenant lookup has no store to intercept.
-    """
-    async with session_factory() as session:
-        session.add(
-            ApiKey(
-                user_id=owner_id,
-                key_hash=hashlib.sha256(token.encode()).hexdigest(),
-                encrypted_key="enc",
-                label="reg",
-                type="registration",
-            )
-        )
-        await session.commit()
 
 
 async def _policy_of(
@@ -135,8 +105,8 @@ class TestRegistrationDefaultPolicy:
     async def test_no_policy_leaves_the_agent_open(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # A service the deployment offers everyone (a server-side connector
-        # agent) is owned by someone only in the bookkeeping sense.
+        # An agent the deployment offers everyone is owned by someone only in
+        # the bookkeeping sense.
         svc = make_service(session_factory)
         owner_id = await make_owner(session_factory)
         agent_id = await register(svc, "shared", owner_id, addressing_policy=None)
@@ -164,69 +134,3 @@ class TestRegistrationDefaultPolicy:
         assert again == agent_id
         raw = await _policy_of(svc, session_factory, agent_id)
         assert raw == {"rules": [{"users": ["ext-3"], "agents": []}]}
-
-
-class TestRegisterWithTokenPassesThrough:
-    async def test_token_registration_uses_the_default_policy(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = make_service(session_factory)
-        owner_id = await make_owner(session_factory)
-        await _seed_registration_key(session_factory, owner_id, "tok")
-        captured: dict[str, object] = {}
-
-        async def _register_agent(**kwargs: object) -> object:
-            captured.update(kwargs)
-            return SimpleNamespace(agent_id="a1", api_key="k", oauth_client_id=None)
-
-        svc.register_agent = _register_agent  # type: ignore[assignment, method-assign]
-        svc.api_key_store = SimpleNamespace(  # type: ignore[assignment]
-            get_by_hash=_stub_key(owner_id)
-        )
-
-        await svc.register_agent_with_token(
-            registration_token="tok",
-            name="tokenised",
-            description="d",
-            connector_type="test",
-            integration_profile=PROFILE,
-        )
-        assert captured["addressing_policy"] == default_agent_policy()
-
-    async def test_token_registration_forwards_the_overrides(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = make_service(session_factory)
-        owner_id = await make_owner(session_factory)
-        await _seed_registration_key(session_factory, owner_id, "tok")
-        captured: dict[str, object] = {}
-
-        async def _register_agent(**kwargs: object) -> object:
-            captured.update(kwargs)
-            return SimpleNamespace(agent_id="a1", api_key="k", oauth_client_id=None)
-
-        svc.register_agent = _register_agent  # type: ignore[assignment, method-assign]
-        svc.api_key_store = SimpleNamespace(  # type: ignore[assignment]
-            get_by_hash=_stub_key(owner_id)
-        )
-
-        await svc.register_agent_with_token(
-            registration_token="tok",
-            name="tokenised",
-            description="d",
-            connector_type="test",
-            integration_profile=PROFILE,
-            addressing_policy=owner_only_policy(["dispatcher"]),
-        )
-        assert captured["addressing_policy"] == owner_only_policy(["dispatcher"])
-
-
-def _stub_key(owner_id: str):  # type: ignore[no-untyped-def]
-    async def _get_by_key(_session: AsyncSession, _token: str) -> object:
-        # Carries a `tenant_id` because registration binds the token's tenant
-        # for the write it delegates to — see `register_agent_with_token`.
-        return SimpleNamespace(
-            user_id=owner_id, type="registration", tenant_id=TENANT_ZERO_ID
-        )
-
-    return _get_by_key

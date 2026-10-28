@@ -36,7 +36,7 @@ type Login = {
  * Pick the AI provider switch-buddy runs on, get it ready on this computer,
  * and create the buddy with it.
  *
- * What a provider needs is read from what this computer's agents controller
+ * What a provider needs is read from what this computer's agent controller
  * reports to Switch, which is what Switch checks before creating an agent.
  * Installing a CLI or signing it in is followed by asking the controller to
  * check again straight away, so the card moves on as soon as it is true

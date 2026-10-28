@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 import uuid
+import weakref
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -27,6 +28,7 @@ from mattermostdriver.exceptions import (
     ResourceNotFound,
 )
 from pydantic import field_validator
+from websockets.asyncio.client import ClientConnection
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
@@ -102,6 +104,16 @@ _MAX_BOT_ICON_BYTES = 5 * 1024 * 1024
 # to wait for ever, so a server that accepts the connection and never answers
 # would hold the call, and anything waiting on it, indefinitely.
 _MM_REQUEST_TIMEOUT_SECONDS = 10.0
+# How long a bot socket's closing handshake may take before the connection is
+# dropped: it runs on the socket's own thread, between one connection and the
+# next.
+_MM_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
+
+# How long a directory search made while the adapter is still connecting waits
+# for it. A bridge is searched as soon as it is registered (the gateway's
+# directory dialog, the setup scripts), and connecting is a log-in and two
+# reads, so it is normally under a second.
+_CONNECT_WAIT_SECONDS = 15.0
 
 # Mattermost channel types a bot can be *added* to: open and private channels.
 # Membership of a DM ("D") or group DM ("G") is a property of the conversation
@@ -302,6 +314,44 @@ def _ephemeral(text: str) -> dict[str, Any]:
     return {"ephemeral_text": text, "skip_slack_parsing": True}
 
 
+class _BotSocketConnection(ClientConnection):
+    """A bot socket's `websockets` connection, remembered so `_close_loop` can
+    close it: mattermostdriver holds it in a local variable and leaves it open
+    when its loop stops, so its transport and file descriptor would otherwise
+    last until the garbage collector found them."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        _BOT_SOCKET_CONNECTIONS.add(self)
+
+
+_BOT_SOCKET_CONNECTIONS: weakref.WeakSet[_BotSocketConnection] = weakref.WeakSet()
+
+
+def _close_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Close the connections opened on `loop`, cancel what is still running on
+    it, then close it.
+
+    A socket's `websockets` connection runs a keepalive task beside it that
+    outlives the socket's own coroutine. A loop dropped with that task still
+    pending is reported as "Task was destroyed but it is pending!" whenever it
+    is collected, at ERROR, in the middle of whatever the server is doing.
+    """
+    connections = [c for c in list(_BOT_SOCKET_CONNECTIONS) if c.loop is loop]
+    if connections:
+        loop.run_until_complete(
+            asyncio.gather(*(c.close() for c in connections), return_exceptions=True)
+        )
+    pending = asyncio.all_tasks(loop)
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    loop.run_until_complete(loop.shutdown_asyncgens())
+    loop.close()
+    asyncio.set_event_loop(None)
+
+
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
     channel_on_delete = "archived"
@@ -458,6 +508,10 @@ class MattermostAdapter(PlatformAdapter):
 
         self._admin_driver: Driver | None = None
         self._team_id: str = ""
+        # Set once the admin driver has logged in and the team is known: what
+        # a directory search needs. The lifecycle starts the adapter in the
+        # background, so a search can arrive before then.
+        self._connected = asyncio.Event()
         self._admin_user_id: str = ""
 
         self._agent_bots: dict[str, dict[str, str]] = {}
@@ -544,11 +598,12 @@ class MattermostAdapter(PlatformAdapter):
         self._on_app_joined = on_app_joined
         self._main_loop = asyncio.get_event_loop()
 
-        self._admin_driver = self._create_driver(
+        admin_driver = self._create_driver(
             login_id=self._config.admin_user,
             password=self._config.admin_password,
         )
-        await self._main_loop.run_in_executor(None, self._admin_driver.login)
+        await self._main_loop.run_in_executor(None, admin_driver.login)
+        self._admin_driver = admin_driver
 
         me = await self._main_loop.run_in_executor(
             None, self._admin_driver.users.get_user, "me"
@@ -559,6 +614,7 @@ class MattermostAdapter(PlatformAdapter):
             None, self._admin_driver.teams.get_team_by_name, self._config.team_name
         )
         self._team_id = team["id"]
+        self._connected.set()
 
         await self._ensure_admin_bot()
 
@@ -571,6 +627,7 @@ class MattermostAdapter(PlatformAdapter):
         )
 
     async def stop(self) -> None:
+        self._connected.clear()
         for agent_name in list(self._ws_stops):
             self._close_bot_socket(agent_name)
         self._admin_driver = None
@@ -2353,23 +2410,32 @@ class MattermostAdapter(PlatformAdapter):
                 return
             backoff = 2
             while not stopped.is_set():
+                # `init_websocket` is synchronous: it runs the thread's current
+                # loop until the socket closes, so each connection gets a loop
+                # of its own, closed with it.
+                ws_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(ws_loop)
                 try:
-                    ws_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(ws_loop)
-                    ws_loop.run_until_complete(driver.init_websocket(_handler))
+                    driver.init_websocket(_handler)
                 except Exception as e:
-                    if stopped.is_set():
-                        break
-                    logger.debug(
-                        "WebSocket for %s disconnected: %s, retrying in %ds",
-                        name,
-                        e,
-                        backoff,
-                    )
-                    stopped.wait(backoff)
-                    backoff = min(backoff * 2, 30)
+                    reason = str(e)
+                    backoff_next = min(backoff * 2, 30)
                 else:
-                    backoff = 2
+                    # It returns only once an established connection closed.
+                    reason = "connection closed"
+                    backoff, backoff_next = 2, 2
+                finally:
+                    _close_loop(ws_loop)
+                if stopped.is_set():
+                    break
+                logger.debug(
+                    "WebSocket for %s disconnected: %s, retrying in %ds",
+                    name,
+                    reason,
+                    backoff,
+                )
+                stopped.wait(backoff)
+                backoff = backoff_next
 
         ws_thread = threading.Thread(
             target=_run_ws, daemon=True, name=f"mm-ws-{agent_name}"
@@ -2926,14 +2992,21 @@ class MattermostAdapter(PlatformAdapter):
         Scoped to the bridge's team, and bots are dropped — a bot is not a
         person who can own an agent.
         """
-        if not self._admin_driver or not self._main_loop:
-            raise RuntimeError("Mattermost adapter is not started")
-
         term = query.strip()
         if not term:
             return []
 
+        try:
+            async with asyncio.timeout(_CONNECT_WAIT_SECONDS):
+                await self._connected.wait()
+        except TimeoutError:
+            raise RuntimeError(
+                "The Mattermost bridge is not connected yet, so its directory "
+                f"cannot be searched; it did not connect within {_CONNECT_WAIT_SECONDS:.0f}s."
+            ) from None
         driver = self._admin_driver
+        if driver is None or self._main_loop is None:
+            raise RuntimeError("Mattermost adapter is not started")
         try:
             found = await self._main_loop.run_in_executor(
                 None,
@@ -3005,6 +3078,10 @@ class MattermostAdapter(PlatformAdapter):
             "port": port,
             "verify": self._config.verify_tls,
             "request_timeout": _MM_REQUEST_TIMEOUT_SECONDS,
+            "websocket_kw_args": {
+                "create_connection": _BotSocketConnection,
+                "close_timeout": _MM_SOCKET_CLOSE_TIMEOUT_SECONDS,
+            },
         }
         if token:
             opts["token"] = token

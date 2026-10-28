@@ -219,3 +219,52 @@ it('posts a session’s room reply only into the room it still attends', async (
     answer(session, { type: 'room-reply', roomId: 'elsewhere', threadId: null, body: 'Nope' })
   ).rejects.toThrow('refused');
 });
+
+it('reads the instructions of the room a session attends, without moving it', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', apiEndpoint: 'http://127.0.0.1', token: 't' } as never,
+    connectionId: 'connection',
+    placements,
+    publish: async () => {},
+    redactions: new Redactions(),
+  });
+  const session = await caller(base, 'session');
+  await placements.place('session', 'room');
+  calls.connect.mockResolvedValue({
+    content: [{ type: 'text', text: '{}' }],
+    structuredContent: { instructions: '## Room-specific instructions\n\nSign every reply.' },
+  });
+
+  await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
+    instructions: 'Sign every reply.',
+  });
+  expect(calls.connect.mock.calls).toEqual([
+    ['session', 'connect_to_room', { room_id: 'room', include_general_instructions: false }],
+  ]);
+
+  calls.connect.mockResolvedValue({
+    content: [{ type: 'text', text: '{}' }],
+    structuredContent: { instructions: '' },
+  });
+  await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).resolves.toEqual({
+    instructions: '',
+  });
+
+  calls.connect.mockResolvedValue({
+    content: [{ type: 'text', text: '{}' }],
+    structuredContent: {},
+  });
+  await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).rejects.toThrow(
+    'without its instructions'
+  );
+
+  await placements.place('session', 'elsewhere');
+  await expect(answer(session, { type: 'room-instructions', roomId: 'room' })).rejects.toThrow(
+    'no longer attends room room (it attends elsewhere)'
+  );
+  expect(calls.connect).toHaveBeenCalledTimes(3);
+  expect(placements.roomOf('session')).toBe('elsewhere');
+});

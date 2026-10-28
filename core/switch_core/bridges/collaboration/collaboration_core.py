@@ -531,7 +531,11 @@ class CollaborationCore:
         # restarts one. Messages do not depend on it: an agent is addressable
         # by name whether or not its platform identity exists yet. Every
         # process provisions, the adapter deciding how much a quiet one needs.
-        self._identity_task = asyncio.create_task(self._run_agent_identities())
+        # Not yet on a shared connection that is not attached: every agent's
+        # call would fail, and attaching provisions them all. Guarded, since
+        # an attach while the adapter started may have begun a run already.
+        if not self._awaiting_shared_connection():
+            self._provision_identities_on_attach()
         # Not awaited either: one platform read per channel, and nothing waits
         # on it. Only where the bridge is held: one process is enough.
         if self._active:
@@ -550,7 +554,16 @@ class CollaborationCore:
         let go of the deleted ones'. A run already going reads the agents
         again once it is done, in case it read them before the change."""
         self._identities_stale = True
-        self._provision_identities_on_attach()
+        if not self._awaiting_shared_connection():
+            self._provision_identities_on_attach()
+
+    def _awaiting_shared_connection(self) -> bool:
+        """Whether the bridge waits to be attached to its platform's shared
+        connection, which provisions the agents' identities once it is."""
+        return (
+            isinstance(self._adapter, SupportsSharedConnection)
+            and self._adapter.awaiting_shared_connection()
+        )
 
     async def stop(self) -> None:
         try:
@@ -646,22 +659,24 @@ class CollaborationCore:
                 self._human_user_ids.add(client.transport_user_id)
 
     def _provision_identities_on_attach(self) -> None:
-        """Re-run identity provisioning when a shared connection attaches.
+        """Run identity provisioning when a shared connection attaches.
 
-        The start-time run failed for a shared bridge because it had no
-        connection yet. Attaching gives it one, so provision now — a fresh
-        background task, not awaited, for the same reason `start` gives.
+        A shared bridge started before the connection was up skipped the
+        start-time run, as it had no connection yet. Attaching gives it one,
+        so provision now — a fresh background task, not awaited, for the same
+        reason `start` gives. `start` and `agents_changed` begin their runs
+        here too, for the guard below.
 
-        Guarded against overwriting a still-running task. The start-time run
-        spends most of its life in the agent read (`_create_agent_identities`
-        awaits `get_all` before the per-agent loop), so an attach during that
-        window must not spawn a second provisioner: two concurrent
+        Guarded against overwriting a still-running task. A run spends most
+        of its life in the agent read (`_create_agent_identities` awaits
+        `get_all` before the per-agent loop), and an attach can land while the
+        adapter is starting, before `start` asks for its own run, so a second
+        call during a run must not spawn a second provisioner: two concurrent
         `create_agent_identity` calls can double a role through its
         check-then-create window, and overwriting the handle would orphan the
-        task `stop` cancels. If the start-time task is still going it will reach
-        the per-agent loop against the now-attached connection and provision
-        itself; if it has finished — the usual case, since the per-agent loop
-        fails fast while unattached — this replaces the completed handle.
+        task `stop` cancels. A run still going reaches the per-agent loop
+        against the connection as it is by then; one that has finished is
+        replaced.
         """
         if self._identity_task is not None and not self._identity_task.done():
             return

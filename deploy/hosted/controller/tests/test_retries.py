@@ -29,7 +29,7 @@ def test_create_volume_error_is_recovered_by_tag_discovery(tmp_path: Path):
     with Stubber(client) as stubber:
         stubber.add_response("describe_volumes", {"Volumes": []}, {"Filters": filters})
         stubber.add_client_error("create_volume", service_error_code="RequestTimeout")
-        Reconciler(store, cloud).reconcile_all()
+        Reconciler(store, cloud, instance_type=None).reconcile_all()
 
     uncertain = store.get(machine.machine_id)
     assert uncertain.volume_create_intent
@@ -39,7 +39,7 @@ def test_create_volume_error_is_recovered_by_tag_discovery(tmp_path: Path):
     owned_volume = volume(cfg, uncertain)
     with Stubber(client) as stubber:
         stubber.add_response("describe_volumes", {"Volumes": [owned_volume]}, {"Filters": filters})
-        recovered = Reconciler(store, cloud).reconcile(machine.machine_id)
+        recovered = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert recovered.data_volume_id == owned_volume["VolumeId"]
     store.close()
 
@@ -58,7 +58,7 @@ def test_stop_cancels_queued_launch_before_any_api_write(tmp_path: Path):
             {"Reservations": []},
             {"Filters": cloud._resource_filters(machine, "worker")},
         )
-        stopped = Reconciler(store, cloud).reconcile(machine.machine_id)
+        stopped = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert stopped.observed_state is ObservedState.STOPPED
     assert not stopped.instance_launch_intent
     assert not stopped.instance_launch_issued
@@ -101,7 +101,7 @@ def ready_to_launch(tmp_path: Path):
 def test_definitely_rejected_launch_is_forgotten(tmp_path: Path, code, status, cleared):
     _, store, machine, cloud = ready_to_launch(tmp_path)
     cloud.run_instance.side_effect = client_error(code, status, "RunInstances")
-    Reconciler(store, cloud).reconcile_all()
+    Reconciler(store, cloud, instance_type=None).reconcile_all()
 
     failed = store.get(machine.machine_id)
     assert failed.observed_state is ObservedState.NEEDS_ATTENTION
@@ -110,7 +110,7 @@ def test_definitely_rejected_launch_is_forgotten(tmp_path: Path, code, status, c
 
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     cloud.run_instance.reset_mock()
-    retained = Reconciler(store, cloud).reconcile(machine.machine_id)
+    retained = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     expected = ObservedState.RETAINED if cleared else ObservedState.STOPPING
     assert retained.observed_state is expected
     assert retained.instance_launch_issued is not cleared
@@ -121,12 +121,12 @@ def test_definitely_rejected_launch_is_forgotten(tmp_path: Path, code, status, c
 def test_ambiguous_launch_is_replayed_with_the_same_sequence(tmp_path: Path):
     _, store, machine, cloud = ready_to_launch(tmp_path)
     cloud.run_instance.side_effect = client_error("InternalError", 500, "RunInstances")
-    Reconciler(store, cloud).reconcile_all()
+    Reconciler(store, cloud, instance_type=None).reconcile_all()
     assert store.get(machine.machine_id).instance_launch_issued
 
     cloud.run_instance.side_effect = None
     cloud.run_instance.return_value = "i-0123456789abcdef0"
-    launched = Reconciler(store, cloud).reconcile(machine.machine_id)
+    launched = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert launched.instance_id == "i-0123456789abcdef0"
     assert launched.instance_seq == 0
     cloud.validate_image.assert_called_once()
@@ -149,7 +149,7 @@ def test_recent_unresolved_launch_is_not_forgotten(tmp_path: Path, desired):
     store, machine, cloud = unresolved_launch(tmp_path, desired, timedelta(minutes=1))
     busy = ObservedState.STOPPING if desired is DesiredState.RETAINED else ObservedState.DELETING
 
-    waiting = Reconciler(store, cloud).reconcile(machine.machine_id)
+    waiting = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert waiting.observed_state is busy
     assert waiting.instance_launch_issued
     assert waiting.instance_launch_issued_at is not None
@@ -161,7 +161,7 @@ def test_recent_unresolved_launch_is_not_forgotten(tmp_path: Path, desired):
 def test_old_unresolved_launch_is_forgotten(tmp_path: Path, desired):
     store, machine, cloud = unresolved_launch(tmp_path, desired, timedelta(minutes=20))
 
-    forgotten = Reconciler(store, cloud).reconcile(machine.machine_id)
+    forgotten = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert not forgotten.instance_launch_issued
     assert forgotten.instance_launch_issued_at is None
     if desired is DesiredState.RETAINED:
@@ -179,7 +179,7 @@ def test_retention_adopts_an_instance_found_by_launch_token(tmp_path: Path):
     worker = instance(cfg, machine, "terminated")
     cloud.find_launched_instance.return_value = worker
 
-    adopted = Reconciler(store, cloud).reconcile(machine.machine_id)
+    adopted = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert adopted.instance_id == worker["InstanceId"]
     assert adopted.instance_launch_issued
     store.close()
@@ -192,14 +192,14 @@ def test_definitely_rejected_volume_create_lets_retention_finish(tmp_path: Path)
     cloud.image_id = cfg.image_id
     cloud.get_volume.return_value = None
     cloud.create_volume.side_effect = client_error("VolumeLimitExceeded", 400, "CreateVolume")
-    Reconciler(store, cloud).reconcile_all()
+    Reconciler(store, cloud, instance_type=None).reconcile_all()
     failed = store.get(machine.machine_id)
     assert failed.observed_state is ObservedState.NEEDS_ATTENTION
     assert not failed.volume_create_issued
 
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     cloud.get_instance.return_value = None
-    retained = Reconciler(store, cloud).reconcile(machine.machine_id)
+    retained = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert retained.observed_state is ObservedState.RETAINED
     assert retained.error is None
     store.close()
@@ -237,13 +237,13 @@ def test_controller_termination_is_not_a_recovery(tmp_path: Path):
     cfg, store, machine, cloud = launched_instance(tmp_path)
     store.set_desired(machine.machine_id, DesiredState.RETAINED, None)
     cloud.get_instance.return_value = instance(cfg, machine, "stopped")
-    terminating = Reconciler(store, cloud).reconcile(machine.machine_id)
+    terminating = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert terminating.observed_state is ObservedState.STOPPING
     cloud.terminate_instance.assert_called_once()
 
     store.set_desired(machine.machine_id, DesiredState.RUNNING, None)
     cloud.get_instance.return_value = instance(cfg, machine, "terminated")
-    replaced = Reconciler(store, cloud).reconcile(machine.machine_id)
+    replaced = Reconciler(store, cloud, instance_type=None).reconcile(machine.machine_id)
     assert replaced.instance_id is None
     assert replaced.instance_seq == 1
     assert replaced.recovery_count == 0
@@ -252,7 +252,7 @@ def test_controller_termination_is_not_a_recovery(tmp_path: Path):
 
 def test_recovery_limit_applies_per_operation(tmp_path: Path):
     cfg, store, machine, cloud = launched_instance(tmp_path)
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
     cloud.get_instance.return_value = instance(cfg, machine, "terminated")
     for index in range(3):
         replaced = reconciler.reconcile(machine.machine_id)

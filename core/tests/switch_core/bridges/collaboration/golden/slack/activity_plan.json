@@ -1,0 +1,114 @@
+[
+  {
+    "kwargs": {
+      "blocks": [
+        {
+          "block_id": "switch-request:tok-plan",
+          "tasks": [
+            {
+              "status": "in_progress",
+              "task_id": "switch-session",
+              "title": "Switch session"
+            },
+            {
+              "icon": {
+                "name": "code",
+                "type": "icon"
+              },
+              "status": "complete",
+              "task_id": "i1",
+              "title": "Read README.md"
+            },
+            {
+              "icon": {
+                "name": "code",
+                "type": "icon"
+              },
+              "status": "in_progress",
+              "task_id": "i2",
+              "title": "Run pytest"
+            }
+          ],
+          "title": "Working… 5s · Running: Run pytest",
+          "type": "plan"
+        },
+        {
+          "block_id": "switch-interrupt",
+          "elements": [
+            {
+              "action_id": "switch:turn-interrupt",
+              "style": "danger",
+              "text": {
+                "text": "Stop current work",
+                "type": "plain_text"
+              },
+              "type": "button",
+              "value": "turn-1"
+            }
+          ],
+          "type": "actions"
+        }
+      ],
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "metadata": {
+        "event_payload": {
+          "token": "tok-plan"
+        },
+        "event_type": "switch_publication"
+      },
+      "text": "Working… 5s · Running: Run pytest",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "blocks": [
+        {
+          "block_id": "switch-request:tok-plan",
+          "tasks": [
+            {
+              "status": "complete",
+              "task_id": "switch-session",
+              "title": "Switch session"
+            },
+            {
+              "icon": {
+                "name": "code",
+                "type": "icon"
+              },
+              "status": "complete",
+              "task_id": "i1",
+              "title": "Read README.md"
+            },
+            {
+              "icon": {
+                "name": "code",
+                "type": "icon"
+              },
+              "status": "complete",
+              "task_id": "i2",
+              "title": "Run pytest"
+            }
+          ],
+          "title": "Worked for 42s. 2 tool calls.",
+          "type": "plan"
+        }
+      ],
+      "channel": "C0GENERAL",
+      "metadata": {
+        "event_payload": {
+          "token": "tok-plan"
+        },
+        "event_type": "switch_publication"
+      },
+      "text": "Worked for 42s. 2 tool calls.",
+      "ts": "1800000000.000001"
+    },
+    "method": "chat.update"
+  }
+]

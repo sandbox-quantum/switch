@@ -65,8 +65,8 @@ class RegisterKnownAgentBulkRequest(BaseModel):
 
     `options` is the shared base (e.g. `channels_enabled`, `repo_dir`) applied
     to every subagent; the per-subagent `subagent_name`
-    is merged in on top. Used by the configure skill to bring a user's
-    existing `.claude/agents/*.md` subagents into Switch in one step.
+    is merged in on top. Brings a user's existing `.claude/agents/*.md`
+    subagents into Switch in one step.
     """
 
     agent_type: str

@@ -1,5 +1,5 @@
 /**
- * Switch Console asking the agents controller it runs on this computer to
+ * Switch Console asking the agent controller it runs on this computer to
  * check every provider again now, over the controller's IPC channel.
  *
  * The controller otherwise checks each provider at most every ten minutes, so

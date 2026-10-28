@@ -322,7 +322,10 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         name="tenant_of_server_connector",
         arguments=("connector_id",),
         query="SELECT tenant_id FROM server_connectors WHERE id = p_connector_id",
-        purpose="Same as the bridge, for a server-side connector.",
+        purpose=(
+            "Same as the bridge, for a server-side connector. Nothing calls it "
+            "any more; it goes with `server_connectors`, a release later."
+        ),
     ),
     TenantLookup(
         name="tenant_of_invitation",

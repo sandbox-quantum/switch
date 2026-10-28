@@ -2359,6 +2359,7 @@ dependencies = [
     { name = "slack-sdk" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -2395,6 +2396,7 @@ requires-dist = [
     { name = "slack-sdk", specifier = ">=3.41.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2,<3" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
+    { name = "websockets", specifier = ">=14,<17" },
 ]
 
 [package.metadata.requires-dev]

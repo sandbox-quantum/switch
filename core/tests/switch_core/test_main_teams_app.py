@@ -111,7 +111,6 @@ async def test_the_apps_client_is_closed_only_after_the_bridges_stop(
             controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
-            connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]
             provisioning=_Stoppable("provisioning"),  # type: ignore[arg-type]
             discord_gateway=None,
             teams_app=_TeamsApp(),  # type: ignore[arg-type]
@@ -146,9 +145,13 @@ async def test_the_package_carries_the_environments_app_name() -> None:
 async def test_shutdown_drains_before_it_closes_anything(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Readiness fails and the lease is released before uvicorn stops
-    accepting, and with several replicas the process keeps serving for the
-    drain window while the Service moves its traffic elsewhere."""
+    """Readiness fails first, and with several replicas the process keeps
+    serving, still owning its work and its lease, for the drain window while
+    the Service moves its traffic elsewhere. Only then is the lease released,
+    and the sockets close right after it: once the lease reads stopped, every
+    other process counts this one's agent and controller connections as gone,
+    so a socket left open past it is an agent that reads offline while it is
+    still connected here."""
     calls: list[str] = []
 
     class _Stoppable:
@@ -195,7 +198,6 @@ async def test_shutdown_drains_before_it_closes_anything(
             controllers=_Controllers(),  # type: ignore[arg-type]
             client_lifecycle=_Stoppable("clients"),  # type: ignore[arg-type]
             collab_lifecycle=_Lifecycle(calls),  # type: ignore[arg-type]
-            connector_lifecycle=_Stoppable("connectors"),  # type: ignore[arg-type]
             provisioning=_Stoppable("provisioning"),  # type: ignore[arg-type]
             discord_gateway=None,
             teams_app=None,
@@ -204,7 +206,7 @@ async def test_shutdown_drains_before_it_closes_anything(
     assert calls[:5] == [
         "not ready",
         "controllers told",
-        "lease released",
         "slept 5",
+        "lease released",
         "sockets closing",
     ]

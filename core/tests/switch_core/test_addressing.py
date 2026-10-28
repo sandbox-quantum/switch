@@ -12,6 +12,7 @@ from switch_core.addressing import (
     owner_only_policy,
     parse_policy,
     platform_allowed_policy,
+    policy_kind,
 )
 
 
@@ -608,6 +609,35 @@ class TestRequiresOwnerIdentity:
 
     def test_true_for_owner_only_policy(self) -> None:
         assert owner_only_policy([]).requires_owner_identity() is True
+
+
+class TestPolicyKind:
+    """Which Console choice a stored policy is, as agents read it back."""
+
+    def test_no_policy_is_anyone(self) -> None:
+        assert policy_kind(None) == "anyone"
+
+    def test_no_rules_is_anyone(self) -> None:
+        assert policy_kind({"rules": []}) == "anyone"
+
+    def test_owner_only(self) -> None:
+        assert policy_kind(owner_only_policy([]).model_dump()) == "owner_only"
+
+    def test_default_is_owner_and_owner_agents(self) -> None:
+        assert (
+            policy_kind(default_agent_policy().model_dump()) == "owner_and_owner_agents"
+        )
+
+    def test_a_rule_stored_without_its_defaults_still_matches(self) -> None:
+        stored = {"rules": [{"users": [], "agents": [], "owner": True}]}
+        assert policy_kind(stored) == "owner_only"
+
+    def test_owner_only_with_granted_agents_is_custom(self) -> None:
+        assert policy_kind(owner_only_policy(["a1"]).model_dump()) == "custom"
+
+    def test_named_people_are_custom(self) -> None:
+        policy = AddressingPolicy(rules=[AddressingRule(users=["u1"], agents=[])])
+        assert policy_kind(policy.model_dump()) == "custom"
 
 
 class TestAdmitsOthers:

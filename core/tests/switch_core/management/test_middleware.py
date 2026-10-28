@@ -32,6 +32,7 @@ from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.wiring import create_management
 from switch_core.tenant_context import current_tenant_id
 from switch_core.trust.client import NullTrustClient
+from switch_core.user_changes import LocalUserChanges
 from tests.db_buffer import QuietRooms
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
@@ -286,6 +287,7 @@ class TestTheFlagOff:
                 AgentConnectionRegistry().controllers,
                 object(),  # type: ignore[arg-type]
                 object(),  # type: ignore[arg-type]
+                LocalUserChanges(),
             )
             is None
         )

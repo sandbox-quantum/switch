@@ -113,7 +113,7 @@ export function serverUrlProblem(url: string): string | null {
   if (parsed.protocol === 'https:') return null;
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
   if (parsed.protocol === 'http:' && loopback) return null;
-  return `The agents controller connects to Switch only over https (or plain http to the host itself), and this server's address is ${url}.`;
+  return `The agent controller connects to Switch only over https (or plain http to the host itself), and this server's address is ${url}.`;
 }
 
 function key(sshHost: string, serverId: string): string {
@@ -259,7 +259,7 @@ export class HostControllerService {
         await this.deps.records.set(enrolled);
         this.setPhase(sshHost, serverId, { kind: 'installing', step: 'Starting the controller…' });
         await this.start(shell, enrolled, prepared.home);
-        this.deps.log.info('Installed the agents controller on an SSH host', {
+        this.deps.log.info('Installed the agent controller on an SSH host', {
           sshHost,
           serverId,
           controllerId: enrolled.controllerId,
@@ -350,7 +350,7 @@ export class HostControllerService {
         });
       }
       await this.deps.records.delete(sshHost, serverId);
-      this.deps.log.info('Removed the agents controller from an SSH host', { sshHost, serverId });
+      this.deps.log.info('Removed the agent controller from an SSH host', { sshHost, serverId });
     });
   }
 
@@ -423,7 +423,7 @@ export class HostControllerService {
     );
     if (!nodeIsNewEnough(prepared.node))
       throw new Error(
-        `${sshHost} runs Node ${prepared.node}; the agents controller needs Node ${MIN_NODE.join('.')} or later on the host.`
+        `${sshHost} runs Node ${prepared.node}; the agent controller needs Node ${MIN_NODE.join('.')} or later on the host.`
       );
     const bundle = posix.join(prepared.directory, bundleName);
     if (!prepared.present) {
@@ -454,7 +454,7 @@ export class HostControllerService {
         supervision: record.supervision,
         unit: hostControllerUnit(record.serverId),
         unitText: systemdUnit({
-          description: `Switch agents controller (Switch Console, server ${record.serverId})`,
+          description: `Switch agent controller (Switch Console, server ${record.serverId})`,
           node: record.node,
           bundle: record.bundle,
           dataDir: absolute(record.dataDir),

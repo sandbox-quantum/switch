@@ -85,6 +85,7 @@ async def test_catalog_lists_the_enabled_services_and_placeholders(catalog_app):
     assert result.pop("github") == "not_connected"
     # A Console this older route serves connects GitHub alone, whatever else
     # is enabled.
+    assert result.pop("airtable") == "not_connected"
     assert result.pop("atlassian") == "not_connected"
     assert result.pop("google-workspace") == "not_connected"
     assert result.pop("datadog") == "not_connected"

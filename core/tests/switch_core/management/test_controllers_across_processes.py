@@ -26,6 +26,7 @@ from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.db.models import TENANT_ZERO_ID, AgentController, SwitchCoreProcess
 from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.process_lease import LEASE_TTL
+from switch_core.user_changes import MACHINE, UserChange
 from tests.db_buffer import say
 from tests.switch_core.management.harness import (
     Harness,
@@ -699,3 +700,62 @@ class TestTheRowNamesTheConnectionOpenedLast:
             )
             == there.management.lease.process_id
         )
+
+
+class TestOwnerNotices:
+    """A machine's owner hears that it changed, on whichever process holds
+    their Console's socket."""
+
+    async def _heard(self, subscription: Any, change: UserChange) -> None:
+        heard: list[UserChange] = []
+
+        def check() -> bool:
+            heard.extend(subscription.drain())
+            return change in heard
+
+        await _eventually(check)
+
+    async def test_enrolling_through_one_process_tells_the_owner_on_the_other(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        subscription = there.user_changes.subscribe(TENANT_ZERO_ID, owner.id)
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+        await self._heard(subscription, UserChange(MACHINE, controller.controller_id))
+
+    async def test_a_socket_attaching_and_going_tell_the_owner_on_the_other(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        subscription = there.user_changes.subscribe(TENANT_ZERO_ID, owner.id)
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            machine = UserChange(MACHINE, controller.controller_id)
+            await self._heard(subscription, machine)
+
+            await connect(client, controller)
+            await self._heard(subscription, machine)
+
+        held = here.protocol.connections.controllers
+        conn = held.current_connection(controller.controller_id)
+        assert conn is not None
+        held.detach_stream(conn, conn.stream_token)
+        await here.management.ledger.flush_all()
+        await self._heard(subscription, machine)
+
+    async def test_nobody_else_hears_of_it(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        other = await add_member(here.session_factory, "bob")
+        theirs = there.user_changes.subscribe(TENANT_ZERO_ID, owner.id)
+        bystander = there.user_changes.subscribe(TENANT_ZERO_ID, other.id)
+        async with here.client() as client:
+            controller = await enroll_console(here, client, owner)
+            await connect(client, controller)
+        await self._heard(theirs, UserChange(MACHINE, controller.controller_id))
+        assert bystander.drain() == []

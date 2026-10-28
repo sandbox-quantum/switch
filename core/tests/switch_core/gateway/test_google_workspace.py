@@ -85,7 +85,11 @@ def _world(
         CATALOG,
         github_app=None,
         oauth_clients=(
-            {SERVICE: OAuthClientCredentials(STATIC_CLIENT_ID, STATIC_CLIENT_SECRET)}
+            {
+                SERVICE: OAuthClientCredentials(
+                    STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+                )
+            }
             if client_settings
             else {}
         ),
@@ -107,7 +111,7 @@ def _world(
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
-        public_url=None,
+        public_url=PUBLIC,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -180,7 +184,9 @@ def _another_client(world: World, session_factory) -> OAuthAdapter:
         CATALOG,
         github_app=None,
         oauth_clients={
-            SERVICE: OAuthClientCredentials("other-client-id", "example-secret-1111")
+            SERVICE: OAuthClientCredentials(
+                "other-client-id", "example-secret-1111", authentication=None
+            )
         },
         http=world.google.client(),
         registration=ClientRegistration(

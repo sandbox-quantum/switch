@@ -15,7 +15,7 @@ run location is Switch cloud.
 ## Switch cloud agents
 
 Signing in to Switch Cloud claims and starts the user's cloud machine
-(`/gateway/hosted-machines/ensure`). The machine runs the agents controller, so
+(`/gateway/hosted-machines/ensure`). The machine runs the agent controller, so
 a Switch cloud agent is a managed agent placed on that machine's controller
 once it has enrolled and is online, created like an agent on any other machine.
 Provider logins reach the machine sealed to its controller ("Give login"); the

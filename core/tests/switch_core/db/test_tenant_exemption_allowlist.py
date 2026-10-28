@@ -72,8 +72,7 @@ _ALLOWED_MODULES = {
     # policy, the same shape as service-token upkeep above.
     "switch_core.gateway.connector_apps",
     # The runtime-state sweep reads every tenant's stale rows, one tenant at a
-    # time; `register_agent_with_token` resolves a registration credential by
-    # its globally unique hash, which is the read that produces a tenant.
+    # time.
     "switch_core.bridges.agent.protocol.agent_core",
     # Each process keeps a copy of every other process's agent connections, so
     # its periodic pass over the recorded rows reads every tenant's: enumerate
@@ -109,11 +108,10 @@ _ALLOWED_MODULES = {
     # `tenants_of_cloud_machine`, and each one's row on the machine is then
     # read with that workspace bound.
     "switch_core.db.stores.hosted_machine_store",
-    # Enumerating tenants at boot, and starting one bridge or one connector by
-    # id from a context bound to somebody else's tenant.
+    # Enumerating tenants at boot, and starting one bridge by id from a
+    # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
     "switch_core.bridges.collaboration.lifecycle_service",
-    "switch_core.bridges.agent.server_connectors.lifecycle",
     # `_room_tenant`'s fallback: which tenant is this room in, asked when the
     # answer is not already cached alongside the channel mapping.
     "switch_core.bridges.collaboration.collaboration_core",
@@ -172,7 +170,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.commands",
     "switch_core.bridges.collaboration.collaboration_core",
     "switch_core.bridges.collaboration.lifecycle_service",
-    "switch_core.bridges.agent.server_connectors.lifecycle",
     "switch_core.delivery.recipient",
     "switch_core.clients.command_consumer",
     "switch_core.clients.client_lifecycle_service",

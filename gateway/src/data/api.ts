@@ -79,11 +79,11 @@ export interface AgentSessionDetail {
   room_id: string | null;
   room_name: string | null;
   // `heartbeat` / `explicit` (a session row), `connection` (the agent's own
-  // connection) or `controller` (run by the agents controller it is placed on).
+  // connection) or `controller` (run by the agent controller it is placed on).
   lifecycle: string;
   state: string;
   last_seen_at: string;
-  // The agents controller running it, for a `controller` session; else null.
+  // The agent controller running it, for a `controller` session; else null.
   controller_id: string | null;
 }
 
@@ -219,6 +219,9 @@ export interface CreateRoomInput {
   join_event_listeners?: string[];
   user_names?: string[];
   bridge_id?: string | null;
+  // With no bridge_id the server uses the default bridge; this asks for a
+  // room with no external channel instead.
+  internal_only?: boolean;
   external_channel_id?: string | null;
   group_id?: string | null;
   read_visibility?: "public" | "private";
@@ -338,6 +341,7 @@ export interface ProvisionResult {
   room_id: string;
   room_name: string;
   attached_reference_ids: string[];
+  attached_package_ids: string[];
   created_reference_ids: string[];
   created_document_ids: string[];
   role_names: string[];
@@ -741,64 +745,6 @@ export async function registerOtherAgent(
   return (await res.json()) as RegisterResult;
 }
 
-// ── Connectors ──────────────────────────────────────────────────────────────
-
-export interface ConnectorTypeConfigSchema {
-  type: string;
-  properties: Record<
-    string,
-    {
-      type?: string;
-      title?: string;
-      description?: string;
-      default?: unknown;
-      format?: string;
-    }
-  >;
-  required?: string[];
-}
-
-export interface ConnectorTypeInfo {
-  key: string;
-  config_schema: ConnectorTypeConfigSchema;
-}
-
-export interface ConnectorResult {
-  connector_id: string;
-  connector_type: string;
-  display_name: string;
-  status: string;
-  agent_names: string[];
-  created_at: string;
-}
-
-export async function fetchConnectorTypes(): Promise<ConnectorTypeInfo[] | null> {
-  return fetchJson<ConnectorTypeInfo[]>("/connectors/types");
-}
-
-export async function createConnector(
-  type: string,
-  displayName: string,
-  connectionConfig: Record<string, unknown>,
-): Promise<ConnectorResult> {
-  const res = await fetch(`${BASE}/connectors`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({
-      type,
-      display_name: displayName,
-      connection_config: connectionConfig,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
-  return (await res.json()) as ConnectorResult;
-}
-
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
 export interface ApiKeyDetail {
@@ -855,9 +801,24 @@ export async function deleteApiKey(keyId: string): Promise<boolean> {
 
 // ── Collaborations ───────────────────────────────────────────────────────────
 
+export interface BridgeConfigSchema {
+  type: string;
+  properties: Record<
+    string,
+    {
+      type?: string;
+      title?: string;
+      description?: string;
+      default?: unknown;
+      format?: string;
+    }
+  >;
+  required?: string[];
+}
+
 export interface BridgeTypeInfo {
   key: string;
-  config_schema: ConnectorTypeConfigSchema;
+  config_schema: BridgeConfigSchema;
   // Whether this platform can create channels at all. Fixed per platform.
   channel_creation_supported: boolean;
 }
@@ -1328,23 +1289,16 @@ export async function fetchUsers(): Promise<UserInfo[] | null> {
   return fetchJson<UserInfo[]>("/users");
 }
 
+// The roles `POST /users` accepts; `admin` makes a deployment operator.
+export type UserRole = "user" | "admin";
+
 export async function createUser(
   name: string,
   email: string,
   password: string,
-  role: string,
+  role: UserRole,
 ): Promise<UserInfo> {
-  const res = await fetch(`${BASE}/users`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify({ name, email, password, role }),
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
-  return (await res.json()) as UserInfo;
+  return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────
@@ -2359,6 +2313,12 @@ export interface ConnectorApp {
   load_error: string | null;
   /** Where the vendor sends people back to Switch; null without a GATEWAY_PUBLIC_URL it accepts. */
   redirect_uri: string | null;
+  /** Every address to register at the vendor: Core's own callback, or one per port of Switch Console's listener. */
+  redirect_uris: string[];
+  /** Whether the vendor sends people back to the server, so it needs GATEWAY_PUBLIC_URL. */
+  needs_public_url: boolean;
+  /** The scopes a sign-in asks for, where the vendor's app must list them. */
+  scopes: string[];
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
   install_url: string | null;
@@ -2381,6 +2341,8 @@ export interface ConnectorAppCheck {
   ok: boolean;
   message: string;
   field: ConnectorAppField | null;
+  /** What the check could not see, for the operator to confirm themselves. */
+  note: string | null;
 }
 
 export interface SaveConnectorAppInput {
@@ -2416,10 +2378,16 @@ export async function fetchConnectorApps(): Promise<ConnectorApps> {
   return jsonRequest<ConnectorApps>("/connector-apps", "GET");
 }
 
+/** A saved app, and what the vendor said when Switch checked it; none from an older server. */
+export interface SavedConnectorApp {
+  app: ConnectorApp;
+  checks: ConnectorAppCheck[];
+}
+
 export async function saveConnectorApp(
   service: string,
   input: SaveConnectorAppInput,
-): Promise<ConnectorApp> {
+): Promise<SavedConnectorApp> {
   const res = await fetch(`${BASE}/connector-apps/${service}`, {
     method: "PUT",
     credentials: "include",
@@ -2435,7 +2403,8 @@ export async function saveConnectorApp(
     }
     throw new ApiError(res.status, detail, message);
   }
-  return payload as ConnectorApp;
+  const { checks, ...app } = payload as ConnectorApp & { checks?: ConnectorAppCheck[] };
+  return { app, checks: checks ?? [] };
 }
 
 export async function importConnectorApp(service: string): Promise<ConnectorApp> {

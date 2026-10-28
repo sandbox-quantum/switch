@@ -75,6 +75,14 @@ function unavailableState(
             : `${entry.name} needs a server with an https address, so it can't work on this one.`,
         fix: null,
       };
+    case 'needs_public_url':
+      return {
+        ...unavailable,
+        detail: viewer.operator
+          ? `${entry.name} sends people back to this server's public address. Set GATEWAY_PUBLIC_URL, then restart Switch.`
+          : `${entry.name} needs the server's public address. Ask whoever runs your Switch server to set it.`,
+        fix: null,
+      };
     default:
       return { ...unavailable, detail: reason, fix: null };
   }

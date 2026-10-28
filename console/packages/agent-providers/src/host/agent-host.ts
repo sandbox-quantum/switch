@@ -639,7 +639,7 @@ export class AgentHostAssignments {
  * What a watcher hears its agent's events on, and tells Switch where its
  * sessions are through: its own connection to Switch (`openSwitchStream`), or
  * whatever hosts the watcher and holds the agent's connection for it, as an
- * agents controller does for every agent on its machine.
+ * agent controller does for every agent on its machine.
  */
 export type AgentEventStream = {
   /** The agent host, not Switch, tells a room when it starts a session for it. */
@@ -743,7 +743,7 @@ export async function runAgentHost(
     const placements = await SessionPlacements.open(root, () => assignments.placements());
     /**
      * This agent's sessions whose host runs here and has not said it is idle:
-     * the ones an agents controller restarting now would cut off mid-turn.
+     * the ones an agent controller restarting now would cut off mid-turn.
      */
     const busySessions = (): string[] => {
       const live = new Set(links.live());

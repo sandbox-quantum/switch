@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end harness that drives real messages through a Switch server and a Mattermost bridge to exercise Switch Console's provider-backed sessions.",
+  "description": "End-to-end harness for Switch: a provider-free fast lane over plain HTTP, and a provider lane that drives real agent sessions through Switch Console.",
   "scripts": {
     "test": "vitest run",
     "test:e2e": "vitest run",
@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "playwright": "1.60.0",
     "typescript": "^5.9.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "yaml": "2.9.0"
   }
 }

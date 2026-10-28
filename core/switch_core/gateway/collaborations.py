@@ -75,6 +75,7 @@ from switch_core.gateway.schemas import (
     SlackTokensCheck,
     SlackTokensChecked,
 )
+from switch_core.request_validation import describe_errors
 from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
@@ -329,8 +330,8 @@ async def create_bridge(
         CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
     ],
     # Admin-only: a bridge is an unowned, workspace-wide integration holding
-    # platform secrets, so there is no owner to scope to (unlike connectors,
-    # whose authz is owner-or-admin) — registering one is an admin action.
+    # platform secrets, so there is no owner to scope to — registering one is
+    # an admin action.
     user: Annotated[User, Depends(require_tenant_admin)],
 ) -> BridgeDetail:
     # A shared bridge runs on this deployment's own app, which is in every
@@ -358,7 +359,7 @@ async def create_bridge(
         # credentials and we do not.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=describe_errors(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -520,7 +521,7 @@ async def update_bridge(
                 connection_config=merged,
             )
         except ValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=describe_errors(exc)) from exc
         except BridgeStartRefused as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except (BridgeClaimConflict, BridgeCredentialError) as exc:

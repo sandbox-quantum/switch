@@ -3,6 +3,8 @@ depends on which providers exist."""
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -28,7 +30,6 @@ from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
 from switch_core.providers.registry import (
     AgentProvider,
-    ConsoleStart,
     UnknownProvider,
     agent_provider,
     agent_providers,
@@ -73,6 +74,31 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
     }
 
 
+_AGENT_PROVIDERS_SRC = (
+    Path(__file__).resolve().parents[4] / "console/packages/agent-providers/src"
+)
+
+# Where Switch Console defines each provider's `loginCommand`.
+_CONSOLE_SIGN_IN = {
+    "claude": ("claude/sign-in.ts", r"CLAUDE_LOGIN = '([^']+)'"),
+    "codex": ("codex/sign-in.ts", r"CODEX_LOGIN = '([^']+)'"),
+    "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
+    "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
+    "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+}
+
+
+def test_each_sign_in_command_is_the_one_switch_console_runs() -> None:
+    # An offline reply tells the owner to sign the CLI in with this command,
+    # and Switch Console tells them the same thing from its own table.
+    assert set(_CONSOLE_SIGN_IN) == set(provider_ids())
+    for provider in agent_providers():
+        path, pattern = _CONSOLE_SIGN_IN[provider.id]
+        found = re.search(pattern, (_AGENT_PROVIDERS_SRC / path).read_text())
+        assert found is not None, provider.id
+        assert provider.sign_in_command == found.group(1), provider.id
+
+
 def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
@@ -92,7 +118,7 @@ def test_only_claude_has_a_known_agent_of_its_own() -> None:
     )
 
 
-NEW = AgentProvider(id="newcli", label="New CLI")
+NEW = AgentProvider(id="newcli", label="New CLI", sign_in_command="newcli login")
 
 
 @pytest.fixture
@@ -109,9 +135,6 @@ class TestANewProvider:
         assert new_provider.connector_type == "New CLI"
         assert new_provider.advanced_fields == ()
         assert new_provider.tools == ()
-        assert new_provider.session_start == ConsoleStart(
-            runtime=None, sign_in_command=None
-        )
         assert provider_ids()[-1] == "newcli"
 
     async def test_it_is_served_in_the_provider_list(
@@ -159,10 +182,6 @@ class TestANewProvider:
         agent = SimpleNamespace(
             name="new.agent",
             metadata_={"known_agent_type": "newcli", "known_agent_options": {}},
-        )
-        assert spec.connect_command(options, agent, "hub", None) is None  # type: ignore[arg-type]
-        assert spec.start_session_instructions(options, agent, "hub", None) == (  # type: ignore[arg-type]
-            "open **new.agent** in Switch Console and start a local session in **hub**."
         )
         resolved = known_agent_for(agent)  # type: ignore[arg-type]
         assert resolved is not None

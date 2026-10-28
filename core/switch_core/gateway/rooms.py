@@ -795,6 +795,7 @@ async def export_room_yaml(
     agents: Annotated[bool, Query()] = True,
     users: Annotated[bool, Query()] = True,
     references: Annotated[bool, Query()] = True,
+    packages: Annotated[bool, Query()] = True,
     docs: Annotated[bool, Query()] = True,
     roles: Annotated[bool, Query()] = True,
 ) -> Response:
@@ -806,6 +807,7 @@ async def export_room_yaml(
         agents=agents,
         users=users,
         references=references,
+        packages=packages,
         docs=docs,
         roles=roles,
     )

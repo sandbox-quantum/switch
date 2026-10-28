@@ -37,6 +37,10 @@ from testcontainers.postgres import PostgresContainer
 
 # Importing models registers every table on Base.metadata for create_all.
 import switch_core.db.models  # noqa: F401
+from switch_core.bridges.agent.api.handlers import (
+    _resolve_registration_user_id,
+    registration_path,
+)
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -317,16 +321,27 @@ class Harness:
         self, name: str, token: str
     ) -> RegistrationResult:
         """Register the way a standalone agent does: with a bearer token
-        presented to `POST /agents`, resolved here directly against the
-        protocol service rather than over real HTTP."""
-        result = await self.protocol.register_agent_with_token(
-            registration_token=token,
+        presented to `POST /agents`, its owner resolved by the endpoint's own
+        dependency rather than over real HTTP.
+
+        The tenant is the harness's, tenant zero, which is where the bootstrap
+        key lives; binding the token's own tenant is `BearerAuthMiddleware`'s
+        part, covered by `test_bearer_auth_tenant_binding.py`."""
+        async with self.session_factory() as session:  # type: ignore[operator]
+            owner_id = await _resolve_registration_user_id(
+                authorization=f"Bearer {token}",
+                session=session,
+                api_key_store=ApiKeyStore(),
+                protocol=self.protocol,
+            )
+        result = await self.protocol.register_agent(
             name=name,
             description=f"integration test agent {name}",
             connector_type="test",
             integration_profile=_PROFILE,
+            owner_id=owner_id,
             overwrite=True,
-            addressing_policy=None,
+            registration_path=registration_path(),
         )
         self._registered.append(result.agent_id)
         return result
@@ -614,6 +629,7 @@ async def harness(
                 room_store=session_env.room_store,
                 document_store=session_env.document_store,
                 reference_store=session_env.reference_store,
+                package_store=session_env.package_store,
                 agent_session_store=session_env.agent_session_store,
                 room_role_store=session_env.room_role_store,
                 external_user_store=session_env.external_user_store,

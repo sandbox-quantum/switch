@@ -541,20 +541,6 @@ class TestRefusals:
                 agent_id=parent_id, new_name="other", display_name=None
             )
 
-    async def test_a_server_connector_agent(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc = _service(session_factory, _FakeAdapter())
-        owner = await make_owner(session_factory)
-        agent_id = await register(
-            svc, "found", owner, metadata={"server_connector_id": "c1"}
-        )
-
-        with pytest.raises(AgentRenameRefused, match="server connector"):
-            await svc.rename_agent(
-                agent_id=agent_id, new_name="other", display_name=None
-            )
-
     async def test_no_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

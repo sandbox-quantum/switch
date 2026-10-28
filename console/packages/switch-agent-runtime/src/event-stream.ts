@@ -188,7 +188,7 @@ export interface EventStreamLogger {
 export interface SessionCommand {
   /**
    * The session it is for. Null when Switch knows only the room it was typed
-   * in (`roomId`), as for an agent run by an agents controller: the agent
+   * in (`roomId`), as for an agent run by an agent controller: the agent
    * decides which of its sessions that is.
    */
   sessionId: string | null;
@@ -349,7 +349,7 @@ type Transport = 'socket' | 'stream';
 /** The socket closed before it opened: the server is unreachable, or has no
  * socket to offer. Only a request to the event stream tells the two apart. */
 class SocketNeverOpened extends Error {
-  constructor(code: number | null) {
+  constructor(readonly code: number | null) {
     super(
       `could not connect to Switch (socket closed with ${code ?? 'no code'}, and the event stream did not answer either): the server is unreachable`
     );
@@ -467,7 +467,7 @@ export class SwitchEventStream {
 
   /**
    * Whether this client tells a room it is starting a session for it, rather
-   * than the server: an agents controller leaves it to the agent, Switch
+   * than the server: an agent controller leaves it to the agent, Switch
    * itself does it for an agent connected on its own.
    */
   get announcesSessionStarts(): boolean {
@@ -960,7 +960,9 @@ export class SwitchEventStream {
    * `probing` is the socket's failure when this request is the one that tells
    * an old server from an unreachable one. Then anything short of a stream
    * means unreachable, and that failure is what is reported. A refusal is
-   * still the server's answer, and handled as one.
+   * still the server's answer, and handled as one. The request also says it
+   * is a fallback, and the socket's close code, so the server's log can tell
+   * it from a client built before the socket.
    */
   private async *readEventStream(
     params: URLSearchParams,
@@ -969,9 +971,14 @@ export class SwitchEventStream {
     probing: SocketNeverOpened | null
   ): AsyncGenerator<SocketFrame> {
     const { creds, signal } = this.deps;
+    const query = new URLSearchParams(params);
+    if (probing) {
+      query.set('fallback', 'socket_never_opened');
+      if (probing.code !== null) query.set('fallback_close_code', String(probing.code));
+    }
     let resp: Response;
     try {
-      resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/events?${params}`, {
+      resp = await fetch(`${creds.apiEndpoint}/agents/${creds.agentId}/events?${query}`, {
         headers: {
           Authorization: `Bearer ${creds.token}`,
           Accept: 'text/event-stream',

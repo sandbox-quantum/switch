@@ -68,6 +68,10 @@ from switch_core.db.models import (
     TurnStatusPost,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_post_store import (
     ApprovalRequestPostStore,
@@ -78,6 +82,7 @@ from switch_core.db.stores.session_activity_store import (
     AgentSessionActivityStore,
     ApprovalRequestStore,
 )
+from switch_core.delivery.addressing import AddressingResolver
 from switch_core.session_activity.bridge_turns import (
     TurnView,
     status_state,
@@ -93,6 +98,7 @@ from switch_core.sessions.contract import DecidedBy, decided
 from switch_core.sessions.presentation import (
     activity_error_summary,
     notification_recipient,
+    request_card_recipient,
 )
 
 logger = logging.getLogger(__name__)
@@ -210,6 +216,15 @@ class AgentSessionActivityPublisher:
         self._agent_online = agent_online
         self._approvals = ApprovalRequestStore()
         self._rooms = RoomStore()
+        self._addressing = AddressingResolver(
+            room_store=self._rooms,
+            room_role_store=RoomRoleStore(),
+            client_store=ClientStore(),
+            agent_store=AgentStore(),
+            external_user_store=ExternalUserStore(),
+            # Only role mentions consult liveness; a permission check never does.
+            live_connection_ids=set,
+        )
         self._activity = AgentSessionActivityStore()
         self._card_posts = ApprovalRequestPostStore()
         self._turn_posts = TurnStatusPostStore()
@@ -507,22 +522,55 @@ class AgentSessionActivityPublisher:
         thread_ref: str | None,
     ) -> str | None:
         """Who a post asking someone to act names: whoever asked, else the owner."""
-        actor_id: str | None = None
-        if turn_row is not None and turn_row.message_id is not None:
-            actor_id = await db.scalar(
-                select(Message.sender_id).where(
-                    Message.transport_event_id == turn_row.message_id
-                )
-            )
         return await notification_recipient(
             db,
             bridge_id=self._bridge_id,
             room_id=room_id,
             surface=self._bridge_type,
-            actor_id=actor_id,
+            actor_id=await self._asker(db, turn_row),
             agent=agent,
             thread_id=thread_ref,
         )
+
+    async def _card_recipient(
+        self,
+        db: AsyncSession,
+        room_id: str,
+        agent: Agent,
+        turn_row: AgentSessionActivityItem | None,
+        thread_ref: str | None,
+    ) -> str | None:
+        """Who a new request card names: in a thread, somebody who may answer it."""
+        if thread_ref is None:
+            return await self._recipient(db, room_id, agent, turn_row, None)
+
+        async def may_answer(sender: str) -> bool:
+            decision = await self._addressing.permitted(
+                db, agent=agent, room_id=room_id, sender=sender
+            )
+            return decision.allowed
+
+        return await request_card_recipient(
+            db,
+            bridge_id=self._bridge_id,
+            room_id=room_id,
+            actor_id=await self._asker(db, turn_row),
+            agent=agent,
+            may_answer=may_answer,
+        )
+
+    async def _asker(
+        self, db: AsyncSession, turn_row: AgentSessionActivityItem | None
+    ) -> str | None:
+        """The room identity of whoever sent the message a turn answers, if known."""
+        if turn_row is None or turn_row.message_id is None:
+            return None
+        sender: str | None = await db.scalar(
+            select(Message.sender_id).where(
+                Message.transport_event_id == turn_row.message_id
+            )
+        )
+        return sender
 
     async def _turn_row(
         self, db: AsyncSession, agent_id: str, session_id: str, turn_id: str
@@ -561,7 +609,7 @@ class AgentSessionActivityPublisher:
             online = self._agent_online(agent_id)
             asking = post is None and row.state == "open"
             recipient = (
-                await self._recipient(
+                await self._card_recipient(
                     db, row.room_id, target.agent, turn_row, target.thread_ref
                 )
                 if asking

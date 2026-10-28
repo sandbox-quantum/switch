@@ -19,12 +19,21 @@ from datetime import timedelta
 from typing import Any
 
 import httpx
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api.service_routes import router as service_router
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
-from switch_core.db.models import Agent, ApiKey, Client, ServiceGrant, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Agent,
+    ApiKey,
+    Client,
+    ServiceGrant,
+    Tenant,
+    User,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
@@ -75,6 +84,20 @@ def build_service_harness(
     harness.app.state.service_broker = broker
     harness.gateway_app.state.service_broker = broker
     return harness, broker
+
+
+async def services_on_by_default(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Make the workspace one that had members before services started off,
+    where a service no admin has switched is on."""
+    async with session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(services_on_by_default=True)
+        )
+        await session.commit()
 
 
 async def agent_with_key(

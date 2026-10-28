@@ -96,6 +96,13 @@ class Tenant(Base):
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Whether a catalog service no workspace admin has switched on or off
+    # (`WorkspaceServiceSetting`) is on. Off for every workspace made since
+    # services started off; on for those that already had members then, so
+    # what they were using kept working.
+    services_on_by_default: Mapped[bool] = mapped_column(
+        Boolean, server_default="false", nullable=False
+    )
 
 
 class TenantMember(Base):
@@ -398,7 +405,7 @@ class CloudMachine(Base):
 
 
 class MachineWorkspace(TenantScoped, Base):
-    """A workspace on its owner's cloud machine: the agents controller the
+    """A workspace on its owner's cloud machine: the agent controller the
     machine runs for this workspace, enrolled with a one-time code minted here.
     The owner's managed agents placed on that controller run on the machine."""
 
@@ -1746,6 +1753,10 @@ class MessagingEventReceipt(TenantScoped, Base):
 # ── Server-Side Connectors ────────────────────────────────────────────────────
 
 
+# Nothing reads or writes this table any more. It is dropped a release after
+# the code that used it went, so a release still running that code during a
+# rolling deploy finds it there (`migrations/script.py.mako`). Until then the
+# model keeps `create_all` in step with the migrated schema.
 class ServerConnector(TenantScoped, Base):
     __tablename__ = "server_connectors"
     __table_args__ = (
@@ -4126,7 +4137,9 @@ class ServerAuditEvent(Base):
 class WorkspaceServiceSetting(TenantScoped, Base):
     """A workspace admin switched a catalog service on or off for the workspace.
 
-    No row means on: a row is written only when an admin touches the switch,
+    No row means the workspace's default (`Tenant.services_on_by_default`),
+    off for a workspace made since services started off: a row is written
+    only when an admin touches the switch,
     so `updated_by` always names a person. `service` is a catalog slug, checked
     in code as `ServiceConnection.service` is. Off, nobody in the workspace can
     connect, grant or be issued a token for it, and its grants drop out of
@@ -4226,6 +4239,10 @@ class ServiceTokenIssuance(TenantScoped, Base):
     token has expired or been revoked. `token_sha256` stays, so a leaked token
     can be traced to the agent it was issued to. Records are pruned after
     `service_token_retention_days`.
+
+    `revoke_requested` on a token held without its ciphertext from the start
+    (the owner's own, passed through) means its access was withdrawn while it
+    was live: nothing can revoke it, and it stays valid until `expires_at`.
     """
 
     __tablename__ = "service_token_issuances"
@@ -4243,6 +4260,14 @@ class ServiceTokenIssuance(TenantScoped, Base):
             "tenant_id",
             "expires_at",
             postgresql_where=text("encrypted_token IS NOT NULL"),
+        ),
+        # The tokens that cannot be revoked, for marking the ones still live
+        # when their access is withdrawn.
+        Index(
+            "ix_service_token_issuances_unrevocable",
+            "tenant_id",
+            "expires_at",
+            postgresql_where=text("encrypted_token IS NULL"),
         ),
     )
 

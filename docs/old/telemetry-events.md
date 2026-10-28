@@ -770,8 +770,6 @@ This is what each carries.
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
 | `room_users_added` | `user_count` (number) |
-| `server_connector_registered` | `connector_kind` (`opencode` \| `other`) |
-| `server_connector_removed` | `connector_kind` (`opencode` \| `other`) |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
@@ -1073,7 +1071,6 @@ reason.
   as it connecting. `is_preconfigured` separates the setup step's own
   connector from one a person added. Many of these and few `bridge_connected` is a deployment
   whose setup is failing, and only the pair shows it.
-- `server_connector_registered` / `server_connector_removed`.
 
 **Deliberately not reported**, so the boundary is stated rather than
 discovered: edits that change a setting rather than create or remove

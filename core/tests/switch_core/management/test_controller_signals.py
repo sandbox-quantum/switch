@@ -30,6 +30,7 @@ from switch_core.management.notifier import (
 )
 from switch_core.management.signals import ControllerSignals
 from switch_core.signals import SignalBus
+from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -73,6 +74,7 @@ def _process(
         rooms=RoomStore(),
         processes=SwitchCoreProcessStore(),
         clock=lambda: datetime.now(UTC),
+        user_changes=SignalUserChanges(local=LocalUserChanges(), bus=bus),
     )
     return signals, registry, bus
 

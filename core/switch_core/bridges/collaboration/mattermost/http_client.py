@@ -92,7 +92,10 @@ class NoRedirectClient(Client):  # type: ignore[misc]
                 message = body.get("message", body)
             except ValueError:
                 message = response.text
-            logger.error("Mattermost %s %s failed: %s", method, endpoint, message)
+            # An expired session is routine: the adapter logs in again and
+            # retries (`_mm_api_blocking`), and raises where it cannot.
+            log = logger.warning if exc.response.status_code == 401 else logger.error
+            log("Mattermost %s %s failed: %s", method, endpoint, message)
             error = _ERRORS_BY_STATUS.get(exc.response.status_code)
             if error is not None:
                 raise error(message) from None

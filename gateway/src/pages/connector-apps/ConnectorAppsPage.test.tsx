@@ -182,6 +182,76 @@ describe("ConnectorAppsPage", () => {
     });
   });
 
+  it("saves Airtable only once the operator confirms it is published, which no check can see", async () => {
+    const airtable = {
+      ...NONE_GOOGLE,
+      slug: "airtable",
+      name: "Airtable",
+      redirect_uri: "https://switch.example.test/gateway/service-connections/airtable/flows/callback",
+      redirect_uris: ["https://switch.example.test/gateway/service-connections/airtable/flows/callback"],
+      needs_public_url: true,
+      scopes: ["data.records:read"],
+    };
+    const calls = serve(listOf(airtable), {
+      "PUT /gateway/connector-apps/airtable": [
+        200,
+        {
+          ...airtable,
+          source: "saved",
+          checks: [
+            {
+              name: "client",
+              ok: true,
+              message: "Airtable accepts this client ID and secret.",
+              field: null,
+              note: "Have someone else connect once to confirm.",
+            },
+          ],
+        },
+      ],
+    });
+    render(<ConnectorAppsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Set up Airtable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    fireEvent.change(screen.getByLabelText("Client ID"), { target: { value: "example-client-id" } });
+    fireEvent.change(screen.getByLabelText("Client secret"), { target: { value: "example-secret" } });
+    const save = screen.getByRole("button", { name: "Check and save" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText(/filled in its support details/));
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    // What the check said on saving stays on the card, its note included.
+    expect(await card("airtable").findByText("Airtable accepts this client ID and secret.")).toBeTruthy();
+    expect(card("airtable").getByText(/Have someone else connect once to confirm\./)).toBeTruthy();
+  });
+
+  it("shows what a passing check could not see as a note", async () => {
+    serve(listOf(app()), {
+      "POST /gateway/connector-apps/google-workspace/check": [
+        200,
+        {
+          ok: true,
+          checks: [
+            {
+              name: "client",
+              ok: true,
+              message: "Google knows the client.",
+              field: null,
+              note: "Have someone else connect once.",
+            },
+          ],
+        },
+      ],
+    });
+    render(<ConnectorAppsPage />);
+    await screen.findByTestId("connector-app-google-workspace");
+    fireEvent.click(card("google-workspace").getByRole("button", { name: "Check it works" }));
+    expect(await card("google-workspace").findByText("Google knows the client.")).toBeTruthy();
+    expect(card("google-workspace").getByText("Note:").tagName).toBe("STRONG");
+    expect(card("google-workspace").getByText(/Have someone else connect once\./)).toBeTruthy();
+  });
+
   it("reads GitHub's private key from its file and never shows it", async () => {
     const calls = serve(
       listOf({ ...GITHUB, ...NONE_GOOGLE, slug: "github", name: "GitHub", kind: "github_app" }),

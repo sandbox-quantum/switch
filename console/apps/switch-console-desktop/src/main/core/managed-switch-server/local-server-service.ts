@@ -177,9 +177,8 @@ export class LocalServerService {
   }
 
   /**
-   * Turn Mattermost on or off for a native server. Takes effect at the next
-   * start; a running Mattermost is left alone until then, like any setting a
-   * running server read when it started.
+   * Turn Mattermost on or off for a native server: brought up or stopped now
+   * when the server is running, and at its next start when it is not.
    */
   async setMattermost(enabled: boolean): Promise<void> {
     if ((await this.runtime()) !== 'native') {
@@ -195,7 +194,7 @@ export class LocalServerService {
     const layout = nativeLayout(localServerDir());
     this.mattermostRun++;
     if (!enabled) {
-      this.setStatus({ mattermostState: null, notice: null });
+      this.setStatus({ mattermostState: 'off', notice: null });
       await stopMattermost(layout, false);
       return;
     }
@@ -538,7 +537,7 @@ export class LocalServerService {
               ? `Could not move this server off Docker, so it is still running on Docker: ` +
                 `${moveFailure} Its data is safe; Switch Console tries again at the next start.`
               : result.warning,
-          mattermostState: bringUpMattermost ? 'starting' : null,
+          mattermostState: bringUpMattermost ? 'starting' : ranNative ? 'off' : null,
         });
         if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
         if (updatedTo !== null) await recordLocalActivity('updated', updatedTo);

@@ -1,0 +1,70 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "file": {
+        "$bytes_base64": "iVBORy1ieXRlcw=="
+      },
+      "filename": "plot.png",
+      "initial_comment": "*Reviewer &lt;QA&gt; &amp; *co**: The *plot*, @doe.jane",
+      "thread_ts": "1700000000.000100"
+    },
+    "method": "files.upload_v2"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "file": {
+        "$bytes_base64": "IyBub3Rlcw=="
+      },
+      "filename": "notes.md",
+      "initial_comment": "*Scout* sent `notes.md`",
+      "thread_ts": null
+    },
+    "method": "files.upload_v2"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "file_uploads": [
+        {
+          "file": {
+            "$bytes_base64": "YWxwaGE="
+          },
+          "filename": "a.txt"
+        },
+        {
+          "file": {
+            "$bytes_base64": "eCx5CjEsMgo="
+          },
+          "filename": "b.csv"
+        }
+      ],
+      "initial_comment": "*Scout*: Two *files*",
+      "thread_ts": "1700000000.000100"
+    },
+    "method": "files.upload_v2"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "file_uploads": [
+        {
+          "file": {
+            "$bytes_base64": "YWxwaGE="
+          },
+          "filename": "a.txt"
+        },
+        {
+          "file": {
+            "$bytes_base64": "eCx5CjEsMgo="
+          },
+          "filename": "b.csv"
+        }
+      ],
+      "initial_comment": "*Scout* sent `a.txt`, `b.csv`",
+      "thread_ts": null
+    },
+    "method": "files.upload_v2"
+  }
+]
