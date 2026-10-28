@@ -851,7 +851,9 @@ class CreateUserRequest(BaseModel):
     name: str
     email: Email
     password: Password
-    role: str = "user"
+    # Only the exact string "admin" grants operator rights (`require_admin`),
+    # so anything else would create an account claiming a role it lacks.
+    role: Literal["user", "admin"] = "user"
 
 
 class ChangePasswordRequest(BaseModel):

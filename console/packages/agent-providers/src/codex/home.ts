@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import type { RuntimeMode } from '../adapter';
@@ -20,18 +20,26 @@ export function withManagedCodexSandbox(config: string, runtimeMode: RuntimeMode
   return `sandbox_mode = "${mode}"\n${config}`;
 }
 
-/** Native rollouts remain in the persistent session directory on the execution host. */
+/**
+ * Native rollouts remain in the persistent session directory on the execution
+ * host. `keyringLogin` is set when the source home has no auth.json to copy:
+ * the machine's login, if Codex has one, is then in the OS keyring, and a
+ * session with no login of its own is handed it as it starts
+ * (`CodexKeyringLogin`). A copy the session already has is left alone, since
+ * Codex may still read it.
+ */
 export async function prepareCodexSessionHome(input: {
   root: string;
   sessionId: string;
   sourceHome: string;
   config: string;
-}): Promise<string> {
+}): Promise<{ home: string; keyringLogin: boolean }> {
   const key = createHash('sha256').update(input.sessionId).digest('hex');
   const home = join(input.root, key);
   await mkdir(home, { recursive: true, mode: 0o700 });
   await chmod(home, 0o700);
-  await copyCodexAuthenticationOnce(home, input.sourceHome);
+  const keyringLogin = !(await isFile(join(input.sourceHome, 'auth.json')));
+  if (!keyringLogin) await copyCodexAuthenticationOnce(home, input.sourceHome);
   const sourceConfig = await optionalText(join(input.sourceHome, 'config.toml'));
   const config = { ...(sourceConfig ? parse(sourceConfig) : {}), ...parse(input.config) };
   // The session host registers its own `switch` server; an entry of that name
@@ -50,7 +58,16 @@ export async function prepareCodexSessionHome(input: {
   // instructions, and a leftover copy would only be read again by shell.
   await rm(join(home, 'skills', 'switch'), { recursive: true, force: true });
   await linkSkills(join(input.sourceHome, 'skills'), join(home, 'skills'));
-  return home;
+  return { home, keyringLogin };
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw new Error('Could not load the execution-host Codex login.', { cause: error });
+  }
 }
 
 /** A resumed session keeps its refreshed login; new sessions copy only auth. */

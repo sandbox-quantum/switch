@@ -45,6 +45,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Security
+- **A refused request is no longer repeated back.** When the gateway or the
+  agent API refused a request as invalid, the 422 repeated what was sent: a
+  password too short to accept, or the whole body, password included, when
+  another field was missing. Registering or editing a Slack, Discord or Teams
+  connection with a config that did not fit quoted part of its bot token or
+  secret, and on an edit that could be the stored token, which nothing else
+  returns. Anything that records error responses (APM, proxies, browser HAR
+  captures) could end up holding passwords and tokens. Each error now says
+  only where and what is wrong (`type`, `loc` and `msg`), and the agent API no
+  longer writes the request body to its log. A script that read `input` or
+  `ctx` from a 422 will find them gone. A validation rule that raised its own
+  error on the agent API now answers 422 rather than 500.
 - **Agents are no longer handed a key that never expires.** Datadog connects
   with an API key and an application key that do not expire and that only
   Datadog can revoke, and an agent granted Datadog was handed both. Switch now
@@ -177,6 +189,16 @@ version of their own to them without also giving them a release of their own.
   does `read_context` (#1045). One whose offset moves it outside the years 1
   to 9999 in UTC is refused the same way instead of answering 404, and a time
   in the last millisecond of 9999 is no longer refused at all.
+- **Creating a user refuses a role the server does not understand.** An
+  account is a user or an admin, and only the exact role `admin` grants
+  operator rights. `POST /users` accepted any role string, so `Admin` or
+  `owner` created an account that was shown with that role, was stored with
+  it, and had no operator rights. Anything other than `user` or `admin` is now
+  a 422 and creates nothing. The Add User dialog offers only those two, so
+  only scripts calling the API were affected. Accounts already stored with
+  another role are left as they are, still listed with that role and still
+  treated as ordinary users; `SELECT id, email, role FROM users WHERE role
+  NOT IN ('user', 'admin')` finds them.
 - **Every way of setting a password now applies the same rules.** Signup
   already required 8 characters and at most 72 bytes. Changing your own
   password checked only the 8 characters, and an admin creating a user checked
@@ -2016,6 +2038,21 @@ version of their own to them without also giving them a release of their own.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
+- **Codex sessions can use an API key kept in the OS keyring.** With
+  `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
+  Codex keeps its login in the keyring, where a session's own Codex home cannot
+  find it, so every session failed with "Sign in on the execution machine with
+  codex login" while `codex login status` said it was signed in (#1048). When
+  the machine has no `auth.json` to copy, a session now asks its Codex for the
+  API key as it starts and keeps it in the memory of the session's own Codex
+  process: it is not written to a file, put in the environment or copied into
+  another keyring entry, and a changed key is picked up at the next start. A
+  ChatGPT login in the keyring cannot be handed over, and the session says so
+  with the file-storage workaround; it also refuses to hand over the key when an
+  administrator's Codex configuration would have it saved elsewhere. A session
+  that still has a working login of its own, such as one it copied while the
+  machine had an `auth.json`, starts as before; a copy that no longer works is
+  removed.
 
 #### Changed
 - **Managed agents and machines update when the server says they changed.**
@@ -2063,18 +2100,13 @@ version of their own to them without also giving them a release of their own.
   skill said a request card needed the owner's linked identity and room
   membership. Its addressing policy decides, and agents now read theirs with
   `get_agent_detail` and name the people who can answer.
-- **A Codex session explains why a keyring login is not available to it.**
-  Each session runs in its own Codex home, which receives the machine's
-  `auth.json` but not a login stored in the OS keyring, so a machine signed in
-  with keyring storage (`cli_auth_credentials_store = "keyring"` or `"auto"`)
-  failed with only "Sign in on the execution machine with codex login" while
-  `codex login status` said it was signed in. The error now says that sessions
-  cannot use a keyring login, and gives the workaround for a machine whose
-  organization does not enforce the keyring: switch Codex to file storage,
-  which keeps the login in plaintext, sign in again and start a new session.
-  Giving this computer's Codex login to a machine says the same instead of
-  "This computer is not signed in to codex". Keyring logins are still not
-  supported in Switch sessions (#1048).
+- **Giving this computer's Codex login to a machine explains a keyring
+  login.** When Codex keeps its login in the OS keyring
+  (`cli_auth_credentials_store = "keyring"` or `"auto"`), it said "This
+  computer is not signed in to codex". It now says the login is in the keyring,
+  which cannot be given to another machine, and gives the workaround for a
+  machine whose organization does not enforce the keyring: switch Codex to file
+  storage, which keeps the login in plaintext, and sign in again (#1048).
 
 ### [0.40.1] - 2026-10-21
 

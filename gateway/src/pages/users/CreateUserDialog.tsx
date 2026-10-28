@@ -11,7 +11,7 @@ import {
   TextField,
 } from "@mui/material";
 import { useCallback, useState } from "react";
-import { createUser } from "../../data/api";
+import { createUser, type UserRole } from "../../data/api";
 
 interface Props {
   open: boolean;
@@ -23,7 +23,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState("user");
+  const [role, setRole] = useState<UserRole>("user");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -85,7 +85,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
             label="Role"
             select
             value={role}
-            onChange={(e) => setRole(e.target.value)}
+            onChange={(e) => setRole(e.target.value as UserRole)}
           >
             <MenuItem value="user">User</MenuItem>
             <MenuItem value="admin">Admin</MenuItem>

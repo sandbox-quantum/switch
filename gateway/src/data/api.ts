@@ -1289,11 +1289,14 @@ export async function fetchUsers(): Promise<UserInfo[] | null> {
   return fetchJson<UserInfo[]>("/users");
 }
 
+// The roles `POST /users` accepts; `admin` makes a deployment operator.
+export type UserRole = "user" | "admin";
+
 export async function createUser(
   name: string,
   email: string,
   password: string,
-  role: string,
+  role: UserRole,
 ): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
 }

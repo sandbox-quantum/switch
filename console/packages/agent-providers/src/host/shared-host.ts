@@ -1108,7 +1108,8 @@ export async function hostSessionProcess(input: {
       mcp.spec,
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
-      { ...vendors.specs, ...clis.specs }
+      { ...vendors.specs, ...clis.specs },
+      (secret) => redactions.add(secret)
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
     // The people watching see it as a notice; the agent reads it with the

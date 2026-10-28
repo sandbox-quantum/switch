@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -76,6 +77,7 @@ from switch_core.gateway.workspace_services import (
 )
 from switch_core.keys import Purpose
 from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
@@ -187,6 +189,7 @@ def create_gateway_app(
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
 
+    app.add_exception_handler(RequestValidationError, validation_error_response)
     app.add_exception_handler(SessionError, session_error_response)
     app.add_exception_handler(ChatError, chat_error_response)
     app.include_router(

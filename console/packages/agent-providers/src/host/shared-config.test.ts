@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,7 @@ import {
 } from './shared-config';
 
 const NO_SERVICES = { grants: [], unavailable: null };
+const NO_REDACTIONS = () => {};
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -112,7 +113,15 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
       url: 'http://127.0.0.1:4321/mcp',
       headers: { Authorization: 'Bearer per-session' },
     };
-    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null, {});
+    const prepared = await prepareSharedConfig(
+      root,
+      config,
+      runtime,
+      NO_SERVICES,
+      null,
+      {},
+      NO_REDACTIONS
+    );
     expect(prepared.input.mcpServers).toEqual({ switch: runtime });
     expect(prepared.input.env).toEqual({ CONFIGURED: 'yes' });
     // The host itself still reports to Switch as the agent.
@@ -122,67 +131,128 @@ it('gives the provider the host’s own MCP server and no Switch identity', asyn
   }
 });
 
+/** A Codex session's launch spec, taking its Codex home from `CODEX_HOME`. */
+async function codexHostConfig(root: string) {
+  const credentialsPath = join(root, 'credentials.json');
+  await writeFile(
+    credentialsPath,
+    JSON.stringify({
+      env: {
+        SWITCH_API_ENDPOINT: 'https://switch.test',
+        SWITCH_API_TOKEN: 'agent-token',
+        SWITCH_AGENT_ID: 'agent',
+      },
+    })
+  );
+  return sharedConfigSchema.parse({
+    session: {
+      sessionId: 'session',
+      agentId: 'agent',
+      hostId: 'host',
+      epoch: 'epoch',
+      provider: 'codex',
+      status: 'starting',
+      connectivity: 'online',
+      pendingRequestIds: [],
+      capabilities: {
+        input: 'queue',
+        approvals: true,
+        questions: true,
+        interrupt: true,
+        reset: false,
+        compact: false,
+        modelChange: false,
+        attachmentMimeTypes: [],
+      },
+    },
+    start: {
+      provider: 'codex',
+      input: {
+        sessionId: 'session',
+        cwd: root,
+        runtimeMode: 'approval-required',
+        env: { CONFIGURED: 'yes', CODEX_HOME: join(root, 'codex-source') },
+        mcpServers: {},
+      },
+    },
+    roomConnection: { connectionId: 'controller' },
+    execution: {
+      credentialsPath,
+      inheritEnv: [],
+      codexConfig: '',
+      skill: '',
+      context: 'Switch skill text',
+    },
+  });
+}
+
+const CODEX_RUNTIME = {
+  transport: 'http' as const,
+  url: 'http://127.0.0.1:4321/mcp',
+  headers: { Authorization: 'Bearer per-session' },
+};
+
 it('gives Codex the Switch skill as instructions, like the other providers', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
   try {
-    const credentialsPath = join(root, 'credentials.json');
-    await writeFile(
-      credentialsPath,
-      JSON.stringify({
-        env: {
-          SWITCH_API_ENDPOINT: 'https://switch.test',
-          SWITCH_API_TOKEN: 'agent-token',
-          SWITCH_AGENT_ID: 'agent',
-        },
-      })
+    const config = await codexHostConfig(root);
+    const prepared = await prepareSharedConfig(
+      root,
+      config,
+      CODEX_RUNTIME,
+      NO_SERVICES,
+      null,
+      {},
+      NO_REDACTIONS
     );
-    const config = sharedConfigSchema.parse({
-      session: {
-        sessionId: 'session',
-        agentId: 'agent',
-        hostId: 'host',
-        epoch: 'epoch',
-        provider: 'codex',
-        status: 'starting',
-        connectivity: 'online',
-        pendingRequestIds: [],
-        capabilities: {
-          input: 'queue',
-          approvals: true,
-          questions: true,
-          interrupt: true,
-          reset: false,
-          compact: false,
-          modelChange: false,
-          attachmentMimeTypes: [],
-        },
-      },
-      start: {
-        provider: 'codex',
-        input: {
-          sessionId: 'session',
-          cwd: root,
-          runtimeMode: 'approval-required',
-          env: { CONFIGURED: 'yes', CODEX_HOME: join(root, 'codex-source') },
-          mcpServers: {},
-        },
-      },
-      roomConnection: { connectionId: 'controller' },
-      execution: {
-        credentialsPath,
-        inheritEnv: [],
-        codexConfig: '',
-        skill: '',
-        context: 'Switch skill text',
-      },
-    });
-    const runtime = {
-      transport: 'http' as const,
-      url: 'http://127.0.0.1:4321/mcp',
-      headers: { Authorization: 'Bearer per-session' },
-    };
-    const prepared = await prepareSharedConfig(root, config, runtime, NO_SERVICES, null, {});
     expect(prepared.input.systemContext).toBe('Switch skill text');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('hands a Codex session the keyring login of a home with no auth.json, with only what reading it needs', async () => {
+  vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus');
+  vi.stubEnv('XDG_RUNTIME_DIR', '/run/user/1000');
+  const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+  try {
+    const source = join(root, 'codex-source');
+    const config = await codexHostConfig(root);
+    Object.assign(config.start.input.env, { PATH: '/usr/bin', OPENAI_API_KEY: 'session-only' });
+    const redact = vi.fn();
+    const keyring = await prepareSharedConfig(
+      root,
+      config,
+      CODEX_RUNTIME,
+      NO_SERVICES,
+      null,
+      {},
+      redact
+    );
+    const login = keyring.input.codexKeyringLogin;
+    expect(login?.home).toBe(source);
+    expect(login?.env).toEqual({
+      PATH: '/usr/bin',
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+      XDG_RUNTIME_DIR: '/run/user/1000',
+    });
+    login?.redact('fixture-secret');
+    expect(redact).toHaveBeenCalledWith('fixture-secret');
+    expect(keyring.input.env.CODEX_HOME).not.toBe(source);
+    expect(keyring.input.env.DBUS_SESSION_BUS_ADDRESS).toBeUndefined();
+
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, 'auth.json'), '{"fixture":"login"}');
+    const file = await prepareSharedConfig(
+      root,
+      await codexHostConfig(root),
+      CODEX_RUNTIME,
+      NO_SERVICES,
+      null,
+      {},
+      NO_REDACTIONS
+    );
+    expect(file.input.codexKeyringLogin).toBeUndefined();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -355,7 +425,8 @@ describe('the skills of the agent’s service grants', () => {
         runtime,
         { grants: [GITHUB_GRANT], unavailable: null },
         null,
-        {}
+        {},
+        NO_REDACTIONS
       );
       expect(claude.input.systemContext).toBe('Switch skill text\n\n# GitHub\n\nUse gh.');
       const opencode = await prepareSharedConfig(
@@ -364,7 +435,8 @@ describe('the skills of the agent’s service grants', () => {
         runtime,
         { grants: [GITHUB_GRANT], unavailable: null },
         null,
-        {}
+        {},
+        NO_REDACTIONS
       );
       expect(opencode.input.systemContext).toBe('Switch skill text');
       // Without a service endpoint nothing is set up for GitHub.
@@ -389,13 +461,22 @@ describe('the skills of the agent’s service grants', () => {
         runtime,
         NO_SERVICES,
         null,
-        { example: vendor }
+        { example: vendor },
+        NO_REDACTIONS
       );
       expect(prepared.input.mcpServers).toEqual({ example: vendor, switch: runtime });
       await expect(
-        prepareSharedConfig(root, await configFor(root, 'claude'), runtime, NO_SERVICES, null, {
-          switch: vendor,
-        })
+        prepareSharedConfig(
+          root,
+          await configFor(root, 'claude'),
+          runtime,
+          NO_SERVICES,
+          null,
+          {
+            switch: vendor,
+          },
+          NO_REDACTIONS
+        )
       ).rejects.toThrow('which is taken');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -416,7 +497,8 @@ describe('the skills of the agent’s service grants', () => {
         NO_SERVICES,
         null,
         // A vendor MCP server and a vendor CLI, both served on loopback.
-        { atlassian: served(4400), 'google-workspace': served(4401) }
+        { atlassian: served(4400), 'google-workspace': served(4401) },
+        NO_REDACTIONS
       );
       expect(prepared.input.connectorMcpServers.sort()).toEqual(['atlassian', 'google-workspace']);
       expect(prepared.input.connectorMcpServers).not.toContain('switch');
@@ -431,7 +513,8 @@ describe('the skills of the agent’s service grants', () => {
         runtime,
         NO_SERVICES,
         null,
-        {}
+        {},
+        NO_REDACTIONS
       );
       expect(none.input.connectorMcpServers).toEqual([]);
     } finally {
@@ -449,7 +532,8 @@ describe('the skills of the agent’s service grants', () => {
           runtime,
           { grants: [], unavailable: 'Switch refused (HTTP 503).' },
           null,
-          {}
+          {},
+          NO_REDACTIONS
         );
         expect(prepared.input.systemContext).toBe(
           `Switch skill text\n\n${servicesUnavailableNotice('Switch refused (HTTP 503).')}`
@@ -476,7 +560,8 @@ describe('the skills of the agent’s service grants', () => {
           execPath: '/usr/bin/node',
           entrypoint: '/opt/switch/shared-host.mjs',
         },
-        {}
+        {},
+        NO_REDACTIONS
       );
       // Git and gh ask the endpoint, which refuses, rather than this machine's sign-in.
       expect(prepared.input.env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');
@@ -509,7 +594,8 @@ describe('the skills of the agent’s service grants', () => {
             execPath: '/usr/bin/node',
             entrypoint: '/opt/switch/shared-host.mjs',
           },
-          {}
+          {},
+          NO_REDACTIONS
         );
         const env = prepared.input.env;
         expect(env.SWITCH_SERVICE_ENDPOINT).toBe('http://127.0.0.1:5555');

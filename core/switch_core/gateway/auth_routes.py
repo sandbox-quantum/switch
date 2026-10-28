@@ -26,7 +26,7 @@ from switch_core.db.stores.hosted_machine_store import (
     owner_stopped,
 )
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
@@ -259,7 +259,9 @@ async def signup(
         try:
             async with session.begin_nested():
                 await user_store.create(session, user)
-        except IntegrityError:
+        except IntegrityError as err:
+            if not email_taken(err):
+                raise
             await session.rollback()
             raise HTTPException(
                 status_code=409, detail="Email already registered"
@@ -518,7 +520,18 @@ async def create_user(
         role=req.role,
         password_hash=password_hash,
     )
-    await user_store.create(session, user)
+    # The check above ran before bcrypt, so a concurrent request for the same
+    # address can have inserted since; the unique constraint is what decides.
+    try:
+        async with session.begin_nested():
+            await user_store.create(session, user)
+    except IntegrityError as err:
+        if not email_taken(err):
+            raise
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Email already registered"
+        ) from None
     await session.commit()
 
     logger.info("Created user: %s (%s)", user.email, user.id)
