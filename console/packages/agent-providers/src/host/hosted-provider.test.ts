@@ -91,12 +91,13 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
   const original = credential('{"fixture":"original"}');
   await materializeHostedProvider(root, env, original, 'fixture-cli');
   const sourceHome = env.CODEX_HOME!;
-  const home = await prepareCodexSessionHome({
+  const { home, keyringLogin } = await prepareCodexSessionHome({
     root: sourceHome,
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
   });
+  expect(keyringLogin).toBe(false);
   env.CODEX_HOME = home;
   await writeFile(join(home, 'auth.json'), '{"fixture":"native-refresh"}');
   await materializeHostedProvider(root, env, original, 'fixture-cli');

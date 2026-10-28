@@ -1,4 +1,4 @@
-"""Switch cloud machines, which run the agents controller.
+"""Switch cloud machines, which run the agent controller.
 
 A cloud machine is its owner's, whichever workspaces it serves
 (`CloudMachine`). For each workspace it boots a `switch-agent-controller` of

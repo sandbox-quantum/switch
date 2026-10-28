@@ -36,6 +36,9 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import Agent, Room, Template
+from switch_core.db.stores.template_install_store import TemplateInstallStore
+from switch_core.official_templates import current_revision
+from switch_core.template_installs import fingerprint
 from switch_core.template_runs import AgentsNotCreated, RunUndone
 from tests.switch_core.bridges.agent.operations.conftest import _make_agent
 
@@ -880,3 +883,51 @@ async def test_users_with_no_messaging_app_are_refused_before_any_agent(managed)
     with pytest.raises(ValueError, match="on no messaging app"):
         await _as(managed["agent_id"], run_template, template_id=template_id)
     assert managed["management"].created == []
+
+
+async def _install_of(env: dict[str, Any], template_id: str) -> Any:
+    store = TemplateInstallStore()
+    async with env["session_factory"]() as session:
+        installs = await store.of_template(session, template_id)
+        return [(i, await store.resources(session, i.id)) for i in installs]
+
+
+@pytest.mark.asyncio
+async def test_switch_buddy_run_by_an_agent_is_recorded_as_its_install(managed):
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id="official:switch-buddy",
+        inputs={"agent_name": "switch-buddy-max"},
+    )
+
+    ((install, (resource,)),) = await _install_of(managed, "official:switch-buddy")
+    assert (install.source, install.owner_id, install.revision) == (
+        "official",
+        managed["user_id"],
+        current_revision("switch-buddy"),
+    )
+    assert resource.key == "buddy"
+    assert resource.agent_id == result["created_agents"][0]["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_saved_template_run_by_an_agent_is_recorded_at_its_version(managed):
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: helper\n"
+        "  description: Helps.\n"
+        "  instructions: Help.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/helper\n",
+        kind="agent",
+    )
+
+    await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    ((install, (resource,)),) = await _install_of(managed, template_id)
+    assert (install.source, install.revision) == ("saved", 1)
+    assert resource.key == "helper"
+    assert resource.fingerprints["instructions"] == fingerprint("Help.")

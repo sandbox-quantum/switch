@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -411,13 +411,16 @@ describe('the published copy', () => {
 
 describe('the published copy’s scripts, run for real', () => {
   let dir: string;
+  let stdinDir: string;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'stack-state-'));
+    stdinDir = mkdtempSync(join(tmpdir(), 'stack-state-stdin-'));
   });
 
   afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(stdinDir, { recursive: true, force: true });
   });
 
   /** A host whose state volume is `dir`, with every script run by `sh`. */
@@ -429,11 +432,21 @@ describe('the published copy’s scripts, run for real', () => {
       const run = dockerRun(args);
       const at = run.indexOf('-c');
       const script = run[at + 1]!.replaceAll('/state', dir);
-      return execFileSync('sh', ['-c', script, ...run.slice(at + 2)], {
-        input,
-        encoding: 'utf8',
-        env,
-      });
+      // Stdin is a file, not a pipe: a script that refuses before reading its
+      // input (the lock check) can exit before a piped write lands, and the
+      // write then fails with EPIPE in place of the script's own error.
+      const inputPath = join(stdinDir, 'input');
+      writeFileSync(inputPath, input);
+      const stdin = openSync(inputPath, 'r');
+      try {
+        return execFileSync('sh', ['-c', script, ...run.slice(at + 2)], {
+          stdio: [stdin, 'pipe', 'pipe'],
+          encoding: 'utf8',
+          env,
+        });
+      } finally {
+        closeSync(stdin);
+      }
     };
     fake.writeCommandInput.mockImplementation(async (_command, args, input) => {
       sh(args, input);

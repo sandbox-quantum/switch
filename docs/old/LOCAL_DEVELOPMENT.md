@@ -94,10 +94,10 @@ start the gateway frontend — you run both of those yourself, in their own
 terminals, so each gets hot-reload while you work. `just down` stops the
 stack; `just reset` also wipes its volumes (Postgres data included).
 
-switch-core refuses to connect to a private address at a URL a bridge or
-connector config names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The
-`.env.example` default, `localhost`, covers the local Mattermost and an OpenCode
-server on your machine. An `.env` from before that setting existed lacks it, and
+switch-core refuses to connect to a private address at a URL a bridge config
+names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The `.env.example`
+default, `localhost`, covers the local Mattermost. An `.env` from before that
+setting existed lacks it, and
 the Mattermost bridge then refuses to start with a message naming the variable:
 add the line from `.env.example`.
 
@@ -230,7 +230,7 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
 | --- | --- |
 | `just local-cloud` / `just local-cloud-console` | Run switch-core as a stand-in for Switch Cloud, and the Console pointed at it (see above) |
 | `just format` / `just check` | Format with ruff / lint-check in CI mode (no changes) |
-| `just typecheck` | mypy over `core/switch_core/` and `connectors/` |
+| `just typecheck` | mypy over `core/switch_core/` |
 | `just test` / `just test -k name` | Run the test suite / a single test |
 | `just test-integration` | Integration tests against a real Postgres via testcontainers |
 | `just migration "message"` | Autogenerate a new Alembic migration |

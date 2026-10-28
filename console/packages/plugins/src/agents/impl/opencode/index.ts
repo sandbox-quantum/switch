@@ -27,16 +27,27 @@ const validateSessionId = (id: string) => id.startsWith('ses');
  * user-writable, and changing them would strand anyone who already has it.
  */
 const OPENCODE_HOST_DEPENDENCY = (() => {
-  const base = npmDependency({ id: 'opencode', package: 'opencode-ai' });
+  const base = npmDependency({ id: 'opencode', package: '@opencode/cli' });
+
+  // Uninstall must target both the current package (@opencode/cli) and the
+  // legacy name (opencode-ai) that Console used to install. Users may have
+  // either one; npm silently skips whichever isn't present.
+  const patchUninstall = (options: typeof base.installCommands.macos) =>
+    options?.map((opt) => ({
+      ...opt,
+      ...(opt.uninstallCommand ? { uninstallCommand: opt.uninstallCommand + ' opencode-ai' } : {}),
+    }));
+
   return {
     ...base,
     installCommands: {
-      ...base.installCommands,
+      macos: patchUninstall(base.installCommands.macos),
+      windows: patchUninstall(base.installCommands.windows),
       linux: [
         {
           method: 'npm' as const,
-          command: 'npm install -g --prefix "$HOME/.local" opencode-ai',
-          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" opencode-ai',
+          command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
+          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli opencode-ai',
           recommended: true,
         },
       ],

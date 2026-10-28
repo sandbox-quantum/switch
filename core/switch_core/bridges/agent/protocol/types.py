@@ -239,6 +239,10 @@ class MessagePayload(BaseModel):
     # arrived: "owner", "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # What Switch has to tell the agent before this message, such as that
+    # its template has a new revision it was not brought fully up to; told
+    # with every message until the agent reads about it. None for nothing.
+    switch_notice: str | None = None
 
 
 class CommandPayload(BaseModel):

@@ -531,7 +531,7 @@ export class AgentHub {
               rooms: [...(agent.rooms ?? [])].sort(),
               all_rooms: true,
               reason:
-                'the agents controller no longer holds events this far back; re-read room context',
+                'the agent controller no longer holds events this far back; re-read room context',
             });
             host.cursor = agent.droppedThrough;
           }

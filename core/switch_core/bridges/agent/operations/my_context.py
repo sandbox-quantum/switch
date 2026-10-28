@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import func, select
 
 from switch_core import messaging_platforms
-from switch_core.addressing import owner_and_owner_agents_policy, owner_only_policy
+from switch_core.addressing import policy_kind
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.operations.context import get_agent_id, get_protocol
 from switch_core.bridges.agent.operations.registry import operation
@@ -92,8 +92,9 @@ async def get_my_context() -> dict[str, Any]:
         set up; `unavailable_code` says why not, one of "switched_off" (its
         operator turned it off), "needs_https" (it can't work on this
         server), "app_not_set_up" (its operator can set it up under Admin →
-        Connector apps in Switch Console), "not_set_up" or
-        "not_fully_set_up";
+        Connector apps in Switch Console), "not_set_up",
+        "not_fully_set_up" or "key_never_expires" (it connects with a key
+        that never expires, which Switch does not hand to agents);
         `connection` is your owner's: "not_connected", "active",
         "needs_reauthorization" or "error". `agents_using` names your owner's
         agents granted it. Empty when this server has service connections off.
@@ -215,7 +216,7 @@ async def get_my_context() -> dict[str, Any]:
                 "id": agent.id,
                 "name": agent.name,
                 "display_name": agent.display_name,
-                "who_can_talk": _who_can_talk(agent),
+                "who_can_talk": policy_kind(agent.addressing_policy),
                 "can_manage_agents": agent.can_manage_agents,
                 "services": grants[agent.id],
                 "managed": (
@@ -300,14 +301,3 @@ def _services(
             }
         )
     return entries
-
-
-def _who_can_talk(agent: Agent) -> str:
-    policy = agent.addressing_policy
-    if policy is None:
-        return "anyone"
-    if policy == owner_only_policy([]).model_dump():
-        return "owner_only"
-    if policy == owner_and_owner_agents_policy().model_dump():
-        return "owner_and_owner_agents"
-    return "custom"

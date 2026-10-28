@@ -8,6 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.db.models import Agent, AgentDefinition
 
 
+class DefinitionChanged(Exception):
+    """A definition changed between being read and being written."""
+
+
 class AgentDefinitionStore:
     """Managed agent definitions, one per agent.
 
@@ -106,14 +110,20 @@ class AgentDefinitionStore:
         controller_id: str | None,
         desired_state: str,
         definition: dict[str, Any],
+        expected_revision: int | None,
     ) -> AgentDefinition:
-        """Replace the placement, desired state and definition, bumping the revision."""
+        """Replace the placement, desired state and definition, bumping the
+        revision. With `expected_revision`, only while the definition is still
+        at it: `DefinitionChanged` when something changed it since it was read."""
+        conditions = [
+            AgentDefinition.tenant_id == tenant_id,
+            AgentDefinition.agent_id == agent_id,
+        ]
+        if expected_revision is not None:
+            conditions.append(AgentDefinition.revision == expected_revision)
         result = await session.execute(
             update(AgentDefinition)
-            .where(
-                AgentDefinition.tenant_id == tenant_id,
-                AgentDefinition.agent_id == agent_id,
-            )
+            .where(*conditions)
             .values(
                 controller_id=controller_id,
                 desired_state=desired_state,
@@ -124,6 +134,11 @@ class AgentDefinitionStore:
             .execution_options(synchronize_session=False, populate_existing=True)
         )
         row = result.scalar_one_or_none()
+        if row is None and expected_revision is not None:
+            raise DefinitionChanged(
+                f"The definition of agent {agent_id} changed since revision "
+                f"{expected_revision} was read"
+            )
         if row is None:
             raise LookupError(f"No definition for agent: {agent_id}")
         return row

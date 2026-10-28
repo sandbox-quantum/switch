@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, exists, func, select, text, update
+from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -325,16 +325,56 @@ class ServiceConnectionStore:
         session.add(issuance)
 
     async def queue_revocation(self, session: AsyncSession, *conditions: Any) -> None:
-        """Ask for every live token matching `conditions` to be revoked."""
+        """Ask for every live token matching `conditions` to be revoked.
+
+        A live token no vendor can revoke alone (the owner's own, passed
+        through, recorded without its ciphertext) is marked the same way: it
+        stays valid until it expires, and the record says its access was
+        withdrawn before then.
+        """
+        tenant_id = require_tenant_id()
         await session.execute(
             update(ServiceTokenIssuance)
             .where(
-                ServiceTokenIssuance.tenant_id == require_tenant_id(),
+                ServiceTokenIssuance.tenant_id == tenant_id,
                 ServiceTokenIssuance.encrypted_token.is_not(None),
                 *conditions,
             )
             .values(revoke_requested=True)
         )
+        await session.execute(
+            update(ServiceTokenIssuance)
+            .where(
+                ServiceTokenIssuance.tenant_id == tenant_id,
+                ServiceTokenIssuance.encrypted_token.is_(None),
+                ServiceTokenIssuance.revoke_requested.is_(False),
+                ServiceTokenIssuance.expires_at > func.now(),
+                *conditions,
+            )
+            .values(revoke_requested=True)
+        )
+
+    async def withdrawn_until(
+        self, session: AsyncSession, services: list[str], conditions: tuple[Any, ...]
+    ) -> dict[str, datetime]:
+        """For each of `services`, whose tokens no vendor can revoke alone, when
+        the last token matching `conditions` that was withdrawn but is still
+        valid expires. A service with none is left out."""
+        rows = await session.execute(
+            select(
+                ServiceTokenIssuance.service, func.max(ServiceTokenIssuance.expires_at)
+            )
+            .where(
+                ServiceTokenIssuance.tenant_id == require_tenant_id(),
+                ServiceTokenIssuance.service.in_(services),
+                ServiceTokenIssuance.encrypted_token.is_(None),
+                ServiceTokenIssuance.revoke_requested.is_(True),
+                ServiceTokenIssuance.expires_at > func.now(),
+                *conditions,
+            )
+            .group_by(ServiceTokenIssuance.service)
+        )
+        return {service: until for service, until in rows.tuples()}
 
     async def queue_orphaned(self, session: AsyncSession) -> None:
         """Queue every live token whose grant, or owner's membership, is gone,
@@ -456,16 +496,22 @@ class ServiceConnectionStore:
             )
 
     async def holds_tokens(self, session: AsyncSession) -> bool:
-        """Whether the bound tenant holds any token's ciphertext at all.
-
-        Every step of a revocation pass acts only on these rows, so a tenant
-        with none has nothing to clear, queue or revoke.
+        """Whether the bound tenant holds a token a revocation pass acts on:
+        one whose ciphertext is kept, or a live one passed through that is not
+        yet marked withdrawn. A tenant with neither has nothing to clear,
+        queue or revoke.
         """
         held = await session.scalar(
             select(ServiceTokenIssuance.id)
             .where(
                 ServiceTokenIssuance.tenant_id == require_tenant_id(),
-                ServiceTokenIssuance.encrypted_token.is_not(None),
+                or_(
+                    ServiceTokenIssuance.encrypted_token.is_not(None),
+                    and_(
+                        ServiceTokenIssuance.revoke_requested.is_(False),
+                        ServiceTokenIssuance.expires_at > func.now(),
+                    ),
+                ),
             )
             .limit(1)
         )

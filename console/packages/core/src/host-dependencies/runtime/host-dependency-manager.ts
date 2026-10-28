@@ -17,6 +17,7 @@ import type {
   DependencyId,
   DependencyInstallResult,
   DependencyProbeOptions,
+  DependencyUninstallError,
   DependencyState,
   DependencyStatus,
   DependencyStatusUpdatedEvent,
@@ -788,7 +789,141 @@ export class HostDependencyManager {
   }
 
   /**
+   * Extracts package/formula names from an uninstall command string.
+   * Returns all targets — a command may name several packages (e.g.
+   * `npm uninstall -g @opencode/cli opencode-ai` for migration).
+   *
+   * For npm: every non-flag, non-subcommand token after `npm uninstall`.
+   * For homebrew: every non-flag token after `brew uninstall`.
+   */
+  private extractUninstallTargets(command: string, method: InstallMethod): string[] {
+    const tokens = command.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) return [];
+
+    if (method === 'npm') {
+      const flagsWithValue = new Set(['--prefix', '--registry']);
+      const targets: string[] = [];
+      for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i]!;
+        if (tok.startsWith('-')) {
+          if (flagsWithValue.has(tok)) i++; // skip the flag's value
+          continue;
+        }
+        if (tok === 'npm' || tok === 'uninstall') continue;
+        targets.push(tok);
+      }
+      return targets;
+    }
+
+    if (method === 'homebrew') {
+      const targets: string[] = [];
+      for (const tok of tokens) {
+        if (tok.startsWith('-') || tok === 'brew' || tok === 'uninstall') continue;
+        targets.push(tok);
+      }
+      return targets;
+    }
+
+    return [];
+  }
+
+  /**
+   * Extracts the `--prefix` value from an npm command string, if present.
+   * The Linux OpenCode option installs under `--prefix "$HOME/.local"`, so
+   * the verification must query the same prefix rather than the default global root.
+   */
+  private extractNpmPrefix(command: string): string | null {
+    const tokens = command.split(/\s+/).filter(Boolean);
+    for (let i = 0; i < tokens.length - 1; i++) {
+      if (tokens[i] === '--prefix') {
+        const val = tokens[i + 1];
+        // Strip surrounding quotes that may appear in shell command strings
+        return val ? val.replace(/^["']|["']$/g, '') : null;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Pre-flight check: verify at least one of the target packages/formulas is
+   * actually installed before running the uninstall command. A command may list
+   * several packages (e.g. `npm uninstall -g @opencode/cli opencode-ai` for
+   * migration from a renamed package); the check passes when any one is found.
+   *
+   * For npm commands with `--prefix`, the same prefix is forwarded to `npm list`
+   * so the check queries the right install root.
+   *
+   * Returns the first found target on success, or an error when none is installed.
+   */
+  private async verifyUninstallTarget(
+    id: DependencyId,
+    command: string,
+    method: InstallMethod
+  ): Promise<Result<string, DependencyUninstallError>> {
+    const targets = this.extractUninstallTargets(command, method);
+    if (targets.length === 0) return ok('');
+
+    const VERIFY_TIMEOUT_MS = 10_000;
+
+    if (method === 'npm') {
+      const prefix = this.extractNpmPrefix(command);
+
+      for (const target of targets) {
+        const listArgs = ['list', '-g', target, '--depth=0'];
+        if (prefix) listArgs.push('--prefix', prefix);
+
+        try {
+          await this.ctx.exec('npm', listArgs, { timeout: VERIFY_TIMEOUT_MS });
+          return ok(target);
+        } catch {
+          // This target not found; try the next one
+        }
+      }
+
+      this.logger.warn(
+        `[HostDependencyManager] Pre-flight check: none of [${targets.join(', ')}] installed globally via npm`
+      );
+      return err({
+        type: 'uninstall-target-not-found',
+        id,
+        package: targets.join(', '),
+        method,
+      });
+    }
+
+    if (method === 'homebrew') {
+      for (const target of targets) {
+        try {
+          await this.ctx.exec('brew', ['list', target], { timeout: VERIFY_TIMEOUT_MS });
+          return ok(target);
+        } catch {
+          // This target not found; try the next one
+        }
+      }
+
+      this.logger.warn(
+        `[HostDependencyManager] Pre-flight check: none of [${targets.join(', ')}] installed via homebrew`
+      );
+      return err({
+        type: 'uninstall-target-not-found',
+        id,
+        package: targets.join(', '),
+        method,
+      });
+    }
+
+    // No verification available for this method; proceed
+    return ok('');
+  }
+
+  /**
    * Uninstall an agent dependency on this host, then re-probe to confirm it is gone.
+   *
+   * Before running the uninstall command, a pre-flight check verifies the target
+   * package/formula is actually installed under the expected name. This catches
+   * mismatches like a descriptor naming `opencode-ai` when the binary was installed
+   * as `@opencode/cli` — npm silently exits 0 for packages that aren't installed,
+   * which would otherwise produce a false success.
    *
    * Routing is driven by the active installation's provenance: method selections use
    * PM uninstall commands when available (e.g. `brew uninstall <formula>`), otherwise
@@ -836,6 +971,14 @@ export class HostDependencyManager {
     const plan = this.resolveUpdatePlan(effectiveMethod, descriptor, 'uninstall');
 
     if (plan.kind === 'package-manager') {
+      // Pre-flight: verify the target package is actually installed
+      const resolvedMethod =
+        effectiveMethod ?? pickInstallOption(descriptor, this.platform)?.method;
+      if (resolvedMethod) {
+        const verify = await this.verifyUninstallTarget(id, plan.command, resolvedMethod);
+        if (!verify.success) return verify;
+      }
+
       const runResult = await this.runInstallCommand(plan.command);
       if (!runResult.success) return err(runResult.error);
     } else if (plan.kind === 'cli') {

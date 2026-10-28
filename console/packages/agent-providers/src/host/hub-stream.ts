@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AgentEventStream, OpenAgentStream } from './agent-host';
 
 /**
- * The agents controller's hub, over a WebSocket on the controller's loopback
+ * The agent controller's hub, over a WebSocket on the controller's loopback
  * relay: how an agent host in a process of its own (an `isolated` agent) hears
  * its agent's events. The controller holds the agent's connection to Switch
  * and hands each event to the hub; the hub hands it here, one at a time, and
@@ -132,7 +132,7 @@ class HubEventStream implements AgentEventStream {
         });
         return;
       }
-      const error = reason || `the agents controller hub closed (${code})`;
+      const error = reason || `the agent controller hub closed (${code})`;
       this.deps.onDisconnected?.({ error });
       if (helloed) {
         backoff = INITIAL_BACKOFF_MS;
@@ -141,7 +141,7 @@ class HubEventStream implements AgentEventStream {
       failures++;
       // The first failure, then powers of two: a long outage costs a few lines.
       if ((failures & (failures - 1)) === 0)
-        log.warn(`The agents controller hub is unreachable (${error}); retrying.`);
+        log.warn(`The agent controller hub is unreachable (${error}); retrying.`);
       const wait = code === HUB_CLOSE.restarting ? INITIAL_BACKOFF_MS : backoff;
       await sleep(Math.round(wait * (0.5 + Math.random() * 0.5)), signal);
       backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
@@ -152,7 +152,7 @@ class HubEventStream implements AgentEventStream {
   private connectOnce(): Promise<{ code: number; reason: string; helloed: boolean }> {
     return new Promise((resolve) => {
       const Socket = (globalThis as { WebSocket?: HeaderedWebSocket }).WebSocket;
-      if (!Socket) throw new Error('The agents controller hub needs Node 22 or newer.');
+      if (!Socket) throw new Error('The agent controller hub needs Node 22 or newer.');
       const socket = new Socket(this.url, {
         headers: { Authorization: `Bearer ${this.deps.creds.token}` },
       });
@@ -176,7 +176,7 @@ class HubEventStream implements AgentEventStream {
         try {
           parsed = JSON.parse(String(message.data)) as HubServerMessage;
         } catch {
-          this.deps.log.error('Dropped a message from the agents controller hub that is not JSON');
+          this.deps.log.error('Dropped a message from the agent controller hub that is not JSON');
           return;
         }
         if (parsed.type === 'result') {

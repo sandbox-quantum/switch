@@ -43,6 +43,28 @@ describe('provider authentication', () => {
     expect(answer.status).toBe('unauthenticated');
     expect(answer.message).toContain('Invalid API key');
   });
+  it('reads what went wrong from `errors` when the result does not say', () => {
+    const answer = parseClaudeTestReply(
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["API Error: 401 OAuth token has expired"]}'
+    );
+    expect(answer.status).toBe('unauthenticated');
+    expect(answer.message).toContain('OAuth token has expired');
+  });
+  it('shows a failure Claude only wrote to stderr, without calling it too old', () => {
+    const answer = parseClaudeTestReply('', 'Error: Could not load credentials from keychain\n');
+    expect(answer).toEqual({
+      status: 'unknown',
+      message:
+        'Claude Code could not answer a test prompt ("Error: Could not load credentials from keychain").',
+      models: [],
+    });
+  });
+  it('takes a test prompt with options Claude does not know as Claude being too old', () => {
+    expect(
+      parseClaudeTestReply('', "error: unknown option '--no-session-persistence'").message
+    ).toBe(CLAUDE_TOO_OLD);
+    expect(parseClaudeTestReply('', '').message).toBe(CLAUDE_TOO_OLD);
+  });
   it('accepts native API-key authentication', () => {
     expect(parseClaudeAuthStatus('{"loggedIn":true,"authMethod":"api-key"}').status).toBe(
       'authenticated'

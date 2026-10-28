@@ -6,6 +6,7 @@ import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
+import { Checkbox } from '@renderer/lib/ui/checkbox';
 import {
   DialogContentArea,
   DialogFooter,
@@ -27,6 +28,7 @@ import {
   type SecretField,
   UPDATE_SECRET_NOTE,
   asksWhoConnects,
+  confirmBeforeCheck,
   menuLabel,
   moveChecklist,
   peopleIn,
@@ -36,7 +38,7 @@ import {
   switchWarning,
   vendorName,
 } from './connector-apps';
-import { useReloadConnectorApps } from './connector-apps-queries';
+import { useReloadConnectorApps, useRememberChecks } from './connector-apps-queries';
 import { CopyButton } from './copy-button';
 
 export type SetupMode = 'set_up' | 'switch' | 'enter_again';
@@ -53,10 +55,12 @@ type Refusal = { message: string; field: ConnectorAppField | null };
  */
 function useSave(serverId: string, service: string, failure: string) {
   const reload = useReloadConnectorApps(serverId);
+  const remember = useRememberChecks(serverId);
   return async (input: SaveConnectorAppInput): Promise<Refusal | null> => {
     try {
       const result = await rpc.switchServers.saveConnectorApp({ serverId, service, input });
       if (result.kind === 'refused') return { message: result.message, field: result.field };
+      remember(service, result.checks);
       await reload();
       return null;
     } catch (cause) {
@@ -206,13 +210,18 @@ export function ConnectorAppSetupDialog({
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [busy, setBusy] = useState(false);
   const [impact, setImpact] = useState<ConnectorAppImpact | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   useCloseGuard(busy);
   const save = useSave(serverId, app.slug, `Could not save ${app.name}'s app.`);
 
   const vendor = vendorName(app);
   const fields = secretFields(app);
   const id = clientId.trim();
-  const complete = id !== '' && fields.every((field) => (secrets[field.name] ?? '') !== '');
+  const confirmation = confirmBeforeCheck(app);
+  const complete =
+    id !== '' &&
+    fields.every((field) => (secrets[field.name] ?? '') !== '') &&
+    (confirmation === null || confirmed);
   const replacing = app.saved_client_id !== null && id !== app.saved_client_id;
   const index = steps.indexOf(step);
   const stepName = {
@@ -317,7 +326,16 @@ export function ConnectorAppSetupDialog({
                       <ExternalLink className="size-3" />
                     </button>
                   )}
-                  {instruction.copy && <Copyable value={instruction.copy} />}
+                  {instruction.items.length > 0 && (
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5 font-mono text-xs">
+                      {instruction.items.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {instruction.copy.map((value) => (
+                    <Copyable key={value} value={value} />
+                  ))}
                 </li>
               ))}
             </ol>
@@ -356,6 +374,20 @@ export function ConnectorAppSetupDialog({
               <p className="text-xs text-foreground-muted">
                 The App&apos;s name is read from GitHub when Switch checks it.
               </p>
+            )}
+            {confirmation && (
+              <label className="flex cursor-pointer items-start gap-2.5 pt-1">
+                <Checkbox
+                  checked={confirmed}
+                  disabled={busy}
+                  onCheckedChange={(checked) => setConfirmed(checked === true)}
+                  className="mt-0.5"
+                />
+                <span className="flex flex-col gap-0.5">
+                  <span className="text-sm font-medium">{confirmation.label}</span>
+                  <span className="text-xs text-foreground-muted">{confirmation.why}</span>
+                </span>
+              </label>
             )}
             {mode === 'enter_again' && replacing && (
               <p role="status" className="text-sm text-foreground-warning">

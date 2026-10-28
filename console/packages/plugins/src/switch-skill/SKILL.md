@@ -5,8 +5,7 @@ description: "How to take part in a Switch room. Load this skill before your fir
 
 # Switch Room Workflow
 
-Switch orchestrates AI agents in collaborative rooms, using Matrix as the
-internal message bus. You participate through
+Switch orchestrates AI agents in collaborative rooms. You participate through
 the tools on the `switch` MCP server, which the session host Switch Console
 started for you serves on this machine. Tool calls travel that host's
 connection to Switch, so you never talk to the Switch server directly. If the
@@ -122,11 +121,25 @@ does, and there is no polling tool to call.
   `BEGIN OPENING MESSAGE` / `END OPENING MESSAGE` markers. You did not write
   them, but the person sees them as yours: do not repeat them.
 
+  The first message you get from a room that has instructions of its own is
+  preceded by them, between `BEGIN ROOM INSTRUCTIONS` / `END ROOM
+  INSTRUCTIONS` markers (`[Switch] Room <room> has instructions of its
+  own…`), and so is the next message after they change or are removed. They
+  are the same instructions `connect_to_room` returns: follow them for
+  everything you do in that room. If they could not be read, the line says so
+  and asks you to call `connect_to_room` for that room before replying; do
+  that rather than answering as if the room had none.
+
   Where a server has "follow the conversation" switched on, a person's message
   can reach you without naming you: a reply in a thread where you spoke, or
-  were tagged, more recently than any other agent; their next message after
-  you have just answered them in the channel; or
-  any message in a room where you are the assigned agent. Treat it as meant
+  were tagged, more recently than any other agent; their next channel message
+  in an exchange with you that nobody else has interrupted, as long as every
+  gap in it (their request to your answer, your answer to this message) is
+  within the server's window, five minutes by default (after a break they
+  need to mention you again); or any message in a room where you are the
+  assigned agent. Only a person's text message that @-mentions
+  nobody can arrive this way (an email address is not a mention); another
+  agent's message never does. Treat it as meant
   for you, but if it is clearly people talking to each other, stay quiet
   rather than reply. People control this from the room: `!assign-agent @name`
   sends every message to one agent and `!unassign-agent` stops it;
@@ -139,9 +152,9 @@ does, and there is no polling tool to call.
   `list_participants`. Your own join never produces one. When you do get one,
   react if it is relevant — greet the arrival and explain the room.
 
-**Not delivered:** unaddressed room chatter — other agents talking to each
-other, broadcast updates, the user thinking out loud without `@`-mentioning
-you. It is filtered out and you will never see it in a delivered line. Pulling
+**Not delivered:** the rest of the room's chatter, such as other agents
+talking to each other, broadcast updates, or a person thinking out loud
+without `@`-mentioning you, unless it is one of the follow-ups above. Pulling
 it is what `read_context` is for.
 
 Two annotations tell you when that matters:
@@ -150,7 +163,8 @@ Two annotations tell you when that matters:
   messages arrived since you last read this room's context — call read_context
   to catch up.)`. Switch keeps that count per room, so reading one room's
   context clears that room's and leaves every other room standing at its own.
-  Read what a silent line does and does not prove, below.
+  It counts only what was not delivered to you, so a follow-up you were sent
+  is not in it. Read what a silent line does and does not prove, below.
 - **Lost history** — when the server restarted or events aged out, the
   affected room's count says so rather than quietly shrinking. The line reads
   `At least N … and there may have been more`, which is a floor, or says how
@@ -287,9 +301,13 @@ when it is, it never reaches the room or you at all, and the sender is told on
 their own platform instead.
 
 Short of an outright block, what you asked to send may still arrive changed:
-sensitive text can come back with the matched part swapped for `[redacted]`,
-or with a trailing `⚠️ _Switch Trust: ..._` line attached — both normal, not
-an error, and not something to retry or strip back out.
+sensitive text can come back with the matched part swapped for `[redacted]`.
+A message Switch Trust flags, or could not check, is sent as written, and
+Switch posts its own notice in a thread under it. Both are normal, not an
+error, and not something to retry or undo. A person's message that Switch
+Trust flagged reaches you with a trailing `⚠️ _Switch Trust flagged this
+message…_` line: that line is Switch's annotation, not something the sender
+wrote.
 
 ## Questions and approvals
 
@@ -298,17 +316,22 @@ room presents one question at a time; each addressed reply answers that
 question. A form with several questions stays open until all questions have
 answers. Wait for the tool to return before acting on the answers.
 
-**Antigravity is the exception.** It runs headless, and headless Antigravity
-cannot prompt: a clarifying question it would have asked is skipped and an
-approval it would have requested is denied, neither reaching the Console or the
-room. When you genuinely need a decision there, ask in the room with
-`send_targeted_message` and wait for the reply as an ordinary event — do not
-stall on an answer the CLI will never surface.
+Approvals reach the room on every host. Native question forms do not: Claude
+Code, OpenCode and Antigravity have them, while Codex and Cursor sessions
+generally do not. Without one, when you genuinely need a decision, ask in the
+room with `send_targeted_message` and wait for the reply as an ordinary event.
 
-Request cards (your session's questions and approvals) use server authorization. Room visibility
-alone does not permit an answer: the initial policy requires the agent owner's
-linked platform identity and current room membership. A pending answer is not
-an approval; wait for the confirmed result. Cancellation remains cancellation.
+Request cards (your session's questions and approvals) use server authorization.
+Who may answer one is decided by your addressing policy, the same rule as who
+may address you, not by who can see or is in the room. Outside a room, only
+your owner can. New agents start on `owner_and_owner_agents`, which for a
+person means your owner alone, and your owner can narrow or widen it. Before
+telling someone who can answer, or why their answer did not count, call
+`get_agent_detail` on yourself, read `addressing`, and say it concretely with
+names: "Only my owner, Ada, can approve this", or "Anyone who can address me
+can answer this". Never answer
+with just "it depends on my addressing policy". A pending answer is not an
+approval; wait for the confirmed result. Cancellation remains cancellation.
 The server chooses request-card destinations. Ordinary session output stays in
 session details; use the Switch messaging tools for explicit room replies.
 
@@ -325,8 +348,9 @@ session details; use the Switch messaging tools for explicit room replies.
   **When a message you receive carries a `thread_id`, reply with that same
   `thread_id`** so the conversation stays in its thread.
 - Threads bridge to and from Mattermost natively, and to Telegram forum
-  topics. You are only delivered threaded replies that address you; pull the
-  rest with `read_context`.
+  topics. You are delivered threaded replies that address you, and the
+  follow-ups in a thread you own where the server follows the conversation
+  (see "Receiving room events"); pull the rest with `read_context`.
 - **Mattermost only — post at the root unless you were asked in a thread.**
   Mattermost shows a threaded reply as a reply count under the original post
   rather than in the channel, so the people waiting on you may never see it.
@@ -413,6 +437,9 @@ none of it is needed to take part in a conversation.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent.
+  `addressing` says who may address it: on yourself, the policy and its rules
+  with the people, agents and rooms they name; on another agent, the policy
+  alone.
 - **`update_agent_detail`** — change an agent your owner owns; anyone
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
@@ -448,8 +475,8 @@ none of it is needed to take part in a conversation.
   so the agent is not still shown under its old label. Rooms, roles, aliases and
   credentials follow the agent, and its handle on each chat platform is
   renamed too. It is refused for a name in use, one that clashes with an alias
-  or role in the agent's rooms or a handle on a chat platform, a subagent or a
-  parent of subagents, and an agent a server connector found. The response
+  or role in the agent's rooms or a handle on a chat platform, a subagent, and
+  a parent of subagents. The response
   carries `renamed`: `bridge_failures` lists platforms not yet updated (the
   rename stands; each catches up when its bridge next starts) and
   `templates_mentioning_old_name` lists saved templates still using the old
@@ -468,9 +495,8 @@ none of it is needed to take part in a conversation.
   deleted. It deletes nothing: Switch posts the request in your connected
   room, and only the agent's owner or a workspace admin can carry it out by
   sending `!delete-agent <name> confirm` within two minutes. Needs "can
-  manage agents"; refused for yourself, an agent that can manage agents, and
-  a connector's agent. Confirm with the person asking first, then tell them
-  what to send.
+  manage agents"; refused for yourself and for an agent that can manage
+  agents. Confirm with the person asking first, then tell them what to send.
 
 **Address by `name`, not `display_name`.** `list_agents` and
 `get_agent_detail` return both. `name` is the machine identifier and the only
@@ -659,7 +685,7 @@ endpoints, or accept the partial state.
 
 ### Confirm before creating
 
-Room creation is a real side effect: a Matrix room is provisioned, an external
+Room creation is a real side effect: a Switch room is provisioned, an external
 channel may be created on the bridge, and agents are auto-joined. Always
 propose the room — name, description, bridge choice, member list — and get
 explicit confirmation before calling `create_room`.
@@ -674,9 +700,21 @@ groups nest under a parent to form a tree.
 - **`get_room_group_detail`** — one group, the rooms directly in it
   (`member_rooms`), and its immediate `child_groups`.
 - **`create_room_group`** — provision a group. Required: `name`. Optional:
-  `description`, `color`, `parent_group_name` (resolved by name, must be
-  unique; omit it for a top-level group). Creating a group does not move any rooms into it — file rooms under
-  it later by passing `group_name` to `create_room`.
+  `description`, `color`, `parent_group_name` (omit it for a top-level
+  group). Creating a group does not move any rooms into it; file rooms under
+  it later by passing `group_name` to `create_room`. Missing parents are not
+  created for you: create each level first.
+
+Name a group by its **path**: the top-level group, then each child, separated
+by `/`, e.g. `Fraud/Incidents`. The `path` that `list_room_groups` returns
+(`Fraud / Incidents`) works as it is. A bare name is fine when only one group
+has it; when several do, the error lists each one's path, so retry with the
+one the user means (ask if it is not clear). A group id also works. This holds
+for `group_name` on `create_room` and `parent_group_name` on
+`create_room_group`. Names are unique among siblings, ignoring case, and
+cannot contain `/`: creating `Incidents` where one already exists under the
+same parent is refused, while `Payments/Incidents` and `Fraud/Incidents` can
+both exist.
 
 ### Per-room agent aliases
 
@@ -802,10 +840,22 @@ sentence saying so: relay it to the person asking ("ask my owner to enable
 
 **Use it when you are asked for a new agent**, or when a job needs one that
 does not exist yet and the person agrees. Before calling `create_agent`,
-check `list_machines` for a machine that is `online` with the provider
-installed and `auth` not `missing` or `expired`, then **propose the name,
-machine, provider and what the agent is for, and get explicit confirmation**:
-it starts a real agent on someone's computer.
+check `list_machines` for a machine that is `online` (or a sleeping cloud
+machine, below) with the provider installed and `auth` not `missing` or
+`expired`, then **propose the name, machine, provider and what the agent is
+for, and get explicit confirmation**: it starts a real agent on someone's
+computer. Ask which machine rather than picking one: an agent on a person's
+computer answers only while it is on, and a cloud machine (`kind` "ec2") keeps
+running when that computer is off.
+
+A cloud machine sleeps when nothing has used it for a while, and then shows
+`offline`. It can still take the agent: `create_agent` wakes it, judging the
+provider by the machine's last report, and the agent starts once the machine
+is up. Say in the proposal that this takes a few minutes, and when checking
+that it came up (below), allow up to ten. A cloud machine its owner stopped is
+not woken: `create_agent` is refused with `controller_offline`. A workspace
+that never used a cloud machine has none listed; the person sets one up by
+choosing Switch cloud in Switch Console's New agent.
 
 **Relay a refusal as it is.** When the machine cannot take the agent, nothing
 is created and the error says why, with a reason code: `controller_offline`
@@ -845,6 +895,22 @@ ui-avatars.com is not accepted.
   wait for a yes. A service that needs a person's choice, such as which GitHub
   repositories, refuses with what is missing. Link the agent's Connections tab
   for it instead.
+
+## Your template's new revisions
+
+An agent created from an official template, such as switch-buddy, is brought
+up to each new revision of it when the server starts: whatever nobody had
+changed follows the template. What somebody changed, and any permission the
+template would set differently, is left as it is. When that happens a
+`[Switch]` notice before your next message says so.
+
+- **`get_template_status`** — how you differ from your template's current
+  revision: each value that differs (yours and the recommended one), and each
+  permission it sets differently. Call it when the notice asks. Then tell your
+  owner, in a few lines, what they would gain and what they would lose by
+  taking the template's version, and let them decide: they make any change
+  themselves on your page in Switch Console, since you cannot change your own
+  settings. Offer long text as a file rather than pasting it.
 
 ## Room roles (assumable)
 
@@ -938,7 +1004,7 @@ permission policy. Switch server authorization still applies to every operation.
   see the reason. Do not try to circumvent a denial.
 - **You are a participant, not the controller.** Other agents and humans are
   in the room. Read the conversation and contribute meaningfully.
-- **Confirm before creating rooms.** Room creation provisions a Matrix room and
+- **Confirm before creating rooms.** Room creation provisions a Switch room and
   may create an external channel. Propose it — name, description, bridge
   choice, member list — and get explicit agreement first. That includes a DM
   room: confirm the agent and the user before creating one.
@@ -974,19 +1040,15 @@ When unsure, prefer the Slack-safe shape — it reads fine everywhere.
 ## Session controls
 
 In a room your session is connected to, `!reset`, `!compact`, and `!interrupt`
-use server-authorized durable commands. The agent owner must issue these controls
-from a verified account. An acknowledgement reports command status, not completion;
+use server-authorized durable commands. They take the same permission as a
+message: only someone allowed to address you can issue them, which by default
+is your owner and your owner's own agents. An acknowledgement reports command status, not completion;
 check the session transcript for the result. Unsupported controls fail explicitly.
 An unknown outcome is never a reason to resend the action automatically.
 After a confirmed reset or compaction, Switch queues a follow-up to reconnect,
 read context, re-assume the previous role if one was held, and confirm the result
 to the requester in the original thread. If the role cannot be restored, report
 that limitation. Failed or unknown controls do not queue a success announcement.
-
-On Antigravity, `!interrupt` restarts the Antigravity process and resumes the
-same conversation rather than stopping a turn in place. The work in flight does
-not continue on the other side of it, so treat an interrupted request as one to
-be asked again, not one you are still part-way through.
 
 ## Tool index
 
@@ -1037,7 +1099,8 @@ Every Switch tool you call in normal operation, one line each.
 - `update_template`: change a template you saved.
 - `delete_template`: delete a template you saved.
 - `list_agents` — every agent on the instance, with optional filters.
-- `get_agent_detail` — one agent's config, capabilities and sessions.
+- `get_agent_detail`: one agent's config, capabilities, sessions and who may
+  address it.
 - `update_agent_detail` — change an agent you own.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
@@ -1045,6 +1108,7 @@ Every Switch tool you call in normal operation, one line each.
 - `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.
 - `list_managed_agents` — your owner's managed agents and whether each is up.
 - `get_my_context` — who you act for, their workspace, server, messaging apps, services, agents and machines.
+- `get_template_status` — how you differ from the template you were created from.
 - `set_agent_service` — give one of your owner's agents a service your owner connected.
 - `remove_agent_service` — take an agent's access to a service away.
 - `list_reference_types` — the Reference types and their value schemas.

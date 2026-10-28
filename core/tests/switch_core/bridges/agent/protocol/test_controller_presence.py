@@ -1,4 +1,4 @@
-"""Presence for agents run by an agents controller.
+"""Presence for agents run by an agent controller.
 
 A controller-backed agent holds no connection of its own: it is live while its
 controller's stream is attached and beating, and every presence reader asks the
@@ -629,6 +629,11 @@ def _addressing_client(
         return None
 
     ns._sender_role = _sender_role
+
+    async def _no_notice(*_args: Any) -> None:
+        return None
+
+    ns._switch_notice = _no_notice
     ns._report_addressed = lambda *_a, **_k: None
     ns._triggered_by_auto_reply = AgentRecipient._triggered_by_auto_reply
     ns.actor = SimpleNamespace(send_message=sent)

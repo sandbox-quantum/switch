@@ -55,7 +55,8 @@
           "thread_id": null,
           "attachments": [],
           "opening_message": null,
-          "sender_role": null
+          "sender_role": null,
+          "switch_notice": null
         },
         "sequence": 1,
         "missed": {

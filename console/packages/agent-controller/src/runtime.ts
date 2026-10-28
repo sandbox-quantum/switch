@@ -550,6 +550,9 @@ export class InProcessRuntime implements AgentRuntime {
     const sessions = inProcessSupervision(this.deps.bundlePath, this.links);
     // For `status`, which runs in another process and reads only disk.
     const stopRecording = recordWatcherHealth(root, control, null);
+    const forget = () => {
+      if (this.hosts.get(agentId)?.done === done) this.hosts.delete(agentId);
+    };
     const done = (async () => {
       try {
         await runAgentHost(root, config, signal, sessions, control, this.deps.openStream(agentId));
@@ -563,22 +566,27 @@ export class InProcessRuntime implements AgentRuntime {
           this.deps.log.info('Agent host stopped', { agentId });
           return false;
         },
-        (error: unknown) => this.crashed(agentId, root, signal, error)
+        (error: unknown) => this.crashed(agentId, root, signal, error, forget)
       )
       .then((again) => {
-        if (this.hosts.get(agentId)?.done === done) this.hosts.delete(agentId);
+        forget();
         if (again) this.start(agentId, root, config);
       });
     this.hosts.set(agentId, { stop, done, control, sessions });
     this.deps.log.info('Agent host started', { agentId });
   }
 
-  /** Whether an agent host that failed is started again. */
+  /**
+   * Whether an agent host that failed is started again. One that is not is
+   * forgotten before its failure is recorded, so nothing that reads the
+   * failure can still see it alive.
+   */
   private async crashed(
     agentId: string,
     root: string,
     signal: AbortSignal,
-    error: unknown
+    error: unknown,
+    forget: () => void
   ): Promise<boolean> {
     const message = errorMessage(error);
     if (signal.aborted) {
@@ -594,6 +602,7 @@ export class InProcessRuntime implements AgentRuntime {
         agentId,
         error: message,
       });
+      forget();
       await mkdir(join(root, 'supervisor'), { recursive: true, mode: 0o700 });
       await writeAtomic(join(root, 'supervisor', 'failure.json'), JSON.stringify({ message }));
       return false;

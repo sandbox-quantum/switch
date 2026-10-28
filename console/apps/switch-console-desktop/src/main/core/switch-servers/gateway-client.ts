@@ -13,6 +13,7 @@ import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
 import type {
   AdvancedConfigField,
+  ManagedAgentTemplate,
   ManagedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import { ManagedServerStoppedError } from '@shared/core/managed-switch-server/managed-switch-server';
@@ -40,6 +41,7 @@ import {
   connectorAppImpactSchema,
   connectorAppRefusalSchema,
   connectorAppSchema,
+  savedConnectorAppSchema,
   connectorAppsSchema,
 } from '@shared/core/switch-servers/connector-apps';
 import {
@@ -302,6 +304,32 @@ async function silentLogin(server: SwitchServer): Promise<string | null> {
   // `switchTenant` stores the scoped cookie; the minted one it replaced would
   // send this very call to the wrong workspace.
   return (await getSessionCookie(server.id)) ?? minted;
+}
+
+/** Where to open an authenticated gateway WebSocket, and the headers to open it with. */
+export type GatewaySocketTarget = { url: string; headers: Record<string, string> };
+
+/**
+ * The URL and headers for an authenticated WebSocket to the gateway: the
+ * session cookie (renewed if it is near expiry) and Console's identity, as
+ * every gateway call sends them. Node's WebSocket takes request headers,
+ * unlike a browser's. Refuses a server that is known to be unreachable or
+ * stopped, as `gatewayRequest` does.
+ */
+export async function gatewaySocketTarget(
+  server: SwitchServer,
+  path: string
+): Promise<GatewaySocketTarget> {
+  const blocked = managedServerHostBlocked(server);
+  if (blocked) throw new HostUnreachableError(blocked);
+  const stopped = managedServerStoppedPhase(server);
+  if (stopped) throw new ManagedServerStoppedError(server, stopped);
+  const identity = await consoleIdentityHeaders(server);
+  const cookie = await resolveAuthCookie(server);
+  return {
+    url: gatewayUrl(server, path).replace(/^http/, 'ws'),
+    headers: { ...identity, Cookie: `switch_auth=${cookie}` },
+  };
 }
 
 /**
@@ -2460,6 +2488,12 @@ export async function runTemplateDocument(
     /** Existing agents standing in for slots that allow it, by resource key. */
     filled: Record<string, string>;
     templateName: string;
+    /**
+     * The template the document is, when it is one: the server records the run
+     * as that template's, to update its agents from, only when the document is
+     * exactly the template's.
+     */
+    templateId: string | null;
   }
 ): Promise<TemplateRunResult> {
   return postTemplateRun(server, '/rooms/from-template-document', {
@@ -2467,6 +2501,7 @@ export async function runTemplateDocument(
     inputs: body.inputs,
     filled: body.filled,
     template_name: body.templateName,
+    ...(body.templateId !== null ? { template_id: body.templateId } : {}),
   });
 }
 
@@ -3283,7 +3318,8 @@ export async function saveConnectorApp(
     }
     throw cause;
   }
-  return { kind: 'saved', app: connectorAppSchema.parse(await response.json()) };
+  const saved = savedConnectorAppSchema.parse(await response.json());
+  return { kind: 'saved', app: connectorAppSchema.parse(saved), checks: saved.checks };
 }
 
 function safeJson(body: string): unknown {
@@ -3707,6 +3743,12 @@ export type ManagedAgent = {
   machine?: ManagedMachine | null;
   desiredState: 'running' | 'stopped';
   revision: number;
+  /**
+   * The template that created it, as the server's record of that run has it:
+   * null for an agent no template run the server vouches for created, and
+   * undefined from a server too old to say.
+   */
+  template?: ManagedAgentTemplate | null;
   provider: string;
   model: string | null;
   /** The provider's advanced configuration, keyed by its field keys; unset fields are absent. */
@@ -3758,6 +3800,8 @@ type ManagedAgentJson = {
   desired_state: 'running' | 'stopped';
   description?: string;
   revision?: number;
+  /** Absent from servers older than template installs. */
+  template?: { id: string; key: string; revision: number } | null;
   definition: {
     provider?: unknown;
     model?: unknown;
@@ -3971,6 +4015,7 @@ function toManagedAgent(json: ManagedAgentJson): ManagedAgent {
     machine: machineOf(json),
     desiredState: json.desired_state,
     revision: json.revision ?? 0,
+    ...(json.template !== undefined ? { template: json.template } : {}),
     provider: typeof json.definition?.provider === 'string' ? json.definition.provider : 'unknown',
     model: typeof json.definition?.model === 'string' ? json.definition.model : null,
     advancedConfig: advancedConfigOf(json.agent_id, json.definition?.advanced_config),

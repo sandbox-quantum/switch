@@ -41,7 +41,9 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 )
 from switch_core.bridges.agent.protocol.agent_detail import (
     AgentProfileUpdate,
+    agent_facing_summary,
     assemble_agent_detail,
+    describe_addressing,
     list_agent_summaries,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
@@ -61,10 +63,6 @@ from switch_core.bridges.agent.protocol.types import (
     SendTargetedResult,
     ToolCallReport,
     ToolSpec,
-)
-from switch_core.bridges.agent.registration_bootstrap import (
-    REGISTRATION_KEY_TYPES,
-    resolve_registration_owner_id,
 )
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
@@ -113,7 +111,7 @@ from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.db.tenant_lookup import all_tenant_ids, tenant_of_api_key
+from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
 from switch_core.events import (
     LlmCallReport as RoomLlmCallReport,
@@ -167,7 +165,7 @@ if TYPE_CHECKING:
     )
     from switch_core.db.stores.external_user_store import ExternalUserStore
     from switch_core.db.stores.room_store import RoomStore
-    from switch_core.gateway.schemas import AgentDetail
+    from switch_core.gateway.schemas import AgentAddressing, AgentDetail
     from switch_core.room_service import RoomCreateResult, RoomService
     from switch_core.rooms_yaml import RoomYamlService
     from switch_core.session_activity.outcomes import ApprovalOutcomes
@@ -292,17 +290,6 @@ class AgentDeletionResult:
     clean-up when its bridge next starts."""
 
     bridge_failures: list[str]
-
-
-class BootstrapOwnerMisconfiguredError(Exception):
-    """Raised when the deployment-wide bootstrap key's owner account cannot
-    be resolved or trusted (see ``registration_bootstrap.py``).
-
-    Deliberately not a ``PermissionError``: the presented token is valid, so
-    this is a deployment misconfiguration, not a bad credential. A caller
-    that catches ``PermissionError`` to mean "bad token" must not also catch
-    this and report the same thing.
-    """
 
 
 def _describe_room(room: Room) -> RoomDescriptor:
@@ -436,8 +423,8 @@ class AgentCore:
     ) -> RegistrationResult:
         """Register or re-register an agent.
 
-        Pass ``owner_id`` directly (gateway flow) or use
-        ``register_agent_with_token`` to resolve a registration token first.
+        The caller resolves ``owner_id``: the gateway from the signed-in
+        person, the HTTP registration endpoint from the registration token.
 
         ``parent_agent_id`` links this agent as a child of another (a Claude
         Code subagent registered under the user's main agent); None for an
@@ -608,91 +595,6 @@ class AgentCore:
             oauth_client_id=oauth_client_id,
         )
 
-    async def register_agent_with_token(
-        self,
-        *,
-        registration_token: str,
-        name: str,
-        description: str,
-        display_name: str | None = None,
-        connector_type: str,
-        integration_profile: IntegrationProfile,
-        tools: list[ToolSpec] | None = None,
-        models: list[ModelSpec] | None = None,
-        metadata: dict[str, Any] | None = None,
-        overwrite: bool = False,
-        addressing_policy: AddressingPolicy | None = default_agent_policy(),
-    ) -> RegistrationResult:
-        """Resolve a registration token to its owner, then register the agent.
-
-        Raises PermissionError if the token does not match a stored ApiKey of
-        a registration type (see ``registration_bootstrap.REGISTRATION_KEY_TYPES``).
-        Raises BootstrapOwnerMisconfiguredError if the token is valid but its
-        bootstrap owner cannot be resolved or trusted — a deployment fault,
-        not a bad credential, so callers must not conflate it with the
-        PermissionError above (the detail is logged here, not in the
-        exception, to match the HTTP registration path's handling of the
-        same failure).
-        Raises AgentExistsError if the name is taken and ``overwrite`` is False.
-
-        The token also decides the *tenant* the new agent and its API key land
-        in, and that is bound here rather than left to the caller. The HTTP
-        registration endpoint has ``BearerAuthMiddleware`` in front of it doing
-        the same thing. This path does not: a server-side connector calls it
-        in-process from ``server_connectors/core.py``, which binds its own
-        row's tenant around the call (``_register_agent``) — from boot, and
-        from ``POST /connectors``, where the tenant already bound is the
-        *requesting operator's*, which is not necessarily the connector's.
-
-        So the binding here is not filling a vacuum; it is overriding whatever
-        the caller had, with the one thing that is authoritative for these
-        rows. Bearer authentication later reads ``api_keys.tenant_id`` back as
-        the source of truth, so a key filed under the wrong tenant would keep
-        confirming itself on every subsequent call.
-        """
-        token_hash = hashlib.sha256(registration_token.encode()).hexdigest()
-        # Resolving a credential is the read that *produces* a tenant, so it
-        # cannot be answered under one: doing so is either a tautology or a
-        # false "invalid token". `key_hash` is one of the two columns
-        # deliberately left globally unique for exactly this, and the
-        # exemption (`db/tenant_lookup.py`) turns it into a tenant id. The key
-        # row itself, and the owner resolution that reads it, are then
-        # ordinary scoped reads under that tenant.
-        tenant_id = await tenant_of_api_key(self.session_factory, token_hash)
-        if tenant_id is None:
-            raise PermissionError("Invalid registration token")
-        async with tenant_session(self.session_factory, tenant_id) as session:
-            key = await self.api_key_store.get_by_hash(session, token_hash)
-            if key is None or key.type not in REGISTRATION_KEY_TYPES:
-                raise PermissionError("Invalid registration token")
-            try:
-                owner_id = await resolve_registration_owner_id(
-                    session, self.user_store, key
-                )
-            except RuntimeError as exc:
-                logger.error(
-                    "Agent-registration bootstrap owner resolution failed: %s", exc
-                )
-                raise BootstrapOwnerMisconfiguredError(
-                    "Agent registration is temporarily unavailable"
-                ) from exc
-
-        with tenant_scope(tenant_id):
-            return await self.register_agent(
-                name=name,
-                description=description,
-                display_name=display_name,
-                connector_type=connector_type,
-                integration_profile=integration_profile,
-                tools=tools,
-                models=models,
-                metadata=metadata,
-                owner_id=owner_id,
-                overwrite=overwrite,
-                addressing_policy=addressing_policy,
-                registration_path="bootstrap",
-            )
-
     async def _create_agent(
         self,
         *,
@@ -817,8 +719,8 @@ class AgentCore:
         # rotates credentials and rebuilds the profile, and callers that know
         # nothing about icons must not wipe one the owner chose.
         icon_fields = {} if icon_url is None else {"icon_url": icon_url}
-        # Same for the display name: a connector re-registers on every startup
-        # and knows nothing about it.
+        # Same for the display name: a client that re-registers on every
+        # launch knows nothing about it.
         display_name_fields = (
             {} if display_name is None else {"display_name": display_name}
         )
@@ -883,6 +785,12 @@ class AgentCore:
         self, listener: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._agent_profile_listener = listener
+
+    async def agent_profile_changed(self, agent_id: str) -> None:
+        """Tell whoever follows agents' faces that this one's icon or
+        display name changed, after a change made outside
+        `update_agent_detail`."""
+        await self._agent_profile_changed(agent_id)
 
     async def _agent_profile_changed(self, agent_id: str) -> None:
         if self._agent_profile_listener is not None:
@@ -1115,8 +1023,7 @@ class AgentCore:
                 unsafe to render (InvalidDisplayName), or no such agent.
             AgentExistsError: another agent has the name.
             AgentRenameRefused: a clash in a room or on a platform, or an agent
-                that cannot be renamed (a subagent, a parent of subagents, or
-                one a server connector discovered).
+                that cannot be renamed (a subagent or a parent of subagents).
             RuntimeError: no tenant is bound.
         """
         (
@@ -1254,8 +1161,8 @@ class AgentCore:
 
         Raises:
             PermissionError: the target belongs to another owner.
-            AgentRenameRefused: the target is the caller itself, an agent that
-                can manage agents, or one a server connector found.
+            AgentRenameRefused: the target is the caller itself, or an agent
+                that can manage agents.
             ValueError: no such agent or room.
             RuntimeError: deletion requests are not wired in this process.
         """
@@ -1281,11 +1188,6 @@ class AgentCore:
                     f"Agent '{target.name}' can manage agents itself, so another "
                     "agent cannot ask for it to be deleted. Its owner can delete "
                     "it from the gateway or with `!delete-agent`."
-                )
-            if (target.metadata_ or {}).get("server_connector_id"):
-                raise AgentRenameRefused(
-                    f"Agent '{target.name}' was found by a server connector, which "
-                    "would bring it back. Remove it at its source."
                 )
             await record_audit_event(
                 session,
@@ -1338,11 +1240,6 @@ class AgentCore:
     async def _check_renamable(
         self, session: AsyncSession, agent: Agent, new_name: str
     ) -> None:
-        if (agent.metadata_ or {}).get("server_connector_id"):
-            raise AgentRenameRefused(
-                f"Agent '{agent.name}' was found by a server connector, which "
-                "would bring it back under its old name. Rename it at its source."
-            )
         if agent.parent_agent_id is not None:
             raise AgentRenameRefused(
                 f"Agent '{agent.name}' is a subagent; its name comes from its "
@@ -2960,8 +2857,9 @@ class AgentCore:
         into that room's run (see `agent_runs`), and is refused if the run is
         paused or stopped or the agent is already creating a room.
 
-        `group_name`, when given, files the room under an existing room group;
-        it is resolved to a group id here (agents work in names, not ids)."""
+        `group_name`, when given, files the room under an existing room group.
+        It may be a path, a bare name or an id, and is resolved to a group id
+        here (see `_resolve_group_name`)."""
         from switch_core.room_service import (
             LinkedRoomSpec,
             RoleSpec,
@@ -3032,24 +2930,15 @@ class AgentCore:
     async def _resolve_group_name(
         self, session: AsyncSession, group_name: str | None
     ) -> str | None:
-        """Resolve a room-group name to its id. Returns None for no group.
+        """Resolve what an agent passed as a group (a path such as
+        "Fraud/Incidents", a bare name, or an id) to its id. Returns None for
+        no group.
 
-        Raises ValueError if the name is unknown or ambiguous (group names are
-        not unique across the tree)."""
+        Raises ValueError if it is unknown or ambiguous; an ambiguous bare name
+        lists each match by path (see `RoomGroupStore.resolve`)."""
         if group_name is None:
             return None
-        result = await session.execute(
-            select(RoomGroup).where(RoomGroup.name == group_name)
-        )
-        matches = result.scalars().all()
-        if not matches:
-            raise ValueError(f"No room group named '{group_name}'")
-        if len(matches) > 1:
-            raise ValueError(
-                f"Multiple room groups named '{group_name}'; ask the user which "
-                "one to use"
-            )
-        return matches[0].id
+        return await self.room_group_store.resolve(session, group_name)
 
     async def _group_labels(
         self, session: AsyncSession, group_id: str | None
@@ -3861,9 +3750,10 @@ class AgentCore:
         parent_group_name: str | None,
     ) -> dict[str, Any]:
         """Create a room group, optionally nested under an existing parent
-        (resolved by name). Returns the new group's detail dict.
+        (a path, bare name or id). Returns the new group's detail dict.
 
-        Raises ValueError if `parent_group_name` is unknown or ambiguous.
+        Raises ValueError if `parent_group_name` is unknown or ambiguous, or if
+        the parent already has a group with this name.
         """
         async with self.session_factory() as session:
             parent_group_id = await self._resolve_group_name(session, parent_group_name)
@@ -3951,7 +3841,7 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [s.model_dump() for s in summaries]
+        return [agent_facing_summary(s) for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str
@@ -3974,6 +3864,23 @@ class AgentCore:
                 agent_session_store=self.agent_session_store,
                 room_role_store=self.room_role_store,
                 connections=self.connections,
+            )
+
+    async def get_agent_addressing(
+        self, agent_id: str, target_agent_id: str
+    ) -> AgentAddressing:
+        """Who may address `target_agent_id`, as `agent_id` may see it: the
+        rules with their names when an agent reads its own, the policy's kind
+        alone otherwise.
+
+        Raises ValueError if the target agent does not exist.
+        """
+        async with self.session_factory() as session:
+            agent = await self.agent_store.get(session, target_agent_id)
+            if agent is None:
+                raise ValueError(f"Agent not found: {target_agent_id}")
+            return await describe_addressing(
+                session, agent=agent, with_rules=agent_id == target_agent_id
             )
 
     async def require_same_owner(self, agent_id: str, target_agent_id: str) -> None:
@@ -4285,7 +4192,7 @@ class AgentCore:
 
         `arguments` is not inspected. It is accepted because a mediation
         decision that looks at what is being passed is the obvious next thing
-        to want, and because the hook already sends it.
+        to want.
         """
         await self.require_room_member(agent_id, room_id)
         verdict = await self.mediation.tool_access(agent_id, tool_name)

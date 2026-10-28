@@ -7,9 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
-from switch_core.bridges.agent.server_connectors.lifecycle import (
-    ServerSideConnectorLifecycleService,
-)
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
 )
@@ -29,7 +26,6 @@ from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
-from switch_core.db.stores.server_connector_store import ServerConnectorStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
@@ -37,6 +33,7 @@ from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
+from switch_core.user_changes import LocalUserChanges
 
 _state: dict[str, Any] = {}
 
@@ -50,8 +47,6 @@ def init_dependencies(
     bridge_store: CollaborationBridgeStore,
     client_lifecycle: ClientLifecycleService,
     collab_lifecycle: CollaborationBridgeLifecycleService,
-    connector_lifecycle: ServerSideConnectorLifecycleService,
-    connector_store: ServerConnectorStore,
     event_buffer: EventBuffer,
     session_factory: Any,
     user_store: UserStore,
@@ -66,6 +61,7 @@ def init_dependencies(
     protocol: AgentCore,
     install_service: MessagingInstallService | None,
     invite_mailer: InviteMailer | None,
+    user_changes: LocalUserChanges,
     config: SwitchConfig,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -75,8 +71,6 @@ def init_dependencies(
     _state["bridge_store"] = bridge_store
     _state["client_lifecycle"] = client_lifecycle
     _state["collab_lifecycle"] = collab_lifecycle
-    _state["connector_lifecycle"] = connector_lifecycle
-    _state["connector_store"] = connector_store
     _state["event_buffer"] = event_buffer
     _state["session_factory"] = session_factory
     _state["user_store"] = user_store
@@ -91,6 +85,7 @@ def init_dependencies(
     _state["protocol"] = protocol
     _state["install_service"] = install_service
     _state["invite_mailer"] = invite_mailer
+    _state["user_changes"] = user_changes
     _state["config"] = config
 
 
@@ -218,16 +213,12 @@ def get_budget_store() -> BudgetStore:
     return _state["budget_store"]  # type: ignore[no-any-return]
 
 
-def get_connector_lifecycle() -> ServerSideConnectorLifecycleService:
-    return _state["connector_lifecycle"]  # type: ignore[no-any-return]
-
-
-def get_connector_store() -> ServerConnectorStore:
-    return _state["connector_store"]  # type: ignore[no-any-return]
-
-
 def get_template_store() -> TemplateStore:
     return _state["template_store"]  # type: ignore[no-any-return]
+
+
+def get_user_changes() -> LocalUserChanges:
+    return _state["user_changes"]  # type: ignore[no-any-return]
 
 
 def get_config() -> SwitchConfig:

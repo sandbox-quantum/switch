@@ -13,7 +13,6 @@ import {
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
-  type ConnectorTypeInfo,
   type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
@@ -43,7 +42,6 @@ import {
   fetchBridges,
   fetchBridgeTypes,
   fetchBridgeUsers,
-  fetchConnectorTypes,
   fetchDocumentRooms,
   fetchDocuments,
   fetchInboundLinkedRooms,
@@ -225,10 +223,6 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
 
 export function useUsers(): UseQueryResult<UserInfo[]> {
   return useQuery(fetchUsers);
-}
-
-export function useConnectorTypes(): UseQueryResult<ConnectorTypeInfo[]> {
-  return useQuery(fetchConnectorTypes);
 }
 
 export function useApiKeys(): UseQueryResult<ApiKeyDetail[]> {

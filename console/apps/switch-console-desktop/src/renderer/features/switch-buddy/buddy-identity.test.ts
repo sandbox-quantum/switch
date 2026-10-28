@@ -28,6 +28,17 @@ describe('isBuddy', () => {
     expect(isBuddy({ name: 'helper' })).toBe(false);
     expect(isBuddy({ name: 'switch-buddyish' })).toBe(false);
   });
+
+  it("goes by the server's record of the template that made it, when there is one", () => {
+    const buddy = { id: 'official:switch-buddy', key: 'buddy', revision: 9 };
+    expect(isBuddy({ name: 'renamed-by-max', template: buddy })).toBe(true);
+    expect(
+      isBuddy({ name: 'switch-buddy-max', template: { id: 'tpl-1', key: 'helper', revision: 1 } })
+    ).toBe(false);
+    // No record (null), or a server too old to keep one (absent): the name decides.
+    expect(isBuddy({ name: 'switch-buddy-max', template: null })).toBe(true);
+    expect(isBuddy({ name: 'helper', template: null })).toBe(false);
+  });
 });
 
 describe('buddyIsPending', () => {

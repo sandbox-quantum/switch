@@ -22,18 +22,22 @@ auth:
     url: https://api.atlassian.com/me
     account_id: account_id
     label: email
-# Atlassian's MCP access tokens live 8 hours; agents still ask again hourly.
+# Atlassian's MCP access tokens live 8 hours, and Atlassian offers no way to
+# ask for a shorter one or to revoke one alone, so an agent's copy may outlive
+# its grant by up to that long. Agents still ask again hourly.
 token: { kind: pass_through, max_lifetime: 28800 }
 mcp:
   servers:
     - { name: atlassian, url: "https://mcp.atlassian.com/v2/mcp" }
 access:
   # The identity scopes are needed for consent; search:jira carries JQL search
-  # and search:confluence CQL search. Atlassian hides the write tools from a
-  # read-only sign-in. Not asked for: Rovo's cross-product search
-  # (search:rovo) and Teamwork Graph (read:all:twg), whose every call spends
-  # the organization's Rovo credits. Four Confluence write tools (infographics
-  # and apps on a page) spend them too, 15-30 credits a request.
+  # and search:confluence CQL search. A read-only sign-in still lists
+  # executeWrite and executeDestructive; Atlassian leaves write operations out
+  # of discover and reports the products read-only. Not asked for: Rovo's
+  # cross-product search (search:rovo) and Teamwork Graph (read:all:twg),
+  # whose every call spends the organization's Rovo credits. Four Confluence
+  # write tools (infographics and apps on a page) spend them too, 15-30
+  # credits a request.
   read:
     scopes:
       - read:me

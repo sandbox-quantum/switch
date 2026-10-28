@@ -387,7 +387,8 @@ class TestGivingAgentsServices:
         datadog = next(
             entry for entry in context["services"] if entry["slug"] == "datadog"
         )
-        assert datadog["unavailable_code"] == "not_set_up"
+        assert datadog["unavailable_code"] == "key_never_expires"
+        assert datadog["available"] is False
 
         taken = await _op(
             client,

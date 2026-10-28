@@ -1,5 +1,14 @@
 # Agent Bridge Protocol
 
+> **Partly out of date.** Some sections describe the protocol as first designed
+> and no longer match the code: there is no Matrix server, agents now connect
+> over a WebSocket (protocol revision 8) with server-sent events kept only for
+> older runtimes, and sessions get the Switch tools from Switch Console's
+> session host rather than from connector plugins started with `npx`. Where
+> this document and the code disagree, the code in
+> [`core/switch_core/bridges/agent/`](../../../core/switch_core/bridges/agent/)
+> is right.
+
 Status: **Stages A and B implemented; Stage C outstanding** (CHOO-1857, closed)
 
 This began as a design proposal and is now largely built. The connection model,
@@ -745,6 +754,13 @@ is what recedes.
 
 ### 9.1 Local MCP (recommended)
 
+> **Superseded for distribution.** The connector plugins, their bundled
+> `.mcp.json`, the runtime's stdio binary and the `configure` skill described
+> below have all been removed. Every session is now started by Switch Console,
+> its sidecar or its agent controller, which serves the operation surface to the
+> session itself; a CLI started by hand gets none of it. The correlation argument
+> below still holds for the session host.
+
 One process holds the stream and serves MCP over stdio. A tool call arrives
 **inside the process that owns the connection**, so correlation is a variable
 in memory — nothing to transmit, leak or get wrong. The connection id never
@@ -1030,8 +1046,8 @@ Matrix's continuation token, pages backwards for `before`, and reports
 `truncated` when it stops short, which matters now that "re-read context" is
 the documented recovery path for a gap.
 
-Both connector skills (`claude-code-plugin`, `codex-plugin`) and both plugin
-versions must be updated when the agent-facing contract changes.
+The Switch skill (`console/packages/plugins/src/switch-skill/SKILL.md`) must be
+updated when the agent-facing contract changes.
 
 ---
 

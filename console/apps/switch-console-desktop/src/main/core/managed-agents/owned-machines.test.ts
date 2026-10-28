@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { machineProvider, ownedMachines, thisComputerReport } from './owned-machines';
+import {
+  machineProvider,
+  ownedMachines,
+  preferredFirst,
+  thisComputerReport,
+} from './owned-machines';
 
 function controller(patch: Partial<ManagementController> & { id: string }): ManagementController {
   return {
@@ -173,5 +178,13 @@ describe('thisComputerReport', () => {
 
   it('is null when this computer runs no controller', async () => {
     expect(await thisComputerReport([], () => Promise.resolve([machine({})]))).toBeNull();
+  });
+});
+
+describe('preferredFirst', () => {
+  it('asks the server Console is on first, then the rest in order', () => {
+    expect(preferredFirst(['a', 'b', 'c'], 'b')).toEqual(['b', 'a', 'c']);
+    expect(preferredFirst(['a', 'b'], 'elsewhere')).toEqual(['a', 'b']);
+    expect(preferredFirst(['a', 'b'], null)).toEqual(['a', 'b']);
   });
 });

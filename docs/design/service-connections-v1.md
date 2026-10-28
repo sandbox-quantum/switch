@@ -10,9 +10,9 @@ foundation: see [`service-connections-v2.md`](service-connections-v2.md).
 The target contract is `controller-contract-v1.md`; its §5 is amended alongside
 this spec, and the deviations are listed below.
 
-"Connector" already means something else in Core (`agents.connector_type`,
-`bridges/agent/server_connectors/`), so this feature says **service** and
-**service connection** throughout: in tables, routes, code and screens.
+"Connector" already means something else in Core (`agents.connector_type`),
+so this feature says **service** and **service connection** throughout: in
+tables, routes, code and screens.
 
 ## Shape
 
@@ -621,7 +621,7 @@ vendor's HTTP side is faked.
 
 ## Rollout
 
-Deploy Core, then update Console and the agents controllers (cloud machines
+Deploy Core, then update Console and the agent controllers (cloud machines
 included), then drop `provider_connections` in the next release.
 
 ## Operating a self-hosted Core with GitHub

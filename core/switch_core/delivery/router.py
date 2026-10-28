@@ -90,6 +90,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
+from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
@@ -150,6 +151,9 @@ GROUP_SWEEP_SECONDS = 5.0
 _COMMAND_EVENT = "com.switch.command"
 
 
+_INSTALLS = TemplateInstallStore()
+
+
 class RoomReads:
     """What deciding one row reads about its room, read once and shared by
     every agent the row is decided for.
@@ -190,6 +194,7 @@ class RoomReads:
         self._claims: dict[str, list[str]] = {}
         self._standings: list[BudgetStanding] | None = None
         self._clients: dict[str, Client | None] = {}
+        self._notices: dict[str, str] | None = None
         self.addressing = _RoomAddressing(
             self, services=services, client_store=client_store
         )
@@ -374,6 +379,15 @@ class RoomReads:
                 session, tenant_id=self.tenant_id, agent_id=None
             )
         return self._standings
+
+    async def switch_notice(self, session: AsyncSession, agent_id: str) -> str | None:
+        """What Switch has to tell an agent before its next message (see
+        `TemplateInstallResource.notice`), read for every agent member at once."""
+        if self._notices is None:
+            self._notices = await _INSTALLS.notices_for_agents(
+                session, [member.agent.id for member in self.members]
+            )
+        return self._notices.get(agent_id)
 
     async def get_by_transport_user_id(
         self, session: AsyncSession, transport_user_id: str
@@ -1259,6 +1273,7 @@ class MessageRouter:
             addressing=reads.addressing,
             budget_guard=reads.budget_guard,
             clients=reads,
+            notices=reads,
             cloud_waking_notices=self._cloud_waking.setdefault(member.agent.id, set()),
         )
 

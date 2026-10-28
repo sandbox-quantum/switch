@@ -25,8 +25,9 @@ root is the worked example, and `examples/` holds more.
 10. [The form block](#the-form-block)
 11. [Version 2](#version-2)
 12. [Agents and saved templates](#agents-and-saved-templates)
-13. [Validation](#validation)
-14. [Versioning](#versioning)
+13. [Installs and updates](#installs-and-updates)
+14. [Validation](#validation)
+15. [Versioning](#versioning)
 
 ## A first template
 
@@ -147,7 +148,7 @@ is the name; keep it a plain identifier.
 | `bridge` | The display name of a messaging app set up on the server. | The server checks it exists. |
 | `room` | The name of a room on the server. | The server checks it exists. |
 | `user` | A username on the room's messaging app. | The server looks it up on the app. |
-| `provider` | A coding agent id: `claude`, `codex` or `opencode`. | Read when the agents are created; never in the room document. |
+| `provider` | A coding agent id: `claude`, `codex`, `opencode`, `antigravity` or `cursor`. | Read when the agents are created; never in the room document. |
 | `location` | Where an agent runs: `local`, or an SSH host name the Console knows. | Switch Console; never in the room document. |
 | `machine` | One of the deployer's machines on the server, by name or id. | Read when the agents are created; never in the room document. |
 | `directory` | An agent's working directory, on the machine it runs on. | Read when the agents are created; never in the room document. |
@@ -267,7 +268,7 @@ agent:
   icon_url:       https URL
   description:    text
   instructions:   text
-  provider:       claude | codex | opencode | "{param}"
+  provider:       claude | codex | opencode | antigravity | cursor | "{param}"
   machine:        machine name or id | "{param}"
   location:       local | ssh host | "{param}"
   directory:      path | "{param}"
@@ -439,6 +440,7 @@ room:
   users:           [ usernames ]
   roles:           [ ... ]
   references:      [ ... ]
+  packages:        [ {id: package id} or {name: package name} ]
   docs:            [ ... ]
   aliases:         { agent name: alias }
 ```
@@ -448,11 +450,29 @@ exports, so an exported room is a valid template once you add `params:`.
 `examples/room-templates/red-blue-workroom.template.yaml` documents every
 field in place.
 
+`roles:` are hats the room's agents can assume, each
+`{name, instructions, exclusive}`; an `exclusive: true` role (the default is
+`false`) has one holder at a time. `references:` attach outside material:
+`{id: ...}` or `{name: ...}` attaches a reference that exists, and one that
+is missing, ambiguous or not the deployer's to read stops the run; an entry
+with `type`, `name`, `description`, `instructions` and `value: {urls: [...]}`
+creates a new one (private unless `read_visibility` / `write_visibility` say
+otherwise). `docs:` are documents created in the room, each
+`{name, description, instructions, content}`. An exported room writes roles
+and docs in full and references by `id`.
+
 `agents:` names agents that exist on the server, plus the ones this
 document creates by the text written as their `name`. `users:` names people
 by their username on the room's messaging app; `{$creator}` puts the
 deployer in. Without `bridge:` the room is created on the server's default
 messaging app; on a server with none, it is a Switch-only room.
+
+`packages:` attaches packages that already exist, by `id` or by `name`; a
+template never creates or changes one. The deployer must be able to read
+each package, as when attaching it by hand, and a name must match exactly
+one package they own or that is public. A package that is missing, ambiguous
+or not theirs to attach stops the run before the room is created. An
+exported room lists its packages by `id`.
 
 ## Groups
 
@@ -690,6 +710,48 @@ documents against (`core/switch_core/template_guide.py`; keep it in step).
 
 A refusal tells the agent why. The server logs it, naming the agent, and
 counts it in telemetry by operation and reason.
+
+## Installs and updates
+
+A template's **revision** is its own edit count, not the language version
+(`version: 2`): a saved template's goes up each time its document is
+replaced, and an official template's is the last entry in its
+`revisions.json`, beside its files. Revisions are recorded when Switch is
+released, with the other versions (`just record-template-revisions`, see
+RELEASING.md), not by whoever changes a template: between releases a changed
+template is served under its last revision, and the release workflow refuses
+a release tag while a change is unrecorded.
+
+When the server runs a template whose source it can vouch for, it records
+the run as an **install**: the template's id and revision, the inputs it was
+rendered with, and, for each agent it created, the template's key for it (a
+version 2 resource key) and a fingerprint of each value the template set on
+it: instructions, description, icon and display name. It vouches for an
+agent's `run_template`, which names the template by id, and for a document
+the Console sends with a `template_id`, when the document is exactly that
+template's. A document that is an official template's word for word is
+recognised without one. A document someone wrote or changed has no install.
+The managed agent API returns the install as `template` (`{id, key,
+revision}`, or null).
+
+When the server starts, every install of an official template at an older
+revision is brought up to the current one:
+
+- A value whose fingerprint still matches (nobody changed it) takes the new
+  revision's value. A running agent is told its instructions changed.
+- A value somebody changed is left as it is.
+- Who may address the agent and whether it can manage agents never change,
+  whichever way the new revision would move them.
+
+When anything was left, the agent is told before each message, until it
+calls `get_template_status`, which lists what differs from the current
+revision and what the template recommends. switch-buddy's instructions have
+it explain that to its owner, who decides and makes any change. Every write
+is conditional on what was read, so servers starting together update each
+agent once. switch-buddies created before installs were recorded are
+recorded first, when named as buddies are and still carrying a released
+revision's icon or description, as the revision they match most. Saved
+templates are recorded but not updated yet.
 
 ## Validation
 

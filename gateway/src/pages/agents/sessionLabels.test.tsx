@@ -24,14 +24,14 @@ describe("sessionRunner", () => {
     ).toEqual({
       label: "Run by a machine",
       detail:
-        "Run by agents controller ctrl-1 on the machine the agent is placed on, working in this room.",
+        "Run by agent controller ctrl-1 on the machine the agent is placed on, working in this room.",
     });
     expect(
       sessionRunner(
         session({ lifecycle: "controller", controller_id: "ctrl-1", room_id: null, room_name: null }),
       )?.detail,
     ).toBe(
-      "Run by agents controller ctrl-1 on the machine the agent is placed on, running, with no session working in a room yet.",
+      "Run by agent controller ctrl-1 on the machine the agent is placed on, running, with no session working in a room yet.",
     );
   });
 

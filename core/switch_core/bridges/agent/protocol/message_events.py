@@ -51,6 +51,7 @@ def message_event(
     attachments: list[AttachmentRef] | None = None,
     opening_message: str | None = None,
     sender_role: str | None = None,
+    switch_notice: str | None = None,
 ) -> AgentEvent:
     """Build the `message` event the agent receives, with any attached files.
 
@@ -85,6 +86,7 @@ def message_event(
             attachments=attachments or [],
             opening_message=opening_message,
             sender_role=sender_role,
+            switch_notice=switch_notice,
         ),
     )
 

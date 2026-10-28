@@ -447,6 +447,7 @@ class ManagementAgentOperations:
                     controller_id=request.controller_id,
                     controller_id_given="controller_id" in request.model_fields_set,
                     protocol=protocol,
+                    expected_revision=None,
                 )
             except ManagementError as exc:
                 machine = controller.name if controller is not None else "(none)"

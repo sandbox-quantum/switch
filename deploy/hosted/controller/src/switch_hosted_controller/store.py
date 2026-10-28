@@ -31,6 +31,26 @@ class MachineNotFoundError(StoreError):
     pass
 
 
+def rebind_superseded_fingerprint(path: Path, superseded: str, fingerprint: str) -> None:
+    """Moves a state database bound to the controller's superseded fingerprint
+    onto its current one, before MachineStore checks it. The two describe the
+    same placement; a database bound to anything else is left for MachineStore
+    to refuse."""
+    if not path.exists():
+        return
+    connection = sqlite3.connect(path, timeout=30, isolation_level=None)
+    try:
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'controller_metadata'"
+        ).fetchone():
+            connection.execute(
+                "UPDATE controller_metadata SET value = ? WHERE key = ? AND value = ?",
+                (fingerprint, "controller_fingerprint", superseded),
+            )
+    finally:
+        connection.close()
+
+
 class MachineStore:
     def __init__(self, path: Path, controller_fingerprint: str):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,21 +316,21 @@ class MachineStore:
     def mark_volume_create_intent(self, claim: Machine) -> Machine:
         return self._mark_intent(claim, "volume_create_intent")
 
-    def use_image(self, claim: Machine, image_id: str) -> Machine:
-        """Launch the machine's next instance from `image_id`: only while it has
-        no instance and no launch is issued, so nothing launched is told apart
-        from its launch request by the image."""
+    def use_launch_spec(self, claim: Machine, image_id: str, instance_type: str) -> Machine:
+        """Launch the machine's next instance from `image_id` as `instance_type`:
+        only while it has no instance and no launch is issued, so nothing
+        launched is told apart from its launch request by either."""
         self._connection.execute(
             """
-            UPDATE machines SET image_id = ?, updated_at = CURRENT_TIMESTAMP
+            UPDATE machines SET image_id = ?, instance_type = ?, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = ? AND desired_revision = ? AND operation_id = ?
             AND instance_id IS NULL AND instance_launch_issued = 0
             """,
-            (image_id, claim.machine_id, claim.desired_revision, claim.operation_id),
+            (image_id, instance_type, claim.machine_id, claim.desired_revision, claim.operation_id),
         )
         return self.get(claim.machine_id)
 
-    def upgrade_terminated(self, claim: Machine, image_id: str) -> Machine:
+    def upgrade_terminated(self, claim: Machine, image_id: str, instance_type: str) -> Machine:
         if (
             claim.desired_state is not DesiredState.STOPPED
             or not claim.instance_id
@@ -319,12 +339,12 @@ class MachineStore:
             raise StoreError(
                 "image upgrades require a stopped machine and confirmed terminated predecessor"
             )
-        if image_id == claim.image_id:
-            raise StoreError("the machine already uses this image")
+        if image_id == claim.image_id and instance_type == claim.instance_type:
+            raise StoreError("the machine already uses this image and instance type")
         cursor = self._connection.execute(
             """UPDATE machines SET previous_instance_id = instance_id, instance_id = NULL,
             instance_bundle = NULL,
-            image_id = ?, instance_seq = instance_seq + 1,
+            image_id = ?, instance_type = ?, instance_seq = instance_seq + 1,
             desired_revision = desired_revision + 1, operation_id = ?,
             instance_launch_intent = 0, instance_launch_issued = 0, instance_launch_issued_at = NULL,
             instance_terminate_issued = 0,
@@ -333,6 +353,7 @@ class MachineStore:
             AND desired_state = 'stopped' AND instance_id = ? AND instance_terminal_observed = 1""",
             (
                 image_id,
+                instance_type,
                 str(uuid.uuid4()),
                 claim.machine_id,
                 claim.desired_revision,
@@ -341,7 +362,7 @@ class MachineStore:
             ),
         )
         if cursor.rowcount != 1:
-            raise StoreError("machine state changed during image upgrade; refresh before retrying")
+            raise StoreError("machine state changed during upgrade; refresh before retrying")
         return self.get(claim.machine_id)
 
     def replace_terminated(self, claim: Machine, *, unexpected: bool) -> Machine:

@@ -53,6 +53,12 @@ import {
   readToldInstructions,
   recordToldInstructions,
 } from './told-instructions';
+import {
+  readToldRoomInstructions,
+  recordToldRoomInstructions,
+  roomInstructionsNote,
+  roomInstructionsUnreadNote,
+} from './told-room-instructions';
 import { startVendorClis } from './vendor-cli';
 import {
   CALL_TIMEOUT_MS,
@@ -104,6 +110,8 @@ export type SharedHostOptions = {
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
+const roomInstructionsAnswerSchema = z.object({ instructions: z.string() });
+
 const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -651,6 +659,39 @@ export async function runSharedHost(
           `Could not give session ${options.session.sessionId} its changed instructions as a developer message (${error instanceof Error ? error.message : String(error)}); it is told with its next room message instead.`
         );
       }
+    // ── Telling a conversation the instructions of the rooms it is in ─────
+    let toldRooms = await readToldRoomInstructions(options.root);
+    const roomInstructionsTold = async (rooms: Record<string, string>): Promise<void> => {
+      toldRooms = rooms;
+      await recordToldRoomInstructions(options.root, rooms);
+    };
+    /**
+     * What to tell the conversation about a room's instructions before its
+     * message, and the instructions to record as told once the message runs
+     * (null when they could not be read, so the next message tries again).
+     */
+    const roomInstructionsFor = async (
+      roomId: string
+    ): Promise<{ note: string | null; instructions: string | null }> => {
+      if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
+      if (host!.snapshot().turns.length === 0) toldRooms = {};
+      try {
+        const { instructions } = roomInstructionsAnswerSchema.parse(
+          await parentChannel.ask({ type: 'room-instructions', roomId })
+        );
+        return {
+          note: roomInstructionsNote(roomId, instructions, toldRooms[roomId]),
+          instructions,
+        };
+      } catch (error) {
+        executionSignal.throwIfAborted();
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `Could not read room ${roomId}'s instructions for session ${options.session.sessionId} (${reason}); the session is told to read them itself.`
+        );
+        return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
+      }
+    };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
@@ -708,9 +749,12 @@ export async function runSharedHost(
               `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
             )
           );
-      // A fresh conversation starts with the instructions this host was given.
-      if (command.body.type === 'session.reset' && status?.status === 'applied')
+      // A fresh conversation starts with the instructions this host was given,
+      // and has been told no room's.
+      if (command.body.type === 'session.reset' && status?.status === 'applied') {
         await instructionsTold();
+        await roomInstructionsTold({});
+      }
       return status ?? 'The host did not record the command.';
     };
     /** Turn each room message handed over into the command it amounts to, in order. */
@@ -741,6 +785,8 @@ export async function runSharedHost(
             planned.refused = `It could not be fetched: ${error instanceof Error ? error.message : String(error)}.`;
           }
         }
+        const room = await roomInstructionsFor(event.roomId);
+        const preface = [instructionsNote, room.note].filter((note) => note !== null);
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
@@ -749,19 +795,18 @@ export async function runSharedHost(
           message: message.data,
           surface: 'switch-web',
           attachments,
-          preface: instructionsNote,
+          preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: host!.snapshot().turns.length === 0,
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
         // rather than losing it.
         const outcome = await run(command, null);
-        if (
-          instructionsNote !== null &&
-          typeof outcome !== 'string' &&
-          outcome.status !== 'rejected'
-        )
-          await instructionsTold();
+        if (typeof outcome !== 'string' && outcome.status !== 'rejected') {
+          if (instructionsNote !== null) await instructionsTold();
+          if (room.instructions !== null)
+            await roomInstructionsTold({ ...toldRooms, [event.roomId]: room.instructions });
+        }
         await inbox.acknowledge(event);
       }
     };
@@ -1063,7 +1108,8 @@ export async function hostSessionProcess(input: {
       mcp.spec,
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
-      { ...vendors.specs, ...clis.specs }
+      { ...vendors.specs, ...clis.specs },
+      (secret) => redactions.add(secret)
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
     // The people watching see it as a notice; the agent reads it with the

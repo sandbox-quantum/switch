@@ -1,6 +1,7 @@
 import { ConnectorTile } from '@renderer/features/connectors/connector-tile';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
@@ -16,38 +17,44 @@ import {
   actionLabel,
   cardOrder,
   cardState,
+  changeBlocked,
+  missingPublicUrl,
   stateLabel,
   tileAction,
   tileStanding,
 } from './connector-apps';
 
-/** Whether an app can be set up or changed here now: a vendor needs the public URL first. */
-export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {
-  return publicUrl === null || app.setup_blocked !== null;
-}
-
 /**
  * Opens the dialog for an app's action, and says what it did once it is
  * done. Shared by the tiles and the profile, so a fix does the same thing
- * from either.
+ * from either. A save checks the app, so it ends on the app's page, where
+ * what the vendor said shows.
  */
 export function useConnectorAppDialogs(serverId: string, publicUrl: string | null) {
   const showSetup = useShowModal('connectorAppSetupModal');
   const showSecret = useShowModal('connectorAppSecretModal');
   const showRemove = useShowModal('connectorAppRemoveModal');
   const showMove = useShowModal('connectorAppMoveModal');
+  const { navigate } = useNavigate();
   const { toast } = useToast();
   const done = (message: string) => toast({ title: message });
   return (app: ConnectorApp, action: Exclude<CardAction, 'check'> | MenuAction) => {
     const base = { serverId, app, onSuccess: done };
+    const saved = {
+      ...base,
+      onSuccess: (message: string) => {
+        done(message);
+        navigate('admin', { serverId, section: 'apps', app: app.slug });
+      },
+    };
     switch (action) {
       case 'set_up':
       case 'enter_again':
-        return showSetup({ ...base, publicUrl, mode: action });
+        return showSetup({ ...saved, publicUrl, mode: action });
       case 'switch_app':
-        return showSetup({ ...base, publicUrl, mode: 'switch' });
+        return showSetup({ ...saved, publicUrl, mode: 'switch' });
       case 'update_secret':
-        return showSecret(base);
+        return showSecret(saved);
       case 'remove':
         return showRemove(base);
       case 'manage_here':
@@ -118,7 +125,7 @@ export function ConnectorAppsTab({
   );
   return (
     <div className="space-y-3">
-      {publicUrl === null && (
+      {missingPublicUrl(apps.data.apps, publicUrl) && (
         <Alert>
           <AlertDescription>{PUBLIC_URL_BANNER}</AlertDescription>
         </Alert>

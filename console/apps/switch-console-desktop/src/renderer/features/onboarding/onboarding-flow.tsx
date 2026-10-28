@@ -1,8 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { Fragment, useEffect, useState } from 'react';
-import { buddyIntroStore } from '@renderer/features/switch-buddy/buddy-intro-store';
 import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
-import { openBuddyChat } from '@renderer/features/switch-buddy/open-buddy';
+import { openBuddyAfterOnboarding } from '@renderer/features/switch-buddy/open-buddy';
 import {
   ExternalServerStep,
   LocalSetupStep,
@@ -143,11 +142,7 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     // is still on screen: ending the flow first would draw the app's home
     // page for the moment that takes, then jump to the buddy.
     await switchServersStore.setActive(serverId);
-    if (agent) await openBuddyChat(serverId, agent);
-    else {
-      buddyIntroStore.skipped();
-      navigate('switchBuddy', { serverId });
-    }
+    await openBuddyAfterOnboarding(serverId, agent);
     onboardingStore.reset();
   };
 
@@ -332,6 +327,9 @@ function currentPage(
           serverId={server.id}
           workspaceId={workspaceId}
           onCreated={(agent) => void finishWithBuddy(server.id, agent)}
+          onSetupOpened={() =>
+            report('onboarding_page', { page: 'provider_setup', path: onboardingStore.via })
+          }
           onSkip={() => void finishWithBuddy(server.id, null)}
           onNotOffered={() => finish(server.id)}
         />

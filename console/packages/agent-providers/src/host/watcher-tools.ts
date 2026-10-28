@@ -162,16 +162,49 @@ export function sessionToolAnswerer(deps: {
     return null;
   };
 
+  /**
+   * The instructions of the room the session attends, read through
+   * `connect_to_room`, which for an agent whose controller places its sessions
+   * checks membership and returns the room's context without claiming
+   * anything. Called directly rather than as the session's own connect: that
+   * one also places the session, and a session that has moved on since the
+   * message was handed over is not to be moved back.
+   */
+  const roomInstructions = async (
+    caller: Caller,
+    catalog: SwitchToolCatalog,
+    ask: Extract<HostAsk, { type: 'room-instructions' }>
+  ): Promise<{ instructions: string }> => {
+    const attended = deps.placements.roomOf(caller.sessionId);
+    if (attended !== ask.roomId)
+      throw new Error(
+        `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its instructions were not read.`
+      );
+    const result = await catalog.call(await context(caller), 'connect_to_room', {
+      room_id: ask.roomId,
+      include_general_instructions: false,
+    });
+    if (result.isError) throw new Error(resultText(result));
+    const instructions = result.structuredContent?.instructions;
+    if (typeof instructions !== 'string')
+      throw new Error(`connect_to_room answered for room ${ask.roomId} without its instructions.`);
+    return { instructions: instructions.replace(ROOM_SECTION_HEADING, '').trim() };
+  };
+
   return async (caller, ask) => {
     if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
     const catalog = await tools();
     if (ask.type === 'tools') return catalog.tools();
     if (ask.type === 'room-reply') return roomReply(caller, catalog, ask);
+    if (ask.type === 'room-instructions') return roomInstructions(caller, catalog, ask);
     const args = deps.redactions.value(ask.arguments);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
     return catalog.call(await context(caller), ask.name, args);
   };
 }
+
+/** The heading `connect_to_room` puts over a room's own instructions (`build_room_instructions`). */
+const ROOM_SECTION_HEADING = /^## Room-specific instructions\s*/;
 
 function resultText(result: ToolResult): string {
   return result.content.map((part) => part.text).join('\n');

@@ -298,6 +298,9 @@ function connectorApp(overrides: Partial<ConnectorApp>): ConnectorApp {
     unreadable: false,
     load_error: null,
     redirect_uri: 'https://switch.example.test/callback',
+    redirect_uris: ['https://switch.example.test/callback'],
+    needs_public_url: true,
+    scopes: [],
     setup_blocked: null,
     install_url: null,
     updated_by_name: 'Ada',
@@ -384,8 +387,20 @@ it("opens an app's profile from its tile, and a failed check stays on the tile a
   switchServers.checkConnectorApp.mockResolvedValue({
     ok: false,
     checks: [
-      { name: 'client', ok: true, message: 'Google knows the client.', field: null },
-      { name: 'secret', ok: false, message: 'Google refused the secret.', field: 'client_secret' },
+      {
+        name: 'client',
+        ok: true,
+        message: 'Google knows the client.',
+        field: null,
+        note: 'Have someone else connect once.',
+      },
+      {
+        name: 'secret',
+        ok: false,
+        message: 'Google refused the secret.',
+        field: 'client_secret',
+        note: null,
+      },
     ],
   });
   navigation.navigate('admin', { section: 'apps' });
@@ -410,9 +425,10 @@ it("opens an app's profile from its tile, and a failed check stays on the tile a
 
   await act(async () => button(/^Check it works$/, page)!.click());
   await vi.waitFor(() => expect(page.textContent).toContain('Google refused the secret.'));
-  expect(page.querySelector('[aria-label="What the vendor said"]')!.textContent).toContain(
-    'Google knows the client.'
-  );
+  const said = page.querySelector('[aria-label="What the vendor said"]')!;
+  expect(said.textContent).toContain('Google knows the client.');
+  expect(said.querySelector('strong')?.textContent).toBe('Note:');
+  expect(said.textContent).toContain('Note: Have someone else connect once.');
   // The fix is now the obvious button.
   expect(button(/^Update secret$/, page)).toBeDefined();
 
@@ -439,6 +455,14 @@ it('says what is missing before an app can be set up, and holds the button', asy
   ).toBe(true);
 });
 
+const SAVED_CHECK = {
+  name: 'client',
+  ok: true,
+  message: 'Google Workspace accepts this client ID and secret.',
+  field: null,
+  note: "Switch can't check the redirect URI. Connect once to confirm.",
+};
+
 it('marks the value the vendor refused, and saves once it is right', async () => {
   const onSuccess = vi.fn();
   switchServers.saveConnectorApp
@@ -448,12 +472,13 @@ it('marks the value the vendor refused, and saves once it is right', async () =>
       field: 'client_secret',
       checks: [],
     })
-    .mockResolvedValueOnce({ kind: 'saved', app: GOOGLE });
+    .mockResolvedValueOnce({ kind: 'saved', app: GOOGLE, checks: [SAVED_CHECK] });
   switchServers.getConnectorApps.mockResolvedValue({ public_url: null, apps: [GOOGLE] });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  // Kept as the app keeps it, for the app's page to read after the save.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
@@ -503,4 +528,8 @@ it('marks the value the vendor refused, and saves once it is right', async () =>
   expect(dialog.querySelector('[role="alert"]')).toBeNull();
   await act(async () => button(/^Check and save$/, dialog)!.click());
   await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledWith('Google Workspace is ready.'));
+  // What the save's check said is kept for the app's page, note and all.
+  expect(client.getQueryData(['connector-app-checks', 'server', 'google-workspace'])).toEqual([
+    SAVED_CHECK,
+  ]);
 });

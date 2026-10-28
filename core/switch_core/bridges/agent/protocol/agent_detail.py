@@ -13,20 +13,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.addressing import (
+    ANY,
     AddressingPolicy,
+    Dimension,
     owner_and_owner_agents_policy,
     owner_only_policy,
+    parse_policy,
+    policy_kind,
 )
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url, refuse_third_party_avatar
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
-from switch_core.db.models import Agent, AgentSession
+from switch_core.db.models import (
+    Agent,
+    AgentSession,
+    Client,
+    ExternalUser,
+    Room,
+    RoomGroup,
+    User,
+)
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -34,12 +47,15 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.gateway.schemas import (
+    AddressingRuleView,
+    AgentAddressing,
     AgentDetail,
     AgentModelSummary,
     AgentRoomMembership,
     AgentSessionDetail,
     AgentSummary,
     AgentToolSummary,
+    NamedEntry,
 )
 
 
@@ -321,6 +337,118 @@ async def assemble_agent_detail(
         sessions=sessions,
         children=children,
     )
+
+
+def agent_facing_summary(summary: AgentSummary) -> dict[str, Any]:
+    """`summary` as an agent may read it: without the raw addressing policy,
+    whose rules name the users, agents and rooms the owner let in. An agent
+    learns who may address it from `describe_addressing` instead."""
+    return summary.model_dump(exclude={"addressing_policy"})
+
+
+def agent_facing_detail(detail: AgentDetail) -> dict[str, Any]:
+    """`detail` as an agent may read it, its children included; see
+    `agent_facing_summary`."""
+    return detail.model_dump(
+        exclude={
+            "addressing_policy": True,
+            "children": {"__all__": {"addressing_policy"}},
+        }
+    )
+
+
+async def describe_addressing(
+    session: AsyncSession, *, agent: Agent, with_rules: bool
+) -> AgentAddressing:
+    """Who may address `agent`, for an agent to read and repeat to a person.
+
+    `with_rules` is for the agent reading its own policy: the rules come with
+    every id they name resolved to the name people know it by, so the agent
+    can say who may answer it rather than quote ids. Any other reader gets
+    the policy's kind alone.
+    """
+    kind = policy_kind(agent.addressing_policy)
+    if not with_rules:
+        return AgentAddressing(policy=kind, rules=None)
+    policy = parse_policy(agent.addressing_policy)
+    names = await _addressing_names(session, policy)
+    return AgentAddressing(
+        policy=kind,
+        rules=[
+            AddressingRuleView(
+                rooms=_named(rule.rooms, names.rooms),
+                room_groups=_named(rule.room_groups, names.room_groups),
+                users=_named(rule.users, names.users),
+                agents=_named(rule.agents, names.agents),
+                owner=rule.owner,
+                owner_agents=rule.owner_agents,
+                platform=rule.platform,
+            )
+            for rule in policy.rules
+        ],
+    )
+
+
+@dataclass(frozen=True)
+class _AddressingNames:
+    rooms: dict[str, str]
+    room_groups: dict[str, str]
+    users: dict[str, str]
+    agents: dict[str, str]
+
+
+async def _addressing_names(
+    session: AsyncSession, policy: AddressingPolicy
+) -> _AddressingNames:
+    """The names of everything `policy` lists by id, one query per kind.
+
+    A `users` entry is a chat account (named by its username on the platform)
+    or a person's own Switch member client (named by that person's name).
+    """
+
+    def ids(dimension: str) -> set[str]:
+        return {
+            value
+            for rule in policy.rules
+            for value in _listed(getattr(rule, dimension))
+        }
+
+    async def names_of(model: Any, column: Any, wanted: set[str]) -> dict[str, str]:
+        if not wanted:
+            return {}
+        rows = await session.execute(
+            select(model.id, column).where(model.id.in_(wanted))
+        )
+        return {row_id: name for row_id, name in rows.tuples()}
+
+    user_ids = ids("users")
+    users = await names_of(ExternalUser, ExternalUser.external_username, user_ids)
+    member_ids = user_ids - users.keys()
+    if member_ids:
+        rows = await session.execute(
+            select(Client.id, User.name)
+            .join(User, User.id == Client.user_id)
+            .where(Client.id.in_(member_ids))
+        )
+        users.update({row_id: name for row_id, name in rows.tuples()})
+    return _AddressingNames(
+        rooms=await names_of(Room, Room.name, ids("rooms")),
+        room_groups=await names_of(RoomGroup, RoomGroup.name, ids("room_groups")),
+        users=users,
+        agents=await names_of(Agent, Agent.name, ids("agents")),
+    )
+
+
+def _listed(dimension: Dimension) -> list[str]:
+    return [] if dimension == ANY else list(dimension)
+
+
+def _named(
+    dimension: Dimension, names: dict[str, str]
+) -> Literal["*"] | list[NamedEntry]:
+    if dimension == ANY:
+        return "*"
+    return [NamedEntry(id=value, name=names.get(value)) for value in dimension]
 
 
 async def apply_agent_options(

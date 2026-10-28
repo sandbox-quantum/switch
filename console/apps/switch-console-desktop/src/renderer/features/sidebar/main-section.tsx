@@ -6,6 +6,7 @@ import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-
 import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
+import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
@@ -89,7 +90,7 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
  */
 const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { serverId: string }) {
   const active = useCurrentViewId() === 'switchBuddy';
-  const name = expectedBuddyName(switchServersStore.statusFor(serverId)?.user ?? null);
+  const name = expectedBuddyName(buddyPerson(serverId));
   return (
     <SidebarMenuRow
       isActive={active}

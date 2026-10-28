@@ -2,7 +2,7 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderDefinition } from '@shared/core/providers/agent-provider-registry';
 
 /**
- * Where a provider stands on this computer, as its agents controller last
+ * Where a provider stands on this computer, as its agent controller last
  * reported it to Switch: what Switch checks before it will create an agent
  * with it, so the one answer the buddy pages go by.
  *

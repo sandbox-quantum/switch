@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
@@ -21,7 +22,6 @@ from switch_core.logging_context import LogContextFilter
 from switch_core.observability.catalogue import (
     AGENTS_CONNECTED,
     BRIDGES_RUNNING,
-    CONNECTORS_RUNNING,
     CONSUMERS_RUNNING,
     DB_POOL_IN_USE,
     DB_POOL_OVERFLOW,
@@ -36,7 +36,6 @@ from switch_core.observability.health import (
     HealthMonitor,
     agent_event_listener_check,
     bridges_check,
-    connectors_check,
     database_check,
     message_listener_check,
     session_activity_listener_check,
@@ -93,8 +92,6 @@ class RuntimeProbes:
     bridges_running_by_platform: Callable[[], Mapping[str, int]]
     bridges_configured: Callable[[], int]
     consumers_running: Callable[[], int]
-    connectors_running: Callable[[], int]
-    connectors_configured: Callable[[], int]
     # Agents per (transport, client); see
     # `AgentConnectionRegistry.live_agents_by_transport`.
     agents_connected: Callable[[], Mapping[tuple[str, str], int]]
@@ -157,7 +154,6 @@ def _state_readings(probes: RuntimeProbes) -> Callable[[], Iterator[GaugeReading
                 float(running),
                 {"bridge": "collaboration", "platform": platform},
             )
-        yield GaugeReading(CONNECTORS_RUNNING, float(probes.connectors_running()), {})
 
         stats = probes.pool_stats()
         if stats is not None:
@@ -202,7 +198,6 @@ def start_observability(
             ),
             signal_bus_check(probes.signal_bus_connected, listeners_gate),
             bridges_check(probes.bridges_running, probes.bridges_configured),
-            connectors_check(probes.connectors_running, probes.connectors_configured),
         ],
         interval_seconds=HEALTH_REFRESH_INTERVAL_SECONDS,
     )
@@ -252,6 +247,7 @@ def start_observability(
         commit_sha=switch_core_commit(),
         repository_url=switch_core_repository_url(),
         instance_id=process_id,
+        pod_name=config.pod_name or socket.gethostname(),
     )
 
     if config.otlp_metrics_enabled:

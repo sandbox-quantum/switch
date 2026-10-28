@@ -191,9 +191,11 @@ export type LocalServerStatus = {
    * available. A Docker server always runs it, so this is null there. */
   mattermost: boolean | null;
   /** How the Mattermost beside a native server is doing since the last start:
-   * it comes up after the server does. Null when it is off, or when nothing has
-   * been seen of it since Console launched. */
-  mattermostState: 'starting' | 'running' | 'failed' | null;
+   * it comes up after the server does. `off` when the running server is going
+   * without it: turned off, or left out at start because Docker was not there.
+   * Null when the server is not running, or when nothing has been seen of it
+   * since Console launched. */
+  mattermostState: 'off' | 'starting' | 'running' | 'failed' | null;
   /** Something the last start could not do that did not stop it (Mattermost
    * skipped or failed, say), for the server page to say; else null. */
   notice: string | null;

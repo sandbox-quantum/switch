@@ -18,8 +18,9 @@ export interface ProviderRuntimeOptions {
   logger: ProviderLogger | undefined;
   /**
    * The Switch skill file, for a provider that loads skills from a directory
-   * it is given (OpenCode), or '' for none. Codex takes it through its session
-   * home instead, and ACP agents through the session's system context.
+   * it is given (OpenCode), or '' for none. Codex and the ACP agents take it
+   * through the session's system context instead (Codex as its
+   * `developerInstructions`).
    */
   skill: string;
   /**

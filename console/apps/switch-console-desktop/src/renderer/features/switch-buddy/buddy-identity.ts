@@ -4,8 +4,8 @@ import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agent
 /** The template every person's buddy is created from, served by the server. */
 export const BUDDY_TEMPLATE_ID = 'official:switch-buddy';
 
-/** What the buddy is, whoever's it is: each one is shown by its own name, switch-buddy-<person>. */
-export const BUDDY_KIND = 'switch-buddy';
+/** The template's key for the buddy among what it creates. */
+export const BUDDY_KEY = 'buddy';
 
 const NAME_PREFIX = 'switch-buddy';
 
@@ -37,14 +37,40 @@ export function buddyAgentName(
 }
 
 /**
- * Whether one of the person's own managed agents is their buddy: named as
- * buddies are created (`switch-buddy` or `switch-buddy-<person>`). Read off
- * the name rather than the picture, which the person, or the buddy itself,
- * may change; the list holds only their own agents, so another person's
- * buddy is never taken for theirs.
+ * Whether one of the person's own managed agents is their buddy.
+ *
+ * The server records which template run created an agent: when it says, that
+ * decides (the buddy is what switch-buddy's template created as `buddy`, so an
+ * agent another template made is never taken for it, whatever its name). An
+ * agent with no record, or from a server too old to keep one, is read off its
+ * name instead: named as buddies are created (`switch-buddy` or
+ * `switch-buddy-<person>`). The list holds only the person's own agents, so
+ * another person's buddy is never taken for theirs.
  */
-export function isBuddy(agent: Pick<ManagedAgentView, 'name'>): boolean {
+export function isBuddy(
+  agent: Pick<ManagedAgentView, 'name'> & Partial<Pick<ManagedAgentView, 'template'>>
+): boolean {
+  if (agent.template)
+    return agent.template.id === BUDDY_TEMPLATE_ID && agent.template.key === BUDDY_KEY;
   return agent.name === NAME_PREFIX || agent.name.startsWith(`${NAME_PREFIX}-`);
+}
+
+/** The person's buddy among their own agents, if they have one. */
+export function findBuddy<T extends Pick<ManagedAgentView, 'name'>>(
+  agents: readonly T[] | null | undefined
+): T | null {
+  return agents?.find(isBuddy) ?? null;
+}
+
+/**
+ * Whether a server offers switch-buddy: it is made from a template the server
+ * serves behind its `switch_buddy` flag, and runs as a managed agent, so
+ * agent management must be on too.
+ */
+export function buddyOffered(
+  flags: Pick<FeatureFlags, 'switch_buddy' | 'agent_management'>
+): boolean {
+  return flags.switch_buddy && flags.agent_management;
 }
 
 /**
@@ -66,10 +92,9 @@ export function buddyIsPending({
   return (
     onboardingBuilt &&
     serverId !== null &&
-    flags.switch_buddy &&
-    flags.agent_management &&
+    buddyOffered(flags) &&
     Array.isArray(agents) &&
-    !agents.some(isBuddy)
+    findBuddy(agents) === null
   );
 }
 

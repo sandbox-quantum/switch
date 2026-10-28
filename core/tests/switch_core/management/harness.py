@@ -60,6 +60,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
@@ -71,6 +72,7 @@ from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
 from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
+from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.db_buffer import db_buffer_on
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
@@ -184,6 +186,7 @@ class Harness:
     controller_auth_cache: ControllerAuthCache
     clock: Clock
     session_factory: async_sessionmaker[AsyncSession]
+    user_changes: LocalUserChanges
     broker: ServiceBroker
     vendor: FakeVendor
 
@@ -229,6 +232,7 @@ def build_harness(
     protocol = protocol_service(session_factory, cache)
     process_id = str(uuid.uuid4())
     signal_bus = SignalBus(session_factory, signal_engine, process_id=process_id)
+    user_changes = LocalUserChanges()
     management = build_management(
         token_secret=TOKEN_SECRET,
         status_interval_seconds=STATUS_INTERVAL,
@@ -248,6 +252,7 @@ def build_harness(
             processes=SwitchCoreProcessStore(),
             key_ids=[key.id for key in TEST_KEYRING.keys],
         ),
+        user_changes=SignalUserChanges(local=user_changes, bus=signal_bus),
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:
@@ -287,10 +292,14 @@ def build_harness(
     )
     gateway_app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
     gateway_app.dependency_overrides[gw_deps.get_protocol] = lambda: protocol
+    gateway_app.dependency_overrides[gw_deps.get_template_store] = lambda: (
+        TemplateStore()
+    )
     gateway_app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=TEST_KEYRING,
         gateway_tenant_choice_enabled=False,
         third_party_avatars_enabled=third_party_avatars,
+        feature_flags={"agent_management": True, "switch_buddy": True},
     )
     agent_app.mount("/gateway", gateway_app)
     agent_app.add_middleware(
@@ -311,6 +320,7 @@ def build_harness(
         controller_auth_cache=controller_auth_cache,
         clock=clock,
         session_factory=session_factory,
+        user_changes=user_changes,
         broker=broker,
         vendor=vendor,
     )

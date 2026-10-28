@@ -94,6 +94,14 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     body: z.string().min(1),
   }),
   /**
+   * The room's own instructions, answered with `{ instructions }` ('' for a
+   * room with none). Refused unless the session still attends `roomId`.
+   */
+  z.object({
+    type: z.literal('room-instructions'),
+    roomId: z.string().min(1),
+  }),
+  /**
    * A token for one of the agent's granted services, answered with a
    * `ServiceTokenAnswer`. `rejected` is a token the service refused (Git
    * erasing it, or `gh` told 401): the parent stops handing it out.

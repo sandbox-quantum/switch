@@ -17,9 +17,11 @@ set up or renew.
 - **Jira and Confluence only.** Atlassian's other apps are not part of this
   connection. If Confluence tools are missing, your owner connected before
   Confluence was added and has to connect Atlassian again.
-- **Read or write is your owner's choice, made when they connected.** If they
-  connected for reading only, Atlassian hides the write tools and refuses
-  writes: tell the user that, rather than looking for another way.
+- **Read or write is your owner's choice, made when they connected.**
+  `getAccessibleAtlassianResources` reports each product's access, read-only or
+  not. On a read-only connection `executeWrite` and `executeDestructive` are
+  still listed, but `discover` returns no write operations: tell the user you
+  can only read, rather than looking for another way.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.

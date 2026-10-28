@@ -11,7 +11,7 @@ for a confirmed server stop; unknown outcomes remain visible.
 Local and SSH hosts use the same SDK protocol but not the same process tree: a
 local host and its room watcher are owned by Console and stop with it, and only
 an SSH host is deployed and detached. The one local exception is a managed agent
-run by the embedded agents controller (`src/main/core/embedded-controller/`): its
+run by the embedded agent controller (`src/main/core/embedded-controller/`): its
 watcher is detached like a remote one, keeps running when Console quits, and
 reconnects when the controller is back. A Console agent moved to managed
 (`src/main/core/agent-migration/`) is the same: Console leaves its watcher and

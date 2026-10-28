@@ -248,6 +248,9 @@ class _AttachableAdapter(_RecordingAdapter):
     def set_on_attached(self, callback: Any) -> None:
         return None
 
+    def awaiting_shared_connection(self) -> bool:
+        return not self.attached
+
 
 class _FakeLifecycle:
     """Registers real rows, on a plain session like the real lifecycle.

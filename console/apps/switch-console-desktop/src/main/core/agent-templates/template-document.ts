@@ -50,8 +50,8 @@ export type ParsedAgentEntry = {
   addressing: AgentTemplateAddressing | null;
   /**
    * Which coding agent runs it. Either a provider id (`claude`, `codex`,
-   * `opencode`) or a `{param}` whose value is one. Null when the template
-   * has no `provider` field.
+   * `opencode`, `antigravity`, `cursor`) or a `{param}` whose value is one.
+   * Null when the template has no `provider` field.
    */
   provider: string | null;
   /** Where it runs: `local`, an ssh host, or a `{param}`. Null when the template has no `location` field. */

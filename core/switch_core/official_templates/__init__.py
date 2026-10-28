@@ -16,10 +16,19 @@ Switch Console runs itself), and ``AGENT.md``, the agent's instructions,
 written into the document's agent where it has none of its own. The Switch
 expert's files are copies of ``switch-expert/`` at the repository root, kept
 equal by a test.
+
+Each also has ``revisions.json``: every revision of it released, numbered
+from 1, with a fingerprint of what each one served and set on its agents.
+The last is the revision this release serves (its ``version``), and agents
+created from an older one are brought up to it when the server starts
+(``management/template_updates.py``). Revisions are recorded at release time,
+with the other versions (see ``revisions.py``); between releases a changed
+template is served under its last revision.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -28,6 +37,9 @@ from typing import Any, Literal
 import yaml
 
 OFFICIAL_PREFIX = "official:"
+
+# Each template's revisions, next to its files: see ``revisions.py``.
+REVISIONS_FILE = "revisions.json"
 
 _HERE = Path(__file__).parent
 
@@ -119,7 +131,13 @@ def _with_instructions(document: str, instructions: str) -> str:
 
 @cache
 def _document(slug: str, agent_management: bool) -> str:
-    folder = _HERE / slug
+    return document_in(_HERE / slug, agent_management)
+
+
+def document_in(folder: Path, agent_management: bool) -> str:
+    """The document a template's folder serves: its ``template.yaml`` (or,
+    without agent management, its ``template.console.yaml`` where it has
+    one), with ``AGENT.md`` written in as its agents' instructions."""
     console = folder / "template.console.yaml"
     path = (
         folder / "template.yaml"
@@ -146,9 +164,45 @@ def official_templates(
             description=shipped.description,
             kind=shipped.kind,
             content=_document(shipped.slug, agent_management),
+            version=current_revision(shipped.slug),
         )
         for shipped in _SHIPPED
         if (shipped.served == "buddy") == (agent_management and switch_buddy)
+    ]
+
+
+@cache
+def _revisions(slug: str) -> tuple[dict[str, Any], ...]:
+    path = _HERE / slug / REVISIONS_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    revisions = tuple(data["revisions"])
+    numbers = [entry["revision"] for entry in revisions]
+    if numbers != list(range(1, len(numbers) + 1)):
+        raise RuntimeError(
+            f"{path} must list revisions 1, 2, 3… in order; it lists {numbers}"
+        )
+    return revisions
+
+
+def current_revision(slug: str) -> int:
+    """The revision of an official template this release serves."""
+    return int(_revisions(slug)[-1]["revision"])
+
+
+def slug_of(template_id: str) -> str:
+    return template_id.removeprefix(OFFICIAL_PREFIX)
+
+
+def released_agent_fingerprints(
+    slug: str,
+) -> list[tuple[int, dict[str, dict[str, str]]]]:
+    """Every revision of an official template ever released, newest first,
+    with the fingerprints of what it set on each agent it creates, by key:
+    how an agent created before installs were recorded is told apart from
+    one somebody has changed."""
+    return [
+        (int(entry["revision"]), dict(entry["agents"]))
+        for entry in reversed(_revisions(slug))
     ]
 
 

@@ -17,9 +17,9 @@ class ControllerAuthCache:
     A controller token is a signed JWT, so verifying it needs no database. But
     every request it authenticates also re-reads its controller row, to refuse
     a revoked controller while its token is unexpired, and a request acting as
-    one of its agents reads that agent's row too. A controller beats every two
-    seconds and relays every call its agents' sessions make, so those reads are
-    most of what it costs the connection pool.
+    one of its agents reads that agent's row too. A controller relays every
+    call its agents' sessions make, so those reads are most of what it costs
+    the connection pool.
 
     Kept apart from :class:`ApiKeyCache`, which maps one bearer token to one
     agent: a controller token stands for many agents, and its authorization is

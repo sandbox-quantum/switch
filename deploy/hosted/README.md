@@ -23,7 +23,7 @@ This directory holds what runs the machines:
   exposed port.
 
 Machines never join the cluster. They reach Switch over its public,
-authenticated HTTPS API, as any agents controller does.
+authenticated HTTPS API, as any agent controller does.
 
 ## How a user gets a machine
 
@@ -34,7 +34,7 @@ controller for this workspace once it has reported. A machine serves up to 8
 workspaces. Self sign-up claims one too, so it warms
 while the user signs in. The hosted controller polls Core for the machines that
 should exist, creates the data volume, and launches the VM with a bundle as its
-user data. The machine runs one agents controller per workspace seated on it,
+user data. The machine runs one agent controller per workspace seated on it,
 and the bundle (version 5) lists them in Core's order, each under its seat key
 with either the controller it enrolled as or a one-time enrollment code. The
 machine enrolls each controller with its code, and their status reports are
@@ -74,8 +74,13 @@ means the server cannot run them. Keep it no higher than the hosted controller's
 
 Mount a secret with `gateway.json` for the hosted controller, holding `origin`,
 the matching `token` and `instance_type`, and set the chart's
-`gatewaySecretName` to it. `instance_type` is used for every new machine and
-must be one of `allowed_instance_types` in both Terraform and the controller
+`gatewaySecretName` to it. `instance_type` is the type of every machine, not
+only of the machines created after it is set: changing it resizes existing
+machines too, each the next time it gets a new instance (a recovery, new user
+data, a start after being retained, or `upgrade`), so it changes the cost and
+vCPU quota of the whole fleet. A machine that only stops and starts keeps its
+instance and its type. See "Operator commands" for moving a machine on purpose.
+It must be one of `allowed_instance_types` in both Terraform and the controller
 configuration; `c7i.2xlarge` is recommended. The token authorizes only the
 hosted controller routes, for every machine on the server: their lifecycle
 and the controllers they run, never a workspace's agents, rooms or logins. It
@@ -141,13 +146,34 @@ switch-hosted-controller --config /etc/switch-hosted/controller.json status <mac
 switch-hosted-controller --config /etc/switch-hosted/controller.json stop <machine-id>
 switch-hosted-controller --config /etc/switch-hosted/controller.json start <machine-id>
 switch-hosted-controller --config /etc/switch-hosted/controller.json delete <machine-id> --confirm-machine-id <machine-id> --retain-volume
-switch-hosted-controller --config /etc/switch-hosted/controller.json upgrade <machine-id> --confirm-instance-id i-0123456789abcdef0
+switch-hosted-controller --config /etc/switch-hosted/controller.json --gateway-config /etc/switch-hosted-gateway/gateway.json upgrade <machine-id> --confirm-instance-id i-0123456789abcdef0
 ```
 
-Every new instance of a machine launches from the configured image: a
-relaunch for new user data, a recovery, or a retained machine starting again
-moves it onto a new `image_id`, keeping its disk. `upgrade` does it for a
-stopped machine whose instance is terminated. A queued command is not confirmation that
+Every new instance of a machine launches from the configured image, as
+`gateway.json`'s `instance_type`: a relaunch for new user data, a recovery, or
+a retained machine starting again moves it onto a new `image_id` and instance
+type, keeping its disk. Stopping and starting a machine does not: it starts the
+same instance, which keeps its image and type for as long as it exists.
+
+To move a machine onto the configured image and type now:
+
+1. `stop` it, and wait for `status` to report `observed_state` `stopped`.
+2. Terminate its instance (`instance_id` in `status`) with the EC2 API or
+   console, and wait until it is terminated and the data volume is detached.
+3. `upgrade` it with `--gateway-config` and the terminated `instance_id`.
+   Without `--gateway-config`, `upgrade` keeps the machine's instance type.
+4. `start` it. Its next instance launches on the same data volume.
+
+On a server whose Core runs the machine, Core may ask for it to run again
+while it is stopped; move it when no agent needs it.
+
+`allowed_instance_types` may change while machines exist: add the new type,
+set it in `gateway.json`, move every machine as above, and drop the old type
+once `list` reports `instance_type_allowed` true for each. IAM refuses to
+launch a dropped type but not to start an existing instance of one, so a
+machine left unmoved keeps running it. The other placement settings
+(installation, region, zone, subnet, security groups, root device and volume
+sizes) are bound to the state database and cannot change. A queued command is not confirmation that
 AWS has done it. Deletion needs `--confirm-machine-id` and exactly one of
 `--retain-volume` or `--delete-volume`. Deleting a machine does not remove
 snapshots, roles, the NAT gateway or the controller's database.

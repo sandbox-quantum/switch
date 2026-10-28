@@ -763,6 +763,8 @@ export const workspacesController = createRPCController({
       inputs: Record<string, string | number | boolean>;
       filled: Record<string, string>;
       templateName: string;
+      /** The template the document is, when it is one; see `runTemplateDocument`. */
+      templateId: string | null;
       /** Where the run was started, for the agents it makes. */
       entryPoint: UiEntryPoint;
     }

@@ -253,6 +253,7 @@ async def patch_managed_agent(
         controller_id=body.controller_id,
         controller_id_given="controller_id" in body.model_fields_set,
         protocol=protocol,
+        expected_revision=None,
     )
     await _revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id

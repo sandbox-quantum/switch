@@ -2,12 +2,13 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
+import type { CodexKeyringLogin, HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
 import { prepareCodexSessionHome } from '../codex/home';
+import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
 import { roomConnectionSchema } from './room-inbox';
@@ -127,7 +128,8 @@ export async function prepareSharedConfig(
   runtime: HttpMcpServerSpec,
   services: SessionServices,
   helpers: ServiceHelpers | null,
-  vendors: Record<string, HttpMcpServerSpec>
+  vendors: Record<string, HttpMcpServerSpec>,
+  redact: (secret: string) => void
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -136,6 +138,7 @@ export async function prepareSharedConfig(
   let agentApiUrl = process.env.SWITCH_API_ENDPOINT;
   let token = process.env.SWITCH_API_TOKEN;
   const input = structuredClone(config.start.input);
+  let codexKeyringLogin: CodexKeyringLogin | undefined;
   if (config.execution) {
     const execution = config.execution;
     if (execution.agentDefinition) {
@@ -157,13 +160,22 @@ export async function prepareSharedConfig(
       execution.inheritEnv
     );
     input.env = { ...inherited, ...input.env };
-    if (config.start.provider === 'codex')
-      input.env.CODEX_HOME = await prepareCodexSessionHome({
+    if (config.start.provider === 'codex') {
+      const sourceHome = resolve(input.env.CODEX_HOME || join(homedir(), '.codex'));
+      const prepared = await prepareCodexSessionHome({
         root: join(root, 'provider-home'),
         sessionId: config.session.sessionId,
-        sourceHome: input.env.CODEX_HOME || join(homedir(), '.codex'),
+        sourceHome,
         config: execution.codexConfig,
       });
+      if (prepared.keyringLogin)
+        codexKeyringLogin = {
+          home: sourceHome,
+          env: codexKeyringReaderEnvironment(input.env, process.env, process.platform),
+          redact,
+        };
+      input.env.CODEX_HOME = prepared.home;
+    }
     // The skills of the agent's grants join the context for every provider
     // but OpenCode, which loads them as files (`adapterFor`), as it does the
     // Switch skill. Added here rather than saved with the session, so a
@@ -216,6 +228,7 @@ export async function prepareSharedConfig(
   const started: ProviderSessionStartInput = {
     ...input,
     connectorMcpServers: Object.keys(vendors),
+    ...(codexKeyringLogin ? { codexKeyringLogin } : {}),
   };
   return { agentApiUrl, token, input: started, notices };
 }
@@ -247,7 +260,7 @@ export async function sessionServiceGrants(config: SharedHostConfig): Promise<Se
 }
 
 /**
- * The provider login an agents controller hands this agent host with its
+ * The provider login an agent controller hands this agent host with its
  * credentials, when the machine has none of its own for the provider and
  * Switch gave it one; null when it hands none.
  */
@@ -272,7 +285,7 @@ export async function readSharedCredentials(config: SharedHostConfig) {
         SWITCH_API_ENDPOINT: z.string().min(1),
         SWITCH_API_TOKEN: z.string().min(1),
         SWITCH_AGENT_ID: z.string().min(1),
-        // Set when an agents controller runs the agent host in a process of
+        // Set when an agent controller runs the agent host in a process of
         // its own: the hub it hears its events on instead of Switch.
         SWITCH_AGENT_HUB: z.string().min(1).optional(),
       }),

@@ -6,7 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.models import Room
-from switch_core.db.stores.room_group_store import RoomGroupStore
+from switch_core.db.stores.room_group_store import (
+    RoomGroupNameTaken,
+    RoomGroupStore,
+)
 from switch_core.db.stores.room_store import RoomStore
 
 
@@ -59,6 +62,37 @@ class TestCreateRoomGroup:
         svc = _service(session_factory)
         with pytest.raises(ValueError, match="No room group named"):
             await svc.create_room_group("agent-x", "C", None, None, "Nope")
+
+    async def test_creates_under_a_parent_given_by_path(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        for top in ("Payments", "Fraud"):
+            await svc.create_room_group("agent-x", top, None, None, None)
+            await svc.create_room_group("agent-x", "Incidents", None, None, top)
+        fraud_incidents = await svc.create_room_group(
+            "agent-x", "Triage", None, None, "Fraud/Incidents"
+        )
+        assert fraud_incidents["path"] == "Fraud / Incidents / Triage"
+
+        with pytest.raises(ValueError) as e:
+            await svc.create_room_group("agent-x", "Triage", None, None, "Incidents")
+        assert str(e.value) == (
+            "Ambiguous room group 'Incidents': use 'Fraud/Incidents' or "
+            "'Payments/Incidents'"
+        )
+
+    async def test_refuses_a_sibling_with_the_same_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory)
+        await svc.create_room_group("agent-x", "Fraud", None, None, None)
+        await svc.create_room_group("agent-x", "Incidents", None, None, "Fraud")
+        with pytest.raises(RoomGroupNameTaken) as e:
+            await svc.create_room_group("agent-x", "incidents", None, None, "Fraud")
+        assert str(e.value) == (
+            "A room group named 'Incidents' already exists under 'Fraud'"
+        )
 
 
 class TestGetRoomGroupDetail:

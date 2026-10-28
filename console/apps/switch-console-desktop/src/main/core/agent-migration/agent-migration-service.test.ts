@@ -846,7 +846,7 @@ describe('moving every agent automatically', () => {
   it('leaves the agents of a server that cannot take the controller alone, saying why on the overview', async () => {
     world.heal = async (agent) =>
       agent.serverId === 'server-2'
-        ? { kind: 'incompatible', reason: 'Local dev accepts agents controller protocol 1-1.' }
+        ? { kind: 'incompatible', reason: 'Local dev accepts agent controller protocol 1-1.' }
         : { kind: 'unchanged' };
     const migration = service();
     await migration.migrateEverything();

@@ -180,6 +180,7 @@ export default function RoomCreateFormBody() {
         })(),
         user_names: userNames.length > 0 ? userNames : undefined,
         bridge_id: bridgeId || undefined,
+        internal_only: !bridgeId,
         external_channel_id: extId,
         group_id: groupId || null,
         roles:

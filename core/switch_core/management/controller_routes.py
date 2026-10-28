@@ -468,8 +468,8 @@ async def record_beat(
 ) -> list[str]:
     """Keep the controller, and so every agent on it, live; confirm cursors.
 
-    A pong on the socket, every heartbeat interval; six seconds without one
-    and its agents are not live. The cursors confirmed here are where a
+    A pong on the socket, every heartbeat interval; `HEARTBEAT_TTL_SECONDS`
+    without one and its agents are not live. The cursors confirmed here are where a
     stream reattached to this connection resumes each agent. Raises the
     presence's refusal: `taken_over` once another connection has replaced
     this one, terminal for the client, and `no_stream` or

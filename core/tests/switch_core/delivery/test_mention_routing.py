@@ -126,7 +126,7 @@ class TestPrefixCollision:
         assert _is_mentioned("cc-bug-fixing-2", "@cc-bug-fixing-2 please run") is True
 
     async def test_command_does_not_address_prefix_name(self) -> None:
-        # `!run-cmd @cc-bug-fixing-2` must not trigger cc-bug-fixing.
+        # `!reset @cc-bug-fixing-2` must not trigger cc-bug-fixing.
         assert await _command_addresses("cc-bug-fixing", "@cc-bug-fixing-2") is False
 
     async def test_command_addresses_exact_name(self) -> None:
@@ -356,7 +356,7 @@ class TestAliasMentionRouting:
 
 
 class TestCommandRoleTargeting:
-    """`!run-cmd @<role>` / `!reset @<role>` target the role's holder.
+    """`!reset @<role>` / `!interrupt @<role>` target the role's holder.
 
     on_command lets an agent through when the command args tag a role it
     holds; that gate is `_text_tags_my_role(args, room_id)`.
@@ -399,7 +399,7 @@ def _unavailable_client(
     `live_rooms`: room ids where the agent currently has a live, room-bound
     session (live_connected_rooms). `role_here`: whether the agent holds a live
     role in the room it was addressed from (agent_room_role). `connection_model`
-    drives the dev-channels-warning branch; `bound_here` is what
+    drives the connected-but-not-live branch; `bound_here` is what
     has_room_binding returns for the addressed room. `watching` is the
     room-agnostic heartbeat an un-migrated connector keeps up, and `connected`
     / `spawns` are the connection arm (see `_no_connections`).
@@ -489,8 +489,8 @@ class TestUnavailableHereReply:
 
     async def test_no_role_lists_other_sessions(self, db: AsyncSession) -> None:
         # No role here, but the agent has live sessions in two other rooms.
-        # Defers to the known-agent reply (paste-ready connect command) with
-        # the other rooms threaded in, rather than the role-flavoured wording.
+        # Defers to the Switch Console reply with the other rooms named,
+        # rather than the role-flavoured wording.
         client = _unavailable_client(live_rooms=["room-B", "room-C"], role_here=False)
         msg = await AgentRecipient._reply_when_unavailable_here(
             client, db, client.agent, _here(), "asker"
@@ -542,7 +542,8 @@ class TestConnectedNotLive:
     async def test_passive_never_says_connected_not_live(
         self, db: AsyncSession
     ) -> None:
-        # session_passive has no dev-channels flag; this branch must not apply.
+        # A session_passive agent is never live in real time, so "connected
+        # but not live" must not apply.
         client = _unavailable_client(
             live_rooms=[],
             role_here=False,

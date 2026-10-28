@@ -33,6 +33,8 @@ export const roomMessageSchema = z.object({
       .default([]),
     opening_message: z.string().nullish(),
     sender_role: z.enum(['owner', 'admin', 'member']).nullish(),
+    /** What Switch tells the agent before this message, until it reads about it; absent for nothing. */
+    switch_notice: z.string().nullish(),
   }),
   missed: z
     .object({ count: z.number().int().nonnegative().nullable(), reason: z.string().nullable() })
@@ -186,8 +188,11 @@ export function roomCommand(input: {
   // Read by the server as the message arrived, so it outranks anything said earlier.
   const senderRole = payload.sender_role ? ` (workspace ${payload.sender_role})` : '';
   const opening = input.firstOfConversation ? (payload.opening_message ?? null) : null;
+  // Written by the server, never by a room participant, so it sits outside the message's markers.
+  const notice = payload.switch_notice ? `[Switch] ${payload.switch_notice}\n\n` : '';
   const text =
     (input.preface === null ? '' : `${input.preface}\n\n`) +
+    notice +
     (opening === null ? '' : `${openingNote(opening)}\n\n`) +
     `[Switch] ${senderName}${senderRole} addressed you in room ${input.roomId} (message_id ${payload.message_id}, thread_id ${payload.thread_id ?? 'none'}):\n` +
     `BEGIN SWITCH MESSAGE ${marker}\n` +

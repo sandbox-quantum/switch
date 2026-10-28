@@ -519,6 +519,7 @@ async def _serve(
             room_store=session_env.room_store,
             document_store=session_env.document_store,
             reference_store=session_env.reference_store,
+            package_store=session_env.package_store,
             agent_session_store=session_env.agent_session_store,
             room_role_store=session_env.room_role_store,
             external_user_store=session_env.external_user_store,

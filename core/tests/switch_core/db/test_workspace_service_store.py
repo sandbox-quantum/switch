@@ -1,6 +1,7 @@
 """A workspace admin's switch per service, against Postgres.
 
-No row means on. The isolation test writes through the restricted role the
+No row means the workspace's default, off for a workspace made since services
+started off. The isolation test writes through the restricted role the
 server connects as, so a missing policy fails it rather than being bypassed
 by the superuser's exemption.
 """
@@ -10,15 +11,16 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Tenant, User, WorkspaceServiceSetting
+from switch_core.db.models import TENANT_ZERO_ID, Tenant, User, WorkspaceServiceSetting
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import RLSHarness
 
 STORE = WorkspaceServiceStore()
+SERVICES = ["atlassian", "datadog", "github"]
 
 
 async def _user(session_factory: async_sessionmaker[AsyncSession], name: str) -> str:
@@ -33,26 +35,69 @@ async def _user(session_factory: async_sessionmaker[AsyncSession], name: str) ->
         return user.id
 
 
+async def _on_by_default(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(services_on_by_default=True)
+        )
+        await session.commit()
+
+
 class TestSwitch:
-    async def test_with_no_row_every_service_is_on(self, session_factory) -> None:
+    async def test_a_new_workspace_with_no_row_has_every_service_off(
+        self, session_factory
+    ) -> None:
         async with session_factory() as session:
-            assert await STORE.is_enabled(session, "datadog") is True
-            assert await STORE.disabled_services(session) == set()
+            assert await STORE.on_by_default(session) is False
+            assert await STORE.is_enabled(session, "datadog") is False
+            assert await STORE.disabled_services(session, SERVICES) == set(SERVICES)
             assert await STORE.list_settings(session) == {}
 
-    async def test_off_then_on_round_trips(self, session_factory) -> None:
+    async def test_a_workspace_on_by_default_with_no_row_has_every_service_on(
+        self, session_factory
+    ) -> None:
+        await _on_by_default(session_factory)
+        async with session_factory() as session:
+            assert await STORE.is_enabled(session, "datadog") is True
+            assert await STORE.disabled_services(session, SERVICES) == set()
+
+    async def test_on_then_off_round_trips_in_a_new_workspace(
+        self, session_factory
+    ) -> None:
+        admin = await _user(session_factory, "admin")
+        async with session_factory() as session:
+            await STORE.set_enabled(session, "datadog", True, admin)
+            await session.commit()
+            assert await STORE.is_enabled(session, "datadog") is True
+            assert await STORE.is_enabled(session, "atlassian") is False
+            assert await STORE.disabled_services(session, SERVICES) == {
+                "atlassian",
+                "github",
+            }
+
+            await STORE.set_enabled(session, "datadog", False, admin)
+            await session.commit()
+            assert await STORE.is_enabled(session, "datadog") is False
+            assert await STORE.disabled_services(session, SERVICES) == set(SERVICES)
+
+    async def test_off_then_on_round_trips_in_a_workspace_on_by_default(
+        self, session_factory
+    ) -> None:
+        await _on_by_default(session_factory)
         admin = await _user(session_factory, "admin")
         async with session_factory() as session:
             await STORE.set_enabled(session, "datadog", False, admin)
             await session.commit()
             assert await STORE.is_enabled(session, "datadog") is False
             assert await STORE.is_enabled(session, "atlassian") is True
-            assert await STORE.disabled_services(session) == {"datadog"}
+            assert await STORE.disabled_services(session, SERVICES) == {"datadog"}
 
             await STORE.set_enabled(session, "datadog", True, admin)
             await session.commit()
             assert await STORE.is_enabled(session, "datadog") is True
-            assert await STORE.disabled_services(session) == set()
+            assert await STORE.disabled_services(session, SERVICES) == set()
 
     async def test_the_same_switch_twice_is_one_row_naming_the_last_admin(
         self, session_factory
@@ -81,7 +126,14 @@ class TestIsolation:
         theirs = f"tenant-{uuid.uuid4().hex[:8]}"
         async with rls_harness.owner() as session:
             for tenant_id in (mine, theirs):
-                session.add(Tenant(id=tenant_id, slug=tenant_id, name=tenant_id))
+                session.add(
+                    Tenant(
+                        id=tenant_id,
+                        slug=tenant_id,
+                        name=tenant_id,
+                        services_on_by_default=True,
+                    )
+                )
             await session.commit()
         admin = await _user(rls_harness.owner, "admin")
 
@@ -96,7 +148,7 @@ class TestIsolation:
             )
             assert raw.all() == []
             assert await STORE.is_enabled(session, "datadog") is True
-            assert await STORE.disabled_services(session) == set()
+            assert await STORE.disabled_services(session, SERVICES) == set()
 
         async with tenant_session(rls_harness.restricted, mine) as session:
-            assert await STORE.disabled_services(session) == {"datadog"}
+            assert await STORE.disabled_services(session, SERVICES) == {"datadog"}

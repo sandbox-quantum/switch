@@ -293,7 +293,7 @@ class BearerAuthMiddleware:
             ):
                 await _controller_refusal(
                     MANAGED_BY_CONTROLLER,
-                    f"Agent {agent.id} is run by an agents controller, which acts "
+                    f"Agent {agent.id} is run by an agent controller, which acts "
                     "for it; its own credential is not accepted while it is.",
                     409,
                 )(scope, receive, send)

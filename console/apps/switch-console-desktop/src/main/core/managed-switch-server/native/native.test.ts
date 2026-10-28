@@ -13,7 +13,12 @@ import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } fro
 import { nativeLayout } from './native-paths';
 import { parsePostgresMajor, resolvePostgres } from './postgres-binaries';
 import { bundlePthLine } from './switch-core-install';
-import { currentNativePlatform, postgresArchive, uvArchive } from './toolchain-pins';
+import {
+  currentNativePlatform,
+  opensslSourceArchive,
+  postgresArchive,
+  uvArchive,
+} from './toolchain-pins';
 import { parseUvVersion } from './uv';
 
 vi.mock('@main/lib/logger', () => ({
@@ -130,6 +135,7 @@ describe('toolchain pins', () => {
     }
     // No portable PostgreSQL is published for Windows on Arm.
     expect(postgresArchive('win32-arm64')).toBeNull();
+    expect(opensslSourceArchive().integrity).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 });
 

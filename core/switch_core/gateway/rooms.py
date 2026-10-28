@@ -19,17 +19,21 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     RetireOutcome,
 )
+from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_bridge_store,
     get_collab_lifecycle,
+    get_config,
     get_external_user_store,
     get_protocol,
     get_room_group_store,
@@ -37,6 +41,7 @@ from switch_core.gateway.dependencies import (
     get_room_store,
     get_room_yaml_service,
     get_session,
+    get_template_store,
     get_user_store,
 )
 from switch_core.gateway.schemas import (
@@ -59,6 +64,7 @@ from switch_core.gateway.schemas import (
     RoomUpdateRequest,
     RoomUsersRequest,
 )
+from switch_core.gateway.templates import readable_template
 from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
@@ -68,6 +74,7 @@ from switch_core.rooms_yaml import (
     template_json_schema,
 )
 from switch_core.telemetry import emit_safely
+from switch_core.template_installs import record_install, vouched_source
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
     AgentsNotCreated,
@@ -626,6 +633,11 @@ class TemplateDocumentRunBody(BaseModel):
     # Existing agents standing in for slots that allow it: {slot: agent name}.
     filled: dict[str, str] = Field(default_factory=dict)
     template_name: str
+    # The template the document is, by id, when it is one. The run is
+    # recorded as that template's install only when the document is exactly
+    # the template's; a Switch Console that does not send it still has a run
+    # of an official template recognised by its document.
+    template_id: str | None = None
 
 
 @router.post("/from-template-document", status_code=201, response_model=None)
@@ -633,6 +645,9 @@ async def run_template_document(
     body: TemplateDocumentRunBody,
     rooms_yaml: Annotated[RoomYamlService, Depends(get_room_yaml_service)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> dict[str, Any] | JSONResponse:
@@ -641,7 +656,23 @@ async def run_template_document(
     the caller's machines), checks everything, creates the agents, then the
     rooms. For a ``version: 2`` document, whose conditions and references
     only the server resolves. Answers as ``from-template``.
+
+    The agents a run of a known template creates are recorded as its
+    install (``template_installs``), so a later revision can update them.
     """
+    loaded = (
+        await readable_template(
+            body.template_id, session, template_store, user, is_admin, config
+        )
+        if body.template_id is not None
+        else None
+    )
+    source = vouched_source(
+        body.template,
+        loaded,
+        agent_management=config.feature_flags[AGENT_MANAGEMENT],
+        switch_buddy=config.feature_flags[SWITCH_BUDDY],
+    )
     inputs = body.inputs or {}
     try:
         if is_v2_text(body.template):
@@ -666,7 +697,7 @@ async def run_template_document(
         return _refused_run(error)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return await _run_as_person(
+    result = await _run_as_person(
         rooms_yaml,
         protocol,
         user,
@@ -677,6 +708,19 @@ async def run_template_document(
         template_name=body.template_name,
         room_addressing=plan.room_addressing,
     )
+    if source is not None and isinstance(result, dict):
+        await record_install(
+            protocol.session_factory,
+            require_tenant_id(),
+            owner_id=user.id,
+            source=source,
+            document=body.template,
+            inputs=inputs,
+            builtins=builtins,
+            plans=plan.new_agents,
+            created=result["created_agents"],
+        )
+    return result
 
 
 async def _run_as_person(
@@ -795,6 +839,7 @@ async def export_room_yaml(
     agents: Annotated[bool, Query()] = True,
     users: Annotated[bool, Query()] = True,
     references: Annotated[bool, Query()] = True,
+    packages: Annotated[bool, Query()] = True,
     docs: Annotated[bool, Query()] = True,
     roles: Annotated[bool, Query()] = True,
 ) -> Response:
@@ -806,6 +851,7 @@ async def export_room_yaml(
         agents=agents,
         users=users,
         references=references,
+        packages=packages,
         docs=docs,
         roles=roles,
     )

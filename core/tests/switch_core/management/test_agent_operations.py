@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,6 +21,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import switch_core.official_templates as official_templates_package
 from switch_core.addressing import default_agent_policy, parse_policy
 from switch_core.bridges.agent.mcp.server import mcp
 from switch_core.bridges.agent.operations import all_operations, definitions
@@ -35,11 +37,18 @@ from switch_core.db.models import (
     Client,
     ServiceGrant,
     Template,
+    TemplateInstall,
     User,
 )
+from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import rooms as gateway_rooms
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.official_templates import (
+    current_revision,
+    official_template,
+    revisions,
+)
 from tests.switch_core.connections.github_seed import connect_github
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
@@ -1532,3 +1541,162 @@ class TestTheConsoleRunsAVersion2Template:
         body = response.json()
         assert {p["code"] for p in body["problems"]} == {"machine_unresolved"}
         assert "claude is not signed in on laptop" in body["detail"]
+
+
+_OFFICIAL = Path(official_templates_package.__file__).parent
+
+
+async def _installs(harness: Harness, template_id: str) -> list[Any]:
+    async with harness.session_factory() as session:
+        installs = await TemplateInstallStore().of_template(session, template_id)
+        return [
+            (install, await TemplateInstallStore().resources(session, install.id))
+            for install in installs
+        ]
+
+
+def _buddy_document() -> str:
+    buddy = official_template("official:switch-buddy", True, switch_buddy=True)
+    assert buddy is not None
+    return buddy.content
+
+
+@pytest.mark.usefixtures("_short_listen")
+class TestARunOfAKnownTemplateIsRecorded:
+    """`POST /gateway/rooms/from-template-document` records the agents a run
+    of a template it can vouch for created, to be updated from it later:
+    the template the request names when the document is exactly that one,
+    or an official template whose document it is word for word."""
+
+    @pytest.fixture(autouse=True)
+    def _rooms(self, harness: Harness) -> None:
+        harness.gateway_app.include_router(rooms_router, prefix="/rooms")
+        harness.gateway_app.dependency_overrides[gw_deps.get_room_yaml_service] = (
+            lambda: _NoRooms()
+        )
+
+    async def _run(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        owner: User,
+        document: str,
+        **extra: Any,
+    ) -> httpx.Response:
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        return await client.post(
+            "/gateway/rooms/from-template-document",
+            json={"template": document, "template_name": "t", **extra},
+            cookies=cookies_for(owner),
+        )
+
+    async def test_switch_buddy_is_recorded_from_its_document_alone(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+
+        response = await self._run(
+            harness,
+            client,
+            owner,
+            _buddy_document(),
+            inputs={"agent_name": "switch-buddy-ada", "provider": "claude"},
+        )
+
+        assert response.status_code == 201, response.text
+        ((install, resources),) = await _installs(harness, "official:switch-buddy")
+        (created,) = response.json()["created_agents"]
+        assert (install.source, install.owner_id, install.revision) == (
+            "official",
+            owner.id,
+            current_revision("switch-buddy"),
+        )
+        assert install.inputs["agent_name"] == "switch-buddy-ada"
+        (resource,) = resources
+        assert (resource.key, resource.agent_id) == ("buddy", created["agent_id"])
+        assert (
+            resource.fingerprints
+            == revisions.entry_for(_OFFICIAL / "switch-buddy")["agents"]["buddy"]
+        )
+
+    async def test_a_saved_template_named_by_id_is_recorded_at_its_version(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.session_factory() as session:
+            template = Template(
+                owner_id=owner.id,
+                name="helper",
+                description="d",
+                kind="agent",
+                content=DOCUMENT_TEMPLATE,
+                version=3,
+            )
+            session.add(template)
+            await session.commit()
+
+        response = await self._run(
+            harness, client, owner, DOCUMENT_TEMPLATE, template_id=template.id
+        )
+
+        assert response.status_code == 201, response.text
+        ((install, resources),) = await _installs(harness, template.id)
+        assert (install.source, install.template_name, install.revision) == (
+            "saved",
+            "helper",
+            3,
+        )
+        assert [r.key for r in resources] == ["helper"]
+
+    async def test_a_document_changed_from_the_template_it_names_is_not_recorded(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+
+        response = await self._run(
+            harness,
+            client,
+            owner,
+            _buddy_document().replace("Your assistant", "My assistant"),
+            inputs={"agent_name": "switch-buddy-ada", "provider": "claude"},
+            template_id="official:switch-buddy",
+        )
+
+        assert response.status_code == 201, response.text
+        assert await _installs(harness, "official:switch-buddy") == []
+
+    async def test_a_document_of_no_known_template_is_not_recorded(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+
+        response = await self._run(harness, client, owner, DOCUMENT_TEMPLATE)
+
+        assert response.status_code == 201, response.text
+        async with harness.session_factory() as session:
+            assert (await session.execute(select(TemplateInstall))).first() is None
+
+    async def test_a_template_the_caller_cannot_read_is_not_found(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        other = await add_member(harness.session_factory, "bob")
+        async with harness.session_factory() as session:
+            template = Template(
+                owner_id=other.id,
+                name="private",
+                description="d",
+                kind="agent",
+                content=DOCUMENT_TEMPLATE,
+                read_visibility="private",
+            )
+            session.add(template)
+            await session.commit()
+
+        response = await self._run(
+            harness, client, owner, DOCUMENT_TEMPLATE, template_id=template.id
+        )
+
+        assert response.status_code == 404, response.text
+        assert await _agent_row(harness, "helper") is None

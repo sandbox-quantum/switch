@@ -19,6 +19,7 @@ from switch_hosted_controller.store import (
     CapacityError,
     MachineStore,
     StoreError,
+    rebind_superseded_fingerprint,
 )
 
 MACHINE_ID = "3f1c2b4a-0000-4000-8000-000000000001"
@@ -292,7 +293,7 @@ def test_uncertain_launch_then_stop_waits_for_late_instance(tmp_path: Path):
             {"InstanceIds": [worker["InstanceId"]]},
         )
 
-        reconciler = Reconciler(store, cloud)
+        reconciler = Reconciler(store, cloud, instance_type=None)
         assert (
             reconciler.reconcile(machine.machine_id).observed_state is ObservedState.NEEDS_ATTENTION
         )
@@ -411,7 +412,9 @@ def test_an_instance_with_a_stale_bundle_makes_way_for_one_launched_with_the_new
             {"TerminatingInstances": []},
             {"InstanceIds": [machine.instance_id]},
         )
-        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
+        result = Reconciler(store, Ec2Cloud(client, cfg), instance_type=None).reconcile(
+            machine.machine_id
+        )
         stubber.assert_no_pending_responses()
     assert result.observed_state is ObservedState.PROVISIONING
     assert result.instance_terminate_issued
@@ -438,7 +441,9 @@ def test_starting_an_instance_with_the_current_bundle_only_starts_it(tmp_path: P
         stubber.add_response(
             "start_instances", {"StartingInstances": []}, {"InstanceIds": [machine.instance_id]}
         )
-        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
+        result = Reconciler(store, Ec2Cloud(client, cfg), instance_type=None).reconcile(
+            machine.machine_id
+        )
         stubber.assert_no_pending_responses()
     assert result.observed_state is ObservedState.PROVISIONING
     assert result.instance_bundle == REVISION_2_BUNDLE
@@ -607,7 +612,9 @@ def test_starting_an_enrolled_instance_keeps_the_user_data_it_enrolled_with(tmp_
         stubber.add_response(
             "start_instances", {"StartingInstances": []}, {"InstanceIds": [machine.instance_id]}
         )
-        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
+        result = Reconciler(store, Ec2Cloud(client, cfg), instance_type=None).reconcile(
+            machine.machine_id
+        )
         stubber.assert_no_pending_responses()
     assert result.instance_bundle == REVISION_1_BUNDLE
     store.close()
@@ -807,7 +814,7 @@ def test_slot_era_database_with_a_live_machine_is_refused(tmp_path, row):
     connection.close()
 
 
-def test_capacity_and_image_can_change_but_placement_cannot(tmp_path):
+def test_capacity_image_and_instance_types_can_change_but_placement_cannot(tmp_path):
     cfg = config(tmp_path)
     MachineStore(cfg.state_db_path, cfg.fingerprint()).close()
     expanded = config(tmp_path, max_machines=2)
@@ -815,9 +822,58 @@ def test_capacity_and_image_can_change_but_placement_cannot(tmp_path):
     current.close()
     new_image = replace(expanded, image_id="ami-11111111111111111")
     MachineStore(new_image.state_db_path, new_image.fingerprint()).close()
+    new_types = replace(new_image, allowed_instance_types=frozenset({"r7i.2xlarge"}))
+    MachineStore(new_types.state_db_path, new_types.fingerprint()).close()
     incompatible = replace(expanded, subnet_id="subnet-11111111111111111")
     with pytest.raises(StoreError, match="immutable"):
         MachineStore(incompatible.state_db_path, incompatible.fingerprint())
+
+
+def test_a_database_bound_to_the_superseded_fingerprint_is_rebound(tmp_path):
+    cfg = config(tmp_path)
+    MachineStore(cfg.state_db_path, cfg.superseded_fingerprint()).close()
+    with pytest.raises(StoreError, match="immutable"):
+        MachineStore(cfg.state_db_path, cfg.fingerprint())
+    rebind_superseded_fingerprint(
+        cfg.state_db_path, cfg.superseded_fingerprint(), cfg.fingerprint()
+    )
+    MachineStore(cfg.state_db_path, cfg.fingerprint()).close()
+
+
+def test_rebinding_leaves_another_placement_refused(tmp_path):
+    cfg = config(tmp_path)
+    other = replace(cfg, subnet_id="subnet-11111111111111111")
+    MachineStore(cfg.state_db_path, other.superseded_fingerprint()).close()
+    rebind_superseded_fingerprint(
+        cfg.state_db_path, cfg.superseded_fingerprint(), cfg.fingerprint()
+    )
+    with pytest.raises(StoreError, match="immutable"):
+        MachineStore(cfg.state_db_path, cfg.fingerprint())
+
+
+def test_rebinding_a_missing_database_creates_nothing(tmp_path):
+    cfg = config(tmp_path)
+    rebind_superseded_fingerprint(
+        cfg.state_db_path, cfg.superseded_fingerprint(), cfg.fingerprint()
+    )
+    assert not cfg.state_db_path.exists()
+
+
+def test_an_upgrade_can_change_only_the_instance_type(tmp_path):
+    cfg = config(tmp_path)
+    store, machine = store_and_machine(cfg)
+    store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
+    machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", "bundle-1")
+    machine = store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
+    machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
+    with pytest.raises(StoreError, match="already uses this image and instance type"):
+        store.upgrade_terminated(machine, machine.image_id, machine.instance_type)
+    upgraded = store.upgrade_terminated(machine, machine.image_id, "r7i.2xlarge")
+    assert upgraded.instance_type == "r7i.2xlarge"
+    assert upgraded.image_id == machine.image_id
+    assert upgraded.instance_id is None
+    assert upgraded.data_volume_id == machine.data_volume_id
+    store.close()
 
 
 def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_path):
@@ -826,12 +882,12 @@ def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_pa
     store.record_volume(machine.machine_id, "vol-0123456789abcdef0", cfg.availability_zone)
     machine = store.record_instance(machine.machine_id, "i-0123456789abcdef0", "bundle-1")
     with pytest.raises(StoreError, match="stopped"):
-        store.upgrade_terminated(machine, "ami-11111111111111111")
+        store.upgrade_terminated(machine, "ami-11111111111111111", machine.instance_type)
     machine = store.set_desired(machine.machine_id, DesiredState.STOPPED, None)
     with pytest.raises(StoreError, match="terminated"):
-        store.upgrade_terminated(machine, "ami-11111111111111111")
+        store.upgrade_terminated(machine, "ami-11111111111111111", machine.instance_type)
     machine = store.mark_instance_terminal_observed(machine.machine_id, machine.instance_id)
-    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111")
+    upgraded = store.upgrade_terminated(machine, "ami-11111111111111111", machine.instance_type)
     assert upgraded.instance_id is None
     assert upgraded.previous_instance_id == machine.instance_id
     assert upgraded.data_volume_id == machine.data_volume_id
@@ -839,7 +895,7 @@ def test_image_upgrade_requires_stopped_terminal_claim_and_preserves_disk(tmp_pa
     assert upgraded.image_id != machine.image_id
     assert upgraded.instance_bundle is None
     with pytest.raises(StoreError, match="changed"):
-        store.upgrade_terminated(machine, "ami-11111111111111111")
+        store.upgrade_terminated(machine, "ami-11111111111111111", machine.instance_type)
     store.close()
 
 
@@ -868,7 +924,9 @@ def test_terminating_worker_waits_without_profile_or_replacement(tmp_path, desir
             {"Reservations": [{"Instances": [worker]}]},
             {"InstanceIds": [machine.instance_id]},
         )
-        result = Reconciler(store, Ec2Cloud(client, cfg)).reconcile(machine.machine_id)
+        result = Reconciler(store, Ec2Cloud(client, cfg), instance_type=None).reconcile(
+            machine.machine_id
+        )
         expected = (
             ObservedState.PROVISIONING
             if desired is DesiredState.RUNNING

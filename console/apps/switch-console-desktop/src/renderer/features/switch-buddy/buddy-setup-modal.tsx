@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { ProviderSetup } from './provider-setup';
+import { useThisComputer } from './use-this-computer';
 
 type Args = { serverId: string; workspaceId: string };
 
@@ -17,6 +18,7 @@ export function BuddySetupModal({
   onSuccess,
   onClose,
 }: Args & BaseModalProps<{ agentId: string; name: string }>) {
+  const thisComputer = useThisComputer(serverId, workspaceId);
   return (
     <>
       <DialogHeader>
@@ -28,6 +30,7 @@ export function BuddySetupModal({
           workspaceId={workspaceId}
           entryPoint="switch_buddy"
           onCreated={onSuccess}
+          thisComputer={thisComputer}
         />
       </DialogContentArea>
       <DialogFooter>

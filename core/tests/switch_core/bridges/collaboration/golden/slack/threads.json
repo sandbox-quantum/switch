@@ -1,0 +1,72 @@
+[
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "Thread root.",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "Reply under a message ref.",
+      "thread_ts": "1800000000.000001",
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "Reply under a bare ts.",
+      "thread_ts": "1700000000.000100",
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "D0DIRECT",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "DM reply, auto-threaded.",
+      "thread_ts": "1700000000.000200",
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "D0DIRECT",
+      "icon_url": "https://api.dicebear.com/10.x/gaze/png?seed=scout&size=256&scale=1.1&backgroundColor=1a1d21",
+      "text": "<!channel> not threaded",
+      "thread_ts": null,
+      "unfurl_links": false,
+      "unfurl_media": false,
+      "username": "Scout"
+    },
+    "method": "chat.postMessage"
+  },
+  {
+    "kwargs": {
+      "channel": "C0GENERAL",
+      "text": "A **notice** in a thread.",
+      "thread_ts": "1800000000.000001",
+      "unfurl_links": false,
+      "unfurl_media": false
+    },
+    "method": "chat.postMessage"
+  }
+]

@@ -135,17 +135,6 @@ class TestRefused:
             )
         assert lifecycle.posted == []
 
-    async def test_a_server_connector_agent(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        svc, _lifecycle, _owner, caller, target, room_id = await _setup(session_factory)
-        await _set(session_factory, target, metadata_={"server_connector_id": "c1"})
-
-        with pytest.raises(AgentRenameRefused, match="server connector"):
-            await svc.request_agent_deletion(
-                caller_agent_id=caller, target_agent_id=target, room_id=room_id
-            )
-
     async def test_another_owners_agent(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

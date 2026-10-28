@@ -15,6 +15,10 @@ auth:
     registration: static
     client_settings: GOOGLE_WORKSPACE
     redirect: [core]
+    # Google refuses a made-up code before it compares the redirect URI, so a
+    # client missing Switch's passes the check and fails the first sign-in.
+    unchecked: >-
+      Switch can't check the redirect URI. Connect once to confirm.
     authorization_url: https://accounts.google.com/o/oauth2/v2/auth
     token_url: https://oauth2.googleapis.com/token
     revocation_url: https://oauth2.googleapis.com/revoke
@@ -28,9 +32,10 @@ auth:
     url: https://openidconnect.googleapis.com/v1/userinfo
     account_id: sub
     label: email
-# Google's access tokens lived 3,599 s when measured; its documentation's
-# sample shows 3,920. Agents still ask again hourly.
-token: { kind: pass_through, max_lifetime: 3920 }
+# Google's access tokens lived 3,599 s when measured, so one handed out never
+# has more than an hour left. A longer one is held back (retryable) until it
+# has run down to an hour.
+token: { kind: pass_through, max_lifetime: 3600 }
 cli:
   name: google-workspace
   binary: gws
