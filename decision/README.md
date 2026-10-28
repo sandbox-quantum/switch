@@ -133,8 +133,12 @@ runs in its own container, with the weights in a volume.
 Strands Decider (Linux, an NVIDIA GPU with 24 GB, the NVIDIA Container
 Toolkit). `switch-decision-strands` serves on :8400; the first start
 downloads the checkpoint and its base model (about 17 GB) into `/models`.
-`HF_TOKEN` is optional; arguments after the image name are appended to
-`strands-decider serve`:
+`HF_TOKEN` is optional. The image runs its own `serve.py` rather than
+`strands-decider serve`: it merges the checkpoint's LoRA adapter into the base
+weights once at load, which on an L4 gives the same answers in 0.26 s instead
+of 0.42 s for a typical room and about 3.9 decisions a second instead of 2.4.
+It's configured by env only (`STRANDS_CHECKPOINT`, `STRANDS_MODEL_NAME`,
+`STRANDS_MAX_BATCH`):
 
 ```
 docker build -t switch-decision-strands decision/model-servers/strands/
