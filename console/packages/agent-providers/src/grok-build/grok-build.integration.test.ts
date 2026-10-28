@@ -9,9 +9,9 @@ describeConformance('grok-build', {
     return probe.error || probe.status !== 0 ? 'the grok binary is not on PATH' : null;
   },
   skip: {
-    'user-input': 'grok-build-acp user-input support not yet verified.',
-    'steer-mid-turn': 'grok-build-acp steering support not yet verified.',
-    subagent: 'grok-build-acp subagent support not yet verified.',
+    'user-input': 'Grok Build ACP does not expose an interactive ask-the-user tool over stdio.',
+    'steer-mid-turn': 'Grok Build ACP queues subsequent messages rather than steering the running turn.',
+    subagent: 'Grok Build ACP does not declare a subagent delegation tool over stdio.',
   },
   mcpServers: { echo: echoMcpServerSpec() },
   ...(process.env.XAI_API_KEY ? { env: { XAI_API_KEY: process.env.XAI_API_KEY } } : {}),
