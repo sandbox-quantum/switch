@@ -56,6 +56,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -82,8 +83,10 @@ class _FakeClientLifecycle:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def create_tenant(self, name: str, slug: str) -> Tenant:
-        tenant = Tenant(id=str(uuid.uuid4()), name=name, slug=slug)
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+        tenant = Tenant(
+            id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
+        )
         async with tenant_session(self._session_factory, tenant.id) as session:
             await TenantStore().create(session, tenant)
             await session.commit()
@@ -98,9 +101,9 @@ class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
         super().__init__(session_factory)
         self.calls = 0
 
-    async def create_tenant(self, name: str, slug: str) -> Tenant:
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
         self.calls += 1
-        await super().create_tenant(name, slug)
+        await super().create_tenant(name, slug, organization_id)
         raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
 
 
@@ -149,6 +152,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()
     app.dependency_overrides[gw_deps.get_join_domain_store] = lambda: JoinDomainStore()
+    app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
+        OrganizationStore()
+    )
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()

@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -28,13 +29,14 @@ from switch_core.connections.broker import (
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
     Invitation,
+    Organization,
     Tenant,
     TenantJoinDomain,
     TenantMember,
     User,
     require_tenant_id,
 )
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import (
@@ -50,6 +52,10 @@ from switch_core.db.stores.join_domain_store import (
     JoinDomainAlreadyAdded,
     JoinDomainNotFound,
     JoinDomainStore,
+)
+from switch_core.db.stores.organization_store import (
+    OrganizationSlugTaken,
+    OrganizationStore,
 )
 from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.usage_store import UsageStore
@@ -81,6 +87,7 @@ from switch_core.gateway.dependencies import (
     get_invitation_store,
     get_invite_mailer,
     get_join_domain_store,
+    get_organization_store,
     get_protocol,
     get_session,
     get_session_factory,
@@ -353,6 +360,7 @@ async def _lock_workspace_allowance(
 async def _provision_workspace(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
+    organization_store: OrganizationStore,
     client_lifecycle: ClientLifecycleService,
     caller: AuthenticatedCaller,
     name: str,
@@ -361,11 +369,26 @@ async def _provision_workspace(
     tenant: Tenant | None = None
     for attempt in range(_SLUG_ATTEMPTS):
         slug = base_slug if attempt == 0 else f"{base_slug}-{secrets.token_hex(2)}"
+        organization = Organization(id=str(uuid.uuid4()), name=name, slug=slug)
         try:
-            tenant = await client_lifecycle.create_tenant(name, slug)
+            async with organization_session(
+                session_factory, organization.id
+            ) as session:
+                await organization_store.create(session, organization)
+                await session.commit()
+        except OrganizationSlugTaken:
+            continue
+        try:
+            tenant = await client_lifecycle.create_tenant(name, slug, organization.id)
         except TenantSlugTaken:
+            await _discard_organization(
+                session_factory, organization_store, organization.id
+            )
             continue
         except TenantIsolationNotInForce as exc:
+            await _discard_organization(
+                session_factory, organization_store, organization.id
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         break
     if tenant is None:
@@ -382,7 +405,11 @@ async def _provision_workspace(
     try:
         async with tenant_session(session_factory, tenant.id) as session:
             await user_store.add_membership(
-                session, tenant_id=tenant.id, user_id=caller.id, role="owner"
+                session,
+                tenant_id=tenant.id,
+                user_id=caller.id,
+                role="owner",
+                organization_role="org_admin",
             )
             await record_audit_event(
                 session,
@@ -407,6 +434,17 @@ async def _provision_workspace(
     return tenant
 
 
+async def _discard_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_store: OrganizationStore,
+    organization_id: str,
+) -> None:
+    """Delete the organization made for a workspace that could not be created."""
+    async with organization_session(session_factory, organization_id) as session:
+        await organization_store.delete_empty(session, organization_id)
+        await session.commit()
+
+
 @router.post("/tenants", status_code=201)
 async def create_tenant(
     req: TenantCreateRequest,
@@ -417,11 +455,15 @@ async def create_tenant(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Create a workspace. The caller becomes its `owner`, and their session
     switches into it.
+
+    The workspace comes with an organization of its own, of the same name,
+    whose `org_admin` the caller becomes.
 
     Whether they may is `workspace_creation_refusal`'s decision: sign-up mode
     and a per-person cap on workspaces created, with operators exempt. It is
@@ -462,12 +504,22 @@ async def create_tenant(
         # Not held across provisioning, which opens a session per tenant.
         await session.commit()
         tenant = await _provision_workspace(
-            session_factory, user_store, client_lifecycle, caller, req.name
+            session_factory,
+            user_store,
+            organization_store,
+            client_lifecycle,
+            caller,
+            req.name,
         )
     else:
         user = await _lock_workspace_allowance(session, caller, config)
         tenant = await _provision_workspace(
-            session_factory, user_store, client_lifecycle, caller, req.name
+            session_factory,
+            user_store,
+            organization_store,
+            client_lifecycle,
+            caller,
+            req.name,
         )
         user.workspaces_created += 1
         await session.commit()
@@ -965,7 +1017,11 @@ async def _join_through(
             ) from exc
         role = invitation.role
         await user_store.add_membership(
-            session, tenant_id=tenant_id, user_id=caller.id, role=role
+            session,
+            tenant_id=tenant_id,
+            user_id=caller.id,
+            role=role,
+            organization_role="member",
         )
         await record_audit_event(
             session,
@@ -1285,7 +1341,11 @@ async def join_tenant_by_domain(
         if role is None:
             role = "member"
             await user_store.add_membership(
-                session, tenant_id=tenant_id, user_id=caller.id, role=role
+                session,
+                tenant_id=tenant_id,
+                user_id=caller.id,
+                role=role,
+                organization_role="member",
             )
             await record_audit_event(
                 session,

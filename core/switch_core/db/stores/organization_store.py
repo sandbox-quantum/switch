@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from sqlalchemy import delete
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from switch_core.db.models import Organization, OrganizationMember
+
+# Postgres's default name for `organizations.slug`'s unique constraint.
+_SLUG_CONSTRAINT = "organizations_slug_key"
+
+
+class OrganizationSlugTaken(Exception):
+    """The slug belongs to another organization. Nothing was written."""
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(f"Organization slug {slug!r} is taken")
+        self.slug = slug
+
+
+def _violated_constraint(err: IntegrityError) -> str | None:
+    return getattr(getattr(err.orig, "__cause__", None), "constraint_name", None)
+
+
+class OrganizationStore:
+    """Organizations and their members.
+
+    Every method runs on a session whose organization is bound, explicitly
+    (`db/session_scope.organization_session`) or through a bound workspace:
+    the policy on both tables (`db/rls_ddl.py`) narrows every read to it and
+    refuses every write outside it.
+    """
+
+    async def create(
+        self, session: AsyncSession, organization: Organization
+    ) -> Organization:
+        """Insert `organization`, on a session bound to its own id.
+
+        A taken slug raises `OrganizationSlugTaken`; every other integrity
+        error propagates as it is.
+        """
+        session.add(organization)
+        try:
+            await session.flush()
+        except IntegrityError as err:
+            if _violated_constraint(err) == _SLUG_CONSTRAINT:
+                raise OrganizationSlugTaken(organization.slug) from err
+            raise
+        return organization
+
+    async def delete_empty(self, session: AsyncSession, organization_id: str) -> None:
+        """Delete an organization that no workspace or member was ever added to.
+
+        Undoes a `create` whose workspace could not be created after it. A
+        foreign key refuses it once anything references the organization.
+        """
+        await session.execute(
+            delete(Organization).where(Organization.id == organization_id)
+        )
+
+    async def role(
+        self, session: AsyncSession, organization_id: str, user_id: str
+    ) -> str | None:
+        """`user_id`'s role in `organization_id`, or None if not a member."""
+        member = await session.get(OrganizationMember, (organization_id, user_id))
+        return member.role if member is not None else None

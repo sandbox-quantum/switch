@@ -149,7 +149,9 @@ async def test_a_tenant_created_after_startup_gets_a_working_admin_client(
     service = _service(rls_harness.restricted)
     await service.ensure_system_client("admin")  # the boot-time call
 
-    tenant = await service.create_tenant(name="Acme", slug="acme")
+    tenant = await service.create_tenant(
+        name="Acme", slug="acme", organization_id=TENANT_ZERO_ID
+    )
 
     clients = await _admin_clients(rls_harness.owner)
     assert sorted(c.tenant_id for c in clients) == sorted([TENANT_ZERO_ID, tenant.id])

@@ -152,6 +152,7 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.messaging_event_store import MessagingEventReceiptStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -729,6 +730,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     api_key_store = ApiKeyStore()
     invitation_store = InvitationStore()
     join_domain_store = JoinDomainStore()
+    organization_store = OrganizationStore()
     tenant_store = TenantStore()
     reference_store = ReferenceStore()
     reference_type_store = ReferenceTypeStore()
@@ -1216,6 +1218,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         api_key_store=api_key_store,
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
+        organization_store=organization_store,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,

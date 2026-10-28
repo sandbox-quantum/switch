@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.authz import administers_tenant, owns_tenant
 from switch_core.db.models import (
     OidcIdentity,
+    OrganizationMember,
+    Tenant,
     TenantMember,
     User,
     require_tenant_id,
@@ -120,14 +122,21 @@ class UserStore:
         )
         if existing.first() is not None:
             return False
+        tenant_id = require_tenant_id()
         session.add(
             TenantMember(
-                tenant_id=require_tenant_id(),
+                tenant_id=tenant_id,
                 user_id=user.id,
                 role="owner" if user.role == "admin" else "member",
             )
         )
         await session.flush()
+        await self._join_organization(
+            session,
+            tenant_id=tenant_id,
+            user_id=user.id,
+            role="org_admin" if user.role == "admin" else "member",
+        )
         return True
 
     async def get(self, session: AsyncSession, user_id: str) -> User | None:
@@ -407,7 +416,13 @@ class UserStore:
         return list(result.scalars().all())
 
     async def add_membership(
-        self, session: AsyncSession, *, tenant_id: str, user_id: str, role: str
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        user_id: str,
+        role: str,
+        organization_role: str,
     ) -> TenantMember:
         """Insert a `role` membership for `user_id` in `tenant_id`.
 
@@ -420,11 +435,57 @@ class UserStore:
         checks before calling. Kept as the one place `TenantMember` is
         constructed (`tests/switch_core/test_seed_admin_membership.py` pins
         that), so a route never writes one directly.
+
+        Joining a workspace makes `user_id` a member of its organization too,
+        as `organization_role` when they are not one already
+        (`_join_organization`).
         """
         membership = TenantMember(tenant_id=tenant_id, user_id=user_id, role=role)
         session.add(membership)
         await session.flush()
+        await self._join_organization(
+            session, tenant_id=tenant_id, user_id=user_id, role=organization_role
+        )
         return membership
+
+    async def _join_organization(
+        self, session: AsyncSession, *, tenant_id: str, user_id: str, role: str
+    ) -> None:
+        """Make `user_id` a `role` member of `tenant_id`'s organization, if not one.
+
+        An existing organization membership is left as it is: joining another
+        workspace never changes someone's role in the organization. Runs on
+        the workspace-bound session that wrote the workspace membership, whose
+        organization `require_organization_id()` derives from the workspace,
+        so the row passes the organization policy with nothing else bound.
+
+        A workspace with no organization was created by a release from before
+        organizations; it gets one from the revision that makes the column
+        `NOT NULL`. Until then its members join no organization, and each one
+        that would have is logged.
+        """
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant is None:
+            raise RuntimeError(f"Workspace {tenant_id} is not visible to this session")
+        if tenant.organization_id is None:
+            logger.warning(
+                "Workspace %s belongs to no organization; user %s joined it "
+                "without joining an organization",
+                tenant_id,
+                user_id,
+            )
+            return
+        existing = await session.get(
+            OrganizationMember, (tenant.organization_id, user_id)
+        )
+        if existing is not None:
+            return
+        session.add(
+            OrganizationMember(
+                organization_id=tenant.organization_id, user_id=user_id, role=role
+            )
+        )
+        await session.flush()
 
     async def tenant_role(
         self, session: AsyncSession, tenant_id: str, user_id: str

@@ -24,6 +24,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
@@ -54,6 +55,7 @@ def init_dependencies(
     api_key_store: ApiKeyStore,
     invitation_store: InvitationStore,
     join_domain_store: JoinDomainStore,
+    organization_store: OrganizationStore,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -78,6 +80,7 @@ def init_dependencies(
     _state["api_key_store"] = api_key_store
     _state["invitation_store"] = invitation_store
     _state["join_domain_store"] = join_domain_store
+    _state["organization_store"] = organization_store
     _state["template_store"] = template_store
     _state["usage_store"] = usage_store
     _state["budget_store"] = budget_store
@@ -203,6 +206,10 @@ def get_invitation_store() -> InvitationStore:
 
 def get_join_domain_store() -> JoinDomainStore:
     return _state["join_domain_store"]  # type: ignore[no-any-return]
+
+
+def get_organization_store() -> OrganizationStore:
+    return _state["organization_store"]  # type: ignore[no-any-return]
 
 
 def get_usage_store() -> UsageStore:

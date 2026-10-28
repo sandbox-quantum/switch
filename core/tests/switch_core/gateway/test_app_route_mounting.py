@@ -34,6 +34,7 @@ def _app(**overrides: object) -> object:
         api_key_store=MagicMock(),
         invitation_store=MagicMock(),
         join_domain_store=MagicMock(),
+        organization_store=MagicMock(),
         template_store=MagicMock(),
         usage_store=MagicMock(),
         budget_store=MagicMock(),
