@@ -144,6 +144,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     w.add_argument(
         "--connect-rate", type=float, default=20.0, help="agents opened per second"
     )
+    w.add_argument(
+        "--retry",
+        choices=["harness", "runtime"],
+        default="harness",
+        help="how a dropped agent socket reopens: the harness's jittered backoff, "
+        "or as the real agent runtime does (fast retries for a minute after a "
+        "restart, unjittered doubling otherwise, standing down when refused as "
+        "taken over)",
+    )
+    w.add_argument(
+        "--honor-busy",
+        action="store_true",
+        help="wait out the retry_after_s of an open refused as busy, as clients "
+        "with the open gate's change do",
+    )
     w.add_argument("--seed", type=int, default=1)
     o = ap.add_argument_group("run")
     o.add_argument("--run-id", help="default: UTC time, e.g. 20261026t153000")
@@ -461,6 +476,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                         clients[base],
                         ids,
                         stats,
+                        honor_busy=a.honor_busy,
                     )
                 )
         else:
@@ -505,6 +521,8 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                     clients[base],
                     a.read_fraction,
                     a.seed,
+                    retry=a.retry,
+                    honor_busy=a.honor_busy,
                 )
             )
         if controllers:

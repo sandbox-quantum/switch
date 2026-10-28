@@ -90,6 +90,11 @@ def phase_summary(
         "connect_failures": count["connect_failed"],
         "evictions": count["evicted"],
         "gaps": count["gap"],
+        # Agents that gave up for good (`--retry runtime`, refused as taken
+        # over), and controller sockets that dropped or were refused.
+        "stood_down": count["stood_down"],
+        "controller_drops": count["controller_drop"],
+        "controller_connect_failures": count["controller_connect_failed"],
         "errors": errors,
         "harness_lag_ms_max": round(stats.lag_max.get(name, 0.0) * 1000, 1),
         "pods": {

@@ -66,6 +66,7 @@ class FakeController:
         http: httpx.AsyncClient,
         ids: RequestIds,
         stats: Stats,
+        honor_busy: bool = False,
     ) -> None:
         self.index = index
         self.id = controller_id
@@ -89,6 +90,8 @@ class FakeController:
         self._changed = asyncio.Event()  # its agents changed: report soon
         self._sync = asyncio.Event()  # pull the assignment soon
         self._tasks: list[asyncio.Task] = []
+        self._refusal: dict | None = None
+        self.honor_busy = honor_busy
 
     def add(self, agent: ManagedAgent) -> None:
         self.agents[agent.s.id] = agent
@@ -137,6 +140,8 @@ class FakeController:
         while True:
             opened = time.monotonic()
             why = "closed"
+            close_code: int | None = None
+            told: float | None = None
             try:
                 await self.ensure_token()
                 r = await self.http.post(
@@ -150,6 +155,7 @@ class FakeController:
                 )
                 if r.status_code != 201:
                     why = f"open HTTP {r.status_code}"
+                    told = _busy_retry_after(r)
                 else:
                     body = r.json()
                     query = urlencode(
@@ -166,16 +172,33 @@ class FakeController:
                         ping_interval=None,  # the server's ping frames are the heartbeat
                     ) as ws:
                         why = await self._read(ws, opened)
+                    close_code = ws.close_code
             except asyncio.CancelledError:
                 raise
+            except websockets.ConnectionClosed as exc:
+                why = type(exc).__name__
+                close_code = exc.rcvd.code if exc.rcvd is not None else None
             except Exception as exc:  # noqa: BLE001 - every ending is counted and retried
                 why = type(exc).__name__
+            attached = self.attached.is_set()
             self._lost(why)
             if why == "taken_over":
-                return  # reopening would itself be a takeover
-            if time.monotonic() - opened > 10:
-                backoff = INITIAL_BACKOFF_S
-            await asyncio.sleep(backoff * (0.5 + random.random()))
+                return  # the real controller stops its agents and exits
+            refusal, self._refusal = self._refusal, None
+            if refusal is not None and refusal.get("code") == "busy":
+                told = refusal.get("retry_after_s")
+            if attached:
+                backoff = INITIAL_BACKOFF_S  # a socket that attached starts over
+            # The real controller's waits (agent-controller/src/stream.ts): a
+            # busy server's time when it honours one, one quick retry after a
+            # restart, else half-jittered doubling up to 8 s.
+            if self.honor_busy and isinstance(told, (int, float)):
+                await asyncio.sleep(told)
+                continue
+            if close_code == 1012:
+                await asyncio.sleep(0.25 + random.random() * 0.5)
+                continue
+            await asyncio.sleep(backoff * (0.5 + random.random() * 0.5))
             backoff = min(backoff * 2, MAX_BACKOFF_S)
 
     def _lost(self, why: str) -> None:
@@ -252,6 +275,8 @@ class FakeController:
                 self.stats.event("controller_evicted", self.name, code=code)
                 return code
             if ev == "refused":
+                detail = data.get("detail")
+                self._refusal = detail if isinstance(detail, dict) else None
                 self.stats.event("refused", self.name, detail=str(data)[:200])
                 return f"refused {data.get('status')}"
             if ev == "credential.revoked":
@@ -376,6 +401,18 @@ class FakeController:
                 )
             except (httpx.HTTPError, RuntimeError) as exc:
                 self.stats.event("sync_failed", self.name, why=type(exc).__name__)
+
+
+def _busy_retry_after(r: httpx.Response) -> float | None:
+    """The wait a busy server named in a refused open, or None."""
+    try:
+        error = r.json().get("error") or {}
+    except ValueError:
+        return None
+    after = error.get("retry_after_s")
+    if error.get("code") == "busy" and isinstance(after, (int, float)):
+        return float(after)
+    return None
 
 
 class ManagedAgent(Agent):

@@ -6,6 +6,11 @@ Each agent opens `/agents/{id}/connection/ws` the way the agent runtime does
 `pong` carrying its cursor and position. It reads frames and does nothing
 else unless the traffic asks it to post or to read a room's context. A
 dropped socket is reopened from the last position with backoff, and counted.
+With `retry="runtime"` it is reopened the way the real runtime does it: every
+250 to 750 ms for a minute after the server closed it with 1012 (restarting),
+otherwise a doubling backoff with no jitter, and never again once a reattach
+is refused as taken over. With `honor_busy`, a busy server's `retry_after_s`
+is waited out first, as the runtime does from the open gate's release on.
 
 A message's text starts `lt:<token>:`; a receiver that sees one of its own
 run's tokens records the time from the send to its arrival.
@@ -88,8 +93,14 @@ class Agent:
         http: httpx.AsyncClient,
         read_fraction: float,
         seed: int,
+        retry: str = "harness",
+        honor_busy: bool = False,
     ) -> None:
         self.s = seeded
+        self.retry = retry
+        self.honor_busy = honor_busy
+        self._restarting_until = 0.0
+        self._refusal: dict | None = None
         self.rooms = rooms
         self.ws_base = base_url.replace("https://", "wss://", 1).replace(
             "http://", "ws://", 1
@@ -141,6 +152,7 @@ class Agent:
         while True:
             opened = time.monotonic()
             why = "closed"
+            close_code: int | None = None
             try:
                 async with websockets.connect(
                     self._url(),
@@ -149,18 +161,49 @@ class Agent:
                     max_size=None,
                     ping_interval=None,  # the server's own ping frames are the heartbeat
                 ) as ws:
+                    self._restarting_until = 0.0  # the runtime ends it on an open
                     why = await self._read(ws, opened)
+                close_code = ws.close_code
             except asyncio.CancelledError:
                 raise
+            except websockets.ConnectionClosed as exc:
+                why = type(exc).__name__
+                close_code = exc.rcvd.code if exc.rcvd is not None else None
             except Exception as exc:  # noqa: BLE001 - every ending is counted and retried
                 why = type(exc).__name__
             if self.connected.is_set():
-                self.stats.event("drop", self.s.name, why=why)
+                self.stats.event("drop", self.s.name, why=why, code=close_code)
             elif why != "taken_over":
                 self.stats.event("connect_failed", self.s.name, why=why)
             self.connected.clear()
             if why == "taken_over":
                 return  # reopening would itself be a takeover
+            refusal, self._refusal = self._refusal, None
+            detail = (refusal or {}).get("detail")
+            code = detail.get("code") if isinstance(detail, dict) else None
+            if self.retry == "runtime" and code == "taken_over":
+                # The runtime reads a reattach refused as taken over as another
+                # client holding the connection, and stands down for good.
+                self.stats.event("stood_down", self.s.name)
+                return
+            if (
+                self.honor_busy
+                and code == "busy"
+                and isinstance(detail.get("retry_after_s"), (int, float))
+            ):
+                await asyncio.sleep(detail["retry_after_s"])
+                continue
+            if self.retry == "runtime":
+                if close_code == 1012:
+                    self._restarting_until = time.monotonic() + 60
+                if time.monotonic() - opened >= 30:
+                    backoff = 1.0  # only a stream that lasted resets it
+                if time.monotonic() < self._restarting_until:
+                    await asyncio.sleep(0.25 + random.random() * 0.5)
+                    continue
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+                continue
             if time.monotonic() - opened > 10:
                 backoff = 1.0
             await asyncio.sleep(backoff * (0.5 + random.random()))
@@ -183,6 +226,7 @@ class Agent:
                 )
                 continue
             if ev == "refused":
+                self._refusal = data
                 self.stats.event("refused", self.s.name, detail=str(data)[:200])
                 return f"refused {data.get('status')}"
             if ev == "connection_state":
