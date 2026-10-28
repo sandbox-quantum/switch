@@ -3,6 +3,10 @@
     uv run --project core python loadtest/run.py --namespace switch-staging \\
         --scenarios idle,steady,burst --steps 50,100,200 --rate 5 --duration 120
 
+    # a message-rate sweep: one idle window, then 90 s at each rate until one breaks
+    uv run --project core python loadtest/run.py --namespace switch-dev-abel \\
+        --scenarios idle --steps 300 --rates 10,15,20,25
+
 Seeds its own agents and rooms, runs the scenarios at each step, samples
 every switch-core pod and the database while it does, then removes what it
 made, on Ctrl-C and on failure too. `--cleanup <run_id>` removes leftovers.
@@ -93,6 +97,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     w.add_argument(
         "--settle", type=float, default=10.0, help="quiet seconds after each scenario"
     )
+    w.add_argument(
+        "--rates",
+        help="messages per second to step through after the scenarios at each step, "
+        "e.g. 10,15,20: one steady window per rate with the same agents connected, "
+        "stopping after the first rate that breaks",
+    )
+    w.add_argument(
+        "--rate-duration", type=float, default=90.0, help="seconds measured per rate"
+    )
+    w.add_argument(
+        "--drain",
+        type=float,
+        default=60.0,
+        help="most seconds to wait after each rate for its deliveries to arrive",
+    )
     w.add_argument("--burst-every", type=float, default=30.0)
     w.add_argument("--burst-size", type=int, default=100, help="messages per spike")
     w.add_argument(
@@ -139,6 +158,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if s not in SCENARIOS:
             ap.error(f"unknown scenario {s}")
     a.steps = [int(x) for x in a.steps.split(",")] if a.steps else [a.agents]
+    a.rates = [float(x) for x in a.rates.split(",")] if a.rates else []
+    if a.rates != sorted(a.rates) or any(r <= 0 for r in a.rates):
+        ap.error("--rates must be increasing and above 0")
     if a.steps != sorted(a.steps) or min(a.steps) < 2:
         ap.error("--steps must be increasing and at least 2")
     a.rooms = a.rooms or max(1, max(a.steps) // 2)
@@ -165,7 +187,37 @@ def plan(a: argparse.Namespace) -> tuple[list[list[int]], dict[str, list]]:
                 payload_min=a.payload_min,
                 payload_max=a.payload_max,
             )
+        for r in a.rates:
+            schedules[rate_phase(r, step)] = build_schedule(
+                seed=a.seed,
+                scenario="steady",
+                step=step,
+                duration=a.rate_duration,
+                rooms=membership,
+                active=step,
+                rate=r,
+                payload_min=a.payload_min,
+                payload_max=a.payload_max,
+            )
     return membership, schedules
+
+
+def rate_phase(rate: float, step: int) -> str:
+    """The phase name of one rate in --rates: `steady15@300` is 15 messages a
+    second with 300 agents connected."""
+    return f"steady{rate:g}@{step}"
+
+
+def broken(summary: dict) -> str | None:
+    """Why a measured window counts as broken, or None: a delivery lost, p99
+    over 20 s, or more than 20 errors. A sweep does not step past it."""
+    if summary["deliveries_missing"]:
+        return f"{summary['deliveries_missing']} deliveries missing"
+    if (summary["delivery_ms_p99"] or 0) > 20000:
+        return f"p99 {summary['delivery_ms_p99'] / 1000:.1f} s"
+    if summary["errors"] > 20:
+        return f"{summary['errors']} errors"
+    return None
 
 
 def resolve_urls(a: argparse.Namespace, kube: Kube) -> None:
@@ -322,6 +374,58 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             await asyncio.sleep(1)
 
     counter = asyncio.create_task(count_connected())
+
+    async def drained(name: str) -> bool:
+        """Wait, up to --drain seconds, until every message sent in `name` has
+        reached all its receivers, so a backlog does not run into the next
+        window. Errors in the meantime still count for `name`."""
+        t = time.monotonic()
+        while time.monotonic() - t < a.drain:
+            sent = [m for m in stats.messages.values() if m.phase == name]
+            if all(m.status != 200 or len(m.latencies) >= m.expected for m in sent):
+                return True
+            if await wait(stop, 1.0):
+                break
+        return False
+
+    async def measure(
+        name: str, scenario: str, step: int, duration: float, drain: bool = False
+    ) -> None:
+        schedule = schedules[name]
+        stats.phase = sampler.phase = name
+        start, t0 = time.time(), time.monotonic()
+        print(f"  {name}: {len(schedule)} messages over {duration:.0f}s", flush=True)
+        if schedule:
+            await play(
+                schedule, agents[:step], room_ids, membership, stats, run_id, name, stop
+            )
+        await wait(stop, duration - (time.monotonic() - t0))
+        end, secs = time.time(), time.monotonic() - t0
+        stopped = stop.is_set()
+        if drain:
+            sampler.phase = "drain"
+            t1 = time.monotonic()
+            done = await drained(name)
+            print(
+                f"  {name}: deliveries {'drained' if done else 'still owed'} after {time.monotonic() - t1:.0f}s",
+                flush=True,
+            )
+        stats.phase = sampler.phase = "settle"
+        await wait(stop, a.settle)
+        phases.append(
+            {
+                "name": name,
+                "scenario": scenario,
+                "agents": step,
+                "start": start,
+                "end": end,
+                "seconds": secs,
+                "planned": len(schedule),
+                "fingerprint": fingerprint(schedule),
+                "stopped": stopped,
+            }
+        )
+
     code = 0
     try:
         await admin.login(*kube.admin_login())
@@ -377,43 +481,21 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             for sc in a.scenarios:
                 if stop.is_set():
                     break
-                name = f"{sc}@{step}"
-                schedule = schedules[name]
-                stats.phase = sampler.phase = name
-                start, t0 = time.time(), time.monotonic()
-                print(
-                    f"  {name}: {len(schedule)} messages over {a.duration:.0f}s",
-                    flush=True,
-                )
-                if schedule:
-                    await play(
-                        schedule,
-                        agents[:step],
-                        room_ids,
-                        membership,
-                        stats,
-                        run_id,
-                        name,
-                        stop,
+                await measure(f"{sc}@{step}", sc, step, a.duration)
+            for r in a.rates:
+                if stop.is_set():
+                    break
+                name = rate_phase(r, step)
+                await measure(name, "steady", step, a.rate_duration, drain=True)
+                phases[-1]["rate"] = r
+                why = broken(
+                    phase_summary(
+                        phases[-1], stats, sampler.samples, connected_log.get(name, [])
                     )
-                await wait(stop, a.duration - (time.monotonic() - t0))
-                end, secs = time.time(), time.monotonic() - t0
-                stopped = stop.is_set()
-                stats.phase = sampler.phase = "settle"
-                await wait(stop, a.settle)
-                phases.append(
-                    {
-                        "name": name,
-                        "scenario": sc,
-                        "agents": step,
-                        "start": start,
-                        "end": end,
-                        "seconds": secs,
-                        "planned": len(schedule),
-                        "fingerprint": fingerprint(schedule),
-                        "stopped": stopped,
-                    }
                 )
+                if why:
+                    print(f"  {name} broke ({why}); not stepping higher", flush=True)
+                    break
     except Exception as exc:  # noqa: BLE001 - reported, then torn down
         print(f"run failed: {type(exc).__name__}: {exc}", flush=True)
         code = 1

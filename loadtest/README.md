@@ -26,6 +26,13 @@ At each step in `--steps`, the harness brings that many agents online and then r
 
 To compare one pod with two, run the same command, with the same `--seed`, once against each replica count. The replica count is changed in napoleon, not by this harness.
 
+`--rates 10,15,20,25` sweeps the message rate in one run: after the scenarios at each step, the same agents stay connected for one steady window of `--rate-duration` seconds (90 by default) at each rate, named `steady15@300` and so on. After each window the harness waits up to `--drain` seconds for that window's deliveries to arrive, so a backlog does not spill into the next rate, and it stops stepping after the first rate that breaks: a delivery lost, p99 over 20 s, or more than 20 errors. Agents are created, connected and measured idle once, so a five-rate sweep takes about 15 minutes instead of about 40 as separate runs:
+
+```sh
+uv run --project core python loadtest/run.py --namespace switch-dev-abel \
+    --scenarios idle --steps 300 --rates 10,15,20,25,30 --rds-instance switch-dev-abel
+```
+
 `--plan` prints the workload (message counts and a fingerprint per scenario) without making any request. The same `--seed` and flags always produce the same plan, which `summary.md` records alongside the results.
 
 `--via port-forward` reaches each switch-core pod through `kubectl port-forward` instead of the tailnet, spreading the agents evenly over the pods. Use it for a smoke run from a Mac that is off the tailnet, not for capacity numbers, because all the traffic then passes through the Kubernetes API server.
@@ -60,7 +67,7 @@ The cleanup prints what it removed and what is still there; a non-zero exit mean
 ## Checks
 
 ```sh
-uv run --project core pytest loadtest/test_workload.py
+uv run --project core pytest loadtest/test_workload.py loadtest/test_run.py
 ```
 
-These check that the same seed gives the same rooms and schedule, and that the pilot and prod are refused. They make no requests.
+These check that the same seed gives the same rooms and schedule, that a rate sweep plans one window per rate and knows when a window is broken, and that the pilot and prod are refused. They make no requests.
