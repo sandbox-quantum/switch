@@ -1,14 +1,15 @@
 """Creating the run's agents, rooms and key, and removing them again.
 
 Everything a run creates is named after it: the API key is labelled
-`load-<run_id>`, agents are `load-<run_id>-aNNNN`, rooms `load-<run_id>-rNNN`.
+`load-<run_id>`, agents are `load-<run_id>-aNNNN`, rooms `load-<run_id>-rNNN`,
+and with `--controllers` the controllers are `load-<run_id>-cNNN`.
 Teardown and `--cleanup` find what to remove by those names, through the
 gateway as the environment's admin, so they work even when the process that
 created them died without saying what it made.
 
 No secret leaves this process: the admin password, the session cookie, the
-registration key and the agents' keys are held in memory and never printed or
-written to the run folder.
+registration key, the agents' keys and the controllers' credentials are held
+in memory and never printed or written to the run folder.
 """
 
 from __future__ import annotations
@@ -141,6 +142,95 @@ async def seed(
         await asyncio.gather(*(register(i) for i in range(n_agents)))
 
     seeded = [a for a in agents if a is not None]
+    return seeded, await create_rooms(admin, run_id, seeded, membership, state, sem)
+
+
+@dataclass
+class SeededController:
+    index: int
+    id: str
+    name: str
+    credential: str  # memory only
+
+
+async def seed_managed(
+    admin: Admin,
+    run_id: str,
+    n_agents: int,
+    n_controllers: int,
+    membership: list[list[int]],
+    state: dict,
+    concurrency: int = 8,
+) -> tuple[list[SeededAgent], list[str], list[SeededController]]:
+    """Create the controllers, the agents they will run and the rooms, through
+    the gateway's management routes, as Switch Console does. The agents are
+    made unplaced: each is placed on its controller when its step connects it
+    (`controllers.ManagedAgent`), since placing needs the controller online.
+    Records each id in `state` as it is made."""
+    sem = asyncio.Semaphore(concurrency)
+    controllers: list[SeededController | None] = [None] * n_controllers
+
+    async def controller(k: int) -> None:
+        name = f"{prefix(run_id)}c{k:03d}"
+        async with sem:
+            r = await admin.call(
+                "POST",
+                "/management/controllers",
+                json={
+                    "name": name,
+                    "description": f"load test {run_id}, removed when the run ends",
+                    "kind": "console",
+                    "platform": {
+                        "os": "linux",
+                        "arch": "x64",
+                        "os_version": "loadtest",
+                    },
+                    "version": "loadtest",
+                },
+            )
+        if r.status_code != 201:
+            raise _fail(f"creating controller {name}", r)
+        b = r.json()
+        controllers[k] = SeededController(k, b["controller_id"], name, b["credential"])
+        state.setdefault("controllers", []).append(b["controller_id"])
+
+    await asyncio.gather(*(controller(k) for k in range(n_controllers)))
+
+    agents: list[SeededAgent | None] = [None] * n_agents
+
+    async def agent(i: int) -> None:
+        name = f"{prefix(run_id)}a{i:04d}"
+        async with sem:
+            r = await admin.call(
+                "POST",
+                "/management/agents",
+                json={
+                    "name": name,
+                    "description": f"load test {run_id}, removed when the run ends",
+                    "controller_id": None,
+                    "desired_state": "running",
+                    "definition": {"provider": "claude"},
+                },
+            )
+        if r.status_code != 201:
+            raise _fail(f"creating managed agent {name}", r)
+        agents[i] = SeededAgent(i, r.json()["agent_id"], name, "")
+        state["agents"].append(agents[i].id)
+
+    await asyncio.gather(*(agent(i) for i in range(n_agents)))
+    seeded = [a for a in agents if a is not None]
+    rooms = await create_rooms(admin, run_id, seeded, membership, state, sem)
+    return seeded, rooms, [c for c in controllers if c is not None]
+
+
+async def create_rooms(
+    admin: Admin,
+    run_id: str,
+    seeded: list[SeededAgent],
+    membership: list[list[int]],
+    state: dict,
+    sem: asyncio.Semaphore,
+) -> list[str]:
     room_ids: list[str | None] = [None] * len(membership)
 
     async def create_room(j: int, members: list[int]) -> None:
@@ -162,7 +252,7 @@ async def seed(
         state["rooms"].append(room_ids[j])
 
     await asyncio.gather(*(create_room(j, m) for j, m in enumerate(membership)))
-    return seeded, [rid for rid in room_ids if rid]
+    return [rid for rid in room_ids if rid]
 
 
 async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
@@ -171,7 +261,13 @@ async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
     Returns what it removed, and what is still there after (should be 0)."""
     pre = "load-" if run_id == "*" else prefix(run_id)
     label = None if run_id == "*" else f"load-{run_id}"
-    done = {"agents_deleted": 0, "rooms_archived": 0, "keys_deleted": 0, "errors": 0}
+    done = {
+        "agents_deleted": 0,
+        "rooms_archived": 0,
+        "keys_deleted": 0,
+        "controllers_revoked": 0,
+        "errors": 0,
+    }
     sem = asyncio.Semaphore(8)
 
     async def one(method: str, path: str, counter: str) -> None:
@@ -188,6 +284,22 @@ async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
             log(f"  {method} {path}: HTTP {r.status_code} {r.text[:120]}")
             done["errors"] += 1
 
+    # Controller-backed agents go through the management routes, which also
+    # drop their definitions; then their controllers are revoked.
+    managed = await _managed_agents(admin, pre)
+    await asyncio.gather(
+        *(
+            one("DELETE", f"/management/agents/{a['agent_id']}", "agents_deleted")
+            for a in managed
+        )
+    )
+    controllers = await _controllers(admin, pre)
+    await asyncio.gather(
+        *(
+            one("DELETE", f"/management/controllers/{c['id']}", "controllers_revoked")
+            for c in controllers
+        )
+    )
     rooms = await _rooms(admin, pre)
     await asyncio.gather(
         *(one("POST", f"/rooms/{r['id']}/archive", "rooms_archived") for r in rooms)
@@ -204,7 +316,31 @@ async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
     done["left_agents"] = len(await _agents(admin, pre))
     done["left_rooms"] = len(await _rooms(admin, pre))
     done["left_keys"] = len(await _keys(admin, pre, label))
+    done["left_controllers"] = len(await _controllers(admin, pre))
     return done
+
+
+async def _managed_agents(admin: Admin, pre: str) -> list[dict]:
+    r = await admin.call("GET", "/management/agents")
+    if r.status_code == 404:
+        return []  # agent management is off here, so there are none
+    if r.status_code != 200:
+        raise _fail("listing managed agents", r)
+    return [a for a in r.json() if str(a.get("name", "")).startswith(pre)]
+
+
+async def _controllers(admin: Admin, pre: str) -> list[dict]:
+    # Unrevoked only: revoked is the end state, so it is not a leftover.
+    r = await admin.call("GET", "/management/controllers")
+    if r.status_code == 404:
+        return []
+    if r.status_code != 200:
+        raise _fail("listing controllers", r)
+    return [
+        c
+        for c in r.json()
+        if str(c.get("name", "")).startswith(pre) and not c.get("revoked_at")
+    ]
 
 
 async def _agents(admin: Admin, pre: str) -> list[dict]:

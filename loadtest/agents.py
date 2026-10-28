@@ -73,6 +73,11 @@ class Stats:
 
 
 class Agent:
+    # An agent reading its own socket with `scope=all` gets every message in
+    # its rooms. A controller-backed agent gets only the messages that address
+    # it, so its senders @-mention the receivers (controllers.ManagedAgent).
+    mentions_receivers = False
+
     def __init__(
         self,
         seeded: SeededAgent,
@@ -322,11 +327,19 @@ async def _post(
         expected,
     )
     stats.messages[token] = msg
+    content = payload(token, send.size)
+    if sender.mentions_receivers:
+        names = (
+            agents[a].s.name
+            for a in membership[send.room]
+            if a != send.sender and a < len(agents)
+        )
+        content = " ".join(f"@{n}" for n in names) + " " + content
     try:
         r = await sender.http.post(
             f"/agents/{sender.s.id}/message",
             headers={**sender.auth, "X-Request-Id": sender.ids.next()},
-            json={"room_id": msg.room, "content": payload(token, send.size)},
+            json={"room_id": msg.room, "content": content},
         )
         msg.status = r.status_code
     except httpx.HTTPError as exc:

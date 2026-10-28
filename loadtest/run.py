@@ -7,6 +7,10 @@
     uv run --project core python loadtest/run.py --namespace switch-dev-abel \\
         --scenarios idle --steps 300 --rates 10,15,20,25
 
+    # the same agents behind 25 fake controllers, as most real agents connect
+    uv run --project core python loadtest/run.py --namespace switch-dev-abel \\
+        --controllers 25 --scenarios idle,steady --steps 500,1000 --rate 2
+
 Seeds its own agents and rooms, runs the scenarios at each step, samples
 every switch-core pod and the database while it does, then removes what it
 made, on Ctrl-C and on failure too. `--cleanup <run_id>` removes leftovers.
@@ -34,9 +38,10 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent, Stats, play  # noqa: E402
+from controllers import FakeController, ManagedAgent  # noqa: E402
 from kube import Kube, PortForward, Refused, Sampler, guard_target  # noqa: E402
 from report import phase_summary, render  # noqa: E402
-from seed import Admin, RequestIds, seed, teardown  # noqa: E402
+from seed import Admin, RequestIds, seed, seed_managed, teardown  # noqa: E402
 from workload import (  # noqa: E402
     SCENARIOS,
     build_membership,
@@ -81,6 +86,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     w.add_argument("--steps", help="agent counts to ramp through, e.g. 50,100,200")
     w.add_argument("--rooms", type=int, help="rooms; default half the largest step")
+    w.add_argument(
+        "--controllers",
+        type=int,
+        default=0,
+        help="run the agents behind this many fake agent controllers, spread "
+        "evenly, instead of each on a socket of its own",
+    )
     w.add_argument("--room-size", type=int, default=4)
     w.add_argument(
         "--rate",
@@ -164,6 +176,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if a.steps != sorted(a.steps) or min(a.steps) < 2:
         ap.error("--steps must be increasing and at least 2")
     a.rooms = a.rooms or max(1, max(a.steps) // 2)
+    if a.controllers < 0 or a.controllers > max(a.steps):
+        ap.error("--controllers must be between 0 and the largest step")
     return a
 
 
@@ -362,6 +376,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         for b in bases
     }
     agents: list[Agent] = []
+    controllers: list[FakeController] = []
     phases: list[dict] = []
     connected_log: dict[str, list[int]] = {}
     td: dict | None = None
@@ -430,11 +445,32 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     try:
         await admin.login(*kube.admin_login())
         t = time.monotonic()
-        seeded, room_ids = await seed(
-            admin, a.api_url, run_id, max(a.steps), membership, state
-        )
+        if a.controllers:
+            seeded, room_ids, made = await seed_managed(
+                admin, run_id, max(a.steps), a.controllers, membership, state
+            )
+            for c in made:
+                base = bases[c.index % len(bases)]
+                controllers.append(
+                    FakeController(
+                        c.index,
+                        c.id,
+                        c.name,
+                        c.credential,
+                        base,
+                        clients[base],
+                        ids,
+                        stats,
+                    )
+                )
+        else:
+            seeded, room_ids = await seed(
+                admin, a.api_url, run_id, max(a.steps), membership, state
+            )
         print(
-            f"seeded {len(seeded)} agents, {len(room_ids)} rooms in {time.monotonic() - t:.1f}s",
+            f"seeded {len(seeded)} agents, {len(room_ids)} rooms"
+            + (f", {len(controllers)} controllers" if controllers else "")
+            + f" in {time.monotonic() - t:.1f}s",
             flush=True,
         )
         rooms_of: dict[int, list[str]] = {}
@@ -443,6 +479,22 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 rooms_of.setdefault(m, []).append(room_ids[j])
         for s in seeded:
             base = bases[s.index % len(bases)]
+            if controllers:
+                owner = controllers[s.index % len(controllers)]
+                agents.append(
+                    ManagedAgent(
+                        s,
+                        rooms_of.get(s.index, []),
+                        ids,
+                        stats,
+                        owner.http,
+                        a.read_fraction,
+                        a.seed,
+                        owner,
+                        admin,
+                    )
+                )
+                continue
             agents.append(
                 Agent(
                     s,
@@ -455,6 +507,28 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                     a.seed,
                 )
             )
+        if controllers:
+            # Placing an agent needs its controller online with a fresh status
+            # report, so every controller connects and reports first.
+            stats.phase = sampler.phase = "controllers"
+            t = time.monotonic()
+            for c in controllers:
+                c.start()
+                await asyncio.sleep(1 / a.connect_rate)
+            while (
+                sum(c.reported.is_set() for c in controllers) < len(controllers)
+                and time.monotonic() - t < 120
+            ):
+                if await wait(stop, 0.5):
+                    break
+            up = sum(c.reported.is_set() for c in controllers)
+            print(
+                f"controllers: {up}/{len(controllers)} connected and reporting "
+                f"in {time.monotonic() - t:.1f}s",
+                flush=True,
+            )
+            if up < len(controllers):
+                raise RuntimeError("not every controller came online")
 
         opened = 0
         for step in a.steps:
@@ -503,10 +577,17 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         stats.phase = sampler.phase = "teardown"
         counter.cancel()
         await asyncio.gather(*(x.stop() for x in agents), return_exceptions=True)
+        await asyncio.gather(*(c.stop() for c in controllers), return_exceptions=True)
         try:
             td = await teardown(admin, run_id)
             print(f"teardown: {json.dumps(td)}", flush=True)
-            if td["left_agents"] or td["left_rooms"] or td["left_keys"] or td["errors"]:
+            if (
+                td["left_agents"]
+                or td["left_rooms"]
+                or td["left_keys"]
+                or td.get("left_controllers")
+                or td["errors"]
+            ):
                 code = code or 1
         except Exception as exc:  # noqa: BLE001
             print(f"teardown failed ({exc}); run: --cleanup {run_id}", flush=True)
