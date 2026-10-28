@@ -173,13 +173,6 @@ spec:
         - name: model-server
           image: {{ include "switch.image" (dict "global" .Values.global "image" $st.image) }}
           imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" $st.imagePullPolicy "image" $st.image) }}
-          {{- with $st.args }}
-          # Appended to the image's `strands-decider serve` command.
-          args:
-            {{- range . }}
-            - {{ . | quote }}
-            {{- end }}
-          {{- end }}
           env:
             - name: STRANDS_CHECKPOINT
               value: {{ required "decision.modelServer.strands.checkpoint is required" $st.checkpoint | quote }}
