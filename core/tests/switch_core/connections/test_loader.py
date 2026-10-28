@@ -8,6 +8,7 @@ from switch_core.connections.loader import (
     MAX_SKILL_BYTES,
     CatalogError,
     load_catalog,
+    with_access_profiles,
 )
 
 PLACEHOLDERS = {
@@ -225,6 +226,85 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+RESTRICTED_DRIVE = {
+    "drive",
+    "drive.readonly",
+    "drive.metadata",
+    "drive.metadata.readonly",
+    "drive.activity",
+    "drive.activity.readonly",
+    "drive.meet.readonly",
+    "drive.scripts",
+}
+
+
+def test_the_shipped_google_entry_offers_drive_file_without_restricted_scopes():
+    entry = CATALOG["google-workspace"]
+    full = entry.definition.access
+    profile = entry.definition.access_profiles["drive-file"]
+    assert full is not None and full.write is not None
+    assert profile.access.write is not None
+    read = set(profile.access.read.scopes or [])
+    write = set(profile.access.write.scopes or [])
+    assert {"openid", f"{GOOGLE}userinfo.email"} <= read < write
+    # Google reviews drive and drive.readonly with a yearly security
+    # assessment; this profile asks for neither.
+    assert not {scope.removeprefix(GOOGLE) for scope in write} & RESTRICTED_DRIVE
+    assert {scope.removeprefix(GOOGLE) for scope in write - read} == {
+        "drive.file",
+        "documents",
+        "spreadsheets",
+        "presentations",
+        "calendar.events",
+    }
+    # The rest is what the full levels ask for.
+    assert read == set(full.read.scopes or []) - {f"{GOOGLE}drive.readonly"}
+    assert write - {f"{GOOGLE}drive.file"} == set(full.write.scopes or []) - {
+        f"{GOOGLE}drive.readonly",
+        f"{GOOGLE}drive",
+    }
+    skill = entry.skill_files[profile.skill]
+    assert skill.startswith("---\nname: google-workspace\n")
+    assert "drive files list` finds only the files created" in skill
+
+
+def test_a_server_choosing_a_profile_offers_its_levels_and_skill():
+    offered = with_access_profiles(CATALOG, {"google-workspace": "drive-file"})
+    entry = offered["google-workspace"]
+    profile = CATALOG["google-workspace"].definition.access_profiles["drive-file"]
+    assert entry.definition.access == profile.access
+    assert (
+        entry.skill_files["SKILL.md"]
+        == CATALOG["google-workspace"].skill_files["drive-file/SKILL.md"]
+    )
+    assert entry.definition.cli == CATALOG["google-workspace"].definition.cli
+    # Every other entry, and the shipped catalog, are as they were.
+    assert all(
+        offered[slug] is CATALOG[slug] for slug in CATALOG if slug != "google-workspace"
+    )
+    assert CATALOG["google-workspace"].skill_files["SKILL.md"].count("Find files") == 1
+
+
+def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
+    assert with_access_profiles(CATALOG, {}) == CATALOG
+
+
+@pytest.mark.parametrize(
+    ("chosen", "message"),
+    [
+        ({"jira": "drive-file"}, "names a service not in the catalog: jira"),
+        (
+            {"google-workspace": "gmail"},
+            r"does not have: 'gmail' \(it has: drive-file\)",
+        ),
+        ({"github": "drive-file"}, r"does not have: 'drive-file' \(it has: none\)"),
+    ],
+)
+def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
+    with pytest.raises(CatalogError, match=message):
+        with_access_profiles(CATALOG, chosen)
 
 
 @pytest.fixture
@@ -1045,4 +1125,57 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
         ),
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
+        load_catalog(catalog_copy)
+
+
+def _rewrite_google(catalog_copy, old, new):
+    path = catalog_copy / "google-workspace" / "connection.yaml"
+    text = path.read_text()
+    assert text.count(old) == 1
+    path.write_text(text.replace(old, new))
+
+
+def test_rejects_a_profile_whose_skill_file_is_not_shipped(catalog_copy):
+    _rewrite_google(
+        catalog_copy, "skill: drive-file/SKILL.md", "skill: elsewhere/SKILL.md"
+    )
+    with pytest.raises(CatalogError, match="does not ship: elsewhere/SKILL.md"):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_skill_named_for_another_entry(catalog_copy):
+    path = catalog_copy / "google-workspace" / "skill" / "drive-file" / "SKILL.md"
+    path.write_text(
+        path.read_text().replace("name: google-workspace", "name: github", 1)
+    )
+    with pytest.raises(
+        CatalogError,
+        match="drive-file/SKILL.md needs frontmatter with name: google-workspace",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_without_the_entrys_levels(catalog_copy):
+    path = catalog_copy / "google-workspace" / "connection.yaml"
+    text = path.read_text()
+    start = text.index("      write:\n", text.index("access_profiles:"))
+    path.write_text(text[:start] + "tools: { mode: pass_through }\n")
+    with pytest.raises(
+        CatalogError,
+        match="(?s)google-workspace is invalid.*must name the levels the entry does",
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_rejects_a_profile_on_an_entry_that_is_not_oauth(catalog_copy):
+    path = catalog_copy / "datadog" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access_profiles:\n  less:\n    skill: SKILL.md\n"
+        + "    access: { read: { scopes: [a] } }\n"
+    )
+    with pytest.raises(
+        CatalogError,
+        match="(?s)datadog is invalid.*only an oauth entry with access levels",
+    ):
         load_catalog(catalog_copy)
