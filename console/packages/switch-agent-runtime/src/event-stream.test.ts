@@ -1409,3 +1409,53 @@ describe('placements', () => {
     }
   });
 });
+
+describe('what connection_state says', () => {
+  it('tells a session start to the room itself only where the server says it leaves that to it', async () => {
+    for (const [said, expected] of [
+      [{ announce_session_starts: true }, true],
+      [{}, false],
+    ] as const) {
+      server.sockets = [];
+      serve((socket) => {
+        socket.open();
+        socket.frame('connection_state', { connection_id: 'conn-1', generation: 0, ...said });
+      });
+      let connected = false;
+      const { stream, abort } = makeStream({
+        rooms: [],
+        onConnected: () => {
+          connected = true;
+        },
+      });
+      expect(stream.announcesSessionStarts).toBe(false);
+      await vi.waitFor(() => expect(connected).toBe(true));
+      expect(stream.announcesSessionStarts).toBe(expected);
+      abort.abort();
+    }
+  });
+
+  it('reports a restart gap resuming above the cursor as no cursor reset', async () => {
+    serve((socket) => {
+      attach(socket, 0);
+      socket.frame('message', { type: 'message', room_id: 'r' }, 7);
+      socket.frame('gap', {
+        from_sequence: 7,
+        resumed_at: 2 ** 32 - 1,
+        reason: 'server restarted',
+        rooms: [],
+      });
+    });
+    const gaps: { cursorReset?: boolean; resumedAt?: number }[] = [];
+    const { stream, abort } = makeStream({ rooms: [], onGap: (g) => void gaps.push(g) });
+    try {
+      await vi.waitFor(() => expect(gaps).toHaveLength(1));
+      expect(gaps).toEqual([
+        expect.objectContaining({ resumedAt: 2 ** 32 - 1, cursorReset: false }),
+      ]);
+      expect(stream.position).toEqual({ s: 2 ** 32 - 1 });
+    } finally {
+      abort.abort();
+    }
+  });
+});

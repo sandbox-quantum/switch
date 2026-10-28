@@ -70,10 +70,6 @@ logger = logging.getLogger(__name__)
 
 Scope = Literal["single", "all"]
 DeliveryFilter = Literal["all", "addressed"]
-# How a connection's stream reaches its client. `sse` is the event stream an
-# agent runtime built before the WebSocket still asks for, served for a
-# compatibility window and counted apart so we can see those clients drain.
-Transport = Literal["websocket", "sse"]
 
 # Refuse a client that cannot meet this server's protocol rather than degrading
 # in ways neither side can see. The runtime lives on the user's machine and
@@ -334,9 +330,6 @@ class ClientDeclaration:
     accepts: int | None = None
     artifact: str | None = None
     version: str | None = None
-    # Why a client that has the WebSocket opened the event stream instead, as
-    # `sse_fallback` cleaned it. Logged only: not recorded and not reported.
-    fallback: str | None = None
 
     @property
     def declares_protocol(self) -> bool:
@@ -364,31 +357,6 @@ class ClientDeclaration:
         }
 
 
-SSE_FALLBACK_REASONS = frozenset({"socket_never_opened"})
-
-
-def sse_fallback(reason: str | None, close_code: str | None) -> str | None:
-    """Why a client opened the event stream, as it goes in the log line.
-
-    A runtime that has the WebSocket asks for the event stream only when its
-    socket never opened, and says so, so the log can tell it apart from a
-    client built before the socket. Both values are the client's own, so an
-    unknown reason becomes "other" and a close code that is not a short number
-    is dropped.
-    """
-    if not reason:
-        return None
-    label = reason if reason in SSE_FALLBACK_REASONS else "other"
-    if (
-        close_code
-        and close_code.isascii()
-        and close_code.isdigit()
-        and len(close_code) <= 4
-    ):
-        return f"{label}:{close_code}"
-    return label
-
-
 def client_label(declaration: ClientDeclaration) -> str:
     """The declared artifact as a metric value: a registered name, or a bucket.
 
@@ -401,14 +369,6 @@ def client_label(declaration: ClientDeclaration) -> str:
     if declaration.artifact in ARTIFACT_VERSIONS:
         return declaration.artifact
     return "other"
-
-
-def _fallback_suffix(declaration: ClientDeclaration) -> str:
-    """` fallback=<why>` for the `[CONN]` log lines, or nothing when the
-    client did not fall back, so the line reads as it always has."""
-    if declaration.fallback is None:
-        return ""
-    return f" fallback={declaration.fallback}"
 
 
 class ProtocolVersionError(ConnectionError_):
@@ -464,8 +424,6 @@ class AgentConnection:
     # agent belongs to that no sibling has claimed.
     rooms: set[str] = field(default_factory=set)
     stream_attached: bool = False
-    # What the attached stream travels over, as of the last attach.
-    stream_transport: Transport = "websocket"
     # How many heartbeats this connection has received. Diagnostic: it is the
     # difference between a client that never started beating and one that beat
     # and then stopped, which the timestamp alone cannot tell you.
@@ -548,10 +506,9 @@ CONTROLLER_LABEL = ("controller", "agents-controller")
 
 
 def connection_transport(conn: AgentConnection) -> str:
-    """`websocket` or `sse` while a stream is attached, by what it travels over;
-    `detached` while it has dropped and the connection waits out its heartbeat
-    window for a reconnect."""
-    return conn.stream_transport if conn.stream_attached else "detached"
+    """`websocket` while the socket is attached; `detached` while the socket has
+    dropped and the connection waits out its heartbeat window for a reconnect."""
+    return "websocket" if conn.stream_attached else "detached"
 
 
 #: How a deleted agent's connections end, in whichever process holds them. A
@@ -690,7 +647,6 @@ class AgentConnectionRegistry:
         position: Position,
         declaration: ClientDeclaration,
         expected_generation: int | None,
-        transport: Transport = "websocket",
     ) -> AgentConnection:
         """Open a connection, or reattach to one the client already owns.
 
@@ -752,7 +708,6 @@ class AgentConnectionRegistry:
             existing.last_beat = time.monotonic()
             existing.closure = None
             existing.stream_attached = True
-            existing.stream_transport = transport
             existing.stream_generation = self._new_incarnation()
             # Wake the stream this one replaces, so its client hears it was
             # taken over now rather than on the stream's next idle tick.
@@ -763,15 +718,12 @@ class AgentConnectionRegistry:
             existing.declaration = declaration
             metrics().increment(AGENT_CONNECTIONS_OPENED, {"kind": "reattach"})
             logger.info(
-                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s "
-                "transport=%s%s%s",
+                "[CONN] reattached agent=%s connection=%s scope=%s generation=%s%s",
                 agent_id,
                 connection_id,
                 scope,
                 existing.stream_generation,
-                transport,
                 f" from process={moved_from}" if moved_from is not None else "",
-                _fallback_suffix(declaration),
             )
             return existing
 
@@ -790,7 +742,6 @@ class AgentConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
-            stream_transport=transport,
             stream_generation=self._new_incarnation(),
             declaration=declaration,
         )
@@ -802,7 +753,7 @@ class AgentConnectionRegistry:
         )
         logger.info(
             "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
-            "client=%s version=%s protocol=%s transport=%s%s",
+            "client=%s version=%s protocol=%s",
             agent_id,
             connection_id,
             scope,
@@ -813,8 +764,6 @@ class AgentConnectionRegistry:
             f"{floor}-{declaration.speaks}"
             if declaration.declares_protocol
             else "unknown",
-            transport,
-            _fallback_suffix(declaration),
         )
         return conn
 
@@ -1555,7 +1504,6 @@ class AgentConnectionRegistry:
             last_beat=now,
             opened_at=now,
             stream_attached=True,
-            stream_transport=cast(Transport, row.transport),
             stream_generation=row.incarnation,
             declaration=ClientDeclaration(speaks=row.speaks, accepts=row.accepts),
             held_by=row.process_id,

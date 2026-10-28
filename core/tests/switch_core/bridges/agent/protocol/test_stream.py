@@ -38,10 +38,7 @@ from switch_core.bridges.agent.protocol.positions import OWN_EVENTS, room_source
 from switch_core.bridges.agent.protocol.stream import (
     KEEPALIVE,
     Frame,
-    encode_sse,
-    encode_ws,
     event_frames,
-    sse_stream,
 )
 from switch_core.bridges.agent.protocol.types import (
     AgentEvent,
@@ -1596,45 +1593,3 @@ async def test_each_delivered_event_counts_as_an_agent_bridge_event_out(
         }
     finally:
         uninstall()
-
-
-class TestBothTransportsEncodeTheSameFrames:
-    """The socket and the event stream an old client still reads carry the
-    same frames from the same loop; only the encoding differs."""
-
-    def test_an_event_carries_its_sequence_as_the_sse_id(self) -> None:
-        frame = Frame("message", {"payload": {"body": "hi"}}, seq=7)
-
-        assert encode_sse(frame) == (
-            b'id: 7\nevent: message\ndata: {"payload":{"body":"hi"}}\n\n'
-        )
-        assert encode_ws(frame) == {
-            "event": "message",
-            "data": {"payload": {"body": "hi"}},
-            "id": 7,
-        }
-
-    def test_a_frame_without_a_sequence_has_no_id(self) -> None:
-        assert encode_sse(Frame("gap", {"reason": "x"})) == (
-            b'event: gap\ndata: {"reason":"x"}\n\n'
-        )
-
-    def test_the_keepalive_is_a_comment_on_the_event_stream(self) -> None:
-        assert encode_sse(KEEPALIVE) == b": keepalive\n\n"
-
-    async def test_closing_the_event_stream_detaches_its_connection(
-        self, db_buffer: EventBuffer
-    ) -> None:
-        registry = AgentConnectionRegistry()
-        buffer = db_buffer
-        conn = _open(registry)
-
-        body = sse_stream(
-            event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
-        )
-        first = await anext(body)
-        await body.aclose()
-
-        assert first.startswith(b"event: connection_state\n")
-        assert not conn.stream_attached
-        assert registry.get(conn.id) is conn

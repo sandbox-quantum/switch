@@ -38,7 +38,7 @@ lapsed. What a signal asks this process to read goes through the bus's
 `PendingWork`, so a read that fails is kept and tried again.
 
 Three requests are handed to the holder rather than served where they land: a
-`POST /connection/beat` from an old event-stream client (forwarded in batches,
+beat for a connection another process holds (forwarded in batches,
 `agent_connections.beats`), a session command for a stream another process
 holds, the agent's watcher or its controller's (stored as a relay row for that
 process and signalled, `agent_connections.session_command`, since its content
@@ -255,7 +255,9 @@ class SharedConnections:
                         scope=conn.scope,
                         delivery_filter=conn.delivery_filter,
                         spawn_capable=conn.spawn_capable,
-                        transport=conn.stream_transport,
+                        # The column outlived the event stream: every
+                        # connection travels over the WebSocket now.
+                        transport="websocket",
                         speaks=conn.declaration.speaks,
                         accepts=conn.declaration.protocol_floor,
                     )
