@@ -29,6 +29,7 @@ auth:
     prompt: consent select_account
     authorization_params: { access_type: offline }
   identity:
+    method: GET
     url: https://openidconnect.googleapis.com/v1/userinfo
     account_id: sub
     label: email

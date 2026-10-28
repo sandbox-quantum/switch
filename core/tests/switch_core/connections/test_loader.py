@@ -1,4 +1,6 @@
+import os
 import shutil
+import stat
 
 import pytest
 
@@ -17,7 +19,6 @@ PLACEHOLDERS = {
     "microsoft-365",
     "new-relic",
     "notion",
-    "linear",
     "salesforce",
     "box",
     "canva",
@@ -25,13 +26,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_linear():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "linear",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +41,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "linear",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["linear"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -69,7 +73,12 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
     assert definition.auth.refresh == "reusable"
     assert definition.auth.identity is not None
-    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+    assert (
+        definition.auth.identity.method,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == (
+        "GET",
         "sub",
         "email",
     )
@@ -172,7 +181,10 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     every = set(definition.access.write.scopes)
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
-    assert definition.auth.identity.url == "https://api.atlassian.com/me"
+    assert (definition.auth.identity.method, definition.auth.identity.url) == (
+        "GET",
+        "https://api.atlassian.com/me",
+    )
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -223,8 +235,50 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     # Never the scope that creates and changes bases, tables and fields.
     assert "schema.bases:write" not in definition.access.write.scopes
     assert definition.auth.identity is not None
-    assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
-    assert definition.auth.identity.account_id == "id"
+    assert (
+        definition.auth.identity.method,
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+    ) == ("GET", "https://api.airtable.com/v0/meta/whoami", "id")
+
+
+def test_the_shipped_linear_entry_signs_in_as_the_spike_found_it_must():
+    definition = CATALOG["linear"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("linear", "https://mcp.linear.app/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["read"]
+    assert definition.access.write.scopes == ["read", "write"]
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.method,
+        definition.auth.identity.url,
+        definition.auth.identity.body,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == (
+        "POST",
+        "https://api.linear.app/graphql",
+        {"query": "query { viewer { id email name } }"},
+        "data.viewer.id",
+        "data.viewer.email",
+    )
 
 
 @pytest.fixture
@@ -262,7 +316,10 @@ def test_rejects_a_slug_that_differs_from_its_directory(catalog_copy):
 
 
 def test_rejects_an_enabled_entry_without_a_skill(catalog_copy):
-    shutil.rmtree(catalog_copy / "github" / "skill")
+    shutil.rmtree(
+        catalog_copy / "github" / "skill",
+        onexc=lambda func, p, _: (os.chmod(p, stat.S_IWRITE), func(p)),
+    )
     with pytest.raises(CatalogError, match="github is enabled but has no skill"):
         load_catalog(catalog_copy)
 
@@ -461,6 +518,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -495,6 +553,7 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
     assert definition.auth.identity is not None
+    assert definition.auth.identity.method == "GET"
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
     assert definition.token.kind == "pass_through"
@@ -543,7 +602,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
@@ -655,6 +714,21 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    redirect: [loopback, core]\n    unchecked: Publish it.\n",
             "unchecked is for a static client",
         ),
+        (
+            "    method: GET\n",
+            "    method: POST\n",
+            "sends a body",
+        ),
+        (
+            "    method: GET\n",
+            '    method: GET\n    body: { query: "viewer" }\n',
+            "sends a body",
+        ),
+        (
+            "    method: GET\n",
+            "",
+            "method",
+        ),
     ],
 )
 def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
@@ -664,6 +738,18 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
     _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
         load_catalog(catalog_copy)
+
+
+def test_loads_an_oauth_entry_with_post_identity(catalog_copy):
+    post_entry = OAUTH_ENTRY.replace(
+        "    method: GET\n",
+        '    method: POST\n    body:\n      query: "query { viewer { id } }"\n',
+    )
+    _write_example(catalog_copy, post_entry)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.method == "POST"
+    assert identity.body == {"query": "query { viewer { id } }"}
 
 
 def test_placeholders_keep_their_short_form():
