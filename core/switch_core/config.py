@@ -734,7 +734,19 @@ class SwitchConfig(BaseSettings):
     db_pool_size: int = 30
     db_max_overflow: int = 10
     db_pool_recycle: int = 1800
-    db_pool_pre_ping: bool = True
+    # Off by default. On, every checkout first pings its connection, and
+    # SQLAlchemy's asyncpg ping is a BEGIN, an empty statement and a ROLLBACK:
+    # three round trips and a transaction before any work, which under agent
+    # load was over a third of all the transactions core ran. What it catches
+    # is a connection that died while it sat in the pool, as every pooled
+    # connection does when the database restarts or fails over. Without it the
+    # first query on such a connection fails, and SQLAlchemy then replaces
+    # every connection the pool held. So on each pod the first query fails
+    # (`test_pool_pre_ping.py`), along with any query that was running when the
+    # database went, which fails with the ping too. How soon a connection left
+    # open by a failover is known to be dead is up to `db_tcp_keepalive_*` and
+    # `db_tcp_user_timeout` below, with the ping or without it.
+    db_pool_pre_ping: bool = False
     # SQLAlchemy's default is 30s, long enough that pool starvation surfaces as
     # unexplained latency rather than an error. Fail fast and loudly instead.
     db_pool_timeout: float = 5.0

@@ -30,6 +30,7 @@ from switch_core.db.models import Agent, ApiKey, Client, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.keys import Keyring
+from tests.session_counting import CountingSessionFactory
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -38,21 +39,6 @@ _PROFILE = IntegrationProfile(
     post_invocation_mediation=[],
     event_reporting=[],
 )
-
-
-class _CountingSessionFactory:
-    """Wraps the real factory and counts how many sessions are opened.
-
-    A session is a pool checkout, so this is the number the incident is about.
-    """
-
-    def __init__(self, inner: async_sessionmaker[AsyncSession]) -> None:
-        self._inner = inner
-        self.opened = 0
-
-    def __call__(self) -> Any:
-        self.opened += 1
-        return self._inner()
 
 
 class _FakeClientLifecycle:
@@ -242,7 +228,7 @@ class TestResolutionHitsAndMisses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _seed_agent(session_factory, "tok")
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=5, max_entries=8))
 
@@ -270,7 +256,7 @@ class TestResolutionHitsAndMisses:
         # on a tenant_session to read the row itself. What the cache above
         # saves is these two round trips, not one.
         await _seed_agent(session_factory, "tok")
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=0, max_entries=8))
 
@@ -285,7 +271,7 @@ class TestResolutionHitsAndMisses:
         # tenant to open the second, row-reading session under. This is the
         # load-shape that matters — an unauthenticated flood never reaches
         # the second query.
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
 
@@ -298,7 +284,7 @@ class TestResolutionHitsAndMisses:
         # A token that does not resolve must reach Postgres every time, or a
         # key that starts existing would keep failing — and, far worse, the
         # memo would become a place to park an attacker-chosen string.
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
 
@@ -318,7 +304,7 @@ class TestResolutionHitsAndMisses:
             key_type="registration",
             with_agent=False,
         )
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
@@ -337,7 +323,7 @@ class TestResolutionHitsAndMisses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _seed_agent(session_factory, "orphan", name="orphan", with_agent=False)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
         mw = _middleware(counting, cache)
@@ -354,7 +340,7 @@ class TestResolutionHitsAndMisses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         await _seed_agent(session_factory, "tok")
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=0, max_entries=8))
 
@@ -373,7 +359,7 @@ class TestResolutionHitsAndMisses:
         monkeypatch.setattr(
             "switch_core.bridges.agent.api_key_cache.time.monotonic", lambda: now[0]
         )
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         counting.opened = 0
         mw = _middleware(counting, ApiKeyCache(ttl_seconds=5, max_entries=8))
 

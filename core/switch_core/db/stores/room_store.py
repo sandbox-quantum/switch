@@ -248,9 +248,6 @@ class RoomStore:
 
     async def delete(self, session: AsyncSession, room_id: str) -> None:
         await session.execute(delete(ClientRoom).where(ClientRoom.room_id == room_id))
-        await session.execute(
-            delete(room_agents).where(room_agents.c.room_id == room_id)
-        )
         room = await session.get(Room, room_id)
         if room:
             await session.delete(room)

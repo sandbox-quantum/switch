@@ -61,6 +61,7 @@ def db_buffer_on(
     sequence_base: int = 0,
     retention_seconds: float = 3600,
     rooms: RoomAnnouncements | None = None,
+    session_slots: int | None = None,
 ) -> EventBuffer:
     """The db-buffer on a test's database."""
     return EventBuffer(
@@ -68,6 +69,7 @@ def db_buffer_on(
         sequence_base=sequence_base,
         rooms=rooms if rooms is not None else QuietRooms(),
         retention_seconds=retention_seconds,
+        session_slots=session_slots,
     )
 
 

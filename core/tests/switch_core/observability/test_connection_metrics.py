@@ -251,7 +251,12 @@ class _EmptyBuffer(EventBuffer):
     """
 
     def __init__(self) -> None:
-        super().__init__(object(), sequence_base=0, rooms=QuietRooms())  # type: ignore[arg-type]
+        super().__init__(
+            object(),  # type: ignore[arg-type]
+            sequence_base=0,
+            rooms=QuietRooms(),
+            session_slots=None,
+        )
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
         return self.sequence_floor - 1

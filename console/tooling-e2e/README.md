@@ -138,6 +138,11 @@ passed or not. A teardown that leaves something behind fails the scenario.
 | `operations-front-door` | The operations registry over HTTP: it lists the operations, `list_rooms` returns the room, `read_context` returns a message posted in it. | — |
 | `mattermost-roundtrip` | A room on the Mattermost bridge: an addressed post from the human reaches the agent, and the agent's reply appears as its bot. | Mattermost |
 | `agent-identity` | Renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
+| `room-group-paths` | The same subgroup name under two parents: a bare name both share is refused naming each path, the path picks one, and a second group of that name under one parent is refused whatever its case. | — |
+| `attachment-names` | A file whose name is not latin-1 is posted, listed by `read_context` and downloaded under its own name (`filename*` in `Content-Disposition`). | — |
+| `client-mistakes` | An outsider inviting itself into a room or reading it gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |
+| `room-capture` | A room built from a document keeps the package it names, and the room captured back as a document builds a second room with the same package; both rooms delete. | — |
+| `follow-ups` | Follow the conversation: an untagged message continuing an exchange the agent just answered, or replying in its thread, reaches it; one after another agent spoke, or after the window, does not; an agent's message follows no one. | Mattermost; ephemeral only, where the stack turns the flag on with a 20-second window |
 
 If `mattermost-roundtrip` passes and a provider-lane scenario fails, the fault
 is in the agent session, not in Switch, the bridge or the harness.
@@ -601,6 +606,8 @@ than being half-used.
 | `question` | Two turns: the agent asks, the human answers in the channel, the agent uses the answer. | The bot offers `red`/`green`/`blue`, then replies `green` after the answer. |
 | `approval` | A tool call the session is not pre-authorised to make. | The bot posts an approval card, answering it with `<handle> 1` allows the call, the bot replies `done`. |
 | `interrupt` | `!interrupt @agent-name` cancels a running local shell command after its start marker is verified. | No completion marker appears after the command’s 90-second lifetime (observed for 95 seconds). Requires `SWITCH_E2E_AGENT_DIR` on this machine. |
+| `card-answer-refused` | With the agent open only to its owner, a person who is not the owner answers its approval card, then the owner does. | The Switch admin bot tells the other person in the card's thread that the answer did not land and the command does not run; after the owner's answer the bot replies `done`. Ephemeral and local only: the other person signs up on the spot. |
+| `template-agent` | A template creates a managed agent on the controller and a Mattermost room with it in it. | The run reports the agent on the controller and listening, and it answers `SWITCH_E2E_OK_TPL` in the new channel. Requires an agent controller. |
 
 `question` is the one a one-shot reply cannot fake: it only passes if the session
 is still alive and still connected when the second message arrives.

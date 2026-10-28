@@ -400,52 +400,57 @@ class _ControllerStream:
                 self._tenant, agent_id, attached.reader_id, room_id
             )
             attached.counted.add(room_id)
-        # Take the number of the newest of the agent's own events before
-        # reading, and read no further than it. A read that finds nothing moves
-        # the cursor up to this number. An event added to `agent_events` while
-        # the read runs is numbered above it, so the cursor does not skip that
-        # event.
-        bound = await self._buffer.head(self._tenant, agent_id)
-        try:
-            pending = await self._buffer.read_from(
+        # The reads below share one session (`EventBuffer.one_session`): one
+        # pool checkout and one transaction for the agent's pass, not one per
+        # read. The frames are built after it, and returned rather than
+        # yielded, so the connection is back in the pool before any is sent.
+        async with self._buffer.one_session(self._tenant):
+            # Take the number of the newest of the agent's own events before
+            # reading, and read no further than it. A read that finds nothing moves
+            # the cursor up to this number. An event added to `agent_events` while
+            # the read runs is numbered above it, so the cursor does not skip that
+            # event.
+            bound = await self._buffer.head(self._tenant, agent_id)
+            try:
+                pending = await self._buffer.read_from(
+                    self._tenant,
+                    agent_id,
+                    attached.cursor,
+                    limit=CATCH_UP_BATCH,
+                    through_seq=bound,
+                )
+            except CursorExpiredError as exc:
+                resumed_at = exc.resume_after
+                attached.cursor = resumed_at
+                self._conn.sent_cursors[agent_id] = resumed_at
+                return [
+                    frame(
+                        "agent.gap",
+                        {
+                            "agent_id": agent_id,
+                            "from_sequence": exc.requested,
+                            "resumed_at": resumed_at,
+                            "rooms": list(exc.rooms),
+                            "all_rooms": False,
+                            "reason": str(exc),
+                        },
+                    )
+                ]
+            if not pending:
+                # Events above the cursor that are no longer held — a room the
+                # agent left takes its events with it — are passed, or every pass
+                # would find work it can never read and spin.
+                attached.cursor = max(attached.cursor, bound)
+                self._conn.sent_cursors[agent_id] = attached.cursor
+                return []
+            # The unread counts sent with the events below, counted for the whole
+            # batch at once, so that catching up on a few hundred events costs a
+            # few statements per room rather than several per event.
+            missed = await self._buffer.unread_batch(
                 self._tenant,
                 agent_id,
-                attached.cursor,
-                limit=CATCH_UP_BATCH,
-                through_seq=bound,
+                [(item.room_id, item.room_seq) for item in pending if item.notifiable],
             )
-        except CursorExpiredError as exc:
-            resumed_at = exc.resume_after
-            attached.cursor = resumed_at
-            self._conn.sent_cursors[agent_id] = resumed_at
-            return [
-                frame(
-                    "agent.gap",
-                    {
-                        "agent_id": agent_id,
-                        "from_sequence": exc.requested,
-                        "resumed_at": resumed_at,
-                        "rooms": list(exc.rooms),
-                        "all_rooms": False,
-                        "reason": str(exc),
-                    },
-                )
-            ]
-        if not pending:
-            # Events above the cursor that are no longer held — a room the
-            # agent left takes its events with it — are passed, or every pass
-            # would find work it can never read and spin.
-            attached.cursor = max(attached.cursor, bound)
-            self._conn.sent_cursors[agent_id] = attached.cursor
-            return []
-        # The unread counts sent with the events below, counted for the whole
-        # batch at once, so that catching up on a few hundred events costs a
-        # few statements per room rather than several per event.
-        missed = await self._buffer.unread_batch(
-            self._tenant,
-            agent_id,
-            [(item.room_id, item.room_seq) for item in pending if item.notifiable],
-        )
         frames: list[ControllerFrame] = []
         for item in pending:
             data = item.event.model_dump(mode="json")

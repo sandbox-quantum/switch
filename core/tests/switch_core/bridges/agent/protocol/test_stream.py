@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import select
@@ -61,6 +61,7 @@ from tests.db_buffer import (
     seed_member,
     sender_of,
 )
+from tests.session_counting import CountingSessionFactory
 
 AGENT = "agent-1"
 ROOM_A = "room-a"
@@ -1638,3 +1639,30 @@ class TestBothTransportsEncodeTheSameFrames:
         assert first.startswith(b"event: connection_state\n")
         assert not conn.stream_attached
         assert registry.get(conn.id) is conn
+
+
+async def test_a_pass_reads_in_one_session(
+    session_factory: async_sessionmaker[AsyncSession], room_bells: MessageListener
+) -> None:
+    """The reads of a pass that delivers (the agent's rooms, its head, its own
+    events, what was dropped after its position, its rooms' conversation and
+    the unread counts) cost one pool checkout and one transaction, not one of
+    each per read. A contract like those in `test_pool_checkouts.py`: every
+    message wakes a pass in each stream it is for."""
+    counting = CountingSessionFactory(session_factory)
+    buffer = db_buffer_on(cast(Any, counting), rooms=room_bells)
+    registry = AgentConnectionRegistry()
+    conn = _open(registry, scope="all", delivery_filter="all")
+    stream = event_frames(conn=conn, registry=registry, buffer=buffer, approvals=None)
+    await _addressed(session_factory, buffer, "first")
+    opening = await _take(stream, 2)
+    assert [name for name, _ in opening] == ["connection_state", "message"]
+
+    await _addressed(session_factory, buffer, "second")
+    counting.opened = 0
+    ((name, data),) = await _take(stream, 1)
+    await stream.aclose()
+
+    assert name == "message"
+    assert data["payload"]["body"] == "second"
+    assert counting.opened == 1

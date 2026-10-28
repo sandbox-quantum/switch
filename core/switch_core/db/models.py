@@ -878,6 +878,7 @@ room_agents = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_agents_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "agent_id"],
@@ -903,6 +904,7 @@ room_skills = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_skills_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "skill_id"],
@@ -1108,6 +1110,7 @@ class Task(TenantScoped, Base):
             ["tenant_id", "room_id"],
             ["rooms.tenant_id", "rooms.id"],
             name="fk_tasks_room",
+            ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
             ["tenant_id", "requester_agent_id"],
@@ -1162,6 +1165,7 @@ room_references = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_references_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "reference_id"],
@@ -1187,6 +1191,7 @@ room_documents = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_documents_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "document_id"],
@@ -1479,6 +1484,7 @@ room_packages = Table(
         ["tenant_id", "room_id"],
         ["rooms.tenant_id", "rooms.id"],
         name="fk_room_packages_room",
+        ondelete="CASCADE",
     ),
     ForeignKeyConstraint(
         ["tenant_id", "package_id"],

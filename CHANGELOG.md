@@ -78,6 +78,11 @@ version of their own to them without also giving them a release of their own.
   its warning names the service and the time until which they may keep
   working: up to an hour for Google Workspace, and up to eight hours for
   Atlassian, whose tokens cannot be asked for shorter.
+- **A template's room params name only rooms its runner can see.** A room
+  param checked its value against every room on the server, and `$first` or
+  a list of candidates could settle on someone else's private room. That told
+  the runner the room existed and could write its name into their new room.
+  Now a room the runner cannot read reads as missing.
 
 #### Added
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
@@ -137,6 +142,20 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **An agent's stream reads in one database session per pass, and pooled
+  connections are no longer pinged before use.** A pass that delivered a
+  message opened a session for each of its reads, six pool checkouts and six
+  transactions, and the pre-ping added a transaction to every checkout. The
+  reads of a pass now share one session, for an agent on its own socket and
+  for each agent an agent controller serves. `DB_POOL_PRE_PING` now defaults
+  to `false`: after a database restart the first query on each pod fails, along
+  with any query running at the time, and the pool then replaces every
+  connection it held. Set it to `true` behind
+  anything that drops idle connections. In a load test of 300 agents at 10
+  messages a second on 2 pods, CPU per message fell by a quarter and database
+  transactions per message by more than two thirds. At most half of a pod's
+  pool goes to streams' passes at once, so requests still get a connection
+  when the pod's CPU is saturated.
 - **A cloud machine can move to another instance type and keep its disk.**
   The hosted controller now launches every new instance of a machine as the
   instance type in its `gateway.json`, at the same moment it already moves the
@@ -255,6 +274,18 @@ version of their own to them without also giving them a release of their own.
   uploaded again.
 
 #### Removed
+- **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
+  removed** and answer `404`. They predate the operations door, which runs the
+  same operations as MCP. Call `POST /agents/{id}/ops/<operation>` with the
+  operation's arguments as the JSON body instead:
+  `POST moderation/rooms` is `create_room`,
+  `POST moderation/rooms/{room_id}/invite` is `invite_agent_to_room`,
+  `GET moderation/rooms` is `list_all_rooms`,
+  `GET moderation/rooms/{room_id}` is `get_room_detail`,
+  `GET moderation/agents` is `list_agents`, and
+  `GET moderation/bridges` is `list_bridges`. The reply is
+  `{"result": …}` in the operation's own shape, so `list_all_rooms` gives
+  `room_id` where the old route gave `id`.
 - **`!run-cmd`, and the terminal command in offline replies.** A CLI started
   with that command got none of the Switch tools, so it never brought the agent
   online. The reply for an agent that is offline or not live now says what's
@@ -2026,6 +2057,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Replace a messaging app's token without disconnecting it.** When a bot
+  token is rotated or leaked, a workspace admin can paste the new one from the
+  connection's menu on the server page. The connection restarts with it and
+  keeps its rooms. Offered on connections to your own bot, not on ones that
+  came from installing Switch's app.
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
@@ -2072,6 +2108,10 @@ version of their own to them without also giving them a release of their own.
   project, so anyone else who kept it got a sign-in failure with nothing to
   say why. It now starts empty, with a placeholder; the region still starts
   at `global`.
+- **Two agent hosts starting at once on Windows no longer crash each other.**
+  A host reading another host's ownership ticket while that host replaced or
+  deleted it got `EPERM` from Windows and exited. It now tries the read again
+  for a few seconds, as it already did for its own writes.
 - **Settings → Agent providers keeps this computer's report current.** It
   prefers the report from the server Console is on, rereads it while open and
   after the controller reports again, and the install section says so when

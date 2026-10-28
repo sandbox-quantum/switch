@@ -36,7 +36,10 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.agent_event_listener import AgentEventListener
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import (
+    EventBuffer,
+    session_slots_for,
+)
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_KEY_LABEL,
     BOOTSTRAP_KEY_TYPE,
@@ -761,6 +764,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         sequence_base=event_boot << 32,
         rooms=message_listener,
         retention_seconds=config.agent_event_retention_seconds,
+        session_slots=session_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Listens for the `NOTIFY` that each insert into `agent_events` sends, and
     # wakes this process's streams for that agent, whichever process wrote it.

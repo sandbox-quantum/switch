@@ -44,7 +44,10 @@ from switch_core.bridges.agent.api.handlers import (
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
-from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.protocol.event_buffer import (
+    EventBuffer,
+    session_slots_for,
+)
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
     RegistrationResult,
@@ -585,6 +588,9 @@ async def harness(
             sequence_base=0,
             rooms=message_listener,
             retention_seconds=config.agent_event_retention_seconds,
+            session_slots=session_slots_for(
+                config.db_pool_size, config.db_max_overflow
+            ),
         )
         connections = AgentConnectionRegistry()
         collab_lifecycle: object = _NoBridges()

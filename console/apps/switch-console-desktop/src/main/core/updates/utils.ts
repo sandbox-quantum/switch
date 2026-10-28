@@ -16,14 +16,17 @@ export function formatUpdaterError(error: unknown): string {
     statusMessage?: string;
     description?: string;
   };
-  const status = err.statusCode || err.code || err.status;
+  const status = err.statusCode || err.status;
   const statusText = err.statusMessage || err.description;
   if (status) {
     const base = `Update request failed with HTTP ${status}`;
     return statusText ? `${base}: ${stripMarkupAndTruncate(String(statusText))}` : base;
   }
   const message = error instanceof Error ? error.message : String(error ?? 'Unknown update error');
-  return stripMarkupAndTruncate(message);
+  // electron-updater's own failures carry an ERR_UPDATER_* code, not an HTTP status.
+  return err.code
+    ? `${stripMarkupAndTruncate(message)} (${err.code})`
+    : stripMarkupAndTruncate(message);
 }
 
 export function sanitizeUpdaterLogArgs(args: unknown[]) {

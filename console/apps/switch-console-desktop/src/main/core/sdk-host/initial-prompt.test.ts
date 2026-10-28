@@ -95,14 +95,12 @@ it('does not resubmit a pending attempt that saved no epoch', async () => {
 
 it('records the receipt of a submission the server refused', async () => {
   const h = harness({
-    submit: vi.fn(
-      async (): Promise<CommandReceipt> => ({
-        recorded: true,
-        status: 'rejected',
-        code: 'STALE_EPOCH',
-        message: 'The epoch has moved on.',
-      })
-    ),
+    submit: vi.fn(async (): Promise<CommandReceipt> => ({
+      recorded: true,
+      status: 'rejected',
+      code: 'STALE_EPOCH',
+      message: 'The epoch has moved on.',
+    })),
   });
   const outcome = await h.run();
   expect(outcome).toEqual({
@@ -121,14 +119,12 @@ it('records the receipt of a submission the server refused', async () => {
 
 it('leaves a submission the server answered as unknown unresolved', async () => {
   const h = harness({
-    submit: vi.fn(
-      async (): Promise<CommandReceipt> => ({
-        recorded: true,
-        status: 'unknown',
-        code: 'HOST_UNREACHABLE',
-        message: 'The host did not answer.',
-      })
-    ),
+    submit: vi.fn(async (): Promise<CommandReceipt> => ({
+      recorded: true,
+      status: 'unknown',
+      code: 'HOST_UNREACHABLE',
+      message: 'The host did not answer.',
+    })),
   });
   const outcome = await h.run();
   expect(outcome).toMatchObject({
@@ -147,14 +143,12 @@ it('leaves a submission the server answered as unknown unresolved', async () => 
 it('leaves a lookup the server answered as unknown unresolved', async () => {
   const h = harness({
     record: { commandId: 'attempt-1', state: 'pending', epoch: 'epoch-1' },
-    lookup: vi.fn(
-      async (): Promise<CommandLookup> => ({
-        recorded: true,
-        status: 'unknown',
-        code: 'HOST_UNREACHABLE',
-        message: 'The host did not answer.',
-      })
-    ),
+    lookup: vi.fn(async (): Promise<CommandLookup> => ({
+      recorded: true,
+      status: 'unknown',
+      code: 'HOST_UNREACHABLE',
+      message: 'The host did not answer.',
+    })),
   });
   const outcome = await h.run();
   expect(h.input.submit).not.toHaveBeenCalled();
@@ -210,14 +204,12 @@ it('leaves an unknown delivery unresolved rather than resending it', async () =>
 it('records a pending id the server rejected and does not submit under a new one', async () => {
   const h = harness({
     record: { commandId: 'attempt-1', state: 'pending', epoch: 'epoch-1' },
-    lookup: vi.fn(
-      async (): Promise<CommandLookup> => ({
-        recorded: true,
-        status: 'rejected',
-        code: 'STALE_EPOCH',
-        message: 'The epoch has moved on.',
-      })
-    ),
+    lookup: vi.fn(async (): Promise<CommandLookup> => ({
+      recorded: true,
+      status: 'rejected',
+      code: 'STALE_EPOCH',
+      message: 'The epoch has moved on.',
+    })),
   });
   const outcome = await h.run();
   expect(h.input.submit).not.toHaveBeenCalled();

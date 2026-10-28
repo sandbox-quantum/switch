@@ -14,6 +14,7 @@ from typing import Any, ClassVar, Literal, NamedTuple
 from pydantic import ConfigDict, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from telegram import (
+    Bot,
     ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -56,6 +57,7 @@ from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
     BridgeConnectionConfig,
+    BridgeCredentialError,
     BridgeInstallLink,
     ChannelCreationUnsupported,
     ChannelType,
@@ -89,6 +91,7 @@ from switch_core.bridges.collaboration.telegram.app_client import (
     TelegramAppClient,
     bot_id_of,
     bot_resource,
+    initialize_bot,
 )
 from switch_core.bridges.collaboration.telegram.chunking import (
     MAX_MESSAGE,
@@ -523,6 +526,29 @@ class TelegramAdapter(PlatformAdapter):
     keeps_quiet_unless_listening: ClassVar[bool] = True
 
     @classmethod
+    async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
+        """Ask Telegram who the bot token belongs to (`getMe`).
+
+        A bridge on the shared app bot holds no token of its own; the
+        deployment's is checked when the app starts.
+        """
+        config = TelegramConnectionConfig.model_validate(connection_config)
+        if config.event_delivery == "shared":
+            return
+        assert config.bot_token is not None  # guaranteed by the validator
+        bot = Bot(config.bot_token)
+        try:
+            await initialize_bot(bot.initialize())
+        except InvalidToken as exc:
+            raise BridgeCredentialError(str(exc)) from exc
+        except TelegramError as exc:
+            raise BridgeCredentialError(
+                f"Could not check the bot token with Telegram: {exc}. Try again."
+            ) from exc
+        finally:
+            await bot.shutdown()
+
+    @classmethod
     def classify_failure(cls, exc: BaseException) -> FailureReason | None:
         """`BadRequest` is a subclass of `NetworkError` in python-telegram-bot,
         so the definite refusals are checked before the network failure that
@@ -681,7 +707,7 @@ class TelegramAdapter(PlatformAdapter):
         self._app = app
         self._bot = app.bot
 
-        await app.initialize()
+        await initialize_bot(app.initialize())
         me = await app.bot.get_me()
         self._bot_user_id = me.id
         if me.username and me.username != self._bot_username:

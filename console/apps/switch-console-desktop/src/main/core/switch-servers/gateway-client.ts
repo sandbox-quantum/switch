@@ -4132,21 +4132,19 @@ export async function fetchAdvancedConfigSchema(
   return Object.fromEntries(
     Object.entries(providers).map(([provider, { fields }]) => [
       provider,
-      fields.map(
-        (field): AdvancedConfigField => ({
-          key: field.key,
-          label: field.label,
-          type: field.type,
-          ...(field.help !== null ? { help: field.help } : {}),
-          ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
-          ...(field.options !== null ? { options: field.options } : {}),
-          ...(field.catalogue === null
-            ? {}
-            : field.catalogue.kind === 'model'
-              ? { catalogue: { kind: 'model' } }
-              : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
-        })
-      ),
+      fields.map((field): AdvancedConfigField => ({
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        ...(field.help !== null ? { help: field.help } : {}),
+        ...(field.placeholder !== null ? { placeholder: field.placeholder } : {}),
+        ...(field.options !== null ? { options: field.options } : {}),
+        ...(field.catalogue === null
+          ? {}
+          : field.catalogue.kind === 'model'
+            ? { catalogue: { kind: 'model' } }
+            : { catalogue: { kind: 'model-variant', modelField: field.catalogue.model_field } }),
+      })),
     ])
   );
 }

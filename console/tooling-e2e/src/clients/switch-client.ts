@@ -134,6 +134,59 @@ export class SwitchHttpError extends Error {
   }
 }
 
+/** An agent's addressing policy: anyone no rule matches is refused. */
+export interface AddressingPolicy {
+  rules: {
+    rooms: "*" | string[];
+    room_groups: "*" | string[];
+    users: "*" | string[];
+    agents: "*" | string[];
+    owner: boolean;
+    owner_agents: boolean;
+    platform: boolean;
+  }[];
+}
+
+/** Only the agent's owner, and the platform identities its owner claimed. */
+export const OWNER_ONLY: AddressingPolicy = {
+  rules: [
+    {
+      rooms: "*",
+      room_groups: "*",
+      users: [],
+      agents: [],
+      owner: true,
+      owner_agents: false,
+      platform: false,
+    },
+  ],
+};
+
+/** What a template run made. */
+export interface TemplateRun {
+  created_agents: {
+    slot: string;
+    agent_id: string;
+    name: string;
+    machine: { id: string; name: string };
+    listening: boolean;
+  }[];
+  room: { room_id: string; room_name: string; failed_attachments: unknown[] };
+}
+
+/** A template run the server refused, having created nothing. */
+export class TemplateRefusal extends Error {
+  readonly problems: { slot: string; code: string; message: string }[];
+  constructor(
+    cause: SwitchHttpError,
+    problems: { slot: string; code: string; message: string }[],
+  ) {
+    super(cause.message, { cause });
+    this.name = "TemplateRefusal";
+    this.problems = problems;
+  }
+}
+
 /**
  * The reason code of a management API refusal (`{"error": {"code": …}}`), or
  * null when the error is not one.
@@ -145,6 +198,16 @@ export function managementErrorCode(error: unknown): string | null {
     return typeof parsed.error?.code === "string" ? parsed.error.code : null;
   } catch {
     return null;
+  }
+}
+
+/** A FastAPI error body's `detail` when it is a string, else the body as it came. */
+export function errorDetail(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    return typeof parsed.detail === "string" ? parsed.detail : body;
+  } catch {
+    return body;
   }
 }
 
@@ -530,6 +593,54 @@ export class SwitchClient {
     await this.gateway("DELETE", `/rooms/${roomId}`);
   }
 
+  /** `DELETE /gateway/room-groups/{id}` — a group's rooms and subgroups move up a level, so delete those first. */
+  async deleteRoomGroup(groupId: string): Promise<void> {
+    await this.gateway("DELETE", `/room-groups/${groupId}`);
+  }
+
+  /** `POST /gateway/packages` — a private package owned by the signed-in admin, with nothing in it. */
+  async createPackage(params: {
+    name: string;
+    description: string;
+    instructions: string;
+  }): Promise<{ id: string; name: string }> {
+    return this.gateway<{ id: string; name: string }>("POST", "/packages", params);
+  }
+
+  async deletePackage(packageId: string): Promise<void> {
+    await this.gateway("DELETE", `/packages/${packageId}`);
+  }
+
+  /** `GET /gateway/rooms/{id}/packages` — the packages attached to a room. */
+  async roomPackages(roomId: string): Promise<{ id: string; name: string }[]> {
+    return this.gateway<{ id: string; name: string }[]>(
+      "GET",
+      `/rooms/${roomId}/packages`,
+    );
+  }
+
+  /**
+   * `GET /gateway/rooms/{id}/yaml` — the room captured as the document
+   * `/rooms/from-yaml` takes, so the room can be built again from it.
+   */
+  async exportRoomYaml(roomId: string): Promise<string> {
+    assertAllowed(this.environment, "GET", `/gateway/rooms/${roomId}/yaml`);
+    const response = await fetch(`${this.apiUrl}/gateway/rooms/${roomId}/yaml`, {
+      headers: {
+        Accept: "application/x-yaml",
+        Cookie: await this.gatewayLogin(),
+        ...this.requestId(),
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new SwitchHttpError("GET", `/gateway/rooms/${roomId}/yaml`, response.status, text);
+    }
+    return text;
+  }
+
   /**
    * `DELETE /gateway/agents/by-name/{name}` — admin-authenticated teardown that,
    * unlike `DELETE /agents/{id}`, does not need the agent's own API key. Used by
@@ -578,9 +689,47 @@ export class SwitchClient {
    * agents and an unclaimed platform user, so its agents are opened explicitly.
    */
   async openAddressing(agentId: string): Promise<void> {
+    await this.setAddressingPolicy(agentId, null);
+  }
+
+  /** `PUT /gateway/agents/{id}/addressing-policy` — who may address the agent; null lets anyone. */
+  async setAddressingPolicy(
+    agentId: string,
+    policy: AddressingPolicy | null,
+  ): Promise<void> {
     await this.gateway("PUT", `/agents/${agentId}/addressing-policy`, {
-      policy: null,
+      policy,
     });
+  }
+
+  /**
+   * `POST /gateway/rooms/from-template-document` — run a template as the
+   * signed-in admin: create its agents, wait for each to listen, then build
+   * its room. A refusal creates nothing and throws a {@link TemplateRefusal}
+   * naming every problem.
+   */
+  async runTemplateDocument(params: {
+    template: string;
+    templateName: string;
+  }): Promise<TemplateRun> {
+    try {
+      return await this.gateway<TemplateRun>(
+        "POST",
+        "/rooms/from-template-document",
+        { template: params.template, template_name: params.templateName },
+      );
+    } catch (error) {
+      if (error instanceof SwitchHttpError && error.status === 409) {
+        const body = JSON.parse(error.body) as {
+          code?: string;
+          problems?: { slot: string; code: string; message: string }[];
+        };
+        if (body.code === "agents_not_created") {
+          throw new TemplateRefusal(error, body.problems ?? []);
+        }
+      }
+      throw error;
+    }
   }
 
   /**
@@ -988,6 +1137,86 @@ export class SwitchClient {
       { token: agent.apiKey, body: { room_id: roomId, content } },
     );
     return body.event_id;
+  }
+
+  /**
+   * `POST /agents/{id}/rooms/{room_id}/media` — post one file to a room as the
+   * agent (multipart, part `file`). Returns the media URI it was stored under.
+   */
+  async uploadMedia(
+    agent: RegisteredAgent,
+    roomId: string,
+    file: { name: string; bytes: Uint8Array<ArrayBuffer>; contentType: string },
+  ): Promise<{ eventId: string; mxc: string }> {
+    const path = `/agents/${agent.id}/rooms/${roomId}/media`;
+    assertAllowed(this.environment, "POST", path);
+    const form = new FormData();
+    form.append(
+      "file",
+      new Blob([file.bytes], { type: file.contentType }),
+      file.name,
+    );
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${agent.apiKey}`,
+        ...this.requestId(),
+      },
+      body: form,
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text();
+    if (!response.ok) throw new SwitchHttpError("POST", path, response.status, text);
+    const body = JSON.parse(text) as { event_id: string; mxc: string };
+    return { eventId: body.event_id, mxc: body.mxc };
+  }
+
+  /**
+   * `GET /agents/{id}/rooms/{room_id}/media?mxc=` — an attachment's bytes, and
+   * the headers that name it, as the agent's session host downloads it.
+   */
+  async downloadMedia(
+    agent: RegisteredAgent,
+    roomId: string,
+    mxc: string,
+  ): Promise<{ bytes: Uint8Array; contentType: string; contentDisposition: string }> {
+    const path = `/agents/${agent.id}/rooms/${roomId}/media?mxc=${encodeURIComponent(mxc)}`;
+    assertAllowed(this.environment, "GET", path);
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      headers: { Authorization: `Bearer ${agent.apiKey}`, ...this.requestId() },
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      throw new SwitchHttpError("GET", path, response.status, await response.text());
+    }
+    return {
+      bytes: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") ?? "",
+      contentDisposition: response.headers.get("content-disposition") ?? "",
+    };
+  }
+
+  /**
+   * Any agent-bridge request as the agent, answered with its status and body
+   * whatever the status: for the checks that a client's mistake is answered
+   * with a 4xx that says what was wrong.
+   */
+  async agentAttempt(
+    agent: RegisteredAgent,
+    method: "GET" | "POST",
+    path: string,
+    body: unknown,
+  ): Promise<{ status: number; detail: string }> {
+    try {
+      await this.request(method, path, { token: agent.apiKey, body: body ?? undefined });
+      return { status: 200, detail: "" };
+    } catch (error) {
+      if (!(error instanceof SwitchHttpError)) throw error;
+      return { status: error.status, detail: errorDetail(error.body) };
+    }
   }
 
   // ── agent bridge: the operations front door ───────────────────────────────

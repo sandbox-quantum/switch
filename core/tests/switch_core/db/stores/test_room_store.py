@@ -3,10 +3,25 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Room, Tenant, TenantNotBoundError
+from switch_core.db.models import (
+    Agent,
+    ApiKey,
+    Client,
+    Package,
+    Reference,
+    Room,
+    Task,
+    Tenant,
+    TenantNotBoundError,
+    User,
+    room_agents,
+)
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.package_store import PackageStore
+from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_store import RoomStore
 
 
@@ -19,6 +34,33 @@ async def _make_room(session: AsyncSession, transport_room_id: str) -> Room:
     session.add(room)
     await session.flush()
     return room
+
+
+async def _make_agent(session: AsyncSession, user_id: str) -> Agent:
+    api_key = ApiKey(
+        user_id=user_id,
+        key_hash="hash-member",
+        encrypted_key="enc",
+        label="member",
+        type="agent",
+    )
+    client = Client(
+        transport_user_id="@member:test.local", display_name="member", type="agent"
+    )
+    session.add_all([api_key, client])
+    await session.flush()
+    agent = Agent(
+        name="member",
+        description="member",
+        agent_type="always_on",
+        connector_type="claude_code",
+        integration_profile={"connection_model": "always_on"},
+        client_id=client.id,
+        api_key_id=api_key.id,
+    )
+    session.add(agent)
+    await session.flush()
+    return agent
 
 
 class TestGetByTransportRoomIdMultiTenant:
@@ -111,3 +153,70 @@ class TestGetByTransportRoomIdRequiresATenant:
         async with session_factory() as verify:
             with pytest.raises(TenantNotBoundError):
                 await store.get_by_transport_room_id(verify, shared_transport_room_id)
+
+
+class TestDelete:
+    async def test_deletes_a_room_with_what_hangs_off_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        packages, references = PackageStore(), ReferenceStore()
+        async with session_factory() as session:
+            owner = User(name="owner", email="owner@example.com", role="admin")
+            session.add(owner)
+            await session.flush()
+            room = await _make_room(session, "!attached:switch.local")
+            package = await packages.create(
+                session,
+                Package(
+                    owner_id=owner.id,
+                    read_visibility="private",
+                    write_visibility="private",
+                    name="pkg",
+                    description="d",
+                    instructions="i",
+                ),
+            )
+            reference = await references.create(
+                session,
+                Reference(
+                    owner_id=owner.id,
+                    read_visibility="private",
+                    write_visibility="private",
+                    type="url",
+                    name="ref",
+                    description="d",
+                    instructions="i",
+                    value={"url": "https://example.com"},
+                ),
+            )
+            await packages.attach_to_room(session, room.id, package.id)
+            await references.attach_to_room(session, room.id, reference.id)
+            agent = await _make_agent(session, owner.id)
+            await session.execute(
+                insert(room_agents).values(room_id=room.id, agent_id=agent.id)
+            )
+            session.add(
+                Task(
+                    room_id=room.id,
+                    requester_agent_id=agent.id,
+                    performer_agent_id=agent.id,
+                    summary="s",
+                    description="d",
+                    status="pending",
+                )
+            )
+            await session.commit()
+            room_id, package_id, reference_id = room.id, package.id, reference.id
+            agent_id = agent.id
+
+        async with session_factory() as session:
+            await RoomStore().delete(session, room_id)
+            await session.commit()
+
+        async with session_factory() as session:
+            assert await session.get(Room, room_id) is None
+            assert await packages.get(session, package_id) is not None
+            assert await session.get(Reference, reference_id) is not None
+            assert await session.get(Agent, agent_id) is not None
+            tasks = await session.execute(select(Task).where(Task.room_id == room_id))
+            assert tasks.scalars().all() == []

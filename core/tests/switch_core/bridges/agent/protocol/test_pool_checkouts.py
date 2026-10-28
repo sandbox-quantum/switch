@@ -34,22 +34,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.usage_store import UsageStore
-
-
-class _CountingSessionFactory:
-    """The real factory, counting the sessions opened through it.
-
-    One session is one pool checkout, which is the quantity this whole change
-    is about.
-    """
-
-    def __init__(self, inner: async_sessionmaker[AsyncSession]) -> None:
-        self._inner = inner
-        self.opened = 0
-
-    def __call__(self) -> Any:
-        self.opened += 1
-        return self._inner()
+from tests.session_counting import CountingSessionFactory
 
 
 class _NoBridges:
@@ -68,7 +53,7 @@ class _OneBridge:
         self.typing.append((room_id, agent_name, is_typing))
 
 
-def _service(counting: _CountingSessionFactory) -> AgentCore:
+def _service(counting: CountingSessionFactory) -> AgentCore:
     svc = object.__new__(AgentCore)
     svc.session_factory = counting  # type: ignore[attr-defined]
     svc.agent_store = AgentStore()  # type: ignore[attr-defined]
@@ -136,7 +121,7 @@ class TestRequireRoomMember:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id, member_id, _ = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
 
         room = await svc.require_room_member(member_id, room_id)
@@ -148,7 +133,7 @@ class TestRequireRoomMember:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id, _, outsider_id = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
 
         with pytest.raises(PermissionError):
@@ -162,7 +147,7 @@ class TestRequireRoomMember:
         # "No such room" and "not your room" must stay distinguishable now that
         # the two reads have been folded into one statement.
         _, member_id, _ = await _seed(session_factory)
-        svc = _service(_CountingSessionFactory(session_factory))
+        svc = _service(CountingSessionFactory(session_factory))
 
         with pytest.raises(ValueError, match="Room not found"):
             await svc.require_room_member(member_id, "no-such-room")
@@ -171,7 +156,7 @@ class TestRequireRoomMember:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id, member_id, _ = await _seed(session_factory)
-        svc = _service(_CountingSessionFactory(session_factory))
+        svc = _service(CountingSessionFactory(session_factory))
 
         room = await svc.require_room_member(member_id, room_id)
 
@@ -193,7 +178,7 @@ class TestCanAddress:
             )
             await session.commit()
 
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
         async with session_factory() as session:
             target = await svc.agent_store.get(session, member_id)
@@ -223,7 +208,7 @@ class TestCanAddress:
             )
             await session.commit()
 
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
         async with session_factory() as session:
             target = await svc.agent_store.get(session, member_id)
@@ -245,7 +230,7 @@ class TestCanAddress:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         _, member_id, outsider_id = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
 
         async with session_factory() as session:
@@ -272,7 +257,7 @@ class TestTyping:
         # Was three checkouts: membership took two of its own, then a third
         # re-read the agent and the room the caller had already resolved.
         room_id, member_id, _ = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
 
         await svc.set_typing(member_id, room_id, True)
@@ -283,7 +268,7 @@ class TestTyping:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         _, member_id, _ = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
         bridge = _OneBridge()
         svc.collab_lifecycle = bridge  # type: ignore[assignment]
@@ -310,7 +295,7 @@ class TestSendMessage:
         # agent for the typing indicator — and no more than that, because the
         # room the caller already resolved is passed along instead of re-read.
         room_id, member_id, _ = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
         sent: list[tuple[str, str]] = []
 
@@ -337,7 +322,7 @@ class TestSendMessage:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id, _, outsider_id = await _seed(session_factory)
-        svc = _service(_CountingSessionFactory(session_factory))
+        svc = _service(CountingSessionFactory(session_factory))
 
         with pytest.raises(PermissionError):
             await svc.send_message(outsider_id, room_id, "hello")
@@ -367,7 +352,7 @@ class TestSendMessage:
                 amount=2,
             )
             await session.commit()
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
 
         with pytest.raises(BudgetExceeded, match="member has reached its budget"):
@@ -383,7 +368,7 @@ class TestAgentStatuses:
         # The gateway builds a room's detail inside its request transaction.
         # Resolving statuses used to open a second one from underneath it.
         room_id, member_id, _ = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
         svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
 
@@ -400,7 +385,7 @@ class TestAgentStatuses:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         room_id, member_id, _ = await _seed(session_factory)
-        counting = _CountingSessionFactory(session_factory)
+        counting = CountingSessionFactory(session_factory)
         svc = _service(counting)
         svc.agent_session_store = AgentSessionStore()  # type: ignore[attr-defined]
 

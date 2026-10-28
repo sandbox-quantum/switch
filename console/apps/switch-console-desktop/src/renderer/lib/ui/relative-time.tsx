@@ -6,6 +6,10 @@ type RelativeTimeProps = {
   className?: string;
   /** Renders an abbreviated form (e.g. "3d", "5mo") with a tooltip showing the full text. */
   compact?: boolean;
+  /**
+   * Adds "ago" to the compact form ("3d ago"). The full form always reads
+   * "3 days ago", so this has no effect there.
+   */
   ago?: boolean;
 };
 
@@ -65,7 +69,6 @@ export const RelativeTime: React.FC<RelativeTimeProps> = ({ value, className, co
   return (
     <time className={className} dateTime={date.toISOString()}>
       {label}
-      {ago && 'ago'}
     </time>
   );
 };

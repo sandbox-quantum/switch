@@ -38,6 +38,7 @@ from switch_core.management.notifier import (
     ControllerNotifier,
 )
 from tests.db_buffer import age_events, say
+from tests.session_counting import CountingSessionFactory
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -223,6 +224,32 @@ class TestOpening:
         assert name == "agent.event"
         assert data["event"]["payload"]["body"] == "@you"
         assert data["event"]["missed"] == {"count": 2, "reason": None}
+
+    async def test_an_agents_pass_reads_in_one_session(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The agent's head, its own events, what was dropped after its cursor
+        and the unread counts cost one pool checkout and one transaction, not
+        one of each per read."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+            room_id = await add_room(harness.session_factory, agent_id)
+            opened = await open_connection(client, controller)
+
+        stream = await open_stream(harness, controller, opened)
+        await take(stream, 2)
+        await _ask(harness, agent_id, room_id, "@you")
+        buffer = harness.protocol.event_buffer
+        counting = CountingSessionFactory(buffer._session_factory)
+        monkeypatch.setattr(buffer, "_session_factory", counting)
+        [(name, data)] = await take(stream, 1)
+        await stream.aclose()
+
+        assert name == "agent.event"
+        assert data["event"]["payload"]["body"] == "@you"
+        assert counting.opened == 1
 
     async def test_a_cursor_from_before_a_restart_is_a_gap(
         self, harness: Harness

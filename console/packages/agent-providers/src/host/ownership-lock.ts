@@ -31,9 +31,10 @@ function recordMode(): number {
 /**
  * `replaceFile` from `replace-file`, for any operation: on Windows a rename
  * or link onto a record another contender has open is refused while it stays
- * open, so it is tried again for a few seconds.
+ * open, and so is opening a record another contender is replacing or
+ * deleting, so it is tried again for a few seconds.
  */
-async function waitingOutSharing(operation: () => Promise<void>): Promise<void> {
+async function waitingOutSharing<T>(operation: () => Promise<T>): Promise<T> {
   const deadline = Date.now() + 5_000;
   for (let wait = 10; ; wait = Math.min(wait * 2, 200)) {
     try {
@@ -93,10 +94,8 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
       if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid ownership ticket PID.');
       if (!alive(pid)) continue;
       try {
-        result.push({
-          id: name,
-          value: ticketSchema.parse(JSON.parse(await readFile(join(directory, name), 'utf8'))),
-        });
+        const text = await waitingOutSharing(() => readFile(join(directory, name), 'utf8'));
+        result.push({ id: name, value: ticketSchema.parse(JSON.parse(text)) });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }

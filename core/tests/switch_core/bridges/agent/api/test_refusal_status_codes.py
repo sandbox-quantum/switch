@@ -20,8 +20,9 @@ from fastapi.exceptions import RequestValidationError
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.bridges.agent.api import handlers
+from switch_core.bridges.agent.api import handlers, operations
 from switch_core.bridges.agent.app import log_http_exceptions, log_validation_errors
+from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.db.stores.message_store import MessageStore
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
@@ -39,10 +40,14 @@ async def _request(
     app.add_exception_handler(HTTPException, log_http_exceptions)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, log_validation_errors)  # type: ignore[arg-type]
     app.include_router(handlers.router, prefix="/agents")
+    app.include_router(operations.router)
     app.dependency_overrides[handlers.get_agent_from_scope] = lambda: SimpleNamespace(
         id=caller_id
     )
     app.dependency_overrides[handlers.get_protocol] = lambda: svc
+    # The ops door runs operations against the process-wide protocol.
+    app.dependency_overrides[operations.get_session_factory] = lambda: None
+    op_context.init_operations_protocol(svc)
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -81,8 +86,8 @@ async def test_a_refused_invite_is_403(
         r.svc,
         r.outsider_id,
         "POST",
-        f"/agents/{r.outsider_id}/moderation/rooms/{r.room_id}/invite",
-        json={"agent_name": "outsider-agent"},
+        f"/agents/{r.outsider_id}/ops/invite_agent_to_room",
+        json={"room_id": r.room_id, "agent_name": "outsider-agent"},
     )
 
     assert resp.status_code == 403
@@ -97,8 +102,9 @@ async def test_a_non_member_looking_up_a_room_is_403(
     resp = await _request(
         r.svc,
         r.outsider_id,
-        "GET",
-        f"/agents/{r.outsider_id}/moderation/rooms/{r.room_id}",
+        "POST",
+        f"/agents/{r.outsider_id}/ops/get_room_detail",
+        json={"room_id": r.room_id},
     )
 
     assert resp.status_code == 403

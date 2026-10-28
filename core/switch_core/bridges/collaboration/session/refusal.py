@@ -19,8 +19,9 @@ class Refused:
     does, because most of these are one: the wording that explains a refusal to
     whoever reads the log is the wording that explains it to whoever typed.
     `handle` names the card when it is known, so the person can be told which
-    of several they were answering. `card_ref` is the card's own post — set
-    whenever a card was found, which is every refusal past the lookup — so a
+    of several they were answering. `card_ref` is the thread the card is in —
+    the root it was posted under, or the card's own post at the top level — set
+    whenever a card was found, which is every refusal past the lookup, so a
     notice can be said in the card's thread rather than wherever the answer
     happened to be typed, which may be nowhere at all.
     """

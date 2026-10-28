@@ -40,6 +40,7 @@ LANE="${SWITCH_E2E_LANE:-fast}"
 # The agentic lane runs on the provider lane's setup: a real session on an
 # agent controller.
 NEEDS_CONTROLLER=0
+FOLLOW_WINDOW_SECONDS=20
 case "$LANE" in provider|agentic) NEEDS_CONTROLLER=1 ;; esac
 KEEP=0
 VITEST_ARGS=()
@@ -109,6 +110,13 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=agent_management|" \
              -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
+else
+  # Follow-ups, with a window short enough for a scenario to wait out. Not on
+  # the controller lanes: there an untagged answer to a request card, or an
+  # agentic scenario's unaddressed setup message, would become a follow-up.
+  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=follow_the_conversation|" "$ENV_FILE"
+  rm -f "$ENV_FILE.bak"
+  printf 'FOLLOW_THE_CONVERSATION_WINDOW_SECONDS=%s\n' "$FOLLOW_WINDOW_SECONDS" >>"$ENV_FILE"
 fi
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
@@ -255,6 +263,8 @@ status=0
   export SWITCH_E2E_SERVER_LOG="$OUT/switch-core.log"
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
+  # The follow-up window the server was started with, for the scenario that waits it out.
+  [ "$NEEDS_CONTROLLER" = 0 ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \

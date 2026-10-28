@@ -27,9 +27,8 @@ const waitForHealthMock = vi.hoisted(() =>
   vi.fn((_url: string, _opts?: unknown) => Promise.resolve(true))
 );
 const readDeployedVersionMock = vi.hoisted(() =>
-  vi.fn(
-    (): Promise<{ kind: string; version?: string; source?: string }> =>
-      Promise.resolve({ kind: 'deployed', version: '0.11.0', source: 'env-file' })
+  vi.fn((): Promise<{ kind: string; version?: string; source?: string }> =>
+    Promise.resolve({ kind: 'deployed', version: '0.11.0', source: 'env-file' })
   )
 );
 const buildEnvFileMock = vi.hoisted(() => vi.fn((_params: unknown) => 'BUILT_ENV\n'));

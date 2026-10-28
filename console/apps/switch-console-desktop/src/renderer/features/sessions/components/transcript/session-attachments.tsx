@@ -73,15 +73,13 @@ export function useSessionAttachments(client: SessionChatClient, mimeTypes: stri
         setError('Each attachment must contain 1 byte to 10 MiB.');
         return;
       }
-      const added = files.map(
-        (file): Entry => ({
-          id: crypto.randomUUID(),
-          file,
-          attachment: null,
-          error: null,
-          uploading: true,
-        })
-      );
+      const added = files.map((file): Entry => ({
+        id: crypto.randomUUID(),
+        file,
+        attachment: null,
+        error: null,
+        uploading: true,
+      }));
       update([...current.current, ...added]);
       for (const entry of added) void upload(entry);
     },

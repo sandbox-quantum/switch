@@ -3,6 +3,7 @@
 ## Main Files
 
 - `src/main/core/updates/update-service.ts`
+- `src/main/core/updates/canary-feed.ts` — finds the newest canary release
 - `src/main/core/updates/controller.ts`
 - `src/main/core/updates/dev-harness.ts` — `SWITCHDASH_FAKE_UPDATE` replay
 - `scripts/merge-mac-update-manifest.ts` — the merged macOS channel manifest
@@ -66,7 +67,7 @@ electron-builder suffixes the channel file per architecture on Linux only
 There is no `latest-mac-x64.yml` to reach for, and giving one architecture its own
 `channel` would not help either — `update-service.ts` calls `setFeedURL` with a bare
 provider descriptor, so whatever channel the packaged `app-update.yml` carries is
-discarded at runtime.
+discarded at runtime (canary sets its own `channel` in that descriptor).
 
 So the release workflow builds each architecture on a runner of that architecture,
 neither job publishes a manifest, and `merge-mac-manifest` combines the two into one
@@ -97,7 +98,9 @@ constant named "channel" must be one.
 The app does **not** override `autoUpdater.channel`; the GitHub provider resolves the channel naturally:
 
 - **Stable** (`allowPrerelease=false`): resolves to `latest`, fetches `latest*.yml` from the newest non-prerelease GitHub release.
-- **Canary** (`allowPrerelease=true`): resolves the target release tag from the Atom feed by matching the semver prerelease identifier of the installed version (`canary`) against each entry. Once a `-canary.N` tag is found it fetches `canary*.yml` from that release, as defined by `channel: 'canary'` in `electron-builder.canary.config.ts`.
+- **Canary** does **not** use the GitHub provider. `canary-feed.ts` lists releases through the GitHub API, picks the newest published `v*-canary.*` tag, and `update-service.ts` points the **generic** provider at that release's download URL with `channel: 'canary'`, so it fetches `canary*.yml` (named by `channel: 'canary'` in `electron-builder.canary.config.ts`) and the installers from there.
+
+  Why not the GitHub provider: with `allowPrerelease` it finds a prerelease through `releases.atom`, which lists only the ten newest releases of the repo. The agents controller publishes a prerelease for every build on main, several a day, so canaries fall out of the feed within hours and the provider fails with `ERR_UPDATER_NO_PUBLISHED_VERSIONS`. Do not switch canary back to it while the repo publishes other prereleases.
 
 - Canary publishes to GitHub as prereleases. `ALLOW_PRERELEASE` in `update-service.ts` is driven by `IS_CANARY` so canary clients accept prerelease versions automatically.
 - The `publish-release` workflow job runs after all platform builds complete to flip the draft GitHub release to published. Until that job finishes the release remains a draft and is invisible to electron-updater clients.

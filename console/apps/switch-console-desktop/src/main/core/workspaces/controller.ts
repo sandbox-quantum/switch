@@ -560,11 +560,31 @@ export const workspacesController = createRPCController({
    * connection may create channels. Admin-only, like registering one; see
    * `updateBridgeOnServer` for the recoverable-failure mapping.
    */
-  updateBridge: (params: UpdateBridgeParams): Promise<UpdateBridgeResult> =>
+  updateBridge: (
+    params: Omit<UpdateBridgeParams, 'connectionConfig'>
+  ): Promise<UpdateBridgeResult> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateBridgeOnServer(server, {
         bridgeId: params.bridgeId,
         channelCreationEnabled: params.channelCreationEnabled,
+      })
+    ),
+
+  /**
+   * Put new tokens on a connection to the workspace's own bot, after the old
+   * ones were rotated or leaked. The server keeps the rest of the connection's
+   * settings and restarts it with them; its rooms are untouched. Admin-only.
+   * The tokens go to the server and nowhere else.
+   */
+  replaceBridgeTokens: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    tokens: Record<string, string>;
+  }): Promise<UpdateBridgeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateBridgeOnServer(server, {
+        bridgeId: params.bridgeId,
+        connectionConfig: params.tokens,
       })
     ),
 

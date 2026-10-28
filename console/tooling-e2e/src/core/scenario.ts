@@ -39,8 +39,14 @@ export interface ScenarioHeader {
  * `agent-dir`: the provider session's working directory is on this machine.
  * `gateway-ui`: the address of a gateway UI served against this Switch server.
  * `agentic-models`: the driver and judge models, and the spending limit.
+ * `controller`: an agent controller that runs the agents Switch manages.
  */
-export type Prerequisite = 'mattermost' | 'agent-dir' | 'gateway-ui' | 'agentic-models';
+export type Prerequisite =
+  | 'mattermost'
+  | 'agent-dir'
+  | 'gateway-ui'
+  | 'agentic-models'
+  | 'controller';
 
 const OPERATION = /^[a-z][a-z0-9_]*$/;
 const ROUTE = /^(GET|POST|PUT|PATCH|DELETE) \/\S*$/;
@@ -136,6 +142,8 @@ function satisfied(prerequisite: Prerequisite, env: HarnessEnv): boolean {
         env.agentic.judgeModel !== null &&
         env.agentic.budgetUsd !== null
       );
+    case 'controller':
+      return env.provider.controllerId !== null;
   }
 }
 
@@ -149,5 +157,7 @@ function describePrerequisite(prerequisite: Prerequisite): string {
       return 'a gateway UI (SWITCH_GATEWAY_UI_URL)';
     case 'agentic-models':
       return 'the driver and judge models and a spending limit (SWITCH_E2E_DRIVER_MODEL, SWITCH_E2E_JUDGE_MODEL, SWITCH_E2E_AGENTIC_BUDGET_USD)';
+    case 'controller':
+      return 'an agent controller (SWITCH_E2E_CONTROLLER_ID)';
   }
 }
