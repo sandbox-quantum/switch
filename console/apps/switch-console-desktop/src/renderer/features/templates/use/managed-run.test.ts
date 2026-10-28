@@ -112,6 +112,23 @@ describe('machineProblem', () => {
         'a'
       )
     ).toBe('claude on laptop is not ready: not logged in.');
+    expect(
+      machineProblem(
+        machine({
+          providers: [
+            {
+              provider: 'claude',
+              ready: false,
+              problem: 'not logged in',
+              detail: 'Its login is in the OS keyring.',
+              loginHelps: true,
+            },
+          ],
+        }),
+        'claude',
+        'a'
+      )
+    ).toBe('claude on laptop is not ready: not logged in. Its login is in the OS keyring.');
     expect(machineProblem(LAPTOP, 'claude', 'a')).toBeNull();
   });
 });

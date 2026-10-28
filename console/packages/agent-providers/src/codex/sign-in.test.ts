@@ -23,7 +23,9 @@ const unknownMethod = (method: string) =>
  * logins are kept, for a plain spawn and for one asked to keep them in memory.
  */
 const codex = vi.hoisted(() => ({
-  codexHome: undefined as string | undefined,
+  codexHome: undefined as string | null | undefined,
+  accountDelayMs: 0,
+  disposeError: null as Error | null,
   account: null as unknown,
   requiresOpenaiAuth: true,
   authStatus: { authMethod: 'apikey', authToken: null } as unknown,
@@ -43,10 +45,19 @@ vi.mock('../transport/stdio-json-rpc', async (original) => ({
         : 'plain';
       codex.events.push(`start ${this.name}`);
     }
+    private stopped: (() => void) | null = null;
     async request(method: string) {
-      if (method === 'initialize') return codex.codexHome ? { codexHome: codex.codexHome } : {};
-      if (method === 'account/read')
+      if (method === 'initialize')
+        return codex.codexHome === undefined ? {} : { codexHome: codex.codexHome };
+      if (method === 'account/read') {
+        if (codex.accountDelayMs)
+          // Answers late, or fails as an exit if stopped first.
+          await new Promise<void>((resolve, reject) => {
+            setTimeout(resolve, codex.accountDelayMs);
+            this.stopped = () => reject(new Error('provider process exited (signal SIGTERM)'));
+          });
         return { account: codex.account, requiresOpenaiAuth: codex.requiresOpenaiAuth };
+      }
       if (method === 'getAuthStatus') {
         if (codex.authStatusError) throw codex.authStatusError;
         return codex.authStatus;
@@ -61,6 +72,8 @@ vi.mock('../transport/stdio-json-rpc', async (original) => ({
     notify() {}
     async dispose() {
       codex.events.push(`stop ${this.name}`);
+      this.stopped?.();
+      if (codex.disposeError) throw codex.disposeError;
     }
   },
 }));
@@ -71,6 +84,8 @@ let home: string;
 beforeEach(async () => {
   Object.assign(codex, {
     codexHome: undefined,
+    accountDelayMs: 0,
+    disposeError: null,
     account: null,
     requiresOpenaiAuth: true,
     authStatus: { authMethod: 'apikey', authToken: null },
@@ -86,6 +101,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
 });
@@ -122,14 +138,24 @@ it('reports an auth.json that Codex is set to ignore for the keyring as unusable
   });
 });
 
-it('says it cannot tell when Codex is too old to say whether it uses the keyring', async () => {
+it('reads a Codex too old for config/read from the config.toml sessions inherit', async () => {
   await authFile();
   codex.account = CHATGPT;
   codex.configReadError = unknownMethod('config/read');
+  expect((await check()).status).toBe('authenticated');
+  await writeFile(join(home, 'config.toml'), 'cli_auth_credentials_store = "keyring"\n');
+  expect((await check()).message).toBe(codexKeyringIgnoresAuthFile(home));
+});
+
+it('does not take a refused parameter for a missing method', async () => {
+  codex.account = API_KEY;
+  codex.authStatusError = new JsonRpcError(
+    -32600,
+    'Invalid request: unknown variant `includeSecrets`, expected one of `includeToken`'
+  );
   const result = await check();
   expect(result.status).toBe('unknown');
-  expect(result.message).toContain('cannot say whether it uses the OS keyring');
-  expect(result.message).not.toContain('expected one of');
+  expect(result.message).toContain('unknown variant `includeSecrets`');
 });
 
 it('reports an API key in the keyring as signed in when sessions can be handed it', async () => {
@@ -196,10 +222,12 @@ it('reports a Bedrock key Codex keeps in the keyring as unusable', async () => {
   expect((await check()).message).toBe(codexKeyringLoginUnusable(home));
 });
 
-it('asks for auth.json from Bedrock unless Codex says it uses AWS credentials', async () => {
+it('says it cannot tell when Codex does not say what a Bedrock login runs on', async () => {
   codex.account = { type: 'amazonBedrock' };
   codex.requiresOpenaiAuth = false;
-  expect((await check()).status).toBe('unauthenticated');
+  const result = await check();
+  expect(result.status).toBe('unknown');
+  expect(result.message).toContain('runs on AWS credentials or on a key Codex keeps');
   codex.account = { type: 'amazonBedrock', usesCodexManagedCredentials: false };
   expect((await check()).status).toBe('authenticated');
 });
@@ -230,4 +258,41 @@ it('looks for auth.json in ~/.codex when Codex does not say and CODEX_HOME is no
   await mkdir(join(root, '.codex'));
   await authFile(join(root, '.codex'));
   expect((await check({})).status).toBe('authenticated');
+});
+
+it('falls back to CODEX_HOME when Codex reports its home as null', async () => {
+  await authFile();
+  codex.codexHome = null;
+  codex.account = CHATGPT;
+  expect((await check()).status).toBe('authenticated');
+});
+
+it('keeps what it read when a Codex will not stop afterwards', async () => {
+  await authFile();
+  codex.account = CHATGPT;
+  codex.disposeError = new Error('Provider process did not exit after termination.');
+  expect((await check()).status).toBe('authenticated');
+});
+
+it('says the check ran out of time rather than that Codex crashed', async () => {
+  vi.useFakeTimers();
+  codex.account = CHATGPT;
+  codex.accountDelayMs = 60_000;
+  const result = check();
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(await result).toEqual({
+    status: 'unknown',
+    message: "Could not check Codex's sign-in: the check ran out of its 20 seconds.",
+    models: [],
+  });
+});
+
+it('does not start a second Codex with too little of the deadline left', async () => {
+  vi.useFakeTimers();
+  codex.account = API_KEY;
+  codex.accountDelayMs = 19_000;
+  const result = check();
+  await vi.advanceTimersByTimeAsync(19_000);
+  expect((await result).message).toContain('ran out of its 20 seconds');
+  expect(codex.events).toEqual(['start plain', 'stop plain']);
 });

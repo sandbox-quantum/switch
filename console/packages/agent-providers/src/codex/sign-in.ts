@@ -1,4 +1,7 @@
+import { join } from 'node:path';
+import { parse } from 'smol-toml';
 import { z } from 'zod';
+import { optionalText } from '../host/provider-home';
 import {
   loginWontHelp,
   readiness,
@@ -19,6 +22,9 @@ export const CODEX_LOGIN = 'codex login';
 
 /** How long the whole check may take, across every Codex it starts. */
 const CHECK_TIMEOUT_MS = 20_000;
+
+/** Less than this left of the deadline, and a second Codex is not started at all. */
+const START_BUDGET_MS = 2_000;
 
 /**
  * Shorter than `CODEX_FILE_STORE_WORKAROUND`: the controller keeps only 300
@@ -45,6 +51,16 @@ export const codexKeyringStorePinned = (home: string, store: unknown) =>
 export const codexSessionLoginUnchecked = (home: string, cause: string) =>
   `Codex is signed in, but whether sessions can use its login could not be checked: ${cause} ${inHome(home)}`;
 
+const BEDROCK_UNSAID =
+  'Codex did not say whether this Amazon Bedrock login runs on AWS credentials or on a key Codex keeps, so whether sessions can use it is not known.';
+
+/** A Codex the check's deadline stopped before it answered. */
+class CheckTimeout extends Error {
+  constructor() {
+    super(`the check ran out of its ${CHECK_TIMEOUT_MS / 1000} seconds.`);
+  }
+}
+
 const accountSchema = z.object({
   account: z
     .object({ type: z.string().optional(), usesCodexManagedCredentials: z.boolean().optional() })
@@ -64,10 +80,17 @@ export async function checkCodexSignIn(input: SignInCheckInput): Promise<Provide
     return loginWontHelp(readiness('unauthenticated', describe(error)));
   }
   const deadline = Date.now() + CHECK_TIMEOUT_MS;
-  // The home this Codex read the login from, as Codex resolved it, when it says.
-  const found = await withAppServer(input, [], deadline, (client, codexHome) =>
-    machineLogin(input, client, codexHome ?? sourceHome)
-  );
+  let found: ProviderReadiness | HandOver;
+  try {
+    // The home this Codex read the login from, as Codex resolved it, when it says.
+    found = await withAppServer(input, [], deadline, (client, codexHome) =>
+      machineLogin(input, client, codexHome ?? sourceHome)
+    );
+  } catch (error) {
+    if (error instanceof CheckTimeout)
+      return readiness('unknown', `Could not check Codex's sign-in: ${error.message}`);
+    throw error;
+  }
   // Asked only once the first Codex has stopped, within the same deadline.
   return 'handOver' in found ? handOverStore(input, deadline, found.handOver) : found;
 }
@@ -101,22 +124,16 @@ async function machineLogin(
   if (inFile) {
     let store: unknown;
     try {
-      store = await readCodexCredentialStore(client, input.cwd);
+      store = await credentialStore(client, input.cwd, home);
     } catch (error) {
-      return readiness(
-        'unknown',
-        codexSessionLoginUnchecked(
-          home,
-          isUnknownCodexMethod(error)
-            ? 'this version of Codex cannot say whether it uses the OS keyring.'
-            : describe(error)
-        )
-      );
+      return readiness('unknown', codexSessionLoginUnchecked(home, describe(error)));
     }
     return store === 'keyring'
       ? readiness('unauthenticated', codexKeyringIgnoresAuthFile(home))
       : readiness('authenticated', 'Signed in.');
   }
+  if (account.type === 'amazonBedrock' && account.usesCodexManagedCredentials === undefined)
+    return readiness('unknown', `${BEDROCK_UNSAID} ${inHome(home)}`);
   if (account.type !== 'apiKey')
     return readiness('unauthenticated', codexKeyringLoginUnusable(home));
   let authMethod: string | null;
@@ -125,7 +142,7 @@ async function machineLogin(
       await client.request('getAuthStatus', { includeToken: false, refreshToken: false })
     ));
   } catch (error) {
-    return isUnknownCodexMethod(error)
+    return isUnknownCodexMethod(error, 'getAuthStatus')
       ? readiness('unauthenticated', codexKeyringApiKeyWithheld(home))
       : readiness('unknown', codexSessionLoginUnchecked(home, describe(error)));
   }
@@ -134,11 +151,32 @@ async function machineLogin(
   return { handOver: home };
 }
 
+/**
+ * Where Codex keeps logins for `cwd`. A Codex too old to answer config/read
+ * is read from the home's own config.toml instead, which a session inherits;
+ * an administrator's managed configuration is then not seen.
+ */
+async function credentialStore(
+  client: StdioJsonRpcClient,
+  cwd: string,
+  home: string
+): Promise<unknown> {
+  try {
+    return await readCodexCredentialStore(client, cwd);
+  } catch (error) {
+    if (!isUnknownCodexMethod(error, 'config/read')) throw error;
+  }
+  const text = await optionalText(join(home, 'config.toml'));
+  return text === null ? null : parse(text).cli_auth_credentials_store;
+}
+
 async function handOverStore(
   input: SignInCheckInput,
   deadline: number,
   home: string
 ): Promise<ProviderReadiness> {
+  if (deadline - Date.now() < START_BUDGET_MS)
+    return readiness('unknown', codexSessionLoginUnchecked(home, new CheckTimeout().message));
   let store: unknown;
   try {
     store = await withAppServer(input, CODEX_EPHEMERAL_LOGIN_ARGS, deadline, (session) =>
@@ -171,22 +209,36 @@ async function withAppServer<T>(
     logger: noopLogger,
     onExit: () => {},
   });
+  let timedOut = false;
   const timer = setTimeout(
     () => {
+      timedOut = true;
       void client.dispose().catch(() => console.warn('Provider readiness process cleanup failed.'));
     },
     Math.max(0, deadline - Date.now())
   );
   try {
-    const { codexHome } = z.object({ codexHome: z.string().optional() }).parse(
+    const { codexHome } = z.object({ codexHome: z.string().nullish() }).parse(
       await client.request('initialize', {
         clientInfo: { name: 'switch-console', version: '0.1.0' },
       })
     );
     client.notify('initialized', null);
     return await read(client, codexHome ?? null);
+  } catch (error) {
+    // Stopped by the deadline, it fails as an exit; say what stopped it.
+    if (timedOut) throw new CheckTimeout();
+    throw error;
   } finally {
     clearTimeout(timer);
-    await client.dispose();
+    // What was read, or went wrong, is the answer: a Codex that will not stop
+    // is reported, not put in its place.
+    await client
+      .dispose()
+      .catch((error: unknown) =>
+        console.warn(
+          `The Codex that checked a sign-in did not stop: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
   }
 }

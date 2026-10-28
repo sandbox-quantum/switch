@@ -61,9 +61,15 @@ def _validation_message(exc: ValidationError) -> str:
     return "; ".join(parts) or "invalid request"
 
 
-def _placement_sentence(code: str, machine: str, provider: str) -> str | None:
+def _placement_sentence(
+    code: str, machine: str, provider: str, problem: str | None
+) -> str | None:
     """Why the machine cannot take the agent, in a person's terms, for the
-    placement reason codes; None for any other code."""
+    placement reason codes; None for any other code. `problem` is what the
+    machine said about the provider's login: a CLI that is signed in in a way
+    its agents cannot use is not fixed by logging in, and that says so."""
+    if code == reason_codes.PROVIDER_LOGIN_MISSING and problem:
+        return f"{provider} cannot be used on machine '{machine}': {problem}"
     sentences = {
         reason_codes.CONTROLLER_REVOKED: (
             f"machine '{machine}' has been removed from Switch; pick another machine"
@@ -105,19 +111,44 @@ def _agents_running(controller: AgentController) -> int | None:
     )
 
 
-def _providers(controller: AgentController) -> list[dict[str, Any]]:
-    if controller.status is None:
+def _provider_entries(controller: AgentController | None) -> list[dict[str, Any]]:
+    if controller is None or controller.status is None:
         return []
     providers = controller.status.get("providers")
+    return [
+        entry
+        for entry in (providers if isinstance(providers, list) else [])
+        if isinstance(entry, dict)
+    ]
+
+
+def _login_problem(entry: dict[str, Any]) -> str | None:
+    """What the machine said about the provider's login, if anything."""
+    problem = entry.get("auth_problem")
+    return problem if isinstance(problem, str) and problem else None
+
+
+def _provider_problem(controller: AgentController | None, provider: str) -> str | None:
+    return next(
+        (
+            _login_problem(entry)
+            for entry in _provider_entries(controller)
+            if entry.get("provider") == provider
+        ),
+        None,
+    )
+
+
+def _providers(controller: AgentController) -> list[dict[str, Any]]:
     return [
         {
             "provider": entry.get("provider"),
             "installed": entry.get("installed") is True,
             "version": entry.get("version"),
             "auth": provider_auth(entry),
+            "problem": _login_problem(entry),
         }
-        for entry in (providers if isinstance(providers, list) else [])
-        if isinstance(entry, dict)
+        for entry in _provider_entries(controller)
     ]
 
 
@@ -238,7 +269,9 @@ class ManagementAgentOperations:
     def _refusal(
         exc: ManagementError, controller: AgentController, provider: str
     ) -> AgentManagementRefused:
-        sentence = _placement_sentence(exc.code, controller.name, provider)
+        sentence = _placement_sentence(
+            exc.code, controller.name, provider, _provider_problem(controller, provider)
+        )
         return AgentManagementRefused(
             exc.code,
             f"{NOTHING_CREATED}: {sentence or exc.message} ({exc.code}).",
@@ -451,7 +484,9 @@ class ManagementAgentOperations:
                 )
             except ManagementError as exc:
                 machine = controller.name if controller is not None else "(none)"
-                sentence = _placement_sentence(exc.code, machine, provider)
+                sentence = _placement_sentence(
+                    exc.code, machine, provider, _provider_problem(controller, provider)
+                )
                 raise AgentManagementRefused(
                     exc.code,
                     f"{NOTHING_CHANGED}: {sentence or exc.message} ({exc.code}).",

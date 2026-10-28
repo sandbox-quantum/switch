@@ -13,14 +13,15 @@ const METHOD_NOT_FOUND = -32601;
 const INVALID_REQUEST = -32600;
 
 /**
- * Whether Codex refused a request for a method it does not have. Codex
- * answers that with -32600 ("unknown variant"), not JSON-RPC's -32601.
+ * Whether Codex refused `method` because it does not have it. Codex answers
+ * that with -32600 naming the method as an unknown variant, not JSON-RPC's
+ * -32601; the same words about a parameter's value name the value instead.
  */
-export function isUnknownCodexMethod(error: unknown): boolean {
+export function isUnknownCodexMethod(error: unknown, method: string): boolean {
   return (
     error instanceof JsonRpcError &&
     (error.code === METHOD_NOT_FOUND ||
-      (error.code === INVALID_REQUEST && error.message.includes('unknown variant')))
+      (error.code === INVALID_REQUEST && error.message.includes(`unknown variant \`${method}\``)))
   );
 }
 
@@ -153,7 +154,7 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
       await client.request('getAuthStatus', { includeToken: true, refreshToken: false })
     );
   } catch (error) {
-    if (isUnknownCodexMethod(error))
+    if (isUnknownCodexMethod(error, 'getAuthStatus'))
       throw new KeyringLoginError(
         `This version of Codex cannot hand Switch the API key it keeps in the OS keyring: it no longer answers getAuthStatus. ${CODEX_FILE_STORE_WORKAROUND}`,
         { cause: error }

@@ -73,7 +73,7 @@ export const codexHomeNotAbsolute = (home: string) =>
  * each start in a different one, so no one resolution would be the home both
  * sessions and the check mean.
  */
-export function codexSourceHome(env: Record<string, string>): string {
+export function codexSourceHome(env: Readonly<Record<string, string | undefined>>): string {
   const configured = env.CODEX_HOME;
   if (configured && !isAbsolute(configured)) throw new Error(codexHomeNotAbsolute(configured));
   return configured || join(homedir(), '.codex');

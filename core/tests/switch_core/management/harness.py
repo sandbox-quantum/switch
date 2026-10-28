@@ -372,7 +372,13 @@ def status_report(
     return report
 
 
-def provider(name: str, *, installed: bool = True, auth: str = "ok") -> dict[str, Any]:
+def provider(
+    name: str,
+    *,
+    installed: bool = True,
+    auth: str = "ok",
+    auth_problem: str | None = None,
+) -> dict[str, Any]:
     return {
         "provider": name,
         "installed": installed,
@@ -380,6 +386,7 @@ def provider(name: str, *, installed: bool = True, auth: str = "ok") -> dict[str
         "auth": auth,
         "auth_source": "local" if installed else None,
         "checked_at": "2026-01-01T00:00:00Z",
+        **({"auth_problem": auth_problem} if auth_problem else {}),
     }
 
 

@@ -7,6 +7,10 @@ import {
   managedServerStoppedPhase,
   noteManagedServerUnanswered,
 } from '@main/core/managed-switch-server/managed-server-status';
+import {
+  type ControllerProviderReport,
+  providerReport,
+} from '@main/core/switch-servers/controller-provider-report';
 import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
@@ -3739,18 +3743,6 @@ export type ManagementController = {
   sealingKey: { key: string; keyId: string } | null;
 };
 
-/** A provider as a controller reports it: installed, and whether its login works. */
-export type ControllerProviderReport = {
-  /** The Switch definition provider id (`claude`, `codex`, …). */
-  provider: string;
-  installed: boolean;
-  auth: 'ok' | 'expired' | 'missing' | 'unknown';
-  /** Why its login does not work, in the controller's words; null when it said nothing. */
-  problem: string | null;
-  /** False when signing in with the provider's login command would not fix `problem`. */
-  loginHelps: boolean;
-};
-
 /** A managed agent as the owner's list shows it. */
 export type ManagedAgent = {
   agentId: string;
@@ -3962,13 +3954,6 @@ export async function fetchMachineOperation(
   return { state: found.state, error: found.result?.error ?? null };
 }
 
-const PROVIDER_AUTH_STATES: readonly ControllerProviderReport['auth'][] = [
-  'ok',
-  'expired',
-  'missing',
-  'unknown',
-];
-
 /**
  * The providers in a controller's last status report. An entry that does not
  * say which provider it is, or whether it is installed, is left out; a login
@@ -3978,28 +3963,13 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   if (!status || typeof status !== 'object') return [];
   const providers = (status as { providers?: unknown }).providers;
   if (!Array.isArray(providers)) return [];
-  return providers.flatMap((entry: unknown): ControllerProviderReport[] => {
-    if (!entry || typeof entry !== 'object') return [];
-    const { provider, installed, auth, auth_problem, login_helps } = entry as Record<
-      string,
-      unknown
-    >;
-    if (typeof provider !== 'string' || typeof installed !== 'boolean') return [];
-    const known = PROVIDER_AUTH_STATES.find((state) => state === auth);
-    return [
-      {
-        provider,
-        installed,
-        auth: known ?? 'unknown',
-        problem: typeof auth_problem === 'string' && auth_problem ? auth_problem : null,
-        // A controller older than the field says nothing, as before.
-        loginHelps: login_helps !== false,
-      },
-    ];
+  return providers.flatMap((entry: unknown) => {
+    const report = providerReport(entry);
+    return report ? [report] : [];
   });
 }
 
-export type { AdvancedConfigValue };
+export type { AdvancedConfigValue, ControllerProviderReport };
 
 const advancedConfigSchema = z.record(
   z.string(),

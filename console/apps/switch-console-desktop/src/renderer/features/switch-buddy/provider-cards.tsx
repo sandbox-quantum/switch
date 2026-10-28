@@ -74,7 +74,9 @@ export function ProviderCard({
             )}
           >
             {provider.state === 'checking' && <Spinner className="size-3" />}
-            {TAG[provider.state]}
+            {provider.state === 'sign-in' && !provider.loginHelps
+              ? 'Can’t be used yet'
+              : TAG[provider.state]}
           </span>
         </span>
       </button>
@@ -144,7 +146,9 @@ export function SelectedPanel({
         </>
       );
     case 'sign-in': {
-      if (!provider.loginHelps)
+      const running = login !== null && login.ended === null;
+      // A sign-in already under way stays, with its Cancel, whatever the report says now.
+      if (!provider.loginHelps && !running)
         return (
           <>
             <div className="space-y-1">
@@ -164,7 +168,6 @@ export function SelectedPanel({
             {checked && <p className="text-xs text-foreground-muted">{checked}</p>}
           </>
         );
-      const running = login !== null && login.ended === null;
       const links = login ? linksIn(login.lines) : [];
       return (
         <>

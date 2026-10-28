@@ -1,3 +1,8 @@
+import {
+  type ControllerProviderReport,
+  providerReport,
+} from '@main/core/switch-servers/controller-provider-report';
+
 /**
  * Checks this computer's providers as onboarding opens, before it is enrolled
  * as a machine anywhere, with the controller's own `precheck`: the same
@@ -23,15 +28,7 @@ export type ProviderPrecheckDeps = {
 };
 
 /** A provider as the precheck found it, in the terms a controller reports it to Switch. */
-export type PrecheckedProvider = {
-  provider: string;
-  installed: boolean;
-  auth: 'ok' | 'expired' | 'missing' | 'unknown';
-  /** Why its login does not work, in the controller's words; null when it said nothing. */
-  problem: string | null;
-  /** False when signing in with the provider's login command would not fix `problem`. */
-  loginHelps: boolean;
-};
+export type PrecheckedProvider = ControllerProviderReport;
 
 /** A check older than this is made again when asked; the controller takes none older either. */
 const FRESH_MS = 10 * 60 * 1000;
@@ -104,34 +101,13 @@ export class ProviderPrecheck {
     if (!Array.isArray(entries)) return [];
     return entries.flatMap((entry): PrecheckedProvider[] => {
       const status = (entry as { status?: Record<string, unknown> }).status;
-      if (!status) return [];
-      const {
-        provider,
-        installed,
-        auth,
-        checked_at: checkedAt,
-        auth_problem: said,
-        login_helps: loginHelps,
-      } = status;
-      if (
-        typeof provider !== 'string' ||
-        typeof installed !== 'boolean' ||
-        (auth !== 'ok' && auth !== 'expired' && auth !== 'missing' && auth !== 'unknown') ||
-        typeof checkedAt !== 'string'
-      )
-        return [];
+      const report = providerReport(status);
+      const checkedAt = status?.checked_at;
+      if (!report || typeof checkedAt !== 'string') return [];
       // Checked before this session's start: a file left from an earlier one.
       const at = Date.parse(checkedAt);
       if (!(at >= this.startedAt! - 1000) || this.deps.now() - at >= FRESH_MS) return [];
-      return [
-        {
-          provider,
-          installed,
-          auth,
-          problem: typeof said === 'string' && said ? said : null,
-          loginHelps: loginHelps !== false,
-        },
-      ];
+      return [report];
     });
   }
 }

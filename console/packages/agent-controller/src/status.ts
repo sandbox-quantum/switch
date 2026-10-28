@@ -367,7 +367,12 @@ export class ProviderStatuses {
         }
       } else if (given) {
         problem = given.problem;
-        if (problem) status = { ...status, auth_problem: problem.message.slice(0, 300) };
+        if (problem)
+          status = {
+            ...status,
+            auth_problem: problem.message.slice(0, 300),
+            login_helps: undefined,
+          };
       } else {
         const held = this.entries.get(provider);
         login = held?.login ?? null;

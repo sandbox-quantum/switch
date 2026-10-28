@@ -200,6 +200,13 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **An agent is told why a machine's CLI cannot be used.** When
+  `create_agent` or `update_agent_detail` was refused because a provider was
+  not logged in, it said the owner needed to log in, even when the machine had
+  reported a login its agents could not use, which logging in does not fix
+  (a Codex login in the OS keyring, say). The refusal now gives what the
+  machine said instead, and `list_machines` shows it as each provider's
+  `problem`.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room

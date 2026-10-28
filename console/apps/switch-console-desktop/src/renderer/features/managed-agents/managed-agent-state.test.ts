@@ -150,6 +150,23 @@ describe('machineProblem', () => {
     ).toBe('Claude Code is not ready on laptop: not logged in.');
   });
 
+  it('says what the machine said about a provider that is not ready', () => {
+    expect(
+      machineProblem(AGENT, {
+        ...LAPTOP,
+        providers: [
+          {
+            provider: 'claude',
+            ready: false,
+            problem: 'not logged in',
+            detail: 'Its login is in the OS keyring.',
+            loginHelps: true,
+          },
+        ],
+      })
+    ).toBe('Claude Code is not ready on laptop: not logged in. Its login is in the OS keyring.');
+  });
+
   it('is quiet, not alarming, while the agent is stopped', () => {
     const stopped = { ...AGENT, desiredState: 'stopped' as const, status: null };
     expect(machineProblem(stopped, LAPTOP)).toBeNull();
