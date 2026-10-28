@@ -68,7 +68,12 @@ app = FastAPI(title="Strands Decider (adapter merged)")
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model": MODEL_NAME, "checkpoint": CHECKPOINT, "adapter": "merged"}
+    return {
+        "status": "ok",
+        "model": MODEL_NAME,
+        "checkpoint": CHECKPOINT,
+        "adapter": "merged",
+    }
 
 
 @app.post("/v1/systemone")
