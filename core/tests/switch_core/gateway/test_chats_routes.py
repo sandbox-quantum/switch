@@ -1826,3 +1826,46 @@ async def _events_of(chats: _Harness, agent: Agent) -> list[tuple[str, int]]:
             )
         )
         return [(room_id, room_seq) for room_id, room_seq in rows.all()]
+
+
+# ── Activity across processes ────────────────────────────────────────────────
+
+
+def _activity_stream_on(process: _Process, user: User) -> _Events:
+    return _Events(
+        chat_activity_events(
+            process.service,
+            TENANT,
+            user,
+            ping_seconds=60.0,
+            queue_max=64,
+        )
+    )
+
+
+async def test_a_step_reaches_the_activity_streams_of_every_process(
+    chats: _Harness, listening_processes: tuple[_Process, _Process]
+) -> None:
+    """A step is written by whichever process its agent reports to, and the
+    Console streams showing its room are held by any process: each one hears
+    of the step from the database, not from the process that wrote it."""
+    here, there = listening_processes
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    other_agent = await chats.agent("other", owner=chats.bob)
+    hidden = await chats.new_chat(chats.bob, other_agent, "c2")
+    streams = [
+        _activity_stream_on(here, chats.alice),
+        _activity_stream_on(there, chats.alice),
+    ]
+    for events in streams:
+        assert (await events.next())[0] == "ready"
+
+    # A room Alice is not in reaches neither stream: the next frame is hers.
+    await _step(chats, other_agent, hidden, "t9", "turn", 1)
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+
+    for events in streams:
+        name, item = await events.next()
+        assert (name, item["roomId"], item["turnId"]) == ("activity", room_id, "t1")
+        await events.stream.aclose()  # type: ignore[attr-defined]

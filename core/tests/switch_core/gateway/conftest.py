@@ -47,7 +47,10 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_service import RoomService
-from switch_core.session_activity.listener import Change
+from switch_core.session_activity.listener import (
+    AgentSessionActivityListener,
+    Change,
+)
 from switch_core.signals import SignalBus
 from switch_core.transport.invites import InviteBus
 from tests.conftest import TEST_KEYRING
@@ -406,3 +409,27 @@ async def two_processes(
         for run in runs:
             run.cancel()
         await asyncio.gather(*runs, return_exceptions=True)
+
+
+@pytest.fixture
+async def listening_processes(
+    two_processes: tuple[_Process, _Process], postgres_url: str
+) -> AsyncIterator[tuple[_Process, _Process]]:
+    """`two_processes`, each told of session activity by its own listener on
+    the real `NOTIFY` channel, as a switch-core process is, rather than by the
+    test."""
+    listeners = []
+    for process in two_processes:
+        listener = AgentSessionActivityListener(
+            lambda: create_async_engine(postgres_url, poolclass=NullPool)
+        )
+        process.service.activity_listener = listener
+        await listener.start()
+        listeners.append(listener)
+    try:
+        for listener in listeners:
+            await asyncio.wait_for(listener.connected.wait(), _CONNECT_SECONDS)
+        yield two_processes
+    finally:
+        for listener in listeners:
+            await listener.stop()
