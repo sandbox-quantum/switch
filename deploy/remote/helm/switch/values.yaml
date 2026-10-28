@@ -903,11 +903,12 @@ decision:
       # first start with its base model (google/gemma-4-E4B-it, about 16 GB,
       # under the Gemma terms). Later starts only load it.
       checkpoint: StrandsAgents/strands-decider-E4B-gemma4-v1-2610
-      # --model-name, and DECISION_MODEL unless `model` above is set.
+      # The name the server answers as, and DECISION_MODEL unless `model`
+      # above is set.
       modelName: strands-decider-E4B
-      # Extra arguments for `strands-decider serve` (e.g. --max-batch 8).
-      args: []
-      # Extra container env, as Kubernetes env entries.
+      # Extra container env, as Kubernetes env entries. The server (the image's
+      # serve.py, which merges the adapter into the base weights) is
+      # configured only by env, e.g. STRANDS_MAX_BATCH (default 32).
       env: []
       # The port opens only once the model is loaded: the first start
       # downloads about 16 GB and then loads it (a few minutes with 32 GiB of

@@ -57,4 +57,5 @@ WORKDIR /home/decision
 EXPOSE 8400
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30m --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8400/health', timeout=3)"]
-ENTRYPOINT ["sh", "-c", "exec strands-decider serve \"$STRANDS_CHECKPOINT\" --host 0.0.0.0 --port 8400 --device cuda --model-name \"$STRANDS_MODEL_NAME\" \"$@\"", "strands-decider"]
+COPY --chown=10001:10001 serve.py /opt/strands-serve/serve.py
+ENTRYPOINT ["python", "/opt/strands-serve/serve.py"]
