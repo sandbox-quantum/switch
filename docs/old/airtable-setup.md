@@ -107,8 +107,8 @@ Integrations & development.
 
 ## What people do
 
-1. In Switch Console: Settings, Connections, Airtable, Connect. The browser
-   opens Airtable's consent page and comes back to Switch Console.
+1. In Switch Console: Connectors, Airtable, Connect. The browser opens
+   Airtable's consent page and comes back to Switch Console.
 2. On Airtable's page the person picks everything they can reach, or chosen
    bases, interfaces and workspaces. They cannot leave out the write
    permissions, so every connection can write; what an agent reaches is
@@ -141,10 +141,14 @@ next token requests:
 ## Limits worth knowing
 
 - Access tokens last an hour. A sign-in unused for 60 days lapses, and shows
-  as needing reconnection under Connections.
+  as needing reconnection under Connectors.
 - A granted agent's token is its owner's own, shared by every agent they
-  grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
-  its sessions within an hour; disconnecting stops every agent at once.
+  grant; it cannot be narrowed or revoked per agent. Turning Airtable off for
+  an agent stops its sessions using it within a minute: the machine running
+  them reads the agent's grants again about every 30 seconds. A token already
+  handed to it stays valid at Airtable until it expires, at most an hour, and
+  disconnecting does not end it sooner, since Switch cannot revoke an Airtable
+  sign-in; the disconnect's warning says until when.
 - Development bases refuse every call from Airtable's MCP server.
 - Reconnecting never narrows what a connection reaches: the bases of every
   grant the person has not removed in Airtable still count (see "What people

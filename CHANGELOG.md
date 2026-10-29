@@ -756,7 +756,12 @@ version of their own to them without also giving them a release of their own.
   owner to connect or reconnect a service, which agents pass on, sent them to
   "Settings, Connections", which Switch Console does not have; it now names
   Connectors, the page in Switch Console's sidebar and in the dashboard.
-  switch-buddy calls an agent's tab by its name, Connectors.
+  switch-buddy calls an agent's tab by its name, Connectors. The setup guides
+  for GitHub, Google Workspace and Airtable quote the not-set-up message as
+  it reads now, drop the confirm step removed in 0.31.0, and say that turning
+  a service off for an agent stops its sessions using it within a minute (not
+  an hour), and that disconnecting Airtable does not end a token already
+  handed out.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
