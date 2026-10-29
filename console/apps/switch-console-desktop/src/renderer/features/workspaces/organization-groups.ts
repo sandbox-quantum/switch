@@ -34,6 +34,27 @@ export function groupByOrganization(workspaces: Workspace[]): OrganizationGroup[
   return [...groups.values()];
 }
 
+/**
+ * How the switcher lists a server's workspaces: one section per organization,
+ * each headed with its name, where there is more than one and every one of
+ * them has a name to show.
+ *
+ * Otherwise one unheaded section in the order listed, as before organizations.
+ * Headings without names would read as several identical ones, so a server
+ * whose organizations could not be named is listed as if it had none, and its
+ * section offers no Add workspace, having no organization to say it is for.
+ */
+export function switcherSections(workspaces: Workspace[]): {
+  sections: OrganizationGroup[];
+  headed: boolean;
+} {
+  const groups = groupByOrganization(workspaces);
+  if (groups.length <= 1) return { sections: groups, headed: false };
+  const named = groups.every((group) => group.organizationId === null || group.name !== null);
+  if (named) return { sections: groups, headed: true };
+  return { sections: [{ organizationId: null, name: null, workspaces }], headed: false };
+}
+
 /** What a server answered about creating, for the workspace it was asked about. */
 export type CreationAnswer = { canAddWorkspace: boolean; workspaceId: string };
 
