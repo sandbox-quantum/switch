@@ -434,8 +434,8 @@ version of their own to them without also giving them a release of their own.
   and widens their next connection. Disconnecting or reconnecting says so and
   where in Airtable to remove it, as any OAuth service without revocation now
   does rather than reporting a failed revoke.
-- **The Box connection.** A person connects Box from Switch Console,
-  read-only or read-write, and a granted agent searches, reads and organizes
+- **The Box connection.** A person connects Box from Switch Console, and a
+  granted agent searches, reads and organizes
   the files and folders they can reach, as that person, through Box's MCP
   server (`https://mcp.box.com`). A Box admin enables the Box MCP server and
   adds Integration Credentials in the Box Admin Console; each server's

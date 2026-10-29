@@ -3,8 +3,8 @@
 Agents can search, read and organize the files and folders their owners can
 reach in Box once a Box admin turns on Box's MCP server and the server's
 operator saves its Integration Credentials. Each person then connects their
-own Box account from Switch Console, read-only or read-write, and turns Box on
-for the agents they choose. How it works is in
+own Box account from Switch Console and turns Box on for the agents they
+choose. How it works is in
 [`docs/design/service-connections-v2.md`](../design/service-connections-v2.md),
 under Box.
 
@@ -15,7 +15,10 @@ Without the credentials, Box is listed on the server as not set up.
 - A **Box admin** for the enterprise whose people will connect. Box's MCP
   server (`https://mcp.box.com`) is an integration the admin enables, and its
   client ID and secret come from the Box Admin Console; Box offers no way for
-  Switch to register itself. A free Box developer account is its own
+  Switch to register itself. A Custom App with **User Authentication
+  (OAuth 2.0)** made in the Box Developer Console also works, with the same
+  redirect URI and scopes, while the Box MCP server is enabled for the
+  people who connect. A free Box developer account is its own
   enterprise, with its owner as admin, and is enough to try it.
 - The server's **`GATEWAY_PUBLIC_URL`**: the address people reach Switch at.
   Box sends people back to Switch there, as Google Workspace and Airtable do;
@@ -42,8 +45,7 @@ server**:
    If the public URL changes, change it here too, or sign-ins fail.
 4. Under **Access Scopes**, allow reading and writing all files and folders
    (`root_readonly` and `root_readwrite`). Those are the most a sign-in can be
-   granted; each person still chooses read-only or read-write when they
-   connect, and Switch asks for that scope alone. Box AI (`ai.readwrite`) and
+   granted, and Switch asks for `root_readwrite` alone. Box AI (`ai.readwrite`) and
    Doc Gen (`docgen.readwrite`) are not asked for: Box AI spends the
    enterprise's AI units, and Doc Gen needs an Enterprise Advanced licence.
 5. Copy the **Client ID** and **Client Secret**.
@@ -97,9 +99,9 @@ switch-core does not start, and says why.
 
 ## What people do
 
-1. In Switch Console: Settings, Connections, Box, Connect, choosing read-only
-   or read-write. The browser opens Box's sign-in and consent page and comes
-   back to Switch Console.
+1. In Switch Console: Settings, Connections, Box, Connect. The browser opens
+   Box's sign-in and consent page, which asks to read and write all files and
+   folders, and comes back to Switch Console.
 2. On an agent's page (in Switch Console or the dashboard), the agent's owner
    turns Box on. The agent acts as its owner: it sees only what they can open
    in Box, and what it uploads, moves, renames or comments on shows in Box as
@@ -122,9 +124,12 @@ next token requests:
 
 ## Limits worth knowing
 
-- Access tokens last about an hour. Each refresh token works once, and a
-  sign-in unused for 60 days lapses and shows as needing reconnection under
-  Connections.
+- Access tokens last 60 to 70 minutes. Each refresh replaces the refresh
+  token, and a sign-in unused for 60 days lapses and shows as needing
+  reconnection under Connections.
+- A Box connection is read-write: Switch asks Box for `root_readwrite`, and
+  Box's consent page has nothing to untick. Box still refuses whatever the
+  person cannot do in a folder themselves.
 - A granted agent's token is its owner's own, shared by every agent they
   grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
   its sessions within an hour; disconnecting stops every agent at once.

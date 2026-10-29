@@ -17,16 +17,15 @@ MCP server; there is nothing to set up or renew.
   viewer, changes are refused. Box also applies its own policies (Shield,
   classification), so a file your owner can open may still refuse a download
   or a preview.
-- **Read-only or read-write.** Your owner chose one when they connected. On a
-  read-only connection every change is refused; tell the user, and don't look
-  for another way to make it.
+- **If a change is refused** for lack of scope or permission, tell the user,
+  and don't look for another way to make it.
 - **No Box AI or Doc Gen.** The server lists Box AI tools (`ai_qa_*`,
-  `ai_extract_*`) and Doc Gen tools, but this connection does not include
-  them, and Box refuses them. Read the file yourself instead.
-- **Some tools are off unless a Box admin turned them on**: shared links,
-  collaborations, moving, metadata and property changes, new file versions,
-  and download and upload links. If one is refused or missing, say so; your
-  owner's Box admin decides.
+  `ai_extract_*`), and may list Doc Gen tools, but this connection does not
+  include them, and Box refuses them. Read the file yourself instead.
+- **Some tools are off unless a Box admin turned them on**, and are then not
+  listed at all: shared links, collaborations, moving, renaming and other
+  property changes, metadata, new file versions, and download and upload
+  links. If the task needs one, say so; your owner's Box admin decides.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
@@ -53,8 +52,10 @@ can find them.
 
 - Read an item's details before you change it, and say which item will change
   and how: its path, its new name or its destination folder.
-- Confirm with the user before uploading, copying, moving or renaming, or
-  adding a comment, unless they asked for exactly that change.
+- The changes the default tools make are `upload_file`, `create_folder`,
+  `create_box_note`, `copy_file`, `copy_folder` and `create_file_comment`.
+  Confirm with the user before any of them, or a move or rename where those
+  tools are on, unless they asked for exactly that change.
 - Never create or change a shared link or a collaboration unless the user
   asked for that one in this conversation: it can give people outside the
   organization access.

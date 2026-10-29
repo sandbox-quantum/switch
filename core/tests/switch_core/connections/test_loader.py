@@ -333,13 +333,17 @@ def test_the_shipped_box_entry_signs_in_as_box_documents_it():
     assert (oauth.revocation_url, oauth.revocation_discovered) == (None, True)
     assert oauth.remove_access is None
     assert oauth.unchecked is not None and "enabled" in oauth.unchecked
-    # Box's refresh tokens are single-use.
+    # Each refresh returns a new refresh token, which replaces the old one.
     assert definition.auth.refresh == "rotating"
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
         "pass_through",
-        3600,
+        4500,
     )
+    # Box's tokens outlive the hour it documents: the longest measured was
+    # 4,068 s. Under a cap below that, a fresh token would be refused for its
+    # first minutes after every sign-in and refresh.
+    assert definition.token.max_lifetime > 4068 + 60
     assert definition.mcp is not None
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("box", "https://mcp.box.com")

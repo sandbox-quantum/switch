@@ -540,40 +540,51 @@ Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 
 ## Box
 
-Built from Box's published metadata and documentation; the operator's setup
-is in [`docs/old/box-setup.md`](../old/box-setup.md).
+Built from Box's published metadata and documentation, and checked in a
+sign-in run against a free Box developer account; the operator's setup is in
+[`docs/old/box-setup.md`](../old/box-setup.md).
 
 - Box offers no dynamic registration. A Box admin enables the Box MCP server
   under Integrations in the Box Admin Console and adds Integration Credentials
   to it, with the redirect URI and the most scopes a sign-in may be granted;
   each server's operator saves the client under Connector apps, or names it
-  in `BOX_CLIENT_CONFIG_PATH`. The browser comes back to Core's own callback,
-  as Airtable's and Google's do, so the server needs `GATEWAY_PUBLIC_URL`.
+  in `BOX_CLIENT_CONFIG_PATH`. A Custom App with User Authentication (OAuth
+  2.0) from the Box Developer Console works too: `mcp.box.com` took its tokens
+  in the run. The browser comes back to Core's own callback, as Airtable's
+  and Google's do, so the server needs `GATEWAY_PUBLIC_URL`.
 - The endpoints are discovered: `mcp.box.com`'s 401 names its protected
   resource metadata, which names `api.box.com` as the authorization server.
   Its metadata offers PKCE with S256, `client_secret_basic` and
   `client_secret_post`, and a revocation endpoint, so a disconnect revokes the
   sign-in (`revocation_discovered`). The secret goes in the form body, as the
-  adapter sends it wherever the vendor lists the body.
-- A sign-in asks for `root_readonly` (read) or `root_readwrite` (write). Box
-  narrows the credentials' scopes to those asked for, and checks every call
-  against the person's own folder and file permissions too, so a connection
-  reaches what its owner can open, not one folder. Not asked for:
+  adapter sends it wherever the vendor lists the body. Box takes the
+  `resource` parameter Core sends with the authorization and token requests.
+- The catalog's levels are `root_readonly` (read) and `root_readwrite`
+  (write). Connecting asks for write, as for every service with a write
+  level, and Box's consent page lists that one permission with nothing to
+  untick, so a Box connection is read-write. Box does narrow a sign-in to the
+  scopes asked for: one asking `root_readonly` alone was refused every write,
+  by the MCP server ("Access denied") and by the API (403
+  `insufficient_scope`), and stayed read-only through a refresh. Box checks
+  every call against the person's own folder and file permissions too, so a
+  connection reaches what its owner can open, not one folder. Not asked for:
   `ai.readwrite`, whose Box AI tools spend the enterprise's AI units, and
   `docgen.readwrite`, which needs an Enterprise Advanced licence; tools pass
-  through unclassified, and Box refuses those. The server has no tool that
-  deletes a file or folder. Some write tools (shared links, collaborations,
-  moves, metadata) are off until a Box admin turns them on.
-- Access tokens live about an hour (documented). Refresh tokens are
-  single-use and last 60 days, so `refresh: rotating`.
+  through unclassified, and Box refuses those (documented). The server listed
+  36 tools, Box AI's among them and no Doc Gen tool, and none that deletes a
+  file or folder. The tools a Box admin must turn on (moves, renames,
+  metadata, shared links, collaborations, new versions, upload and download
+  links) are not listed until they are.
+- Box documents hour-long access tokens, but they live 60 to 70 minutes:
+  3,686 to 4,068 s across sign-ins and refreshes. `max_lifetime` is 4,500, so
+  a fresh token is handed out at once rather than refused until it has run
+  down to the cap. Each refresh returns a new refresh token, so `refresh:
+  rotating`; Box documents them as single-use with a 60-day life, though a
+  used one was still accepted 90 s later.
 - `GET https://api.box.com/2.0/users/me` names the account: `id`, and
-  `login`, its email.
-
-Still to confirm in a sign-in run, against a free Box developer account:
-that Box accepts the `resource` parameter Core sends with the authorization
-and token requests, that the MCP server's token is accepted by
-`/2.0/users/me`, the measured token lifetime, and that a read-only sign-in
-is refused a write.
+  `login`, its email. It takes the token issued for `mcp.box.com`. Box's
+  token answer for Integration Credentials carries `scope`; a Custom App's
+  carries none, so Core takes the scopes it asked for.
 
 To connect: Settings, Connections in Switch Console, then Box. To roll back,
 add `box` to `DISABLED_SERVICES`, remove its client under Connector apps or

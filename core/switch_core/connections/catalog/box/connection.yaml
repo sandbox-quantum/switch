@@ -6,8 +6,8 @@ enabled: true
 adapter: oauth
 auth:
   type: oauth
-  # Box's refresh tokens are single-use: each refresh returns a new one, and
-  # one left unused for 60 days lapses.
+  # Each refresh returns a new refresh token, which replaces the old one; Box
+  # documents them as single-use, and one left unused for 60 days lapses.
   refresh: rotating
   oauth:
     # Box offers no dynamic registration. A Box admin enables the Box MCP
@@ -15,7 +15,9 @@ auth:
     # Credentials there, which give the client id and secret; each server's
     # operator saves them under Connector apps, or names them in
     # BOX_CLIENT_CONFIG_PATH. The credentials' Access Scopes are the most a
-    # sign-in can be granted; the scopes asked for below narrow it.
+    # sign-in can be granted; the scopes asked for below narrow it. A Custom
+    # App with User Authentication (OAuth 2.0) from the Developer Console
+    # works the same way.
     registration: static
     client_settings: BOX
     # Back to Core's own https callback, as Airtable's and Google's: the
@@ -35,9 +37,11 @@ auth:
     url: https://api.box.com/2.0/users/me
     account_id: id
     label: login
-# Box's access tokens live about an hour (documented). A longer one is held
-# back until it has run down to an hour.
-token: { kind: pass_through, max_lifetime: 3600 }
+# Box documents an hour, but its access tokens live 60 to 70 minutes: a
+# sign-in run measured 3,686 to 4,068 s across sign-ins and refreshes. The cap
+# leaves room above that, so a token is handed out as soon as Box issues it,
+# rather than refused for its first minutes after every sign-in and refresh.
+token: { kind: pass_through, max_lifetime: 4500 }
 mcp:
   servers:
     - { name: box, url: "https://mcp.box.com" }
@@ -47,8 +51,10 @@ access:
   # Box AI tools (ask, extract) spend the enterprise's AI units, and
   # docgen.readwrite, which needs an Enterprise Advanced licence. Box refuses
   # those tools without them, though its server may still list them. The Box
-  # MCP server has no tool that deletes a file or folder; root_readwrite lets
-  # it upload, copy, move, rename and comment.
+  # MCP server has no tool that deletes a file or folder. With its default
+  # tools, root_readwrite lets it upload, create folders and Box Notes, copy
+  # and comment; moving, renaming, metadata, shared links and collaborations
+  # are off, and not listed, until a Box admin turns them on.
   read:
     scopes:
       - root_readonly
