@@ -468,7 +468,7 @@ class TestChecks:
             "internal",
             False,
         )
-        assert "not available on this server" in refused.message
+        assert refused.message == broker.availability("github")
         assert broker.connectable("github") is False
 
     async def test_an_owner_no_longer_in_the_workspace_is_forbidden(
@@ -1670,6 +1670,61 @@ class TestWorkspaceSwitch:
             await g.broker.disconnect(session, g.world.owner.id, "github")
         assert await _connection(session_factory, g.world.owner.id) is None
         assert len(g.github.connections_revoked) == 1
+
+
+class TestSessionGrants:
+    """A session is given a grant only where a token for it would be issued,
+    so it never holds tools whose every call is refused."""
+
+    async def _listed(self, g: Gated, session_factory) -> list[str]:
+        async with session_factory() as session:
+            agent = await session.get(Agent, g.world.agent.id)
+            assert agent is not None
+            grants = await g.broker.grants_for(session, agent, Principal.agent_key())
+        return sorted(grant["service"] for grant in grants)
+
+    async def test_a_service_switched_off_on_the_server_is_left_out(
+        self, session_factory, tmp_path
+    ) -> None:
+        g = await _gated(
+            session_factory,
+            tmp_path / "c",
+            gate=False,
+            disabled={"example": "Maintenance"},
+        )
+
+        assert await self._listed(g, session_factory) == ["github"]
+        refused = await _refused(
+            g.broker, session_factory, g.world.agent.id, service="example"
+        )
+        assert refused.message == "Maintenance"
+
+    async def test_a_service_whose_app_is_removed_is_left_out_until_it_is_back(
+        self, session_factory, tmp_path
+    ) -> None:
+        g = await _gated(session_factory, tmp_path / "c", gate=False)
+        g.broker.replace_adapter("example", None)
+
+        assert await self._listed(g, session_factory) == ["github"]
+        refused = await _refused(
+            g.broker, session_factory, g.world.agent.id, service="example"
+        )
+        assert (refused.status_code, refused.code) == (503, "internal")
+        assert refused.message == g.broker.availability("example")
+
+        g.broker.replace_adapter("example", g.example)
+        assert await self._listed(g, session_factory) == ["example", "github"]
+
+    async def test_github_whose_app_cannot_issue_is_left_out(
+        self, session_factory, tmp_path
+    ) -> None:
+        g = await _gated(session_factory, tmp_path / "c", gate=False)
+        g.github.can_issue = False
+
+        assert await self._listed(g, session_factory) == ["example"]
+        refused = await _refused(g.broker, session_factory, g.world.agent.id)
+        assert refused.message == g.broker.availability("github")
+        assert g.github.issued == []
 
 
 async def _all_connections(

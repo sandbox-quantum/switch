@@ -475,16 +475,12 @@ class ServiceBroker:
         return await self._workspace_services.disabled_services(session, self._catalog)
 
     def _adapter(self, service: str) -> ServiceAdapter:
-        """The adapter that issues for `service`, or the refusal saying why not."""
-        adapter = self._refresher(service)
-        if not adapter.can_issue:
-            raise ServiceError(
-                503,
-                INTERNAL,
-                self.availability(service) or "Not available on this server.",
-                retryable=False,
-            )
-        return adapter
+        """The adapter that issues for `service`, or the refusal saying why
+        not: `unavailable` decides, as it does what a session is given."""
+        unavailable = self.unavailable(service)
+        if unavailable is not None:
+            raise ServiceError(503, INTERNAL, unavailable.reason, retryable=False)
+        return self._refresher(service)
 
     def _refresher(self, service: str) -> ServiceAdapter:
         """The adapter that keeps `service`'s connections signed in."""
@@ -1108,22 +1104,24 @@ class ServiceBroker:
         issuing holds it to.
         """
         _require_owners_controller(principal, agent.owner_id)
-        # A service the workspace switched off is left out, as if never
-        # granted: the host restarts a running session without it. The grant
-        # is kept, so switching it back on returns it.
+        # A grant whose every token request would be refused is left out, as
+        # if never granted, and the host restarts a running session without
+        # it: the workspace switched the service off, or this server can't
+        # hand it out (`unavailable`: switched off here, its app not set up or
+        # missing a part, a key that never expires). The grant is kept, so it
+        # comes back once that changes.
         switched_off = await self.workspace_disabled(session)
         grants = []
         for grant in await self._store.list_grants(session, agent.id):
-            if grant.service in switched_off:
+            if (
+                grant.service in switched_off
+                or self.unavailable(grant.service) is not None
+            ):
                 continue
-            entry = self._catalog.get(grant.service)
-            # Nor is one whose credential never expires: every token request
-            # for it is refused, so the session gets none of its tools.
-            if entry is not None and not _issued_to_agents(entry):
-                continue
-            skill = None if entry is None else entry.skill_files.get("SKILL.md")
-            mcp = None if entry is None else entry.definition.mcp
-            cli = None if entry is None else entry.definition.cli
+            entry = self._catalog[grant.service]
+            skill = entry.skill_files.get("SKILL.md")
+            mcp = entry.definition.mcp
+            cli = entry.definition.cli
             grants.append(
                 {
                     "service": grant.service,

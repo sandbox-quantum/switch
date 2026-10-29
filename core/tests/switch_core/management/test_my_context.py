@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import AsyncIterator, Iterator
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -34,6 +37,8 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS, SWITCH_CLOUD
 from tests.switch_core.connections.github_seed import (
     INSTALLATION_ID,
@@ -346,6 +351,44 @@ async def _grants(harness: Harness, agent_name: str) -> list[tuple[str, str]]:
             select(ServiceGrant).where(ServiceGrant.agent_id == agent.id)
         )
         return [(grant.service, grant.access) for grant in rows]
+
+
+def _service(context: dict[str, Any], slug: str) -> dict[str, Any]:
+    return next(entry for entry in context["services"] if entry["slug"] == slug)
+
+
+async def test_a_service_off_in_the_workspace_is_not_available(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    harness.protocol.service_broker = ServiceBroker(
+        session_factory=harness.session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters={"github": harness.vendor},
+        disabled={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=True,
+        public_url=None,
+    )
+    buddy_id, key, ada_id = await _setup(harness)
+
+    async def switch(enabled: bool) -> dict[str, Any]:
+        async with harness.session_factory() as session:
+            await WorkspaceServiceStore().set_enabled(
+                session, "github", enabled, ada_id
+            )
+            await session.commit()
+        return _service(await _context(client, buddy_id, key), "github")
+
+    on = await switch(True)
+    assert (on["available"], on["workspace_enabled"]) == (True, True)
+
+    off = await switch(False)
+    assert (off["available"], off["workspace_enabled"]) == (False, False)
+    # The server itself has GitHub set up: only the workspace's switch is off.
+    assert (off["unavailable_reason"], off["unavailable_code"]) == (None, None)
 
 
 class TestGivingAgentsServices:

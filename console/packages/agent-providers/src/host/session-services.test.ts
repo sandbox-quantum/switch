@@ -104,9 +104,9 @@ describe('what a restarted session is told about its services', () => {
   });
   const shape = (...names: string[]) => servicesShape(services(...names));
   const REMOVED_DATADOG =
-    "Datadog was removed from this agent's tools: it was switched off for the workspace, or its grant was removed.";
+    "Datadog was removed from this agent's tools: it was switched off for the workspace, can no longer be used on this Switch server, or its grant was removed.";
 
-  it('names a service taken away, and both reasons it may have gone', () => {
+  it('names a service taken away, and each reason it may have gone', () => {
     expect(servicesChangeSince(shape('atlassian', 'datadog'), services('atlassian'))).toBe(
       REMOVED_DATADOG
     );
@@ -119,7 +119,7 @@ describe('what a restarted session is told about its services', () => {
     expect(
       servicesChangeSince(shape('datadog', 'github', 'google-workspace'), services('atlassian'))
     ).toBe(
-      "Datadog, GitHub and Google Workspace were removed from this agent's tools: each was switched off for the workspace, or its grant was removed. Atlassian was added to this agent's tools."
+      "Datadog, GitHub and Google Workspace were removed from this agent's tools: each was switched off for the workspace, can no longer be used on this Switch server, or had its grant removed. Atlassian was added to this agent's tools."
     );
   });
 

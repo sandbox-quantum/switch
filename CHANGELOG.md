@@ -291,6 +291,22 @@ version of their own to them without also giving them a release of their own.
   and `/room-url` leaves the menu but still works when typed. A self-hosted
   Teams app shows the change once its package is rebuilt with `--bump` and
   uploaded again.
+- **A session is no longer given a service whose every token request is
+  refused.** A session got the skill and tools of each service its agent was
+  granted, leaving out only one the workspace switched off or whose key never
+  expires. A service the operator switched off (`DISABLED_SERVICES`), one
+  whose app is not set up or was removed, and GitHub without its App's
+  signing key still came with tools whose every call failed. A session now
+  gets a service only where Switch hands out its tokens, and a running one is
+  restarted without a service that stops being usable, as it already was for
+  the workspace's switch. The grant is kept, so the service comes back once
+  it can be used again. A service whose sign-ins need the server's public
+  address is also no longer handed out on a server without one, which already
+  showed it as unavailable.
+- **`get_my_context` no longer calls a service available when the workspace
+  has it switched off.** `available` now also needs the workspace's switch to
+  be on, and the new `workspace_enabled` says whether it is, so an agent tells
+  its owner to ask a workspace admin rather than to connect it.
 
 #### Removed
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
@@ -2186,6 +2202,10 @@ version of their own to them without also giving them a release of their own.
   which cannot be given to another machine, and gives the workaround for a
   machine whose organization does not enforce the keyring: switch Codex to file
   storage, which keeps the login in plaintext, and sign in again (#1048).
+- **A session that loses a service gives every reason it may have gone.**
+  Switch now also leaves a service out once the server can no longer hand it
+  out, so the session's notice says that as well as the workspace's switch
+  and a removed grant.
 
 ### [0.40.1] - 2026-10-21
 
