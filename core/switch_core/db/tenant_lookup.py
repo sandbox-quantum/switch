@@ -97,7 +97,7 @@ test that keeps the list honest is the one that would have let this stand: a
 function nobody needs is still a function every role could call, so the shorter
 list is the whole point of noticing.
 
-**`tenant_of_invitation` is the eighth, and it is the same shape as
+**`tenant_of_invitation` is the seventh, and it is the same shape as
 `tenant_of_api_key`.** Accepting an invitation is credential resolution: the
 request carries a token and nothing else, no tenant is bound yet, and the
 table it would have to read (`invitations`) is tenant-scoped like everything
@@ -109,7 +109,7 @@ gates are actually enforced. Nothing about *that* row crosses the exemption;
 only the tenant id does, which is the property every lookup in this module
 rests on.
 
-**`tenant_of_messaging_install` is the ninth, and the only one whose caller is
+**`tenant_of_messaging_install` is the eighth, and the only one whose caller is
 not a person.** An event from the Switch app installed in a customer's Slack
 arrives over a public endpoint that no one has authenticated to: what it
 carries is a workspace id, and the tenant is precisely what has to be worked out before
@@ -129,7 +129,7 @@ this would otherwise answer twice — refusing a customer's live traffic on the
 strength of an install they themselves ended. The predicate here and the one
 on the index are the same predicate, and have to stay that way.
 
-**`tenants_inviting_email` is the tenth, and the only one keyed on a
+**`tenants_inviting_email` is the ninth, and the only one keyed on a
 person's address rather than on something they hold.** An invitation
 addressed to someone is theirs to accept whichever workspace they are signed
 in to, or with none selected at all; listing those means reading
@@ -143,7 +143,7 @@ metadata above is which workspaces have invited a given address, to anyone
 holding the runtime role's credentials; the endpoint that calls it only ever
 passes the signed-in caller's own address.
 
-**`tenants_open_to_domain` is the eleventh**, and the same shape one step
+**`tenants_open_to_domain` is the tenth**, and the same shape one step
 wider: keyed on the domain of a person's address rather than on the address.
 A workspace can let anyone at a domain join it without an invitation, and
 offering those workspaces means reading `tenant_join_domains` across every
@@ -151,7 +151,7 @@ tenant before any is bound. It discloses which workspaces are open to a
 domain; the endpoint that calls it only ever passes the domain of the
 signed-in caller's own address.
 
-**`tenants_of_cloud_machine` is the twelfth.** A user's cloud machine is
+**`tenants_of_cloud_machine` is the eleventh.** A user's cloud machine is
 global (`cloud_machines`, one VM per person), and the cloud controller that
 drives it acts for no tenant; what the machine runs in each workspace is that
 workspace's scoped `machine_workspaces` row. The lookup says which workspaces
