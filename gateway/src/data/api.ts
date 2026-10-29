@@ -2193,8 +2193,19 @@ export interface ServiceConnection {
   connectable: boolean;
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: string | null;
+  /**
+   * The same, as a code to act on (`UnavailableCode` in Core's
+   * `connections/broker.py`); null when it can be granted.
+   */
+  unavailable_code: string | null;
   /** Whether it waits on the server's operator setting up its app under Connectors. */
   server_setup_needed: boolean;
+  /**
+   * Whether the workspace has it switched on. Off, nobody in the workspace
+   * can connect it or turn it on for an agent until a workspace admin
+   * switches it on.
+   */
+  workspace_enabled: boolean;
   status: "not_connected" | "active" | "needs_reauthorization" | "error";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;

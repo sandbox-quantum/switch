@@ -322,6 +322,13 @@ version of their own to them without also giving them a release of their own.
   else and naming a page that does not exist. You are now told to reconnect
   it from Connectors in Switch Console, and an agent asking for a token is
   told its owner must.
+- **The dashboard says when the workspace has a service switched off.** An
+  agent's Service access offered to turn on, or to grant GitHub for, a
+  service the workspace had switched off, and the server refused. It now
+  says the service is not enabled in the workspace and who can switch it on,
+  as Switch Console does, and a grant that is on can still be turned off.
+  GitHub that this server can't grant for another reason says so in place of
+  its form, rather than only when its App is not set up.
 
 #### Removed
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
