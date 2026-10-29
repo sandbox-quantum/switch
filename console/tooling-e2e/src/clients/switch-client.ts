@@ -834,6 +834,39 @@ export class SwitchClient {
     );
   }
 
+  /** `DELETE /gateway/organizations/current/members/{user_id}` — remove someone from the organization. */
+  async removeOrganizationMember(userId: string): Promise<void> {
+    await this.gateway<unknown>(
+      "DELETE",
+      `/organizations/current/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/members` — the workspace roster, with each person's organization role. */
+  async workspaceMembers(tenantId: string): Promise<
+    {
+      user_id: string;
+      role: string;
+      organization_role: string | null;
+      via_organization: boolean;
+    }[]
+  > {
+    return this.gateway("GET", `/tenants/${encodeURIComponent(tenantId)}/members`);
+  }
+
+  /** `DELETE /gateway/tenants/{tenant_id}/members/{user_id}` — remove someone from a workspace. */
+  async removeWorkspaceMember(tenantId: string, userId: string): Promise<void> {
+    await this.gateway<unknown>(
+      "DELETE",
+      `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
+  async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
+    return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
+  }
+
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */
   async tenantId(): Promise<string> {
     const state = await this.gateway<{

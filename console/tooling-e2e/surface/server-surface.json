@@ -157,6 +157,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/organizations/current/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/packages/{package_id}",
       "auth": "session",
       "flags": []
@@ -579,6 +584,11 @@
     {
       "route": "GET /gateway/openapi.json",
       "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/operator/workspaces",
+      "auth": "session",
       "flags": []
     },
     {
