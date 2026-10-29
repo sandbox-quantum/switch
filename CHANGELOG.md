@@ -514,6 +514,12 @@ version of their own to them without also giving them a release of their own.
   Secure over plain http on the loopback address, where a browser drops it,
   as the other connectors' sign-ins already did. switch-buddy no longer tells
   people on a server Switch Console runs that GitHub can't work there.
+- **GitHub says why it can't be used on a server with no GitHub App.** Its
+  routes answered "GitHub connections are not enabled on this server." for
+  every cause, which is what the dashboard's GitHub grant and Switch Console's
+  GitHub settings showed. They now give the reason the Connectors page does:
+  the App is not set up yet, and who sets it up, or the server's address is
+  one GitHub does not call back.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in

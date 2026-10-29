@@ -1445,6 +1445,14 @@ class ServiceBroker:
             else unavailable.reason
         )
 
+    def server_availability(self, service: str) -> str | None:
+        """Why a workspace that goes through the server's app for `service`
+        cannot be granted it, or None if it can."""
+        unavailable = self._unavailable(
+            service, _Choice(self._adapters.get(service), None, "server")
+        )
+        return None if unavailable is None else unavailable.reason
+
     def server_serves(self, service: str) -> bool:
         """Whether a workspace that goes through the server's app for
         `service` can be granted it: switched on, set up, and able to issue."""
