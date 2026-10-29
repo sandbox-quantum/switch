@@ -1219,6 +1219,13 @@
       ]
     },
     {
+      "route": "POST /gateway/service-connections/{service}/flows/{flow_id}/fail",
+      "auth": "session",
+      "flags": [
+        "service_connections"
+      ]
+    },
+    {
       "route": "POST /gateway/template-runs/{root_room_id}/continue",
       "auth": "session",
       "flags": []
