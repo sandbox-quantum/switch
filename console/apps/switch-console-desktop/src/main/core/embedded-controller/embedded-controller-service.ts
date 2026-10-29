@@ -20,6 +20,7 @@ import {
   ControllerSupervisor,
   type SpawnController,
 } from './controller-supervisor';
+import { DECISION_MODEL_ENV, type DecisionModelPreference } from './decision-model';
 
 export type ControllerPlatform = { os: string; arch: string; os_version: string };
 
@@ -90,6 +91,8 @@ export type EmbeddedControllerDeps = {
   movedAgents: (serverId: string) => Promise<string[]>;
   /** Provider checks made ahead of the controller, for it to take, or null when there are none. */
   providerSeed: () => string | null;
+  /** Whether this computer may run auto-route's decision model, kept between launches. */
+  decisionModel: DecisionModelPreference;
 };
 
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
@@ -101,6 +104,12 @@ const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win
  * report that has them rather than timing out ahead of it.
  */
 const RECHECK_TIMEOUT_MS = 90_000;
+
+/**
+ * Deleting the model's files takes the controller well under a second; one
+ * that has not answered in this long does not know the request.
+ */
+const REMOVE_DECISION_MODEL_TIMEOUT_MS = 15_000;
 
 function providerSeedArgs(file: string | null): string[] {
   return file === null ? [] : ['--provider-seed', file];
@@ -285,6 +294,48 @@ export class EmbeddedControllerService {
     const runner = this.runners.get(serverId);
     if (!runner) throw new Error('This computer does not run managed agents for this server.');
     await runner.supervisor.recheckProviders(RECHECK_TIMEOUT_MS);
+  }
+
+  /** Whether this computer may run auto-route's decision model: on unless turned off here. */
+  decisionModelEnabled(): Promise<boolean> {
+    return this.deps.decisionModel.enabled();
+  }
+
+  /**
+   * Lets this computer run auto-route's decision model, or stops it. Kept for
+   * later launches, and taken up now by restarting every controller running
+   * here, which reads it as it starts; its agents keep running meanwhile.
+   */
+  async setDecisionModelEnabled(enabled: boolean): Promise<void> {
+    if ((await this.deps.decisionModel.enabled()) === enabled) return;
+    await this.deps.decisionModel.setEnabled(enabled);
+    this.deps.log.info(
+      enabled
+        ? 'This computer may run the decision model again; restarting its controllers'
+        : 'This computer no longer runs the decision model; restarting its controllers',
+      { servers: this.runners.size }
+    );
+    await Promise.all(
+      [...this.runners.entries()].map(async ([serverId, runner]) => {
+        if (this.disposed || this.busy.has(serverId)) return;
+        if (runner.phase.kind !== 'running' && runner.phase.kind !== 'restarting') return;
+        await runner.supervisor.stop(this.deps.stopTimeoutMs);
+        if (this.disposed || this.runners.get(serverId) !== runner) return;
+        runner.supervisor.start();
+      })
+    );
+  }
+
+  /**
+   * Has this computer's controller for `serverId` delete the decision model
+   * it downloaded. Fails, saying so, when the controller is not running or is
+   * a version that cannot.
+   */
+  async removeDecisionModel(serverId: string): Promise<void> {
+    const runner = this.runners.get(serverId);
+    if (!runner) throw new Error('This computer does not run managed agents for this server.');
+    await runner.supervisor.removeDecisionModel(REMOVE_DECISION_MODEL_TIMEOUT_MS);
+    this.deps.log.info('Removed the downloaded decision model from this computer', { serverId });
   }
 
   /**
@@ -508,6 +559,7 @@ export class EmbeddedControllerService {
         ...this.deps.env(),
         ELECTRON_RUN_AS_NODE: '1',
         SWITCH_CONTROLLER_LOG_LEVEL: 'info',
+        [DECISION_MODEL_ENV]: (await this.deps.decisionModel.enabled()) ? 'on' : 'off',
       },
       credential,
     };

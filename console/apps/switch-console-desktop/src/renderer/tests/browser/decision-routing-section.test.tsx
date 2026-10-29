@@ -32,10 +32,11 @@ const SERVER_DEFAULT: DecisionSettings = {
     threshold: null,
     available: true,
     reason: null,
+    machine: null,
   },
   workspace: null,
   serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
-  options: { haikuAnthropic: true, haikuBedrock: false },
+  options: { haikuAnthropic: true, haikuBedrock: false, machines: null },
 };
 
 const OWN_HAIKU: DecisionSettings = {
@@ -47,6 +48,7 @@ const OWN_HAIKU: DecisionSettings = {
     threshold: 0.4,
     available: true,
     reason: null,
+    machine: null,
   },
   workspace: {
     backend: 'haiku_anthropic',
@@ -56,6 +58,8 @@ const OWN_HAIKU: DecisionSettings = {
     apiKeyLast4: 'AwcA',
     apiKeyUnreadable: false,
     updatedAt: '2026-10-27T10:00:00Z',
+    machineId: null,
+    model: null,
   },
 };
 
@@ -68,9 +72,10 @@ const NO_SERVICE: DecisionSettings = {
     available: false,
     reason:
       'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.',
+    machine: null,
   },
   serverDefault: { configured: false, endpoint: null, hasApiKey: false },
-  options: { haikuAnthropic: false, haikuBedrock: false },
+  options: { haikuAnthropic: false, haikuBedrock: false, machines: null },
 };
 
 let container: HTMLDivElement | null = null;
@@ -205,6 +210,7 @@ it('saves a self-hosted endpoint, then shows what the server stored', async () =
       threshold: 0.5,
       available: true,
       reason: null,
+      machine: null,
     },
     workspace: {
       backend: 'endpoint',
@@ -214,6 +220,8 @@ it('saves a self-hosted endpoint, then shows what the server stored', async () =
       apiKeyLast4: null,
       apiKeyUnreadable: false,
       updatedAt: '2026-10-27T10:00:00Z',
+      machineId: null,
+      model: null,
     },
   };
   switchServers.updateDecisionSettings.mockResolvedValue({ kind: 'saved', settings: stored });

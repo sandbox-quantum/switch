@@ -77,6 +77,10 @@ import {
   type ChatClaim,
   type ConnectedChat,
   type DecisionBackend,
+  type DecisionEffectiveMachine,
+  type DecisionMachineOption,
+  type DecisionMachineState,
+  type DecisionOfferedModel,
   type DecisionSettings,
   type DecisionSettingsInput,
   type DecisionTestInput,
@@ -537,6 +541,45 @@ export async function clearTrustSettings(server: SwitchServer): Promise<TrustSet
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
+type DecisionOfferedModelJson = {
+  model: string;
+  label?: string | null;
+  kind?: string | null;
+  runtime?: string | null;
+  download_bytes?: number | null;
+  speed?: 'fast' | 'slow' | null;
+};
+
+type DecisionMachineJson = {
+  id: string;
+  name: string;
+  model: string;
+  state: DecisionMachineState;
+  progress?: { done_bytes: number; total_bytes: number } | null;
+  ready: boolean;
+  reason?: string | null;
+  last_decision_ms?: number | null;
+  connected?: boolean | null;
+  since?: string | null;
+};
+
+type DecisionMachineOptionJson = {
+  id: string;
+  name: string;
+  connected: boolean;
+  decision?: {
+    supported: boolean;
+    hardware?: {
+      accelerator: string;
+      memory_bytes?: number | null;
+      gpu_name?: string | null;
+      vram_bytes?: number | null;
+    } | null;
+    offered?: DecisionOfferedModelJson[] | null;
+    reason?: string | null;
+  } | null;
+};
+
 type DecisionSettingsJson = {
   source: 'workspace' | 'server_default';
   effective: {
@@ -545,6 +588,8 @@ type DecisionSettingsJson = {
     threshold: number | null;
     available: boolean;
     reason: string | null;
+    /** Absent from a server that predates running decisions on machines. */
+    machine?: DecisionMachineJson | null;
   };
   workspace: {
     backend: DecisionBackend;
@@ -554,10 +599,68 @@ type DecisionSettingsJson = {
     api_key_last4: string | null;
     api_key_unreadable: boolean;
     updated_at: string;
+    machine_id?: string | null;
+    model?: string | null;
   } | null;
   server_default: { configured: boolean; endpoint: string | null; has_api_key: boolean };
-  options: { haiku_anthropic: boolean; haiku_bedrock: boolean };
+  options: {
+    haiku_anthropic: boolean;
+    haiku_bedrock: boolean;
+    machines?: DecisionMachineOptionJson[] | null;
+  };
 };
+
+function mapOfferedModel(json: DecisionOfferedModelJson): DecisionOfferedModel {
+  return {
+    model: json.model,
+    label: json.label ?? json.model,
+    kind: json.kind ?? 'llamacpp',
+    runtime: json.runtime ?? '',
+    downloadBytes: json.download_bytes ?? 0,
+    speed: json.speed ?? 'fast',
+  };
+}
+
+function mapDecisionMachine(json: DecisionMachineJson): DecisionEffectiveMachine {
+  return {
+    id: json.id,
+    name: json.name,
+    model: json.model,
+    state: json.state,
+    progress: json.progress
+      ? { doneBytes: json.progress.done_bytes, totalBytes: json.progress.total_bytes }
+      : null,
+    ready: json.ready,
+    reason: json.reason ?? null,
+    lastDecisionMs: json.last_decision_ms ?? null,
+    connected: json.connected ?? null,
+    since: json.since ?? null,
+  };
+}
+
+/** A machine with no `decision` block is one whose controller predates it. */
+function mapMachineOption(json: DecisionMachineOptionJson): DecisionMachineOption {
+  const decision = json.decision;
+  const hardware = decision?.hardware;
+  return {
+    id: json.id,
+    name: json.name,
+    connected: json.connected,
+    decision: {
+      supported: decision?.supported ?? false,
+      hardware: hardware
+        ? {
+            accelerator: hardware.accelerator,
+            memoryBytes: hardware.memory_bytes ?? null,
+            gpuName: hardware.gpu_name ?? null,
+            vramBytes: hardware.vram_bytes ?? null,
+          }
+        : null,
+      offered: (decision?.offered ?? []).map(mapOfferedModel),
+      reason: decision ? (decision.reason ?? null) : 'Update this machine’s controller',
+    },
+  };
+}
 
 function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
   const { workspace } = json;
@@ -569,6 +672,7 @@ function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
       threshold: json.effective.threshold,
       available: json.effective.available,
       reason: json.effective.reason,
+      machine: json.effective.machine ? mapDecisionMachine(json.effective.machine) : null,
     },
     workspace:
       workspace === null
@@ -581,6 +685,8 @@ function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
             apiKeyLast4: workspace.api_key_last4,
             apiKeyUnreadable: workspace.api_key_unreadable,
             updatedAt: workspace.updated_at,
+            machineId: workspace.machine_id ?? null,
+            model: workspace.model ?? null,
           },
     serverDefault: {
       configured: json.server_default.configured,
@@ -590,6 +696,7 @@ function mapDecisionSettings(json: DecisionSettingsJson): DecisionSettings {
     options: {
       haikuAnthropic: json.options.haiku_anthropic,
       haikuBedrock: json.options.haiku_bedrock,
+      machines: json.options.machines ? json.options.machines.map(mapMachineOption) : null,
     },
   };
 }
@@ -604,6 +711,8 @@ function decisionSettingsBody(input: DecisionTestInput): Record<string, unknown>
     ...(input.apiKey !== undefined ? { api_key: input.apiKey } : {}),
     ...(input.clearApiKey !== undefined ? { clear_api_key: input.clearApiKey } : {}),
     ...(input.threshold !== undefined ? { threshold: input.threshold } : {}),
+    ...(input.machineId !== undefined ? { machine_id: input.machineId } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
   };
 }
 

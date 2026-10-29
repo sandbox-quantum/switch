@@ -7,7 +7,15 @@ import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { RadioGroup, RadioGroupItem } from '@renderer/lib/ui/radio-group';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { cn } from '@renderer/utils/utils';
 import type {
   ClearDecisionSettingsResult,
   DecisionSettings,
@@ -24,11 +32,20 @@ import {
   formProblem,
   haikuNote,
   inputFor,
+  MACHINE_POLL_MS,
+  machineOption,
+  machineOptionNote,
+  machineSettling,
+  machineStateLine,
+  type MachineStateTone,
+  modelLabel,
   offeredChoices,
+  offeredModelText,
   serverDefaultText,
   storedKeyText,
   testInputFor,
   testOutcomeText,
+  withMachine,
 } from './decision-routing';
 
 /** The recoverable failure kinds every decision settings call can produce,
@@ -53,6 +70,15 @@ const CHOICE_HINTS: Record<DecisionChoice, string> = {
   haiku_anthropic:
     'The most accurate picks, at about 1.5 s each. Room messages are sent to Anthropic.',
   haiku_bedrock: 'Haiku through Amazon Bedrock, on this server’s AWS account. No key needed.',
+  machine:
+    'A computer of yours runs the model. Room messages reach it over its own connection to Switch, and are not kept there.',
+};
+
+const TONE_TEXT: Record<MachineStateTone, string> = {
+  ok: 'text-foreground-success',
+  busy: 'text-foreground',
+  problem: 'text-destructive',
+  idle: 'text-foreground-muted',
 };
 
 type TestState =
@@ -103,6 +129,27 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
       cancelled = true;
     };
   }, [workspaceId]);
+
+  // While the chosen machine downloads and starts its model (or is offline),
+  // ask again every few seconds, so the state line follows it. Only the
+  // settings are replaced: whatever is being edited in the form stays.
+  const settling = settings !== null && machineSettling(settings);
+  useEffect(() => {
+    if (!settling) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      rpc.switchServers.getDecisionSettings(workspaceId).then(
+        (result) => {
+          if (!cancelled && result.kind === 'loaded') setSettings(result.settings);
+        },
+        () => {}
+      );
+    }, MACHINE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [settling, settings, workspaceId]);
 
   if (loadError !== null) {
     return (
@@ -185,6 +232,7 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2" aria-label="Setting that applies">
         <p className="text-sm text-foreground">{appliesText(settings)}</p>
+        <MachineState settings={settings} />
         {!settings.effective.available && settings.effective.reason && (
           <Alert variant="warning">
             <AlertDescription>{settings.effective.reason}</AlertDescription>
@@ -216,6 +264,8 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
         </RadioGroup>
         {note !== null && <p className="text-xs text-foreground-muted">{note}</p>}
       </fieldset>
+
+      {form.choice === 'machine' && <MachinePicker settings={settings} form={form} edit={edit} />}
 
       {(fields.endpoint || fields.key || fields.threshold) && (
         <FieldGroup>
@@ -338,5 +388,131 @@ function TestResult({ state }: { state: TestState }) {
     >
       {failed ? `Test failed — ${text}` : text}
     </p>
+  );
+}
+
+/**
+ * Where the chosen machine's decision model stands, while the workspace runs
+ * auto-route on one of its admin's machines.
+ */
+function MachineState({ settings }: { settings: DecisionSettings }) {
+  const machine = settings.effective.machine;
+  if (settings.effective.backend !== 'machine' || machine === null) return null;
+  const line = machineStateLine(machine, machineOption(settings, machine.id));
+  return (
+    <p role="status" aria-label="Machine state" className="text-sm text-foreground">
+      <span className="text-foreground-muted">Decision model on {machine.name}: </span>
+      <span className={TONE_TEXT[line.tone]}>{line.text}</span>
+    </p>
+  );
+}
+
+/**
+ * The admin's own machines in this workspace, and the models the one picked
+ * offers. A machine that can't run the model is listed but can't be picked,
+ * with the reason; one that isn't connected now is flagged, and can still be
+ * picked: it starts when it next connects.
+ */
+function MachinePicker({
+  settings,
+  form,
+  edit,
+}: {
+  settings: DecisionSettings;
+  form: DecisionForm;
+  edit: (changes: Partial<DecisionForm>) => void;
+}) {
+  const machines = settings.options.machines ?? [];
+  const picked = machineOption(settings, form.machineId);
+  if (machines.length === 0) {
+    return (
+      <p className="text-sm text-foreground-muted" aria-label="Machine">
+        None of your machines is enrolled in this workspace. Turn on “Run managed agents on this
+        computer”, or enroll an agent controller, then come back here.
+      </p>
+    );
+  }
+  const offered = picked?.decision.supported ? picked.decision.offered : [];
+  return (
+    <FieldGroup>
+      <fieldset className="flex flex-col gap-2">
+        <legend className="mb-2 text-sm font-medium text-foreground">Machine</legend>
+        <RadioGroup
+          value={form.machineId}
+          onValueChange={(value) => {
+            const option = machineOption(settings, value as string);
+            if (option) {
+              const next = withMachine(form, option);
+              edit({ machineId: next.machineId, model: next.model });
+            }
+          }}
+          className="gap-2.5"
+          aria-label="Machine"
+        >
+          {machines.map((machine) => (
+            <label
+              key={machine.id}
+              className={cn(
+                'flex items-start gap-2.5 text-sm',
+                !machine.decision.supported && 'cursor-not-allowed'
+              )}
+              data-machine={machine.id}
+            >
+              <RadioGroupItem
+                value={machine.id}
+                className="mt-0.5"
+                disabled={!machine.decision.supported}
+              />
+              <span className="flex flex-col">
+                <span
+                  className={
+                    machine.decision.supported ? 'text-foreground' : 'text-foreground-muted'
+                  }
+                >
+                  {machine.name}
+                </span>
+                <span
+                  className={cn(
+                    'text-xs',
+                    !machine.decision.supported || !machine.connected
+                      ? 'text-foreground-warning'
+                      : 'text-foreground-muted'
+                  )}
+                >
+                  {machineOptionNote(machine)}
+                </span>
+              </span>
+            </label>
+          ))}
+        </RadioGroup>
+      </fieldset>
+      {picked !== null && offered.length > 0 && (
+        <Field>
+          <FieldLabel>Model</FieldLabel>
+          <Select
+            value={form.model}
+            onValueChange={(next) => {
+              if (typeof next === 'string') edit({ model: next });
+            }}
+          >
+            <SelectTrigger aria-label="Model" className="w-80">
+              <SelectValue>
+                {form.model ? modelLabel(form.model, picked) : 'Choose a model'}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {offered.map((offer) => (
+                <SelectItem key={offer.model} value={offer.model}>
+                  {offeredModelText(offer)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <FieldDescription className="text-xs">
+            The machine downloads it once, checks it, and runs it for this workspace only.
+          </FieldDescription>
+        </Field>
+      )}
+    </FieldGroup>
   );
 }

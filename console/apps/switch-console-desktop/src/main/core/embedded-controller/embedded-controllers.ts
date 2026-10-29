@@ -22,6 +22,7 @@ import {
   wipeControllerIdentity,
 } from './controller-files';
 import { DEFAULT_BACKOFF } from './controller-supervisor';
+import { DecisionModelPreferenceFile } from './decision-model';
 import { EmbeddedControllerService } from './embedded-controller-service';
 import { gatewayManagementPort } from './management-port';
 import { ProviderPrecheck } from './provider-precheck';
@@ -153,4 +154,5 @@ export const embeddedControllerService = new EmbeddedControllerService({
     return names;
   },
   providerSeed: () => providerPrecheck.seedFile(),
+  decisionModel: new DecisionModelPreferenceFile(() => join(base(), 'decision-model.json')),
 });

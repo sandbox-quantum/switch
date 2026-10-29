@@ -83,6 +83,7 @@ const SETTINGS = {
     threshold: 0.4,
     available: true,
     reason: null,
+    machine: null,
   },
   workspace: {
     backend: 'haiku_anthropic',
@@ -92,9 +93,11 @@ const SETTINGS = {
     apiKeyLast4: 'AwcA',
     apiKeyUnreadable: false,
     updatedAt: '2026-10-27T10:00:00Z',
+    machineId: null,
+    model: null,
   },
   serverDefault: { configured: true, endpoint: 'http://decision:8230', hasApiKey: false },
-  options: { haikuAnthropic: true, haikuBedrock: false },
+  options: { haikuAnthropic: true, haikuBedrock: false, machines: null },
 };
 
 const DEFAULT_JSON = {
@@ -150,6 +153,144 @@ describe('fetchDecisionSettingsFromServer', () => {
       kind: 'loaded',
       settings: { source: 'server_default', workspace: null },
     });
+  });
+
+  it('reads a machine choice: the machine’s state, and the admin’s machines with their offer', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        ...SETTINGS_JSON,
+        effective: {
+          backend: 'machine',
+          endpoint: null,
+          threshold: null,
+          available: false,
+          reason: 'The decision model on Mac-Studio is getting ready (1.2 / 2.7 GB).',
+          machine: {
+            id: 'ctl-mac',
+            name: 'Mac-Studio',
+            model: 'qwen3.5-4b-q4_k_m',
+            state: 'downloading',
+            progress: { done_bytes: 1_200_000_000, total_bytes: 2_700_000_000 },
+            ready: false,
+          },
+        },
+        workspace: {
+          ...SETTINGS_JSON.workspace,
+          backend: 'machine',
+          machine_id: 'ctl-mac',
+          model: 'qwen3.5-4b-q4_k_m',
+        },
+        options: {
+          haiku_anthropic: true,
+          haiku_bedrock: false,
+          machines: [
+            {
+              id: 'ctl-mac',
+              name: 'Mac-Studio',
+              connected: true,
+              decision: {
+                supported: true,
+                hardware: { accelerator: 'apple_silicon', memory_bytes: 64_000_000_000 },
+                offered: [
+                  {
+                    model: 'qwen3.5-4b-q4_k_m',
+                    label: 'Qwen3.5-4B',
+                    kind: 'llamacpp',
+                    runtime: 'llamacpp-metal',
+                    download_bytes: 2_700_000_000,
+                    speed: 'fast',
+                  },
+                ],
+              },
+            },
+            {
+              id: 'ctl-old',
+              name: 'old-box',
+              connected: false,
+              decision: { supported: false, reason: 'Update this machine’s controller' },
+            },
+            { id: 'ctl-older', name: 'older-box', connected: true },
+          ],
+        },
+      })
+    );
+
+    const result = await fetchDecisionSettingsFromServer(SERVER);
+    if (result.kind !== 'loaded') throw new Error(result.kind);
+    expect(result.settings.effective.machine).toEqual({
+      id: 'ctl-mac',
+      name: 'Mac-Studio',
+      model: 'qwen3.5-4b-q4_k_m',
+      state: 'downloading',
+      progress: { doneBytes: 1_200_000_000, totalBytes: 2_700_000_000 },
+      ready: false,
+      reason: null,
+      lastDecisionMs: null,
+      connected: null,
+      since: null,
+    });
+    expect(result.settings.workspace).toMatchObject({
+      backend: 'machine',
+      machineId: 'ctl-mac',
+      model: 'qwen3.5-4b-q4_k_m',
+    });
+    expect(result.settings.options.machines).toEqual([
+      {
+        id: 'ctl-mac',
+        name: 'Mac-Studio',
+        connected: true,
+        decision: {
+          supported: true,
+          hardware: {
+            accelerator: 'apple_silicon',
+            memoryBytes: 64_000_000_000,
+            gpuName: null,
+            vramBytes: null,
+          },
+          offered: [
+            {
+              model: 'qwen3.5-4b-q4_k_m',
+              label: 'Qwen3.5-4B',
+              kind: 'llamacpp',
+              runtime: 'llamacpp-metal',
+              downloadBytes: 2_700_000_000,
+              speed: 'fast',
+            },
+          ],
+          reason: null,
+        },
+      },
+      {
+        id: 'ctl-old',
+        name: 'old-box',
+        connected: false,
+        decision: {
+          supported: false,
+          hardware: null,
+          offered: [],
+          reason: 'Update this machine’s controller',
+        },
+      },
+      {
+        id: 'ctl-older',
+        name: 'older-box',
+        connected: true,
+        decision: {
+          supported: false,
+          hardware: null,
+          offered: [],
+          reason: 'Update this machine’s controller',
+        },
+      },
+    ]);
+  });
+
+  it('reads a server that predates machines as offering none', async () => {
+    fetchMock.mockResolvedValue(response(200, SETTINGS_JSON));
+    const result = await fetchDecisionSettingsFromServer(SERVER);
+    if (result.kind !== 'loaded') throw new Error(result.kind);
+    expect(result.settings.options.machines).toBeNull();
+    expect(result.settings.effective.machine).toBeNull();
   });
 
   it('maps a rejected session onto unauthenticated so the caller prompts a sign-in', async () => {
@@ -228,6 +369,36 @@ describe('updateDecisionSettingsOnServer', () => {
       api_key: 'sk-ant-placeholder',
     });
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ clear_api_key: true });
+  });
+
+  it('PUTs a machine choice as the machine and model only', async () => {
+    fetchMock.mockResolvedValue(response(200, SETTINGS_JSON));
+
+    await updateDecisionSettingsOnServer(SERVER, {
+      backend: 'machine',
+      machineId: 'ctl-mac',
+      model: 'qwen3.5-4b-q4_k_m',
+    });
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      backend: 'machine',
+      machine_id: 'ctl-mac',
+      model: 'qwen3.5-4b-q4_k_m',
+    });
+  });
+
+  it('reports a machine the server refuses as invalid, with its reason', async () => {
+    fetchMock.mockResolvedValue(
+      response(422, { detail: 'You can only choose a machine you own.' })
+    );
+
+    await expect(
+      updateDecisionSettingsOnServer(SERVER, {
+        backend: 'machine',
+        machineId: 'ctl-someone-else',
+        model: 'qwen3.5-4b-q4_k_m',
+      })
+    ).resolves.toEqual({ kind: 'invalid', message: 'You can only choose a machine you own.' });
   });
 
   it('reports a refused value as invalid, with the gateway’s own sentence', async () => {
@@ -375,6 +546,35 @@ describe('testDecisionSettingsOnServer', () => {
       backend: 'endpoint',
       endpoint: 'https://decide.example',
       threshold: 0.5,
+    });
+  });
+
+  it('tests a machine choice, and returns a machine that isn’t ready as a failed decision', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        ok: false,
+        agent: null,
+        model_choice: null,
+        confidence: null,
+        latency_ms: null,
+        backend: 'machine',
+        error: { code: 'machine_not_ready', message: 'Mac-Studio is still downloading the model.' },
+      })
+    );
+
+    const result = await testDecisionSettingsOnServer(SERVER, {
+      backend: 'machine',
+      machineId: 'ctl-mac',
+      model: 'qwen3.5-4b-q4_k_m',
+    });
+    expect(result).toMatchObject({
+      kind: 'tested',
+      outcome: { ok: false, error: { code: 'machine_not_ready' } },
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      backend: 'machine',
+      machine_id: 'ctl-mac',
+      model: 'qwen3.5-4b-q4_k_m',
     });
   });
 

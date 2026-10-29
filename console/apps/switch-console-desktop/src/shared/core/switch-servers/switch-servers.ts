@@ -794,10 +794,72 @@ export type ClearTrustSettingsResult =
 
 /**
  * Who decides an untagged message in a workspace's auto-route rooms: nobody
- * (`none`), a self-hosted decision endpoint, or Haiku run inside the server's
- * decision service, through the Anthropic API or Amazon Bedrock.
+ * (`none`), a self-hosted decision endpoint, Haiku run inside the server's
+ * decision service, through the Anthropic API or Amazon Bedrock, or a model
+ * run on one of the workspace admin's own machines (`machine`).
  */
-export type DecisionBackend = 'none' | 'endpoint' | 'haiku_anthropic' | 'haiku_bedrock';
+export type DecisionBackend = 'none' | 'endpoint' | 'haiku_anthropic' | 'haiku_bedrock' | 'machine';
+
+/** Where a machine's decision model stands, as the machine last reported it. */
+export type DecisionMachineState = 'off' | 'downloading' | 'starting' | 'running' | 'failed';
+
+/** A decision model a machine can run, from its own catalogue. */
+export type DecisionOfferedModel = {
+  /** The catalogue id, saved as the workspace's `model` (`qwen3.5-4b-q4_k_m`). */
+  model: string;
+  /** Its name for people ("Qwen3.5-4B"). */
+  label: string;
+  kind: string;
+  /** How it runs there (`llamacpp-metal`, `llamacpp-cpu`, `llamacpp-cuda`). */
+  runtime: string;
+  downloadBytes: number;
+  /** Fast enough for auto-route's one-second budget there, or not. */
+  speed: 'fast' | 'slow';
+};
+
+/** What a machine says about its hardware, for the decision model. */
+export type DecisionHardware = {
+  accelerator: 'apple_silicon' | 'nvidia' | 'cpu' | string;
+  memoryBytes: number | null;
+  gpuName: string | null;
+  vramBytes: number | null;
+};
+
+/**
+ * One of the signed-in admin's own machines enrolled in the workspace, as the
+ * machine picker offers it. A machine that can't run a decision model is
+ * still listed, with `supported` false and the reason.
+ */
+export type DecisionMachineOption = {
+  id: string;
+  name: string;
+  connected: boolean;
+  decision: {
+    supported: boolean;
+    hardware: DecisionHardware | null;
+    offered: DecisionOfferedModel[];
+    /** Why it can't run one ("Update this machine's controller"); null when it can. */
+    reason: string | null;
+  };
+};
+
+/** The machine the workspace's decisions run on, and where its model stands. */
+export type DecisionEffectiveMachine = {
+  id: string;
+  name: string;
+  model: string;
+  state: DecisionMachineState;
+  progress: { doneBytes: number; totalBytes: number } | null;
+  /** It has reported running at least once since it was chosen. */
+  ready: boolean;
+  /** The machine's reason code (`not_enough_disk`, `turned_off_on_machine`, …), or null. */
+  reason: string | null;
+  lastDecisionMs: number | null;
+  /** Whether its controller is connected now; null from a server that doesn't say. */
+  connected: boolean | null;
+  /** When it entered its state (or went offline); null when not said. */
+  since: string | null;
+};
 
 /**
  * A workspace's decision routing settings (`GET /decision-settings`), read for
@@ -817,6 +879,8 @@ export type DecisionSettings = {
     available: boolean;
     /** Why auto-route is unavailable, in the server's words; null when it is available. */
     reason: string | null;
+    /** The chosen machine and its model's state, when the backend is `machine`. */
+    machine: DecisionEffectiveMachine | null;
   };
   /** Null while the workspace uses the server default. */
   workspace: {
@@ -827,11 +891,20 @@ export type DecisionSettings = {
     apiKeyLast4: string | null;
     apiKeyUnreadable: boolean;
     updatedAt: string;
+    /** The chosen machine and model, for the `machine` backend. */
+    machineId: string | null;
+    model: string | null;
   } | null;
   serverDefault: { configured: boolean; endpoint: string | null; hasApiKey: boolean };
   /** Which Haiku backends the server can run: both need its decision service,
-   * and Bedrock also its operator's say-so. */
-  options: { haikuAnthropic: boolean; haikuBedrock: boolean };
+   * and Bedrock also its operator's say-so. `machines` lists the signed-in
+   * admin's own machines in this workspace, and is null from a server that
+   * can't run decisions on machines. */
+  options: {
+    haikuAnthropic: boolean;
+    haikuBedrock: boolean;
+    machines: DecisionMachineOption[] | null;
+  };
 };
 
 /**
@@ -846,6 +919,9 @@ export type DecisionSettingsInput = {
   apiKey?: string;
   clearApiKey?: boolean;
   threshold?: number | null;
+  /** The machine and the model it offers, for the `machine` backend. */
+  machineId?: string;
+  model?: string;
 };
 
 /** Outcome of loading a workspace's decision settings. Its admins only, so a
@@ -891,7 +967,10 @@ export type DecisionTestErrorCode =
   | 'key_refused'
   | 'bad_answer'
   | 'backend_unavailable'
-  | 'not_configured';
+  | 'not_configured'
+  | 'refused'
+  | 'machine_not_ready'
+  | 'machine_offline';
 
 /** One sample decision run against unsaved values: the pick (null for none),
  * its confidence and latency, or why it failed. */

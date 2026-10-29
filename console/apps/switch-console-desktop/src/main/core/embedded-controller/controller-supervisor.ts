@@ -8,6 +8,12 @@ import {
   STOP_MESSAGE,
 } from '@switch-console/agent-providers';
 import type { EmbeddedControllerPhase } from '@shared/core/embedded-controller/embedded-controller';
+import {
+  DECISION_MODEL_REMOVE_KIND,
+  DECISION_MODEL_UNSUPPORTED,
+  type DecisionModelRemoveRequest,
+  isDecisionModelRemoveReply,
+} from './decision-model';
 
 /** The controller's exit codes (see the agent-controller README). */
 export const EXIT_CONFIGURATION = 2;
@@ -155,10 +161,41 @@ export class ControllerSupervisor {
    * not check or report.
    */
   recheckProviders(timeoutMs: number): Promise<void> {
+    const request: ProviderRecheckRequest = { kind: PROVIDER_RECHECK_KIND, id: randomUUID() };
+    return this.ask(request, isProviderRecheckReply, timeoutMs, () =>
+      Promise.reject(new Error('The agent controller on this computer did not answer in time.'))
+    );
+  }
+
+  /**
+   * Asks the running controller to delete the decision model it downloaded,
+   * and resolves once it has. A controller that predates the request ignores
+   * it, so one that stays silent for `timeoutMs` is taken not to support it.
+   */
+  removeDecisionModel(timeoutMs: number): Promise<void> {
+    const request: DecisionModelRemoveRequest = {
+      kind: DECISION_MODEL_REMOVE_KIND,
+      id: randomUUID(),
+    };
+    return this.ask(request, isDecisionModelRemoveReply, timeoutMs, () =>
+      Promise.reject(new Error(DECISION_MODEL_UNSUPPORTED))
+    );
+  }
+
+  /**
+   * One request over the controller's IPC channel and the reply with its
+   * `id`: resolved when the reply carries no error, rejected with the error
+   * it carries, and with `onTimeout`'s when none comes in time.
+   */
+  private ask(
+    request: { kind: string; id: string },
+    isReply: (message: unknown) => message is { id: string; error: string | null },
+    timeoutMs: number,
+    onTimeout: () => Promise<void>
+  ): Promise<void> {
     const child = this.child;
     if (!child || !child.connected)
       return Promise.reject(new Error('The agent controller on this computer is not running.'));
-    const id = randomUUID();
     return new Promise<void>((resolve, reject) => {
       const done = () => {
         clearTimeout(timer);
@@ -166,16 +203,15 @@ export class ControllerSupervisor {
       };
       const timer = setTimeout(() => {
         done();
-        reject(new Error('The agent controller on this computer did not answer in time.'));
+        onTimeout().then(resolve, reject);
       }, timeoutMs);
       const onMessage = (message: unknown) => {
-        if (!isProviderRecheckReply(message) || message.id !== id) return;
+        if (!isReply(message) || message.id !== request.id) return;
         done();
         if (message.error === null) resolve();
         else reject(new Error(message.error));
       };
       child.on('message', onMessage);
-      const request: ProviderRecheckRequest = { kind: PROVIDER_RECHECK_KIND, id };
       if (!child.send(request)) {
         done();
         reject(new Error('Could not reach the agent controller on this computer.'));
