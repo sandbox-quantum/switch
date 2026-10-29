@@ -118,9 +118,12 @@ next token requests:
 - add it to `DISABLED_SERVICES`, e.g.
   `DISABLED_SERVICES='{"box": "Paused while we review access."}'`;
 - remove its client under Connector apps;
-- unset `BOX_CLIENT_CONFIG_PATH`, where it is set from configuration;
-- disable the Box MCP server, or delete the Integration Credentials, in the
-  Box Admin Console.
+- unset `BOX_CLIENT_CONFIG_PATH`, where it is set from configuration.
+
+Disabling the Box MCP server, or deleting the Integration Credentials, in the
+Box Admin Console stops Box itself from accepting sign-ins and calls, but
+Switch still lists Box as available and may hand out a token it already
+holds, which Box then refuses. Use one of the above to stop Switch too.
 
 ## Limits worth knowing
 

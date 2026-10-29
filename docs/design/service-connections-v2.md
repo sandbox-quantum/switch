@@ -570,9 +570,10 @@ sign-in run against a free Box developer account; the operator's setup is in
   connection reaches what its owner can open, not one folder. Not asked for:
   `ai.readwrite`, whose Box AI tools spend the enterprise's AI units, and
   `docgen.readwrite`, which needs an Enterprise Advanced licence; tools pass
-  through unclassified, and Box refuses those (documented). The server listed
-  36 tools, Box AI's among them and no Doc Gen tool, and none that deletes a
-  file or folder. The tools a Box admin must turn on (moves, renames,
+  through unclassified, and Box documents those tools as needing those
+  scopes (they were not called in the run). The server listed 36 tools, Box
+  AI's among them and no Doc Gen tool, and none that deletes a file or
+  folder. The tools a Box admin must turn on (moves, renames, setting
   metadata, shared links, collaborations, new versions, upload and download
   links) are not listed until they are.
 - Box documents hour-long access tokens, but they live 60 to 70 minutes:
@@ -598,7 +599,8 @@ sign-in run against a free Box developer account; the operator's setup is in
 
 To connect: Settings, Connections in Switch Console, then Box. To roll back,
 add `box` to `DISABLED_SERVICES`, remove its client under Connector apps or
-unset `BOX_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+unset `BOX_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false` and
+remove its `skill/`, which the loader refuses on a placeholder.
 
 ## Google Workspace
 
