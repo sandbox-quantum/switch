@@ -607,6 +607,10 @@ version of their own to them without also giving them a release of their own.
   `GET /connector-apps` no longer returns `registered`, which no client read.
   Starting a GitHub sign-in with a state already used answers 409, as every
   other service's sign-in does, rather than 503.
+- **The dashboard's "Make owner-only" sets the owner alone,** as Switch
+  Console does, rather than the owner and the owner's agents, and its warning
+  reads as Console's. Its note on a token that lives longer than an hour no
+  longer says disconnecting ends it, which Atlassian's does not.
 - **Delivering an event to an agent behind a controller no longer reads the
   agent's head first.** The notification of a new agent event already carries
   its number, and the controller's stream now keeps it as the agent's head, so
