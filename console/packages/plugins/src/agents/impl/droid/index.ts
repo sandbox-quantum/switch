@@ -77,4 +77,3 @@ export const provider = registerPluginBehavior(plugin, {
     },
   },
 });
-

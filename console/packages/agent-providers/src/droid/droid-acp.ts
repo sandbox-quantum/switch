@@ -100,4 +100,3 @@ export const droidAcp: AcpProviderHooks = {
 export function createDroidAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
   return createAcpAdapter(droidAcp, options);
 }
-

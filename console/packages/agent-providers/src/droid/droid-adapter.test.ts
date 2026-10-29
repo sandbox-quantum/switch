@@ -86,7 +86,7 @@ async function setup(
     resume?: boolean;
     runtimeMode?: 'approval-required' | 'full-access' | 'auto-accept-edits' | 'auto';
     env?: Record<string, string>;
-    model?: { modelId: string };
+    model?: { id: string };
   } = {}
 ) {
   const adapter = createDroidAdapter();
@@ -170,7 +170,9 @@ describe('Factory Droid ACP Provider', () => {
     });
 
     it('reports unauthenticated when handshake throws an authentication error', async () => {
-      const handshake = vi.fn().mockRejectedValue(new Error('authentication required: not logged in'));
+      const handshake = vi
+        .fn()
+        .mockRejectedValue(new Error('authentication required: not logged in'));
       const res = await droidAcp.checkSignIn!({
         binaryPath: 'droid',
         cwd: '/work',
@@ -196,20 +198,24 @@ describe('Factory Droid ACP Provider', () => {
     it('parses auth state correctly in parseDroidAuth helper', () => {
       expect(parseDroidAuth({ FACTORY_API_KEY: 'key' }, {}, false).status).toBe('authenticated');
       expect(parseDroidAuth({}, { authMethods: [] }, false).status).toBe('authenticated');
-      expect(parseDroidAuth({}, { authMethods: [{ id: 'oauth' }] }, true).status).toBe('authenticated');
-      expect(parseDroidAuth({}, { authMethods: [{ id: 'oauth' }] }, false).status).toBe('unauthenticated');
+      expect(parseDroidAuth({}, { authMethods: [{ id: 'oauth' }] }, true).status).toBe(
+        'authenticated'
+      );
+      expect(parseDroidAuth({}, { authMethods: [{ id: 'oauth' }] }, false).status).toBe(
+        'unauthenticated'
+      );
     });
   });
 
   describe('capabilities and model selection', () => {
     it('sets model via session/set_config_option when model config option is advertised', async () => {
       acp.modelsFromConfig = true;
-      const { server } = await setup({ model: { modelId: 'gpt-5' } });
+      const { server } = await setup({ model: { id: 'gpt-5' } });
       expect(
         server.received.some(
           (m) =>
             m.method === 'session/set_config_option' &&
-            m.params?.configOptionId === 'model' &&
+            m.params?.configId === 'model' &&
             m.params?.value === 'gpt-5'
         )
       ).toBe(true);
@@ -217,7 +223,7 @@ describe('Factory Droid ACP Provider', () => {
 
     it('sets model via session/set_model when models list is advertised', async () => {
       acp.modelsFromConfig = false;
-      const { server } = await setup({ model: { modelId: 'claude-3-7-sonnet' } });
+      const { server } = await setup({ model: { id: 'claude-3-7-sonnet' } });
       expect(
         server.received.some(
           (m) => m.method === 'session/set_model' && m.params?.modelId === 'claude-3-7-sonnet'
@@ -266,8 +272,10 @@ describe('Factory Droid ACP Provider', () => {
       });
 
       const deltas = events.filter((e) => e.type === 'content.delta');
-      expect(deltas.some((d) => 'text' in d && d.text.includes('leak from other room'))).toBe(false);
-      expect(deltas.some((d) => 'text' in d && d.text.includes('correct room text'))).toBe(true);
+      expect(deltas.some((d) => 'delta' in d && d.delta.includes('leak from other room'))).toBe(
+        false
+      );
+      expect(deltas.some((d) => 'delta' in d && d.delta.includes('correct room text'))).toBe(true);
     });
   });
 
@@ -442,4 +450,3 @@ describe('Factory Droid ACP Provider', () => {
     });
   });
 });
-
