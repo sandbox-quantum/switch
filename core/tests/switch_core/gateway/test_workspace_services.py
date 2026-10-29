@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
@@ -21,6 +21,7 @@ from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AuditEvent,
+    ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
     TenantMember,
@@ -316,6 +317,34 @@ class TestResults:
             services["atlassian"]["connected_members"],
             services["atlassian"]["granted_agents"],
         ) == (0, 0)
+
+    async def test_a_connection_that_needs_reconnecting_is_not_counted(
+        self, harness: Harness, vendor: FakeVendor
+    ) -> None:
+        """Counted as each member's own Connectors page reads it: one marked
+        for reconnecting, and one made through an app since replaced, reach
+        nothing until reconnected."""
+        admin = await _person(harness.session_factory, "admin", member_role="admin")
+        ada = await add_member(harness.session_factory, "ada")
+        bob = await add_member(harness.session_factory, "bob")
+        cy = await add_member(harness.session_factory, "cy")
+        for person, account in ((ada, "1001"), (bob, "1002"), (cy, "1003")):
+            await connect(harness.session_factory, person.id, account_id=account)
+        async with harness.session_factory() as session:
+            await STORE.mark_needs_reauthorization(
+                session, bob.id, "github", "refresh_refused"
+            )
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == cy.id)
+                .values(oauth_client_id="old-client")
+            )
+            await session.commit()
+        vendor.client_id = "new-client"
+
+        services = _by_slug(await _get(harness, admin))
+
+        assert services["github"]["connected_members"] == 1
 
 
 class TestSwitchingOff:

@@ -1757,11 +1757,20 @@ class TestReplacedClient:
         world = await _world(session_factory, expires_in=60)
         await self._recorded(session_factory, world, "old-client")
         vendor.client_id = "new-client"
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        # Read as needing reconnecting before anything asks for a token.
+        assert connection.status == "active"
+        assert broker.connection_status(connection) == "needs_reauthorization"
 
         refused = await _refused(broker, session_factory, world.agent.id)
 
         assert refused.code == CONNECTOR_REVOKED
-        assert "an app this server no longer uses" in refused.message
+        assert refused.message == (
+            "GitHub was connected through an app this server no longer uses. "
+            "The agent's owner must reconnect GitHub from Connectors in Switch "
+            "Console."
+        )
         assert vendor.refreshes == 0 and vendor.issued == []
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
@@ -1769,6 +1778,52 @@ class TestReplacedClient:
             "needs_reauthorization",
             CLIENT_REPLACED,
         )
+
+    async def test_the_owner_is_told_to_reconnect_it_themselves(
+        self, broker, session_factory, vendor
+    ) -> None:
+        """The owner reading their own connection, as GitHub's repository
+        picker does: once as the replaced client is found, and again once it
+        is recorded."""
+        world = await _world(session_factory, expires_in=60)
+        await self._recorded(session_factory, world, "old-client")
+        vendor.client_id = "new-client"
+
+        for _ in range(2):
+            with pytest.raises(ServiceError) as caught:
+                async with session_factory() as session:
+                    await broker.connection_access_token(
+                        session, world.owner.id, "github"
+                    )
+            assert (caught.value.status_code, caught.value.code) == (
+                409,
+                CONNECTOR_REVOKED,
+            )
+            assert caught.value.message == (
+                "GitHub was connected through an app this server no longer "
+                "uses. Reconnect GitHub from Connectors in Switch Console."
+            )
+        assert vendor.refreshes == 0
+
+    async def test_a_refused_sign_in_tells_the_owner_to_reconnect(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory, expires_in=60)
+        vendor.refresh_error = ReauthorizationRequiredError(
+            "GitHub refused the sign-in."
+        )
+
+        with pytest.raises(ServiceError) as caught:
+            async with session_factory() as session:
+                await broker.connection_access_token(session, world.owner.id, "github")
+
+        assert caught.value.message == (
+            "GitHub refused the sign-in. Reconnect GitHub from Connectors in "
+            "Switch Console."
+        )
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert connection.error_code == "refresh_refused"
 
     async def test_the_same_client_issues_as_before(
         self, broker, session_factory, vendor

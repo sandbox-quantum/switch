@@ -458,7 +458,7 @@ class TestLoopback:
         world = _world(session_factory, tmp_path / "catalog")
         ada = await add_member(session_factory, "ada")
         mint = world.vendor.mint
-        world.vendor.mint = lambda scopes: mint(["read:items"])  # type: ignore[method-assign]
+        world.vendor.mint = lambda scopes, client_id: mint(["read:items"], client_id)  # type: ignore[method-assign]
         async with world.harness.client() as client:
             console = Console(client, ada)
             connected = await _loopback_connect(world, console)

@@ -230,6 +230,31 @@ async def test_browser_handoff_completes_through_console_and_saves_encrypted(
     assert (await client.get(BASE)).json()["status"] == "not_connected"
 
 
+async def test_a_connection_through_a_replaced_app_tells_its_owner_to_reconnect(
+    github_app,
+):
+    client, _, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    assert (await complete(client, flow_id)).status_code == 200
+    async with factory() as session:
+        await session.execute(
+            update(ServiceConnection)
+            .where(ServiceConnection.service == "github")
+            .values(oauth_client_id="old-client")
+        )
+        await session.commit()
+
+    # Once as the replaced app is found, and again once it is recorded.
+    for _ in range(2):
+        response = await client.get(BASE)
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "GitHub was connected through an app this server no longer uses. "
+            "Reconnect GitHub from Connectors in Switch Console."
+        )
+
+
 async def test_callback_rejects_missing_cookie_and_replayed_completion(github_app):
     client, github, _, _ = github_app
     flow_id = await authorize(client)

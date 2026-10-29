@@ -14,6 +14,7 @@ expires, which the answer's warning says.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -53,9 +54,12 @@ async def _counts(session: AsyncSession, column: Any, model: Any) -> dict[str, i
 async def list_workspace_services(
     _: Annotated[User, Depends(require_tenant_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
     """Every catalog service that can be connected, whether the workspace has
-    it on, and who it reaches: what an admin weighs before switching it off."""
+    it on, and who it reaches: what an admin weighs before switching it off.
+    A member counts as connected while their connection works, by the status
+    their own Connectors page shows, not one that needs reconnecting."""
     settings = await STORE.list_settings(session)
     on_by_default = await STORE.on_by_default(session)
     names = {
@@ -66,7 +70,15 @@ async def list_workspace_services(
             )
         )
     }
-    connected = await _counts(session, ServiceConnection.user_id, ServiceConnection)
+    connected = Counter(
+        connection.service
+        for connection in await session.scalars(
+            select(ServiceConnection).where(
+                ServiceConnection.tenant_id == require_tenant_id()
+            )
+        )
+        if broker.connection_status(connection) == "active"
+    )
     granted = await _counts(session, ServiceGrant.agent_id, ServiceGrant)
     services = []
     for entry in CATALOG.values():

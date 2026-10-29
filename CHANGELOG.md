@@ -307,6 +307,21 @@ version of their own to them without also giving them a release of their own.
   has it switched off.** `available` now also needs the workspace's switch to
   be on, and the new `workspace_enabled` says whether it is, so an agent tells
   its owner to ask a workspace admin rather than to connect it.
+- **A connection made through an app the server no longer uses needs
+  reconnecting everywhere it is shown.** Connectors already said so, but its
+  row stays active until something asks for a token, and `get_my_context`
+  and a workspace admin's counts read the row: switch-buddy was told the
+  connection was active, offered to give it to an agent, and failed. Both now
+  read it as Connectors does, and the counts leave out every connection that
+  needs reconnecting. A client Switch registers for itself (Atlassian's),
+  registered again when its redirects or scopes change, now counts as
+  replaced too, where it used to surface later as a refused sign-in.
+- **A refusal to reconnect is worded for who reads it.** Opening your own
+  GitHub repositories, or granting a service, could answer "The agent's owner
+  must reconnect GitHub under Settings, Connections", addressed to someone
+  else and naming a page that does not exist. You are now told to reconnect
+  it from Connectors in Switch Console, and an agent asking for a token is
+  told its owner must.
 
 #### Removed
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are

@@ -31,6 +31,7 @@ from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
     MessagingInstall,
+    ServiceConnection,
     ServiceGrant,
     TenantMember,
     User,
@@ -389,6 +390,29 @@ async def test_a_service_off_in_the_workspace_is_not_available(
     assert (off["available"], off["workspace_enabled"]) == (False, False)
     # The server itself has GitHub set up: only the workspace's switch is off.
     assert (off["unavailable_reason"], off["unavailable_code"]) == (None, None)
+
+
+async def test_a_connection_through_a_replaced_app_needs_reconnecting(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    """As the person's own Connectors page shows it, though the row is
+    active until something asks for a token: an agent told "active" would
+    offer to give it to an agent, and fail."""
+    harness.protocol.service_broker = harness.broker
+    buddy_id, key, ada_id = await _setup(harness)
+    async with harness.session_factory() as session:
+        await connect_github(session, ada_id, TEST_KEYRING)
+        await session.execute(
+            update(ServiceConnection)
+            .where(ServiceConnection.user_id == ada_id)
+            .values(oauth_client_id="old-client")
+        )
+        await session.commit()
+    harness.vendor.client_id = "new-client"
+
+    github = _service(await _context(client, buddy_id, key), "github")
+
+    assert github["connection"] == "needs_reauthorization"
 
 
 class TestGivingAgentsServices:
