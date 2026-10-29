@@ -5,8 +5,10 @@ request it must refuse, and reads which refusal it chose.
 
 - **GitHub App**: `GET /app` with a JWT the private key signs, issued by the
   client id, proves the key and the client id are one App's, and answers its
-  slug; a code exchange with a made-up code then tells a wrong client secret
-  (`incorrect_client_credentials`) from a right one (`bad_verification_code`).
+  slug and its permissions, held against the most the catalog's access
+  levels ask for; a code exchange with a made-up code then tells a wrong
+  client secret (`incorrect_client_credentials`) from a right one
+  (`bad_verification_code`).
 - **OAuth client**: a code exchange at the token endpoint with a made-up
   code and PKCE verifier, the secret sent as a sign-in sends it, to a
   redirect URI the client registers: Core's own callback, or Switch
@@ -18,8 +20,9 @@ request it must refuse, and reads which refusal it chose.
   Airtable says nothing of whether the integration is published) is the
   entry's `unchecked`, said with the result.
 
-What a check cannot prove (an App's permissions, a Google app's user type,
-which APIs are switched on) is left to the vendor's own pages.
+What a check cannot prove (whether each installation of a GitHub App has
+accepted its current permissions, a Google app's user type, which APIs are
+switched on) is left to the vendor's own pages.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from switch_core.connections.adapters.oauth import (
     client_fields,
 )
 from switch_core.connections.app_credentials import AppSpec, AppValues
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import AccessLevel, ConnectionDefinition
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
 GITHUB_APP_URL = "https://api.github.com/app"
@@ -48,6 +51,11 @@ PLACEHOLDER_CODE = "switch-connector-app-check"
 PLACEHOLDER_VERIFIER = "switch-connector-app-check-" + "0" * 32
 
 Field = Literal["client_id", "client_secret", "private_key"]
+
+# A GitHub App permission's levels as `GET /app` names them, least first, and
+# as the App's settings page words the two the catalog asks for.
+GITHUB_LEVELS = ("read", "write", "admin")
+GITHUB_LEVEL_WORDS = {"read": "Read-only", "write": "Read and write"}
 
 
 class VendorUnreachableError(Exception):
@@ -101,7 +109,77 @@ def _body(response: httpx.Response) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
-async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckResult:
+def github_permissions_needed(
+    definition: ConnectionDefinition,
+) -> dict[str, AccessLevel]:
+    """The most each App permission is asked for across the catalog's access
+    levels: what the App must have for every grant to mint a token."""
+    access = definition.access
+    if access is None:
+        raise ValueError(f"{definition.name} lists no access levels.")
+    needed: dict[str, AccessLevel] = {}
+    for level in (access.read, access.write):
+        permissions = {} if level is None else level.permissions or {}
+        for name, wanted in permissions.items():
+            held = needed.get(name)
+            if held is None or _rank(wanted) > _rank(held):
+                needed[name] = wanted
+    return needed
+
+
+def _permission(name: str) -> str:
+    """A permission as the App's settings page names it: `Pull requests`."""
+    return name.replace("_", " ").capitalize()
+
+
+def _rank(level: object) -> int:
+    """Where `level` stands among GitHub's, -1 for none or one unknown."""
+    return GITHUB_LEVELS.index(level) if level in GITHUB_LEVELS else -1
+
+
+def _held(level: object) -> str:
+    if level is None:
+        return "no access"
+    return GITHUB_LEVEL_WORDS.get(str(level), str(level))
+
+
+def _permissions_check(needed: dict[str, AccessLevel], granted: object) -> Check:
+    """Whether the App `GET /app` answered holds every permission `needed`."""
+    has = granted if isinstance(granted, dict) else {}
+    short = [
+        name for name, wanted in needed.items() if _rank(has.get(name)) < _rank(wanted)
+    ]
+    if not short:
+        listed = ", ".join(
+            f"{_permission(name)} ({GITHUB_LEVEL_WORDS[wanted]})"
+            for name, wanted in needed.items()
+        )
+        return Check(
+            "permissions",
+            True,
+            f"The App has the repository permissions agents are granted: {listed}.",
+            None,
+            None,
+        )
+    missing = "; ".join(
+        f"{_permission(name)} needs {GITHUB_LEVEL_WORDS[needed[name]]}, and it has "
+        f"{_held(has.get(name))}"
+        for name in short
+    )
+    return Check(
+        "permissions",
+        False,
+        f"The App lacks repository permissions agents are granted: {missing}. "
+        "Change them in the App's settings, under Permissions & events; every "
+        "account that installed the App is then asked to accept the change.",
+        None,
+        None,
+    )
+
+
+async def check_github_app(
+    http: httpx.AsyncClient, definition: ConnectionDefinition, values: AppValues
+) -> CheckResult:
     try:
         signer = GitHubInstallationCredentials(
             values.client_id, values.secrets["private_key"].encode()
@@ -163,7 +241,10 @@ async def check_github_app(http: httpx.AsyncClient, values: AppValues) -> CheckR
             f"GitHub accepts this private key for the App {slug}.",
             None,
             None,
-        )
+        ),
+        _permissions_check(
+            github_permissions_needed(definition), answer.get("permissions")
+        ),
     ]
     exchanged = await _send(
         http,
@@ -312,5 +393,5 @@ async def check_app(
 ) -> CheckResult:
     """Ask the vendor about `values`. Raises `VendorUnreachableError`."""
     if spec.kind == "github_app":
-        return await check_github_app(http, values)
+        return await check_github_app(http, definition, values)
     return await check_oauth_client(http, definition, values, redirect_uri)

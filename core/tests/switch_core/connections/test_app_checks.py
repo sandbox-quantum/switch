@@ -11,12 +11,14 @@ from switch_core.connections.app_checks import (
     VendorUnreachableError,
     check_github_app,
     check_oauth_client,
+    github_permissions_needed,
 )
 from switch_core.connections.app_credentials import AppValues
 from switch_core.connections.loader import CATALOG
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
 GOOGLE = CATALOG["google-workspace"].definition
+GITHUB = CATALOG["github"].definition
 
 
 def _http(status: int, body: object) -> httpx.AsyncClient:
@@ -102,21 +104,44 @@ def _github(app: tuple[int, object], exchange: object) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handle))
 
 
+def _app(permissions: dict[str, str]) -> tuple[int, object]:
+    return (
+        200,
+        {
+            "slug": "example-app",
+            "client_id": "example-client-id",
+            "permissions": permissions,
+        },
+    )
+
+
 class TestGitHubApp:
     KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    APP = (200, {"slug": "example-app", "client_id": "example-client-id"})
+    PERMISSIONS = {"contents": "write", "pull_requests": "write", "metadata": "read"}
+    APP = _app(PERMISSIONS)
 
     async def test_a_right_app_answers_its_slug(self) -> None:
         result = await check_github_app(
             _github(self.APP, {"error": "bad_verification_code"}),
+            GITHUB,
             _github_values(self.KEY),
         )
         assert result.ok
         assert result.settings == {"slug": "example-app"}
+        assert [check.name for check in result.checks] == [
+            "private_key",
+            "permissions",
+            "client_secret",
+        ]
+        assert result.checks[1].message == (
+            "The App has the repository permissions agents are granted: "
+            "Contents (Read and write), Pull requests (Read and write)."
+        )
 
     async def test_a_wrong_secret(self) -> None:
         result = await check_github_app(
             _github(self.APP, {"error": "incorrect_client_credentials"}),
+            GITHUB,
             _github_values(self.KEY),
         )
         failure = result.first_failure()
@@ -124,7 +149,7 @@ class TestGitHubApp:
 
     async def test_a_key_github_refuses(self) -> None:
         result = await check_github_app(
-            _github((401, {"message": "no"}), {}), _github_values(self.KEY)
+            _github((401, {"message": "no"}), {}), GITHUB, _github_values(self.KEY)
         )
         failure = result.first_failure()
         assert failure is not None and failure.field == "private_key"
@@ -132,6 +157,7 @@ class TestGitHubApp:
     async def test_a_key_of_another_app(self) -> None:
         result = await check_github_app(
             _github((200, {"slug": "other", "client_id": "other-client"}), {}),
+            GITHUB,
             _github_values(self.KEY),
         )
         failure = result.first_failure()
@@ -139,6 +165,53 @@ class TestGitHubApp:
 
     async def test_a_key_too_short_is_refused_before_asking(self) -> None:
         short = rsa.generate_private_key(public_exponent=65537, key_size=1024)
-        result = await check_github_app(_github(self.APP, {}), _github_values(short))
+        result = await check_github_app(
+            _github(self.APP, {}), GITHUB, _github_values(short)
+        )
         failure = result.first_failure()
         assert failure is not None and "2048" in failure.message
+
+    async def test_an_app_short_of_a_permission_agents_are_granted_fails(
+        self,
+    ) -> None:
+        """Without it, the first grant to use it would fail at its token."""
+        result = await check_github_app(
+            _github(
+                _app({"contents": "read", "metadata": "read"}),
+                {"error": "bad_verification_code"},
+            ),
+            GITHUB,
+            _github_values(self.KEY),
+        )
+        failure = result.first_failure()
+        assert failure is not None
+        assert (failure.name, failure.field) == ("permissions", None)
+        assert failure.message == (
+            "The App lacks repository permissions agents are granted: Contents "
+            "needs Read and write, and it has Read-only; Pull requests needs Read "
+            "and write, and it has no access. Change them in the App's settings, "
+            "under Permissions & events; every account that installed the App is "
+            "then asked to accept the change."
+        )
+        # The secret is still checked, so one save says everything wrong.
+        assert result.checks[-1].name == "client_secret" and result.checks[-1].ok
+
+    async def test_more_than_the_catalog_asks_for_is_enough(self) -> None:
+        result = await check_github_app(
+            _github(
+                _app(
+                    {"contents": "admin", "pull_requests": "write", "issues": "write"}
+                ),
+                {"error": "bad_verification_code"},
+            ),
+            GITHUB,
+            _github_values(self.KEY),
+        )
+        assert result.ok
+
+
+def test_the_app_must_have_the_most_any_access_level_asks_for() -> None:
+    assert github_permissions_needed(GITHUB) == {
+        "contents": "write",
+        "pull_requests": "write",
+    }

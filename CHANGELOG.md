@@ -274,6 +274,14 @@ version of their own to them without also giving them a release of their own.
   at GitHub. The server's switch now refuses the sign-in before it starts,
   flag or no flag, and a sign-in refused as it completes is revoked at
   GitHub.
+- **Checking a GitHub App says whether it has the permissions agents are
+  granted.** Saving or checking a GitHub App under Connector apps proved its
+  key, client ID and secret, and said a check could not see its permissions,
+  though GitHub's answer carries them. An App without Contents or Pull
+  requests set to Read and write was saved, and failed only at the first
+  token a grant asked for. The check now holds the App's permissions against
+  the most the catalog grants, names each one that falls short and what it
+  has, and a save is refused until the App has them.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room

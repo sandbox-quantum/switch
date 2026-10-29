@@ -82,6 +82,11 @@ class FakeGitHub:
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.client_id = GITHUB_CLIENT_ID
         self.client_secret = GITHUB_SECRET
+        self.permissions = {
+            "contents": "write",
+            "pull_requests": "write",
+            "metadata": "read",
+        }
 
     def pem(self, key: rsa.RSAPrivateKey | None = None) -> str:
         return (
@@ -106,7 +111,12 @@ class FakeGitHub:
             if claims.get("iss") != self.client_id:
                 return httpx.Response(401, json={"message": "Integration not found"})
             return httpx.Response(
-                200, json={"slug": "example-app", "client_id": self.client_id}
+                200,
+                json={
+                    "slug": "example-app",
+                    "client_id": self.client_id,
+                    "permissions": self.permissions,
+                },
             )
         if request.url.path == "/login/oauth/access_token":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
@@ -608,6 +618,36 @@ class TestGitHub:
             )
         assert answer.status_code == 422
         assert answer.json()["field"] == "private_key"
+        assert await _rows(session_factory) == []
+
+    async def test_an_app_short_of_a_permission_is_refused_saying_which(
+        self, world: World, operator, session_factory
+    ) -> None:
+        """Saved, it would fail only at the first token a grant asks for."""
+        await world.install()
+        world.github.permissions = {"contents": "write", "metadata": "read"}
+        async with world.harness.client() as client:
+            answer = await client.put(
+                f"{APPS}/github",
+                json={
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_SECRET,
+                    "private_key": world.github.pem(),
+                    "replace": False,
+                },
+                cookies=cookies_for(operator),
+            )
+        assert answer.status_code == 422, answer.text
+        assert answer.json()["detail"].startswith(
+            "The App lacks repository permissions agents are granted: Pull "
+            "requests needs Read and write, and it has no access."
+        )
+        checks = {check["name"]: check["ok"] for check in answer.json()["checks"]}
+        assert checks == {
+            "private_key": True,
+            "permissions": False,
+            "client_secret": True,
+        }
         assert await _rows(session_factory) == []
 
 
