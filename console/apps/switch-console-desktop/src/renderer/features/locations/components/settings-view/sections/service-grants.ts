@@ -61,6 +61,20 @@ export function onOffGrantNote(
 }
 
 /**
+ * Why the service can't be used by agents here at all, whoever is connected:
+ * the server's own reason first, then the workspace's switch. Null when
+ * neither stops it.
+ */
+export function serviceBlockedReason(
+  service: Pick<ConnectionCatalogEntry, 'name' | 'unavailable_reason' | 'workspace_enabled'>
+): string | null {
+  if (service.unavailable_reason !== null) return service.unavailable_reason;
+  if (service.workspace_enabled === false)
+    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors.`;
+  return null;
+}
+
+/**
  * Why an on/off grant cannot be turned on, or why one that is on does nothing
  * now; null when neither. The server's own reason comes first, then the
  * workspace's switch, then a missing connection. Turning a grant off is never
@@ -73,13 +87,8 @@ export function onOffGrantBlock(
   >,
   granted: boolean
 ): { reason: string; blocksOn: boolean } | null {
-  if (service.unavailable_reason !== null)
-    return { reason: service.unavailable_reason, blocksOn: !granted };
-  if (service.workspace_enabled === false)
-    return {
-      reason: `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors.`,
-      blocksOn: !granted,
-    };
+  const blocked = serviceBlockedReason(service);
+  if (blocked !== null) return { reason: blocked, blocksOn: !granted };
   if (!granted && service.status !== 'connected')
     return {
       reason: `To turn ${service.name} on, first connect it from Connectors.`,
