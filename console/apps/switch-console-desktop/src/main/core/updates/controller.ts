@@ -52,6 +52,15 @@ export const updateController = createRPCController({
     }
   },
 
+  openReleaseNotes: async () => {
+    try {
+      await shell.openExternal(await updateService.releaseNotesUrl());
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+
   getState: async () => {
     try {
       const state = updateService.getState();
