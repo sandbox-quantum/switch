@@ -488,6 +488,7 @@ class TestManagedAgents:
             "opencode",
             "cursor",
             "antigravity",
+            "cline",
         }
         assert providers["cursor"] == {"fields": []}
         effort = next(
@@ -514,6 +515,7 @@ class TestManagedAgents:
             "opencode",
             "antigravity",
             "cursor",
+            "cline",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:
