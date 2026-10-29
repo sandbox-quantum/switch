@@ -71,8 +71,8 @@ function unavailableState(
         ...unavailable,
         detail:
           entry.slug === 'github' && viewer.onThisComputer
-            ? "GitHub needs a server with an https address, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
-            : `${entry.name} needs a server with an https address, so it can't work on this one.`,
+            ? "GitHub needs this server's address to be https, or http at localhost or 127.0.0.1, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
+            : `${entry.name} needs a server with an https address, or one on this computer, so it can't work on this one.`,
         fix: null,
       };
     case 'needs_public_url':
