@@ -37,6 +37,7 @@ import {
   modelConfigOption,
   modelsFromConfig,
   modelsFromList,
+  type AcpAgentCapabilities,
   type AcpConfigOption,
   type AcpInitializeResult,
   type AcpPermissionRequest,
@@ -115,6 +116,7 @@ interface State {
   prompt: AcpPromptCapabilities;
   configOptions: AcpConfigOption[];
   models: ModelChoice[];
+  agentCapabilities?: AcpAgentCapabilities;
 }
 
 type Emittable<T = ProviderRuntimeEvent> = T extends ProviderRuntimeEvent
@@ -215,6 +217,11 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
+      state.agentCapabilities = agent;
+      hooks.onInitialized?.(context, initialized, {
+        request: (method, handler) => client.onServerRequest(method, async (p) => handler(p)),
+        notification: (method, handler) => client.onNotification(method, handler),
+      });
       requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
@@ -384,6 +391,13 @@ export class AcpAdapter implements ProviderAdapter {
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
     if (!modelConfigOption(state.configOptions)) {
+      if (this.hooks.noLegacySetModel) {
+        throw new ProviderSessionError(
+          this.provider,
+          id,
+          'Model switching is not supported: no model config option advertised by agent.'
+        );
+      }
       await state.client.request('session/set_model', {
         sessionId: state.nativeId,
         modelId: model.id,
@@ -391,14 +405,23 @@ export class AcpAdapter implements ProviderAdapter {
       return;
     }
     if (!state.models.some((choice) => choice.id === model.id))
-      throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
+      throw new ProviderSessionError(this.provider, id, Unavailable model: );
     const result = await state.client.request<{ configOptions?: AcpConfigOption[] }>(
       'session/set_config_option',
       { sessionId: state.nativeId, configId: 'model', value: model.id }
     );
-    if (result.configOptions) this.applyConfigOptions(state, result.configOptions);
+    if (result.configOptions) {
+      this.applyConfigOptions(state, result.configOptions);
+      const current = modelConfigOption(state.configOptions)?.currentValue;
+      if (current !== undefined && current !== model.id) {
+        throw new ProviderSessionError(
+          this.provider,
+          id,
+          Failed to apply model : agent retained 
+        );
+      }
+    }
   }
-
   async respondToRequest(id: string, requestId: string, decision: ApprovalDecision): Promise<void> {
     const state = this.require(id);
     const pending = state.decisions.get(requestId);
@@ -446,6 +469,9 @@ export class AcpAdapter implements ProviderAdapter {
     return {
       get turnId() {
         return active();
+      },
+      get agentCapabilities() {
+        return state.agentCapabilities;
       },
       mcpServerNames: state.mcpNames,
       askQuestions: async (questions, answer) => {

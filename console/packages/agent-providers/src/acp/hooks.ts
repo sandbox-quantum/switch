@@ -9,6 +9,7 @@ import type {
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 import type {
+  AcpAgentCapabilities,
   AcpInitializeResult,
   AcpPermissionRequest,
   AcpPromptCapabilities,
@@ -51,6 +52,8 @@ export interface AcpSessionContext {
   readonly turnId: string | null;
   /** Names of the MCP servers this session registered. */
   readonly mcpServerNames: ReadonlySet<string>;
+  /** The capabilities the agent advertised in initialize. */
+  readonly agentCapabilities?: AcpAgentCapabilities;
   /**
    * Ask the user questions. Resolves with what `answer` returns for the
    * user's choices, or ACP's `cancelled` outcome when the turn ends first.
@@ -146,6 +149,14 @@ export interface AcpProviderHooks {
     request: AcpPermissionRequest
   ): Promise<unknown> | undefined;
   /** Register vendor-specific requests and notifications for a session. */
+  /** Do not use V3 removed session/set_model when no model config option is advertised. */
+  noLegacySetModel?: boolean;
+  /** Called immediately after initialize completes with the agent capabilities. */
+  onInitialized?(
+    context: AcpSessionContext,
+    initialized: AcpInitializeResult,
+    on: AcpExtensionRegistrar
+  ): void;
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
 }
 

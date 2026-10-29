@@ -488,8 +488,10 @@ class TestManagedAgents:
             "opencode",
             "cursor",
             "antigravity",
+            "kiro",
         }
         assert providers["cursor"] == {"fields": []}
+        assert providers["kiro"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -514,6 +516,7 @@ class TestManagedAgents:
             "opencode",
             "antigravity",
             "cursor",
+            "kiro",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:

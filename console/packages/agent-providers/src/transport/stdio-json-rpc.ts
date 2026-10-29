@@ -291,7 +291,11 @@ export class StdioJsonRpcClient {
           this.write({
             jsonrpc: '2.0',
             id,
-            error: { code: -32603, message: String(cause) },
+            error: {
+              code: cause instanceof JsonRpcError ? cause.code : -32603,
+              message: cause instanceof Error ? cause.message : String(cause),
+              ...(cause instanceof JsonRpcError && cause.data !== undefined ? { data: cause.data } : {}),
+            },
           })
       )
       .catch((error: unknown) => {
