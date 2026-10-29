@@ -1020,6 +1020,13 @@ version of their own to them without also giving them a release of their own.
   GitHub settings showed. They now give the reason the Connectors page does:
   the App is not set up yet, and who sets it up, or the server's address is
   one GitHub does not call back.
+- **`DISABLED_SERVICES` stops a GitHub sign-in without the
+  `service_connections` flag too.** With the flag off, a GitHub sign-in
+  started even where the operator had switched GitHub off, and was refused
+  only once GitHub had issued the person's token, which was then left live
+  at GitHub. The server's switch now refuses the sign-in before it starts,
+  flag or no flag, and a sign-in refused as it completes is revoked at
+  GitHub.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
