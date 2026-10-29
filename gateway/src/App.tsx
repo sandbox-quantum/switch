@@ -26,11 +26,11 @@ import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
+import OperatorWorkspacesPage from "./pages/operator/OperatorWorkspacesPage";
+import OrganizationPage from "./pages/organization/OrganizationPage";
 import UsagePage from "./pages/usage/UsagePage";
 import UsersPage from "./pages/users/UsersPage";
 import WorkspacePage from "./pages/workspace/WorkspacePage";
-import OrganizationPage from "./pages/organization/OrganizationPage";
-import OperatorWorkspacesPage from "./pages/operator/OperatorWorkspacesPage";
 
 function FullScreen({ children }: { children: React.ReactNode }) {
   return (

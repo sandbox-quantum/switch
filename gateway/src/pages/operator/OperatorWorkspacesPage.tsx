@@ -26,7 +26,13 @@ export default function OperatorWorkspacesPage() {
         renderCell: ({ row }) => (row.id === currentId ? `${row.name} (current)` : row.name),
       },
       { field: "slug", headerName: "Slug", flex: 1, minWidth: 140 },
-      { field: "organization_id", headerName: "Organization", flex: 1, minWidth: 200 },
+      {
+        field: "organization_name",
+        headerName: "Organization",
+        flex: 1,
+        minWidth: 160,
+        valueGetter: (value, row) => value ?? row.organization_id ?? "None",
+      },
       {
         field: "actions",
         headerName: "",

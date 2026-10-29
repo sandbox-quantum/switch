@@ -1,5 +1,4 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { GridColDef } from "@mui/x-data-grid";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -7,54 +6,23 @@ import OrganizationPage from "./OrganizationPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
-/** A cell's text as the grid would show it: through `valueGetter`, then
- * `valueFormatter`. */
-function cellText(
-  column: GridColDef<Record<string, unknown>>,
-  row: Record<string, unknown>,
-): string {
-  const call = (fn: unknown, ...args: unknown[]) =>
-    (fn as (...a: unknown[]) => unknown)(...args);
-  let value: unknown = row[column.field];
-  if (column.valueGetter) value = call(column.valueGetter, value, row, column, null);
-  if (column.valueFormatter) value = call(column.valueFormatter, value, row, column, null);
-  return String(value ?? "");
-}
+vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
-// The data grid renders no rows under jsdom; this draws every cell plainly.
-vi.mock("../../components/DataTable", () => ({
-  default: ({
-    rows,
-    columns,
-  }: {
-    rows: Record<string, unknown>[];
-    columns: GridColDef<Record<string, unknown>>[];
-  }) => (
-    <div>
-      {rows.map((row) => (
-        <div key={String(row.id)} data-testid={`row-${String(row.id)}`}>
-          {columns.map((column) => (
-            <span key={column.field}>
-              {column.renderCell ? column.renderCell({ row } as never) : cellText(column, row)}
-            </span>
-          ))}
-        </div>
-      ))}
-    </div>
-  ),
-}));
-
-function session(organizationRole: "org_admin" | "member", canAdd: boolean): Session {
+function session(
+  organizationRole: "org_admin" | "member" | null,
+  canAdd: boolean,
+  isOperator = false,
+): Session {
   const tenant = {
     id: "t1",
     slug: "acme",
     name: "Acme",
-    role: organizationRole === "org_admin" ? ("admin" as const) : ("member" as const),
+    role: organizationRole === "member" ? ("member" as const) : ("admin" as const),
     organization_role: organizationRole,
     organization_id: "o1",
   };
   return {
-    user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: false },
+    user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: isOperator },
     tenant,
     tenants: [tenant],
     state: "ready",
@@ -64,6 +32,8 @@ function session(organizationRole: "org_admin" | "member", canAdd: boolean): Ses
   };
 }
 
+/** Answers each `METHOD /path` from `routes`: a body, or `[status, body]`
+ * for a refusal. */
 function answer(routes: Record<string, unknown>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input).replace(/^\/gateway/, "").split("?")[0];
@@ -71,10 +41,33 @@ function answer(routes: Record<string, unknown>) {
     if (!(key in routes)) {
       return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
     }
-    return new Response(JSON.stringify(routes[key]), { status: 200 });
+    const answered = routes[key];
+    if (answered instanceof Refusal) {
+      return new Response(JSON.stringify({ detail: answered.detail }), {
+        status: answered.status,
+      });
+    }
+    return new Response(JSON.stringify(answered), { status: 200 });
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+class Refusal {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+  ) {}
+}
+
+function signedInAs(current: Session) {
+  const refresh = vi.fn();
+  vi.mocked(useAuth).mockReturnValue({
+    session: current,
+    switchTo: vi.fn(),
+    refresh,
+  } as unknown as ReturnType<typeof useAuth>);
+  return refresh;
 }
 
 const workspace = (id: string, name: string) => ({
@@ -93,13 +86,9 @@ describe("OrganizationPage", () => {
   });
 
   it("shows an organization admin its members and audit log", async () => {
-    vi.mocked(useAuth).mockReturnValue({
-      session: session("org_admin", true),
-      switchTo: vi.fn(),
-      refresh: vi.fn(),
-    } as unknown as ReturnType<typeof useAuth>);
+    signedInAs(session("org_admin", true));
     answer({
-      "GET /organizations": [{ id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" }],
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
         { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
@@ -108,10 +97,12 @@ describe("OrganizationPage", () => {
         {
           id: "e1",
           occurred_at: "2026-01-02",
-          actor_user_id: "u2",
+          actor_user_id: "op",
+          actor_name: "Olga",
           action: "organization.role_changed",
           target_type: "user",
           target_id: "u2",
+          target_name: "Bob",
           details: { from: "member", to: "org_admin", platform_access: true },
         },
       ],
@@ -123,17 +114,13 @@ describe("OrganizationPage", () => {
     expect(await screen.findByText("Acme (current)")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
     expect(await screen.findByText("Organization role changed")).toBeTruthy();
-    expect(screen.getByText("Bob (platform operator)")).toBeTruthy();
+    expect(screen.getByText("Olga (platform operator)")).toBeTruthy();
   });
 
   it("shows a member only the workspaces, with nothing to add", async () => {
-    vi.mocked(useAuth).mockReturnValue({
-      session: session("member", false),
-      switchTo: vi.fn(),
-      refresh: vi.fn(),
-    } as unknown as ReturnType<typeof useAuth>);
+    signedInAs(session("member", false));
     answer({
-      "GET /organizations": [{ id: "o1", slug: "acme", name: "Acme Inc", role: "member" }],
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "member" },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
     });
 
@@ -145,14 +132,10 @@ describe("OrganizationPage", () => {
     expect(screen.queryByRole("button", { name: "Add workspace" })).toBeNull();
   });
 
-  it("adds a workspace and lists it", async () => {
-    vi.mocked(useAuth).mockReturnValue({
-      session: session("org_admin", true),
-      switchTo: vi.fn(),
-      refresh: vi.fn(),
-    } as unknown as ReturnType<typeof useAuth>);
+  it("adds a workspace, lists it, and refreshes the session", async () => {
+    const refresh = signedInAs(session("org_admin", true));
     const routes: Record<string, unknown> = {
-      "GET /organizations": [],
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
@@ -173,5 +156,48 @@ describe("OrganizationPage", () => {
     const posted = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
     expect(JSON.parse(String(posted?.[1]?.body))).toEqual({ name: "Research" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  const members = [
+    { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+  ];
+  const operatorRoutes = (membersAnswer: unknown) => ({
+    "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: null },
+    "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+    "GET /organizations/current/members": membersAnswer,
+  });
+
+  it("lets the operator make an admin where there is none, and nothing more", async () => {
+    signedInAs(session(null, false, true));
+    answer(operatorRoutes(members));
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByLabelText("Organization role for bob@example.com")).toBeTruthy();
+    expect(screen.queryByLabelText("Remove bob@example.com from the organization")).toBeNull();
+    expect(screen.getByText(/This organization has no admin/)).toBeTruthy();
+    expect(screen.getByText(/You are here as platform operator/)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Audit log" })).toBeNull();
+  });
+
+  it("tells the operator why where the organization has an admin", async () => {
+    signedInAs(session(null, false, true));
+    answer(operatorRoutes(new Refusal(403, "Only an organization admin may do this")));
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText(/only while it has no admin/)).toBeTruthy();
+    expect(screen.queryByText("Only an organization admin may do this")).toBeNull();
+  });
+
+  it("shows the operator a failure as a failure", async () => {
+    signedInAs(session(null, false, true));
+    answer(operatorRoutes(new Refusal(500, "The database is unavailable")));
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText("The database is unavailable")).toBeTruthy();
+    expect(screen.queryByText(/only while it has no admin/)).toBeNull();
   });
 });

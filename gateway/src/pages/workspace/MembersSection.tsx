@@ -112,7 +112,11 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
               }
             >
               <Chip
-                label={row.via_organization ? "Org Admin, via organization" : "Org Admin"}
+                label={
+                  row.via_organization
+                    ? "Org Admin, via organization"
+                    : `${titleCase(row.role)} · Org Admin`
+                }
                 size="small"
                 color="primary"
                 variant="outlined"
