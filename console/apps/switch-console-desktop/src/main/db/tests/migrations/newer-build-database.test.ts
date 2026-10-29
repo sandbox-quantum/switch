@@ -16,7 +16,9 @@
  * everything on main, which is what `db:generate` on a release branch produces.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -105,6 +107,23 @@ describe('database migrated by a newer build', () => {
 
     const error = refusal(() => applyMigrations(db, olderEntries, olderSqlFiles));
     expect(error.unknownMigrations).toBe(allEntries.length - olderEntries.length);
+  });
+
+  // The dialog tells the user what to move aside, and SWITCHDASH_DB_FILE can
+  // put the database outside the data folder: it needs the file it refused.
+  it('names the database file it refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'newer-build-'));
+    const path = join(dir, 'switchdash.db');
+    try {
+      db = new Database(path);
+      applyMigrations(db, allEntries, sqlFiles);
+
+      const error = refusal(() => applyMigrations(db, olderEntries, olderSqlFiles));
+      expect(error.databasePath).toBe(path);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('leaves the schema and the ledger exactly as it found them when it refuses', () => {

@@ -1,10 +1,20 @@
+import { dirname, resolve } from 'node:path';
+import { SWITCH_CONSOLE_RELEASES_URL } from '@shared/urls';
 import { DatabaseFromNewerBuildError } from './initialize';
 
-function newerBuildCause(dataPath: string): string {
+function newerBuildCause(error: DatabaseFromNewerBuildError, dataPath: string): string {
+  // SWITCHDASH_DB_FILE can put the database anywhere, and moving aside the
+  // folder it happens to sit in (or a data folder it is not in) is wrong.
+  const inDataFolder = resolve(dirname(error.databasePath)) === resolve(dataPath);
   return [
     'The database was last opened by a newer or different build of the app (a Canary build, or one built from source, which share this folder), so this version cannot read it. It has not been changed.',
-    'Open the build that last used it. If there is none to go back to, quit and move this folder aside to start empty; what was saved in it will not carry over:',
-    dataPath,
+    // The updater runs after the database opens, so a refused build never
+    // updates itself: without this, waiting for an update would wait forever.
+    `To keep what is in it, open the build that last used it, or download a release newer than that build from ${SWITCH_CONSOLE_RELEASES_URL}. This version cannot update itself while it cannot start.`,
+    inDataFolder
+      ? 'To start empty instead, quit and move this folder aside; what was saved in it will not carry over:'
+      : 'To start empty instead, quit and move this database file aside, with the -wal and -shm files beside it; what was saved in it will not carry over:',
+    inDataFolder ? dataPath : error.databasePath,
   ].join('\n');
 }
 
@@ -25,7 +35,7 @@ export function databaseOpenFailureDialog(
   logPath: string | null | undefined
 ): { title: string; body: string } {
   const cause =
-    error instanceof DatabaseFromNewerBuildError ? newerBuildCause(dataPath) : GENERIC_CAUSE;
+    error instanceof DatabaseFromNewerBuildError ? newerBuildCause(error, dataPath) : GENERIC_CAUSE;
   return {
     title: `${productName} could not open its database`,
     body: [

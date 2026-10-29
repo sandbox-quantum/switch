@@ -53,8 +53,10 @@ function migrationTagFromKey(key: string): string | null {
  */
 export class DatabaseFromNewerBuildError extends Error {
   readonly unknownMigrations: number;
+  /** The file that was refused — not always in the data folder (SWITCHDASH_DB_FILE). */
+  readonly databasePath: string;
 
-  constructor(unknownTimestamps: number[], newestKnown: number) {
+  constructor(unknownTimestamps: number[], newestKnown: number, databasePath: string) {
     super(
       `The database was last opened by a newer or different version of the app: it has ` +
         `${unknownTimestamps.length} migration(s) this version does not know about ` +
@@ -62,6 +64,7 @@ export class DatabaseFromNewerBuildError extends Error {
     );
     this.name = 'DatabaseFromNewerBuildError';
     this.unknownMigrations = unknownTimestamps.length;
+    this.databasePath = databasePath;
   }
 }
 
@@ -132,11 +135,12 @@ export function applyMigrations(
     const newestKnown = Math.max(0, ...knownTimestamps);
     migrationLog.error('Database was migrated by a newer or different build', {
       event: 'db_migration_newer_schema',
+      databasePath: connection.name,
       unknownTimestamps,
       newestKnown,
       unknownMigrations: unknownTimestamps.length,
     });
-    throw new DatabaseFromNewerBuildError(unknownTimestamps, newestKnown);
+    throw new DatabaseFromNewerBuildError(unknownTimestamps, newestKnown, connection.name);
   }
 
   // Apply migrations with foreign keys disabled. SQLite's table-recreation
