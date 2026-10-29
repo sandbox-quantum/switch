@@ -913,6 +913,15 @@ class TenantMembershipResponse(BaseModel):
     organization_role: str | None
 
 
+class OperatorWorkspaceResponse(BaseModel):
+    """One workspace on the server, as the platform operator's list shows it."""
+
+    id: str
+    slug: str
+    name: str
+    organization_id: str | None
+
+
 class CurrentTenantResponse(TenantMembershipResponse):
     """The tenant this request is bound to. `administers` is whether the
     caller may manage it — an `owner` or `admin` membership, or the operator
@@ -1094,6 +1103,13 @@ class InvitationCreateResponse(InvitationDetail):
 
 
 class MemberDetail(BaseModel):
+    """One person in a workspace's roster.
+
+    `via_organization` marks an organization's `org_admin` who holds no
+    membership row here: listed as `admin`, because that is what they act
+    as, and changed or removed only through the organization's members.
+    """
+
     user_id: str
     name: str
     email: str
@@ -1102,6 +1118,8 @@ class MemberDetail(BaseModel):
     # The agent-registration bootstrap owner: kept in the roster, never a
     # person to add to a chat.
     service_account: bool
+    organization_role: str | None
+    via_organization: bool
 
 
 class UsageTotalResponse(BaseModel):

@@ -134,6 +134,10 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Feature flags belong to the deployment and come from its config, so
     # there is no workspace to scope them to and no session is opened.
     ("GET", "/feature-flags"),
+    # The platform operator's list of every workspace, to enter one from.
+    # It opens a `tenant_session` per tenant `all_tenant_ids` names, and
+    # answers 403 to anyone but the operator — see `list_every_workspace`.
+    ("GET", "/operator/workspaces"),
 }
 
 

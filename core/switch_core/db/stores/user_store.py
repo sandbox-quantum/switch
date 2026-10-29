@@ -523,6 +523,19 @@ class UserStore:
         )
         return member.role if member is not None else None
 
+    async def administers_by_role(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> bool:
+        """Whether `user_id` administers `tenant_id` through a role they hold
+        (a workspace admin or owner membership, or `org_admin` of its
+        organization), leaving the operator flag out. An operator who does
+        not is there on `platform_access`."""
+        return administers_tenant(
+            is_operator=False,
+            tenant_role=await self.tenant_role(session, tenant_id, user_id),
+            organization_role=await self.organization_role(session, tenant_id, user_id),
+        )
+
     async def effective_tenant_role(
         self, session: AsyncSession, tenant_id: str, user_id: str
     ) -> str | None:

@@ -66,22 +66,26 @@ class OrganizationStore:
         return member.role if member is not None else None
 
     async def list_members(
-        self, session: AsyncSession
+        self, session: AsyncSession, organization_id: str
     ) -> list[tuple[User, OrganizationMember]]:
-        """Every member of the bound organization, with their user row."""
+        """Every member of `organization_id`, with their user row."""
         result = await session.execute(
             select(User, OrganizationMember)
             .join(OrganizationMember, OrganizationMember.user_id == User.id)
+            .where(OrganizationMember.organization_id == organization_id)
             .order_by(User.name, User.id)
         )
         return [(row[0], row[1]) for row in result.all()]
 
-    async def count_admins(self, session: AsyncSession) -> int:
-        """How many `org_admin`s the bound organization has."""
+    async def count_admins(self, session: AsyncSession, organization_id: str) -> int:
+        """How many `org_admin`s `organization_id` has."""
         return (
             await session.execute(
                 select(func.count())
                 .select_from(OrganizationMember)
-                .where(OrganizationMember.role == "org_admin")
+                .where(
+                    OrganizationMember.organization_id == organization_id,
+                    OrganizationMember.role == "org_admin",
+                )
             )
         ).scalar_one()

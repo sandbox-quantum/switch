@@ -16,11 +16,13 @@ from starlette.requests import HTTPConnection
 
 from switch_core.authz import Action, Principal, require
 from switch_core.config import SwitchConfig
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
+    all_tenant_ids,
     tenant_of_invitation,
     tenants_administered_through_organization,
     tenants_inviting_email,
@@ -43,6 +45,8 @@ from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
@@ -361,17 +365,94 @@ async def tenants_bindable_by(
     )
 
 
-async def may_bind_tenant(
-    session_factory: async_sessionmaker[AsyncSession], user_id: str, tenant_id: str
+async def workspaces_in_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    organization_id: str,
+) -> list[Tenant]:
+    """The workspaces of `organization_id` that `user_id` holds a membership
+    row in. Each workspace is read on its own short session, one after
+    another, so the caller holds no other connection while this runs."""
+    found: list[Tenant] = []
+    for tenant_id in await tenants_of_user(session_factory, user_id):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None and tenant.organization_id == organization_id:
+            found.append(tenant)
+    return found
+
+
+async def _operator_may_enter(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    tenant_id: str,
 ) -> bool:
-    """Whether `user_id` may bind `tenant_id` (`tenants_bindable_by`).
+    """Whether `user_id` is the platform operator and `tenant_id` exists: the
+    operator may bind any workspace, on `platform_access`."""
+    async with session_factory() as system_session:
+        user = await user_store.get(system_session, user_id)
+    if user is None or user.role != "admin":
+        return False
+    async with tenant_session(session_factory, tenant_id) as session:
+        return await session.get(Tenant, tenant_id) is not None
+
+
+async def record_operator_entry(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    tenant_id: str,
+) -> None:
+    """Record the operator entering `tenant_id`, when they hold no role that
+    administers it: `platform_access` in the workspace's own audit log, where
+    its admins read it."""
+    async with tenant_session(session_factory, tenant_id) as session:
+        if await user_store.administers_by_role(session, tenant_id, user_id):
+            return
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            action=AuditAction.PLATFORM_ACCESS,
+            target_type="tenant",
+            target_id=tenant_id,
+            details={"event": "entered"},
+        )
+        await session.commit()
+
+
+async def all_workspaces(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[Tenant]:
+    """Every workspace on the server, oldest first, each read on its own short
+    session. For the platform operator's list only."""
+    found: list[Tenant] = []
+    for tenant_id in await all_tenant_ids(session_factory):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None:
+            found.append(tenant)
+    return found
+
+
+async def may_bind_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    tenant_id: str,
+) -> bool:
+    """Whether `user_id` may bind `tenant_id`: one of `tenants_bindable_by`,
+    or any workspace for the platform operator.
 
     Backs `POST /tenants/{id}/switch`: the claim it goes on to mint never
     authorises by itself (`_resolve_tenant_id` re-checks it on every request
     regardless), but switching still must not let someone select a tenant
     they may not bind.
     """
-    return tenant_id in await tenants_bindable_by(session_factory, user_id)
+    if tenant_id in await tenants_bindable_by(session_factory, user_id):
+        return True
+    return await _operator_may_enter(session_factory, user_store, user_id, tenant_id)
 
 
 async def _describe_memberships(
@@ -605,6 +686,10 @@ async def _resolve_tenant_id(
     if tenant_claim is not None:
         if tenant_claim in memberships:
             return tenant_claim
+        if await _operator_may_enter(
+            session_factory, user_store, user_id, tenant_claim
+        ):
+            return tenant_claim
         logger.warning(
             "Tenant claim %s for user %s names no membership", tenant_claim, user_id
         )
@@ -677,6 +762,28 @@ async def _bound_user(
         if user is None:
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
+        request.state.platform_access = (
+            user.role == "admin"
+            and not await user_store.administers_by_role(session, tenant_id, user_id)
+        )
+        if request.state.platform_access and request.method not in _SAFE_METHODS:
+            route = request.scope.get("route")
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=user_id,
+                action=AuditAction.PLATFORM_ACCESS,
+                target_type="tenant",
+                target_id=tenant_id,
+                details={
+                    "event": "write",
+                    "method": request.method,
+                    "route": getattr(route, "path", request.url.path),
+                },
+            )
+            # Committed before the route runs, so the attempt is recorded
+            # whether or not the write succeeds.
+            await session.commit()
         yield user
 
 

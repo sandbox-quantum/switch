@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE, ORGANIZATION_ADMIN_TENANT_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.clients.client_lifecycle_service import (
@@ -31,6 +31,7 @@ from switch_core.db.audit import AuditAction, list_audit_events, record_audit_ev
 from switch_core.db.models import (
     Invitation,
     Organization,
+    OrganizationMember,
     Tenant,
     TenantJoinDomain,
     TenantMember,
@@ -63,6 +64,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
+    all_workspaces,
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
@@ -70,6 +72,7 @@ from switch_core.gateway.auth import (
     get_tenant_is_owner,
     list_tenant_memberships,
     may_bind_tenant,
+    record_operator_entry,
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
@@ -121,6 +124,7 @@ from switch_core.gateway.schemas import (
     JoinDomainsResponse,
     MemberDetail,
     MemberUpdateRequest,
+    OperatorWorkspaceResponse,
     SessionUserResponse,
     TenantCreateRequest,
     TenantMembershipResponse,
@@ -195,7 +199,9 @@ def _invitation_detail(invitation: Invitation) -> InvitationDetail:
     return InvitationDetail(**_invitation_fields(invitation))
 
 
-def _member_detail(user: User, membership: TenantMember) -> MemberDetail:
+def _member_detail(
+    user: User, membership: TenantMember, organization_role: str | None
+) -> MemberDetail:
     return MemberDetail(
         user_id=user.id,
         name=user.name,
@@ -203,6 +209,8 @@ def _member_detail(user: User, membership: TenantMember) -> MemberDetail:
         role=membership.role,
         created_at=str(membership.created_at),
         service_account=is_bootstrap_owner(user),
+        organization_role=organization_role,
+        via_organization=False,
     )
 
 
@@ -301,6 +309,7 @@ async def list_tenants(
 
 @router.get("/tenants/current")
 async def current_tenant(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
@@ -315,6 +324,10 @@ async def current_tenant(
     tenant_id = require_tenant_id()
     tenant = await session.get(Tenant, tenant_id)
     role = await user_store.effective_tenant_role(session, tenant_id, user.id)
+    if role is None and request.state.platform_access:
+        # The platform operator, there on the operator flag alone, acts as
+        # an admin and holds no role to report.
+        role = ORGANIZATION_ADMIN_TENANT_ROLE
     if tenant is None or role is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return CurrentTenantResponse(
@@ -602,14 +615,21 @@ async def switch_tenant(
     cookie says, so a forged or stale claim already buys nothing — but this
     route is the one place a *caller* picks the value that goes into it, and
     it must not let them pick a tenant they may not bind: one they are a
-    member of, or one their organization's `org_admin` role covers.
+    member of, one their organization's `org_admin` role covers, or, for the
+    platform operator, any.
+
+    The platform operator entering a workspace on the operator flag alone is
+    recorded in that workspace's audit log. Signing in never selects such a
+    workspace (`initial_tenant_claim`), so every visit starts here.
     """
-    if not await may_bind_tenant(session_factory, user_id, tenant_id):
+    if not await may_bind_tenant(session_factory, user_store, user_id, tenant_id):
         raise HTTPException(status_code=403, detail="Not a member of this tenant")
 
     user = await user_store.get(session, user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    if user.role == "admin":
+        await record_operator_entry(session_factory, user_store, user_id, tenant_id)
 
     await user_store.record_last_tenant(session, user, tenant_id)
     await session.commit()
@@ -617,6 +637,30 @@ async def switch_tenant(
         response, user, config.keyring, config.gateway_cookie_secure, tenant_id
     )
     return _session_response(user)
+
+
+@router.get("/operator/workspaces")
+async def list_every_workspace(
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+) -> list[OperatorWorkspaceResponse]:
+    """Every workspace on the server, for the platform operator to enter one
+    with `POST /tenants/{id}/switch`. Kept apart from `GET /tenants`, which
+    stays the caller's own, so the ordinary picker never lists customers'
+    workspaces. Listing records nothing; entering does."""
+    if not caller.is_operator:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return [
+        OperatorWorkspaceResponse(
+            id=tenant.id,
+            slug=tenant.slug,
+            name=tenant.name,
+            organization_id=tenant.organization_id,
+        )
+        for tenant in await all_workspaces(session_factory)
+    ]
 
 
 # ── Invitations ───────────────────────────────────────────────────────────────
@@ -1425,13 +1469,45 @@ async def list_members(
     tenant_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     _user: Annotated[User, Depends(get_current_user)],
 ) -> list[MemberDetail]:
-    """Every member of the bound tenant. Any member may list their own
-    workspace's roster; changing or removing one is admin-gated below."""
+    """Every member of the bound tenant, then every `org_admin` of its
+    organization who is not one, as `admin` via the organization. Any member
+    may list their own workspace's roster; changing or removing one is
+    admin-gated below."""
     _require_bound_tenant(tenant_id)
+    tenant = await session.get(Tenant, tenant_id)
+    organization_roles: dict[str, str] = {}
+    organization_admins: list[tuple[User, OrganizationMember]] = []
+    if tenant is not None and tenant.organization_id is not None:
+        for user, member in await organization_store.list_members(
+            session, tenant.organization_id
+        ):
+            organization_roles[user.id] = member.role
+            if member.role == ORGANIZATION_ADMIN_ROLE:
+                organization_admins.append((user, member))
     members = await user_store.list_tenant_members(session)
-    return [_member_detail(user, membership) for user, membership in members]
+    roster = [
+        _member_detail(user, membership, organization_roles.get(user.id))
+        for user, membership in members
+    ]
+    listed = {user.id for user, _ in members}
+    roster.extend(
+        MemberDetail(
+            user_id=user.id,
+            name=user.name,
+            email=user.email,
+            role=ORGANIZATION_ADMIN_TENANT_ROLE,
+            created_at=str(member.created_at),
+            service_account=is_bootstrap_owner(user),
+            organization_role=member.role,
+            via_organization=True,
+        )
+        for user, member in organization_admins
+        if user.id not in listed
+    )
+    return roster
 
 
 @router.patch("/tenants/{tenant_id}/members/{user_id}")
@@ -1487,7 +1563,11 @@ async def update_member_role(
 
     user = await user_store.get(session, user_id)
     assert user is not None
-    return _member_detail(user, membership)
+    return _member_detail(
+        user,
+        membership,
+        await user_store.organization_role(session, tenant_id, user_id),
+    )
 
 
 @router.delete("/tenants/{tenant_id}/members/{user_id}", response_model=None)
