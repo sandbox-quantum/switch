@@ -41,6 +41,7 @@ import {
   moveChecklist,
   notSetUpSentence,
   primaryAction,
+  readOnlySentence,
   secretSummary,
   stateLabel,
   usedBy,
@@ -151,6 +152,7 @@ export default function ConnectorAppCard({
   publicUrl,
   checkFailure,
   onCheckFailure,
+  onChecked,
   onChanged,
 }: {
   app: ConnectorApp;
@@ -158,6 +160,8 @@ export default function ConnectorAppCard({
   publicUrl: string | null;
   checkFailure: string | null;
   onCheckFailure: (message: string | null) => void;
+  /** After a check: the server keeps what the vendor said of the app, so the apps are read again. */
+  onChecked: () => void;
   onChanged: (message: string) => void;
 }) {
   const [menu, setMenu] = useState<HTMLElement | null>(null);
@@ -175,6 +179,7 @@ export default function ConnectorAppCard({
   const actions = menuActions(app);
   const summary = secretSummary(app);
   const blocked = changeBlocked(app, publicUrl);
+  const readOnly = readOnlySentence(app);
 
   const check = async () => {
     setChecking(true);
@@ -183,6 +188,7 @@ export default function ConnectorAppCard({
       const result = await checkConnectorApp(app.slug);
       setChecks(result.checks);
       onCheckFailure(result.ok ? null : (result.checks.find((c) => !c.ok)?.message ?? null));
+      onChecked();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -235,6 +241,7 @@ export default function ConnectorAppCard({
           </Typography>
         )}
         {needs && <Alert severity={needs.cause === "stale" ? "info" : "warning"}>{needs.sentence}</Alert>}
+        {readOnly && <Alert severity="warning">{readOnly}</Alert>}
         {needs?.cause === "saved_ignored" && app.saved_client_id && (
           <Row label="Saved here">{app.saved_client_id}</Row>
         )}

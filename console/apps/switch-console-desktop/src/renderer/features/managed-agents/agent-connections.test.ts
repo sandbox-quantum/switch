@@ -27,6 +27,7 @@ function service(
     status: 'connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: null,
     loopback_ports: null,
@@ -187,6 +188,22 @@ describe("an agent's connection cards", () => {
     );
     expect(connectionCardStatus(stopped)).toBe('On');
     expect(connectionCardDetail(stopped)).toBe('Maintenance');
+  });
+
+  it('says why a write grant gets nothing where the server lets agents read only', () => {
+    const reason = "This server's GitHub App lets agents read only.";
+    const github = service('github', { pass_through: false, read_only_reason: reason });
+    const [writes] = agentConnectionCards(
+      [github],
+      [grant('github', { access: 'write', summary: 'Pushes to 1 repository.' })]
+    ).cards;
+    const [reads] = agentConnectionCards(
+      [github],
+      [grant('github', { summary: 'Reads 1 repository.' })]
+    ).cards;
+    expect(connectionCardStatus(writes)).toBe('Read and push');
+    expect(connectionCardDetail(writes)).toBe(reason);
+    expect(connectionCardDetail(reads)).toBe('Reads 1 repository.');
   });
 });
 

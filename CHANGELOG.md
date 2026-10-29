@@ -2199,6 +2199,14 @@ version of their own to them without also giving them a release of their own.
 - **Saving a connector app shows what its check said.** After Check and save
   or an updated secret, the app's page opens with the vendor's answer and any
   note, as Check it works shows them.
+- **A GitHub App that can only read says so.** Under Admin → Connector apps,
+  a GitHub App without Contents or Pull requests at Read and write reads
+  "Agents can read only", naming what it lacks, and Check it works shows the
+  change once the App's permissions change at GitHub. Where the server says
+  so, granting GitHub offers Read and push disabled with the reason, and an
+  agent's Connectors card says why a write grant it already has gets
+  nothing. A server that does not send `read_only`, `lacks_write` or
+  `read_only_reason` is read as one whose App can write.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.

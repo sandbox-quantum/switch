@@ -24,6 +24,8 @@ export function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     needs_public_url: true,
     scopes: [],
     setup_blocked: null,
+    read_only: false,
+    lacks_write: [],
     install_url: null,
     updated_by_name: "Ada",
     updated_at: "2026-10-15T10:00:00Z",

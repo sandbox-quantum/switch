@@ -232,6 +232,18 @@ export function usedBy(app: ConnectorApp): string {
   return `Used by ${peopleIn(app)}`;
 }
 
+/** "Contents", "Contents and Pull requests", "A, B and C". */
+function joined(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/** What a GitHub App short of the write permissions means; null for any other app. */
+export function readOnlySentence(app: Pick<ConnectorApp, "read_only" | "lacks_write">): string | null {
+  if (!app.read_only) return null;
+  return `Agents can read only: the App lacks ${joined(app.lacks_write)} write. Write grants are refused.`;
+}
+
 /** Google's choice of who may connect; it changes only the instructions. */
 export function asksWhoConnects(app: Pick<ConnectorApp, "slug">): boolean {
   return app.slug === GOOGLE;
