@@ -11,6 +11,7 @@ import {
   updateDownloadedEvent,
   updateDownloadingEvent,
   updateErrorEvent,
+  updateInstallFailedEvent,
   updateInstallingEvent,
   updateNotAvailableEvent,
   updateProgressEvent,
@@ -21,6 +22,8 @@ const LAST_NOTIFIED_KEY = 'switchdash:update:lastNotified';
 const SNOOZE_HOURS = 6;
 /** One "Update Available" toast at a time: a repeat replaces it, and it goes once the update moves on. */
 export const UPDATE_AVAILABLE_TOAST_ID = 'console-update-available';
+/** One "didn't install" toast at a time, however many times main repeats it. */
+export const UPDATE_INSTALL_FAILED_TOAST_ID = 'console-update-install-failed';
 
 type DownloadProgress = {
   percent?: number;
@@ -43,6 +46,8 @@ export type UpdateState =
   | { status: 'downloading'; progress?: DownloadProgress }
   | { status: 'downloaded' }
   | { status: 'installing' }
+  /** The update was downloaded but cannot or did not install; it has to be downloaded by hand. */
+  | { status: 'install-failed'; message: string }
   | { status: 'error'; message: string };
 
 /** Statuses where main is mid-flight and a fresh check would interrupt it. */
@@ -58,7 +63,15 @@ const IN_FLIGHT_STATUSES: ReadonlySet<UpdateState['status']> = new Set([
  * src/main/core/updates/update-service.ts.
  */
 type MainUpdateState = {
-  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
+  status:
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'installing'
+    | 'install-failed'
+    | 'error';
   currentVersion: string;
   availableVersion?: string;
   updateInfo?: { version: string; releaseDate?: string; releaseName?: string | null };
@@ -87,6 +100,11 @@ export function mainStateToRendererState(main: MainUpdateState): UpdateState {
       return { status: 'downloaded' };
     case 'installing':
       return { status: 'installing' };
+    case 'install-failed':
+      return {
+        status: 'install-failed',
+        message: main.error || "The update didn't install.",
+      };
     case 'error':
       return { status: 'error', message: main.error || 'The update could not be completed.' };
     default:
@@ -210,6 +228,15 @@ export class UpdateStore {
       });
     });
 
+    events.on(updateInstallFailedEvent, (d) => {
+      this._dismissAvailableToast();
+      runInAction(() => {
+        this.availableVersion = d.version;
+        this.state = { status: 'install-failed', message: d.message };
+      });
+      this._toastInstallFailed(d.message);
+    });
+
     events.on(updateErrorEvent, (d) => {
       runInAction(() => {
         this.state = { status: 'error', message: d.message };
@@ -242,6 +269,9 @@ export class UpdateStore {
         this.availableVersion = main.availableVersion;
         this.state = mainStateToRendererState(main);
       });
+      // Main finds this out at launch, before any window is listening: the
+      // update the user restarted for did not take, and they should hear so.
+      if (this.state.status === 'install-failed') this._toastInstallFailed(this.state.message);
     } catch {
       // A failed resync is not itself an update failure — the check that
       // follows will establish real state.
@@ -309,6 +339,7 @@ export class UpdateStore {
     }
   }
 
+  /** Open the release page to download the update by hand. Main quits the app after. */
   async openLatest(): Promise<void> {
     try {
       await rpc.update.openLatest();
@@ -332,6 +363,15 @@ export class UpdateStore {
       this.state = { status: 'error', message };
     });
     toast.error('Update failed', { description: message, duration: 8_000 });
+  }
+
+  private _toastInstallFailed(message: string): void {
+    toast.error("Update didn't install", {
+      id: UPDATE_INSTALL_FAILED_TOAST_ID,
+      description: message,
+      duration: 15_000,
+      action: { label: 'Download manually', onClick: () => void this.openLatest() },
+    });
   }
 
   private _maybeToastAvailable(version: string): void {
