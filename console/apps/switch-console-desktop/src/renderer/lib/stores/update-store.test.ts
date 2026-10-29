@@ -14,13 +14,13 @@ const rpcUpdate = vi.hoisted(() => ({
   getState: vi.fn(),
   check: vi.fn(),
   openLatest: vi.fn(),
+  openReleaseNotes: vi.fn(),
 }));
 
 vi.mock('sonner', () => ({ toast }));
 vi.mock('@renderer/lib/components/update-toast-action-label', () => ({
   createUpdateToastActionLabel: () => 'Update',
 }));
-vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl: vi.fn() }));
 vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: { navigation: { navigate: vi.fn() } },
 }));
@@ -154,5 +154,30 @@ describe('an update that did not install', () => {
         error: message,
       })
     ).toEqual({ status: 'install-failed', message });
+  });
+});
+
+describe('the release notes link', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('asks main to open the page, since only main knows a version is made up', async () => {
+    rpcUpdate.openReleaseNotes.mockResolvedValue({ success: true });
+
+    await new UpdateStore().openReleasePage();
+
+    expect(rpcUpdate.openReleaseNotes).toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('says so when the page could not be opened', async () => {
+    rpcUpdate.openReleaseNotes.mockResolvedValue({ success: false, error: 'no browser' });
+
+    await new UpdateStore().openReleasePage();
+
+    expect(toast.error).toHaveBeenCalledWith('Could not open the release page', {
+      description: 'no browser',
+    });
   });
 });

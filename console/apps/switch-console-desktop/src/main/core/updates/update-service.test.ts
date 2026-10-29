@@ -330,6 +330,14 @@ describe('a copy of the app that cannot update itself', () => {
 
     expect(updateService.getState()).toMatchObject({ status: 'downloaded' });
   });
+
+  it('links the release notes of the version on offer', async () => {
+    await downloadVersion('1.4.0');
+
+    await expect(updateService.releaseNotesUrl()).resolves.toBe(
+      'https://github.com/sandbox-quantum/switch/releases/tag/switch-console-v1.4.0'
+    );
+  });
 });
 
 describe('the launch after an install', () => {
@@ -481,6 +489,12 @@ describe('the dev harness', () => {
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
+
+    // The harness's version has no release, so its release notes are the
+    // newest real release on the channel.
+    await expect(harnessed.releaseNotesUrl()).resolves.toBe(
+      'https://github.com/sandbox-quantum/switch/releases/latest'
+    );
     harnessed.dispose();
   });
 });

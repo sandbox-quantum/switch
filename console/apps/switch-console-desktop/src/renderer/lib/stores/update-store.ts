@@ -2,7 +2,7 @@ import { action, computed, makeObservable, observable, runInAction } from 'mobx'
 import { toast } from 'sonner';
 import { createUpdateToastActionLabel } from '@renderer/lib/components/update-toast-action-label';
 import { events, rpc } from '@renderer/lib/ipc';
-import { openExternalUrl } from '@renderer/lib/open-external';
+import { reportOpenAttempt } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { menuCheckForUpdatesChannel } from '@shared/events/appEvents';
 import {
@@ -16,7 +16,6 @@ import {
   updateNotAvailableEvent,
   updateProgressEvent,
 } from '@shared/events/updateEvents';
-import { switchConsoleReleaseUrl } from '@shared/urls';
 
 const LAST_NOTIFIED_KEY = 'switchdash:update:lastNotified';
 const SNOOZE_HOURS = 6;
@@ -126,7 +125,6 @@ export class UpdateStore {
       hasUpdate: computed,
       progressLabel: computed,
       latestVersion: computed,
-      releaseUrl: computed,
     });
   }
 
@@ -151,10 +149,6 @@ export class UpdateStore {
       return this.state.info.version;
     }
     return this.availableVersion;
-  }
-
-  get releaseUrl(): string {
-    return switchConsoleReleaseUrl(this.latestVersion);
   }
 
   start(): void {
@@ -348,9 +342,16 @@ export class UpdateStore {
     }
   }
 
-  /** Open this update's GitHub release page in the user's browser. */
+  /**
+   * Open this update's GitHub release page in the user's browser. Main picks the
+   * page, because only main knows when the version is the dev harness's own.
+   */
   async openReleasePage(): Promise<void> {
-    await openExternalUrl(this.releaseUrl, 'Could not open the release page');
+    await reportOpenAttempt(
+      rpc.update.openReleaseNotes(),
+      'Could not open the release page',
+      'The release page could not be opened.'
+    );
   }
 
   /**

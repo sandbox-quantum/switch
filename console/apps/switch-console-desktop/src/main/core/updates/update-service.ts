@@ -28,7 +28,7 @@ import {
   updateNotAvailableEvent,
   updateProgressEvent,
 } from '@shared/events/updateEvents';
-import { switchConsoleReleaseApiUrl } from '@shared/urls';
+import { switchConsoleReleaseApiUrl, switchConsoleReleaseUrl } from '@shared/urls';
 import { resolveCanaryFeedUrl } from './canary-feed';
 import {
   FAKE_UPDATE_VERSION_ENV_VAR,
@@ -39,6 +39,7 @@ import {
   readFakeUpdateScenario,
 } from './dev-harness';
 import { type InstallBlocker, findInstallBlocker, macAppBundlePath } from './install-preflight';
+import { manualDownloadUrl } from './manual-download';
 import { type PendingHandover, pendingInstall } from './pending-install';
 import { formatUpdaterError, sanitizeUpdaterLogArgs, updaterErrorCode } from './utils';
 
@@ -642,6 +643,23 @@ class UpdateService implements IInitializable, IDisposable {
       log.error('Failed to fetch release notes:', error);
       return null;
     }
+  }
+
+  /**
+   * The release page of the update being offered. The dev harness makes its
+   * versions up, so a page for one does not exist; under it this opens the
+   * newest real release on the channel instead, and says so.
+   */
+  async releaseNotesUrl(): Promise<string> {
+    const version = this.updateState.availableVersion;
+    if (this.fake) {
+      log.warn(
+        `[dev] Update harness version ${version ?? 'unknown'} has no release page; ` +
+          'opening the newest real release instead'
+      );
+      return manualDownloadUrl(IS_CANARY);
+    }
+    return switchConsoleReleaseUrl(version);
   }
 
   getState(): UpdateState {
