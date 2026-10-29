@@ -338,10 +338,12 @@ Be clear about what that means:
 - It does not show on the agent's Connectors tab.
 
 **Connectors on a server Switch Console runs** — the server's address is plain
-`http://127.0.0.1`. Atlassian and Google sign-ins work there with an up-to-date
-Switch Console, once the server's admin has set up the vendor app ("Set up" on
-its card in [Connector apps](switchdash://open/admin?tab=apps)). GitHub does not: GitHub Apps require an https address. For GitHub,
-the computer's own access above is the way.
+`http://127.0.0.1`. Atlassian, Google and GitHub sign-ins work there with an
+up-to-date Switch Console and server, once the server's admin has set up the
+vendor app ("Set up" on its card in [Connector apps](switchdash://open/admin?tab=apps)).
+GitHub takes that address because it is the computer's own; it refuses any
+other plain http one. For GitHub, the computer's own access above needs no app
+at all.
 
 **Which server they're on** changes the advice:
 - **Switch Cloud:** messaging apps usually have the official app, and their

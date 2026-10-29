@@ -259,7 +259,8 @@ version of their own to them without also giving them a release of their own.
   so does one with a path in its origin, a malformed slug, or no client
   secret, each saying which. The GitHub sign-in's cookie is no longer marked
   Secure over plain http on the loopback address, where a browser drops it,
-  as the other connectors' sign-ins already did.
+  as the other connectors' sign-ins already did. switch-buddy no longer tells
+  people on a server Switch Console runs that GitHub can't work there.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
