@@ -115,10 +115,12 @@ advertises.
 Any of these lists Box as unavailable, with its reason, and stops agents'
 next token requests:
 
-- add it to `DISABLED_SERVICES`, e.g.
+- add it to `DISABLED_SERVICES` and restart switch-core, e.g.
   `DISABLED_SERVICES='{"box": "Paused while we review access."}'`;
 - remove its client under Connector apps;
-- unset `BOX_CLIENT_CONFIG_PATH`, where it is set from configuration.
+- unset `BOX_CLIENT_CONFIG_PATH` and restart switch-core, where it is set
+  from configuration. A client saved under Connector apps takes over once
+  configuration is gone, so remove that too.
 
 Disabling the Box MCP server, or deleting the Integration Credentials, in the
 Box Admin Console stops Box itself from accepting sign-ins and calls, but

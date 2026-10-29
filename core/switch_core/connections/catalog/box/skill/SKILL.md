@@ -25,8 +25,8 @@ MCP server; there is nothing to set up or renew.
   organization's AI units. Don't call them: read the file yourself instead.
 - **Some tools are off unless a Box admin turned them on**, and are then not
   listed at all: shared links, collaborations, moving, renaming and other
-  property changes, setting metadata, changing metadata templates and hubs,
-  new file versions, and download and upload links. If the task needs one,
+  property changes, setting metadata, `update_metadata_template`,
+  `update_hub`, new file versions, and download and upload links. If the task needs one,
   say so; your owner's Box admin decides.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
