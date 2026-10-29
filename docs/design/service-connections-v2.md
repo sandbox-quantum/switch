@@ -4,8 +4,9 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
-session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
-as the first. v1's tables,
+session on generic parts. Atlassian (Jira), Google Workspace and Airtable are
+live; Datadog, built as the first key, is refused now, as every key is (see
+[Keys](#keys)). v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -42,6 +43,8 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
+    # revocation_ends_tokens: true   # revoking the sign-in ends its tokens too
+    #   (Google's); unsaid, they are taken to live until they expire
   identity:                   # GET with the token; dotted paths in its JSON
     url: https://api.atlassian.com/me
     account_id: account_id
@@ -133,7 +136,11 @@ for a pass-through service nothing can revoke the owner's token alone (for
 Google, revoking it would end the owner's whole sign-in), so its issuance
 record is marked withdrawn and the change's `warning` says until when it may
 keep working, up to the entry's `max_lifetime` (an hour for Google, eight
-hours for Atlassian, whose tokens cannot be asked for shorter).
+hours for Atlassian, whose tokens cannot be asked for shorter). A disconnect,
+or a reconnect that replaces the sign-in, also revokes the sign-in itself
+where the vendor allows it. Where that ends its tokens too
+(`revocation_ends_tokens`, Google's), and the revocation succeeded, the
+warning leaves the service out.
 
 ## Connecting
 
@@ -243,8 +250,8 @@ reads the level from the connection as it is now, so reconnecting read-only
 narrows every grant at once. Console and the dashboard show such a service as a
 switch beside GitHub's grant and repository picker, saying that the agent acts
 as its owner there, that off stops its sessions within a minute, and, for a
-token that lives longer, that a token already handed out stays valid until it
-expires or the owner disconnects.
+token that lives longer than an hour, that a token already handed out may
+keep working until it expires.
 
 `GET /gateway/service-connections/{service}/agents` lists the caller's own
 agents in the workspace, each with whether it holds a grant on the service and
@@ -253,25 +260,30 @@ Console offers after connecting. Another member's agents never appear; an
 unknown or placeholder slug is 404.
 
 "Others can address it" (`addressing_open`, here and on the agent's grants
-list) is false only for owner-only in its strict sense: the owner alone, in
-person. Any agent sender counts as someone else, the owner's own agents
-included, so "you and your agents" (`owner_agents`) and any named agent make it
-true. An agent is not the person: whoever addressed the owner's other agent can
-have it pass the request on, and the grant is then used for them. This is what
-Console reports and warns about; it does not refuse the agent-to-agent path,
-which an `owner_agents` rule still admits. Carrying the originating person on
-agent-to-agent messages, so that "you and your agents" can be safe for an agent
-with grants, is a later follow-up.
+list) is true for an open policy, for a rule that admits every person or a
+person by an identity the owner has not claimed, and for a rule that names any
+agent, by id or `"*"` (`AddressingPolicy.admits_others` in `addressing.py`).
+The owner's own agents (`owner_agents`) do not count: they already act for the
+owner, so the default policy, "you and your agents", raises no warning. An
+agent is not the person, though: whoever addressed the owner's other agent can
+have it pass the request on, and the grant is then used for them. Nothing
+refuses that path, which an `owner_agents` rule admits; "Make owner-only", in
+Console and the dashboard alike, sets the owner alone, which closes it.
+Carrying the originating person on agent-to-agent messages, so that "you and
+your agents" can be safe for an agent with grants, is a later follow-up.
 
 ## Switching connections on
 
 The whole feature is behind the `service_connections` feature flag
 (`FEATURE_FLAGS_ENABLED`), off by default. Off, the routes for connections,
-sign-ins, keys and grants are not mounted, on either the gateway or the agent
-API: an agent host reads the missing `service-grants` route as no grants, and
-Switch Console and the dashboard, which ask those routes, offer GitHub's link
-alone, as a server from before connections did. GitHub's own connect routes,
-the boot-time GitHub move and the token upkeep run either way.
+sign-ins, keys, grants, the workspace's switches and connector apps are not
+mounted, on either the gateway or the agent API: an agent host reads the
+missing `service-grants` route as no grants, and Switch Console and the
+dashboard, which show connectors and an agent's grants only with the flag on,
+offer no service at all. GitHub's own connect routes and the older catalog
+(`/gateway/provider-connections`, for a Console from before connections), the
+boot-time GitHub move and the token upkeep run either way; a GitHub
+connection made through those routes cannot be granted until the flag is on.
 
 ## Switching a service off
 
@@ -296,22 +308,22 @@ The list carries `connected_members` and `granted_agents`, what Console shows
 before an admin confirms switching off.
 
 Off, nobody in the workspace can start a sign-in, paste a key, connect, grant
-or be issued a token for the service: 403 `forbidden`, "Datadog is not enabled
-in this workspace. Ask a workspace admin; they switch it on under Connectors in
-Switch Console." The server's own `DISABLED_SERVICES` reason is checked first.
-A sign-in that completes after the switch is refused and revoked at the
-vendor. Grants are kept, but the grants list a session reads leaves the
-service out, so a running session loses the service within half a minute, as
-it does a removed grant: its host restarts it without the service. A token
-already handed out may be used until that restart, except GitHub's, which the
-switch queues and revokes before it answers (`warning` when some could not be
-yet; the five-minute tick keeps trying). A pass-through token is marked
-withdrawn, and the `warning` says until when it may keep working. On again, the grants come back with
-no re-grant.
+or be issued a token for the service: 403 `forbidden`, "Atlassian is not
+enabled in this workspace. Ask a workspace admin; they switch it on under
+Connectors in Switch Console." The server's own `DISABLED_SERVICES` reason is
+checked first. A sign-in that completes after the switch is refused and
+revoked at the vendor. Grants are kept, but the grants list a session reads
+leaves the service out, so a running session loses the service within half a
+minute, as it does a removed grant: its host restarts it without the service.
+A token already handed out may be used until that restart, except GitHub's,
+which the switch queues and revokes before it answers (`warning` when some
+could not be yet; the five-minute tick keeps trying). A pass-through token is
+marked withdrawn, and the `warning` says until when it may keep working. On
+again, the grants come back with no re-grant.
 
 The service list (`GET /gateway/service-connections`) carries
-`workspace_enabled` per service, `true` for every service when the flag is
-off.
+`workspace_enabled` per service. Like the switch, the list exists only with
+the flag on.
 
 Beside `unavailable_reason`, the sentence people read, each entry carries
 `unavailable_code`, null when the service can be granted, so a client can say
@@ -339,7 +351,7 @@ what each person can do about it (`UnavailableCode` in
 ## Keys
 
 For a vendor whose people connect with a key rather than a sign-in (Datadog,
-New Relic, PagerDuty, Snowflake and the like), an entry names
+PagerDuty, Snowflake and the like), an entry names
 `adapter: api_key`:
 
 ```yaml
@@ -404,10 +416,11 @@ for a later server-side use of the key.
 
 ### Datadog
 
-Datadog's remote MCP server takes an API key and an application key in
-headers named with underscores (`DD_API_KEY`, `DD_APPLICATION_KEY`), unlike its
-REST API's hyphens, at `https://mcp.<site>/api/unstable/mcp-server/mcp`, for
-the six commercial sites (not GovCloud). The identity call is the REST API's
+Datadog was the first entry built this way, and is refused now with every
+key. As built, its remote MCP server takes an API key and an application key
+in headers named with underscores (`DD_API_KEY`, `DD_APPLICATION_KEY`), unlike
+its REST API's hyphens, at the address its entry names, for the six
+commercial sites (not GovCloud). The identity call is the REST API's
 `/api/v1/validate`, which checks the API key; the application key is checked
 by the MCP server on the first call, since a key scoped to `mcp_read` alone
 may not read the current user. A Datadog administrator turns MCP access on for
@@ -427,7 +440,8 @@ one of three shapes. Pick the first that fits:
 2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
    `cli`, a pinned release per platform with its SHA-256, and the allow and
    deny lists that keep it to the vendor's own commands.
-3. **A key** (Datadog): `adapter: api_key`, above, with `mcp` or `cli`.
+3. **A key** (Datadog): `adapter: api_key`, above, with `mcp` or `cli`. Such
+   an entry is refused today, since a key is never handed to an agent.
 
 Then:
 
@@ -475,7 +489,7 @@ settings:
   was added connects again to consent to its scopes; until then Atlassian
   shows no Confluence tools.
 
-To connect: Settings, Connections in Switch Console, then Atlassian. Nothing
+To connect: Connectors in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
 
@@ -533,7 +547,7 @@ is in [`docs/old/airtable-setup.md`](../old/airtable-setup.md).
   the operator's integration has one, the same for everyone on the server. Not
   tried: no Enterprise account was at hand.
 
-To connect: Settings, Connections in Switch Console, then Airtable. To roll
+To connect: Connectors in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
@@ -577,7 +591,9 @@ Built from a spike against a test Workspace with an Internal app:
   shows what it already has, with nothing to untick: connecting read-only after
   read and write takes a disconnect first.
 - **Disconnecting revokes** at `oauth2.googleapis.com/revoke`, which ends every
-  token of the person's sign-in to that app.
+  token of the person's sign-in to that app, so the entry says
+  `revocation_ends_tokens` and the disconnect's warning does not name Google
+  Workspace once the revocation succeeded.
 - **`gws` 0.22.5,** pinned per machine; the Linux builds are the musl ones,
   which run on glibc and musl systems alike, and Windows has an x64 build only.
   Its first argument is a service (`drive`, `docs`, `sheets`, `slides`,
