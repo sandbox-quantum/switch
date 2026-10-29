@@ -65,6 +65,7 @@ const {
   completeGitHubConnection,
   startServiceConnection,
   completeServiceConnection,
+  failServiceConnection,
   connectServiceWithKey,
   disconnectService,
   acceptInvitation,
@@ -1744,6 +1745,26 @@ describe('a service sign-in', () => {
       input,
       { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
     ]);
+  });
+
+  it('hands on the vendor’s refusal on the service’s own route', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await failServiceConnection(
+      SERVER,
+      'example',
+      state,
+      'server_error',
+      'Denied here',
+      'b'.repeat(43)
+    );
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe(`${flows}/${state}/fail`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      error: 'server_error',
+      error_description: 'Denied here',
+      completion_secret: 'b'.repeat(43),
+    });
   });
 
   it('accepts Core’s own authorize step on this server in core mode', async () => {

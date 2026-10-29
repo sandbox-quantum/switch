@@ -2,9 +2,9 @@
 
 The routes of `connections/flows.py`, for any catalog entry with the
 `oauth` adapter; GitHub keeps its own (`gateway/github_connections.py`).
-Switch Console starts, completes, follows and drops a flow as the signed-in
-person; `authorize` and `callback` are the browser's, in core mode, and are
-tied to the flow by its state and a cookie rather than by a session.
+Switch Console starts, completes, fails, follows and drops a flow as the
+signed-in person; `authorize` and `callback` are the browser's, in core mode,
+and are tied to the flow by its state and a cookie rather than by a session.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from switch_core.connections.flows import (
     FlowError,
     ServiceFlow,
     ServiceFlows,
+    SignInRefusedError,
 )
 from switch_core.db.models import ServiceConnection, Tenant, User, require_tenant_id
 from switch_core.gateway.auth import get_current_user
@@ -67,7 +68,7 @@ def _page(name: str, message: str, status: int) -> HTMLResponse:
         "<!doctype html><html lang=en><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width'>"
         f"<title>{title}</title><body><main><h1>{title}</h1><p>"
-        + message
+        + escape(message)
         + "</p></main></body></html>",
         status_code=status,
         headers={
@@ -106,6 +107,14 @@ class FlowSecret(BaseModel):
 
 class CompleteFlow(FlowSecret):
     code: str = Field(min_length=1, max_length=MAX_CODE_LENGTH)
+
+
+class FailFlow(FlowSecret):
+    """What the vendor sent Console's listener in place of a code. Core
+    shortens it further, and takes out any markup, before it is shown."""
+
+    error: str = Field(max_length=256)
+    error_description: str | None = Field(max_length=2048)
 
 
 @router.post("", response_model=None)
@@ -208,14 +217,22 @@ async def callback(
     """Back from the vendor: the browser takes the code on to Switch Console,
     on the computer it left from."""
     state = request.query_params.get("state", "")
-    code = request.query_params.get("code", "")
     try:
         flow = await flows.flow(state)
         if flow.service != service:
             raise FlowError(INTERRUPTED)
+    except FlowError:
+        return _page("Connections", INTERRUPTED, 400)
+    try:
         target = await flows.deliver(
-            flow, code, request.cookies.get(_cookie(state), "")
+            flow,
+            code=request.query_params.get("code", ""),
+            error=request.query_params.get("error", ""),
+            description=request.query_params.get("error_description"),
+            nonce=request.cookies.get(_cookie(state), ""),
         )
+    except SignInRefusedError as refusal:
+        return _page(flow.name, f"{refusal} Return to Switch Console.", 400)
     except FlowError:
         return _page("Connections", INTERRUPTED, 400)
     response = RedirectResponse(
@@ -316,6 +333,29 @@ async def complete(
         service,
     )
     return {"warning": warning, "consent": consent, "account": account.label}
+
+
+@router.post("/{flow_id}/fail", status_code=204)
+async def fail(
+    service: str,
+    flow_id: str,
+    body: FailFlow,
+    user: Annotated[User, Depends(get_current_user)],
+    flows: Annotated[ServiceFlows, Depends(get_service_flows)],
+) -> Response:
+    """Console's listener was sent the vendor's refusal rather than a code,
+    in loopback mode: the flow fails with what the vendor said, at once."""
+    flow = await _owned(flows, service, flow_id, user)
+    try:
+        await flows.vendor_refused(
+            flow,
+            completion_secret=body.completion_secret,
+            error=body.error,
+            description=body.error_description,
+        )
+    except FlowError as error:
+        raise HTTPException(400, str(error)) from None
+    return Response(status_code=204)
 
 
 @router.get("/{flow_id}")

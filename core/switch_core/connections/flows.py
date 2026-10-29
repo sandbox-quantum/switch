@@ -15,7 +15,9 @@ Either way Console posts the code back with its completion secret, and Core
 exchanges it, reads the account and writes the connection through
 `ServiceBroker.connect` in that one step. The flow then reads connected, or
 failed with the reason, holding no token, until it expires or Console drops
-it.
+it. A vendor that sends the browser back with an error rather than a code
+fails the flow with what it said: at Core's callback in core mode, and
+through Console, whose listener received it, in loopback mode.
 
 Flows are rows in `sign_in_flows` (`connections/sign_in_flows.py`), as
 GitHub's are, so any switch-core process can take any step: ten minutes each,
@@ -51,6 +53,7 @@ from switch_core.connections.sign_in_flows import (
     SignInFlows,
     StoredFlow,
     digest,
+    vendor_refusal,
 )
 
 KIND = "service"
@@ -66,6 +69,11 @@ def client_changed(name: str) -> str:
 
 class FlowError(Exception):
     """The flow cannot go on; the message is for the person."""
+
+
+class SignInRefusedError(FlowError):
+    """The vendor sent the browser back with a refusal, and the flow failed
+    with it. Unlike other `FlowError`s, the message is for the browser too."""
 
 
 @dataclass(frozen=True)
@@ -263,9 +271,19 @@ class ServiceFlows:
             raise
         return url, nonce
 
-    async def deliver(self, flow: ServiceFlow, code: str, nonce: str) -> str:
+    async def deliver(
+        self,
+        flow: ServiceFlow,
+        *,
+        code: str,
+        error: str,
+        description: str | None,
+        nonce: str,
+    ) -> str:
         """The browser is back at Core's callback, in core mode: where it
-        takes the code on to Console's listener. Once per flow."""
+        takes the code on to Console's listener. Once per flow. Back with the
+        vendor's `error` instead, the flow fails with it and
+        `SignInRefusedError` says why."""
         if (
             flow.mode != "core"
             or flow.status != "authorizing"
@@ -274,14 +292,14 @@ class ServiceFlows:
         ):
             raise FlowError("The sign-in could not be verified.")
         if not code:
-            error = f"{flow.name} sign-in was cancelled."
+            refusal = vendor_refusal(flow.name, error, description)
             await self._flows.advance(
                 flow.stored,
                 expect=("authorizing",),
                 to="failed",
-                changes={"error": error},
+                changes={"error": refusal},
             )
-            raise FlowError(error)
+            raise SignInRefusedError(refusal)
         taken = await self._flows.advance(
             flow.stored, expect=("authorizing",), to="delivered", changes={}
         )
@@ -290,6 +308,36 @@ class ServiceFlows:
         return f"{loopback_redirect(flow.port)}?" + urlencode(
             {"code": code, "state": flow.state}
         )
+
+    async def vendor_refused(
+        self,
+        flow: ServiceFlow,
+        *,
+        completion_secret: str,
+        error: str,
+        description: str | None,
+    ) -> None:
+        """Console's listener was sent the vendor's refusal rather than a
+        code, in loopback mode, and hands it on with its secret: the flow
+        fails with what the vendor said. Once per flow."""
+        if (
+            not flow.stored.holds_secret(completion_secret)
+            or flow.mode != "loopback"
+            or flow.status != "authorizing"
+        ):
+            raise FlowError(
+                f"{flow.name} sign-in could not be verified. Connect again."
+            )
+        failed = await self._flows.advance(
+            flow.stored,
+            expect=("authorizing",),
+            to="failed",
+            changes={"error": vendor_refusal(flow.name, error, description)},
+        )
+        if failed is None:
+            raise FlowError(
+                f"{flow.name} sign-in could not be verified. Connect again."
+            )
 
     async def complete(
         self,
