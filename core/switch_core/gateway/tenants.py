@@ -390,6 +390,23 @@ async def _provision_workspace(
                 session_factory, organization_store, organization.id
             )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except BaseException:
+            # A failure after the workspace committed leaves it referencing
+            # the organization, and the discard is refused; the workspace's
+            # own failure is the one to report.
+            try:
+                await _discard_organization(
+                    session_factory, organization_store, organization.id
+                )
+            except Exception:
+                logger.exception(
+                    "Could not discard organization %s after creating workspace "
+                    "%r (slug %s) failed",
+                    organization.id,
+                    name,
+                    slug,
+                )
+            raise
         break
     if tenant is None:
         logger.error(

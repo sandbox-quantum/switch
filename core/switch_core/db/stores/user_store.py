@@ -5,6 +5,7 @@ from collections.abc import Collection
 from datetime import timedelta
 
 from sqlalchemy import case, func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -475,17 +476,14 @@ class UserStore:
                 user_id,
             )
             return
-        existing = await session.get(
-            OrganizationMember, (tenant.organization_id, user_id)
+        # Two joins into one organization (an invitation to one workspace, a
+        # domain join to another) may both find no row; the second must not
+        # fail its workspace membership on the first's insert.
+        await session.execute(
+            insert(OrganizationMember)
+            .values(organization_id=tenant.organization_id, user_id=user_id, role=role)
+            .on_conflict_do_nothing(index_elements=["organization_id", "user_id"])
         )
-        if existing is not None:
-            return
-        session.add(
-            OrganizationMember(
-                organization_id=tenant.organization_id, user_id=user_id, role=role
-            )
-        )
-        await session.flush()
 
     async def tenant_role(
         self, session: AsyncSession, tenant_id: str, user_id: str

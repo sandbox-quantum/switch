@@ -43,6 +43,7 @@ from switch_core.db.models import (
     ApiKey,
     Client,
     Invitation,
+    Organization,
     ServiceTokenIssuance,
     SignInFlow,
     Tenant,
@@ -105,6 +106,13 @@ class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
         self.calls += 1
         await super().create_tenant(name, slug, organization_id)
         raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
+
+
+class _FailsBeforeTheWorkspaceLifecycle(_FakeClientLifecycle):
+    """Fails before writing anything, the way a dropped connection does."""
+
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+        raise ConnectionResetError("connection to the database was lost")
 
 
 class _RecordingMailer:
@@ -495,6 +503,34 @@ class TestCreateTenant:
                 await client.post("/tenants", json={"name": "Unlucky Co"})
 
         assert lifecycle.calls == 1
+        async with session_factory() as session:
+            tenant = await session.scalar(
+                select(Tenant).where(Tenant.name == "Unlucky Co")
+            )
+        assert tenant is not None and tenant.organization_id is not None
+
+    async def test_any_failure_before_the_workspace_discards_its_organization(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Left behind, the organization would hold the slug in
+        `organizations.slug` and push the next workspace of that name onto a
+        suffix."""
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="disconnected", role="user"
+        )
+        token = _token(user_id, "disconnected@example.invalid", None)
+        lifecycle = _FailsBeforeTheWorkspaceLifecycle(session_factory)
+
+        app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")
+        async with _client(app, token) as client:
+            with pytest.raises(ConnectionResetError):
+                await client.post("/tenants", json={"name": "Disconnected Co"})
+
+        async with session_factory() as session:
+            organization = await session.scalar(
+                select(Organization).where(Organization.slug == "disconnected-co")
+            )
+        assert organization is None
 
     async def test_a_name_with_no_slug_characters_is_400(
         self, session_factory: async_sessionmaker[AsyncSession]

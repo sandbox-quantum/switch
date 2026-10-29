@@ -113,6 +113,17 @@ class OrganizationMember(Base):
     `member` is what joining any of its workspaces makes someone. Workspace
     roles stay on `TenantMember`. A checked string, as `tenant_members.role`
     is.
+
+    Not derived from workspace roles, and never recomputed from them: an
+    organization's admin administers every workspace in it, so promoting a
+    workspace's admin to `org_admin` would hand them every other workspace
+    too. Joining a workspace adds a `member` row when there is none, and
+    changing or removing a workspace membership leaves this row as it is. Only
+    an organization's own `org_admin`s grant or revoke `org_admin`, through
+    the organization's API. The one exception is migration `238c68b7306e`:
+    it made each existing workspace's owners and admins `org_admin` of the
+    organization it created for that workspace alone, which gave them nothing
+    they did not already administer.
     """
 
     __tablename__ = "organization_members"
