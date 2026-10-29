@@ -229,6 +229,46 @@ describe('initializeDatabase on a database from a newer build', () => {
     ).toEqual([]);
   });
 
+  // The dialog promises the database "has not been changed". Switching to WAL
+  // rewrites the file header, so it has to wait until the database is accepted.
+  it('leaves a refused database file byte-for-byte as it was, journal mode included', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'newer-build-'));
+    const path = join(dir, 'switchdash.db');
+    try {
+      db = new Database(path);
+      db.pragma('journal_mode = DELETE');
+      applyMigrations(db, allEntries, sqlFiles);
+      db.prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)').run(
+        'from-a-newer-build',
+        newestKnown + 1
+      );
+      db.close();
+      const before = readFileSync(path);
+
+      db = new Database(path);
+      await expect(initializeDatabase(db)).rejects.toBeInstanceOf(DatabaseFromNewerBuildError);
+      expect(db.pragma('journal_mode', { simple: true })).toBe('delete');
+      db.close();
+
+      expect(readFileSync(path).equals(before)).toBe(true);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('switches a database it accepts to WAL', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'newer-build-'));
+    try {
+      db = new Database(join(dir, 'switchdash.db'));
+      await initializeDatabase(db);
+      expect(db.pragma('journal_mode', { simple: true })).toBe('wal');
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('opens a database this build migrated itself', async () => {
     db = new Database(':memory:');
     await initializeDatabase(db);

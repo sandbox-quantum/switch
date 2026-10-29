@@ -18,8 +18,9 @@ const databasePath = resolveDatabasePath();
  */
 export const databaseExistedAtStart = existsSync(databasePath);
 
+// WAL is switched on by initializeDatabase, not here: switching writes to the
+// file, and a database from a newer build must be refused before anything does.
 export const sqlite = new Database(databasePath);
-sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('busy_timeout = 5000');
 
 export const db = drizzle(sqlite, { schema });

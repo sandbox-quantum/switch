@@ -278,6 +278,9 @@ export async function initializeDatabase(
   // This keeps the module importable in non-Electron environments (Vitest).
   const conn = connection ?? (await import('./client')).sqlite;
   runBundledMigrations(conn);
+  // After the migrations, which refuse a database from a newer build before
+  // writing to it: switching the journal mode writes the file header.
+  conn.pragma('journal_mode = WAL');
   ensureSearchIndex(conn);
   dropFileIndex(conn);
   return conn;

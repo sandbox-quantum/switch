@@ -17,6 +17,9 @@
 
 - database path is resolved by main-process db path helpers
 - `SWITCHDASH_DB_FILE` overrides the default location
+- drizzle-kit (`push`, `migrate`, `studio`) opens the dev database in `switchdash-dev`
+  unless `SWITCHDASH_DB_FILE` is set; never point it at `switchdash`, which stable and
+  Canary share and which refuses to open once it has a migration the app does not know
 - database initialization happens in `src/main/db/initialize.ts`
 
 ## Development Workflow
