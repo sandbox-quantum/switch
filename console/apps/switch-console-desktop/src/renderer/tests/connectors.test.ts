@@ -199,7 +199,8 @@ describe('what each person is told about a connector that cannot be used', () =>
       expect(connectorCardState(github, viewer)).toMatchObject({
         kind: 'unavailable',
         label: 'Unavailable',
-        detail: "GitHub needs a server with an https address, so it can't work on this one.",
+        detail:
+          "GitHub needs a server with an https address, or one on this computer, so it can't work on this one.",
         fix: null,
       });
   });
@@ -207,11 +208,11 @@ describe('what each person is told about a connector that cannot be used', () =>
   it("points at this computer's own GitHub sign-in where the server runs on it", () => {
     const here = { ...MEMBER, onThisComputer: true };
     expect(connectorCardState(github, here).detail).toBe(
-      "GitHub needs a server with an https address, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
+      "GitHub needs this server's address to be https, or http at localhost or 127.0.0.1, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
     );
     // Only GitHub has a sign-in of its own on the computer to fall back on.
     expect(connectorCardState({ ...github, slug: 'example', name: 'Example' }, here).detail).toBe(
-      "Example needs a server with an https address, so it can't work on this one."
+      "Example needs a server with an https address, or one on this computer, so it can't work on this one."
     );
   });
 

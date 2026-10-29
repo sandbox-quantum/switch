@@ -2228,6 +2228,12 @@ version of their own to them without also giving them a release of their own.
   after it was handed out; the disconnect's own warning says what it could
   not take back. The Switch skill tells agents to link an agent's Connectors
   tab, as it is named, rather than its Connections tab.
+- **GitHub's card says what GitHub needs from a server.** Where GitHub can't
+  be used, the Connectors page said it needs a server with an https address.
+  A server on this computer works too, and a switch-core from this release
+  sets GitHub up there, so the card now says so. On a server Switch Console
+  runs at some other plain http address, it names the addresses GitHub
+  accepts.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to

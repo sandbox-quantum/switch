@@ -144,7 +144,7 @@ describe('card state', () => {
 
 describe('set-up blocked by the server', () => {
   const BLOCKED =
-    'GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.';
+    'GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.';
 
   it("is the card's one sentence, with Set up as the fix", () => {
     const github = {

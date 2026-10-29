@@ -24,7 +24,8 @@ export type ServiceKeyForm = z.infer<typeof serviceKeyFormSchema>;
  * - `coming_soon`: not built yet.
  * - `switched_off`: the server's operator switched it off in its settings.
  * - `needs_https`: it can't work on this server: GitHub's App needs the
- *   server to have an https address.
+ *   server's address to be https, or loopback http (localhost, 127.0.0.1 or
+ *   ::1), and it is plain http to another host.
  * - `needs_public_url`: its sign-ins return only to the server, which has no
  *   public address (`GATEWAY_PUBLIC_URL`).
  * - `app_not_set_up`: its app is the operator's to set up, under Admin →
