@@ -19,7 +19,8 @@ leaves the service not set up, with the reason on the operator's page, so a
 bad row cannot lock the operator out of the page that fixes it.
 
 A GitHub App saved here is called back at `GATEWAY_PUBLIC_URL`, which must
-then be https; a configured one keeps the `origin` its file names.
+then be https, or http on this computer (`switch_core.loopback`); a
+configured one keeps the `origin` its file names, under the same rule.
 
 A change takes effect without a restart (`ConnectorApps.apply`): the
 service's adapter is rebuilt and swapped into the broker, and for GitHub the
@@ -38,7 +39,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
-from urllib.parse import urlsplit
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -59,6 +59,7 @@ from switch_core.db.stores.service_app_credential_store import (
     ServiceAppCredentialStore,
 )
 from switch_core.keys import UndecryptableError
+from switch_core.loopback import https_or_loopback
 from switch_core.providers.github import GitHubConnections
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
@@ -84,8 +85,8 @@ SECRET_NAMES: dict[AppKind, frozenset[str]] = {
 UNREADABLE = "Switch can't read the saved secret any more."
 
 GITHUB_NEEDS_HTTPS = (
-    "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people "
-    "back to Switch."
+    "GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http "
+    "one (localhost, 127.0.0.1 or ::1), to send people back to Switch."
 )
 
 
@@ -109,12 +110,13 @@ def needs_operator_app(definition: ConnectionDefinition) -> bool:
 
 def github_needs_https(kind: AppKind | None, public_url: str | None) -> bool:
     """Whether a GitHub App can't be set up on a server at `public_url`:
-    GitHub sends people back only to an https address. An unset public URL
-    is not this: setting it is the operator's first step for every app."""
+    GitHub sends people back only to an https address, or to plain http on
+    the loopback address. An unset public URL is not this: setting it is the
+    operator's first step for every app."""
     return (
         kind == "github_app"
         and public_url is not None
-        and urlsplit(public_url).scheme != "https"
+        and not https_or_loopback(public_url)
     )
 
 
@@ -128,10 +130,11 @@ def not_set_up(name: str) -> str:
 
 def cannot_work_here(name: str) -> str:
     """What members are told about a service whose app this server can't
-    have: GitHub's, on a server without an https address."""
+    have: GitHub's, on a server whose address is plain http and not
+    loopback."""
     return (
-        f"{name} can't be used on this server: it needs the server to have an "
-        "https address."
+        f"{name} can't be used on this server: its address must be https, or "
+        "http on your own computer (localhost or 127.0.0.1)."
     )
 
 
@@ -228,7 +231,7 @@ class AppLoadError(Exception):
 
 def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubApp:
     """A GitHub App from saved values, called back at `public_url`."""
-    if public_url is None or urlsplit(public_url).scheme != "https":
+    if public_url is None or not https_or_loopback(public_url):
         raise AppLoadError(GITHUB_NEEDS_HTTPS)
     try:
         connections = GitHubConnections(

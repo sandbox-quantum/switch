@@ -253,26 +253,40 @@ def test_a_service_signing_in_only_through_the_server_needs_its_public_url(
     assert example is not None and example.code == "app_not_set_up"
 
 
-def test_github_cannot_work_on_a_server_without_an_https_address(
+def test_github_cannot_work_on_a_server_at_another_computers_http_address(
     tmp_path: Path, session_factory
 ) -> None:
     catalog = _catalog(tmp_path, STATIC)
-    broker = _broker(catalog, session_factory, {}, "http://127.0.0.1:8000")
+    broker = _broker(catalog, session_factory, {}, "http://switch.example.com")
     github = broker.unavailable("github")
     assert github is not None
     assert github.code == "needs_https"
     assert github.reason == (
-        "GitHub can't be used on this server: it needs the server to have an "
-        "https address."
+        "GitHub can't be used on this server: its address must be https, or "
+        "http on your own computer (localhost or 127.0.0.1)."
     )
     assert broker.server_setup_needed("github") is False
     # Google and the like take an http address back, so their app still can be.
     example = broker.unavailable("example")
     assert example is not None and example.code == "app_not_set_up"
 
-    https = _broker(catalog, session_factory, {}, "https://switch.example.com")
-    github = https.unavailable("github")
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        "https://switch.example.com",
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://[::1]:8000",
+    ],
+)
+def test_github_can_be_set_up_on_https_or_on_this_computer(
+    tmp_path: Path, session_factory, public_url: str
+) -> None:
+    broker = _broker(_catalog(tmp_path, STATIC), session_factory, {}, public_url)
+    github = broker.unavailable("github")
     assert github is not None and github.code == "app_not_set_up"
+    assert broker.server_setup_needed("github") is True
 
 
 def test_a_service_with_no_app_to_set_up_is_just_not_set_up(

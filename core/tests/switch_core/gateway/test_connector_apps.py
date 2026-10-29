@@ -63,6 +63,8 @@ from tests.switch_core.management.harness import Harness, build_harness, cookies
 
 PUBLIC = "https://switch.example.com"
 HTTP_PUBLIC = "http://switch.example.com"
+# The address a server Switch Console runs has.
+LOOPBACK_PUBLIC = "http://127.0.0.1:8000"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
@@ -317,6 +319,11 @@ async def world(session_factory) -> World:
 @pytest.fixture
 async def http_world(session_factory) -> World:
     return World(session_factory, HTTP_PUBLIC)
+
+
+@pytest.fixture
+async def loopback_world(session_factory) -> World:
+    return World(session_factory, LOOPBACK_PUBLIC)
 
 
 @pytest.fixture
@@ -642,8 +649,8 @@ class TestGitHubNeedsHttps:
         services = {entry["slug"]: entry for entry in listed.json()["connections"]}
         assert services["github"]["unavailable_code"] == "needs_https"
         assert services["github"]["unavailable_reason"] == (
-            "GitHub can't be used on this server: it needs the server to have an "
-            "https address."
+            "GitHub can't be used on this server: its address must be https, or "
+            "http on your own computer (localhost or 127.0.0.1)."
         )
         assert services["github"]["server_setup_needed"] is False
         assert services[GOOGLE]["unavailable_code"] == "app_not_set_up"
@@ -708,6 +715,52 @@ class TestGitHubNeedsHttps:
             )
         assert saved.status_code == 200, saved.text
         assert saved.json()["setup_blocked"] is None
+        assert len(await _rows(session_factory)) == 1
+
+
+class TestGitHubOnThisComputer:
+    """A server only this computer reaches, as Switch Console runs one, is
+    called back over plain http on the loopback address, which GitHub takes."""
+
+    CALLBACK = f"{LOOPBACK_PUBLIC}/gateway/provider-connections/github/callback"
+
+    async def test_the_list_offers_github_with_its_callback(
+        self, loopback_world: World, operator
+    ) -> None:
+        await loopback_world.install()
+        async with loopback_world.harness.client() as client:
+            listed = await client.get(APPS, cookies=cookies_for(operator))
+            catalog = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(operator)
+            )
+        assert listed.status_code == 200, listed.text
+        apps = {entry["slug"]: entry for entry in listed.json()["apps"]}
+        assert apps["github"]["setup_blocked"] is None
+        assert apps["github"]["redirect_uris"] == [self.CALLBACK]
+        services = {entry["slug"]: entry for entry in catalog.json()["connections"]}
+        assert services["github"]["unavailable_code"] == "app_not_set_up"
+        assert services["github"]["server_setup_needed"] is True
+
+    async def test_a_github_app_is_saved_and_called_back_there(
+        self, loopback_world: World, operator, session_factory
+    ) -> None:
+        apps = await loopback_world.install()
+        async with loopback_world.harness.client() as client:
+            saved = await client.put(
+                f"{APPS}/github",
+                json={
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_SECRET,
+                    "private_key": loopback_world.github.pem(),
+                    "replace": False,
+                },
+                cookies=cookies_for(operator),
+            )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["load_error"] is None
+        assert saved.json()["redirect_uris"] == [self.CALLBACK]
+        app = apps.github_app()
+        assert app is not None and app.connections.callback == self.CALLBACK
         assert len(await _rows(session_factory)) == 1
 
 

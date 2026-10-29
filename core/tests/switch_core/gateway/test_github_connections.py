@@ -255,6 +255,36 @@ async def test_a_connection_through_a_replaced_app_tells_its_owner_to_reconnect(
         )
 
 
+@pytest.mark.parametrize(
+    ("base_url", "secure"),
+    [("https://switch.example.com", True), ("http://127.0.0.1:8000", False)],
+)
+async def test_the_cookie_is_secure_except_over_http_on_this_computer(
+    github_app, base_url, secure
+):
+    """A server Switch Console runs is reached over plain http on loopback,
+    where a browser drops a Secure cookie and nothing in between reads it."""
+    client, _, _, _ = github_app
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=client._transport.app), base_url=base_url
+    ) as local:
+        started = await local.post(
+            BASE + "/flows",
+            json={
+                "port": 12345,
+                "state": secrets.token_urlsafe(32),
+                "completion_secret": SECRET,
+            },
+        )
+        assert started.status_code == 200, started.text
+        authorized = await local.get(
+            urlsplit(started.json()["url"]).path, params={"state": started.json()["id"]}
+        )
+    cookie = authorized.headers["set-cookie"]
+    assert "HttpOnly" in cookie
+    assert ("Secure" in cookie) is secure
+
+
 async def test_callback_rejects_missing_cookie_and_replayed_completion(github_app):
     client, github, _, _ = github_app
     flow_id = await authorize(client)

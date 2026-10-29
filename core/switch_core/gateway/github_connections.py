@@ -38,6 +38,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.loopback import secure_cookie
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
@@ -169,6 +170,7 @@ async def start(
 @router.get("/authorize")
 async def authorize(
     state: str,
+    request: Request,
     github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
@@ -193,7 +195,7 @@ async def authorize(
         "switch_github_" + state,
         nonce,
         max_age=600,
-        secure=True,
+        secure=secure_cookie(request),
         httponly=True,
         samesite="lax",
         path="/gateway/provider-connections/github/callback",
@@ -250,7 +252,7 @@ async def callback(
         response.delete_cookie(
             "switch_github_" + state,
             path="/gateway/provider-connections/github/callback",
-            secure=True,
+            secure=secure_cookie(request),
             httponly=True,
             samesite="lax",
         )

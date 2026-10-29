@@ -18,6 +18,7 @@ from starlette.datastructures import State
 from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.app_credentials import (
+    GITHUB_NEEDS_HTTPS,
     SECRET_NAMES,
     ConnectorApps,
     install_github_app,
@@ -271,7 +272,7 @@ class TestSavedGitHubApp:
             f"{PUBLIC_URL}/gateway/provider-connections/github/callback"
         )
 
-    async def test_it_is_not_set_up_without_an_https_public_url(
+    async def test_it_is_not_set_up_on_another_computers_http_address(
         self, session_factory
     ) -> None:
         await _save(
@@ -285,8 +286,29 @@ class TestSavedGitHubApp:
         await apps.load()
         effective = apps.effective("github")
         assert effective.source == "none"
-        assert effective.load_error is not None
-        assert "https" in effective.load_error
+        assert effective.load_error == GITHUB_NEEDS_HTTPS
+
+    @pytest.mark.parametrize(
+        "public_url", ["http://127.0.0.1:8000", "http://localhost:8000"]
+    )
+    async def test_it_is_set_up_on_this_computers_http_address(
+        self, session_factory, public_url: str
+    ) -> None:
+        await _save(
+            session_factory,
+            "github",
+            client_id="example-client-id",
+            settings={"slug": "example-app"},
+            secrets={"client_secret": "example-secret-0000", "private_key": _rsa_pem()},
+        )
+        apps = _apps(session_factory, gateway_public_url=public_url)
+        await apps.load()
+        assert apps.effective("github").load_error is None
+        app = apps.github_app()
+        assert app is not None
+        assert app.connections.callback == (
+            f"{public_url}/gateway/provider-connections/github/callback"
+        )
 
     async def test_a_key_that_is_not_rsa_leaves_it_not_set_up(
         self, session_factory, caplog: pytest.LogCaptureFixture

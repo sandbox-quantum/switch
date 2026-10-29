@@ -161,8 +161,8 @@ def _spec(apps: ConnectorApps, service: str) -> AppSpec:
 
 def _setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
     """Why the operator can't set this app up here, known before any vendor
-    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; Google
-    accepts an http redirect for local development, GitHub does not."""
+    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; GitHub
+    sends people back only to https, or to plain http on this computer."""
     if github_needs_https(spec.kind, public_url):
         return GITHUB_NEEDS_HTTPS
     return None

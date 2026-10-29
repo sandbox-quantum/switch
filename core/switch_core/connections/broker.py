@@ -148,7 +148,8 @@ UnavailableCode = Literal[
     "coming_soon",
     # The operator switched it off on this server (`DISABLED_SERVICES`).
     "switched_off",
-    # Its app can't be set up on this server: GitHub's needs an https address.
+    # Its app can't be set up on this server: GitHub's needs an https address,
+    # or plain http on this computer.
     "needs_https",
     # Its sign-ins return only to the server's own callback, and the server
     # has no public address (`GATEWAY_PUBLIC_URL`).
