@@ -111,7 +111,7 @@ import type {
   PendingInvitations,
   WorkspaceJoinDomains,
 } from '@shared/core/workspaces/invitations';
-import type { WorkspaceRole } from '@shared/core/workspaces/workspaces';
+import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
 import { NoManagementApiError } from './server-address';
@@ -612,11 +612,40 @@ export type RemoteTenant = {
   slug: string;
   name: string;
   role: WorkspaceRole;
+  /** Null on a server from before organizations, which reports none. */
+  organizationId: string | null;
+  organizationRole: OrganizationRole | null;
+};
+
+type TenantJson = {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  organization_id?: string | null;
+  organization_role?: string | null;
 };
 
 function mapRole(raw: unknown): WorkspaceRole {
   if (raw === 'owner' || raw === 'admin' || raw === 'member') return raw;
   throw new GatewayError('http', `Switch server reported an unknown workspace role: ${raw}`);
+}
+
+function mapOrganizationRole(raw: unknown): OrganizationRole | null {
+  if (raw === undefined || raw === null) return null;
+  if (raw === 'org_admin' || raw === 'member') return raw;
+  throw new GatewayError('http', `Switch server reported an unknown organization role: ${raw}`);
+}
+
+function mapTenant(json: TenantJson): RemoteTenant {
+  return {
+    id: json.id,
+    slug: json.slug,
+    name: json.name,
+    role: mapRole(json.role),
+    organizationId: json.organization_id ?? null,
+    organizationRole: mapOrganizationRole(json.organization_role),
+  };
 }
 
 /**
@@ -626,30 +655,82 @@ function mapRole(raw: unknown): WorkspaceRole {
  */
 export async function fetchTenants(server: SwitchServer): Promise<RemoteTenant[]> {
   const res = await gatewayFetch(server, '/tenants', { authenticated: true });
-  const json = (await res.json()) as Array<{
-    id: string;
-    slug: string;
-    name: string;
-    role: string;
-  }>;
-  return json.map((t) => ({ id: t.id, slug: t.slug, name: t.name, role: mapRole(t.role) }));
+  return ((await res.json()) as TenantJson[]).map(mapTenant);
 }
 
 /**
- * Create a workspace on this server, owned by the signed-in user.
+ * The names of the organizations the signed-in user belongs to, by id. Like
+ * `GET /tenants` it needs no tenant selected.
+ *
+ * Null on a server from before organizations, which has no such route.
+ */
+export async function fetchOrganizationNames(
+  server: SwitchServer
+): Promise<Map<string, string> | null> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/organizations', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  const json = (await res.json()) as Array<{ id: string; name: string }>;
+  return new Map(json.map((o) => [o.id, o.name]));
+}
+
+/**
+ * Create an organization on this server, with a first workspace of the same
+ * name, owned by the signed-in user. Answers with that workspace.
+ *
+ * A server from before organizations has no `POST /organizations`, and is
+ * asked for a workspace through `POST /tenants` instead, as it always was.
  *
  * The gateway derives the slug from the name and refuses a name whose slug is
  * already taken, so the caller shows that refusal rather than retrying under a
  * name the user did not choose.
  */
-export async function createTenant(server: SwitchServer, name: string): Promise<RemoteTenant> {
-  const res = await gatewayFetch(server, '/tenants', {
+export async function createOrganization(
+  server: SwitchServer,
+  name: string
+): Promise<RemoteTenant> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/organizations', {
+      authenticated: true,
+      method: 'POST',
+      body: { name },
+    });
+  } catch (cause) {
+    if (!(cause instanceof GatewayError && cause.status === 404)) throw cause;
+    const legacy = await gatewayFetch(server, '/tenants', {
+      authenticated: true,
+      method: 'POST',
+      body: { name },
+    });
+    return mapTenant((await legacy.json()) as TenantJson);
+  }
+  const json = (await res.json()) as { workspace: TenantJson };
+  return mapTenant(json.workspace);
+}
+
+/**
+ * Add a workspace to the organization of the workspace the session selects,
+ * owned by the signed-in user. The gateway allows it to an `org_admin` only,
+ * and leaves the session's selection where it was.
+ *
+ * Call it through the session seam scoped to a workspace of that organization:
+ * the organization is read from the selection, not named in the call.
+ */
+export async function createOrganizationWorkspace(
+  server: SwitchServer,
+  name: string
+): Promise<RemoteTenant> {
+  const res = await gatewayFetch(server, '/organizations/current/workspaces', {
     authenticated: true,
     method: 'POST',
     body: { name },
   });
-  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
-  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+  return mapTenant((await res.json()) as TenantJson);
 }
 
 /**
@@ -757,7 +838,7 @@ export async function fetchPendingInvitations(server: SwitchServer): Promise<Pen
 }
 
 async function joinedTenant(server: SwitchServer, res: Response): Promise<RemoteTenant> {
-  const json = (await res.json()) as { id: string; slug: string; name: string; role: string };
+  const json = (await res.json()) as TenantJson;
   const cookie = extractAuthCookie(res.headers.getSetCookie());
   if (!cookie) {
     throw new GatewayError(
@@ -766,7 +847,7 @@ async function joinedTenant(server: SwitchServer, res: Response): Promise<Remote
     );
   }
   await setSessionCookie(server.id, cookie);
-  return { id: json.id, slug: json.slug, name: json.name, role: mapRole(json.role) };
+  return mapTenant(json);
 }
 
 type InvitationJson = {
@@ -997,30 +1078,68 @@ export async function fetchInviteEmailEnabled(server: SwitchServer): Promise<boo
 }
 
 /**
- * Whether the signed-in account may create a workspace on this server: the
- * server's own answer, which covers its sign-up mode, the per-person cap, and
- * a deployment that keeps to one workspace because it is not isolating them.
+ * What the signed-in account may create on this server, as the server answers
+ * it for the workspace the session selects.
  *
- * True on a server older than the answer (no session route, or no field): it
- * refused nothing up front either.
+ * - `canCreate`: a new organization with its first workspace — or, on a server
+ *   from before organizations, a workspace. The answer covers the server's
+ *   sign-up mode, the per-person cap, and a deployment that keeps to one
+ *   workspace because it is not isolating them.
+ * - `canAddWorkspace`: another workspace in the selected workspace's
+ *   organization, which only its `org_admin` may do.
+ * - `organizations`: whether the server has organizations at all, which is
+ *   what `canCreate` creates.
  */
-export async function fetchCanCreateWorkspace(server: SwitchServer): Promise<boolean> {
+export type WorkspaceCreation = {
+  canCreate: boolean;
+  canAddWorkspace: boolean;
+  organizations: boolean;
+};
+
+/**
+ * {@link WorkspaceCreation} for the session's workspace.
+ *
+ * On a server older than either answer (no session route, or no field) creating
+ * is allowed, since it refused nothing up front either, and adding to an
+ * organization is not, since there are none.
+ */
+export async function fetchWorkspaceCreation(server: SwitchServer): Promise<WorkspaceCreation> {
   let res: Response;
   try {
     res = await gatewayFetch(server, '/auth/session', { authenticated: true });
   } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return true;
+    if (cause instanceof GatewayError && cause.status === 404) {
+      return { canCreate: true, canAddWorkspace: false, organizations: false };
+    }
     throw cause;
   }
-  const json = (await res.json()) as { can_create_workspace?: unknown };
-  if (json.can_create_workspace === undefined) return true;
-  if (typeof json.can_create_workspace !== 'boolean') {
+  const json = (await res.json()) as {
+    can_create_workspace?: unknown;
+    can_add_workspace?: unknown;
+  };
+  return {
+    canCreate: optionalFlag(server, json, 'can_create_workspace', true),
+    canAddWorkspace: optionalFlag(server, json, 'can_add_workspace', false),
+    // Answered by the same release that added organizations.
+    organizations: json.can_add_workspace !== undefined,
+  };
+}
+
+function optionalFlag(
+  server: SwitchServer,
+  json: Record<string, unknown>,
+  field: string,
+  absent: boolean
+): boolean {
+  const value = json[field];
+  if (value === undefined) return absent;
+  if (typeof value !== 'boolean') {
     throw new GatewayError(
       'http',
-      `${server.name} reported an unreadable can_create_workspace: ${String(json.can_create_workspace)}`
+      `${server.name} reported an unreadable ${field}: ${String(value)}`
     );
   }
-  return json.can_create_workspace;
+  return value;
 }
 
 /** Options for `registerKnownAgent`, matching the gateway's

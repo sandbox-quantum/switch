@@ -11,6 +11,12 @@
 /** The caller's standing in a workspace, as the gateway reports it. */
 export type WorkspaceRole = 'owner' | 'admin' | 'member';
 
+/**
+ * The caller's standing in the organization a workspace belongs to. An
+ * `org_admin` administers every workspace in it, and may add more.
+ */
+export type OrganizationRole = 'org_admin' | 'member';
+
 /** A workspace on a registered Switch server. */
 export type Workspace = {
   id: string;
@@ -33,6 +39,18 @@ export type Workspace = {
    * what {@link isWithdrawnWorkspace} reads.
    */
   role: WorkspaceRole | null;
+  /**
+   * The organization the workspace belongs to on the gateway. Null on a server
+   * from before organizations, and alongside a null `tenantId`.
+   */
+  organizationId: string | null;
+  /**
+   * The organization's name. Null where `organizationId` is, and on a server
+   * that reports the id but cannot yet list organizations by name.
+   */
+  organizationName: string | null;
+  /** The caller's role in that organization; null where `organizationId` is. */
+  organizationRole: OrganizationRole | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -43,6 +61,15 @@ export type Workspace = {
  */
 export function administersWorkspace(workspace: Workspace): boolean {
   return workspace.role === 'owner' || workspace.role === 'admin';
+}
+
+/**
+ * Whether this account may add workspaces to the organization `workspace`
+ * belongs to. Whether the server allows it right now (its allowance) is the
+ * server's to say; this is only the role.
+ */
+export function administersOrganization(workspace: Workspace): boolean {
+  return workspace.organizationRole === 'org_admin' && !isWithdrawnWorkspace(workspace);
 }
 
 /**

@@ -1,8 +1,14 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
+import type { CreateTarget } from '@renderer/features/workspaces/create-workspace-modal';
+import {
+  addWorkspaceThrough,
+  type CreationAnswer,
+  groupByOrganization,
+} from '@renderer/features/workspaces/organization-groups';
 import {
   InvitedBadge,
   invitationSummary,
@@ -392,8 +398,9 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             </div>
           )}
           <DropdownMenuSeparator className="mx-1 my-1.5 h-[0.5px] bg-[var(--hair)]" />
-          {/* New workspace and Invite live with the server and the workspace
-              they act on, so only what belongs to no server is left here. */}
+          {/* Create organization and Invite live with the server and the
+              workspace they act on, so only what belongs to no server is left
+              here. */}
           <DropdownMenuItem className={ACTION_ROW} onClick={() => showAddServerModal({})}>
             <Server className="size-4" />
             Add server…
@@ -489,7 +496,7 @@ const ServerWorkspaceGroup = observer(function ServerWorkspaceGroup({
     <ServerWorkspaceGroupBody
       server={server}
       query={query}
-      canCreateWorkspace={false}
+      creation={NO_CREATION}
       invitations={NO_OFFERS.invitations}
       joinable={NO_OFFERS.joinable}
       invitationsFailed={false}
@@ -503,22 +510,47 @@ const NO_OFFERS: { invitations: PendingInvitation[]; joinable: JoinableWorkspace
   joinable: [],
 };
 
+/**
+ * What the switcher offers to create on a server.
+ *
+ * `answer` is the server's own, for the workspace it was asked about; null
+ * until it has answered, or where it could not be asked.
+ */
+type Creation = {
+  canCreate: boolean;
+  organizations: boolean;
+  answer: CreationAnswer | null;
+};
+
+const NO_CREATION: Creation = { canCreate: false, organizations: false, answer: null };
+
 function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer; query: string }) {
   const invitations = usePendingInvitations(server.id);
   const joinable = useJoinableWorkspaces(server.id);
-  // The server's own answer, so New workspace is not offered where creating
-  // one is refused: a deployment that keeps to one workspace, invite-only
-  // sign-up, or a spent allowance. Offered until it has said no.
-  const canCreate = useQuery({
-    queryKey: ['can-create-workspace', server.id],
-    queryFn: () => rpc.switchServers.canCreateWorkspace(server.id),
+  // The server's own answer, so Create organization is not offered where
+  // creating one is refused: a deployment that keeps to one workspace,
+  // invite-only sign-up, or a spent allowance. Offered until it has said no.
+  const answer = useQuery({
+    queryKey: ['workspace-creation', server.id],
+    queryFn: () => rpc.switchServers.workspaceCreation(server.id),
     staleTime: 60_000,
   });
+  const creation: Creation = answer.data
+    ? {
+        canCreate: answer.data.canCreate,
+        organizations: answer.data.organizations,
+        answer: answer.data,
+      }
+    : {
+        canCreate: true,
+        organizations: workspacesStore.onServer(server.id).some((w) => w.organizationId !== null),
+        answer: null,
+      };
   return (
     <ServerWorkspaceGroupBody
       server={server}
       query={query}
-      canCreateWorkspace={canCreate.data !== false}
+      creation={creation}
       invitations={listedInvitations(invitations.data)}
       joinable={listedJoinable(joinable.data)}
       invitationsFailed={invitations.isError}
@@ -530,7 +562,7 @@ function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer
 const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
   server,
   query,
-  canCreateWorkspace,
+  creation,
   invitations,
   joinable,
   invitationsFailed,
@@ -538,7 +570,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
 }: {
   server: SwitchServer;
   query: string;
-  canCreateWorkspace: boolean;
+  creation: Creation;
   invitations: PendingInvitation[];
   joinable: JoinableWorkspace[];
   invitationsFailed: boolean;
@@ -597,11 +629,15 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
     return null;
   }
   const available = availability === 'available';
-  const createWorkspace = () =>
+  const create = (target: CreateTarget) =>
     showCreateWorkspaceModal({
       serverId: server.id,
+      target,
       onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
     });
+  const groups = groupByOrganization(workspaces);
+  // Headed only where there is more than one to tell apart.
+  const headed = groups.length > 1;
 
   return (
     <DropdownMenuGroup>
@@ -639,8 +675,10 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
         <>
           {noMembership && whole && (
             <div className="px-2 py-1.5 text-xs text-foreground-muted">
-              {canCreateWorkspace
-                ? 'No workspace yet — create one, or accept an invitation below.'
+              {creation.canCreate
+                ? creation.organizations
+                  ? 'No workspace yet — create an organization, or accept an invitation below.'
+                  : 'No workspace yet — create one, or accept an invitation below.'
                 : 'No workspace yet — accept an invitation below.'}
             </div>
           )}
@@ -652,15 +690,47 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
               No workspace yet — this server has not finished being set up.
             </div>
           ) : (
-            workspaces.map((workspace) => (
-              <WorkspaceMenuItem
-                key={workspace.id}
-                workspace={workspace}
-                server={server}
-                onServerCount={all.length}
-                dormant={false}
-              />
-            ))
+            groups.map((group) => {
+              const through = whole ? addWorkspaceThrough(group, all, creation.answer) : null;
+              return (
+                <Fragment key={group.organizationId ?? 'none'}>
+                  {headed && (
+                    <div
+                      data-org-heading
+                      className="truncate px-[9px] pt-1.5 pb-0.5 text-[11px] font-medium text-[var(--fg-dim)]"
+                    >
+                      {group.name ?? 'Other workspaces'}
+                    </div>
+                  )}
+                  {group.workspaces.map((workspace) => (
+                    <WorkspaceMenuItem
+                      key={workspace.id}
+                      workspace={workspace}
+                      server={server}
+                      onServerCount={all.length}
+                      dormant={false}
+                    />
+                  ))}
+                  {through && (
+                    <DropdownMenuItem
+                      onClick={() =>
+                        create({
+                          kind: 'organization-workspace',
+                          through: through.id,
+                          organizationName: group.name,
+                        })
+                      }
+                      className={cn(ACTION_ROW, 'text-[var(--fg-dim)]')}
+                    >
+                      <Plus className="size-4" />
+                      {headed || group.name === null
+                        ? 'Add workspace'
+                        : `Add workspace to ${group.name}`}
+                    </DropdownMenuItem>
+                  )}
+                </Fragment>
+              );
+            })
           )}
           {invitationsFailed && (
             <div className="px-2 py-1.5 text-xs text-foreground-muted">
@@ -682,13 +752,15 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
           {shownJoinable.map((offer) => (
             <JoinableWorkspaceMenuItem key={offer.tenantId} offer={offer} server={server} />
           ))}
-          {whole && canCreateWorkspace && (
+          {whole && creation.canCreate && (
             <DropdownMenuItem
-              onClick={createWorkspace}
+              onClick={() =>
+                create({ kind: creation.organizations ? 'organization' : 'workspace' })
+              }
               className={cn(ACTION_ROW, 'text-[var(--fg-dim)]')}
             >
               <Plus className="size-4" />
-              New workspace
+              {creation.organizations ? 'Create organization' : 'New workspace'}
             </DropdownMenuItem>
           )}
         </>

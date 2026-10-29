@@ -10,6 +10,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const create = vi.hoisted(() => vi.fn());
+const addToOrganization = vi.hoisted(() => vi.fn());
 const setActiveWorkspace = vi.hoisted(() => vi.fn());
 const connected = vi.hoisted(() => new Set<string>());
 /** Ids a status read has answered for. Not asked yet is its own state. */
@@ -40,10 +41,13 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { create, setActive: setActiveWorkspace },
+  workspacesStore: { create, addToOrganization, setActive: setActiveWorkspace },
 }));
 
-import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
+import {
+  type CreateTarget,
+  CreateWorkspaceModal,
+} from '@renderer/features/workspaces/create-workspace-modal';
 import { modalStore } from '@renderer/lib/modal/modal-store';
 import { Dialog } from '@renderer/lib/ui/dialog';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
@@ -69,6 +73,7 @@ function workspace(id: string, serverId: string) {
 
 beforeEach(() => {
   create.mockReset();
+  addToOrganization.mockReset();
   setActiveWorkspace.mockReset().mockResolvedValue(undefined);
   refreshStatus.mockReset();
   onSuccess.mockReset();
@@ -116,7 +121,10 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(serverId: string): Promise<HTMLDivElement> {
+async function render(
+  serverId: string,
+  target: CreateTarget = { kind: 'workspace' }
+): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -125,7 +133,12 @@ async function render(serverId: string): Promise<HTMLDivElement> {
   await act(async () =>
     root!.render(
       <Dialog open onOpenChange={() => {}}>
-        <CreateWorkspaceModal serverId={serverId} onSuccess={onSuccess} onClose={onClose} />
+        <CreateWorkspaceModal
+          serverId={serverId}
+          target={target}
+          onSuccess={onSuccess}
+          onClose={onClose}
+        />
       </Dialog>
     )
   );
@@ -160,6 +173,44 @@ function hasLabel(el: HTMLElement, text: string): boolean {
 }
 
 describe('the create-workspace modal', () => {
+  it('creates an organization on a server that has them', async () => {
+    addServer('srv-1', 'Acme prod', 'signedIn');
+    const made = workspace('ws-9', 'srv-1');
+    create.mockResolvedValue(made);
+
+    const el = await render('srv-1', { kind: 'organization' });
+    expect(el.textContent).toContain('Create an organization on Acme prod');
+    await typeName(el, 'Weekend Robotics');
+    await act(async () => button(el, 'Create organization').click());
+    await settle();
+
+    expect(create).toHaveBeenCalledWith('srv-1', 'Weekend Robotics');
+    expect(onSuccess).toHaveBeenCalledWith(made);
+  });
+
+  it('adds a workspace to an organization through one of its workspaces', async () => {
+    addServer('srv-1', 'Acme prod', 'signedIn');
+    const made = workspace('ws-9', 'srv-1');
+    addToOrganization.mockResolvedValue(made);
+
+    const el = await render('srv-1', {
+      kind: 'organization-workspace',
+      through: 'ws-1',
+      organizationName: 'Acme',
+    });
+    expect(el.textContent).toContain('Add a workspace to Acme');
+    // Its place is the organization's, so there is no other server to offer.
+    expect(el.textContent).not.toContain('Add a server');
+    await typeName(el, 'Labs');
+    await act(async () => button(el, 'Add workspace').click());
+    await settle();
+
+    expect(addToOrganization).toHaveBeenCalledWith('ws-1', 'Labs');
+    expect(create).not.toHaveBeenCalled();
+    expect(setActiveWorkspace).toHaveBeenCalledWith('ws-9');
+    expect(onSuccess).toHaveBeenCalledWith(made);
+  });
+
   it('creates on the server the window is in, and goes there', async () => {
     addServer('srv-1', 'Acme prod', 'signedIn');
     const made = workspace('ws-9', 'srv-1');

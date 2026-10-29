@@ -88,7 +88,11 @@ const {
   removeBridgeTeam,
   createInvitation,
   fetchInvitations,
-  fetchCanCreateWorkspace,
+  createOrganization,
+  createOrganizationWorkspace,
+  fetchOrganizationNames,
+  fetchTenants,
+  fetchWorkspaceCreation,
   fetchInviteEmailEnabled,
   createRoom,
   deleteBridge,
@@ -2336,6 +2340,147 @@ describe('messaging-app installs', () => {
   });
 });
 
+describe('organizations', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const WORKSPACE_JSON = {
+    id: 't1',
+    slug: 'acme',
+    name: 'Acme',
+    role: 'owner',
+    organization_id: 'o1',
+    organization_role: 'org_admin',
+  };
+  const WORKSPACE = {
+    id: 't1',
+    slug: 'acme',
+    name: 'Acme',
+    role: 'owner',
+    organizationId: 'o1',
+    organizationRole: 'org_admin',
+  };
+
+  function requests(): Array<{ url: string; method: string; body: unknown }> {
+    return (
+      fetchMock.mock.calls as unknown as Array<[string, { method?: string; body?: string }]>
+    ).map(([url, init]) => ({
+      url,
+      method: init.method ?? 'GET',
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
+    }));
+  }
+
+  it('reads each membership’s organization and the caller’s role in it', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        WORKSPACE_JSON,
+        { id: 't2', slug: 'old', name: 'Old', role: 'member' },
+      ]) as never
+    );
+
+    await expect(fetchTenants(SERVER)).resolves.toEqual([
+      WORKSPACE,
+      {
+        id: 't2',
+        slug: 'old',
+        name: 'Old',
+        role: 'member',
+        organizationId: null,
+        organizationRole: null,
+      },
+    ]);
+  });
+
+  it('refuses an organization role it does not know', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([{ ...WORKSPACE_JSON, organization_role: 'billing' }]) as never
+    );
+    await expect(fetchTenants(SERVER)).rejects.toThrow(/unknown organization role: billing/);
+  });
+
+  it('names the organizations by id, and says when the server has none', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([{ id: 'o1', slug: 'acme', name: 'Acme Inc', role: 'org_admin' }]) as never
+    );
+    await expect(fetchOrganizationNames(SERVER)).resolves.toEqual(new Map([['o1', 'Acme Inc']]));
+
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchOrganizationNames(SERVER)).resolves.toBeNull();
+  });
+
+  it('creates an organization and answers with its first workspace', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        organization: { id: 'o1', slug: 'acme', name: 'Acme', role: 'org_admin' },
+        workspace: WORKSPACE_JSON,
+      }) as never
+    );
+
+    await expect(createOrganization(SERVER, 'Acme')).resolves.toEqual(WORKSPACE);
+    expect(requests()).toEqual([
+      {
+        url: 'https://switch.example.com/gateway/organizations',
+        method: 'POST',
+        body: { name: 'Acme' },
+      },
+    ]);
+  });
+
+  it('creates a workspace on a server from before organizations', async () => {
+    fetchMock
+      .mockResolvedValueOnce(errorResponse(404, '{"detail":"Not Found"}') as never)
+      .mockResolvedValueOnce(
+        jsonResponse({ id: 't1', slug: 'acme', name: 'Acme', role: 'owner' }) as never
+      );
+
+    await expect(createOrganization(SERVER, 'Acme')).resolves.toEqual({
+      id: 't1',
+      slug: 'acme',
+      name: 'Acme',
+      role: 'owner',
+      organizationId: null,
+      organizationRole: null,
+    });
+    expect(requests().map((r) => r.url)).toEqual([
+      'https://switch.example.com/gateway/organizations',
+      'https://switch.example.com/gateway/tenants',
+    ]);
+  });
+
+  it('passes on a refusal rather than retrying under the old route', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(403, '{"detail":"Creating organizations is turned off"}') as never
+    );
+
+    await expect(createOrganization(SERVER, 'Acme')).rejects.toMatchObject({ status: 403 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds a workspace to the selected workspace’s organization', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...WORKSPACE_JSON, id: 't3' }) as never);
+
+    await expect(createOrganizationWorkspace(SERVER, 'Labs')).resolves.toEqual({
+      ...WORKSPACE,
+      id: 't3',
+    });
+    expect(requests()).toEqual([
+      {
+        url: 'https://switch.example.com/gateway/organizations/current/workspaces',
+        method: 'POST',
+        body: { name: 'Labs' },
+      },
+    ]);
+  });
+});
+
 describe('acceptInvitation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -2372,7 +2517,14 @@ describe('acceptInvitation', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ token: 'tok-1' });
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
-    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+    expect(tenant).toEqual({
+      id: 't1',
+      slug: 'cryo',
+      name: 'Cryo Team',
+      role: 'member',
+      organizationId: null,
+      organizationRole: null,
+    });
   });
 
   it('raises when the server joins the workspace but sends no cookie', async () => {
@@ -2616,7 +2768,14 @@ describe('invitations addressed to the signed-in account', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ tenant_id: 't1', invitation_id: 'inv-1' });
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
-    expect(tenant).toEqual({ id: 't1', slug: 'cryo', name: 'Cryo Team', role: 'member' });
+    expect(tenant).toEqual({
+      id: 't1',
+      slug: 'cryo',
+      name: 'Cryo Team',
+      role: 'member',
+      organizationId: null,
+      organizationRole: null,
+    });
   });
 });
 
@@ -2665,7 +2824,14 @@ describe('joining a workspace by e-mail domain', () => {
     fetchMock.mockResolvedValue({
       status: 200,
       ok: true,
-      json: async () => ({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' }),
+      json: async () => ({
+        id: 't9',
+        slug: 'skunk',
+        name: 'Skunkworks',
+        role: 'member',
+        organization_id: 'o1',
+        organization_role: 'member',
+      }),
       headers: { get: () => null, getSetCookie: () => ['switch_auth=scoped; Path=/; HttpOnly'] },
       text: async () => '',
     } as never);
@@ -2676,7 +2842,14 @@ describe('joining a workspace by e-mail domain', () => {
     expect(url).toBe('https://switch.example.com/gateway/joinable-tenants/t9/join');
     expect(init.method).toBe('POST');
     expect(setSessionCookie).toHaveBeenCalledExactlyOnceWith('srv-1', 'scoped');
-    expect(tenant).toEqual({ id: 't9', slug: 'skunk', name: 'Skunkworks', role: 'member' });
+    expect(tenant).toEqual({
+      id: 't9',
+      slug: 'skunk',
+      name: 'Skunkworks',
+      role: 'member',
+      organizationId: 'o1',
+      organizationRole: 'member',
+    });
   });
 
   it("reads a workspace's domains and the admin's own", async () => {
@@ -2825,18 +2998,41 @@ describe('workspace invitations', () => {
     await expect(fetchInviteEmailEnabled(SERVER)).resolves.toBeNull();
   });
 
-  it('reads whether the server lets the account create a workspace', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: false }) as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(false);
+  it('reads what the server lets the account create', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_create_workspace: false, can_add_workspace: true }) as never
+    );
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: false,
+      canAddWorkspace: true,
+      organizations: true,
+    });
 
+    // Older servers refused nothing up front, so nothing is hidden on them, and
+    // have no organizations to add to.
     fetchMock.mockResolvedValue(jsonResponse({ can_create_workspace: true }) as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
-
-    // Older servers refused nothing up front, so nothing is hidden on them.
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: false,
+    });
     fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: false,
+    });
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
-    await expect(fetchCanCreateWorkspace(SERVER)).resolves.toBe(true);
+    await expect(fetchWorkspaceCreation(SERVER)).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: false,
+    });
+  });
+
+  it('refuses an unreadable answer about adding a workspace', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_add_workspace: 'yes' }) as never);
+    await expect(fetchWorkspaceCreation(SERVER)).rejects.toThrow(/can_add_workspace/);
   });
 
   it('keeps the link when an older server says nothing about the e-mail', async () => {

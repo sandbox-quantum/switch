@@ -28,6 +28,9 @@ function workspace(id: string, serverId: string, name = id): Workspace {
     tenantId: `tenant-${id}`,
     slug: id,
     role: 'member',
+    organizationId: null,
+    organizationName: null,
+    organizationRole: null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   };

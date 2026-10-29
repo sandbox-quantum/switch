@@ -79,7 +79,9 @@ export class WorkspacesStore {
   }
 
   /**
-   * Create a workspace on a server and return it.
+   * Create an organization on a server, with a first workspace of the same
+   * name, and return that workspace. A server from before organizations
+   * creates the workspace alone.
    *
    * Refreshes before returning, so a caller that scopes the window to the new
    * workspace is not doing it against a list that does not contain it yet.
@@ -88,6 +90,16 @@ export class WorkspacesStore {
    */
   async create(serverId: string, name: string): Promise<Workspace> {
     const workspace = await rpc.switchServers.createWorkspace({ serverId, name });
+    await this.refresh();
+    return workspace;
+  }
+
+  /**
+   * Add a workspace to the organization `workspaceId` belongs to, and return
+   * it. Refreshes before returning, for the same reason as {@link create}.
+   */
+  async addToOrganization(workspaceId: string, name: string): Promise<Workspace> {
+    const workspace = await rpc.switchServers.addOrganizationWorkspace({ workspaceId, name });
     await this.refresh();
     return workspace;
   }
