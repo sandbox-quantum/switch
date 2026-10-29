@@ -527,6 +527,14 @@ version of their own to them without also giving them a release of their own.
   at GitHub. The server's switch now refuses the sign-in before it starts,
   flag or no flag, and a sign-in refused as it completes is revoked at
   GitHub.
+- **Checking a GitHub App says whether it has the permissions agents are
+  granted.** Saving or checking a GitHub App under Connector apps proved its
+  key, client ID and secret, and said a check could not see its permissions,
+  though GitHub's answer carries them. An App without Contents or Pull
+  requests set to Read and write was saved, and failed only at the first
+  token a grant asked for. The check now holds the App's permissions against
+  the most the catalog grants, names each one that falls short and what it
+  has, and a save is refused until the App has them.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
