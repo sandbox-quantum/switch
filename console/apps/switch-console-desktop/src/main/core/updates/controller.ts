@@ -1,8 +1,9 @@
 import { app, shell } from 'electron';
 import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
 import { updateService } from '@main/core/updates/update-service';
+import { IS_CANARY } from '@shared/app-identity';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { switchConsoleReleaseUrl } from '@shared/urls';
+import { manualDownloadUrl } from './manual-download';
 import { formatUpdaterError } from './utils';
 
 export const updateController = createRPCController({
@@ -34,13 +35,12 @@ export const updateController = createRPCController({
   },
 
   /**
-   * Hand the update to the user: open the release page of the version being
-   * offered and quit, so the app can be replaced while it is not running. The
-   * releases list itself is mostly other components' builds.
+   * Hand the update to the user: open the page of this channel's newest release
+   * and quit, so the app can be replaced while it is not running.
    */
   openLatest: async () => {
     try {
-      await shell.openExternal(switchConsoleReleaseUrl(updateService.getState().availableVersion));
+      await shell.openExternal(await manualDownloadUrl(IS_CANARY));
       setTimeout(() => {
         try {
           app.quit();

@@ -131,8 +131,11 @@ failure there can be silent: the app relaunches on the old version. So
 - Before a restart is offered, `install-preflight.ts` checks that the bundle is not
   translocated, belongs to the signed-in account, and that it and its folder can be
   written.
-- `install-failed` offers "Download manually", which opens the target version's
-  release page and quits. A check that finds the same version again keeps showing
+- `install-failed` offers "Download manually" (`manual-download.ts`), which opens the
+  newest release on the build's channel and quits. The link is read from GitHub,
+  never built from a version: stable opens `/releases/latest`, and canary looks up
+  the newest canary tag. A version can name a release that is gone, because the
+  workflow prunes old canaries and the dev harness invents versions. A check that finds the same version again keeps showing
   the failure; a newer version is offered as usual.
 
 ## Current Notes
