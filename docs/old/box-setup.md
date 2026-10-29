@@ -131,8 +131,11 @@ next token requests:
   Box's consent page has nothing to untick. Box still refuses whatever the
   person cannot do in a folder themselves.
 - A granted agent's token is its owner's own, shared by every agent they
-  grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
-  its sessions within an hour; disconnecting stops every agent at once.
+  grant; it cannot be narrowed or revoked per agent. Turning Box off for an
+  agent takes Box out of its running sessions within about a minute, but a
+  token the agent already holds stays valid at Box until it expires (up to
+  75 minutes). Disconnecting revokes the sign-in at Box and stops every agent
+  at once.
 - A connection reaches everything its owner can reach in Box, not one folder.
   To keep an agent to some folders, connect a Box user who is a collaborator
   on those folders alone.

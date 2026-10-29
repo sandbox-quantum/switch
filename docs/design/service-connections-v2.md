@@ -585,6 +585,16 @@ sign-in run against a free Box developer account; the operator's setup is in
   `login`, its email. It takes the token issued for `mcp.box.com`. Box's
   token answer for Integration Credentials carries `scope`; a Custom App's
   carries none, so Core takes the scopes it asked for.
+- Checked end to end with Switch Console and a Claude Code agent in a
+  Mattermost room. Box turned on for the agent reached its running session,
+  which created and listed folders through `mcp.box.com`. Turned off, the
+  Box tools left that session within about a minute, and the next request was
+  refused. A token renewed inside a running session (issued again after the
+  refresh) worked at once. Disconnecting revoked the sign-in at Box: within
+  seconds the access token got 401 and the refresh token `invalid_grant`.
+  Neither token appeared in the agent's transcript, the room, Core's or
+  Console's logs, or either database outside the encrypted columns. After a
+  refresh, Box refused the previous access token within a few minutes.
 
 To connect: Settings, Connections in Switch Console, then Box. To roll back,
 add `box` to `DISABLED_SERVICES`, remove its client under Connector apps or
