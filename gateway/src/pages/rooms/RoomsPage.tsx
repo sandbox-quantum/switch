@@ -3,7 +3,7 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import UnarchiveOutlined from "@mui/icons-material/UnarchiveOutlined";
-import { Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import type { GridColDef, GridRowId } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
@@ -47,6 +47,10 @@ export default function RoomsPage() {
   const filters = useRoomFilterState();
   const [selected, setSelected] = useState<GridRowId[]>([]);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{
+    severity: "error" | "warning";
+    text: string;
+  } | null>(null);
 
   const { data: rooms, loading, refetch } = useRooms(
     filters.debouncedSearch || undefined,
@@ -72,12 +76,26 @@ export default function RoomsPage() {
     ],
   );
 
+  // Archiving is a write, as the server reports it for each room. Other rooms
+  // get no archive action and can't be selected.
+  const canWrite = useCallback((room: RoomSummary) => room.can_write, []);
+
   const handleToggleArchive = useCallback(
     async (roomId: string, archived: boolean) => {
-      if (archived) {
-        await unarchiveRoom(roomId);
-      } else {
-        await archiveRoom(roomId);
+      setNotice(null);
+      try {
+        if (archived) {
+          await unarchiveRoom(roomId);
+        } else {
+          await archiveRoom(roomId);
+        }
+      } catch (err) {
+        setNotice({
+          severity: "error",
+          text: `Couldn't ${archived ? "unarchive" : "archive"} the room: ${
+            err instanceof Error ? err.message : "unknown error"
+          }`,
+        });
       }
       refetch();
     },
@@ -86,9 +104,26 @@ export default function RoomsPage() {
 
   const handleBulkArchive = useCallback(async () => {
     setBusy(true);
+    setNotice(null);
     const ids = selected.map(String);
     // Active view → archive the selection; Archived view → unarchive it.
-    await bulkArchiveRooms(ids, !viewingArchived);
+    const action = viewingArchived ? "unarchive" : "archive";
+    const done = viewingArchived ? "Unarchived" : "Archived";
+    const result = await bulkArchiveRooms(ids, !viewingArchived);
+    // The server skips, without failing, any room the user can't change or
+    // that is gone, and says how many it did change.
+    if (result === null) {
+      setNotice({
+        severity: "error",
+        text: `Couldn't ${action} the selected rooms.`,
+      });
+    } else if (result.updated < ids.length) {
+      const skipped = ids.length - result.updated;
+      setNotice({
+        severity: "warning",
+        text: `${done} ${result.updated} of ${ids.length}; ${skipped} you can't change or no longer exist.`,
+      });
+    }
     setSelected([]);
     setBusy(false);
     refetch();
@@ -176,28 +211,29 @@ export default function RoomsPage() {
         width: 116,
         sortable: false,
         filterable: false,
-        renderCell: ({ row }) => (
-          <Button
-            size="small"
-            color="inherit"
-            startIcon={
-              row.archived ? (
-                <UnarchiveOutlined fontSize="small" />
-              ) : (
-                <ArchiveOutlined fontSize="small" />
-              )
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              handleToggleArchive(row.id, row.archived);
-            }}
-          >
-            {row.archived ? "Unarchive" : "Archive"}
-          </Button>
-        ),
+        renderCell: ({ row }) =>
+          canWrite(row) && (
+            <Button
+              size="small"
+              color="inherit"
+              startIcon={
+                row.archived ? (
+                  <UnarchiveOutlined fontSize="small" />
+                ) : (
+                  <ArchiveOutlined fontSize="small" />
+                )
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleArchive(row.id, row.archived);
+              }}
+            >
+              {row.archived ? "Unarchive" : "Archive"}
+            </Button>
+          ),
       },
     ],
-    [handleToggleArchive, byId],
+    [handleToggleArchive, byId, canWrite],
   );
 
   return (
@@ -241,6 +277,12 @@ export default function RoomsPage() {
         </Stack>
       </Stack>
 
+      {notice && (
+        <Alert severity={notice.severity} onClose={() => setNotice(null)} sx={{ mb: 2 }}>
+          {notice.text}
+        </Alert>
+      )}
+
       <RoomFilters rooms={rooms ?? []} groups={groupList} state={filters} />
 
       {loading ? (
@@ -252,6 +294,7 @@ export default function RoomsPage() {
           fillHeight
           checkboxSelection
           onRowSelectionModelChange={setSelected}
+          isRowSelectable={({ row }) => canWrite(row)}
           onRowClick={(params) => navigate(`/rooms/${params.id}`)}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />

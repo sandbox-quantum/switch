@@ -19,6 +19,8 @@ interface DataTableProps<T extends { id: string | number }> {
   checkboxSelection?: boolean;
   onRowSelectionModelChange?: (ids: GridRowId[]) => void;
   onRowClick?: (params: GridRowParams<T>) => void;
+  /** Rows the user may not act on can't be ticked for a bulk action. */
+  isRowSelectable?: (params: GridRowParams<T>) => boolean;
   sx?: SxProps<Theme>;
 }
 
@@ -75,6 +77,7 @@ export default function DataTable<T extends { id: string | number }>({
   checkboxSelection = false,
   onRowSelectionModelChange,
   onRowClick,
+  isRowSelectable,
   sx,
 }: DataTableProps<T>) {
   const extraSx = Array.isArray(sx) ? sx : sx ? [sx] : [];
@@ -94,6 +97,7 @@ export default function DataTable<T extends { id: string | number }>({
           : undefined
       }
       onRowClick={onRowClick}
+      isRowSelectable={isRowSelectable}
       disableRowSelectionOnClick
       sx={[HOOT_GRID_SX, { height: fillHeight ? "100%" : height }, ...extraSx]}
     />

@@ -108,6 +108,11 @@ export default function AgentDetailPage() {
   }
 
   const isOwner = !!user && user.id === agent.owner_id;
+  // Renaming and editing options are open to whoever the server says may
+  // manage the agent (its owner or an admin); agent management and service
+  // access stay with the owner alone, because the agent then acts on the
+  // owner's own machines and credentials.
+  const canManage = agent.can_manage;
 
   return (
     <Box>
@@ -116,7 +121,7 @@ export default function AgentDetailPage() {
           <ArrowBack />
         </IconButton>
         <Typography variant="h5">{agent.name}</Typography>
-        {isOwner && !agent.parent_agent_id && agent.children.length === 0 && (
+        {canManage && !agent.parent_agent_id && agent.children.length === 0 && (
           <Tooltip title="Rename agent">
             <IconButton
               size="small"
@@ -170,7 +175,7 @@ export default function AgentDetailPage() {
             <Divider />
             <OptionsSection
               agent={agent}
-              canEdit={isOwner}
+              canEdit={canManage}
               onUpdated={refetch}
             />
           </>
@@ -178,7 +183,7 @@ export default function AgentDetailPage() {
         <Divider />
         <AddressingPolicySection
           agent={agent}
-          canEdit={isOwner}
+          canEdit={canManage}
           onUpdated={refetch}
         />
         <AgentManagementSection
@@ -499,7 +504,7 @@ function OptionsSection({
         <>
           {!canEdit && (
             <Typography variant="body2" color="text.secondary">
-              Only the agent's owner can edit these options.
+              Only the agent's owner and admins can edit these options.
             </Typography>
           )}
           <Box sx={{ pointerEvents: canEdit ? "auto" : "none", opacity: canEdit ? 1 : 0.6 }}>

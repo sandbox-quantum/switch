@@ -10,7 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Action, Principal, can, require, require_manage
+from switch_core.authz import (
+    Action,
+    Principal,
+    can,
+    can_manage,
+    require,
+    require_manage,
+)
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
@@ -177,6 +184,7 @@ async def _build_room_detail(
     bridge_store: CollaborationBridgeStore,
     external_user_store: ExternalUserStore,
     protocol: AgentCore,
+    principal: Principal,
 ) -> RoomDetail:
     agent_ids = await room_store.get_agent_ids(session, room.id)
     client_ids = await room_store.get_client_ids(session, room.id)
@@ -210,6 +218,7 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
+    owner = await session.get(User, room.owner_id) if room.owner_id else None
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -229,6 +238,8 @@ async def _build_room_detail(
         external_channel_url=external_channel_url,
         group_id=room.group_id,
         group_name=group_name,
+        owner_id=room.owner_id,
+        owner_name=owner.name if owner else None,
         read_visibility=room.read_visibility,
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
@@ -247,6 +258,8 @@ async def _build_room_detail(
         join_event_listeners=join_event_listeners,
         archived_at=str(room.archived_at) if room.archived_at else None,
         channel_on_delete=_channel_on_delete(room, bridge_type),
+        can_write=can(principal, "write", room),
+        can_manage=can_manage(principal, room.owner_id),
     )
 
 
@@ -327,6 +340,7 @@ async def list_rooms(
         include_archived=include_archived,
     )
 
+    principal = Principal(user.id, is_admin)
     group_names = {g.id: g.name for g in await room_group_store.get_all(session)}
 
     bridge_ids = {r.bridge_id for r in rooms if r.bridge_id}
@@ -385,6 +399,8 @@ async def list_rooms(
                 write_visibility=room.write_visibility,
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
+                can_write=can(principal, "write", room),
+                can_manage=can_manage(principal, room.owner_id),
             )
         )
 
@@ -401,6 +417,7 @@ async def create_room(
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     _validate_create(req)
     config = RoomCreateConfig(
@@ -437,7 +454,13 @@ async def create_room(
     if fresh is None:
         raise HTTPException(status_code=500, detail="Room missing after create")
     return await _build_room_detail(
-        session, fresh, room_store, bridge_store, external_user_store, protocol
+        session,
+        fresh,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -881,7 +904,13 @@ async def get_room(
 ) -> RoomDetail:
     room = await _require_room(session, room_store, room_id, user, "read", is_admin)
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -927,7 +956,13 @@ async def patch_room(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1040,7 +1075,13 @@ async def put_room_group(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1067,7 +1108,13 @@ async def put_protection(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1094,7 +1141,13 @@ async def put_observe(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1126,7 +1179,13 @@ async def post_room_agents(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1155,7 +1214,13 @@ async def patch_room_agent(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1182,7 +1247,13 @@ async def delete_room_agent(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1209,7 +1280,13 @@ async def post_room_users(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 
@@ -1234,7 +1311,13 @@ async def _set_archived(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal=Principal(user.id, is_admin),
     )
 
 

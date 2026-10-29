@@ -35,6 +35,11 @@ export interface RoomSummary {
   write_visibility: "public" | "private";
   created_at: string;
   archived: boolean;
+  // What the caller may do with the room, as the server decides it. Write:
+  // edit its fields, add agents and people, attach resources. Manage: also
+  // change who may see or write to it, and delete it.
+  can_write: boolean;
+  can_manage: boolean;
 }
 
 export interface AgentSummary {
@@ -55,6 +60,9 @@ export interface AgentSummary {
   parent_agent_id: string | null;
   known_agent_type: string | null;
   known_agent_options: Record<string, unknown> | null;
+  // Whether the caller may rename the agent and edit its options and who may
+  // address it, as the server decides it: its owner or a workspace admin.
+  can_manage: boolean;
 }
 
 export interface AgentToolSummary {
@@ -1547,6 +1555,9 @@ export interface LinkedRoomDetail {
   target_room_name: string;
   target_room_description: string;
   label: string;
+  // Whether the caller may open the linked room; a room can link to one its
+  // readers cannot see.
+  can_read: boolean;
 }
 
 export interface InboundLinkedRoomDetail {
@@ -1737,6 +1748,9 @@ export interface PackageDetail {
   documents_count: number;
   attached_rooms_count: number;
   created_at: string;
+  // Whether the caller may open the package. Only a room's package list
+  // includes packages the caller cannot read.
+  can_read: boolean;
 }
 
 export interface PackageCreateInput {

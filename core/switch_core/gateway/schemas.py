@@ -85,6 +85,12 @@ class RoomSummary(BaseModel):
     created_at: str
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
+    # What the caller may do with the room, decided here by `switch_core.authz`
+    # so the Gateway shows the right controls without repeating the rules.
+    # Write: edit its fields, add agents and people, attach resources. Manage:
+    # also change who may see or write to it, and delete it.
+    can_write: bool = False
+    can_manage: bool = False
 
 
 class RoomDetail(RoomSummary):
@@ -287,6 +293,11 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    # Whether the caller may manage the agent (rename it, edit its options and
+    # who may address it): its owner or a workspace admin. Decided here by
+    # `switch_core.authz` so the Gateway does not repeat the rule; set by the
+    # Gateway routes, and left out of what agents read.
+    can_manage: bool = False
 
 
 class AgentToolSummary(BaseModel):
@@ -1292,6 +1303,9 @@ class LinkedRoomDetail(BaseModel):
     target_room_name: str
     target_room_description: str
     label: str
+    # Whether the caller may open the linked room. A room can link to one its
+    # readers cannot see, and the Gateway shows that one without a link.
+    can_read: bool = False
 
 
 class InboundLinkedRoomDetail(BaseModel):
@@ -1446,6 +1460,11 @@ class PackageDetail(BaseModel):
     documents_count: int = 0
     attached_rooms_count: int = 0
     created_at: str
+    # Whether the caller may open the package. Every route returns only
+    # packages the caller may read, except a room's package list: a private
+    # package its owner attached is listed to every reader of the room, and the
+    # Gateway shows that one without a link.
+    can_read: bool = True
 
 
 class PackageCreateRequest(BaseModel):

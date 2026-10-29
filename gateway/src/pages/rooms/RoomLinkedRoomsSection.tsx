@@ -25,9 +25,10 @@ import { useLinkedRooms, useRooms } from "../../data/hooks";
 
 interface Props {
   roomId: string;
+  canWrite: boolean;
 }
 
-export default function RoomLinkedRoomsSection({ roomId }: Props) {
+export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
   const { data: linked, loading, refetch } = useLinkedRooms(roomId);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,14 +73,23 @@ export default function RoomLinkedRoomsSection({ roomId }: Props) {
               direction="row"
               alignItems="center"
               spacing={1}
+              // A linked room the viewer can't read is listed, but not as a
+              // link: opening it would only be refused.
               sx={{
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
-                cursor: "pointer",
-                "&:hover": { backgroundColor: "action.hover" },
+                ...(link.can_read && {
+                  cursor: "pointer",
+                  "&:hover": { backgroundColor: "action.hover" },
+                }),
               }}
-              onClick={() => navigate(`/rooms/${link.target_room_id}`)}
+              onClick={
+                link.can_read
+                  ? () => navigate(`/rooms/${link.target_room_id}`)
+                  : undefined
+              }
+              data-testid={`linked-room-${link.target_room_id}`}
             >
               <Chip label={link.label} size="small" />
               <Stack sx={{ flexGrow: 1, minWidth: 0 }}>
@@ -92,39 +102,45 @@ export default function RoomLinkedRoomsSection({ roomId }: Props) {
                   </Typography>
                 )}
               </Stack>
-              <IconButton
-                size="small"
-                disabled={busy}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDetach(link.target_room_id);
-                }}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {canWrite && (
+                <IconButton
+                  size="small"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDetach(link.target_room_id);
+                  }}
+                >
+                  <DeleteOutline fontSize="small" />
+                </IconButton>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setDialogOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Add linked room
-      </Button>
-      <AddLinkedRoomDialog
-        open={dialogOpen}
-        sourceRoomId={roomId}
-        existingTargetIds={existingTargetIds}
-        onClose={() => setDialogOpen(false)}
-        onCreated={() => {
-          setDialogOpen(false);
-          refetch();
-        }}
-      />
+      {canWrite && (
+        <>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={() => setDialogOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            Add linked room
+          </Button>
+          <AddLinkedRoomDialog
+            open={dialogOpen}
+            sourceRoomId={roomId}
+            existingTargetIds={existingTargetIds}
+            onClose={() => setDialogOpen(false)}
+            onCreated={() => {
+              setDialogOpen(false);
+              refetch();
+            }}
+          />
+        </>
+      )}
     </Stack>
   );
 }

@@ -23,7 +23,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agents import update_can_manage_agents
 from switch_core.gateway.schemas import AgentDetail, UpdateAgentCanManageAgentsRequest
-from tests.switch_core.gateway.agent_route_harness import add_agent, add_user
+from tests.switch_core.gateway.agent_route_harness import add_agent, add_user, is_admin
 
 
 async def _set(
@@ -42,6 +42,7 @@ async def _set(
             connections=AgentConnectionRegistry(),
         ),
         user,
+        await is_admin(session, user),
     )
 
 

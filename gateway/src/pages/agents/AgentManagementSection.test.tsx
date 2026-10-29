@@ -28,6 +28,7 @@ const agent: AgentDetail = {
   children: [],
   addressing_policy: null,
   can_manage_agents: false,
+  can_manage: true,
 };
 
 type Call = { path: string; method: string; body: unknown };

@@ -15,7 +15,7 @@ import {
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { detachDocumentFromRoom } from "../../data/api";
-import { useRoomDocument } from "../../data/hooks";
+import { useRoom, useRoomDocument } from "../../data/hooks";
 
 export default function RoomScopedDocumentView() {
   const { roomId, documentId } = useParams<{
@@ -24,6 +24,10 @@ export default function RoomScopedDocumentView() {
   }>();
   const navigate = useNavigate();
   const { data: doc, loading, error } = useRoomDocument(roomId, documentId);
+  // Deleting a room document (or detaching a shared one) is a write to the
+  // room, so it is offered only to those who may write to it.
+  const { data: room } = useRoom(roomId);
+  const canWrite = !!room && room.can_write;
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -132,19 +136,23 @@ export default function RoomScopedDocumentView() {
             </Paper>
           </Stack>
 
-          <Divider />
+          {canWrite && (
+            <>
+              <Divider />
 
-          {deleteError && <Alert severity="error">{deleteError}</Alert>}
-          <Stack direction="row" justifyContent="flex-end">
-            <Button
-              color="error"
-              startIcon={<DeleteOutline />}
-              onClick={handleDelete}
-              disabled={deleting}
-            >
-              Delete
-            </Button>
-          </Stack>
+              {deleteError && <Alert severity="error">{deleteError}</Alert>}
+              <Stack direction="row" justifyContent="flex-end">
+                <Button
+                  color="error"
+                  startIcon={<DeleteOutline />}
+                  onClick={handleDelete}
+                  disabled={deleting}
+                >
+                  Delete
+                </Button>
+              </Stack>
+            </>
+          )}
         </Stack>
       </Paper>
     </Box>

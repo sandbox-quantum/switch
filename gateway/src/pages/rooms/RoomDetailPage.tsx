@@ -48,7 +48,6 @@ import {
   updateRoomRole,
 } from "../../data/api";
 import { useAgents, useBridgeUsers, useRoom, useRoomGroups } from "../../data/hooks";
-import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
 import {
@@ -67,7 +66,6 @@ import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -92,15 +90,12 @@ export default function RoomDetailPage() {
     );
   }
 
-  // Room write access: owner, admin, or a publicly-writable room.
-  const canWrite =
-    !!user &&
-    (user.id === room.owner_id ||
-      canAdminTenant ||
-      room.write_visibility === "public");
-  // Delete is stricter — owner or admin only, never via public write.
-  const canDelete =
-    !!user && (user.id === room.owner_id || canAdminTenant);
+  // The server says what the caller may do: write covers the room's fields,
+  // agents, people and resources; deleting it and changing its access need
+  // manage, which public write never gives.
+  const canWrite = room.can_write;
+  const canManage = room.can_manage;
+  const canDelete = canManage;
 
   return (
     <Box>
@@ -135,14 +130,15 @@ export default function RoomDetailPage() {
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
+          canManage={canManage}
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} onChanged={refetch} />
+        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
-        <RoomResourcesSection roomId={room.id} />
+        <RoomResourcesSection roomId={room.id} canWrite={canWrite} />
         <Divider />
-        <RoomLinkedRoomsSection roomId={room.id} />
+        <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
         <Divider />
         <RoomGraphView roomId={room.id} />
         {room.bridge_id && (
@@ -596,13 +592,18 @@ function RoleRow({
 
 // ── Editable fields ─────────────────────────────────────────────────────────
 
-function EditableFieldsSection({
+// Exported for its test.
+export function EditableFieldsSection({
   room,
   canWrite,
+  canManage,
   onSaved,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  /** Owner or admin. A publicly writable room lets anyone edit its settings,
+   * but only these people may change who can see and write to it. */
+  canManage: boolean;
   onSaved: () => void;
 }) {
   const [name, setName] = useState(room.name);
@@ -637,7 +638,11 @@ function EditableFieldsSection({
           !isBridged && description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        // The server refuses the whole update if it carries a visibility
+        // change from someone who doesn't manage the room.
+        ...(canManage && access !== toAccessLevel(room)
+          ? fromAccessLevel(access)
+          : {}),
       });
       onSaved();
     } catch (err) {
@@ -645,7 +650,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, onSaved]);
+  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -691,7 +696,14 @@ function EditableFieldsSection({
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canWrite || saving}
+        disabled={!canManage || saving}
+        helpers={
+          canManage
+            ? undefined
+            : {
+                [access]: "Only the room's owner and admins can change who can see and write to it.",
+              }
+        }
         sx={{ maxWidth: 360 }}
       />
       <Box>
@@ -712,9 +724,11 @@ function EditableFieldsSection({
 
 function ParticipantsSection({
   room,
+  canWrite,
   onChanged,
 }: {
   room: RoomDetail;
+  canWrite: boolean;
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
@@ -859,10 +873,12 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                working ? undefined : (next) => handleToggleJoinEvents(id, next)
+                working || !canWrite
+                  ? undefined
+                  : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                isFixedMembership || working
+                isFixedMembership || working || !canWrite
                   ? undefined
                   : () => handleRemoveAgent(id)
               }
@@ -874,7 +890,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {!isFixedMembership && (
+        {!isFixedMembership && canWrite && (
           <>
             <Button
               size="small"
@@ -921,25 +937,29 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AddIcon />}
-            onClick={() => setAddUserOpen(true)}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Add user
-          </Button>
-          <SearchablePickerDialog
-            open={addUserOpen}
-            title="Add users"
-            searchPlaceholder="Search users…"
-            submitLabel="Add"
-            options={addableUserOptions}
-            loading={bridgeUsersLoading}
-            onClose={() => setAddUserOpen(false)}
-            onSubmit={handleAddUsers}
-          />
+          {canWrite && (
+            <>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<AddIcon />}
+                onClick={() => setAddUserOpen(true)}
+                sx={{ alignSelf: "flex-start" }}
+              >
+                Add user
+              </Button>
+              <SearchablePickerDialog
+                open={addUserOpen}
+                title="Add users"
+                searchPlaceholder="Search users…"
+                submitLabel="Add"
+                options={addableUserOptions}
+                loading={bridgeUsersLoading}
+                onClose={() => setAddUserOpen(false)}
+                onSubmit={handleAddUsers}
+              />
+            </>
+          )}
         </Box>
       )}
     </Stack>

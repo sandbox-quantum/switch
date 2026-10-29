@@ -25,7 +25,6 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import DataTable from "../../components/DataTable";
 import { type AgentSummary, deleteAgent } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { useAgents } from "../../data/hooks";
 import { EM_DASH, formatDate, titleCase } from "../../theme/hootFormat";
 import RegisterAgentDialog from "./RegisterAgentDialog";
@@ -36,7 +35,6 @@ import RegisterAgentDialog from "./RegisterAgentDialog";
 
 export default function AgentsPage() {
   const navigate = useNavigate();
-  const { user, canAdminTenant: isAdmin } = useAuth();
   const { data: agents, loading, refetch } = useAgents();
   const [deleteTarget, setDeleteTarget] = useState<AgentSummary | null>(null);
   const [deleteNotice, setDeleteNotice] = useState<{
@@ -206,8 +204,7 @@ export default function AgentsPage() {
         sortable: false,
         filterable: false,
         renderCell: ({ row }) => {
-          const canModify = isAdmin || row.owner_id === user?.id;
-          if (!canModify) return null;
+          if (!row.can_manage) return null;
           return (
             <>
               <IconButton
@@ -224,7 +221,7 @@ export default function AgentsPage() {
         },
       },
     ],
-    [isAdmin, user?.id, parentNameById],
+    [parentNameById],
   );
 
   return (
