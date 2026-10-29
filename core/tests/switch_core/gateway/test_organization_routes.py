@@ -24,9 +24,10 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
-from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
@@ -36,7 +37,29 @@ _KEYRING = Keyring.parse(
 )
 
 
-def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
+class _FakeClientLifecycle:
+    """`ClientLifecycleService.create_tenant`'s database half, without the
+    admin client it provisions."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+        tenant = Tenant(
+            id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
+        )
+        async with tenant_session(self._session_factory, tenant.id) as session:
+            await TenantStore().create(session, tenant)
+            await session.commit()
+        return tenant
+
+
+def _app(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    signup_mode: str = "open",
+    max_workspaces_per_user: int = 3,
+) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
             yield session
@@ -51,10 +74,15 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
         OrganizationStore()
     )
+    app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
+        _FakeClientLifecycle(session_factory)
+    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
         gateway_cookie_secure=False,
         gateway_tenant_choice_enabled=False,
+        gateway_signup_mode=signup_mode,
+        gateway_max_workspaces_per_user=max_workspaces_per_user,
     )
     return app
 
@@ -463,3 +491,231 @@ class TestThePlatformOperator:
         assert refused.status_code == 403
         [event] = await _events(session_factory, orphaned, AuditAction.PLATFORM_ACCESS)
         assert event.details is not None and event.details["method"] == "PATCH"
+
+
+async def _user(session_factory: async_sessionmaker[AsyncSession], role: str) -> str:
+    user_id = _name("newcomer")
+    async with session_factory() as session:
+        session.add(
+            User(
+                id=user_id,
+                name=user_id,
+                email=f"{user_id}@example.invalid",
+                role=role,
+            )
+        )
+        await session.commit()
+    return user_id
+
+
+async def _organization_id(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> str | None:
+    async with tenant_session(session_factory, tenant_id) as session:
+        tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None
+    return tenant.organization_id
+
+
+async def _workspaces_created(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> int:
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+    assert user is not None
+    return user.workspaces_created
+
+
+class TestCreatingAnOrganization:
+    async def test_anyone_signed_in_creates_one_with_its_first_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = await _user(session_factory, "user")
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post(
+                "/organizations", json={"name": "Acme", "workspace_name": "Research"}
+            )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        organization, workspace = body["organization"], body["workspace"]
+        assert (organization["name"], organization["slug"], organization["role"]) == (
+            "Acme",
+            "acme",
+            "org_admin",
+        )
+        assert (workspace["name"], workspace["role"]) == ("Research", "owner")
+        assert workspace["organization_id"] == organization["id"]
+        assert (
+            await _organization_id(session_factory, workspace["id"])
+            == (organization["id"])
+        )
+        token = response.cookies.get("switch_auth")
+        assert token is not None
+        assert decode_jwt(token, _KEYRING)["tenant_id"] == workspace["id"]
+        assert await _workspaces_created(session_factory, ada) == 1
+        async with tenant_session(session_factory, workspace["id"]) as session:
+            membership = await session.get(TenantMember, (workspace["id"], ada))
+            organization_member = await session.get(
+                OrganizationMember, (organization["id"], ada)
+            )
+        assert membership is not None and membership.role == "owner"
+        assert organization_member is not None
+        assert organization_member.role == "org_admin"
+
+    async def test_the_first_workspace_takes_the_organization_name_by_default(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = await _user(session_factory, "user")
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post("/organizations", json={"name": "Globex"})
+
+        assert response.status_code == 201, response.text
+        assert response.json()["workspace"]["name"] == "Globex"
+
+    async def test_invite_only_sign_up_refuses_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = await _user(session_factory, "user")
+
+        app = _app(session_factory, signup_mode="invite_only")
+        async with _client(app, ada, None) as client:
+            response = await client.post("/organizations", json={"name": "Initech"})
+
+        assert response.status_code == 403
+        assert await _workspaces_created(session_factory, ada) == 0
+
+
+class TestCreatingAWorkspace:
+    async def test_an_org_admin_adds_one_to_the_organization(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("member", "org_admin")})
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+
+        assert response.status_code == 201, response.text
+        workspace = response.json()
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert workspace["organization_id"] == organization_id
+        assert await _organization_id(session_factory, workspace["id"]) == (
+            organization_id
+        )
+        assert workspace["role"] == "owner"
+        # The session stays in the workspace it was in.
+        assert response.cookies.get("switch_auth") is None
+        assert await _workspaces_created(session_factory, ada) == 1
+        [event] = await _events(
+            session_factory, workspace["id"], AuditAction.TENANT_CREATED
+        )
+        assert event.actor_user_id == ada
+        assert event.details is not None
+        assert event.details["organization_created"] is False
+        async with tenant_session(session_factory, workspace["id"]) as session:
+            membership = await session.get(TenantMember, (workspace["id"], ada))
+        assert membership is not None and membership.role == "owner"
+
+    async def test_a_workspace_admin_who_is_no_org_admin_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("admin", "member")}
+        )
+
+        async with _client(_app(session_factory), bob, tenant_id) as client:
+            response = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+
+        assert response.status_code == 403
+        assert await _workspaces_created(session_factory, bob) == 0
+
+    async def test_invite_only_sign_up_does_not_stop_an_org_admin(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+
+        app = _app(session_factory, signup_mode="invite_only")
+        async with _client(app, ada, tenant_id) as client:
+            response = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+
+        assert response.status_code == 201, response.text
+
+    async def test_it_counts_against_the_creator_allowance(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+
+        app = _app(session_factory, max_workspaces_per_user=1)
+        async with _client(app, ada, tenant_id) as client:
+            first = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+            second = await client.post(
+                "/organizations/current/workspaces", json={"name": "Third"}
+            )
+
+        assert first.status_code == 201, first.text
+        assert second.status_code == 403
+
+
+class TestListingOrganizationsAndWorkspaces:
+    async def test_an_org_admin_sees_every_workspace_and_a_member_their_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+        )
+        app = _app(session_factory)
+        async with _client(app, ada, tenant_id) as client:
+            created = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+            assert created.status_code == 201, created.text
+            as_admin = await client.get("/organizations/current/workspaces")
+        async with _client(app, bob, tenant_id) as client:
+            as_member = await client.get("/organizations/current/workspaces")
+
+        assert as_admin.status_code == 200, as_admin.text
+        assert {row["id"] for row in as_admin.json()} == {
+            tenant_id,
+            created.json()["id"],
+        }
+        assert as_member.status_code == 200, as_member.text
+        assert [row["id"] for row in as_member.json()] == [tenant_id]
+
+    async def test_the_caller_sees_each_of_their_organizations_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = await _user(session_factory, "user")
+        app = _app(session_factory)
+        async with _client(app, ada, None) as client:
+            acme = await client.post("/organizations", json={"name": "Acme"})
+            assert acme.status_code == 201, acme.text
+        acme_workspace = acme.json()["workspace"]["id"]
+        async with _client(app, ada, acme_workspace) as client:
+            second = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+            assert second.status_code == 201, second.text
+            globex = await client.post("/organizations", json={"name": "Globex"})
+            assert globex.status_code == 201, globex.text
+            listed = await client.get("/organizations")
+
+        assert listed.status_code == 200, listed.text
+        assert [(row["name"], row["role"]) for row in listed.json()] == [
+            ("Acme", "org_admin"),
+            ("Globex", "org_admin"),
+        ]

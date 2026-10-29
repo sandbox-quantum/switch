@@ -911,6 +911,9 @@ class TenantMembershipResponse(BaseModel):
     # or not.
     role: str
     organization_role: str | None
+    # None only for a workspace from before organizations that no migration
+    # has given one yet.
+    organization_id: str | None
 
 
 class OperatorWorkspaceResponse(BaseModel):
@@ -931,6 +934,33 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
+    name: str
+
+
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    # The first workspace's name; the organization's when left out.
+    workspace_name: str | None = None
+
+
+class OrganizationSummary(BaseModel):
+    """One organization the caller belongs to, and their role in it."""
+
+    id: str
+    slug: str
+    name: str
+    role: str
+
+
+class OrganizationCreateResponse(BaseModel):
+    """A new organization and its first workspace, which the session is now
+    bound to."""
+
+    organization: OrganizationSummary
+    workspace: TenantMembershipResponse
+
+
+class WorkspaceCreateRequest(BaseModel):
     name: str
 
 

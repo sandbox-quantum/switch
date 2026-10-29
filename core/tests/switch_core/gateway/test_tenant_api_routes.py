@@ -1756,6 +1756,7 @@ class TestCurrentTenantRoute:
             "name": TENANT_A,
             "role": "member",
             "organization_role": None,
+            "organization_id": None,
             "administers": False,
         }
 
@@ -1828,7 +1829,7 @@ class TestOrganizationAdmins:
         admin_id = await _make_unaffiliated_user(
             session_factory, name="org-admin", role="user"
         )
-        await self._organization_of(
+        organization_id = await self._organization_of(
             session_factory, TENANT_A, members={admin_id: "org_admin"}
         )
         token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
@@ -1843,6 +1844,7 @@ class TestOrganizationAdmins:
             "name": TENANT_A,
             "role": "admin",
             "organization_role": "org_admin",
+            "organization_id": organization_id,
             "administers": True,
         }
 

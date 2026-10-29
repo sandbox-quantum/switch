@@ -592,7 +592,17 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/organizations",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/organizations/current/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/workspaces",
       "auth": "session",
       "flags": []
     },
@@ -1141,6 +1151,16 @@
     },
     {
       "route": "POST /gateway/messaging-apps/{platform}/install",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces",
       "auth": "session",
       "flags": []
     },

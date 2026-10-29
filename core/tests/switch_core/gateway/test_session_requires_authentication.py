@@ -62,6 +62,7 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Locks the caller's `users` row, which has no tenant, while it creates a
     # workspace that has none yet either.
     ("POST", "/tenants"),
+    ("POST", "/organizations"),
     # Deletes the caller's `users` row and sign-in identities, which belong to
     # no workspace; each workspace is left in a `tenant_session` of its own.
     ("DELETE", "/auth/me"),
@@ -112,6 +113,9 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("GET", "/tenants"),
     ("POST", "/tenants"),
     ("POST", "/tenants/{tenant_id}/switch"),
+    # The same for organizations: list the caller's, make one.
+    ("GET", "/organizations"),
+    ("POST", "/organizations"),
     # Accepting an invitation binds the tenant the *token* names, which is
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.

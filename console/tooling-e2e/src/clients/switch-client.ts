@@ -222,6 +222,22 @@ interface SwitchRequest {
   timeoutMs?: number;
 }
 
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+}
+
+export interface WorkspaceMembership {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  organization_role: string | null;
+  organization_id: string | null;
+}
+
 export class SwitchClient {
   private readonly apiUrl: string;
   /** The deployment-wide registration key; agents it registers belong to a bootstrap account. */
@@ -450,6 +466,59 @@ export class SwitchClient {
     this.issued.record(cookie.slice("switch_auth=".length));
     this.gatewayCookie = cookie;
     return (parsed as { id: string }).id;
+  }
+
+  /**
+   * `POST /gateway/organizations` — create an organization with its first
+   * workspace. The caller becomes its organization admin and the workspace's
+   * owner, and the server re-mints their session into the workspace, so from
+   * here on this client acts there.
+   */
+  async createOrganization(name: string): Promise<{
+    organization: OrganizationSummary;
+    workspace: WorkspaceMembership;
+  }> {
+    const { parsed, response } = await this.rawRequest(
+      "POST",
+      "/gateway/organizations",
+      {
+        cookie: await this.gatewayLogin(),
+        body: { name },
+      },
+    );
+    const cookie = sessionCookieFrom(response);
+    if (!cookie)
+      throw new Error(
+        "Creating an organization returned no switch_auth cookie for its workspace.",
+      );
+    this.issued.record(cookie.slice("switch_auth=".length));
+    this.gatewayCookie = cookie;
+    return parsed as {
+      organization: OrganizationSummary;
+      workspace: WorkspaceMembership;
+    };
+  }
+
+  /** `GET /gateway/organizations` — the caller's organizations and their role in each. */
+  async organizations(): Promise<OrganizationSummary[]> {
+    return this.gateway<OrganizationSummary[]>("GET", "/organizations");
+  }
+
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
+  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
+    return this.gateway<WorkspaceMembership[]>(
+      "GET",
+      "/organizations/current/workspaces",
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces` — add a workspace to the current organization; the session stays put. */
+  async createOrganizationWorkspace(name: string): Promise<WorkspaceMembership> {
+    return this.gateway<WorkspaceMembership>(
+      "POST",
+      "/organizations/current/workspaces",
+      { name },
+    );
   }
 
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */

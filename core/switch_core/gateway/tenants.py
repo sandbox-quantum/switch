@@ -2,25 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import re
-import secrets
-import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE, ORGANIZATION_ADMIN_TENANT_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
-from switch_core.clients.client_lifecycle_service import (
-    ClientLifecycleService,
-    TenantIsolationNotInForce,
-)
+from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import (
     ServiceBroker,
@@ -30,7 +23,6 @@ from switch_core.connections.broker import (
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
     Invitation,
-    Organization,
     OrganizationMember,
     Tenant,
     TenantJoinDomain,
@@ -38,7 +30,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
-from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import (
@@ -55,11 +47,7 @@ from switch_core.db.stores.join_domain_store import (
     JoinDomainNotFound,
     JoinDomainStore,
 )
-from switch_core.db.stores.organization_store import (
-    OrganizationSlugTaken,
-    OrganizationStore,
-)
-from switch_core.db.stores.tenant_store import TenantSlugTaken
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -78,7 +66,6 @@ from switch_core.gateway.auth import (
     tenant_of_invitation_token,
     tenants_open_to,
     tenants_with_invitations_for,
-    workspace_creation_refusal,
 )
 from switch_core.gateway.auth_routes import _session_response
 from switch_core.gateway.dependencies import (
@@ -131,6 +118,7 @@ from switch_core.gateway.schemas import (
     UsageTotalResponse,
 )
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.gateway.workspace_creation import create_organization_for
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -141,30 +129,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 TENANT_MEMBER_ROLES = ("owner", "admin", "member")
-
-_SLUG_INVALID_CHARS = re.compile(r"[^a-z0-9]+")
-
-# A first choice and this many suffixed ones. Four hex characters make a
-# repeat collision on the same name vanishingly unlikely, so running out means
-# something other than bad luck is wrong.
-_SLUG_ATTEMPTS = 4
-
-
-def _derive_slug(name: str) -> str:
-    """A URL-safe slug from a workspace name.
-
-    The slug is an identifier, not the name: the workspace keeps the name its
-    creator typed exactly, and a slug that is already taken gets a short
-    random suffix (`_provision_workspace` below). Refusing instead would tell anyone
-    who can sign up which workspace names exist on this server.
-    """
-    slug = _SLUG_INVALID_CHARS.sub("-", name.strip().lower()).strip("-")
-    if not slug:
-        raise HTTPException(
-            status_code=400,
-            detail="Name must contain at least one letter or digit",
-        )
-    return slug
 
 
 def _require_bound_tenant(tenant_id: str) -> None:
@@ -338,171 +302,12 @@ async def current_tenant(
         organization_role=await user_store.organization_role(
             session, tenant_id, user.id
         ),
+        organization_id=tenant.organization_id,
         administers=is_admin,
     )
 
 
-_LOCK_NOT_AVAILABLE = "55P03"
-
-
-async def _lock_workspace_allowance(
-    session: AsyncSession, caller: AuthenticatedCaller, config: SwitchConfig
-) -> User:
-    """Lock the caller's row and raise 403 unless they may create one more
-    workspace. Returns the locked row, for the caller to count the creation on.
-
-    Creating a workspace is not just a row: `all_tenant_ids()` drives a fan-out
-    per tenant at boot and a sweep every few seconds, so unbounded creation
-    buys the deployment steady-state work
-    (`docs/old/multi-tenancy-phase2-tenants.md`, §5). A limit of 0 closes the
-    route entirely, which is how a deployment that is not ready to offer
-    self-service says so; so does `invite_only` sign-up. What is refused, and
-    why, is `workspace_creation_refusal`'s, so `GET /auth/session` reports the
-    same answer this enforces.
-
-    The bound is on workspaces created (`users.workspaces_created`), not on
-    workspaces owned: ownership can be handed to another account, so a count of
-    ownership could be reset by creating, handing over and stepping down, over
-    and over. An invitation into someone else's workspace spends nothing.
-
-    The row lock is what makes the check hold under concurrent requests. It
-    is taken `NOWAIT`, so a second request from the same person is refused
-    with 409 at once rather than holding a pool connection while it waits —
-    the request holding the lock needs more connections to provision, and a
-    burst of waiters could starve it of them. `FOR NO KEY UPDATE` rather than
-    `FOR UPDATE`, because the new owner membership's foreign key takes a key
-    share on this same row from another session, and `FOR UPDATE` would make
-    the request wait on itself.
-    """
-    try:
-        user = await session.scalar(
-            select(User)
-            .where(User.id == caller.id)
-            .with_for_update(key_share=True, nowait=True)
-        )
-    except DBAPIError as exc:
-        if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
-            raise
-        raise HTTPException(
-            status_code=409,
-            detail="Another workspace is being created for you; try again shortly",
-        ) from exc
-    if user is None:
-        raise HTTPException(status_code=401, detail="Unknown user")
-    refusal = workspace_creation_refusal(
-        config, is_operator=False, workspaces_created=user.workspaces_created
-    )
-    if refusal is not None:
-        raise HTTPException(status_code=403, detail=refusal)
-    return user
-
-
-async def _provision_workspace(
-    session_factory: async_sessionmaker[AsyncSession],
-    user_store: UserStore,
-    organization_store: OrganizationStore,
-    client_lifecycle: ClientLifecycleService,
-    caller: AuthenticatedCaller,
-    name: str,
-) -> Tenant:
-    base_slug = _derive_slug(name)
-    tenant: Tenant | None = None
-    for attempt in range(_SLUG_ATTEMPTS):
-        slug = base_slug if attempt == 0 else f"{base_slug}-{secrets.token_hex(2)}"
-        organization = Organization(id=str(uuid.uuid4()), name=name, slug=slug)
-        try:
-            async with organization_session(
-                session_factory, organization.id
-            ) as session:
-                await organization_store.create(session, organization)
-                await session.commit()
-        except OrganizationSlugTaken:
-            continue
-        try:
-            tenant = await client_lifecycle.create_tenant(name, slug, organization.id)
-        except TenantSlugTaken:
-            await _discard_organization(
-                session_factory, organization_store, organization.id
-            )
-            continue
-        except TenantIsolationNotInForce as exc:
-            await _discard_organization(
-                session_factory, organization_store, organization.id
-            )
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except BaseException:
-            # A failure after the workspace committed leaves it referencing
-            # the organization, and the discard is refused; the workspace's
-            # own failure is the one to report.
-            try:
-                await _discard_organization(
-                    session_factory, organization_store, organization.id
-                )
-            except Exception:
-                logger.exception(
-                    "Could not discard organization %s after creating workspace "
-                    "%r (slug %s) failed",
-                    organization.id,
-                    name,
-                    slug,
-                )
-            raise
-        break
-    if tenant is None:
-        logger.error(
-            "Could not find a free slug for workspace %r after %d attempts",
-            name,
-            _SLUG_ATTEMPTS,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Could not create the workspace; please try again",
-        )
-
-    try:
-        async with tenant_session(session_factory, tenant.id) as session:
-            await user_store.add_membership(
-                session,
-                tenant_id=tenant.id,
-                user_id=caller.id,
-                role="owner",
-                organization_role="org_admin",
-            )
-            await record_audit_event(
-                session,
-                tenant_id=tenant.id,
-                actor_user_id=caller.id,
-                action=AuditAction.TENANT_CREATED,
-                target_type="tenant",
-                target_id=tenant.id,
-                details={"name": tenant.name, "slug": tenant.slug},
-            )
-            await session.commit()
-    except Exception:
-        logger.error(
-            "Workspace %s (slug %s) was created but its owner membership for "
-            "user %s was not written: it now has no members and its slug is "
-            "taken. Insert the membership to repair it.",
-            tenant.id,
-            slug,
-            caller.id,
-        )
-        raise
-    return tenant
-
-
-async def _discard_organization(
-    session_factory: async_sessionmaker[AsyncSession],
-    organization_store: OrganizationStore,
-    organization_id: str,
-) -> None:
-    """Delete the organization made for a workspace that could not be created."""
-    async with organization_session(session_factory, organization_id) as session:
-        await organization_store.delete_empty(session, organization_id)
-        await session.commit()
-
-
-@router.post("/tenants", status_code=201)
+@router.post("/tenants", status_code=201, deprecated=True)
 async def create_tenant(
     req: TenantCreateRequest,
     response: Response,
@@ -516,83 +321,24 @@ async def create_tenant(
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
-    """Create a workspace. The caller becomes its `owner`, and their session
-    switches into it.
-
-    The workspace comes with an organization of its own, of the same name,
-    whose `org_admin` the caller becomes.
-
-    Whether they may is `workspace_creation_refusal`'s decision: sign-up mode
-    and a per-person cap on workspaces created, with operators exempt. It is
-    authenticated with `get_authenticated_caller` because the caller who
-    most needs this — someone who has just signed up — has no workspace for
-    `get_current_user` to bind.
-
-    How many workspaces one person may create is bounded, and the bound is
-    checked before anything is provisioned — see `_lock_workspace_allowance`.
-    Deployment operators are exempt, both because the bypass is what
-    `is_operator` means everywhere else in this codebase (`authz.py`) and
-    because the person provisioning workspaces for other people is the one
-    caller a self-service bound must not stop; nothing is counted for them. This
-    is the only route in this file with no tenant to authorize against, so the
-    limit is what stands in for the role check its neighbours have.
-
-    Provisioning goes through `ClientLifecycleService.create_tenant` — "the
-    one seam a tenant comes into existence through" — rather than inserting a
-    `Tenant` row here, so a workspace created through this route gets the same
-    admin client every other tenant does. The membership row is not part of
-    that call (it provisions the tenant, not any particular person's place in
-    it), so it is written here, in its own session bound to the new tenant.
-
-    Two transactions, therefore, and the gap between them is real: the tenant
-    is committed before the membership is attempted, so a failure in the
-    second leaves a workspace nobody belongs to and a slug nobody can reuse.
-    It is not folded into one because the tenant row has to be committed
-    before `ensure_system_client` can provision against it, and that call is
-    inside the seam. What the gap gets instead is a log line naming the
-    workspace and the person who should have owned it, because the alternative
-    — a 500 with the orphan unrecorded — is the silent degradation this
-    codebase refuses. An operator repairs it by inserting the membership.
+    """`POST /organizations` under its old name, kept for one release for
+    clients that still call it: an organization and its first workspace, both
+    named `name`, with the caller switched into the workspace. Answers with the
+    workspace alone, as it always has.
     """
-    if caller.is_operator:
-        user = await user_store.get(session, caller.id)
-        if user is None:
-            raise HTTPException(status_code=401, detail="User not found")
-        # Not held across provisioning, which opens a session per tenant.
-        await session.commit()
-        tenant = await _provision_workspace(
-            session_factory,
-            user_store,
-            organization_store,
-            client_lifecycle,
-            caller,
-            req.name,
-        )
-    else:
-        user = await _lock_workspace_allowance(session, caller, config)
-        tenant = await _provision_workspace(
-            session_factory,
-            user_store,
-            organization_store,
-            client_lifecycle,
-            caller,
-            req.name,
-        )
-        user.workspaces_created += 1
-        await session.commit()
-
-    await user_store.record_last_tenant(session, user, tenant.id)
-    await session.commit()
-    set_session_cookie(
-        response, user, config.keyring, config.gateway_cookie_secure, tenant.id
+    created = await create_organization_for(
+        response,
+        caller,
+        session,
+        session_factory,
+        user_store,
+        organization_store,
+        client_lifecycle,
+        config,
+        name=req.name,
+        workspace_name=req.name,
     )
-    return TenantMembershipResponse(
-        id=tenant.id,
-        slug=tenant.slug,
-        name=tenant.name,
-        role="owner",
-        organization_role="org_admin",
-    )
+    return created.workspace
 
 
 @router.post("/tenants/{tenant_id}/switch")
@@ -1159,6 +905,7 @@ async def _enter(
         organization_role=await user_store.organization_role(
             session, tenant_id, caller.id
         ),
+        organization_id=tenant.organization_id,
     )
     # `users` is global, so the caller's row is writable from a session
     # bound to any tenant — this one included.

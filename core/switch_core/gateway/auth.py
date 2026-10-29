@@ -294,8 +294,8 @@ async def get_authenticated_caller(
     """Like `get_authenticated_user_id`, but with the whole `users` row's worth
     of the caller that routes with no tenant bound actually need.
 
-    Backs `POST /invitations/accept` and `POST /tenants`
-    (`gateway/tenants.py`): the first checks an email-bound invitation against
+    Backs `POST /invitations/accept` (`gateway/tenants.py`) and
+    `POST /organizations` (`gateway/organizations.py`): the first checks an email-bound invitation against
     the caller's *current* address, the second asks whether the caller runs the
     deployment. Both decide before any tenant is bound — the same "no tenant
     chosen yet" shape as `get_authenticated_user_id` — and both read the same
@@ -503,6 +503,7 @@ async def _describe_memberships(
                 name=tenant.name,
                 role=role,
                 organization_role=organization_role,
+                organization_id=tenant.organization_id,
             )
         )
     return memberships
@@ -553,20 +554,26 @@ async def initial_tenant_claim(
 
 
 def workspace_creation_refusal(
-    config: SwitchConfig, *, is_operator: bool, workspaces_created: int
+    config: SwitchConfig,
+    *,
+    is_operator: bool,
+    workspaces_created: int,
+    new_organization: bool,
 ) -> str | None:
     """Why this caller may not create a workspace, or None if they may.
 
-    Operators always may. Otherwise `invite_only` sign-up refuses outright,
-    and every other mode allows `gateway_max_workspaces_per_user` creations
-    over a person's lifetime — each workspace is work for every per-tenant
-    sweep (`docs/old/multi-tenancy-phase2-tenants.md`, §5). Returned as a
-    message rather than raised so `GET /auth/session` can report the same
-    answer `POST /tenants` enforces.
+    Operators always may. Otherwise every mode allows
+    `gateway_max_workspaces_per_user` creations over a person's lifetime —
+    each workspace is work for every per-tenant sweep
+    (`docs/old/multi-tenancy-phase2-tenants.md`, §5) — and `invite_only`
+    sign-up refuses a `new_organization` outright. It decides who comes onto
+    the server, not what an organization's `org_admin` adds to theirs.
+    Returned as a message rather than raised so `GET /auth/session` can report
+    the same answer `POST /organizations` enforces.
     """
     if is_operator:
         return None
-    if config.gateway_signup_mode == "invite_only":
+    if new_organization and config.gateway_signup_mode == "invite_only":
         return (
             "Creating workspaces is turned off on this server. Ask a "
             "workspace admin for an invitation."
@@ -594,7 +601,7 @@ def describe_session_state(
     Follows its order exactly — a claim is honoured only if it names one of
     `tenants`, and a bad claim is *not* rescued by a sole membership — so a
     client told "ready" is never refused by the next request, and one told
-    otherwise knows which of `/tenants/{id}/switch`, `POST /tenants` or
+    otherwise knows which of `/tenants/{id}/switch`, `POST /organizations` or
     `/invitations/accept` gets it unstuck.
     """
     tenant: TenantMembershipResponse | None = None
@@ -619,12 +626,13 @@ def describe_session_state(
         tenants=tenants,
         state=state,
         # A deployment that is not isolating tenants keeps to the one it has,
-        # for operators too: `POST /tenants` would refuse any name.
+        # for operators too: `POST /organizations` would refuse any name.
         can_create_workspace=tenants_isolated
         and workspace_creation_refusal(
             config,
             is_operator=is_operator,
             workspaces_created=user.workspaces_created,
+            new_organization=True,
         )
         is None,
         invite_email_enabled=config.invite_email_enabled,

@@ -1167,8 +1167,15 @@ export async function fetchSession(): Promise<Session | null> {
   }
 }
 
+/** Create an organization with a first workspace of the same name, and switch
+ * the session into the workspace. */
 export async function createTenant(name: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/tenants", "POST", { name });
+  const created = await jsonRequest<{ workspace: TenantMembership }>(
+    "/organizations",
+    "POST",
+    { name },
+  );
+  return created.workspace;
 }
 
 export async function switchTenant(tenantId: string): Promise<void> {
