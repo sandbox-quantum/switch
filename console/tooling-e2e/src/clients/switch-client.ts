@@ -814,6 +814,26 @@ export class SwitchClient {
     }));
   }
 
+  /** `GET /gateway/organizations/current/members` — the organization of the bound workspace, `org_admin` only. */
+  async organizationMembers(): Promise<{ user_id: string; role: string }[]> {
+    return this.gateway<{ user_id: string; role: string }[]>(
+      "GET",
+      "/organizations/current/members",
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/members/{user_id}` — grant or take back `org_admin`. */
+  async setOrganizationRole(
+    userId: string,
+    role: "org_admin" | "member",
+  ): Promise<{ user_id: string; role: string }> {
+    return this.gateway<{ user_id: string; role: string }>(
+      "PATCH",
+      `/organizations/current/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */
   async tenantId(): Promise<string> {
     const state = await this.gateway<{

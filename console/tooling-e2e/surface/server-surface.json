@@ -582,6 +582,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/organizations/current/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/packages",
       "auth": "session",
       "flags": []
@@ -866,6 +871,11 @@
       "flags": [
         "agent_management"
       ]
+    },
+    {
+      "route": "PATCH /gateway/organizations/current/members/{user_id}",
+      "auth": "session",
+      "flags": []
     },
     {
       "route": "PATCH /gateway/packages/{package_id}",
