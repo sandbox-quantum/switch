@@ -27,6 +27,7 @@ from switch_core.connections.sign_in_flows import (
     SignInFlows,
     StoredFlow,
     digest,
+    vendor_refusal,
 )
 from switch_core.db.models import (
     ServiceConnection,
@@ -258,7 +259,9 @@ async def callback(
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
     """Back from GitHub: the browser takes the code on to Switch Console, on
-    the computer it left from. Once per flow."""
+    the computer it left from. Once per flow. Back with GitHub's `error`
+    instead, the flow fails with what GitHub said, and the page says it too:
+    GitHub reports an App whose callback URL does not match this way."""
     state = request.query_params.get("state", "")
     code = request.query_params.get("code", "")
     try:
@@ -270,13 +273,18 @@ async def callback(
         ):
             raise GitHubError("Authorization could not be verified.")
         if not code:
+            refusal = vendor_refusal(
+                "GitHub",
+                request.query_params.get("error", ""),
+                request.query_params.get("error_description"),
+            )
             await flows.advance(
                 flow,
                 expect=("authorizing",),
                 to="failed",
-                changes={"error": "GitHub authorization was cancelled."},
+                changes={"error": refusal},
             )
-            raise GitHubError("GitHub authorization was cancelled.")
+            return page(f"{refusal} Return to Switch Console.", 400)
         if (
             await flows.advance(
                 flow, expect=("authorizing",), to="delivered", changes={}

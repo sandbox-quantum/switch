@@ -957,6 +957,17 @@ version of their own to them without also giving them a release of their own.
   account still revokes it, and so does a disconnect. A sign-in that Switch
   does not keep, because the workspace switched Google Workspace off during
   it, no longer ends the existing connection either.
+- **A sign-in the vendor refuses fails with the vendor's reason.** When a
+  vendor sent the browser back with an error instead of a code, every one was
+  recorded as "sign-in was cancelled" and what the vendor said was dropped, so
+  a GitHub App whose callback URL does not match, or an identity provider
+  refusing the app, read as the person cancelling. The sign-in now fails with
+  the vendor's own description ("Atlassian refused the sign-in: …"), with any
+  markup taken out and long text cut short, and the browser's page says the
+  same. A bare `access_denied` still reads as cancelled. Switch Console hands
+  on a refusal that reached its own listener through the new
+  `POST /gateway/service-connections/{service}/flows/{id}/fail`, so that
+  sign-in fails at once too.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
@@ -2957,6 +2968,15 @@ version of their own to them without also giving them a release of their own.
   installed, and Update installs `agy` there. An Antigravity sign-in Switch
   holds for the older runtime cannot sign `agy` in: a session given one now
   says how to sign in on the machine instead of starting signed out.
+- **A sign-in the vendor refuses ends at once, with the vendor's reason.**
+  When a service refused a sign-in, for instance after a permission was
+  unticked on Atlassian's consent page, the browser came back to Console with
+  an error Console did not recognise: the page said the connection was not
+  started by this Switch Console, and the Connect dialog kept waiting for up to
+  ten minutes. Console now ends the sign-in, shows what the vendor said in the
+  browser and in the dialog, and tells the server. Against a server too old to
+  be told, the dialog still shows the reason. The dialog also stops asking you
+  to finish signing in in your browser once the sign-in has failed.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied
