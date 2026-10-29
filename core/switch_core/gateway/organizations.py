@@ -33,6 +33,7 @@ from switch_core.db.audit import (
     record_organization_audit_event,
 )
 from switch_core.db.models import (
+    Organization,
     OrganizationMember,
     Tenant,
     User,
@@ -59,7 +60,8 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.schemas import (
-    AuditEventDetail,
+    CurrentOrganizationResponse,
+    OrganizationAuditEventDetail,
     OrganizationCreateRequest,
     OrganizationCreateResponse,
     OrganizationMemberDetail,
@@ -182,6 +184,27 @@ async def create_organization(
     )
 
 
+@router.get("/organizations/current")
+async def current_organization(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> CurrentOrganizationResponse:
+    """The organization the bound workspace belongs to, and the caller's role
+    in it. Unlike `GET /organizations`, it answers for anyone bound to the
+    workspace, the platform operator included."""
+    organization_id = await _current_organization_id(session)
+    organization = await session.get(Organization, organization_id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return CurrentOrganizationResponse(
+        id=organization.id,
+        slug=organization.slug,
+        name=organization.name,
+        role=await user_store.organization_role(session, require_tenant_id(), user.id),
+    )
+
+
 @router.get("/organizations/current/workspaces")
 async def list_organization_workspaces(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -282,10 +305,12 @@ async def list_organization_audit_log(
     user: Annotated[User, Depends(get_current_user)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before: Annotated[datetime | None, Query()] = None,
-) -> list[AuditEventDetail]:
+) -> list[OrganizationAuditEventDetail]:
     """The organization's audit log, newest first. `org_admin` only.
 
-    Page back by passing the oldest `occurred_at` returned as `before`.
+    Page back by passing the oldest `occurred_at` returned as `before`. The
+    actor, and a target that is a person, come with their names, read from
+    `users`, which outlives membership.
     """
     organization_id = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -293,14 +318,29 @@ async def list_organization_audit_log(
     events = await list_organization_audit_events(
         session, organization_id=organization_id, limit=limit, before=before
     )
+    names = await user_store.names_by_id(
+        session,
+        {event.actor_user_id for event in events if event.actor_user_id}
+        | {
+            event.target_id
+            for event in events
+            if event.target_type == "user" and event.target_id
+        },
+    )
     return [
-        AuditEventDetail(
+        OrganizationAuditEventDetail(
             id=event.id,
             occurred_at=event.occurred_at.isoformat(),
             actor_user_id=event.actor_user_id,
+            actor_name=names.get(event.actor_user_id) if event.actor_user_id else None,
             action=event.action,
             target_type=event.target_type,
             target_id=event.target_id,
+            target_name=(
+                names.get(event.target_id)
+                if event.target_type == "user" and event.target_id
+                else None
+            ),
             details=event.details,
         )
         for event in events

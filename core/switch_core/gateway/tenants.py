@@ -402,8 +402,9 @@ async def list_every_workspace(
             slug=tenant.slug,
             name=tenant.name,
             organization_id=tenant.organization_id,
+            organization_name=organization.name if organization is not None else None,
         )
-        for tenant in await all_workspaces(session_factory)
+        for tenant, organization in await all_workspaces(session_factory)
     ]
 
 

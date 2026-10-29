@@ -527,15 +527,21 @@ async def record_operator_entry(
 
 async def all_workspaces(
     session_factory: async_sessionmaker[AsyncSession],
-) -> list[Tenant]:
-    """Every workspace on the server, oldest first, each read on its own short
-    session. For the platform operator's list only."""
-    found: list[Tenant] = []
+) -> list[tuple[Tenant, Organization | None]]:
+    """Every workspace on the server, oldest first, with its organization,
+    each read on its own short session. For the platform operator's list
+    only."""
+    found: list[tuple[Tenant, Organization | None]] = []
     for tenant_id in await all_tenant_ids(session_factory):
         async with tenant_session(session_factory, tenant_id) as session:
             tenant = await session.get(Tenant, tenant_id)
+            organization = (
+                await session.get(Organization, tenant.organization_id)
+                if tenant is not None and tenant.organization_id is not None
+                else None
+            )
         if tenant is not None:
-            found.append(tenant)
+            found.append((tenant, organization))
     return found
 
 
