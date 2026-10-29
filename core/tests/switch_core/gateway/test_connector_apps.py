@@ -388,7 +388,9 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
-        assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
+        # A client Core registers itself is nothing for the operator to set up.
+        assert "atlassian" not in apps
+        assert set(body) == {"public_url", "apps"}
 
     async def test_an_unknown_service_is_not_found(
         self, world: World, operator
@@ -864,25 +866,38 @@ class TestCheckAndImpact:
     async def test_the_impact_counts_people_across_workspaces(
         self, world: World, operator, session_factory
     ) -> None:
+        """Ada is connected in both workspaces, and counted once."""
         await world.install()
         store = ServiceConnectionStore()
-        for name, tenant in (("ada", "default"), ("bo", "default"), ("cy", "other")):
-            user = await _user(session_factory, name, tenant_id=tenant)
-            async with session_factory() as session:
-                tenant_id = await _tenant_id(session, tenant)
-            async with tenant_session(session_factory, tenant_id) as session:
-                await store.save_connection(
-                    session,
-                    user_id=user.id,
-                    service=GOOGLE,
-                    consent="read",
-                    granted_scopes=[],
-                    account_id=f"account-{name}",
-                    external_identity=f"{name}@example.invalid",
-                    encrypted_secret=TEST_KEYRING.encrypt("{}"),
-                    oauth_client_id=STATIC_CLIENT_ID,
-                )
-                await session.commit()
+        for name, tenants in (
+            ("ada", ("default", "other")),
+            ("bo", ("default",)),
+            ("cy", ("other",)),
+        ):
+            user = await _user(session_factory, name, tenant_id=tenants[0])
+            for tenant in tenants:
+                async with session_factory() as session:
+                    tenant_id = await _tenant_id(session, tenant)
+                    if tenant != tenants[0]:
+                        session.add(
+                            TenantMember(
+                                tenant_id=tenant_id, user_id=user.id, role="member"
+                            )
+                        )
+                    await session.commit()
+                async with tenant_session(session_factory, tenant_id) as session:
+                    await store.save_connection(
+                        session,
+                        user_id=user.id,
+                        service=GOOGLE,
+                        consent="read",
+                        granted_scopes=[],
+                        account_id=f"account-{name}-{tenant}",
+                        external_identity=f"{name}@example.invalid",
+                        encrypted_secret=TEST_KEYRING.encrypt("{}"),
+                        oauth_client_id=STATIC_CLIENT_ID,
+                    )
+                    await session.commit()
         async with world.harness.client() as client:
             cookies = cookies_for(operator)
             await client.put(f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies)

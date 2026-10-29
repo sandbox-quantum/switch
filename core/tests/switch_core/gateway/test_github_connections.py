@@ -314,6 +314,19 @@ async def test_cancel_and_expiry_are_visible(github_app):
     ).status_code == 400
 
 
+async def test_a_state_is_used_once(github_app):
+    """As for every other service's sign-in: a reused state is a conflict."""
+    client, github, _, _ = github_app
+    state = await authorize(client)
+    again = await client.post(
+        BASE + "/flows",
+        json={"port": 12345, "state": state, "completion_secret": SECRET},
+    )
+    assert again.status_code == 409
+    assert "already been used" in again.json()["detail"]
+    github.exchange.assert_not_called()
+
+
 async def test_a_flow_keeps_nothing_secret_in_the_clear(github_app):
     client, _, _, factory = github_app
     flow_id = await authorize(client)

@@ -6,8 +6,9 @@ every OAuth client with `registration: static`. Each comes from one of two
 places:
 
 - **configuration**: the files named by `GITHUB_APP_CONFIG_PATH` and
-  `GITHUB_APP_PRIVATE_KEY_PATH` (or, for one more release, the deprecated
-  `HOSTED_GITHUB_CONFIG_PATH`), or by `<PREFIX>_CLIENT_CONFIG_PATH`;
+  `GITHUB_APP_PRIVATE_KEY_PATH` (or the deprecated
+  `HOSTED_GITHUB_CONFIG_PATH`, which names no signing key), or by
+  `<PREFIX>_CLIENT_CONFIG_PATH`;
 - **saved**: a `service_app_credentials` row the operator saved from the
   dashboard.
 

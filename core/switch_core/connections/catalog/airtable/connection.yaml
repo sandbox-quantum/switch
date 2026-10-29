@@ -38,7 +38,7 @@ auth:
     account_id: id
     # Airtable returns the email only with user.email:read, which its MCP
     # server does not offer, so the connection is named by the account id.
-    label: email
+    label: id
 # Airtable's access tokens live 60 minutes (measured).
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:

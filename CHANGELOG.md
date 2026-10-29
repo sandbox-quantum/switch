@@ -77,7 +77,11 @@ version of their own to them without also giving them a release of their own.
   token is the owner's own. The change now marks those tokens withdrawn and
   its warning names the service and the time until which they may keep
   working: up to an hour for Google Workspace, and up to eight hours for
-  Atlassian, whose tokens cannot be asked for shorter.
+  Atlassian, whose tokens cannot be asked for shorter. Disconnecting or
+  reconnecting Google Workspace is the exception: Switch revokes the sign-in
+  at Google, which ends every token on it, so once that succeeds the warning
+  leaves Google Workspace out. A catalog entry says so with
+  `revocation_ends_tokens`.
 - **A template's room params name only rooms its runner can see.** A room
   param checked its value against every room on the server, and `$first` or
   a list of candidates could settle on someone else's private room. That told
@@ -198,6 +202,12 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Small connector answers line up.** `GET /connector-apps`, the impact of
+  replacing an app and removing one count a person connected in two
+  workspaces once in `connected_members`, rather than once per workspace.
+  `GET /connector-apps` no longer returns `registered`, which no client read.
+  Starting a GitHub sign-in with a state already used answers 409, as every
+  other service's sign-in does, rather than 503.
 
 #### Fixed
 - **A sign-in the vendor refuses fails with the vendor's reason.** When a
@@ -219,6 +229,11 @@ version of their own to them without also giving them a release of their own.
   for up to ten minutes. The sign-in now fails with the reason, which the page
   shows too. The same goes for a service switched off or removed while Switch
   Console hands the code back.
+- **Connector messages send people to Connectors.** A refusal telling an
+  owner to connect or reconnect a service, which agents pass on, sent them to
+  "Settings, Connections", which Switch Console does not have; it now names
+  Connectors, the page in Switch Console's sidebar and in the dashboard.
+  switch-buddy calls an agent's tab by its name, Connectors.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
