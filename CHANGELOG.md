@@ -2733,6 +2733,12 @@ version of their own to them without also giving them a release of their own.
   browser and in the dialog, and tells the server. Against a server too old to
   be told, the dialog still shows the reason. The dialog also stops asking you
   to finish signing in in your browser once the sign-in has failed.
+- **A GitHub sign-in Switch could not finish says why.** When the server
+  refused to keep a GitHub sign-in, for instance because that GitHub account
+  is linked to another Switch user, the browser said Switch Console would say
+  what happened, but Console said only that the sign-in was interrupted. It
+  now shows the reason the server gave until you cancel, as other services'
+  sign-ins already did.
 - **Console no longer opens to a blank window on a database a newer build
   has changed.** Stable and Canary share one database, so after Canary added a
   migration, an older build found tables it was not written for, applied
