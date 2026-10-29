@@ -237,6 +237,7 @@ describe('what one install attempt reports', () => {
         {
           version: '1.3.0',
           message: "Version 1.3.0 didn't install: Could not write the app bundle",
+          foundAtLaunch: false,
         },
       ],
     ]);
@@ -387,7 +388,9 @@ describe('the launch after an install', () => {
     expect(restartedEvents.emit).toHaveBeenCalledWith(failedEvent, {
       version: '1.3.0',
       message: expect.stringContaining('1.3.0'),
+      foundAtLaunch: true,
     });
+    expect(restarted.getState().installFailedAtLaunch).toBe(true);
 
     // The check that follows finds the same release. Offering it again would
     // only fail the same way, so the failure stays on screen.
@@ -402,7 +405,15 @@ describe('the launch after an install', () => {
       throw new Error('getaddrinfo ENOTFOUND github.com');
     });
     await expect(restarted.checkForUpdates('scheduled')).rejects.toThrow('ENOTFOUND');
+    vi.mocked(restartedEvents.emit).mockClear();
     await restarted.checkForUpdates('scheduled');
+    // Shown again, but no longer news: no second toast an hour later.
+    expect(restartedEvents.emit).toHaveBeenCalledWith(failedEvent, {
+      version: '1.3.0',
+      message: expect.stringContaining('1.3.0'),
+      foundAtLaunch: false,
+    });
+    expect(restarted.getState().installFailedAtLaunch).toBe(false);
     expect(restarted.getState()).toMatchObject({
       status: 'install-failed',
       error: "Version 1.3.0 didn't install: Switch Console restarted on version 1.2.3.",

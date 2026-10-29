@@ -19,7 +19,7 @@ const rpcUpdate = vi.hoisted(() => ({
 
 vi.mock('sonner', () => ({ toast }));
 vi.mock('@renderer/lib/components/update-toast-action-label', () => ({
-  createUpdateToastActionLabel: () => 'Update',
+  createUpdateToastActionLabel: (text: string) => text,
 }));
 vi.mock('@renderer/lib/stores/app-state', () => ({
   appState: { navigation: { navigate: vi.fn() } },
@@ -50,6 +50,7 @@ const {
   UpdateStore,
   mainStateToRendererState,
 } = await import('./update-store');
+const { appState } = await import('@renderer/lib/stores/app-state');
 
 beforeEach(() => {
   rpcUpdate.getState.mockResolvedValue({ success: false });
@@ -107,44 +108,66 @@ describe('an update that did not install', () => {
     localStorage.clear();
   });
 
-  it('says so, and offers the manual download', () => {
+  it('shows a failure after a click only where the user clicked', () => {
     const store = new UpdateStore();
     store.start();
 
-    emit(updateInstallFailedEvent, { version: '2.0.0', message });
+    emit(updateInstallFailedEvent, { version: '2.0.0', message, foundAtLaunch: false });
 
+    // The panel or the Settings card renders this state; a toast would repeat it.
     expect(store.state).toEqual({ status: 'install-failed', message });
     expect(store.latestVersion).toBe('2.0.0');
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('tells the user about a failure found at launch, and points at Settings', () => {
+    const store = new UpdateStore();
+    store.start();
+
+    emit(updateInstallFailedEvent, { version: '2.0.0', message, foundAtLaunch: true });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
     expect(toast.error).toHaveBeenCalledWith(
       "Update didn't install",
       expect.objectContaining({ id: UPDATE_INSTALL_FAILED_TOAST_ID, description: message })
     );
 
-    const [, options] = toast.error.mock.calls[0] as [string, { action: { onClick(): void } }];
+    // "Download manually" quits the app, so the toast leads to the card that
+    // explains it rather than running it from a corner of the screen.
+    const [, options] = toast.error.mock.calls[0] as [
+      string,
+      { action: { label: unknown; onClick(): void } },
+    ];
+    expect(options.action.label).toBe('Details');
     options.action.onClick();
-    expect(rpcUpdate.openLatest).toHaveBeenCalled();
+    expect(appState.navigation.navigate).toHaveBeenCalledWith('settings', { tab: 'general' });
+    expect(rpcUpdate.openLatest).not.toHaveBeenCalled();
   });
 
-  it('is told on the launch that found it, before any window was listening', async () => {
-    rpcUpdate.getState.mockResolvedValue({
-      success: true,
-      data: {
-        status: 'install-failed',
-        currentVersion: '1.0.0',
-        availableVersion: '2.0.0',
-        error: message,
-      },
-    });
-    const store = new UpdateStore();
-    store.start();
+  it.each([
+    ['found at launch', true, 1],
+    ['found after a click', false, 0],
+  ])(
+    'on a renderer start, toasts a failure %s that main already holds',
+    async (_label, installFailedAtLaunch, toasts) => {
+      rpcUpdate.getState.mockResolvedValue({
+        success: true,
+        data: {
+          status: 'install-failed',
+          currentVersion: '1.0.0',
+          availableVersion: '2.0.0',
+          error: message,
+          installFailedAtLaunch,
+        },
+      });
+      const store = new UpdateStore();
+      store.start();
 
-    await vi.waitFor(() => expect(store.state.status).toBe('install-failed'));
-    expect(store.availableVersion).toBe('2.0.0');
-    expect(toast.error).toHaveBeenCalledWith(
-      "Update didn't install",
-      expect.objectContaining({ description: message })
-    );
-  });
+      await vi.waitFor(() => expect(store.state.status).toBe('install-failed'));
+      expect(store.availableVersion).toBe('2.0.0');
+      expect(toast.error).toHaveBeenCalledTimes(toasts);
+    }
+  );
 
   it('keeps the reason main gave when mapping its state', () => {
     expect(

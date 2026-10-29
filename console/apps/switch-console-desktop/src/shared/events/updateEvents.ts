@@ -28,8 +28,11 @@ export const updateInstallingEvent = defineEvent<void>('update:installing');
  * version, or this copy of the app cannot be updated in place. The update has
  * to be downloaded by hand.
  */
-export const updateInstallFailedEvent = defineEvent<{ version: string; message: string }>(
-  'update:install-failed'
-);
+export const updateInstallFailedEvent = defineEvent<{
+  version: string;
+  message: string;
+  /** Found on the launch after a handover, rather than while someone watched. */
+  foundAtLaunch: boolean;
+}>('update:install-failed');
 
 export const updateErrorEvent = defineEvent<{ message: string }>('update:error');
