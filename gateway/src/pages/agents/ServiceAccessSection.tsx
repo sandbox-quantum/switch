@@ -174,9 +174,8 @@ export default function ServiceAccessSection({
             }
           >
             Anyone who can address {agent.name} can have it use these grants. Owner-only
-            stops that, but it still reads what others write in shared rooms, can be
-            reached through your other agents that are open, and posts results to
-            shared rooms.
+            stops that: only you can address it. It still reads what others write in
+            shared rooms and posts results there.
           </Alert>
         )}
 
@@ -271,9 +270,11 @@ export default function ServiceAccessSection({
 /**
  * What turning on a service whose agents use the owner's own token means, and
  * how long turning it off takes: Switch stops handing it out within a minute,
- * and a token that lives longer stays valid at the vendor until it expires. A
- * service connected with a key hands out the key itself, which does not
- * expire, so its note says only how far the key reaches.
+ * and a token that lives longer may keep working at the vendor until it
+ * expires. Whether disconnecting ends it sooner is the vendor's to say, so the
+ * note does not promise it; the disconnect's own warning says what it could
+ * not take back. A service connected with a key hands out the key itself,
+ * which does not expire, so its note says only how far the key reaches.
  */
 export function onOffGrantNote(
   agentName: string,
@@ -284,9 +285,9 @@ export function onOffGrantNote(
   if (service.key)
     return `On, ${agentName} uses ${name} with your key, as far as the key allows. ${off}`;
   const note = `On, ${agentName} acts as you at ${name}, with everything your ${name} connection allows. ${off}`;
-  return service.token_lifetime !== null && service.token_lifetime > 3600
-    ? `${note} A token already handed out stays valid at ${name} until it expires or you disconnect.`
-    : note;
+  if (service.token_lifetime === null || service.token_lifetime <= 3600) return note;
+  const hours = Math.ceil(service.token_lifetime / 3600);
+  return `${note} A token already handed out may keep working at ${name} until it expires, up to ${hours} hours after it was handed out.`;
 }
 
 /**
