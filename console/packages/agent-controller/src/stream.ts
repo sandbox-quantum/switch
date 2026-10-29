@@ -8,6 +8,7 @@ import {
   isTakenOver,
   isUpgradeRequired,
   type OpenedSocket,
+  type SocketLike,
 } from './api';
 import { errorMessage, type Logger } from './log';
 import {
@@ -34,6 +35,8 @@ import {
   connectionStateSchema,
   type ControllerConnection,
   credentialRevokedSchema,
+  type DecisionRequestFrame,
+  decisionRequestFrameSchema,
   type Evicted,
   evictedSchema,
   type OperationPending,
@@ -56,6 +59,7 @@ export const STREAM_FRAME_SCHEMAS = {
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
+  'decision.request': decisionRequestFrameSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 /** Every frame the controller's socket carries down: the stream's, and the answers to calls. */
@@ -77,7 +81,8 @@ export type ControllerFrame =
   | { type: 'agent.rooms'; data: AgentRoomsFrame }
   | { type: 'assignment.changed'; data: { revision: number } }
   | { type: 'operation.pending'; data: OperationPending }
-  | { type: 'credential.revoked'; data: Record<string, never> };
+  | { type: 'credential.revoked'; data: Record<string, never> }
+  | { type: 'decision.request'; data: DecisionRequestFrame };
 
 /** Why the stream stopped for good. */
 export type StreamEnding =
@@ -184,9 +189,11 @@ export function runControllerStream(options: ControllerStreamOptions): Promise<S
   return new ControllerStream(options).run();
 }
 
-class ControllerStream {
+export class ControllerStream {
   private held: Held | null = null;
   private backoff: number;
+  /** The socket being read, while one is open. */
+  private socket: SocketLike | null = null;
 
   constructor(private readonly options: ControllerStreamOptions) {
     this.backoff = options.initialBackoffMs;
@@ -254,6 +261,18 @@ class ControllerStream {
         this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
     }
     return 'stopped';
+  }
+
+  /**
+   * Sends one message up the socket now open, for a frame handled off the
+   * frame loop (a decision's result). Resolves false when no socket is open:
+   * Switch fails whatever waited on it when the connection closed.
+   */
+  send(message: object): boolean {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== 1) return false;
+    socket.send(JSON.stringify(message));
+    return true;
   }
 
   private async attach(attempt: Attempt): Promise<void> {
@@ -355,6 +374,7 @@ class ControllerStream {
       notify();
     };
     const onAbort = () => notify();
+    this.socket = socket;
     socket.addEventListener('message', onMessage);
     socket.addEventListener('close', onClose);
     socket.addEventListener('error', notify);
@@ -397,6 +417,7 @@ class ControllerStream {
         this.options.log.warn('The controller socket closed; reconnecting.', { code: closedWith });
     } finally {
       this.options.calls?.close('The controller socket closed before Switch answered the call.');
+      if (this.socket === socket) this.socket = null;
       if (idle) clearTimeout(idle);
       socket.removeEventListener('message', onMessage);
       socket.removeEventListener('close', onClose);
