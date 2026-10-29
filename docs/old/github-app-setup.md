@@ -12,8 +12,10 @@ under Admin → Connector apps."
 
 ## What you need
 
-- The server's **`GATEWAY_PUBLIC_URL`**, an `https://` address: GitHub sends
-  each sign-in back to it.
+- The server's **`GATEWAY_PUBLIC_URL`**, an `https://` address, or a loopback
+  `http://` one (`localhost`, `127.0.0.1` or `::1`) on a server only its own
+  computer reaches, such as one Switch Console runs: GitHub sends each sign-in
+  back to it, and to no other `http://` address.
 - A GitHub account or organization to own the App. An App owned by an
   organization keeps working when the person who created it leaves.
 
@@ -89,8 +91,8 @@ connected lose it until an App is set up again. They can still disconnect.
 The App can be set in the server's configuration instead:
 
 - `GITHUB_APP_CONFIG_PATH`: a JSON file with `client_id`, `client_secret`,
-  `slug` (the App's name in its URL) and `origin` (the HTTPS address GitHub
-  calls back; normally `GATEWAY_PUBLIC_URL`);
+  `slug` (the App's name in its URL) and `origin` (the address GitHub calls
+  back, https or loopback http; normally `GATEWAY_PUBLIC_URL`);
 - `GITHUB_APP_PRIVATE_KEY_PATH`: the private key's `.pem`, by absolute path.
 
 With Helm, `switchCore.githubConnectionsSecret` holds `github.json`, and
