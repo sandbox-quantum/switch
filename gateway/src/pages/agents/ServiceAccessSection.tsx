@@ -147,6 +147,8 @@ export default function ServiceAccessSection({
   const onOff = services.filter((service) => service.enabled && service.pass_through);
   const onOffSlugs = new Set(onOff.map((service) => service.slug));
   const githubService = services.find((service) => service.slug === "github") ?? null;
+  // Why GitHub can't be granted here at all, said where its form would be.
+  const githubBlocked = githubService === null ? null : serviceBlockedReason(githubService);
 
   return (
     <>
@@ -255,12 +257,16 @@ export default function ServiceAccessSection({
             />
           ))}
 
-        {grants && canGrant && (editing || !githubGrant) && (
+        {grants && canGrant && githubBlocked !== null && (
+          <Typography variant="body2" color="text.secondary">
+            {githubBlocked}
+            {isOperator && githubService?.server_setup_needed && <SetUpLink />}
+          </Typography>
+        )}
+        {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
           <GitHubGrantForm
             github={github}
             githubError={githubError}
-            notSetUp={githubService?.server_setup_needed ? githubService.unavailable_reason : null}
-            canSetUp={isOperator}
             current={githubGrant}
             busy={busy}
             onCancel={githubGrant ? () => setEditing(false) : null}
@@ -301,6 +307,20 @@ export function onOffGrantNote(
     : note;
 }
 
+/**
+ * Why the service can't be used by agents here at all, whoever is connected:
+ * the server's own reason first, then the workspace's switch, worded as the
+ * server's refusal is. Null when neither stops it.
+ */
+export function serviceBlockedReason(
+  service: Pick<ServiceConnection, "name" | "unavailable_reason" | "workspace_enabled">,
+): string | null {
+  if (service.unavailable_reason !== null) return service.unavailable_reason;
+  if (!service.workspace_enabled)
+    return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+  return null;
+}
+
 /** The operator's way from a service that is not set up to where it is set
  * up: their server-wide connector apps, under Platform in the new layout. */
 function SetUpLink() {
@@ -338,9 +358,10 @@ function OnOffGrant({
   onTurnOff: () => void;
 }) {
   const connected = service.status === "active";
+  // Said whether or not it is on: on, the grant does nothing until it changes.
+  const blocked = serviceBlockedReason(service);
   // A grant can be turned off whatever the server's state; on needs a usable connection.
-  const blocked =
-    grant === null && (!canTurnOn || !connected || service.unavailable_reason !== null);
+  const blocksOn = grant === null && (!canTurnOn || !connected || blocked !== null);
   return (
     <Paper variant="outlined" sx={{ p: 1.5 }}>
       <Stack direction="row" alignItems="center" spacing={1}>
@@ -350,7 +371,7 @@ function OnOffGrant({
         <Chip size="small" variant="outlined" label={grant ? "On" : "Off"} />
         <Switch
           checked={grant !== null}
-          disabled={busy || blocked}
+          disabled={busy || blocksOn}
           onChange={(_, on) => (on ? onTurnOn() : onTurnOff())}
           slotProps={{ input: { "aria-label": `${service.name} for ${agentName}` } }}
         />
@@ -366,13 +387,13 @@ function OnOffGrant({
           Signs in through your organization&apos;s {service.name} app.
         </Typography>
       )}
-      {service.unavailable_reason && (
+      {blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          {service.unavailable_reason}
+          {blocked}
           {canSetUp && service.server_setup_needed && <SetUpLink />}
         </Typography>
       )}
-      {!grant && !connected && !service.unavailable_reason && (
+      {!grant && !connected && !blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           To turn {service.name} on, first connect it in Switch Console, under Connectors.
         </Typography>
@@ -387,8 +408,6 @@ function OnOffGrant({
 function GitHubGrantForm({
   github,
   githubError,
-  notSetUp,
-  canSetUp,
   current,
   busy,
   onCancel,
@@ -396,9 +415,6 @@ function GitHubGrantForm({
 }: {
   github: GitHubConnection | null;
   githubError: string | null;
-  /** Why GitHub is not set up on this server, when its App is not. */
-  notSetUp: string | null;
-  canSetUp: boolean;
   current: ServiceGrant | null;
   busy: boolean;
   onCancel: (() => void) | null;
@@ -414,13 +430,6 @@ function GitHubGrantForm({
     current ? repositoryIds(current.resources) : [],
   );
 
-  if (notSetUp)
-    return (
-      <Typography variant="body2" color="text.secondary">
-        {notSetUp}
-        {canSetUp && <SetUpLink />}
-      </Typography>
-    );
   if (githubError) return <Alert severity="error">{githubError}</Alert>;
   if (github === null) return <CircularProgress size={20} />;
   if (github.status === "not_connected")
