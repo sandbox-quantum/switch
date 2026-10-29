@@ -92,6 +92,7 @@ switch-agent-controller status [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
 switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
+switch-agent-controller decision-model on|off|remove|status [--data-dir <dir>]
 ```
 
 - `--server` is the agent bridge URL, and it must be `https`. Plain `http` is
@@ -627,6 +628,43 @@ session hosts it launches with `process.execPath` run as Node too.
   turns every agent off, stops accepting their tokens, deletes their credentials
   files and the controller credential, and exits with code `3`.
 
+### The decision model for auto-route
+
+A workspace admin can have auto-route's decisions made on one of their own
+machines. The controller reports `controller.capabilities: ["decision.v1"]` and a `decision`
+block in its status: the hardware (Apple Silicon from `sysctl
+hw.optional.arm64`, an NVIDIA GPU from `nvidia-smi`, else the CPU), the models
+it offers, and the model's state. When the assignment names a model
+(`decision: {revision, model}`), it:
+
+- checks the disk has room, then downloads the pinned llama.cpp build and
+  GGUF weights (`src/decision/catalogue.ts`: Qwen3.5-4B Q4_K_M, llama.cpp
+  `b11981` for macOS arm64 Metal, Linux x64 CPU and Linux x64 CUDA 12.8), each
+  resumable through a `.part` file and checked against its SHA-256;
+- starts llama-server on `127.0.0.1`, on a free port, with a key made for that
+  launch (in its environment, not on its command line), no web UI, no slots
+  endpoint, no network access and no log file; what it prints is kept in
+  memory only, to tell an out-of-memory end from another;
+- waits for `/health`, runs one warm-up decision, and reports `running`;
+- starts it again after 2, 4 and 8 seconds when it crashes, and reports
+  `failed` on the third crash in ten minutes, until the next revision;
+- stops it within seconds when the assignment stops naming a model or decision
+  work is turned off here, keeping the weights.
+
+`decision.request` frames are answered off the frame loop, at most four at a
+time (`busy` beyond), within their `deadline_ms`, with a `decision.result` up
+the socket. Their payloads and answers are room content: never logged or
+written anywhere. Each decision logs its id, outcome and time.
+
+Turning decision work off on a machine: `run --no-decision-model`, or
+`SWITCH_CONTROLLER_DECISION_MODEL=off` (Switch Console passes `on` or `off` on
+every start), or `decision-model off`, which a running controller follows
+within seconds; the variable, when set, wins over `decision-model`. The model
+then reports `off` with the reason `turned_off_on_machine`. `decision-model
+remove` deletes the weights and the build, refused while the assignment names
+the model and decision work is allowed. Console asks its own controller over
+IPC (`switch-decision-model-remove`), which stops the model server first.
+
 ## What it does not do
 
 - No connector tokens and no sealed provider logins.
@@ -661,6 +699,7 @@ It holds:
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
 | `agent hosts/<id>/` | Each agent's agent host state root: `watch.json`, `config.json`, `health.json` (what `status` reads), its journal, and `supervisor/failure.json` once it has failed for good. |
 | `updates/` | A release being downloaded to update to (deleted once installed or refused), and npm's cache. The last update attempt is kept in `controller.db`. |
+| `decision/` | The decision model: `models/<sha256>.gguf` (`.part` while downloading), the llama.cpp build in `runtime/`, `settings.json` (`decision-model on\|off`), and the running model server's pid. |
 | `releases/` | With `install-service`: the releases the controller installed for itself, each an npm prefix, and `current`, the link the service runs through. |
 
 An agent whose definition names no directory works in

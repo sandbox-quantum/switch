@@ -13,7 +13,12 @@ import { DEFAULT_TIMING } from './controller';
 import { silentLogger } from './log';
 import type { AgentCursor, ControllerConnection } from './schemas';
 import { SocketCallLost, SocketCalls } from './socket-calls';
-import { type ControllerFrame, type ControllerStreamOptions, runControllerStream } from './stream';
+import {
+  type ControllerFrame,
+  ControllerStream,
+  type ControllerStreamOptions,
+  runControllerStream,
+} from './stream';
 import { FakeCore } from './testing/fake-core';
 
 type Message = { event: string; data: unknown };
@@ -137,6 +142,43 @@ function run(
   });
   return { frames, states, ending };
 }
+
+describe('ControllerStream.send', () => {
+  it('sends up the socket now open, and says when there is none', async () => {
+    const scripted = new ScriptedClient();
+    const stop = new AbortController();
+    const stream = new ControllerStream({
+      client: scripted.client,
+      cursors: () => ({}),
+      confirmed: () => ({}),
+      onOpened: () => {},
+      onConnected: () => {},
+      onDisconnected: () => {},
+      onFrame: async () => {},
+      signal: stop.signal,
+      log: silentLogger,
+      idleTimeoutMs: 2_000,
+      initialBackoffMs: 5,
+      maxBackoffMs: 20,
+      random: () => 0,
+    });
+    expect(stream.send({ type: 'decision.result', request_id: 'r0' })).toBe(false);
+    const ending = stream.run();
+    await waitFor(() => scripted.opened[0]?.readyState === 1, 'the socket open');
+    await waitFor(
+      () => stream.send({ type: 'decision.result', request_id: 'r1', ok: true }),
+      'a send'
+    );
+    expect(scripted.opened[0]!.sent).toContainEqual({
+      type: 'decision.result',
+      request_id: 'r1',
+      ok: true,
+    });
+    stop.abort();
+    expect(await ending).toBe('stopped');
+    expect(stream.send({ type: 'decision.result', request_id: 'r2' })).toBe(false);
+  });
+});
 
 describe('runControllerStream', () => {
   it('takes calls on a socket that offers them, answers each as it arrives, and fails them when it closes', async () => {
