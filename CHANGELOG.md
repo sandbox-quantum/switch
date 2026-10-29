@@ -496,6 +496,23 @@ version of their own to them without also giving them a release of their own.
   a service off for an agent stops its sessions using it within a minute (not
   an hour), and that disconnecting Airtable does not end a token already
   handed out.
+- **GitHub can be set up on a server at a loopback http address, such as one
+  Switch Console runs.** Switch refused a GitHub App on any server whose
+  `GATEWAY_PUBLIC_URL` was not https, on the belief that GitHub calls back
+  only to https. GitHub also calls back to plain http on the loopback address,
+  where a server Switch Console runs lives (`http://127.0.0.1:<port>`), so
+  GitHub could never be set up there: Connector apps held its Set up back
+  with a sentence saying https was needed, and the Connectors page called it
+  unavailable. A GitHub App is now saved, checked, loaded and signed in
+  through at `localhost`, `127.0.0.1` or `::1` over http, as at any https
+  address. A server at any other http address still refuses it, and the
+  reason now names both ways it can work. A `GITHUB_APP_CONFIG_PATH` file
+  whose `origin` GitHub would not call back stops the server naming that
+  origin, where it said only "GitHub connection configuration is invalid";
+  so does one with a path in its origin, a malformed slug, or no client
+  secret, each saying which. The GitHub sign-in's cookie is no longer marked
+  Secure over plain http on the loopback address, where a browser drops it,
+  as the other connectors' sign-ins already did.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in

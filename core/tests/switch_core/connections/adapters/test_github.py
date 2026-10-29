@@ -287,6 +287,11 @@ def _app_files(tmp_path: Path) -> tuple[str, str]:
     return str(settings), str(key)
 
 
+def _set_origin(settings: str, origin: str) -> None:
+    path = Path(settings)
+    path.write_text(json.dumps({**json.loads(path.read_text()), "origin": origin}))
+
+
 class TestSettings:
     def test_both_or_neither(self, tmp_path: Path) -> None:
         settings, key = _app_files(tmp_path)
@@ -310,6 +315,31 @@ class TestSettings:
 
     def test_nothing_set_means_no_app(self) -> None:
         assert load_github_app(_config()) is None
+
+    def test_an_app_on_this_computer_is_called_back_over_http(
+        self, tmp_path: Path
+    ) -> None:
+        settings, key = _app_files(tmp_path)
+        _set_origin(settings, "http://127.0.0.1:8000")
+        app = load_github_app(
+            _config(github_app_config_path=settings, github_app_private_key_path=key)
+        )
+        assert app is not None
+        assert app.connections.callback == (
+            "http://127.0.0.1:8000/gateway/provider-connections/github/callback"
+        )
+
+    def test_an_origin_github_would_not_call_back_stops_the_server_saying_so(
+        self, tmp_path: Path
+    ) -> None:
+        settings, key = _app_files(tmp_path)
+        _set_origin(settings, "http://switch.example.com")
+        with pytest.raises(ValueError, match="'http://switch.example.com' is neither"):
+            load_github_app(
+                _config(
+                    github_app_config_path=settings, github_app_private_key_path=key
+                )
+            )
 
     def test_the_hosted_settings_without_a_key_connect_but_cannot_grant(
         self, tmp_path: Path, caplog

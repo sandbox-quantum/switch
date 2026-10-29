@@ -333,8 +333,9 @@ what each person can do about it (`UnavailableCode` in
 - `coming_soon`: the catalog has it switched off.
 - `switched_off`: the operator switched it off (`DISABLED_SERVICES`).
 - `needs_https`: its app can't work on this server: GitHub's App needs
-  `GATEWAY_PUBLIC_URL` to be https, as it is not on a server Switch Console
-  runs at `http://127.0.0.1`.
+  `GATEWAY_PUBLIC_URL` to be https, or loopback http (`localhost`,
+  `127.0.0.1` or `::1`, as on a server Switch Console runs at
+  `http://127.0.0.1`), and it is plain http to another host.
 - `app_not_set_up`: its app is the operator's to set up, under Admin →
   Connector apps, and is not (`server_setup_needed` is true for exactly this).
 - `not_set_up`: nothing on this server connects it, and no app would.
