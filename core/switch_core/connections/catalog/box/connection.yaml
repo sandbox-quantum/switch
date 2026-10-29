@@ -49,12 +49,13 @@ access:
   # Box checks each call against the person's own folder and file
   # permissions as well as these scopes. Not asked for: ai.readwrite, whose
   # Box AI tools (ask, extract) spend the enterprise's AI units, and
-  # docgen.readwrite, which needs an Enterprise Advanced licence. Box refuses
-  # those tools without them, though its server may still list them. The Box
-  # MCP server has no tool that deletes a file or folder. With its default
-  # tools, root_readwrite lets it upload, create folders and Box Notes, copy
-  # and comment; moving, renaming, metadata, shared links and collaborations
-  # are off, and not listed, until a Box admin turns them on.
+  # docgen.readwrite, which needs an Enterprise Advanced licence. Box
+  # documents those tools as needing them, and its server still lists the
+  # Box AI tools. The Box MCP server has no tool that deletes a file or
+  # folder. With its default tools, root_readwrite lets it upload, create
+  # folders, Box Notes and hubs, copy files, folders and hubs, add items to a
+  # hub and comment; moving, renaming, setting metadata, shared links and
+  # collaborations are off, and not listed, until a Box admin turns them on.
   read:
     scopes:
       - root_readonly

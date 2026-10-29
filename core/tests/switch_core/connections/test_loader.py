@@ -362,6 +362,28 @@ def test_the_shipped_box_entry_signs_in_as_box_documents_it():
     )
 
 
+def test_the_box_skill_names_every_change_its_default_tools_make():
+    # Box's MCP server turns these write tools on by default; the skill has to
+    # name each one so the agent confirms before using it.
+    skill = CATALOG["box"].skill_files["SKILL.md"]
+    for tool in (
+        "upload_file",
+        "create_folder",
+        "create_box_note",
+        "copy_file",
+        "copy_folder",
+        "create_file_comment",
+        "create_hub",
+        "copy_hub",
+        "add_items_to_hub",
+    ):
+        assert f"`{tool}`" in skill, tool
+    # The Box AI scope isn't asked for, and refusing its tools was not seen
+    # live: the skill keeps the agent off them rather than promising a refusal.
+    assert "Box refuses them" not in skill
+    assert "Don't call them" in skill
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"

@@ -21,11 +21,13 @@ MCP server; there is nothing to set up or renew.
   and don't look for another way to make it.
 - **No Box AI or Doc Gen.** The server lists Box AI tools (`ai_qa_*`,
   `ai_extract_*`), and may list Doc Gen tools, but this connection does not
-  include them, and Box refuses them. Read the file yourself instead.
+  ask Box for the scopes they need, and Box AI spends your owner's
+  organization's AI units. Don't call them: read the file yourself instead.
 - **Some tools are off unless a Box admin turned them on**, and are then not
   listed at all: shared links, collaborations, moving, renaming and other
-  property changes, metadata, new file versions, and download and upload
-  links. If the task needs one, say so; your owner's Box admin decides.
+  property changes, setting metadata, changing metadata templates and hubs,
+  new file versions, and download and upload links. If the task needs one,
+  say so; your owner's Box admin decides.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
@@ -53,9 +55,12 @@ can find them.
 - Read an item's details before you change it, and say which item will change
   and how: its path, its new name or its destination folder.
 - The changes the default tools make are `upload_file`, `create_folder`,
-  `create_box_note`, `copy_file`, `copy_folder` and `create_file_comment`.
-  Confirm with the user before any of them, or a move or rename where those
-  tools are on, unless they asked for exactly that change.
+  `create_box_note`, `copy_file`, `copy_folder` and `create_file_comment`,
+  and for hubs `create_hub`, `copy_hub` and `add_items_to_hub`.
+  `create_metadata_template` is listed too, but needs a Box scope this
+  connection doesn't ask for. Confirm with the user before any change,
+  including a move or rename where a Box admin turned those tools on, unless
+  they asked for exactly that change.
 - Never create or change a shared link or a collaboration unless the user
   asked for that one in this conversation: it can give people outside the
   organization access.
