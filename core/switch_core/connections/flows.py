@@ -249,9 +249,14 @@ class ServiceFlows:
         """Where the browser signs in at the vendor, and the nonce that marks
         the browser sent there; once per flow. The flow records the client it
         is sent through, so a code issued to one client is never exchanged
-        with another."""
+        with another. A vendor that refuses on the way fails the flow with
+        its reason, and the `ServiceAdapterError` is raised on."""
         nonce = secrets.token_urlsafe(32)
-        client_id = await adapter.client_id()
+        try:
+            client_id = await adapter.client_id()
+        except ServiceAdapterError as error:
+            await self.refuse(flow.stored, str(error))
+            raise
         taken = await self._flows.advance(
             flow.stored,
             expect=("pending",),
@@ -270,6 +275,9 @@ class ServiceFlows:
                 code_challenge=s256(flow.stored.verifier),
                 scopes=list(flow.stored.details["scopes"]),
             )
+        except ServiceAdapterError as error:
+            await self.refuse(taken, str(error))
+            raise
         except BaseException:
             await self._flows.discard(flow.stored)
             raise
@@ -420,16 +428,20 @@ class ServiceFlows:
             changes={"account_label": exchange.account.label, "warning": warning},
         )
 
-    async def refused(self, flow: ServiceFlow, error: str) -> None:
-        """The browser could not be sent to the vendor: the flow ends with
-        why, for Console to show, rather than waiting until it expires."""
-        await self._flows.advance(
-            flow.stored, expect=("pending",), to="failed", changes={"error": error}
-        )
-
     async def failed(self, flow: StoredFlow, error: str) -> None:
         await self._flows.advance(
             flow, expect=("checking",), to="failed", changes={"error": error}
+        )
+
+    async def refuse(self, flow: StoredFlow, error: str) -> None:
+        """The sign-in was refused before Core took a code: the flow fails
+        with `error`, for Console to read at once, rather than wait to
+        expire."""
+        await self._flows.advance(
+            flow,
+            expect=("pending", "authorizing", "delivered"),
+            to="failed",
+            changes={"error": error},
         )
 
     async def discard(self, flow: ServiceFlow) -> None:
