@@ -233,7 +233,12 @@ version of their own to them without also giving them a release of their own.
   owner to connect or reconnect a service, which agents pass on, sent them to
   "Settings, Connections", which Switch Console does not have; it now names
   Connectors, the page in Switch Console's sidebar and in the dashboard.
-  switch-buddy calls an agent's tab by its name, Connectors.
+  switch-buddy calls an agent's tab by its name, Connectors. The setup guides
+  for GitHub, Google Workspace and Airtable quote the not-set-up message as
+  it reads now, drop the confirm step removed in 0.31.0, and say that turning
+  a service off for an agent stops its sessions using it within a minute (not
+  an hour), and that disconnecting Airtable does not end a token already
+  handed out.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
