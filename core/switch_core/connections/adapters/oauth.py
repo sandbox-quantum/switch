@@ -161,6 +161,7 @@ def _path_value(document: Any, path: str) -> Any:
 
 class OAuthAdapter:
     can_issue = True
+    read_only = False
 
     def __init__(
         self,

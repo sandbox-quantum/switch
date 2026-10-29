@@ -121,7 +121,7 @@ def _process(
         catalog=CATALOG,
         adapters={}
         if github is None
-        else {"github": GitHubAdapter(github, AsyncMock())},
+        else {"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
         organization_apps=organization_apps,
         disabled={},
         store=ServiceConnectionStore(),
@@ -843,7 +843,7 @@ async def test_with_the_flag_off_the_servers_switch_still_refuses_a_sign_in(
     _rebroker(
         client,
         factory,
-        adapters={"github": GitHubAdapter(github, AsyncMock())},
+        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
         disabled={"github": SERVER_REFUSAL["detail"]},
         public_url=None,
     )
@@ -865,7 +865,7 @@ async def test_switched_off_on_the_server_mid_flow_the_sign_in_is_revoked(
     _rebroker(
         client,
         factory,
-        adapters={"github": GitHubAdapter(github, AsyncMock())},
+        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
         disabled={"github": SERVER_REFUSAL["detail"]},
         public_url=None,
     )
@@ -949,8 +949,10 @@ def _saved(
 ) -> OrganizationApp:
     return OrganizationApp(
         organization_id="org-example",
-        adapter=None if github is None else GitHubAdapter(github, AsyncMock()),
-        github_app=None if github is None else GitHubApp(github, None),
+        adapter=None
+        if github is None
+        else GitHubAdapter(github, AsyncMock(), read_only=False),
+        github_app=None if github is None else GitHubApp(github, None, ()),
         problem=problem,
         changed_at=datetime.now(UTC),
     )
