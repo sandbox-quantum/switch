@@ -88,6 +88,28 @@ it('refuses unknown local flows and displays a failed completion', async () => {
   );
 });
 
+it('ends the sign-in when the listener is sent a refusal, and shows it', async () => {
+  const { id, url } = await start();
+  const response = await fetch(url + `?state=${id}&error=access_denied`);
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain(
+    'GitHub sign-in was cancelled. Return to Switch Console.'
+  );
+  expect(completeGitHubConnection).not.toHaveBeenCalled();
+  vi.mocked(getGitHubFlow).mockResolvedValue({
+    status: 'pending',
+    login: '',
+    error: null,
+    warning: null,
+  });
+  expect(await getGitHubBrowserFlow(server, id)).toEqual({
+    status: 'failed',
+    login: '',
+    error: 'GitHub sign-in was cancelled.',
+    warning: null,
+  });
+});
+
 it('closes the listener when the user cancels', async () => {
   const { id, url } = await start();
   await cancelGitHubBrowserFlow(server, id);

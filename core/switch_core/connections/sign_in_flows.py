@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
+import unicodedata
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
@@ -45,6 +47,11 @@ FLOW_SECONDS = 600
 # Per workspace. A person holds at most one flow of each kind, so this bounds
 # what one workspace's members can have open at once, not a global queue.
 MAX_FLOWS = 256
+# What of a vendor's refusal is shown: its `error_description`, and its
+# `error` code when it gave no description.
+MAX_VENDOR_DESCRIPTION = 300
+MAX_VENDOR_ERROR = 64
+_MARKUP = re.compile(r"<[^>]*>")
 
 
 class FlowGoneError(Exception):
@@ -62,6 +69,36 @@ class FlowsBusyError(Exception):
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _vendor_text(text: str, limit: int) -> str:
+    """What a vendor wrote, fit to show a person: without markup or control
+    characters, on one line, and at most `limit` characters long."""
+    plain = _MARKUP.sub(" ", text).replace("<", " ").replace(">", " ")
+    plain = "".join(
+        " " if unicodedata.category(char).startswith("C") else char for char in plain
+    )
+    plain = " ".join(plain.split())
+    if len(plain) <= limit:
+        return plain
+    return plain[: limit - 1].rstrip() + "…"
+
+
+def vendor_refusal(name: str, error: str, description: str | None) -> str:
+    """What a flow records when the vendor sends the browser back with an
+    OAuth `error` rather than a code. A bare `access_denied` is the person
+    declining at the vendor; anything else is the vendor refusing, in its own
+    words where it gave any. Switch Console words the same refusal the same
+    way (`sign-in-listener.ts`)."""
+    said = _vendor_text(description or "", MAX_VENDOR_DESCRIPTION)
+    if said:
+        return f"{name} refused the sign-in: {said}" + (
+            "" if said.endswith((".", "!", "?", "…")) else "."
+        )
+    code = _vendor_text(error, MAX_VENDOR_ERROR)
+    if code in ("", "access_denied"):
+        return f"{name} sign-in was cancelled."
+    return f"{name} refused the sign-in ({code})."
 
 
 @dataclass(frozen=True)
