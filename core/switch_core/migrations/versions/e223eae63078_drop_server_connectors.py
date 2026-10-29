@@ -29,8 +29,20 @@ label that says why. A registration key is found by its connector's row, or
 by the `server-connector:` label every connector gave its key, which is what
 finds those of connectors already removed.
 
-Everything is logged once it has run, since a statement that fails rolls back
-the lot.
+The warnings are written once the statements have run, and say they take
+effect when the upgrade commits: Alembic runs every pending revision in one
+transaction, so a later revision that fails rolls this one back too. Each
+retired key is named with its workspace and id, so two keys with the same
+label can be told apart on the API Keys page.
+
+Dropping the table takes an ACCESS EXCLUSIVE lock on `api_keys` and `tenants`,
+which its foreign keys point at, until the upgrade commits; Postgres takes the
+same lock to drop just the constraints. Bearer authentication reads `api_keys`
+on every request, so a migration that has to wait for the lock holds those
+reads up for as long as it waits. `DB_MIGRATION_LOCK_TIMEOUT` (10s by default)
+bounds that. The drop is the last statement here, so the lock is held only
+until the upgrade commits, longer only if later revisions run in the same
+upgrade.
 
 The downgrade puts the table, its policy and the lookup back as they were,
 empty: the connectors are not restored, and the keys stay retired. The DDL is
@@ -115,17 +127,18 @@ def upgrade() -> None:
         )
     ]
     retired = [
-        row.label
+        f"{row.slug}/{row.label} (id {row.id})"
         for row in bind.execute(
             sa.text(
                 "UPDATE api_keys k SET type = :retired, label = k.label || :suffix "
-                "WHERE (k.type = 'registration' AND (k.label LIKE :minted "
+                "FROM tenants t WHERE t.id = k.tenant_id AND ("
+                "(k.type = 'registration' AND (k.label LIKE :minted "
                 "OR EXISTS (SELECT 1 FROM server_connectors c "
                 "WHERE c.tenant_id = k.tenant_id AND c.api_key_id = k.id))) "
                 "OR (k.type = 'agent' AND EXISTS (SELECT 1 FROM agents a "
-                f"WHERE a.tenant_id = k.tenant_id AND a.api_key_id = k.id "
-                f"AND {CONNECTOR_AGENT})) "
-                "RETURNING k.label"
+                "WHERE a.tenant_id = k.tenant_id AND a.api_key_id = k.id "
+                f"AND {CONNECTOR_AGENT}))) "
+                "RETURNING t.slug, k.id, k.label"
             ),
             {
                 "retired": RETIRED_KEY_TYPE,
@@ -140,15 +153,18 @@ def upgrade() -> None:
 
     if retired:
         logger.warning(
-            "Retired the keys server-side connectors and their agents held; "
-            "they no longer authenticate and stay on the API Keys page: %s",
+            "Once this upgrade commits, the keys server-side connectors and "
+            "their agents held are retired: they no longer authenticate and "
+            "stay on the API Keys page, under Retired Keys "
+            "(workspace/label (id)): %s",
             ", ".join(sorted(retired)),
         )
     if stranded:
         logger.warning(
-            "Server-side connectors are gone, and nothing can run the agents "
-            "they registered (shown in the gateway as type server-side:...). "
-            "Delete these from the gateway (workspace/agent): %s",
+            "Once this upgrade commits, nothing can run the agents server-side "
+            "connectors registered (shown in the gateway as type "
+            "server-side:...). Delete these from the gateway "
+            "(workspace/agent): %s",
             ", ".join(stranded),
         )
 

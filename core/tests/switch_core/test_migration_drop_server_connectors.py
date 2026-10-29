@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tests.switch_core.test_migration_drop_feature_flags_table import (
     _CORE,
@@ -193,43 +194,68 @@ async def test_the_connectors_go_their_keys_are_retired_and_their_agent_is_named
     assert f"{slug}/nulled" not in caplog.text
 
 
-async def test_the_downgrade_puts_the_table_and_its_lookup_back_empty(
+# What the revision below built for the table and its lookup, read from the
+# catalogue rather than restated, so the downgrade is held to the schema itself.
+_SCHEMA_QUERIES = {
+    "columns": (
+        "SELECT column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_name = 'server_connectors' "
+        "ORDER BY ordinal_position"
+    ),
+    "constraints": (
+        "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conrelid = 'server_connectors'::regclass ORDER BY conname"
+    ),
+    "indexes": (
+        "SELECT indexname, indexdef FROM pg_indexes "
+        "WHERE tablename = 'server_connectors' ORDER BY indexname"
+    ),
+    "policies": (
+        "SELECT policyname, cmd, qual, with_check FROM pg_policies "
+        "WHERE tablename = 'server_connectors' ORDER BY policyname"
+    ),
+    "row_security": (
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class "
+        "WHERE relname = 'server_connectors'"
+    ),
+    "lookup": (
+        "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+        "WHERE p.proname = 'tenant_of_server_connector'"
+    ),
+    "rows": "SELECT count(*) FROM server_connectors",
+}
+
+
+async def _schema(engine: AsyncEngine) -> dict[str, list[tuple[object, ...]]]:
+    async with engine.connect() as connection:
+        return {
+            name: [tuple(row) for row in await connection.execute(text(query))]
+            for name, query in _SCHEMA_QUERIES.items()
+        }
+
+
+async def test_the_downgrade_lands_on_the_schema_the_revision_below_built(
     postgres_url: str,
 ) -> None:
     engine = await _fixture_engine(postgres_url)
     try:
         async with engine.begin() as connection:
+            await connection.run_sync(_upgrade_to(_PRE_MIGRATION_REVISION))
+        before = await _schema(engine)
+
+        async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
         async with engine.begin() as connection:
             await connection.run_sync(_migrate(_PRE_MIGRATION_REVISION, down=True))
+        after = await _schema(engine)
 
-        async with engine.connect() as connection:
-            rows = await connection.scalar(
-                text("SELECT count(*) FROM server_connectors")
-            )
-            policed = await connection.scalar(
-                text(
-                    "SELECT relrowsecurity FROM pg_class "
-                    "WHERE relname = 'server_connectors'"
-                )
-            )
-            policies = await connection.scalar(
-                text(
-                    "SELECT count(*) FROM pg_policies "
-                    "WHERE tablename = 'server_connectors'"
-                )
-            )
-            functions = await connection.scalar(
-                text(
-                    "SELECT count(*) FROM pg_proc "
-                    "WHERE proname = 'tenant_of_server_connector'"
-                )
-            )
-
+        # And it can go up again from there.
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade_to(_MIGRATION_UNDER_TEST))
     finally:
         await engine.dispose()
         await _drop_fixture(postgres_url)
 
-    assert (rows, policed, policies, functions) == (0, True, 1, 1)
+    assert before["rows"] == [(0,)]
+    assert len(before["lookup"]) == 1
+    assert after == before
