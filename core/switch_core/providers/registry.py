@@ -154,6 +154,18 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="goose",
+        label="Goose",
+        sign_in_command="goose configure",
+        tools=(
+            ToolSpec(name="shell", description="Executes shell commands"),
+            ToolSpec(name="write", description="Creates or overwrites files"),
+            ToolSpec(name="edit", description="Makes targeted edits to files"),
+            ToolSpec(name="read", description="Reads file contents"),
+            ToolSpec(name="delegate", description="Delegates to a subagent"),
+        ),
+    ),
 )
 
 
