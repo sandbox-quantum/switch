@@ -26,12 +26,7 @@ export async function startGitHubBrowserFlow(
     maxCodeLength: 512,
     ports: null,
     complete: async (code) => {
-      try {
-        await completeGitHubConnection(server, state, code, secret);
-      } catch (error) {
-        active.delete(key(server, state));
-        throw error;
-      }
+      await completeGitHubConnection(server, state, code, secret);
     },
     // Core's callback takes GitHub's refusals itself and fails the flow with
     // them, so one reaching the listener has no server step left to tell.
