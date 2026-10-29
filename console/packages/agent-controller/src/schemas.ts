@@ -178,9 +178,18 @@ export const agentAssignmentSchema = z.object({
 });
 export type AgentAssignment = z.infer<typeof agentAssignmentSchema>;
 
+/** The decision model Switch wants this machine to serve for auto-route, or none. */
+export const decisionAssignmentSchema = z.object({
+  revision,
+  model: z.string().min(1),
+});
+export type DecisionAssignment = z.infer<typeof decisionAssignmentSchema>;
+
 export const assignmentSchema = z.object({
   revision,
   agents: z.array(agentAssignmentSchema),
+  /** Absent from servers older than decisions on machines: read as none. */
+  decision: decisionAssignmentSchema.nullish(),
 });
 export type Assignment = z.infer<typeof assignmentSchema>;
 
@@ -251,6 +260,67 @@ export type AgentStatus = z.infer<typeof agentStatusSchema>;
 export const updatedBySchema = z.enum(['self', 'console']);
 export type UpdatedBy = z.infer<typeof updatedBySchema>;
 
+/** What this controller can do beyond running agents. */
+export const CAPABILITIES = ['decision.v1'] as const;
+
+export const DECISION_STATES = ['off', 'downloading', 'starting', 'running', 'failed'] as const;
+export type DecisionState = (typeof DECISION_STATES)[number];
+
+/** Why the decision model is off or failed, as Switch shows it. */
+export const DECISION_REASONS = [
+  'turned_off_on_machine',
+  'not_enough_disk',
+  'download_failed',
+  'checksum_mismatch',
+  'model_server_crashed',
+  'out_of_memory',
+  'unsupported_hardware',
+] as const;
+export type DecisionReason = (typeof DECISION_REASONS)[number];
+
+export const decisionHardwareSchema = z.object({
+  accelerator: z.enum(['apple_silicon', 'nvidia', 'cpu']),
+  memory_bytes: z.number().int().nonnegative(),
+  gpu_name: z.string().min(1).optional(),
+  vram_bytes: z.number().int().nonnegative().optional(),
+});
+export type DecisionHardware = z.infer<typeof decisionHardwareSchema>;
+
+export const decisionOfferSchema = z.object({
+  model: z.string().min(1),
+  label: z.string().min(1),
+  kind: z.literal('llamacpp'),
+  runtime: z.enum(['llamacpp-metal', 'llamacpp-cpu', 'llamacpp-cuda']),
+  download_bytes: z.number().int().nonnegative(),
+  speed: z.enum(['fast', 'slow']),
+});
+export type DecisionOffer = z.infer<typeof decisionOfferSchema>;
+
+/** The decision model on this machine, as the status report carries it. */
+export const decisionStatusSchema = z
+  .object({
+    hardware: decisionHardwareSchema,
+    offered: z.array(decisionOfferSchema),
+    state: z.enum(DECISION_STATES),
+    model: z.string().min(1).nullable(),
+    applied_revision: revision.nullable(),
+    progress: z
+      .object({
+        done_bytes: z.number().int().nonnegative(),
+        total_bytes: z.number().int().nonnegative(),
+      })
+      .optional(),
+    restarts_10m: z.number().int().nonnegative(),
+    since: time,
+    reason: z.enum(DECISION_REASONS).optional(),
+    detail: z.string().max(500).optional(),
+    last_decision_ms: z.number().int().nonnegative().optional(),
+  })
+  .refine((status) => status.state !== 'failed' || status.reason !== undefined, {
+    message: 'A failed decision model needs a reason.',
+  });
+export type DecisionStatus = z.infer<typeof decisionStatusSchema>;
+
 export const statusReportSchema = z.object({
   seq: z.number().int().positive(),
   observed_at: time,
@@ -259,6 +329,7 @@ export const statusReportSchema = z.object({
     protocol: z.literal(PROTOCOL_VERSION),
     assignment_revision: revision,
     updated_by: updatedBySchema,
+    capabilities: z.array(z.enum(CAPABILITIES)),
   }),
   machine: z.object({
     platform: platformSchema,
@@ -282,6 +353,7 @@ export const statusReportSchema = z.object({
       problem: z.string().max(500).optional(),
     })
     .optional(),
+  decision: decisionStatusSchema,
 });
 export type StatusReport = z.infer<typeof statusReportSchema>;
 
@@ -453,3 +525,44 @@ export const operationPendingSchema = z.object({
 export type OperationPending = z.infer<typeof operationPendingSchema>;
 
 export const credentialRevokedSchema = z.object({});
+
+/**
+ * One auto-route decision for this machine's model server. `payload` is the
+ * exact body for llama-server's `POST /v1/chat/completions`, forwarded as it
+ * came: room content, never logged. `deadline_ms` is how long Switch waits
+ * for the answer, counted from when the request arrives here.
+ */
+export const decisionRequestFrameSchema = z.object({
+  request_id: id,
+  kind: receivedEnum(['llamacpp', 'systemone']),
+  model: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+  deadline_ms: z.number().int(),
+});
+export type DecisionRequestFrame = z.infer<typeof decisionRequestFrameSchema>;
+
+export const DECISION_ERROR_CODES = [
+  'not_running',
+  'busy',
+  'model_server_error',
+  'deadline',
+] as const;
+export type DecisionErrorCode = (typeof DECISION_ERROR_CODES)[number];
+
+/** The answer to a `decision.request`, sent up the controller's socket. */
+export const decisionResultSchema = z.discriminatedUnion('ok', [
+  z.object({
+    type: z.literal('decision.result'),
+    request_id: id,
+    ok: z.literal(true),
+    body: z.record(z.string(), z.unknown()),
+    model_ms: z.number().int().nonnegative(),
+  }),
+  z.object({
+    type: z.literal('decision.result'),
+    request_id: id,
+    ok: z.literal(false),
+    error: z.object({ code: z.enum(DECISION_ERROR_CODES), message: z.string() }),
+  }),
+]);
+export type DecisionResult = z.infer<typeof decisionResultSchema>;

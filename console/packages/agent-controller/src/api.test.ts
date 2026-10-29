@@ -11,6 +11,7 @@ import { ConfigurationError } from './errors';
 import { silentLogger } from './log';
 import { type Assignment, controllerConnectionRequestSchema } from './schemas';
 import { FakeCore } from './testing/fake-core';
+import { OFF_DECISION_STATUS } from './testing/fake-decision';
 
 let core: FakeCore;
 let clock: number;
@@ -387,6 +388,7 @@ function statusReport() {
       protocol: 2 as const,
       assignment_revision: 0,
       updated_by: 'self' as const,
+      capabilities: ['decision.v1' as const],
     },
     machine: {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
@@ -401,5 +403,6 @@ function statusReport() {
     providers: [],
     tools: [],
     agents: [],
+    decision: OFF_DECISION_STATUS,
   };
 }

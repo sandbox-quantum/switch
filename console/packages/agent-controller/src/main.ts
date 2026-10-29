@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
-import { homedir, hostname } from 'node:os';
+import { arch, availableParallelism, homedir, hostname, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
@@ -22,6 +22,28 @@ import {
   nodeWebSocket,
 } from './api';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
+import { CATALOGUE } from './decision/catalogue';
+import {
+  DECISION_MODEL_REMOVED_KIND,
+  DecisionModelRemovals,
+  type DecisionModelRemoveReply,
+  isDecisionModelRemoveRequest,
+} from './decision/control';
+import { runDetectCommand } from './decision/hardware';
+import {
+  decisionLayout,
+  decisionModelOverride,
+  readLocalSetting,
+  removeDownloads,
+  writeLocalSetting,
+} from './decision/local-setting';
+import { pidFileStaleServers, spawnModelServer } from './decision/model-server';
+import {
+  DecisionRuntime,
+  DEFAULT_DECISION_TIMING,
+  freeDiskBytes,
+  tarExtract,
+} from './decision/runtime';
 import { DetachedRuntime } from './detached-runtime';
 import { formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
@@ -132,6 +154,7 @@ Commands:
       [--controller-id <id> --server <agent-bridge-url> [--name <name>]]
       [--credential-stdin] [--agent-runtime default|separate-user]
       [--releases-dir <dir> | --updated-by-console] [--no-self-update]
+      [--no-decision-model]
       Run the agents assigned to this machine and report their status.
       --agent-runtime separate-user runs every agent as a Linux user of its
       own, as set up by install-service --separate-users.
@@ -148,6 +171,16 @@ Commands:
       turns following the release Switch names off on this machine; it
       reports why when Switch names another. --provider-seed <file> takes the
       provider checks precheck wrote, so the first report carries them.
+      --no-decision-model (or SWITCH_CONTROLLER_DECISION_MODEL=off) keeps
+      decision work for auto-route off on this machine for this run;
+      SWITCH_CONTROLLER_DECISION_MODEL=on allows it, whatever decision-model
+      last set.
+  decision-model on|off|remove|status [--data-dir <dir>]
+      Allow or refuse decision work for auto-route on this machine (it is
+      allowed until turned off; a running controller follows within
+      seconds), delete the downloaded decision model and llama.cpp build
+      (refused while the model is assigned here and allowed), or show the
+      setting.
   precheck --out <file> --probe-dir <dir> [--shared-host-bundle <path>]
       Check every provider's installation and sign-in as run would, with no
       enrollment, writing the results to <file> as each comes back.
@@ -477,6 +510,7 @@ async function runCommand(args: string[]): Promise<number> {
       'updated-by-console': { type: 'boolean' },
       'no-self-update': { type: 'boolean' },
       'provider-seed': { type: 'string' },
+      'no-decision-model': { type: 'boolean' },
     },
     strict: true,
   });
@@ -496,6 +530,7 @@ async function runCommand(args: string[]): Promise<number> {
   const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
   Object.assign(process.env, fromFile);
   const selfUpdateOff = selfUpdateTurnedOff(values['no-self-update'] === true, process.env);
+  const decisionOverride = decisionModelOverride(values['no-decision-model'] === true, process.env);
   const controllerId = values['controller-id'];
   if ((controllerId === undefined) !== (values.server === undefined))
     throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
@@ -539,8 +574,28 @@ async function runCommand(args: string[]): Promise<number> {
   // Windows has no signal a parent can send that is caught here, so Console
   // asks over the IPC channel it starts this controller with.
   const rechecks = new ProviderRechecks();
+  const decisionRemovals = new DecisionModelRemovals();
   const onMessage = (message: unknown) => {
     if (isStopMessage(message)) onSignal('a stop request');
+    if (isDecisionModelRemoveRequest(message)) {
+      const reply = (error: string | null) => {
+        const answer: DecisionModelRemoveReply = {
+          kind: DECISION_MODEL_REMOVED_KIND,
+          id: message.id,
+          error,
+        };
+        process.send?.(answer);
+      };
+      decisionRemovals.run().then(
+        () => reply(null),
+        (error: unknown) => {
+          log.warn('Could not remove the downloaded decision model on request', {
+            error: errorMessage(error),
+          });
+          reply(errorMessage(error));
+        }
+      );
+    }
     if (isProviderRecheckRequest(message)) {
       const reply = (error: string | null) => {
         const answer: ProviderRecheckReply = {
@@ -625,10 +680,38 @@ async function runCommand(args: string[]): Promise<number> {
           to: store.identity()?.server,
         });
     }
+    const decisionFiles = decisionLayout(dataDir);
+    const buildDecision = (onChange: () => void) =>
+      new DecisionRuntime({
+        layout: decisionFiles,
+        catalogue: CATALOGUE,
+        platform: process.platform,
+        arch: arch(),
+        totalMemory: totalmem(),
+        // One core left for the controller and its agents.
+        cpuThreads: Math.max(1, availableParallelism() - 1),
+        run: runDetectCommand,
+        fetch,
+        launch: spawnModelServer(process.env),
+        stale: pidFileStaleServers({
+          file: decisionFiles.pidFile,
+          run: runDetectCommand,
+          kill: (pid, signal) => process.kill(pid, signal),
+        }),
+        extract: tarExtract,
+        diskFree: freeDiskBytes,
+        override: decisionOverride,
+        log,
+        now: Date.now,
+        onChange,
+        timing: DEFAULT_DECISION_TIMING,
+      });
     const exit = await runController(
       {
         store,
         secrets,
+        decision: buildDecision,
+        decisionRemovals,
         runtime: (openStream, workspaces) =>
           separateUsers
             ? new SystemdRuntime({
@@ -680,6 +763,57 @@ async function runCommand(args: string[]): Promise<number> {
     process.off('message', onMessage);
     store.close();
   }
+}
+
+/**
+ * The owner's switch for decision work on this machine, kept in the data
+ * directory, where a running controller reads it again every few seconds;
+ * and removing what the decision model downloaded.
+ */
+async function decisionModelCommand(args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' } },
+    allowPositionals: true,
+    strict: true,
+  });
+  const [action, ...extra] = positionals;
+  if (extra.length > 0 || !['on', 'off', 'remove', 'status'].includes(action ?? ''))
+    throw new UsageError('decision-model takes one of on, off, remove or status.');
+  const dataDir = resolveDataDir(values['data-dir']);
+  await ensureDataDir(dataDir);
+  const layout = decisionLayout(dataDir);
+  if (action === 'on' || action === 'off') {
+    await writeLocalSetting(layout, action === 'on');
+    process.stdout.write(
+      action === 'on'
+        ? 'Decision work for auto-route is allowed on this machine.\n'
+        : 'Decision work for auto-route is off on this machine. A running controller stops its model server within seconds; the downloaded model is kept (remove it with: switch-agent-controller decision-model remove).\n'
+    );
+    return EXIT_OK;
+  }
+  const setting = await readLocalSetting(layout);
+  if (action === 'status') {
+    process.stdout.write(
+      `Decision work: ${setting.enabled ? 'allowed' : 'off'} on this machine${setting.problem ? ` (${setting.problem})` : ''}\n`
+    );
+    return EXIT_OK;
+  }
+  const store = ControllerStore.open(dataLayout(dataDir).database);
+  let assigned: string | null = null;
+  try {
+    const cached = store.cachedAssignment();
+    assigned = cached.kind === 'saved' ? (cached.assignment.decision?.model ?? null) : null;
+  } finally {
+    store.close();
+  }
+  if (assigned !== null && setting.enabled)
+    throw new ConfigurationError(
+      `Auto-route uses ${assigned} on this machine. Turn decision work off here first (switch-agent-controller decision-model off), or choose another backend in Decision routing, then remove it.`
+    );
+  await removeDownloads(layout);
+  process.stdout.write('Removed the downloaded decision model and llama.cpp build.\n');
+  return EXIT_OK;
 }
 
 async function statusCommand(args: string[]): Promise<number> {
@@ -1193,6 +1327,8 @@ export async function main(argv: string[]): Promise<number> {
         return await doctorCommand(rest);
       case 'precheck':
         return await precheckCommand(rest);
+      case 'decision-model':
+        return await decisionModelCommand(rest);
       case 'update':
         return await updateCommand(rest);
       case undefined:

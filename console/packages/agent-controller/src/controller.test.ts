@@ -13,6 +13,7 @@ import {
   ensureRelayCredentials,
   runController,
 } from './controller';
+import { DecisionModelRemovals } from './decision/control';
 import { ConfigurationError } from './errors';
 import { adoptIdentity } from './handover';
 import { silentLogger } from './log';
@@ -24,6 +25,12 @@ import { type ReleaseInstaller, SelfUpdater, type UpdateAttempt } from './self-u
 import { ControllerStore } from './store';
 import { buildWatcherTemplate } from './template';
 import { FakeCore } from './testing/fake-core';
+import {
+  FakeDownloads,
+  FakeLauncher,
+  testCatalogue,
+  testDecisionRuntime,
+} from './testing/fake-decision';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
 
 function agent(revision: number, overrides: Partial<AgentAssignment> = {}): AgentAssignment {
@@ -76,6 +83,8 @@ function deps(server = core.url): ControllerDeps {
   return {
     store,
     secrets,
+    decision: (onChange) => testDecisionRuntime(dir, { onChange }),
+    decisionRemovals: new DecisionModelRemovals(),
     runtime: runtime.build,
     locator: new FakeLocator(),
     rechecks: new ProviderRechecks(),
@@ -693,6 +702,123 @@ describe('runController', () => {
     const wiped = runController(enrolled, stop.signal);
     await expect(wiped).rejects.toThrow(/revoked at/);
     await expect(wiped).rejects.toBeInstanceOf(ConfigurationError);
+  });
+});
+
+describe('the decision model on this machine', () => {
+  const launcher = () => new FakeLauncher();
+  let servers: FakeLauncher;
+
+  beforeEach(() => {
+    servers = launcher();
+  });
+
+  afterEach(async () => {
+    await servers.stopAll();
+  });
+
+  function withDecision(removals = new DecisionModelRemovals()): ControllerDeps {
+    const { files } = testCatalogue();
+    return {
+      ...deps(),
+      decisionRemovals: removals,
+      decision: (onChange) =>
+        testDecisionRuntime(dir, {
+          onChange,
+          launch: servers.launch,
+          fetch: new FakeDownloads(files).fetch,
+        }),
+    };
+  }
+
+  it('reports decision.v1 and the decision block, serves the assigned model and reports it running', async () => {
+    core.setAssignment({ revision: 1, agents: [] });
+    running = runController(withDecision(), stop.signal);
+    await waitFor(() => core.statusReports.length > 0, 'a status report');
+    expect(core.statusReports[0]!.controller.capabilities).toEqual(['decision.v1']);
+    expect(core.statusReports[0]!.decision).toMatchObject({
+      state: 'off',
+      offered: [{ model: 'test-model' }],
+    });
+
+    core.setAssignment({ revision: 2, agents: [], decision: { revision: 2, model: 'test-model' } });
+    core.push('assignment.changed', { revision: 2 });
+    await waitFor(
+      () => core.statusReports.at(-1)?.decision.state === 'running',
+      'the model reported running'
+    );
+    expect(core.statusReports.at(-1)!.decision).toMatchObject({
+      model: 'test-model',
+      applied_revision: 2,
+    });
+    stop.abort();
+    expect(await running).toBe('stopped');
+    expect(servers.last!.stopped).toBe(true);
+  });
+
+  it('answers decision.request up the socket off the frame loop, and frames behind it are not held up', async () => {
+    core.setAssignment({
+      revision: 1,
+      agents: [agent(1)],
+      decision: { revision: 1, model: 'test-model' },
+    });
+    running = runController(withDecision(), stop.signal);
+    await waitFor(() => runtime.launches('agent-1').length === 1, 'the agent started');
+    await waitFor(() => servers.last !== undefined, 'the model server launched');
+    await waitFor(
+      () => core.statusReports.at(-1)?.decision.state === 'running',
+      'the model running'
+    );
+    servers.last!.answer = { ...servers.last!.answer, delayMs: 300 };
+    core.push('decision.request', {
+      request_id: 'request-1',
+      kind: 'llamacpp',
+      model: 'test-model',
+      payload: { messages: [{ role: 'user', content: 'room text' }], max_tokens: 1 },
+      deadline_ms: 5_000,
+    });
+    core.push('agent.warm', { agent_id: 'agent-1', room_id: 'room-a' });
+    await waitFor(() => runtime.warms.length === 1, 'the warm');
+    expect(core.decisionResults).toEqual([]);
+    await waitFor(() => core.decisionResults.length === 1, 'the decision result');
+    expect(core.decisionResults[0]).toMatchObject({
+      type: 'decision.result',
+      request_id: 'request-1',
+      ok: true,
+      body: servers.last!.answer.body,
+    });
+    expect(servers.last!.completions.at(-1)!.body).toEqual({
+      messages: [{ role: 'user', content: 'room text' }],
+      max_tokens: 1,
+    });
+
+    core.push('decision.request', {
+      request_id: 'request-2',
+      kind: 'llamacpp',
+      model: 'another-model',
+      payload: {},
+      deadline_ms: 5_000,
+    });
+    await waitFor(() => core.decisionResults.length === 2, 'the refusal');
+    expect(core.decisionResults[1]).toMatchObject({
+      request_id: 'request-2',
+      ok: false,
+      error: { code: 'not_running' },
+    });
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('removes the downloaded model on request, while it runs', async () => {
+    const removals = new DecisionModelRemovals();
+    await expect(removals.run()).rejects.toThrow(/not running/);
+    core.setAssignment({ revision: 1, agents: [] });
+    running = runController(withDecision(removals), stop.signal);
+    await waitFor(() => core.statusReports.length > 0, 'a status report');
+    await removals.run();
+    stop.abort();
+    expect(await running).toBe('stopped');
+    await expect(removals.run()).rejects.toThrow(/not running/);
   });
 });
 
