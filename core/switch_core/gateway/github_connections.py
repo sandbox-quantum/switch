@@ -58,10 +58,17 @@ APP_CHANGED = "The GitHub App changed during your sign-in. Start it again."
 
 
 def service(request: Request) -> GitHubConnections:
-    """The server's own GitHub App."""
+    """The server's own GitHub App, or a refusal giving the broker's reason
+    GitHub can't be used through it here, such as its App not being set up."""
     value = request.app.state.github_connections
     if value is None:
-        raise HTTPException(503, "GitHub connectors are not turned on here.")
+        reason = get_service_broker(request).server_availability("github")
+        if reason is None:
+            logger.error(
+                "The broker can grant GitHub, but this process has no GitHub App."
+            )
+            reason = "GitHub is not set up here."
+        raise HTTPException(503, reason)
     return cast(GitHubConnections, value)
 
 

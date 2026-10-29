@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import secrets
 import time
@@ -134,6 +135,31 @@ def _process(
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(keyring=TEST_KEYRING)
     return app
+
+
+def _rebroker(
+    client,
+    session_factory,
+    *,
+    adapters: dict,
+    disabled: dict[str, str],
+    public_url: str | None,
+) -> None:
+    """Give the process another broker, as a restart with other settings
+    would: other `DISABLED_SERVICES`, another public URL, or no App."""
+    client._transport.app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters=adapters,
+        organization_apps=None,
+        disabled=disabled,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=public_url,
+    )
 
 
 class _EachRequestToTheNextProcess(httpx.AsyncBaseTransport):
@@ -643,6 +669,39 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
             )
             is None
         )
+
+
+@pytest.mark.parametrize(
+    ("public_url", "reason"),
+    [
+        (
+            "https://switch.example.com",
+            "GitHub is not set up here. Whoever runs Switch can set it up in "
+            "Switch Console, under Admin → Connector apps.",
+        ),
+        (
+            "http://switch.example.com",
+            "GitHub can't be used here: it needs Switch to have an https address, "
+            "or an http one on your own computer (localhost or 127.0.0.1).",
+        ),
+    ],
+)
+async def test_with_no_app_every_route_says_why_github_cannot_be_used(
+    github_app, public_url, reason
+):
+    client, _, _, factory = github_app
+    # Started while the App was there, so the browser has a step to take.
+    started = await _start(client)
+    assert started.status_code == 200, started.text
+    client._transport.app.state.github_connections = None
+    _rebroker(client, factory, adapters={}, disabled={}, public_url=public_url)
+    answers = [await client.get(BASE), await _start(client)]
+    for answer in answers:
+        assert answer.status_code == 503
+        assert answer.json()["detail"] == reason
+    left = await client.get(BASE + "/authorize", params={"state": started.json()["id"]})
+    assert left.status_code == 503
+    assert html.escape(reason) in left.text
 
 
 @pytest.mark.parametrize("status", [204, 404, 422])
