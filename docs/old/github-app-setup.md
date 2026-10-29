@@ -54,8 +54,12 @@ browser and never shown. Then choose **Check and save**.
 
 Switch asks GitHub first: it signs a request with the private key as the App
 named by the client ID, which proves the two belong to one App and tells
-Switch the App's name, so you never type it; and it tells a right client
-secret from a wrong one. Nothing is saved unless GitHub accepts all three.
+Switch the App's name, so you never type it, and its repository permissions,
+which must be at least those of step 3; and it tells a right client secret
+from a wrong one. Nothing is saved unless GitHub accepts all three and the
+App has those permissions. Whether each account that installed the App has
+accepted a change to its permissions is GitHub's to show, on the
+installation's page.
 The secret and the key are stored encrypted, like every other stored
 credential (see [key rotation](key-rotation.md)), and the App is in use at
 once: nobody needs to restart anything. The card then shows the key's
