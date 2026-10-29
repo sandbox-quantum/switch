@@ -1224,13 +1224,6 @@ export async function removeMember(tenantId: string, userId: string): Promise<vo
   );
 }
 
-export interface OrganizationSummary {
-  id: string;
-  slug: string;
-  name: string;
-  role: OrganizationRole;
-}
-
 export interface OrganizationMember {
   user_id: string;
   name: string;
@@ -1239,14 +1232,26 @@ export interface OrganizationMember {
   created_at: string;
 }
 
-export interface AuditEvent {
+export interface OrganizationAuditEvent {
   id: string;
   occurred_at: string;
   actor_user_id: string | null;
+  // Read from the account, so a removed member or the platform operator is
+  // named too; null only once the account is gone.
+  actor_name: string | null;
   action: string;
   target_type: string;
   target_id: string | null;
+  target_name: string | null;
   details: Record<string, unknown> | null;
+}
+
+export interface CurrentOrganization {
+  id: string;
+  slug: string;
+  name: string;
+  // Null for the platform operator there through operator access alone.
+  role: OrganizationRole | null;
 }
 
 export interface OperatorWorkspace {
@@ -1254,10 +1259,11 @@ export interface OperatorWorkspace {
   slug: string;
   name: string;
   organization_id: string | null;
+  organization_name: string | null;
 }
 
-export async function fetchOrganizations(): Promise<OrganizationSummary[]> {
-  return jsonRequest<OrganizationSummary[]>("/organizations", "GET");
+export async function fetchCurrentOrganization(): Promise<CurrentOrganization> {
+  return jsonRequest<CurrentOrganization>("/organizations/current", "GET");
 }
 
 export async function fetchOrganizationWorkspaces(): Promise<TenantMembership[]> {
@@ -1288,8 +1294,19 @@ export async function removeOrganizationMember(userId: string): Promise<void> {
   await jsonRequest(`/organizations/current/members/${encodeURIComponent(userId)}`, "DELETE");
 }
 
-export async function fetchOrganizationAuditEvents(): Promise<AuditEvent[]> {
-  return jsonRequest<AuditEvent[]>("/organizations/current/audit-events", "GET");
+export const ORGANIZATION_AUDIT_PAGE = 50;
+
+/** One page of the organization's audit log, newest first: the most recent
+ * events, or those before `before` (an `occurred_at` from an earlier page). */
+export async function fetchOrganizationAuditEvents(
+  before: string | null,
+): Promise<OrganizationAuditEvent[]> {
+  const query = new URLSearchParams({ limit: String(ORGANIZATION_AUDIT_PAGE) });
+  if (before !== null) query.set("before", before);
+  return jsonRequest<OrganizationAuditEvent[]>(
+    `/organizations/current/audit-events?${query}`,
+    "GET",
+  );
 }
 
 /** Every workspace on the server; the platform operator only. */

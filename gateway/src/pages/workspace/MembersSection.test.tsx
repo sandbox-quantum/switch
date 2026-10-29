@@ -1,31 +1,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import type { GridColDef } from "@mui/x-data-grid";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import MembersSection from "./MembersSection";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ refresh: vi.fn() }) }));
 
-vi.mock("../../components/DataTable", () => ({
-  default: ({
-    rows,
-    columns,
-  }: {
-    rows: Record<string, unknown>[];
-    columns: GridColDef<Record<string, unknown>>[];
-  }) => (
-    <div>
-      {rows.map((row) => (
-        <div key={String(row.id)} data-testid={`row-${String(row.id)}`}>
-          {columns.map((column) => (
-            <span key={column.field}>
-              {column.renderCell ? column.renderCell({ row } as never) : null}
-            </span>
-          ))}
-        </div>
-      ))}
-    </div>
-  ),
-}));
+vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
 const member = (overrides: Record<string, unknown>) => ({
   name: "x",
@@ -59,6 +38,13 @@ describe("MembersSection", () => {
                 organization_role: "org_admin",
                 via_organization: true,
               }),
+              member({
+                user_id: "u4",
+                name: "Dee",
+                email: "dee@example.com",
+                role: "owner",
+                organization_role: "org_admin",
+              }),
             ]),
           ),
       ),
@@ -67,6 +53,8 @@ describe("MembersSection", () => {
     render(<MembersSection tenantId="t1" selfId="u1" canAdmin isOwner />);
 
     expect(await screen.findByText("Org Admin, via organization")).toBeTruthy();
+    expect(screen.getByText("Owner · Org Admin")).toBeTruthy();
+    expect(screen.queryByLabelText("Remove dee@example.com")).toBeNull();
     expect(screen.queryByLabelText("Role for cy@example.com")).toBeNull();
     expect(screen.queryByLabelText("Remove cy@example.com")).toBeNull();
     expect(screen.getByLabelText("Role for bob@example.com")).toBeTruthy();

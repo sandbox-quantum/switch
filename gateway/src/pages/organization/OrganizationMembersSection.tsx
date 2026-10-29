@@ -44,7 +44,7 @@ export default function OrganizationMembersSection({
   asOperator: boolean;
 }) {
   const load = useCallback(() => fetchOrganizationMembers(), []);
-  const { data: members, error, loading, refetch } = useLoad(load);
+  const { data: members, error, errorStatus, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const { refresh } = useAuth();
@@ -132,6 +132,9 @@ export default function OrganizationMembersSection({
     ],
     [act, busy, selfId],
   );
+  // The operator restores an admin and nothing more: removing a member is
+  // refused to them, so there is nothing to offer.
+  const shown = asOperator ? columns.filter((c) => c.field !== "actions") : columns;
 
   return (
     <Stack spacing={1.5}>
@@ -140,15 +143,20 @@ export default function OrganizationMembersSection({
         Organization admins administer every workspace in the organization. Someone is removed
         from each workspace before they can be removed from the organization.
       </Typography>
-      {error &&
-        (asOperator ? (
-          <Alert severity="info">
-            As platform operator you can manage this organization's members only while it has no
-            admin, to make someone one. Changes you make are recorded in its audit log.
-          </Alert>
-        ) : (
-          <Alert severity="error">{error}</Alert>
-        ))}
+      {asOperator && errorStatus === 403 ? (
+        <Alert severity="info">
+          As platform operator you can manage this organization's members only while it has no
+          admin, to make someone one.
+        </Alert>
+      ) : (
+        error && <Alert severity="error">{error}</Alert>
+      )}
+      {asOperator && !error && !loading && (
+        <Alert severity="warning">
+          This organization has no admin. As platform operator you can make one of its members
+          an admin; the change is recorded in its audit log, marked as yours.
+        </Alert>
+      )}
       {actionError && (
         <Alert severity="error" onClose={() => setActionError(null)}>
           {actionError}
@@ -159,7 +167,7 @@ export default function OrganizationMembersSection({
       ) : error ? null : (
         <DataTable
           rows={(members ?? []).map((m) => ({ ...m, id: m.user_id }))}
-          columns={columns}
+          columns={shown}
           height={Math.min(520, 108 + (members?.length ?? 0) * 52)}
           pageSize={25}
         />

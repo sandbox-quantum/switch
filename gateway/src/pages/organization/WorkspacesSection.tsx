@@ -34,7 +34,7 @@ interface Props {
 export default function WorkspacesSection({ currentId, canAdd }: Props) {
   const load = useCallback(() => fetchOrganizationWorkspaces(), []);
   const { data: workspaces, error, loading, refetch } = useLoad(load);
-  const { switchTo } = useAuth();
+  const { switchTo, refresh } = useAuth();
   const [actionError, setActionError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -102,7 +102,15 @@ export default function WorkspacesSection({ currentId, canAdd }: Props) {
           pageSize={25}
         />
       )}
-      <AddWorkspaceDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
+      <AddWorkspaceDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={async () => {
+          await refetch();
+          // Adding one may use up the allowance, which the session reports.
+          await refresh();
+        }}
+      />
     </Stack>
   );
 }
