@@ -434,6 +434,16 @@ version of their own to them without also giving them a release of their own.
   and widens their next connection. Disconnecting or reconnecting says so and
   where in Airtable to remove it, as any OAuth service without revocation now
   does rather than reporting a failed revoke.
+- **The Box connection.** A person connects Box from Switch Console,
+  read-only or read-write, and a granted agent searches, reads and organizes
+  the files and folders they can reach, as that person, through Box's MCP
+  server (`https://mcp.box.com`). A Box admin enables the Box MCP server and
+  adds Integration Credentials in the Box Admin Console; each server's
+  operator saves them under Connector apps, or names them in
+  `BOX_CLIENT_CONFIG_PATH`; see `docs/old/box-setup.md`. Without them, Box is
+  listed as not set up. Like Airtable and Google Workspace, it needs
+  `GATEWAY_PUBLIC_URL`. Box AI and Doc Gen are not asked for, and
+  disconnecting revokes the sign-in at Box (#832).
 - **Connector apps set up Airtable.** An app's entry in `GET /connector-apps`
   gains `redirect_uris` (every address to register), `needs_public_url` and
   `scopes`. The dashboard's Connectors page walks Airtable's Builder Hub, with

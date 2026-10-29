@@ -538,6 +538,47 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Box
+
+Built from Box's published metadata and documentation; the operator's setup
+is in [`docs/old/box-setup.md`](../old/box-setup.md).
+
+- Box offers no dynamic registration. A Box admin enables the Box MCP server
+  under Integrations in the Box Admin Console and adds Integration Credentials
+  to it, with the redirect URI and the most scopes a sign-in may be granted;
+  each server's operator saves the client under Connector apps, or names it
+  in `BOX_CLIENT_CONFIG_PATH`. The browser comes back to Core's own callback,
+  as Airtable's and Google's do, so the server needs `GATEWAY_PUBLIC_URL`.
+- The endpoints are discovered: `mcp.box.com`'s 401 names its protected
+  resource metadata, which names `api.box.com` as the authorization server.
+  Its metadata offers PKCE with S256, `client_secret_basic` and
+  `client_secret_post`, and a revocation endpoint, so a disconnect revokes the
+  sign-in (`revocation_discovered`). The secret goes in the form body, as the
+  adapter sends it wherever the vendor lists the body.
+- A sign-in asks for `root_readonly` (read) or `root_readwrite` (write). Box
+  narrows the credentials' scopes to those asked for, and checks every call
+  against the person's own folder and file permissions too, so a connection
+  reaches what its owner can open, not one folder. Not asked for:
+  `ai.readwrite`, whose Box AI tools spend the enterprise's AI units, and
+  `docgen.readwrite`, which needs an Enterprise Advanced licence; tools pass
+  through unclassified, and Box refuses those. The server has no tool that
+  deletes a file or folder. Some write tools (shared links, collaborations,
+  moves, metadata) are off until a Box admin turns them on.
+- Access tokens live about an hour (documented). Refresh tokens are
+  single-use and last 60 days, so `refresh: rotating`.
+- `GET https://api.box.com/2.0/users/me` names the account: `id`, and
+  `login`, its email.
+
+Still to confirm in a sign-in run, against a free Box developer account:
+that Box accepts the `resource` parameter Core sends with the authorization
+and token requests, that the MCP server's token is accepted by
+`/2.0/users/me`, the measured token lifetime, and that a read-only sign-in
+is refused a write.
+
+To connect: Settings, Connections in Switch Console, then Box. To roll back,
+add `box` to `DISABLED_SERVICES`, remove its client under Connector apps or
+unset `BOX_CLIENT_CONFIG_PATH`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

@@ -20,23 +20,24 @@ PLACEHOLDERS = {
     "notion",
     "linear",
     "salesforce",
-    "box",
     "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_box_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["box"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -311,6 +313,49 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+def test_the_shipped_box_entry_signs_in_as_box_documents_it():
+    definition = CATALOG["box"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Box offers no dynamic registration: a Box admin adds Integration
+    # Credentials to the Box MCP server, and each server's operator saves them.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "BOX"
+    assert oauth.loopback_ports is None
+    # The endpoints and the revocation endpoint come from Box's metadata.
+    assert oauth.authorization_url is None
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, True)
+    assert oauth.remove_access is None
+    assert oauth.unchecked is not None and "enabled" in oauth.unchecked
+    # Box's refresh tokens are single-use.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("box", "https://mcp.box.com")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["root_readonly"]
+    assert definition.access.write.scopes == ["root_readwrite"]
+    # Never the scopes that spend Box AI units or need Doc Gen's licence.
+    every = {*definition.access.read.scopes, *definition.access.write.scopes}
+    assert not every & {"ai.readwrite", "docgen.readwrite"}
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.box.com/2.0/users/me"
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "login",
+    )
 
 
 @pytest.fixture
