@@ -293,7 +293,8 @@ class FakeOAuthServer:
     """An OAuth vendor with an MCP server, over `httpx.MockTransport`.
 
     Codes are checked against their PKCE challenge, redirect URI and client;
-    rotating refresh tokens are spent on use, as the vendor's would be.
+    rotating refresh tokens are spent on use, as the vendor's would be, and
+    refresh only for the client they were issued to (RFC 6749 §6).
     `fail` answers a path with a fixed status and body, before anything else.
 
     The MCP server's metadata is where `resource_metadata_path` says, which
@@ -325,6 +326,8 @@ class FakeOAuthServer:
         self.codes: dict[str, _Code] = {}
         self.live_access: dict[str, list[str]] = {}
         self.live_refresh: dict[str, list[str]] = {}
+        # The client each refresh token was issued to.
+        self.refresh_clients: dict[str, str] = {}
         self.spent_refresh: set[str] = set()
         self.token_requests: list[dict[str, str]] = []
         self.revoked: list[dict[str, str]] = []
@@ -374,11 +377,12 @@ class FakeOAuthServer:
         separator = "&" if "?" in query["redirect_uri"] else "?"
         return f"{query['redirect_uri']}{separator}code={code}&state={query['state']}"
 
-    def mint(self, scopes: list[str]) -> dict[str, Any]:
+    def mint(self, scopes: list[str], client_id: str) -> dict[str, Any]:
         access = f"vendor_access_{secrets.token_hex(8)}"
         refresh = f"vendor_refresh_{secrets.token_hex(8)}"
         self.live_access[access] = scopes
         self.live_refresh[refresh] = scopes
+        self.refresh_clients[refresh] = client_id
         return {
             "access_token": access,
             "token_type": "Bearer",
@@ -477,17 +481,21 @@ class FakeOAuthServer:
                 or pending.resource != form.get("resource")
             ):
                 return _json(400, {"error": "invalid_grant"})
-            return _json(200, self.mint(pending.scopes))
+            return _json(200, self.mint(pending.scopes, pending.client_id))
         if form.get("grant_type") == "refresh_token":
             refresh = form.get("refresh_token", "")
             scopes = self.live_refresh.get(refresh)
-            if scopes is None or refresh in self.spent_refresh:
+            if (
+                scopes is None
+                or refresh in self.spent_refresh
+                or self.refresh_clients.get(refresh) != form["client_id"]
+            ):
                 return _json(400, {"error": "invalid_grant"})
             if self.rotating:
                 self.spent_refresh.add(refresh)
                 del self.live_refresh[refresh]
-                return _json(200, self.mint(scopes))
-            minted = self.mint(scopes)
+                return _json(200, self.mint(scopes, form["client_id"]))
+            minted = self.mint(scopes, form["client_id"])
             del self.live_refresh[minted.pop("refresh_token")]
             return _json(200, minted)
         return _json(400, {"error": "unsupported_grant_type"})

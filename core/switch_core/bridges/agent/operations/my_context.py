@@ -29,6 +29,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     MessagingInstall,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -109,8 +110,10 @@ async def get_my_context() -> dict[str, Any]:
         which a workspace admin changes under Admin → Connectors in Switch
         Console; until then nobody in it can connect it or give it to agents.
         `connection` is your owner's: "not_connected", "active",
-        "needs_reauthorization" or "error". `agents_using` names your owner's
-        agents granted it. Empty when this server has service connections off.
+        "needs_reauthorization" (including one made through an app this server
+        no longer uses) or "error"; only an "active" one can be given to an
+        agent. `agents_using` names your owner's agents granted it. Empty
+        when this server has service connections off.
 
         `agents`: your owner's agents, each {id, name, display_name,
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
@@ -172,7 +175,7 @@ async def get_my_context() -> dict[str, Any]:
             )
         )
         connections = {
-            connection.service: connection.status
+            connection.service: connection
             for connection in await _CONNECTIONS.list_connections(session, owner.id)
         }
         grants = {
@@ -305,7 +308,7 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
 async def _services(
     session: AsyncSession,
     protocol: Any,
-    connections: dict[str, str],
+    connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
     switched_off: set[str],
@@ -334,7 +337,9 @@ async def _services(
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
                 "workspace_enabled": workspace_enabled,
-                "connection": connections.get(definition.slug, "not_connected"),
+                "connection": broker.connection_status(
+                    standing, connections.get(definition.slug)
+                ),
                 "agents_using": sorted(
                     names[agent_id]
                     for agent_id, services in grants.items()
