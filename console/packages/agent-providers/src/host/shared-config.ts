@@ -42,6 +42,12 @@ export const sharedConfigSchema = z.strictObject({
    * addressed a room message to.
    */
   grant: z.strictObject({ roomId: z.string().min(1), messageId: z.string().min(1) }).optional(),
+  /**
+   * The session continues a native conversation started outside Switch
+   * (`start.input.resume`), and its transcript starts with that conversation.
+   * Absent from every other session, and from configurations written before it.
+   */
+  importHistory: z.boolean().optional(),
   execution: z
     .strictObject({
       credentialsPath: z.string().min(1),

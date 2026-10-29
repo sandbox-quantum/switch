@@ -14,9 +14,11 @@ import type {
   CreateSessionParams,
 } from '@shared/core/sessions/sessions';
 import type { SessionStartSource } from '@shared/core/telemetry/reporting';
+import { forkCliConversation } from '../cli-conversations';
 import { provisionSessionRuntime } from '../session-builder';
 import { sessionRuntimeManager } from '../session-runtime-manager';
 import { mapSessionRowToSession } from '../utils/utils';
+import { setProviderSessionId } from './set-provider-session-id';
 
 /**
  * What the session's host tells Switch about how it started. `adopted` never
@@ -52,6 +54,18 @@ export async function createSession(
 
   const configObj: SessionConfig = {};
   if (params.initialPrompt?.trim()) configObj.initialPrompt = params.initialPrompt.trim();
+  if (params.cliConversation) {
+    if (!location) return err({ type: 'agent-not-found' });
+    if (agent.providerId !== 'claude')
+      return err({
+        type: 'spawn-failed',
+        message: 'Only Claude Code agents can continue a conversation started in its CLI.',
+      });
+    configObj.cliConversation = {
+      nativeSessionId: params.cliConversation.nativeSessionId,
+      title: params.cliConversation.title,
+    };
+  }
   // The session's launch identity is not stored — it is read live from the
   // owning agent's `name` (see mapSessionRowToSession). How that name spawns is
   // the provider's business (Claude Code → `--agent <name>`) (CHOO-1440).
@@ -78,10 +92,31 @@ export async function createSession(
   // as a Result instead of a raw UNIQUE-constraint throw.
   if (!row) return err({ type: 'already-exists' });
 
-  const session = mapSessionRowToSession(row, agent.providerId, agent.name);
+  let session = mapSessionRowToSession(row, agent.providerId, agent.name);
 
   if (adopted) return ok({ session });
   if (!location) return err({ type: 'agent-not-found' });
+  if (params.cliConversation) {
+    // Copied once the session's row holds its id, so no copy is left without
+    // a session to own it, and one that cannot be made (open in a terminal,
+    // say) takes the row away again. The copy is what the session resumes;
+    // the CLI's own conversation is never written to.
+    try {
+      const providerSessionId = await forkCliConversation(
+        location,
+        { id: session.id, title: session.title },
+        params.cliConversation.nativeSessionId,
+        params.cliConversation.confirmedClosed
+      );
+      // Into the row as it stands after the copy, which can take a while.
+      if (!(await setProviderSessionId(session.id, providerSessionId)))
+        throw new Error('This session was deleted while its conversation was being copied.');
+      session = { ...session, providerSessionId };
+    } catch (e) {
+      await db.delete(sessions).where(eq(sessions.id, session.id));
+      return err({ type: 'spawn-failed', message: e instanceof Error ? e.message : String(e) });
+    }
+  }
   try {
     const built = await provisionSessionRuntime(session, location);
     await sessionRuntimeManager.registerSession(session.id, built, location.ctx);

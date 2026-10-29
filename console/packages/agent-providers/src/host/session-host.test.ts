@@ -1,14 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
+import {
+  type ConversationHistoryTurn,
+  ProviderConversationUnavailableError,
+  type ProviderAdapter,
+} from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import { Redactions } from './redaction';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
-import { HostedSession, type RoomReply, unpostedReply } from './session-host';
+import { HostedSession, recentTurns, type RoomReply, unpostedReply } from './session-host';
 
 // Every step here is a journal write flushed to disk, and Windows runners take
 // many times longer over that. The waits have no deadline of their own (see
@@ -570,6 +575,286 @@ it('starts a new conversation on its own when the saved one is gone and never an
       expect.objectContaining({ code: 'CONVERSATION_STARTED_FRESH' })
     )
   );
+});
+
+/** A session started to continue a conversation begun outside Switch, as Console configures one. */
+function continuing(
+  provider: Session['provider'],
+  history: () => Promise<ConversationHistoryTurn[]>
+) {
+  const fixture = setup(provider);
+  fixture.adapter.conversationHistory = vi.fn(history);
+  return {
+    ...fixture,
+    config: {
+      ...fixture.config,
+      importHistory: true,
+      input: { ...fixture.config.input, resume: { nativeSessionId: 'cli-copy' } },
+    },
+  };
+}
+
+const CLI_TURNS: ConversationHistoryTurn[] = [
+  {
+    turnId: 'cli:prompt-1',
+    items: [
+      {
+        itemId: 'cli:prompt-1',
+        kind: 'user-message',
+        status: 'completed',
+        title: '',
+        text: 'Fix the build',
+      },
+      {
+        itemId: 'cli:answer-1:0',
+        kind: 'tool-activity',
+        status: 'failed',
+        title: 'pnpm build',
+        text: '',
+      },
+      {
+        itemId: 'cli:answer-1:1',
+        kind: 'assistant-message',
+        status: 'completed',
+        title: '',
+        text: 'x'.repeat(5000),
+      },
+    ],
+  },
+];
+
+it('starts a continued conversation’s transcript with its earlier turns, before the provider and once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(fixture.adapter.conversationHistory).toHaveBeenCalledWith('cli-copy', tmpdir(), {});
+  expect(fixture.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'cli-copy' } })
+  );
+  expect(vi.mocked(fixture.adapter.conversationHistory!).mock.invocationCallOrder[0]).toBeLessThan(
+    vi.mocked(fixture.adapter.startSession).mock.invocationCallOrder[0]!
+  );
+  const snapshot = host.snapshot();
+  expect(snapshot.turns).toEqual([
+    { type: 'turn.upsert', turnId: 'imported:cli:prompt-1', status: 'completed', commandId: null },
+  ]);
+  expect(
+    snapshot.items.map((item) => [item.itemId, item.kind, item.status, item.text.length])
+  ).toEqual([
+    ['imported:cli:prompt-1', 'user-message', 'completed', 13],
+    ['imported:cli:answer-1:0', 'tool-activity', 'failed', 0],
+    ['imported:cli:answer-1:1', 'assistant-message', 'completed', 4096],
+    ['imported:cli:answer-1:1:part:1', 'assistant-message', 'completed', 904],
+  ]);
+  expect(snapshot.items.every((item) => item.origin === null && item.revision === 1)).toBe(true);
+  expect(snapshot.notices.map((notice) => notice.code)).toContain('HISTORY_IMPORTED');
+
+  await host.shutdown();
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const restarted = await startHost(root, next.config, next.adapter);
+  hosts.push(restarted);
+  await until(() => expect(restarted.snapshot().session.status).toBe('ready'));
+  expect(next.adapter.conversationHistory).not.toHaveBeenCalled();
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'native' } })
+  );
+  expect(restarted.snapshot().items).toHaveLength(4);
+});
+
+it('resumes the conversation it continues after a start that failed once its import was done', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => structuredClone(CLI_TURNS));
+  vi.mocked(fixture.adapter.startSession).mockRejectedValueOnce(new Error('Authentication failed'));
+  await expect(startHost(root, fixture.config, fixture.adapter)).rejects.toThrow(
+    'Authentication failed'
+  );
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const restarted = await startHost(root, next.config, next.adapter);
+  hosts.push(restarted);
+  await until(() => expect(restarted.snapshot().session.status).toBe('ready'));
+  expect(next.adapter.conversationHistory).not.toHaveBeenCalled();
+  expect(next.adapter.startSession).toHaveBeenCalledWith(
+    expect.objectContaining({ resume: { nativeSessionId: 'cli-copy' } })
+  );
+});
+
+it('asks before replacing a continued conversation it cannot resume, and says why its history is missing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => {
+    throw new Error('Claude Code has no saved conversation cli-copy to show.');
+  });
+  vi.mocked(fixture.adapter.startSession).mockRejectedValueOnce(
+    new ProviderConversationUnavailableError('claude', 'session', 'No saved conversation')
+  );
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  expect(host.resetDecisionPending).toBe(true);
+  expect(fixture.adapter.startSession).toHaveBeenCalledTimes(1);
+  expect(host.snapshot().notices).toContainEqual(
+    expect.objectContaining({
+      code: 'HISTORY_UNAVAILABLE',
+      message: expect.stringContaining('no saved conversation cli-copy'),
+    })
+  );
+  expect(host.snapshot().notices.map((notice) => notice.code)).not.toContain(
+    'CONVERSATION_STARTED_FRESH'
+  );
+
+  // Said once: a later start does not try the history again.
+  await host.shutdown();
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const restarted = await startHost(root, next.config, next.adapter);
+  hosts.push(restarted);
+  expect(next.adapter.conversationHistory).not.toHaveBeenCalled();
+});
+
+it('scrubs a token from a continued conversation’s history before cutting long text into parts', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const token = 'tok-0123456789abcdefghij';
+  const text = `${'x'.repeat(4090)}${token} and more`;
+  const fixture = continuing('claude', async () => [
+    {
+      turnId: 'cli:prompt-1',
+      items: [{ itemId: 'cli:a', kind: 'assistant-message', status: 'completed', title: '', text }],
+    },
+  ]);
+  const redactions = new Redactions();
+  redactions.add(token);
+  const host = await startHost(root, { ...fixture.config, redactions }, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  const published = host
+    .snapshot()
+    .items.map((item) => item.text)
+    .join('');
+  expect(published).not.toContain(token.slice(0, 6));
+  expect(published).not.toContain(token.slice(-6));
+});
+
+it('says how much of a continued conversation it left out, a long latest turn included', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => [
+    {
+      turnId: 'cli:long',
+      items: Array.from({ length: 600 }, (_, index) => ({
+        itemId: `cli:long:${index}`,
+        kind: 'tool-activity' as const,
+        status: 'completed' as const,
+        title: `step ${index}`,
+        text: '',
+      })),
+    },
+  ]);
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  expect(host.snapshot().items).toHaveLength(500);
+  expect(host.snapshot().notices).toContainEqual(
+    expect.objectContaining({
+      code: 'HISTORY_IMPORTED',
+      message: expect.stringContaining('the last 500 of the 600 messages and tool calls'),
+    })
+  );
+});
+
+it('refuses to start a continued session that has no copy to resume, rather than start afresh', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const { resume: _resume, ...input } = fixture.config.input;
+  await expect(startHost(root, { ...fixture.config, input }, fixture.adapter)).rejects.toThrow(
+    'no copy of it was recorded to resume'
+  );
+  expect(fixture.adapter.startSession).not.toHaveBeenCalled();
+});
+
+it('finishes an import a crash cut short without republishing what it had published', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.shutdown();
+  hosts.splice(hosts.indexOf(host), 1);
+  // As if the host died after the history but before the notice that settles it.
+  const journal = join(root, 'events.jsonl');
+  const lines = (await readFile(journal, 'utf8')).split('\n').filter(Boolean);
+  const settled = lines.findIndex((line) => line.includes('HISTORY_IMPORTED'));
+  await writeFile(journal, `${lines.slice(0, settled).join('\n')}\n`);
+  const before = (await readFile(journal, 'utf8')).split('\n').filter(Boolean).length;
+  // A token issued since would make republished text differ from what is there.
+  const redactions = new Redactions();
+  redactions.add('x'.repeat(40));
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const restarted = await startHost(root, { ...next.config, redactions }, next.adapter);
+  hosts.push(restarted);
+  await until(() => expect(restarted.snapshot().session.status).toBe('ready'));
+  expect(next.adapter.conversationHistory).toHaveBeenCalledOnce();
+  const events = (await readFile(journal, 'utf8')).split('\n').filter(Boolean).slice(before);
+  expect(events.filter((line) => line.includes('"item.upsert"'))).toEqual([]);
+  expect(restarted.snapshot().notices.map((notice) => notice.code)).toContain('HISTORY_IMPORTED');
+});
+
+it('publishes the prompt and later parts a crash kept from being recorded, though their turn and first part were', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-history-test-'));
+  roots.push(root);
+  const fixture = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const host = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.shutdown();
+  hosts.splice(hosts.indexOf(host), 1);
+  // The turn shares its id with its prompt, and the reply's first part is in;
+  // the prompt itself, the reply's second part and the settling notice are not.
+  const journal = join(root, 'events.jsonl');
+  const lines = (await readFile(journal, 'utf8')).split('\n').filter(Boolean);
+  const settled = lines.findIndex((line) => line.includes('HISTORY_IMPORTED'));
+  const kept = lines
+    .slice(0, settled)
+    .filter(
+      (line) => !line.includes('"itemId":"imported:cli:prompt-1"') && !line.includes(':part:1"')
+    );
+  await writeFile(journal, `${kept.join('\n')}\n`);
+  const next = continuing('claude', async () => structuredClone(CLI_TURNS));
+  const restarted = await startHost(root, next.config, next.adapter);
+  hosts.push(restarted);
+  await until(() => expect(restarted.snapshot().session.status).toBe('ready'));
+  expect(restarted.snapshot().items.map((item) => item.itemId)).toEqual(
+    expect.arrayContaining(['imported:cli:prompt-1', 'imported:cli:answer-1:1:part:1'])
+  );
+  expect(
+    restarted.snapshot().items.filter((item) => item.turnId.startsWith('imported:'))
+  ).toHaveLength(4);
+});
+
+it('keeps the most recent whole turns of a long conversation', () => {
+  const turn = (id: string, count: number): ConversationHistoryTurn => ({
+    turnId: id,
+    items: Array.from({ length: count }, (_, index) => ({
+      itemId: `${id}:${index}`,
+      kind: 'assistant-message' as const,
+      status: 'completed' as const,
+      title: '',
+      text: '',
+    })),
+  });
+  const turns = [turn('a', 3), turn('b', 2), turn('c', 2)];
+  expect(recentTurns(turns, 5).map((t) => t.turnId)).toEqual(['b', 'c']);
+  expect(recentTurns(turns, 7).map((t) => t.turnId)).toEqual(['a', 'b', 'c']);
+  expect(recentTurns([turn('big', 9)], 4)[0]!.items.map((item) => item.itemId)).toEqual([
+    'big:5',
+    'big:6',
+    'big:7',
+    'big:8',
+  ]);
 });
 
 it('validates native model choices and persists a confirmed choice across restart', async () => {

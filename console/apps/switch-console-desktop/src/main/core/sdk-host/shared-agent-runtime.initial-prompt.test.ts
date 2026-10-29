@@ -169,6 +169,52 @@ it('delivers the initial prompt on a relaunch that did not create the host', asy
   expect(mocks.persist.mock.calls.map((call) => call[1].state)).toEqual(['pending', 'submitted']);
 });
 
+it('delivers the initial prompt of a session whose transcript holds only a continued conversation’s history', async () => {
+  mocks.snapshot.mockResolvedValue({
+    session: { epoch: 'epoch-2', connectivity: 'online', status: 'ready' },
+    turns: [{ type: 'turn.upsert', turnId: 'imported:u1', status: 'completed', commandId: null }],
+    items: [{ itemId: 'imported:u1', turnId: 'imported:u1', kind: 'user-message' }],
+  });
+
+  await runtime().start(session, false, 'Say hello');
+
+  expect(mocks.submit).toHaveBeenCalledTimes(1);
+  expect(mocks.submit.mock.calls[0][1]).toMatchObject({
+    body: { type: 'message.send', text: 'Say hello' },
+  });
+});
+
+it('refuses to start a continued session whose copy was never made', async () => {
+  await expect(
+    buildSharedHostConfig(
+      { ...session, cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' } },
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport
+    )
+  ).rejects.toThrow('its copy was never made');
+});
+
+it('explains an older Room watcher that refuses a continued session', async () => {
+  const agent = new SharedAgentRuntime(
+    { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
+    { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+  );
+  mocks.sidecarEnsure.mockRejectedValueOnce(new Error('Unrecognized key: "importHistory"'));
+
+  await expect(
+    agent.start(
+      {
+        ...session,
+        providerSessionId: 'copy-1',
+        cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' },
+      },
+      false,
+      undefined,
+      'user'
+    )
+  ).rejects.toThrow('The Room watcher on build-box runs an older version');
+});
+
 it('hands the host how a new session started, so it can tell Switch', async () => {
   await runtime().start(session, false, 'Say hello', 'user');
 
@@ -309,6 +355,26 @@ it('reads updated model, effort and instructions for each launch', async () => {
   expect(second.start.input.model).toEqual({ id: 'second-model', options: { effort: 'high' } });
   expect(second.execution?.context).toContain('Updated instructions');
   expect(second.execution?.context).not.toContain('First instructions');
+});
+
+it('resumes the copy a CLI conversation was continued from, starting its transcript with it', async () => {
+  const config = await buildSharedHostConfig(
+    {
+      ...session,
+      providerSessionId: 'copy-1',
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' },
+    },
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(config.start.input.resume).toEqual({ nativeSessionId: 'copy-1' });
+  expect(config.importHistory).toBe(true);
+  const ordinary = await buildSharedHostConfig(
+    session,
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(ordinary.importHistory).toBeUndefined();
 });
 
 it('runs a session as the agent definition built from its config file', async () => {

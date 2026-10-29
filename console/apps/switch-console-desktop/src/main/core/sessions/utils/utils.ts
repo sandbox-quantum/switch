@@ -39,6 +39,7 @@ export function mapSessionRowToSession(
     autoApprove: config.autoApprove,
     autoMode: config.autoMode,
     providerSessionId: config.providerSessionId,
+    cliConversation: config.cliConversation,
     initialPromptDelivery: config.initialPromptDelivery,
     agentName,
     createdAt: row.createdAt,

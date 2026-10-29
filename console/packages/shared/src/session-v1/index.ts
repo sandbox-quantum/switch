@@ -1,5 +1,6 @@
 export type * from './contract';
 export { SessionReplica } from './replica';
+export { hasOwnActivity, IMPORTED_TURN_PREFIX, isImportedTurn } from './imported';
 export {
   attachmentSchema,
   commandSchema,

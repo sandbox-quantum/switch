@@ -4,6 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { openSwitchStream, runAgentHost } from './agent-host';
 import { AttachmentTransfers } from './attachment-transfers';
+import { answerCliConversationRequest } from './cli-conversations';
 import { type ControlContext, ensureSessions, serveControl } from './control';
 import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
@@ -75,6 +76,18 @@ async function main(): Promise<void> {
     } finally {
       if (timeout) clearTimeout(timeout);
       await adapter.stopAll();
+    }
+    return;
+  }
+  if (root === '--cli-conversations' || root === '--fork-cli-conversation') {
+    // Answered on stdout either way, so Console can say why one failed.
+    try {
+      console.log(JSON.stringify(await answerCliConversationRequest(root, configPath)));
+    } catch (error) {
+      console.log(
+        JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
+      );
+      process.exitCode = 1;
     }
     return;
   }
@@ -303,6 +316,8 @@ else
       root !== undefined &&
       root !== '--probe' &&
       root !== '--models' &&
+      root !== '--cli-conversations' &&
+      root !== '--fork-cli-conversation' &&
       mode !== '--supervise' &&
       mode !== '--watch-supervise'
     ) {

@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
+  IMPORTED_TURN_PREFIX,
   SessionReplica,
   commandSchema,
   eventBytes,
+  hasOwnActivity,
   serverEventSchema,
 } from '@switch-console/shared/session-v1';
 import type {
@@ -20,10 +22,15 @@ import type {
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
-import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
+import type {
+  ConversationHistoryTurn,
+  ProviderAdapter,
+  ProviderSessionStartInput,
+  TurnAttachment,
+} from '../adapter';
 import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
-import { ChatProjector } from '../session-v1/chat-projector';
+import { ChatProjector, ITEM_PART_CHARACTERS, itemParts } from '../session-v1/chat-projector';
 import { ATTACHMENT_MIME_TYPES } from './attachments';
 import { Journal } from './journal';
 import { fitModelCatalog } from './model-catalog';
@@ -59,6 +66,12 @@ export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   /** The host posts this turn's reply to its room itself: decided once, before posting. */
   z.object({ type: z.literal('room-reply'), commandId: z.string() }),
 ]);
+/**
+ * The notices that end a continued conversation's import, either way. Read
+ * back from the event journal rather than recorded in the inbox, whose
+ * records an older host could not read.
+ */
+const HISTORY_SETTLED = new Set(['HISTORY_IMPORTED', 'HISTORY_UNAVAILABLE']);
 type RecordEntry = z.infer<typeof hostInboxRecordSchema>;
 export type HostSessionStart = {
   session: Session;
@@ -75,6 +88,12 @@ export type HostSessionStart = {
   replyToRoom?: (reply: RoomReply) => Promise<void>;
   /** Service tokens to scrub from every event before it is recorded; none when absent. */
   redactions?: Redactions;
+  /**
+   * The session continues a native conversation started outside Switch, so
+   * its transcript starts with that conversation's turns, and a conversation
+   * that cannot be resumed is never quietly replaced by a new one.
+   */
+  importHistory?: boolean;
   /**
    * Told each time the provider asks to run a connector's tool, before the
    * request is published, so a notice it raises comes ahead of the card.
@@ -106,6 +125,7 @@ export class HostedSession {
   private readonly dispatched = new Set<string>();
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
+  private historyImported = false;
   private readonly postedTurns = new Set<string>();
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
@@ -164,6 +184,8 @@ export class HostedSession {
         this.replica = new SessionReplica(prior);
       }
       this.replica.apply(event);
+      if (event.body.type === 'notice' && HISTORY_SETTLED.has(event.body.code))
+        this.historyImported = true;
     }
     for (const record of inbox.records) {
       if (record.type === 'accepted') this.commands.set(record.command.commandId, record.command);
@@ -286,7 +308,8 @@ export class HostedSession {
           return host;
         }
         // A session whose provider never opened a conversation (its first
-        // start failed) has nothing to resume: it starts one below.
+        // start failed) has nothing to resume: it starts one below. One that
+        // continues a conversation resumes the copy it was started with.
         if (!host.nativeId && host.providerAnswered())
           throw new Error('Cannot recover a session without its native provider ID.');
         if (config.epochAuthority !== 'server') config.session.epoch = randomUUID();
@@ -297,6 +320,16 @@ export class HostedSession {
         host.replica = new SessionReplica(next);
       }
       await host.publish({ type: 'session.upsert', session: structuredClone(config.session) });
+      if (config.importHistory) {
+        // Without the copy to resume, starting would open a new conversation
+        // in place of the one this session was made to continue.
+        const continued = config.input.resume?.nativeSessionId;
+        if (!continued)
+          throw new Error(
+            'This session continues a conversation started outside Switch, but no copy of it was recorded to resume.'
+          );
+        if (!host.historyImported) await host.importHistory(continued);
+      }
       const native = await host.startProvider({
         ...config.input,
         ...(host.nativeId ? { resume: { nativeSessionId: host.nativeId } } : {}),
@@ -325,8 +358,9 @@ export class HostedSession {
         await host.eventSerial;
         // Nothing the provider said is lost when it never answered (a session
         // whose turns all failed while its CLI was signed out, say): start a
-        // new conversation rather than ask.
-        if (!host.providerAnswered()) {
+        // new conversation rather than ask. A conversation this session was
+        // started to continue was answered before Switch had it.
+        if (!host.providerAnswered() && !config.importHistory) {
           try {
             await host.startFresh();
             return host;
@@ -345,13 +379,16 @@ export class HostedSession {
     }
   }
 
-  /** Whether the provider has ever answered in this session. */
+  /**
+   * Whether the provider has ever answered in this session. Turns copied in
+   * from a conversation this session continues are not its own answers.
+   */
   private providerAnswered(): boolean {
     const snapshot = this.replica.snapshot();
-    return (
-      snapshot.items.some((item) => item.kind === 'assistant-message') ||
-      snapshot.turns.some((turn) => turn.status === 'completed')
-    );
+    return hasOwnActivity({
+      items: snapshot.items.filter((item) => item.kind === 'assistant-message'),
+      turns: snapshot.turns.filter((turn) => turn.status === 'completed'),
+    });
   }
 
   /** Start a new provider conversation in place of one that cannot be resumed. */
@@ -379,6 +416,103 @@ export class HostedSession {
       message:
         'Started a new provider conversation: the earlier one was never saved by the provider, so there was nothing to resume.',
     });
+  }
+
+  /**
+   * Publishes the earlier turns of the native conversation this session
+   * continues, ahead of any of its own: the most recent ones, up to
+   * {@link HISTORY_ITEM_LIMIT} items, a batch to a journal write, under ids
+   * marked as imported (`IMPORTED_TURN_PREFIX`). Settled by the notice that
+   * ends it. An import a crash cut short runs again on the next start and
+   * publishes only what it had not.
+   *
+   * A conversation that cannot be read is said in the transcript, once, and
+   * does not stop the session: resuming is what decides whether the
+   * conversation is there, and asks before replacing it.
+   */
+  private async importHistory(nativeSessionId: string): Promise<void> {
+    let turns: ConversationHistoryTurn[];
+    try {
+      if (!this.adapter.conversationHistory)
+        throw new Error(`${this.config.session.provider} cannot read its saved conversations.`);
+      turns = await this.adapter.conversationHistory(
+        nativeSessionId,
+        this.config.input.cwd,
+        this.config.input.env
+      );
+    } catch (error) {
+      await this.publish({
+        type: 'notice',
+        level: 'warning',
+        code: 'HISTORY_UNAVAILABLE',
+        message: `Could not show the earlier turns of the conversation this session continues: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      this.historyImported = true;
+      return;
+    }
+    const shown = recentTurns(turns, HISTORY_ITEM_LIMIT);
+    // What an import a crash cut short already published stays as it was:
+    // published again it could differ (a token scrubbed since), and two
+    // versions of one revision are a conflict the transcript refuses.
+    const present = this.replica.snapshot();
+    const publishedTurns = new Set(present.turns.map((turn) => turn.turnId));
+    const publishedItems = new Set(present.items.map((item) => item.itemId));
+    const bodies: HostBody[] = [];
+    for (const turn of shown) {
+      const turnId = `${IMPORTED_TURN_PREFIX}${turn.turnId}`;
+      if (!publishedTurns.has(turnId))
+        bodies.push({ type: 'turn.upsert', turnId, status: 'completed', commandId: null });
+      for (const item of turn.items) {
+        // Scrubbed whole before it is cut, as the chat projector does, so no
+        // part carries a token in pieces that the scrub of each part would miss.
+        const text = this.config.redactions ? this.config.redactions.text(item.text) : item.text;
+        const title = this.config.redactions ? this.config.redactions.text(item.title) : item.title;
+        const parts = itemParts(
+          {
+            itemId: `${IMPORTED_TURN_PREFIX}${item.itemId}`,
+            turnId,
+            revision: 1,
+            kind: item.kind,
+            status: item.status,
+            title: Array.from(title).slice(0, ITEM_PART_CHARACTERS).join(''),
+            text: '',
+            attachments: [],
+            origin: null,
+          },
+          text,
+          1
+        );
+        for (const part of parts)
+          if (!publishedItems.has(part.itemId)) bodies.push({ type: 'item.upsert', item: part });
+      }
+    }
+    // Batched to spare a flush to disk per event, and bounded in bytes too, so
+    // no one write grows much past what a single event could be.
+    let batch: HostBody[] = [];
+    let batchBytes = 0;
+    for (const body of bodies) {
+      const bytes = Buffer.byteLength(JSON.stringify(body));
+      if (
+        batch.length &&
+        (batch.length >= HISTORY_BATCH || batchBytes + bytes > HISTORY_BATCH_BYTES)
+      ) {
+        await this.publishBatch(batch);
+        batch = [];
+        batchBytes = 0;
+      }
+      batch.push(body);
+      batchBytes += bytes;
+    }
+    if (batch.length) await this.publishBatch(batch);
+    const total = turns.reduce((count, turn) => count + turn.items.length, 0);
+    const kept = shown.reduce((count, turn) => count + turn.items.length, 0);
+    await this.publish({
+      type: 'notice',
+      level: 'info',
+      code: 'HISTORY_IMPORTED',
+      message: `${kept < total ? `Above are the last ${kept} of the ${total} messages and tool calls in the conversation this session continues; the earlier ones are not shown here.` : 'Above is the conversation this session continues.'} It was copied when the session started, and the agent has all of it. The original is unchanged.`,
+    });
+    this.historyImported = true;
   }
 
   private async startProvider(input: ProviderSessionStartInput) {
@@ -1280,23 +1414,33 @@ export class HostedSession {
     return bodies.reduce((tail, body) => tail.then(() => this.publish(body)), Promise.resolve());
   }
   private publish(body: ServerEvent['body']): Promise<void> {
+    return this.publishBatch([body]);
+  }
+  /** Publishes events in order, recorded with one write to the journal. */
+  private publishBatch(bodies: ServerEvent['body'][]): Promise<void> {
     const pending = this.publishing.then(async () => {
-      const event: ServerEvent = {
-        contractVersion: 1,
-        eventId: randomUUID(),
-        sessionId: this.config.session.sessionId,
-        sequence: this.events.records.length + 1,
-        occurredAt: new Date().toISOString(),
-        // Scrubbed here, once: the journal, Console's view and the activity
-        // rows Switch shows on the bridges are all made from what is recorded.
-        body: this.config.redactions ? this.config.redactions.value(body) : body,
-      };
-      if (eventBytes(event) > 64 * 1024)
-        throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
-      serverEventSchema.parse(event);
-      await this.events.append(event);
-      this.replica.apply(event);
-      for (const listener of this.listeners) listener(event);
+      const occurredAt = new Date().toISOString();
+      const events = bodies.map((body, index) => {
+        const event: ServerEvent = {
+          contractVersion: 1,
+          eventId: randomUUID(),
+          sessionId: this.config.session.sessionId,
+          sequence: this.events.records.length + 1 + index,
+          occurredAt,
+          // Scrubbed here, once: the journal, Console's view and the activity
+          // rows Switch shows on the bridges are all made from what is recorded.
+          body: this.config.redactions ? this.config.redactions.value(body) : body,
+        };
+        if (eventBytes(event) > 64 * 1024)
+          throw new Error('PAYLOAD_TOO_LARGE: event exceeds 64 KiB.');
+        serverEventSchema.parse(event);
+        return event;
+      });
+      await this.events.appendAll(events);
+      for (const event of events) {
+        this.replica.apply(event);
+        for (const listener of this.listeners) listener(event);
+      }
     });
     this.publishing = pending.catch(() => {});
     return pending;
@@ -1340,6 +1484,35 @@ export class HostedSession {
     await this.publishing;
     this.unsubscribe();
   }
+}
+
+/** How many items of a continued conversation's earlier turns a transcript starts with. */
+const HISTORY_ITEM_LIMIT = 500;
+/** How many of a continued conversation's events are recorded with one journal write. */
+const HISTORY_BATCH = 100;
+/** And how much of them, roughly: a batch stops before it passes this. */
+const HISTORY_BATCH_BYTES = 256 * 1024;
+
+/**
+ * The most recent turns that together hold no more than `limit` items, oldest
+ * first. A latest turn larger than that on its own keeps its last `limit`.
+ */
+export function recentTurns(
+  turns: ConversationHistoryTurn[],
+  limit: number
+): ConversationHistoryTurn[] {
+  const kept: ConversationHistoryTurn[] = [];
+  let items = 0;
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const turn = turns[index]!;
+    if (items + turn.items.length > limit) {
+      if (kept.length === 0) kept.push({ ...turn, items: turn.items.slice(-limit) });
+      break;
+    }
+    kept.push(turn);
+    items += turn.items.length;
+  }
+  return kept.reverse();
 }
 
 /**

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { commandSchema } from '@switch-console/shared/session-v1';
+import { commandSchema, hasOwnActivity } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { ProviderAdapter, ProviderSessionStartInput } from '../adapter';
@@ -94,6 +94,8 @@ export type SharedHostOptions = {
   input: ProviderSessionStartInput;
   roomConnection?: z.infer<typeof roomConnectionSchema>;
   grant?: { roomId: string; messageId: string };
+  /** The session continues a native conversation started outside Switch. */
+  importHistory: boolean;
   /** The IPC channel to the process that started this host, or null if none did. */
   parent: ParentChannel | null;
   /** How long the host waits with nothing to do before parking; null never parks. */
@@ -389,6 +391,7 @@ export async function runSharedHost(
           : {}),
         session: options.session,
         input: options.input,
+        importHistory: options.importHistory,
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
@@ -634,12 +637,14 @@ export async function runSharedHost(
     // A conversation that has not started yet is given the current ones as it
     // starts. One that has, and was told others, gets a note with the next
     // room message: its provider would otherwise keep the old ones.
+    // Turns copied in from a conversation started outside Switch are not this
+    // conversation having started here: it resumes under Switch's context.
+    const startedHere = () => hasOwnActivity(host!.snapshot());
     const instructions = options.instructions;
     let instructionsNote: string | null = null;
     if (instructions !== null) {
       const told = await readToldInstructions(options.root);
-      if (host.snapshot().turns.length === 0)
-        await recordToldInstructions(options.root, instructions);
+      if (!startedHere()) await recordToldInstructions(options.root, instructions);
       else if (told !== instructions) instructionsNote = instructionsChangedNote(instructions);
     }
     const instructionsTold = async (): Promise<void> => {
@@ -674,7 +679,7 @@ export async function runSharedHost(
       roomId: string
     ): Promise<{ note: string | null; instructions: string | null }> => {
       if (!parentChannel || !options.roomConnection) return { note: null, instructions: null };
-      if (host!.snapshot().turns.length === 0) toldRooms = {};
+      if (!startedHere()) toldRooms = {};
       try {
         const { instructions } = roomInstructionsAnswerSchema.parse(
           await parentChannel.ask({ type: 'room-instructions', roomId })
@@ -796,7 +801,7 @@ export async function runSharedHost(
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
-          firstOfConversation: host!.snapshot().turns.length === 0,
+          firstOfConversation: !startedHere(),
         });
         // Taken by the host before the delivery is acknowledged: the host's
         // inbox is durable, so a crash between the two runs the message once
@@ -1133,6 +1138,7 @@ export async function hostSessionProcess(input: {
         input: prepared.input,
         roomConnection: config.roomConnection,
         grant: config.grant,
+        importHistory: config.importHistory ?? false,
         parent,
         parkAfterMs: parkAfterMs(),
         instructions: config.execution?.instructions ?? null,

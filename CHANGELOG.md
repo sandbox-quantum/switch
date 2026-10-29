@@ -2089,6 +2089,12 @@ version of their own to them without also giving them a release of their own.
   that still has a working login of its own, such as one it copied while the
   machine had an `auth.json`, starts as before; a copy that no longer works is
   removed.
+- **A Claude Code agent's session can continue a conversation started in the
+  Claude Code CLI.** The new-session dialog lists the conversations started in
+  the agent's folder, on this computer or its SSH host. The session continues a
+  copy of the one picked, so the terminal's own is never written to, and its
+  transcript starts with what was said in it. A conversation still open in a
+  terminal can't be picked. No earlier prompt is sent again.
 
 #### Changed
 - **Managed agents and machines update when the server says they changed.**
