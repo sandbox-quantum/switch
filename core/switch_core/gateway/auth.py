@@ -14,10 +14,16 @@ from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
-from switch_core.authz import Action, Principal, require
+from switch_core.authz import (
+    ORGANIZATION_ADMIN_ROLE,
+    ORGANIZATION_ADMIN_TENANT_ROLE,
+    Action,
+    Principal,
+    require,
+)
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
-from switch_core.db.models import Room, Tenant, User
+from switch_core.db.models import Organization, Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
@@ -36,6 +42,7 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.schemas import (
+    OrganizationSummary,
     SessionStateResponse,
     SessionStateUser,
     TenantMembershipResponse,
@@ -382,6 +389,102 @@ async def workspaces_in_organization(
     return found
 
 
+async def organizations_bindable_by(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[OrganizationSummary]:
+    """The organizations of the workspaces `user_id` may bind, and their role
+    in each, sorted by name.
+
+    One short session per workspace, one after another; the organization's
+    row is read on the first session bound to one of its workspaces, where
+    its policy lets it be read, and skipped on the rest. An organization
+    `user_id` belongs to without being able to bind any of its workspaces is
+    left out: there is nothing in it they could open.
+    """
+    found: dict[str, OrganizationSummary] = {}
+    for tenant_id in await tenants_bindable_by(session_factory, user_id):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            if tenant is None or tenant.organization_id is None:
+                continue
+            if tenant.organization_id in found:
+                continue
+            organization = await session.get(Organization, tenant.organization_id)
+            role = await user_store.organization_role(session, tenant_id, user_id)
+        if organization is None or role is None:
+            logger.warning(
+                "User %s may bind workspace %s, but its organization %s or "
+                "their role there was gone by the time it was read",
+                user_id,
+                tenant_id,
+                tenant.organization_id,
+            )
+            continue
+        found[organization.id] = OrganizationSummary(
+            id=organization.id,
+            slug=organization.slug,
+            name=organization.name,
+            role=role,
+        )
+    return sorted(found.values(), key=lambda row: (row.name, row.id))
+
+
+async def organization_workspaces_bindable_by(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    organization_id: str,
+    *,
+    is_operator: bool,
+) -> list[TenantMembershipResponse]:
+    """The workspaces of `organization_id` that `user_id` may bind, and their
+    role in each: every one for its `org_admin`, their own for a member.
+
+    The platform operator may bind any workspace, and is shown every one of
+    the organization's, as `admin` where they hold no role, the standing
+    `platform_access` gives them. Each candidate is read on its own short
+    session, and only those in the organization are described further.
+    """
+    candidates = (
+        await all_tenant_ids(session_factory)
+        if is_operator
+        else await tenants_bindable_by(session_factory, user_id)
+    )
+    found: list[TenantMembershipResponse] = []
+    for tenant_id in candidates:
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            if tenant is None or tenant.organization_id != organization_id:
+                continue
+            role = await user_store.effective_tenant_role(session, tenant_id, user_id)
+            organization_role = await user_store.organization_role(
+                session, tenant_id, user_id
+            )
+        if role is None and is_operator:
+            role = ORGANIZATION_ADMIN_TENANT_ROLE
+        if role is None:
+            logger.warning(
+                "tenants_bindable_by named tenant %s for user %s, but their "
+                "role there was gone by the time it was read",
+                tenant_id,
+                user_id,
+            )
+            continue
+        found.append(
+            TenantMembershipResponse(
+                id=tenant.id,
+                slug=tenant.slug,
+                name=tenant.name,
+                role=role,
+                organization_role=organization_role,
+                organization_id=tenant.organization_id,
+            )
+        )
+    return found
+
+
 async def _operator_may_enter(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -575,7 +678,7 @@ def workspace_creation_refusal(
         return None
     if new_organization and config.gateway_signup_mode == "invite_only":
         return (
-            "Creating workspaces is turned off on this server. Ask a "
+            "Creating organizations is turned off on this server. Ask a "
             "workspace admin for an invitation."
         )
     limit = config.gateway_max_workspaces_per_user
@@ -618,6 +721,15 @@ def describe_session_state(
         state = "needs_workspace"
 
     is_operator = user.role == "admin"
+
+    def refusal(new_organization: bool) -> str | None:
+        return workspace_creation_refusal(
+            config,
+            is_operator=is_operator,
+            workspaces_created=user.workspaces_created,
+            new_organization=new_organization,
+        )
+
     return SessionStateResponse(
         user=SessionStateUser(
             id=user.id, name=user.name, email=user.email, is_operator=is_operator
@@ -626,15 +738,12 @@ def describe_session_state(
         tenants=tenants,
         state=state,
         # A deployment that is not isolating tenants keeps to the one it has,
-        # for operators too: `POST /organizations` would refuse any name.
-        can_create_workspace=tenants_isolated
-        and workspace_creation_refusal(
-            config,
-            is_operator=is_operator,
-            workspaces_created=user.workspaces_created,
-            new_organization=True,
-        )
-        is None,
+        # for operators too: creating would refuse any name.
+        can_create_workspace=tenants_isolated and refusal(True) is None,
+        can_add_workspace=tenants_isolated
+        and tenant is not None
+        and tenant.organization_role == ORGANIZATION_ADMIN_ROLE
+        and refusal(False) is None,
         invite_email_enabled=config.invite_email_enabled,
     )
 

@@ -49,7 +49,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from switch_core.db.engine import create_session_factory
-from switch_core.db.models import TENANT_ZERO_ID, Tenant, TenantMember, User
+from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    OrganizationMember,
+    Tenant,
+    TenantMember,
+    User,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import auth as gw_auth
 from switch_core.gateway import dependencies as gw_deps
@@ -475,6 +481,60 @@ class TestSessionStateEndpoint:
         assert body["state"] == "needs_workspace"
         assert body["tenants"] == []
         assert body["can_create_workspace"] is True
+
+    async def test_invite_only_still_lets_an_org_admin_add_a_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """`invite_only` refuses new organizations, not a workspace an
+        `org_admin` adds to theirs, and the session state says both."""
+        admin_id = await _make_user(
+            session_factory, name="org-admin", tenant_id=TENANT_ZERO_ID
+        )
+        member_id = await _make_user(
+            session_factory, name="plain-member", tenant_id=TENANT_ZERO_ID
+        )
+        async with session_factory() as session:
+            for user_id, role in ((admin_id, "org_admin"), (member_id, "member")):
+                member = await session.get(
+                    OrganizationMember, (TENANT_ZERO_ID, user_id)
+                )
+                if member is None:
+                    session.add(
+                        OrganizationMember(
+                            organization_id=TENANT_ZERO_ID, user_id=user_id, role=role
+                        )
+                    )
+                else:
+                    member.role = role
+            await session.commit()
+
+        as_admin = (
+            await self._get(
+                session_factory,
+                create_jwt(
+                    admin_id, "a@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+                ),
+                signup_mode="invite_only",
+            )
+        ).json()
+        as_member = (
+            await self._get(
+                session_factory,
+                create_jwt(
+                    member_id, "m@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+                ),
+                signup_mode="invite_only",
+            )
+        ).json()
+
+        assert (as_admin["can_create_workspace"], as_admin["can_add_workspace"]) == (
+            False,
+            True,
+        )
+        assert (
+            as_member["can_create_workspace"],
+            as_member["can_add_workspace"],
+        ) == (False, False)
 
     async def test_invite_only_offers_no_workspace_creation(
         self, session_factory: async_sessionmaker[AsyncSession]

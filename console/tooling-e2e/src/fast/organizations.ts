@@ -6,8 +6,8 @@ import type { FastScenario } from './scenario.ts';
  * Anyone signed in creates an organization, and its admin adds workspaces to
  * it: a new user, in the default workspace, creates an organization and lands
  * in its first workspace, adds a second, and sees both, in an organization
- * listed beside the default one. A plain member of the default workspace may
- * not add one there.
+ * listed beside those they were already in. A plain member of the default
+ * workspace may not add one there.
  *
  * Users and workspaces cannot be deleted, so this runs only on a stack thrown
  * away after the run.
@@ -47,6 +47,8 @@ export const organizations: FastScenario = {
     // Signing in joins the default workspace, and so its organization.
     const defaultWorkspace = await founder.tenantId();
     await member.tenantId();
+    // The default workspace's organization is listed too, if it has one.
+    const before = await founder.organizations();
 
     try {
       await member.createOrganizationWorkspace(names.name('not-theirs'));
@@ -75,6 +77,8 @@ export const organizations: FastScenario = {
 
     const listed = await founder.organizations();
     expect(listed.find((row) => row.id === organization.id)?.role).toBe('org_admin');
-    expect(listed.length, 'the default organization too').toBe(2);
+    expect(listed.map((row) => row.id).sort(), 'the new one beside the rest').toEqual(
+      [...before.map((row) => row.id), organization.id].sort()
+    );
   },
 };

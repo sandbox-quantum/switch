@@ -178,35 +178,29 @@ async def create_organization_for(
     because the person provisioning for other people is the one caller a
     self-service bound must not stop; nothing is counted for them.
     """
+    allowance: User | None = None
     if caller.is_operator:
-        user = await user_store.get(session, caller.id)
-        if user is None:
+        operator = await user_store.get(session, caller.id)
+        if operator is None:
             raise HTTPException(status_code=401, detail="User not found")
+        user = operator
         # Not held across provisioning, which opens a session per tenant.
         await session.commit()
-        organization, tenant = await create_organization(
-            session_factory,
-            user_store,
-            organization_store,
-            client_lifecycle,
-            caller.id,
-            name,
-            workspace_name,
-        )
     else:
-        user = await lock_workspace_allowance(
+        user = allowance = await lock_workspace_allowance(
             session, caller.id, config, new_organization=True
         )
-        organization, tenant = await create_organization(
-            session_factory,
-            user_store,
-            organization_store,
-            client_lifecycle,
-            caller.id,
-            name,
-            workspace_name,
-        )
-        user.workspaces_created += 1
+    organization, tenant = await create_organization(
+        session_factory,
+        user_store,
+        organization_store,
+        client_lifecycle,
+        caller.id,
+        name,
+        workspace_name,
+    )
+    if allowance is not None:
+        allowance.workspaces_created += 1
         await session.commit()
 
     await user_store.record_last_tenant(session, user, tenant.id)
@@ -249,6 +243,8 @@ async def create_organization(
     If the workspace then cannot be created, for any reason, the organization
     is deleted again, so a failed creation leaves nothing behind.
     """
+    # Both names are checked before anything is written.
+    workspace_slugs = _slugs(workspace_name)
     organization: Organization | None = None
     for slug in _slugs(name):
         candidate = Organization(id=str(uuid.uuid4()), name=name, slug=slug)
@@ -264,7 +260,9 @@ async def create_organization(
         raise _no_free_slug("organization", name)
 
     try:
-        tenant = await _create_tenant(client_lifecycle, organization.id, workspace_name)
+        tenant = await _create_tenant(
+            client_lifecycle, organization.id, workspace_name, workspace_slugs
+        )
     except BaseException:
         # A failure after the workspace committed leaves it referencing the
         # organization, and the discard is refused; the workspace's own
@@ -314,7 +312,7 @@ async def create_workspace(
     an organization does for its first workspace, so it stays theirs if they
     stop being `org_admin`.
     """
-    tenant = await _create_tenant(client_lifecycle, organization_id, name)
+    tenant = await _create_tenant(client_lifecycle, organization_id, name, _slugs(name))
     await _add_creator(
         session_factory,
         user_store,
@@ -333,9 +331,12 @@ async def create_workspace(
 
 
 async def _create_tenant(
-    client_lifecycle: ClientLifecycleService, organization_id: str, name: str
+    client_lifecycle: ClientLifecycleService,
+    organization_id: str,
+    name: str,
+    slugs: list[str],
 ) -> Tenant:
-    for slug in _slugs(name):
+    for slug in slugs:
         try:
             return await client_lifecycle.create_tenant(name, slug, organization_id)
         except TenantSlugTaken:

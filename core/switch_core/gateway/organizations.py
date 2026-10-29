@@ -14,8 +14,6 @@ See `docs/design/organizations-v1.md`.
 
 from __future__ import annotations
 
-import logging
-from collections import defaultdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -27,13 +25,11 @@ from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
-    Organization,
     OrganizationMember,
     Tenant,
     User,
     require_tenant_id,
 )
-from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -41,7 +37,8 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
-    list_tenant_memberships,
+    organization_workspaces_bindable_by,
+    organizations_bindable_by,
     workspaces_in_organization,
 )
 from switch_core.gateway.dependencies import (
@@ -67,8 +64,6 @@ from switch_core.gateway.workspace_creation import (
     create_workspace,
     lock_workspace_allowance,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -134,44 +129,10 @@ async def list_organizations(
 ) -> list[OrganizationSummary]:
     """The organizations of the workspaces the caller may enter, and their
     role in each. Like `GET /tenants`, it needs no workspace selected.
-
-    Read through the workspaces, each on its own short session, so it needs
-    no lookup across organizations of its own. An organization the caller
-    belongs to without being in any of its workspaces is left out: there is
-    nothing in it they could open.
+    An organization the caller belongs to without being in any of its
+    workspaces is left out (`gateway/auth.organizations_bindable_by`).
     """
-    by_organization: dict[str, list[TenantMembershipResponse]] = defaultdict(list)
-    for membership in await list_tenant_memberships(
-        session_factory, user_store, user_id
-    ):
-        if membership.organization_id is not None:
-            by_organization[membership.organization_id].append(membership)
-
-    found: list[OrganizationSummary] = []
-    for organization_id, memberships in by_organization.items():
-        role = memberships[0].organization_role
-        # The organization's row is readable on a session bound to any of its
-        # workspaces.
-        async with tenant_session(session_factory, memberships[0].id) as session:
-            organization = await session.get(Organization, organization_id)
-        if organization is None or role is None:
-            logger.warning(
-                "User %s may enter workspace %s, but its organization %s or "
-                "their role there was gone by the time it was read",
-                user_id,
-                memberships[0].id,
-                organization_id,
-            )
-            continue
-        found.append(
-            OrganizationSummary(
-                id=organization.id,
-                slug=organization.slug,
-                name=organization.name,
-                role=role,
-            )
-        )
-    return sorted(found, key=lambda organization: (organization.name, organization.id))
+    return await organizations_bindable_by(session_factory, user_store, user_id)
 
 
 @router.post("/organizations", status_code=201)
@@ -222,18 +183,19 @@ async def list_organization_workspaces(
     user: Annotated[User, Depends(get_current_user)],
 ) -> list[TenantMembershipResponse]:
     """The organization's workspaces the caller may enter, and their role in
-    each: every one for an `org_admin`, their own for a member."""
+    each: every one for an `org_admin`, their own for a member, and every one
+    for the platform operator, who may enter any."""
     organization_id = await _current_organization_id(session)
     # Let go of the request's connection while each workspace is read on a
     # session of its own.
     await session.commit()
-    return [
-        membership
-        for membership in await list_tenant_memberships(
-            session_factory, user_store, user.id
-        )
-        if membership.organization_id == organization_id
-    ]
+    return await organization_workspaces_bindable_by(
+        session_factory,
+        user_store,
+        user.id,
+        organization_id,
+        is_operator=user.role == "admin",
+    )
 
 
 @router.post("/organizations/current/workspaces", status_code=201)
@@ -261,30 +223,26 @@ async def create_organization_workspace(
     organization_id = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
-    if user.role == "admin":
-        # Not held across provisioning, which opens a session per tenant.
-        await session.commit()
-        tenant = await create_workspace(
-            session_factory,
-            user_store,
-            client_lifecycle,
-            organization_id,
-            user.id,
-            req.name,
-        )
-    else:
-        locked = await lock_workspace_allowance(
+    allowance = (
+        None
+        if user.role == "admin"
+        else await lock_workspace_allowance(
             session, user.id, config, new_organization=False
         )
-        tenant = await create_workspace(
-            session_factory,
-            user_store,
-            client_lifecycle,
-            organization_id,
-            user.id,
-            req.name,
-        )
-        locked.workspaces_created += 1
+    )
+    if allowance is None:
+        # Not held across provisioning, which opens a session per tenant.
+        await session.commit()
+    tenant = await create_workspace(
+        session_factory,
+        user_store,
+        client_lifecycle,
+        organization_id,
+        user.id,
+        req.name,
+    )
+    if allowance is not None:
+        allowance.workspaces_created += 1
         await session.commit()
     return TenantMembershipResponse(
         id=tenant.id,

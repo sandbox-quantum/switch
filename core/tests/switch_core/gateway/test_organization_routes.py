@@ -575,6 +575,27 @@ class TestCreatingAnOrganization:
         assert response.status_code == 201, response.text
         assert response.json()["workspace"]["name"] == "Globex"
 
+    async def test_an_unusable_workspace_name_is_refused_before_anything_is_written(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = await _user(session_factory, "user")
+        name = _name("Nameless")
+
+        async with _client(_app(session_factory), ada, None) as client:
+            response = await client.post(
+                "/organizations", json={"name": name, "workspace_name": "!!!"}
+            )
+
+        assert response.status_code == 400
+        async with session_factory() as session:
+            assert (
+                await session.scalar(
+                    select(Organization).where(Organization.name == name)
+                )
+                is None
+            )
+        assert await _workspaces_created(session_factory, ada) == 0
+
     async def test_invite_only_sign_up_refuses_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -695,6 +716,30 @@ class TestListingOrganizationsAndWorkspaces:
         }
         assert as_member.status_code == 200, as_member.text
         assert [row["id"] for row in as_member.json()] == [tenant_id]
+
+    async def test_the_platform_operator_sees_every_workspace_of_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """There on the operator flag alone, the operator may enter every
+        workspace of the organization, and is shown each as its admin."""
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        app = _app(session_factory)
+        async with _client(app, ada, tenant_id) as client:
+            created = await client.post(
+                "/organizations/current/workspaces", json={"name": "Second"}
+            )
+            assert created.status_code == 201, created.text
+        operator = await _operator(session_factory)
+
+        async with _client(app, operator, tenant_id) as client:
+            response = await client.get("/organizations/current/workspaces")
+
+        assert response.status_code == 200, response.text
+        assert {(row["id"], row["role"]) for row in response.json()} == {
+            (tenant_id, "admin"),
+            (created.json()["id"], "admin"),
+        }
 
     async def test_the_caller_sees_each_of_their_organizations_once(
         self, session_factory: async_sessionmaker[AsyncSession]

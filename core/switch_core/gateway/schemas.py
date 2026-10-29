@@ -993,7 +993,13 @@ class SessionStateResponse(BaseModel):
     tenant: TenantMembershipResponse | None
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
+    # Whether the caller may create a new organization with its first
+    # workspace (`POST /organizations`, and `POST /tenants` before it).
     can_create_workspace: bool
+    # Whether the caller may add a workspace to the bound workspace's
+    # organization (`POST /organizations/current/workspaces`): its
+    # `org_admin`, within their allowance. False with no workspace bound.
+    can_add_workspace: bool
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
