@@ -185,7 +185,9 @@ async def authorize(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
 ) -> Response:
-    """The browser leaves for the vendor through Core, which marks it.
+    """The browser leaves for the vendor through Core, which marks it. A
+    refusal on the way, by this server or the vendor, fails the flow with its
+    reason, so Console shows it at once, and the page says it too.
 
     Nobody is signed in here, so the workspace is the flow's: its app is
     the one the browser is sent to."""
@@ -198,18 +200,20 @@ async def authorize(
     refusal: ServiceError | None
     async with tenant_session(session_factory, flow.tenant_id) as session:
         try:
-            definition, adapter = await broker.sign_in(session, service)
+            _, adapter = await broker.sign_in(session, service)
         except ServiceError as error:
             refusal = error
         else:
             refusal = None
     if refusal is not None:
-        await flows.refused(flow, refusal.message)
-        return _page("Connections", escape(refusal.message), refusal.status_code)
+        await flows.refuse(flow.stored, refusal.message)
+        return _page(flow.name, refusal.message, refusal.status_code)
     try:
         url, nonce = await flows.vendor_url(flow, adapter)
-    except (FlowError, ServiceAdapterError):
-        return _page(definition.name, INTERRUPTED, 400)
+    except FlowError:
+        return _page(flow.name, INTERRUPTED, 400)
+    except ServiceAdapterError as error:
+        return _page(flow.name, str(error), 400)
     response = RedirectResponse(
         url, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
     )
@@ -283,6 +287,7 @@ async def complete(
     try:
         _, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
+        await flows.refuse(flow.stored, error.message)
         return service_refusal(error)
     try:
         exchange = await flows.complete(
