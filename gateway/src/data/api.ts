@@ -2206,7 +2206,7 @@ export interface ServiceConnection {
    * switches it on.
    */
   workspace_enabled: boolean;
-  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  status: "not_connected" | "active" | "needs_reauthorization";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
@@ -2271,8 +2271,10 @@ export async function fetchGitHubConnection(): Promise<GitHubConnection> {
 }
 
 /**
- * Owner-only addressing: the owner, and agents the owner runs. What the grant
- * screens offer when anyone can address an agent with grants.
+ * Owner-only addressing: the owner alone, none of the owner's agents, as
+ * Switch Console sends it. What the grant screens offer when others can
+ * address an agent with grants: an agent the owner runs could pass on a
+ * request someone else gave it.
  */
 export const OWNER_ONLY_POLICY: AddressingPolicy = {
   rules: [
@@ -2282,7 +2284,7 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
       users: [],
       agents: [],
       owner: true,
-      owner_agents: true,
+      owner_agents: false,
     },
   ],
 };
