@@ -88,8 +88,10 @@ import {
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
+  type RemoteRoomSchedule,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
+  type RoomScheduleDraft,
   type RetireOutcome,
   type SwitchAuthConfig,
   type SwitchServer,
@@ -98,6 +100,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type UpdateRoomScheduleChanges,
   type UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
@@ -3020,6 +3023,121 @@ export async function removeRoomAgent(
     `/rooms/${encodeURIComponent(roomId)}/agents/${encodeURIComponent(agentId)}`,
     { authenticated: true, method: 'DELETE' }
   );
+}
+
+type RoomScheduleJson = {
+  id: string;
+  room_id: string;
+  agent_ids: string[];
+  body: string;
+  run_at: string | null;
+  cron: string | null;
+  timezone: string;
+  paused: boolean;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_error: string | null;
+  author_id: string;
+  author_agent_id: string | null;
+  author_name: string;
+};
+
+function mapRoomSchedule(s: RoomScheduleJson): RemoteRoomSchedule {
+  return {
+    id: s.id,
+    roomId: s.room_id,
+    agentIds: s.agent_ids,
+    body: s.body,
+    runAt: s.run_at,
+    cron: s.cron,
+    timezone: s.timezone,
+    paused: s.paused,
+    nextRunAt: s.next_run_at,
+    lastRunAt: s.last_run_at,
+    lastError: s.last_error,
+    authorId: s.author_id,
+    authorAgentId: s.author_agent_id,
+    authorName: s.author_name,
+  };
+}
+
+function roomSchedulesPath(roomId: string, scheduleId?: string): string {
+  const base = `/rooms/${encodeURIComponent(roomId)}/schedules`;
+  return scheduleId === undefined ? base : `${base}/${encodeURIComponent(scheduleId)}`;
+}
+
+/** A room's scheduled messages (`GET /rooms/{id}/schedules`), oldest first. */
+export async function fetchRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomSchedule[]> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), { authenticated: true });
+  return ((await res.json()) as RoomScheduleJson[]).map(mapRoomSchedule);
+}
+
+/**
+ * Schedule a message in a room (`POST /rooms/{id}/schedules`). Requires write
+ * access to the room; the gateway refuses agents not in it and timing it cannot
+ * use (a past one-off, an unknown timezone, a rule that is not five fields),
+ * and that refusal is what the caller shows.
+ */
+export async function createRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  draft: RoomScheduleDraft
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId), {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      agent_ids: draft.agentIds,
+      body: draft.body,
+      run_at: draft.runAt,
+      cron: draft.cron,
+      timezone: draft.timezone,
+    },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/**
+ * Change a schedule (`PATCH /rooms/{id}/schedules/{scheduleId}`): what it says,
+ * whom it addresses, when it fires, or whether it is paused. A field left out
+ * is left alone; timing is sent whole because it replaces the one-off or rule.
+ */
+export async function updateRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  changes: UpdateRoomScheduleChanges
+): Promise<RemoteRoomSchedule> {
+  const body: Record<string, unknown> = {};
+  if (changes.agentIds !== undefined) body.agent_ids = changes.agentIds;
+  if (changes.body !== undefined) body.body = changes.body;
+  if (changes.paused !== undefined) body.paused = changes.paused;
+  if (changes.timing !== undefined) {
+    body.run_at = changes.timing.runAt;
+    body.cron = changes.timing.cron;
+    body.timezone = changes.timing.timezone;
+  }
+  const res = await gatewayFetch(server, roomSchedulesPath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'PATCH',
+    body,
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/** Delete a schedule (`DELETE /rooms/{id}/schedules/{scheduleId}`). */
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<void> {
+  await gatewayFetch(server, roomSchedulesPath(roomId, scheduleId), {
+    authenticated: true,
+    method: 'DELETE',
+  });
 }
 
 /**

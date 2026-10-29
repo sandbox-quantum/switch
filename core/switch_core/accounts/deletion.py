@@ -123,6 +123,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("service_app_credentials", "updated_by"): "handed over",
     ("provider_connections", "user_id"): "database cascades",
     ("template_installs", "owner_id"): "database cascades",
+    # A schedule speaks with its author's authority, so it cannot outlive them.
+    ("room_schedules", "author_id"): "database cascades",
     ("external_user_claims", "user_id"): "database cascades",
     ("chat_operations", "user_id"): "database cascades",
     ("chat_hidden", "user_id"): "database cascades",

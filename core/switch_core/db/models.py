@@ -1099,6 +1099,111 @@ class RoomLink(TenantScoped, Base):
     )
 
 
+class RoomSchedule(TenantScoped, Base):
+    """A message Switch posts in a room at a set time, to some of its agents.
+
+    Exactly one of ``run_at`` (once) and ``cron`` (a five-field rule, read in
+    ``timezone``) is set. ``next_run_at`` is when it fires next, on the
+    database's clock, and null once a one-off has fired. Every switch-core
+    process sweeps for due rows and claims each with `FOR UPDATE SKIP LOCKED`
+    (`room_schedules.RoomScheduler`), so a firing happens once however many
+    processes are running.
+
+    ``author_id`` is the person who last set what it says and whom it
+    addresses: the message is posted with their authority, so each agent's
+    policy judges them, and an edit by someone else makes it theirs. When an
+    agent set it, ``author_agent_id`` names the agent and ``author_id`` is its
+    owner: the message is then judged as that agent speaking, never with its
+    owner's authority.
+    """
+
+    __tablename__ = "room_schedules"
+    __table_args__ = (
+        UniqueConstraint("id", "tenant_id", name="uq_room_schedules_id_tenant"),
+        CheckConstraint(
+            "(run_at IS NULL) <> (cron IS NULL)", name="ck_room_schedules_timing"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_schedules_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "author_agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_room_schedules_author_agent",
+            ondelete="CASCADE",
+        ),
+        Index("ix_room_schedules_author_agent", "tenant_id", "author_agent_id"),
+        # The sweep's question: which of a tenant's schedules are due.
+        Index(
+            "ix_room_schedules_due",
+            "tenant_id",
+            "next_run_at",
+            postgresql_where=text("NOT paused AND next_run_at IS NOT NULL"),
+        ),
+        Index("ix_room_schedules_room", "tenant_id", "room_id"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    author_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    author_agent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cron: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timezone: Mapped[str] = mapped_column(Text, nullable=False)
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why the last firing posted nothing, shown beside the schedule until a
+    # firing succeeds. Null when the last one went out.
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class RoomScheduleAgent(TenantScoped, Base):
+    """An agent a schedule addresses. Goes with the schedule or the agent."""
+
+    __tablename__ = "room_schedule_agents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "schedule_id"],
+            ["room_schedules.tenant_id", "room_schedules.id"],
+            name="fk_room_schedule_agents_schedule",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_room_schedule_agents_agent",
+            ondelete="CASCADE",
+        ),
+        # Deleting an agent finds its rows by this.
+        Index("ix_room_schedule_agents_agent", "tenant_id", "agent_id"),
+    )
+
+    schedule_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
 # ── Tasks ──────────────────────────────────────────────────────────────────────
 
 

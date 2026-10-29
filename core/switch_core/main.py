@@ -159,6 +159,7 @@ from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -199,6 +200,7 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.room_schedules import SCHEDULE_SWEEP_SECONDS, RoomScheduler
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
@@ -329,6 +331,28 @@ async def _attachment_group_sweep_loop(
                 except Exception:
                     logger.exception(
                         "Attachment group sweep failed for tenant %s", tenant_id
+                    )
+
+
+async def _room_schedule_loop(
+    session_factory: async_sessionmaker[AsyncSession], scheduler: RoomScheduler
+) -> None:
+    """Fire the room schedules that are due, in every tenant. Every process
+    runs it, since each schedule is claimed by whoever gets to it first."""
+    with no_tenant():
+        while True:
+            await asyncio.sleep(SCHEDULE_SWEEP_SECONDS)
+            try:
+                tenants = await all_tenant_ids(session_factory)
+            except Exception:
+                logger.exception("Room schedule sweep failed")
+                continue
+            for tenant_id in tenants:
+                try:
+                    await scheduler.fire_due(tenant_id)
+                except Exception:
+                    logger.exception(
+                        "Room schedule sweep failed for tenant %s", tenant_id
                     )
 
 
@@ -1348,6 +1372,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
 
+    room_scheduler = RoomScheduler(
+        session_factory=session_factory,
+        client_lifecycle=client_lifecycle,
+        schedule_store=RoomScheduleStore(),
+        room_store=room_store,
+        user_store=user_store,
+    )
+
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,
         session_factory=session_factory,
@@ -1377,6 +1409,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             )
             session_activity_task = asyncio.create_task(
                 session_activity_maintenance_loop(session_factory)
+            )
+            room_schedule_task = asyncio.create_task(
+                _room_schedule_loop(session_factory, room_scheduler)
             )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
@@ -1425,6 +1460,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 sweep_task.cancel()
                 retention_task.cancel()
                 attachment_group_task.cancel()
+                room_schedule_task.cancel()
                 router.close()
                 session_activity_task.cancel()
                 connection_sweep_task.cancel()

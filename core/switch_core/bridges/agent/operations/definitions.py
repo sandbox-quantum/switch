@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
@@ -1145,6 +1146,121 @@ async def release_role() -> dict[str, Any]:
     await require_connected_room()
     await get_protocol().release_room_role(agent_id)
     return {"status": "released"}
+
+
+def _schedule_time(run_at: str | None) -> datetime | None:
+    if run_at is None:
+        return None
+    try:
+        return datetime.fromisoformat(run_at)
+    except ValueError as e:
+        raise ValueError(
+            f"run_at {run_at!r} is not an ISO 8601 time, e.g. 2026-11-04T09:00:00+00:00"
+        ) from e
+
+
+@operation
+async def list_schedules() -> list[dict[str, Any]]:
+    """List the scheduled messages in the connected room.
+
+    Each entry carries `id`, `agents` (the names it addresses), `message`,
+    `run_at` (a one-off) or `cron` (a five-field rule) with its `timezone`,
+    `paused`, `next_run_at` (null once a one-off has fired), `last_run_at`,
+    `last_error` and `set_by` (the person or agent it speaks for).
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    return await get_protocol().list_room_schedules(agent_id, room_id)
+
+
+@operation
+async def schedule_message(
+    agents: list[str],
+    message: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Schedule a message to agents in the connected room, once or on a repeat.
+
+    When it fires, Switch posts `message` in the room mentioning each agent,
+    and it is judged as YOU speaking: an agent that would not answer you will
+    not answer it. Requires write access to the room. Give exactly one of
+    `cron` and `run_at`.
+
+    Args:
+        agents: Names of agents in this room to address (e.g. ["triage"]).
+        message: The text to post.
+        timezone: IANA timezone the rule is read in, e.g. "Europe/London".
+        cron: A five-field cron rule, minute hour day month weekday, e.g.
+            "0 9 * * 1-5" for weekdays at 09:00.
+        run_at: A one-off ISO 8601 time with its UTC offset, in the future,
+            e.g. "2026-11-04T09:00:00+00:00".
+
+    Returns:
+        The schedule, as `list_schedules` shows it.
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    return await get_protocol().create_room_schedule(
+        agent_id,
+        room_id,
+        agents=agents,
+        message=message,
+        run_at=_schedule_time(run_at),
+        cron=cron,
+        timezone=timezone,
+    )
+
+
+@operation
+async def edit_schedule(
+    schedule_id: str,
+    agents: list[str] | None = None,
+    message: str | None = None,
+    cron: str | None = None,
+    run_at: str | None = None,
+    timezone: str | None = None,
+    paused: bool | None = None,
+) -> dict[str, Any]:
+    """Change a schedule in the connected room; what you leave out stays.
+
+    Giving `cron` or `run_at` replaces the timing (give one). `paused=true`
+    pauses it, `paused=false` resumes it, skipping runs that fell due while
+    paused. Changing `agents` or `message` makes the schedule speak for you.
+    Requires write access to the room.
+
+    Args:
+        schedule_id: The schedule's `id` from `list_schedules`.
+        agents: Names of agents in this room to address instead.
+        message: The new text.
+        cron: A new five-field cron rule.
+        run_at: A new one-off ISO 8601 time with its UTC offset.
+        timezone: A new IANA timezone for the rule.
+        paused: Pause (true) or resume (false).
+    """
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    retimed = cron is not None or run_at is not None
+    return await get_protocol().update_room_schedule(
+        agent_id,
+        room_id,
+        schedule_id,
+        agents=agents,
+        message=message,
+        timing=(_schedule_time(run_at), cron) if retimed else None,
+        timezone=timezone,
+        paused=paused,
+    )
+
+
+@operation
+async def delete_schedule(schedule_id: str) -> dict[str, Any]:
+    """Delete a schedule from the connected room. Requires write access."""
+    agent_id = get_agent_id()
+    room_id = await require_connected_room()
+    await get_protocol().delete_room_schedule(agent_id, room_id, schedule_id)
+    return {"status": "deleted", "id": schedule_id}
 
 
 @operation

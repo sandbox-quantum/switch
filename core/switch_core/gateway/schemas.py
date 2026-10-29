@@ -56,6 +56,62 @@ class RoomRoleUpdateRequest(BaseModel):
     exclusive: bool | None = None
 
 
+ScheduleBody = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class RoomScheduleDetail(BaseModel):
+    """A message Switch posts in a room at a set time (`room_schedules`).
+
+    ``next_run_at`` is null once a one-off has fired. ``last_error`` says why
+    the last firing posted nothing, or why the schedule was paused for it.
+    """
+
+    id: str
+    room_id: str
+    agent_ids: list[str]
+    body: str
+    run_at: datetime | None
+    cron: str | None
+    timezone: str
+    paused: bool
+    next_run_at: datetime | None
+    last_run_at: datetime | None
+    last_error: str | None
+    author_id: str
+    # Set when an agent set the schedule; `author_id` is then its owner and
+    # `author_name` the agent's name.
+    author_agent_id: str | None
+    author_name: str
+
+
+class RoomScheduleCreateRequest(BaseModel):
+    """Exactly one of ``run_at`` (once, with its UTC offset) and ``cron`` (a
+    five-field rule read in ``timezone``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_ids: list[str] = Field(min_length=1)
+    body: ScheduleBody
+    run_at: datetime | None = None
+    cron: str | None = None
+    timezone: str
+
+
+class RoomScheduleUpdateRequest(BaseModel):
+    """Only the fields sent change. Sending ``run_at`` or ``cron`` replaces
+    the timing, so send one of them with the other null to switch between a
+    one-off and a rule."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_ids: list[str] | None = Field(default=None, min_length=1)
+    body: ScheduleBody | None = None
+    run_at: datetime | None = None
+    cron: str | None = None
+    timezone: str | None = None
+    paused: bool | None = None
+
+
 class RoomSummary(BaseModel):
     id: str
     name: str

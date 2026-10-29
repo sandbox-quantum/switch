@@ -110,6 +110,7 @@ from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.deeplinks import deeplink_for_platform
@@ -120,6 +121,13 @@ from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.room_schedules import (
+    RoomSchedules,
+    ScheduleAuthor,
+    ScheduleEdit,
+    ScheduleNotFound,
+    ScheduleView,
+)
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -372,6 +380,7 @@ class AgentCore:
         self.agent_session_store = agent_session_store
         self.agent_runtime_state_store = AgentRuntimeStateStore()
         self.room_role_store = RoomRoleStore()
+        self.room_schedules = RoomSchedules(RoomScheduleStore(), room_store)
         self.room_group_store = RoomGroupStore()
         self.message_store = MessageStore()
         self.budget_guard = BudgetGuard(BudgetStore())
@@ -3451,6 +3460,113 @@ class AgentCore:
                 agent_id, transport_room_id, f"released the `{released_role}` role"
             )
 
+    # ── Room schedules ──────────────────────────────────────────────────────
+
+    async def list_room_schedules(
+        self, agent_id: str, room_id: str
+    ) -> list[dict[str, Any]]:
+        """A room's schedules. Requires read access to the room."""
+        async with self.session_factory() as session:
+            await self._require_room_action(session, agent_id, room_id, "read")
+            schedules = await self.room_schedules.in_room(session, room_id)
+            return [_schedule_for_agent(view) for view in schedules]
+
+    async def create_room_schedule(
+        self,
+        agent_id: str,
+        room_id: str,
+        *,
+        agents: list[str],
+        message: str,
+        run_at: datetime | None,
+        cron: str | None,
+        timezone: str,
+    ) -> dict[str, Any]:
+        """Schedule a message to agents in a room, set by this agent: it is
+        judged as this agent speaking when it fires. Requires write access."""
+        async with self.session_factory() as session:
+            await self._require_room_action(session, agent_id, room_id, "write")
+            author = await self._schedule_author(session, agent_id)
+            schedule = await self.room_schedules.create(
+                session,
+                room_id=room_id,
+                author=author,
+                agent_ids=await self.room_schedules.agent_ids_by_name(
+                    session, room_id, agents
+                ),
+                body=message,
+                run_at=run_at,
+                cron=cron,
+                timezone=timezone,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+            [view] = await self.room_schedules.views(session, [schedule])
+            return _schedule_for_agent(view)
+
+    async def update_room_schedule(
+        self,
+        agent_id: str,
+        room_id: str,
+        schedule_id: str,
+        *,
+        agents: list[str] | None,
+        message: str | None,
+        timing: tuple[datetime | None, str | None] | None,
+        timezone: str | None,
+        paused: bool | None,
+    ) -> dict[str, Any]:
+        """Change a schedule. Setting its text or agents makes this agent the
+        one it speaks for. Requires write access to the room."""
+        async with self.session_factory() as session:
+            await self._require_room_action(session, agent_id, room_id, "write")
+            author = await self._schedule_author(session, agent_id)
+            agent_ids = (
+                await self.room_schedules.agent_ids_by_name(session, room_id, agents)
+                if agents is not None
+                else None
+            )
+            try:
+                schedule = await self.room_schedules.edit(
+                    session,
+                    room_id=room_id,
+                    schedule_id=schedule_id,
+                    author=author,
+                    edit=ScheduleEdit(
+                        agent_ids=agent_ids,
+                        body=message,
+                        timing=timing,
+                        timezone=timezone,
+                        paused=paused,
+                    ),
+                    now=datetime.now(UTC),
+                )
+            except ScheduleNotFound as e:
+                raise ValueError(f"No schedule {schedule_id} in this room") from e
+            await session.commit()
+            [view] = await self.room_schedules.views(session, [schedule])
+            return _schedule_for_agent(view)
+
+    async def delete_room_schedule(
+        self, agent_id: str, room_id: str, schedule_id: str
+    ) -> None:
+        """Delete a schedule. Requires write access to the room."""
+        async with self.session_factory() as session:
+            await self._require_room_action(session, agent_id, room_id, "write")
+            try:
+                await self.room_schedules.delete(session, room_id, schedule_id)
+            except ScheduleNotFound as e:
+                raise ValueError(f"No schedule {schedule_id} in this room") from e
+            await session.commit()
+
+    async def _schedule_author(
+        self, session: AsyncSession, agent_id: str
+    ) -> ScheduleAuthor:
+        agent, owner_id, _ = await self._resolve_acting_identity(session, agent_id)
+        if owner_id is None:
+            raise PermissionError("An agent with no owner cannot set schedules")
+        return ScheduleAuthor(owner_id, agent.id)
+
     async def touch_role_lease(self, agent_id: str, holder: str | None) -> bool:
         """Refresh `holder`'s role-lease heartbeat. False if it holds none.
 
@@ -4383,3 +4499,21 @@ class AgentCore:
         """
         await self.require_room_member(agent_id, room_id)
         return {"verdict": POST_INVOCATION_OK}
+
+
+def _schedule_for_agent(view: ScheduleView) -> dict[str, Any]:
+    """A schedule as an agent reads it: its agents by name, not by id."""
+    s = view.schedule
+    return {
+        "id": s.id,
+        "agents": [name for _, name in view.agents],
+        "message": s.body,
+        "run_at": s.run_at.isoformat() if s.run_at else None,
+        "cron": s.cron,
+        "timezone": s.timezone,
+        "paused": s.paused,
+        "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+        "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+        "last_error": s.last_error,
+        "set_by": view.author_name,
+    }

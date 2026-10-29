@@ -382,6 +382,51 @@ export type UpdateRoomParams = {
 };
 
 /**
+ * A message Switch posts in a room at a set time, to some of its agents
+ * (mirrors the gateway `RoomScheduleDetail`). Exactly one of `runAt` (once) and
+ * `cron` (a five-field rule read in `timezone`) is set.
+ */
+export type RemoteRoomSchedule = {
+  id: string;
+  roomId: string;
+  agentIds: string[];
+  body: string;
+  runAt: string | null;
+  cron: string | null;
+  timezone: string;
+  paused: boolean;
+  /** Null once a one-off has fired. */
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  /** Why the last firing posted nothing, or why the schedule was paused. */
+  lastError: string | null;
+  authorId: string;
+  /** Set when an agent set the schedule: `authorId` is then its owner and
+   * `authorName` the agent's name. */
+  authorAgentId: string | null;
+  authorName: string;
+};
+
+/** When a schedule fires: once at an ISO time with its offset, or on a rule. */
+export type RoomScheduleTiming =
+  | { runAt: string; cron: null; timezone: string }
+  | { runAt: null; cron: string; timezone: string };
+
+export type RoomScheduleDraft = RoomScheduleTiming & {
+  agentIds: string[];
+  body: string;
+};
+
+/** The schedule fields Switch Console can change. Anything omitted is left
+ * alone; timing is sent whole, since it replaces the one-off or the rule. */
+export type UpdateRoomScheduleChanges = {
+  agentIds?: string[];
+  body?: string;
+  timing?: RoomScheduleTiming;
+  paused?: boolean;
+};
+
+/**
  * A room a specific agent belongs to, with that agent's presence there (mirrors
  * the gateway `AgentRoomMembership`). Drives the "connect to room" picker at
  * session start and the room-focused sidebar grouping.

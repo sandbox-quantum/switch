@@ -27,9 +27,11 @@ import type {
   RemoteAgentSummary,
   RemoteRoomDetail,
 } from '@shared/core/switch-servers/switch-servers';
+import { agentNameFor, localAgentFor } from './room-agent-names';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
+import { RoomSchedulesSection } from './room-schedules-section';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -105,6 +107,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             text across. */}
         <GeneralSection key={room.id} workspaceId={workspaceId} room={room} />
         <ParticipantsSection workspaceId={workspaceId} room={room} />
+        <RoomSchedulesSection workspaceId={workspaceId} room={room} />
         <DeleteRoomSection workspaceId={workspaceId} room={room} />
       </div>
     </div>
@@ -609,27 +612,6 @@ function AgentMark({
         size={26}
       />
     </span>
-  );
-}
-
-/** This install's record of a Switch agent, which is where its provider is
- * known — the server says what type an agent is, not what runs it here. */
-function localAgentFor(switchAgentId: string, workspaceId: string) {
-  return (
-    agentsStore.agentsInWorkspace(workspaceId).find((a) => a.switchAgentId === switchAgentId) ??
-    null
-  );
-}
-
-function agentNameFor(
-  switchAgentId: string,
-  workspaceId: string,
-  remoteById: Map<string, RemoteAgentSummary>
-): string {
-  return (
-    localAgentFor(switchAgentId, workspaceId)?.name ??
-    remoteById.get(switchAgentId)?.name ??
-    'Agent'
   );
 }
 

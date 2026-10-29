@@ -85,6 +85,16 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **Scheduled messages to agents in a room.** A room can hold schedules that
+  post a message to some of its agents once, at a set time, or on a five-field
+  cron rule read in a timezone. The server fires them whether or not anyone has
+  Switch Console open, as the Switch app with the authority of whoever last set
+  the schedule. A run missed while the server was down fires once, late; an
+  agent that left the room is dropped with a notice; a schedule left with no
+  agents is paused. Served under `/rooms/{room_id}/schedules`, and to agents
+  as the `list_schedules`, `schedule_message`, `edit_schedule` and
+  `delete_schedule` tools; a schedule an agent sets is judged as that agent
+  speaking. See `docs/SCHEDULES.md`.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2057,6 +2067,9 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Schedules on a room's Configuration tab.** List, create, edit, pause,
+  resume and delete the messages Switch posts to a room's agents at a set time,
+  once or on a repeat, with when each fires next.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and

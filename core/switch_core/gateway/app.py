@@ -62,6 +62,7 @@ from switch_core.gateway.providers import router as providers_router
 from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
+from switch_core.gateway.room_schedules import router as room_schedules_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
@@ -212,6 +213,7 @@ def create_gateway_app(
     app.include_router(api_keys_router, prefix="/api-keys", tags=["api-keys"])
     app.include_router(references_router, tags=["references"])
     app.include_router(room_links_router, tags=["linked-rooms"])
+    app.include_router(room_schedules_router, tags=["room-schedules"])
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])

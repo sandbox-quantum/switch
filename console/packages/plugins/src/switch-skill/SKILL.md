@@ -979,6 +979,31 @@ are moderation tools — use them when setting a room up, not in passing.
   is meant to reach it now.
 - **`delete_role(name)`** — remove the role and any lease on it.
 
+## Scheduled messages
+
+A room can hold schedules: messages Switch posts at a set time, once or on a
+repeat, mentioning the agents they address. The server keeps and fires them,
+so they go out whether or not anyone is connected. Each acts on the
+**connected room**, and changing one requires write access to it.
+
+- **`list_schedules()`** — the room's schedules, with `next_run_at` (null once
+  a one-off has fired), `paused`, `last_error` and `set_by`.
+- **`schedule_message(agents, message, timezone, cron=None, run_at=None)`** —
+  give exactly one of `cron` (five fields, minute hour day month weekday, read
+  in `timezone`, e.g. `"0 9 * * 1-5"` for weekdays at 09:00) and `run_at` (an
+  ISO 8601 time with its offset, in the future). `agents` are names of agents
+  in this room.
+- **`edit_schedule(schedule_id, ...)`** — change any of `agents`, `message`,
+  `cron`, `run_at`, `timezone`, or pause (`paused=true`) and resume
+  (`paused=false`) it; anything left out stays as it is.
+- **`delete_schedule(schedule_id)`** — remove it.
+
+A schedule you set, or whose text or agents you change, speaks for **you**:
+each agent it addresses judges it as you writing to it, so it reaches only
+agents that would answer you. Confirm with the user before scheduling
+something that repeats. A run missed while the server was down fires once,
+late; runs that fall due while a schedule is paused are skipped.
+
 ## Important rules
 
 Switch tools are approved automatically even when the agent's Bypass
@@ -1070,6 +1095,10 @@ Every Switch tool you call in normal operation, one line each.
 - `define_role` — add a role to the connected room.
 - `edit_role` — change a role's instructions or exclusivity.
 - `delete_role` — remove a role and any lease on it.
+- `list_schedules` — the connected room's scheduled messages.
+- `schedule_message` — schedule a message to agents in the room, once or on a cron rule.
+- `edit_schedule` — change, pause or resume a schedule.
+- `delete_schedule` — remove a schedule.
 - `list_linked_rooms` — refresh this room's outbound pointers.
 - `list_all_rooms` — every room on the instance, not just yours.
 - `get_room_detail` — one room's members, channel type, roles, aliases.

@@ -93,6 +93,9 @@ const {
   createRoom,
   deleteBridge,
   deleteRoom,
+  createRoomSchedule,
+  updateRoomSchedule,
+  fetchRoomSchedules,
   ensureCloudMachine,
   fetchAuthConfig,
   fetchBridges,
@@ -1165,6 +1168,95 @@ describe('deleteRoom', () => {
 
     const [url] = fetchMock.mock.calls[0] as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/rooms/r1?retire_channel=true');
+  });
+});
+
+describe('room schedules', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const wire = {
+    id: 's1',
+    room_id: 'r1',
+    agent_ids: ['a1'],
+    body: 'Summarise new issues',
+    run_at: null,
+    cron: '0 9 * * 1',
+    timezone: 'Europe/London',
+    paused: false,
+    next_run_at: '2026-11-02T09:00:00Z',
+    last_run_at: null,
+    last_error: null,
+    author_id: 'u1',
+    author_agent_id: null,
+    author_name: 'Ada',
+  };
+
+  it('reads a room’s schedules into the app’s shape', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([wire]) as never);
+
+    const [schedule] = await fetchRoomSchedules(SERVER, 'r/1');
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r%2F1/schedules');
+    expect(schedule).toMatchObject({
+      roomId: 'r1',
+      agentIds: ['a1'],
+      cron: '0 9 * * 1',
+      nextRunAt: '2026-11-02T09:00:00Z',
+      authorName: 'Ada',
+    });
+  });
+
+  it('creates one with its timing in the gateway’s words', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(wire) as never);
+
+    await createRoomSchedule(SERVER, 'r1', {
+      agentIds: ['a1'],
+      body: 'Summarise new issues',
+      runAt: null,
+      cron: '0 9 * * 1',
+      timezone: 'Europe/London',
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      agent_ids: ['a1'],
+      body: 'Summarise new issues',
+      run_at: null,
+      cron: '0 9 * * 1',
+      timezone: 'Europe/London',
+    });
+  });
+
+  it('sends only what changed, and timing whole', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(wire) as never);
+
+    await updateRoomSchedule(SERVER, 'r1', 's1', { paused: true });
+    await updateRoomSchedule(SERVER, 'r1', 's1', {
+      timing: { runAt: '2026-11-01T09:00:00.000Z', cron: null, timezone: 'UTC' },
+    });
+
+    const [url, pause] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(url).toBe('https://switch.example.com/gateway/rooms/r1/schedules/s1');
+    expect(JSON.parse(pause.body)).toEqual({ paused: true });
+    const [, retime] = fetchMock.mock.calls[1] as unknown as [string, { body: string }];
+    expect(JSON.parse(retime.body)).toEqual({
+      run_at: '2026-11-01T09:00:00.000Z',
+      cron: null,
+      timezone: 'UTC',
+    });
   });
 });
 
