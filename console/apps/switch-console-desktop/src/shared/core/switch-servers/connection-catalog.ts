@@ -63,7 +63,7 @@ export const connectionCatalogEntrySchema = z.object({
   auth_type: z.enum(['oauth', 'api_key']),
   /** Whether it can be connected on this server: there is something to connect it to. */
   connectable: z.boolean(),
-  status: z.enum(['connected', 'not_connected', 'needs_reauthorization', 'error', 'coming_soon']),
+  status: z.enum(['connected', 'not_connected', 'needs_reauthorization', 'coming_soon']),
   /** Why the service cannot be granted to agents on this server; null when it can. */
   unavailable_reason: z.string().nullable(),
   /**
@@ -129,7 +129,6 @@ export const serviceConnectionsSchema = z.object({
       enabled: z.boolean(),
       auth_type: z.enum(['oauth', 'api_key']),
       connectable: z.boolean(),
-      configured: z.boolean(),
       unavailable_reason: z.string().nullable(),
       // Absent from a Switch that predates them.
       unavailable_code: z.string().nullable().default(null),
@@ -140,7 +139,7 @@ export const serviceConnectionsSchema = z.object({
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
       workspace_enabled: z.boolean().nullable().default(null),
-      status: z.enum(['not_connected', 'active', 'needs_reauthorization', 'error']),
+      status: z.enum(['not_connected', 'active', 'needs_reauthorization']),
     })
   ),
 });

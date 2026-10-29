@@ -113,8 +113,7 @@ export function ServiceConnectStep({
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
     }
   };
-  const needsReconnect =
-    connection.status === 'needs_reauthorization' || connection.status === 'error';
+  const needsReconnect = connection.status === 'needs_reauthorization';
   return (
     <>
       <DialogHeader showCloseButton={closable}>

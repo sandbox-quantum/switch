@@ -120,10 +120,10 @@ export function connectorCardState(
           tone: 'muted',
           fix: null,
         };
-  if (entry.status === 'needs_reauthorization' || entry.status === 'error')
+  if (entry.status === 'needs_reauthorization')
     return {
       kind: 'reconnect',
-      label: entry.status === 'error' ? 'Connection failed' : 'Reconnect needed',
+      label: 'Reconnect needed',
       detail: `Switch can no longer use your ${entry.name} connection. Connect again.`,
       tone: 'problem',
       fix: null,
