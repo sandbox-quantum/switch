@@ -815,6 +815,62 @@ async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_
         assert await session.scalar(select(ServiceConnection)) is None
 
 
+SERVER_REFUSAL = {
+    "detail": "Switched off on this server.",
+    "code": "forbidden",
+    "retryable": False,
+}
+
+
+async def test_with_the_flag_off_the_servers_switch_still_refuses_a_sign_in(
+    github_app,
+):
+    """`DISABLED_SERVICES` is the operator's, and holds whether or not the
+    workspace switch applies."""
+    client, github, _, factory = github_app
+    _rebroker(
+        client,
+        factory,
+        adapters={"github": GitHubAdapter(github, AsyncMock())},
+        disabled={"github": SERVER_REFUSAL["detail"]},
+        public_url=None,
+    )
+    response = await _start(client)
+    assert response.status_code == 403
+    assert response.json() == SERVER_REFUSAL
+    async with factory() as session:
+        assert await session.scalar(select(SignInFlow)) is None
+
+
+async def test_switched_off_on_the_server_mid_flow_the_sign_in_is_revoked(
+    github_app,
+):
+    """A restart with GitHub in `DISABLED_SERVICES` while someone is at
+    GitHub: the sign-in GitHub then issues is revoked, not left live."""
+    client, github, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    _rebroker(
+        client,
+        factory,
+        adapters={"github": GitHubAdapter(github, AsyncMock())},
+        disabled={"github": SERVER_REFUSAL["detail"]},
+        public_url=None,
+    )
+
+    response = await complete(client, flow_id)
+
+    assert response.status_code == 403
+    assert response.json() == SERVER_REFUSAL
+    github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
+    async with factory() as session:
+        flow = await session.scalar(select(SignInFlow).where(SignInFlow.id == flow_id))
+        assert flow is not None
+        assert (flow.status, flow.encrypted_result) == ("failed", None)
+        assert flow.error == SERVER_REFUSAL["detail"]
+        assert await session.scalar(select(ServiceConnection)) is None
+
+
 async def test_the_connection_records_the_apps_client(github_app):
     client, _, _, factory = github_app
     flow_id = await authorize(client)

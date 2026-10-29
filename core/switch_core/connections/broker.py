@@ -489,13 +489,14 @@ class ServiceBroker:
     async def require_workspace_enabled(
         self, session: AsyncSession, service: str
     ) -> None:
-        """Refuse `service` where a workspace admin switched it off. The
-        server's own switch (`DISABLED_SERVICES`) is checked first, so its
-        reason is the one people see when both apply."""
+        """Refuse `service` where the operator switched it off on this server
+        (`DISABLED_SERVICES`) or a workspace admin switched it off here. The
+        server's switch applies with the workspace gate off too, and is
+        checked first, so its reason is the one people see when both apply."""
         name = self._entry(service).definition.name
+        self._require_switched_on(service)
         if not self._workspace_gate:
             return
-        self._require_switched_on(service)
         if not await self._workspace_services.is_enabled(session, service):
             raise ServiceError(
                 403,
@@ -1610,10 +1611,12 @@ class ServiceBroker:
         """
         entry = self._entry(service)
         name = entry.definition.name
-        self._require_switched_on(service)
-        if not _issued_to_agents(entry):
-            raise ServiceError(403, FORBIDDEN, _never_expires(name), retryable=False)
         try:
+            self._require_switched_on(service)
+            if not _issued_to_agents(entry):
+                raise ServiceError(
+                    403, FORBIDDEN, _never_expires(name), retryable=False
+                )
             await self.require_workspace_enabled(session, service)
         except ServiceError as refusal:
             # The vendor has already issued this sign-in: one Switch will not

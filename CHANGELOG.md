@@ -267,6 +267,13 @@ version of their own to them without also giving them a release of their own.
   GitHub settings showed. They now give the reason the Connectors page does:
   the App is not set up yet, and who sets it up, or the server's address is
   one GitHub does not call back.
+- **`DISABLED_SERVICES` stops a GitHub sign-in without the
+  `service_connections` flag too.** With the flag off, a GitHub sign-in
+  started even where the operator had switched GitHub off, and was refused
+  only once GitHub had issued the person's token, which was then left live
+  at GitHub. The server's switch now refuses the sign-in before it starts,
+  flag or no flag, and a sign-in refused as it completes is revoked at
+  GitHub.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
