@@ -42,6 +42,7 @@ import {
   useReloadConnectors,
   useServerFeatureFlags,
 } from './connectors-queries';
+import { FlagsUnreadable } from './flags-unreadable';
 import { offersAddAgent } from './grant-agents';
 import { useConnectService } from './use-connect-service';
 
@@ -60,11 +61,13 @@ const DESCRIPTION =
  * The connector catalog of the workspace in scope on the server. Behind the
  * server's `service_connections` flag: with it off there is no page, and
  * reaching it anyway goes to Your Agents rather than drawing an empty one.
+ * Flags that could never be read are said to be, not taken as off.
  */
 const ConnectorsPanel = observer(function ConnectorsPanel() {
   const serverId = useServerId();
   const { navigate } = useNavigate();
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const server = switchServersStore.servers.find((s) => s.id === serverId);
   const viewer: ConnectorViewer = {
@@ -76,6 +79,12 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
     if (access === 'absent') navigate('serverAgents', { serverId });
   }, [access, navigate, serverId]);
 
+  if (access === 'unreadable')
+    return (
+      <ServerPage width={880} title="Connectors" description={DESCRIPTION}>
+        <FlagsUnreadable flags={flags} />
+      </ServerPage>
+    );
   if (access !== 'shown' || workspaceId === null)
     return (
       <ServerPage width={880} title="Connectors" description={DESCRIPTION}>

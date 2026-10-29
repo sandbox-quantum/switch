@@ -23,7 +23,6 @@ const STATUS_LABEL: Record<ConnectionCatalogEntry['status'], string> = {
   connected: 'Connected',
   not_connected: 'Not connected',
   needs_reauthorization: 'Reconnect needed',
-  error: 'Connection failed',
   coming_soon: 'Coming soon',
 };
 
@@ -124,8 +123,7 @@ export function ConnectionsGrid({
                       variant={
                         connection.status === 'connected'
                           ? 'outline'
-                          : connection.status === 'needs_reauthorization' ||
-                              connection.status === 'error'
+                          : connection.status === 'needs_reauthorization'
                             ? 'destructive'
                             : 'secondary'
                       }

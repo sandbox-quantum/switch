@@ -7,6 +7,7 @@ import {
   useConnectorCatalog,
   useServerFeatureFlags,
 } from '@renderer/features/connectors/connectors-queries';
+import { FlagsUnreadable } from '@renderer/features/connectors/flags-unreadable';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -56,7 +57,8 @@ const AdminPanel = observer(function AdminPanel() {
   const { params } = useParams('admin');
   const { serverId } = params;
   const { navigate } = useNavigate();
-  const access = connectorsPageAccess(useServerFeatureFlags(serverId));
+  const flags = useServerFeatureFlags(serverId);
+  const access = connectorsPageAccess(flags);
   const workspace = workspacesStore.onServerInScope(serverId);
   const groups = adminGroupsInScope(serverId, access === 'shown');
   const section = shownAdminSection(groups, params.section);
@@ -73,6 +75,12 @@ const AdminPanel = observer(function AdminPanel() {
     if (redirect !== null) navigate(redirect, { serverId });
   }, [redirect, navigate, serverId]);
 
+  if (access === 'unreadable' && redirect === null)
+    return (
+      <ServerPage width={880} title="Admin" description="">
+        <FlagsUnreadable flags={flags} />
+      </ServerPage>
+    );
   if (access !== 'shown' || workspace === null || redirect !== null)
     return (
       <ServerPage width={880} title="Admin" description="">
