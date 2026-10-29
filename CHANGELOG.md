@@ -464,6 +464,14 @@ version of their own to them without also giving them a release of their own.
   on a refusal that reached its own listener through the new
   `POST /gateway/service-connections/{service}/flows/{id}/fail`, so that
   sign-in fails at once too.
+- **A sign-in refused on its way to the vendor fails at once, with the
+  reason.** When the browser reached Switch's step in front of the vendor
+  after the service was switched off or its app removed, or when the vendor
+  would not register Switch, the page said the sign-in was interrupted but the
+  sign-in itself was left waiting, so Switch Console's Connect dialog waited
+  for up to ten minutes. The sign-in now fails with the reason, which the page
+  shows too. The same goes for a service switched off or removed while Switch
+  Console hands the code back.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
