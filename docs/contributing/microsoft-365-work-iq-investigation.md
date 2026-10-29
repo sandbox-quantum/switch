@@ -14,19 +14,28 @@ Three compatibility gates remain:
 2. **Authorization:** The current Work IQ permission reference documents `WorkIQAgent.Ask` as delegated and explicitly describes it as including both read and write access. It requires admin consent. Work IQ MCP separately blocks mutations by default through tenant policy, but that policy is tenant-wide in the initial release, can take up to 24 hours to apply, and is not a per-Switch-app or per-agent read/write grant. Therefore Switch must not label the connection read-only based only on a tenant's current policy setting.
 3. **Tenant and cost prerequisites:** Enabling Work IQ requires a tenant administrator, a Copilot Studio usage-based billing plan backed by an Azure subscription and resource group, and the test user assigned to the plan. Work IQ API usage is metered with Copilot Credits. Exact cost per workload and expected cost for Switch usage must be established with an administrator and the current billing estimator; this report does not invent a price.
 
-Recommendation: keep the catalog placeholder disabled and deliver this report as the current issue outcome. Ask maintainers to confirm whether they want a narrowly scoped generic OAuth identity enhancement if Work IQ has no supported identity `GET`. Only then proceed to a disabled draft or enabled connector, and only after an administrator-approved tenant test confirms actual OAuth, tool, policy and billing behavior.
+Recommendation: keep the catalog placeholder disabled and treat this report as the current investigation deliverable. If Work IQ has no supported identity `GET`, agree on a narrowly scoped generic OAuth identity enhancement before implementation. Proceed with a connector only after an administrator-approved tenant test confirms actual OAuth, tool, policy and billing behavior.
 
 ## What Work IQ provides
 
 Microsoft describes Work IQ as a workplace-intelligence layer over Microsoft 365 data. The remote MCP server presents a small generic tool surface for entity reads and mutations, Copilot-backed `ask`/`retrieve`, and runtime schema discovery. Tools operate on relative resource paths such as `/me/messages` or `/me/chats/{id}/messages`; schemas are discovered at runtime rather than represented as a fixed list of per-workload tools. The documented workload areas include email, calendar, OneDrive and SharePoint files, Teams messages, people, Planner and enterprise search.
 
-The issue's endpoint is `https://workiq.svc.cloud.microsoft/mcp`. An unauthenticated request made for this report returned `401` with a `WWW-Authenticate` challenge naming path-specific protected-resource metadata. A separate unauthenticated request to `https://workiq.svc.cloud.microsoft/.well-known/oauth-protected-resource/mcp` returned:
+The issue's endpoint is `https://workiq.svc.cloud.microsoft/mcp`. An unauthenticated `GET` made for this report returned `401` with a `WWW-Authenticate` challenge naming path-specific protected-resource metadata. A separate unauthenticated `GET` to `https://workiq.svc.cloud.microsoft/.well-known/oauth-protected-resource/mcp` returned:
 
 - resource: `https://workiq.svc.cloud.microsoft/mcp`;
 - authorization server: `https://login.microsoftonline.com/organizations/v2.0`;
 - advertised scope: `fdcc1f02-fc51-4226-8753-f668596af7f7/WorkIQAgent.Ask`.
 
 These are anonymous discovery observations, not proof of a successful authorization-code exchange, the exact scope string Switch must request, or a usable authenticated identity endpoint. The challenge included a transient service challenge value; it is deliberately not recorded here.
+
+The anonymous checks are reproducible with these requests (the second command prints provider metadata):
+
+```powershell
+curl.exe -sS -D - -o NUL https://workiq.svc.cloud.microsoft/mcp
+curl.exe -sS https://workiq.svc.cloud.microsoft/.well-known/oauth-protected-resource/mcp
+```
+
+Observed evidence: the first response had status `401 Unauthorized` and a `WWW-Authenticate: Bearer` header with a `resource_metadata` URL ending in `/.well-known/oauth-protected-resource/mcp`. The metadata response named the MCP resource, `login.microsoftonline.com/organizations/v2.0`, and the advertised scope shown above. Request IDs and transient challenge values are omitted. No account, tenant, token, or authenticated response was used.
 
 The current Microsoft Learn permission reference instead documents the scope as `api://workiq.svc.cloud.microsoft/WorkIQAgent.Ask`, identifier `0b1715fd-f4bf-4c63-b16d-5be31f9847c2`, delegated only, and admin-consent-required. The live metadata and permission page therefore need to be reconciled during tenant testing: verify the exact consent request and the `scope`/audience representation returned in tokens rather than copying either representation into a catalog entry without a successful flow.
 
