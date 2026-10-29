@@ -64,6 +64,7 @@ from switch_core.db.models import (
     ServiceTokenIssuance,
     Skill,
     Template,
+    Tenant,
     TenantJoinDomain,
     TenantMember,
     User,
@@ -238,28 +239,29 @@ class AccountDeletion:
         self, session: AsyncSession, user: User, tenant_id: str
     ) -> str | None:
         """Refuse the last `org_admin` of the organization `tenant_id` belongs
-        to while anyone else is in it: nobody would be left to run it.
-        Asked on a session bound to `tenant_id`, which the organization's
-        policy derives the organization from."""
+        to while anyone else is in it: nobody would be left to run it."""
         if (
             await self.users.organization_role(session, tenant_id, user.id)
             != ORGANIZATION_ADMIN_ROLE
         ):
             return None
-        others = (
-            await session.execute(
+        tenant = await session.get(Tenant, tenant_id)
+        assert tenant is not None and tenant.organization_id is not None
+        organization = await session.get(Organization, tenant.organization_id)
+        assert organization is not None
+        roles = set(
+            await session.scalars(
                 select(OrganizationMember.role).where(
-                    OrganizationMember.user_id != user.id
+                    OrganizationMember.organization_id == organization.id,
+                    OrganizationMember.user_id != user.id,
                 )
             )
-        ).scalars()
-        roles = set(others)
+        )
         if not roles or ORGANIZATION_ADMIN_ROLE in roles:
             return None
-        organization = await session.scalar(select(Organization.name))
         return (
-            f"You're the only organization admin of {organization}, which has "
-            "other members. Make one of them an organization admin first."
+            f"You're the only organization admin of {organization.name}, which "
+            "has other members. Make one of them an organization admin first."
         )
 
     async def delete(

@@ -34,6 +34,7 @@ from switch_core.db.models import (
     Invitation,
     MessagingInstall,
     OidcIdentity,
+    Organization,
     OrganizationMember,
     Reference,
     Room,
@@ -279,6 +280,32 @@ async def test_the_only_org_admin_of_an_organization_with_others_is_refused(
         await _member(session, TENANT_ZERO_ID, other, "owner")
         await _organization_role(session, admin, "org_admin")
         await _organization_role(session, other, "member")
+        await session.commit()
+        reason = await deletion.refusal(
+            session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+        )
+    assert reason is not None and "only organization admin" in reason
+
+
+async def test_an_org_admin_of_another_organization_does_not_count(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    deletion, _, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        admin = await _user(session, "org-admin")
+        other = await _user(session, "other")
+        elsewhere = await _user(session, "elsewhere")
+        await _member(session, TENANT_ZERO_ID, admin, "admin")
+        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await _organization_role(session, admin, "org_admin")
+        await _organization_role(session, other, "member")
+        session.add(Organization(id="org-elsewhere", slug="org-elsewhere", name="Else"))
+        await session.flush()
+        session.add(
+            OrganizationMember(
+                organization_id="org-elsewhere", user_id=elsewhere.id, role="org_admin"
+            )
+        )
         await session.commit()
         reason = await deletion.refusal(
             session, admin, [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
