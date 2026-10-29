@@ -37,7 +37,7 @@ import {
   readFakeUpdateScenario,
 } from './dev-harness';
 import { pendingInstall } from './pending-install';
-import { formatUpdaterError, sanitizeUpdaterLogArgs } from './utils';
+import { formatUpdaterError, sanitizeUpdaterLogArgs, updaterErrorCode } from './utils';
 
 const { autoUpdater } = _electronUpdater;
 
@@ -185,7 +185,11 @@ class UpdateService implements IInitializable, IDisposable {
 
     failed: (err: unknown) => {
       const errorMessage = formatUpdaterError(err);
-      log.error('Auto-updater error:', errorMessage);
+      log.error('Auto-updater error', {
+        event: 'update.error',
+        errorCode: updaterErrorCode(err),
+        message: errorMessage,
+      });
 
       if (this.updateState.status === 'installing') {
         log.warn('Ignoring auto-updater error while install is in progress');
@@ -348,7 +352,11 @@ class UpdateService implements IInitializable, IDisposable {
     } catch (error: unknown) {
       trackEvent('update_downloaded', { outcome: 'failure' });
       const errorMessage = formatUpdaterError(error);
-      log.error('Update download failed:', errorMessage, error);
+      log.error('Update download failed', {
+        event: 'update.download',
+        errorCode: updaterErrorCode(error),
+        message: errorMessage,
+      });
 
       const version = this.updateState.availableVersion;
       const info = this.updateState.updateInfo;
