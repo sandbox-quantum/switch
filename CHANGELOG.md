@@ -261,6 +261,12 @@ version of their own to them without also giving them a release of their own.
   Secure over plain http on the loopback address, where a browser drops it,
   as the other connectors' sign-ins already did. switch-buddy no longer tells
   people on a server Switch Console runs that GitHub can't work there.
+- **GitHub says why it can't be used on a server with no GitHub App.** Its
+  routes answered "GitHub connections are not enabled on this server." for
+  every cause, which is what the dashboard's GitHub grant and Switch Console's
+  GitHub settings showed. They now give the reason the Connectors page does:
+  the App is not set up yet, and who sets it up, or the server's address is
+  one GitHub does not call back.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room

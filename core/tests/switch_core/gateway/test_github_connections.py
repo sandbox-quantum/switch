@@ -130,6 +130,30 @@ def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI
     return app
 
 
+def _rebroker(
+    client,
+    session_factory,
+    *,
+    adapters: dict,
+    disabled: dict[str, str],
+    public_url: str | None,
+) -> None:
+    """Give the process another broker, as a restart with other settings
+    would: other `DISABLED_SERVICES`, another public URL, or no App."""
+    client._transport.app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters=adapters,
+        disabled=disabled,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=public_url,
+    )
+
+
 class _EachRequestToTheNextProcess(httpx.AsyncBaseTransport):
     """A load balancer with no stickiness: each request goes to the next of
     the processes, in turn."""
@@ -635,6 +659,37 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
             )
             is None
         )
+
+
+@pytest.mark.parametrize(
+    ("public_url", "reason"),
+    [
+        (
+            "https://switch.example.com",
+            "GitHub is not set up on this server. Whoever runs your Switch server "
+            "can set it up in Switch Console, under Admin → Connector apps.",
+        ),
+        (
+            "http://switch.example.com",
+            "GitHub can't be used on this server: its address must be https, or "
+            "http on your own computer (localhost or 127.0.0.1).",
+        ),
+    ],
+)
+async def test_with_no_app_every_route_says_why_github_cannot_be_used(
+    github_app, public_url, reason
+):
+    client, _, _, factory = github_app
+    client._transport.app.state.github_connections = None
+    _rebroker(client, factory, adapters={}, disabled={}, public_url=public_url)
+    answers = [
+        await client.get(BASE),
+        await _start(client),
+        await client.get(BASE + "/authorize", params={"state": "s" * 43}),
+    ]
+    for answer in answers:
+        assert answer.status_code == 503
+        assert answer.json()["detail"] == reason
 
 
 @pytest.mark.parametrize("status", [204, 404, 422])

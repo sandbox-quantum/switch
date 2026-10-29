@@ -55,10 +55,21 @@ KIND = "github"
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
-def service(request: Request) -> GitHubConnections:
+def service(
+    request: Request,
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> GitHubConnections:
+    """This server's GitHub App, or a refusal giving the broker's reason
+    GitHub can't be used here, such as its App not being set up."""
     value = request.app.state.github_connections
     if value is None:
-        raise HTTPException(503, "GitHub connections are not enabled on this server.")
+        reason = broker.availability("github")
+        if reason is None:
+            logger.error(
+                "The broker can grant GitHub, but this process has no GitHub App."
+            )
+            reason = "GitHub is not set up on this server."
+        raise HTTPException(503, reason)
     return cast(GitHubConnections, value)
 
 
