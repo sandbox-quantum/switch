@@ -454,10 +454,10 @@ class TestTheProfileChanging:
         assert issuing.value.message == (
             "The agent's owner must reconnect Google Workspace: this server now "
             "asks for other Google Workspace access than the sign-in granted. "
-            "Reconnect it under Settings, Connections."
+            "Reconnect it under Connectors."
         )
         assert granting.value.message == (
-            "Reconnect Google Workspace under Settings, Connections first."
+            "Reconnect Google Workspace under Connectors first."
         )
         assert later.google.token_requests == []
 

@@ -55,7 +55,7 @@ class GitHubApp:
 
 
 def load_github_app(config: SwitchConfig) -> GitHubApp | None:
-    """The App from `GITHUB_APP_*`, or for one release from the hosted settings."""
+    """The App from `GITHUB_APP_*`, or from the deprecated hosted settings."""
     if config.github_app_config_path is not None:
         if config.github_app_private_key_path is None:
             raise ValueError("GITHUB_APP_PRIVATE_KEY_PATH is not set.")
@@ -70,7 +70,7 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
         return None
     logger.warning(
         "The GitHub App is configured through HOSTED_GITHUB_CONFIG_PATH, which "
-        "stops working in the next release, and no signing key is configured, so "
+        "is deprecated and will be removed, and no signing key is configured, so "
         "GitHub can be connected but not granted to agents. Set "
         "GITHUB_APP_CONFIG_PATH and GITHUB_APP_PRIVATE_KEY_PATH instead."
     )

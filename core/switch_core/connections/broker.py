@@ -389,6 +389,13 @@ def _passes_through(entry: Connection) -> bool:
     return token is not None and token.kind == "pass_through"
 
 
+def _revocation_ends_tokens(entry: Connection) -> bool:
+    """Whether revoking `entry`'s sign-in at its vendor ends the tokens
+    issued on it."""
+    oauth = entry.definition.auth.oauth
+    return oauth is not None and oauth.revocation_ends_tokens
+
+
 def _issued_to_agents(entry: Connection) -> bool:
     """Whether `entry`'s credential expires, so it may be handed to an agent."""
     token = entry.definition.token
@@ -789,7 +796,7 @@ class ServiceBroker:
                 404,
                 CONNECTOR_NOT_CONNECTED,
                 f"The agent's owner has not connected {name}. Connect it under "
-                "Settings, Connections.",
+                "Connectors.",
                 retryable=False,
             )
         if connection.status != "active":
@@ -797,7 +804,7 @@ class ServiceBroker:
                 409,
                 CONNECTOR_REVOKED,
                 f"The agent's owner must reconnect {name}: its sign-in was "
-                "revoked or has lapsed. Reconnect it under Settings, Connections.",
+                "revoked or has lapsed. Reconnect it under Connectors.",
                 retryable=False,
             )
         if _scopes_changed(connection, entry):
@@ -806,7 +813,7 @@ class ServiceBroker:
                 CONNECTOR_REVOKED,
                 f"The agent's owner must reconnect {name}: this server now asks "
                 f"for other {name} access than the sign-in granted. Reconnect it "
-                "under Settings, Connections.",
+                "under Connectors.",
                 retryable=False,
             )
         if grant.account_id != connection.account_id:
@@ -1589,14 +1596,14 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_NOT_CONNECTED,
-                f"Connect {name} under Settings, Connections first.",
+                f"Connect {name} under Connectors first.",
                 retryable=False,
             )
         if connection.status != "active" or _scopes_changed(connection, entry):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"Reconnect {name} under Settings, Connections first.",
+                f"Reconnect {name} under Connectors first.",
                 retryable=False,
             )
         if _passes_through(entry):
@@ -1930,6 +1937,7 @@ class ServiceBroker:
         await session.commit()
 
         warnings = []
+        ended: set[str] = set()
         if (
             replaced is not None
             and replaced.secret.access_token != secret.access_token
@@ -1959,7 +1967,10 @@ class ServiceBroker:
                     f"{name} could not revoke the old sign-in. Revoke it in your "
                     f"{name} settings."
                 )
-        withdrawn = await self.revoke_withdrawn(session, issued_on_it)
+            else:
+                if _revocation_ends_tokens(entry):
+                    ended.add(service)
+        withdrawn = await self._revoke_withdrawn(session, issued_on_it, ended=ended)
         if withdrawn is not None:
             warnings.append(withdrawn)
         return " ".join(warnings) or None
@@ -2205,6 +2216,7 @@ class ServiceBroker:
         """After the removal has committed: revoke each sign-in at its vendor,
         and the tokens issued on it. A warning names what could not be."""
         warnings = []
+        ended: set[str] = set()
         for service, signed_in in removed:
             entry = self._catalog.get(service)
             name = service if entry is None else entry.definition.name
@@ -2231,8 +2243,11 @@ class ServiceBroker:
                     f"{name} could not revoke the sign-in. Revoke it in your "
                     f"{name} settings."
                 )
+            else:
+                if entry is not None and _revocation_ends_tokens(entry):
+                    ended.add(service)
         if removed:
-            withdrawn = await self.revoke_withdrawn(
+            withdrawn = await self._revoke_withdrawn(
                 session,
                 (
                     ServiceTokenIssuance.owner_id == user_id,
@@ -2240,6 +2255,7 @@ class ServiceBroker:
                         [service for service, _ in removed]
                     ),
                 ),
+                ended=ended,
             )
             if withdrawn is not None:
                 warnings.append(withdrawn)
@@ -2258,10 +2274,20 @@ class ServiceBroker:
         alone (the owner's own, passed through) stays valid until it expires;
         the warning names the service and when.
         """
+        return await self._revoke_withdrawn(session, conditions, ended=set())
+
+    async def _revoke_withdrawn(
+        self, session: AsyncSession, conditions: tuple[Any, ...], *, ended: set[str]
+    ) -> str | None:
+        """`revoke_withdrawn`, after a disconnect or reconnect that revoked the
+        sign-ins of `ended` at vendors whose revocation ends their tokens too:
+        those are not named among what may keep working."""
         pending = await self.revoke_pending(session, conditions)
         warnings = [ACCESS_WARNING] if pending else []
         unrevocable = sorted(
-            slug for slug, entry in self._catalog.items() if _passes_through(entry)
+            slug
+            for slug, entry in self._catalog.items()
+            if _passes_through(entry) and slug not in ended
         )
         try:
             async with tenant_session(

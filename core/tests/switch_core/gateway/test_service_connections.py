@@ -279,7 +279,7 @@ class TestGrants:
         response = await _put(harness, owner, agent_id, {"resources": RESOURCES})
 
         assert response.status_code == 409
-        assert "Settings, Connections" in response.json()["detail"]
+        assert "under Connectors" in response.json()["detail"]
 
     async def test_write_on_a_read_only_connection(self, harness: Harness) -> None:
         owner = await add_member(harness.session_factory, "ada")

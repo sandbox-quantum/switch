@@ -175,7 +175,7 @@ Be clear about what that means:
 - **It is their own account.** The agent acts as them there.
 - **Only on that machine.** An agent on a cloud machine or another computer
   does not get it.
-- It does not show on the agent's Connections tab.
+- It does not show on the agent's Connectors tab.
 
 ## Connectors on a server Switch Console runs
 
