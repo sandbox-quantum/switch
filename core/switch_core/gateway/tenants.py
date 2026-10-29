@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.clients.client_lifecycle_service import (
@@ -67,8 +68,8 @@ from switch_core.gateway.auth import (
     get_current_user,
     get_tenant_is_admin,
     get_tenant_is_owner,
-    is_tenant_member,
     list_tenant_memberships,
+    may_bind_tenant,
     require_tenant_admin,
     set_session_cookie,
     tenant_of_invitation_token,
@@ -205,6 +206,29 @@ def _member_detail(user: User, membership: TenantMember) -> MemberDetail:
     )
 
 
+async def _refuse_organization_admin(
+    session: AsyncSession, user_store: UserStore, tenant_id: str, user_id: str
+) -> None:
+    """Raise 409 if `user_id` is `org_admin` of the bound tenant's organization.
+
+    Their standing here comes from the organization, not from their membership
+    row, so changing or removing the row here would take nothing away while
+    looking as if it had. It is changed in the organization's own members.
+    """
+    if (
+        await user_store.organization_role(session, tenant_id, user_id)
+        == ORGANIZATION_ADMIN_ROLE
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This member administers the workspace's organization, which "
+                "gives them admin rights in every one of its workspaces. Change "
+                "their role in the organization instead."
+            ),
+        )
+
+
 def _require_owner(is_owner: bool, action: str) -> None:
     """Raise 403 unless the caller owns the bound tenant.
 
@@ -290,7 +314,7 @@ async def current_tenant(
     """
     tenant_id = require_tenant_id()
     tenant = await session.get(Tenant, tenant_id)
-    role = await user_store.tenant_role(session, tenant_id, user.id)
+    role = await user_store.effective_tenant_role(session, tenant_id, user.id)
     if tenant is None or role is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return CurrentTenantResponse(
@@ -298,6 +322,9 @@ async def current_tenant(
         slug=tenant.slug,
         name=tenant.name,
         role=role,
+        organization_role=await user_store.organization_role(
+            session, tenant_id, user.id
+        ),
         administers=is_admin,
     )
 
@@ -547,7 +574,11 @@ async def create_tenant(
         response, user, config.keyring, config.gateway_cookie_secure, tenant.id
     )
     return TenantMembershipResponse(
-        id=tenant.id, slug=tenant.slug, name=tenant.name, role="owner"
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role="owner",
+        organization_role="org_admin",
     )
 
 
@@ -563,17 +594,17 @@ async def switch_tenant(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> SessionUserResponse:
-    """Select `tenant_id` for this session: verify membership, then re-mint
-    the cookie carrying it as the tenant claim.
+    """Select `tenant_id` for this session: verify the caller may bind it,
+    then re-mint the cookie carrying it as the tenant claim.
 
-    The membership check is what keeps the claim from being a way in on its
-    own: `_resolve_tenant_id` re-reads `tenant_members` on every request
-    regardless of what the cookie says, so a forged or stale claim already
-    buys nothing — but this route is the one place a *caller* picks the
-    value that goes into it, and it must not let them pick a tenant they do
-    not belong to.
+    The check is what keeps the claim from being a way in on its own:
+    `_resolve_tenant_id` re-checks it on every request regardless of what the
+    cookie says, so a forged or stale claim already buys nothing — but this
+    route is the one place a *caller* picks the value that goes into it, and
+    it must not let them pick a tenant they may not bind: one they are a
+    member of, or one their organization's `org_admin` role covers.
     """
-    if not await is_tenant_member(session_factory, user_id, tenant_id):
+    if not await may_bind_tenant(session_factory, user_id, tenant_id):
         raise HTTPException(status_code=403, detail="Not a member of this tenant")
 
     user = await user_store.get(session, user_id)
@@ -996,16 +1027,14 @@ async def accept_invitation(
             raise HTTPException(status_code=404, detail="Invitation not found")
         _require_invitation_usable(invitation, caller.email)
 
-        tenant, user, role = await _join_through(
+        membership, user = await _join_through(
             session, invitation, caller, user_store, invitation_store
         )
 
     set_session_cookie(
         response, user, config.keyring, config.gateway_cookie_secure, tenant_id
     )
-    return TenantMembershipResponse(
-        id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
-    )
+    return membership
 
 
 async def _join_through(
@@ -1014,7 +1043,7 @@ async def _join_through(
     caller: AuthenticatedCaller,
     user_store: UserStore,
     invitation_store: InvitationStore,
-) -> tuple[Tenant, User, str]:
+) -> tuple[TenantMembershipResponse, User]:
     """Make `caller` a member of the invitation's tenant, spending one use,
     select that tenant for them, and commit.
 
@@ -1058,11 +1087,8 @@ async def _join_through(
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},
         )
-    else:
-        role = existing_role
 
-    tenant, user = await _enter(session, tenant_id, caller, user_store)
-    return tenant, user, role
+    return await _enter(session, tenant_id, caller, user_store)
 
 
 async def _enter(
@@ -1070,14 +1096,26 @@ async def _enter(
     tenant_id: str,
     caller: AuthenticatedCaller,
     user_store: UserStore,
-) -> tuple[Tenant, User]:
+) -> tuple[TenantMembershipResponse, User]:
     """Select the tenant `session` is bound to for `caller`, and commit.
 
     The last step of every way of joining a workspace, run once the caller is
-    a member of it.
+    a member of it. Returns the caller's standing there, read before the
+    commit expires what the session holds.
     """
     tenant = await session.get(Tenant, tenant_id)
     assert tenant is not None
+    role = await user_store.effective_tenant_role(session, tenant_id, caller.id)
+    assert role is not None
+    membership = TenantMembershipResponse(
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role=role,
+        organization_role=await user_store.organization_role(
+            session, tenant_id, caller.id
+        ),
+    )
     # `users` is global, so the caller's row is writable from a session
     # bound to any tenant — this one included.
     user = await user_store.get(session, caller.id)
@@ -1085,7 +1123,7 @@ async def _enter(
         raise HTTPException(status_code=401, detail="User not found")
     await user_store.record_last_tenant(session, user, tenant_id)
     await session.commit()
-    return tenant, user
+    return membership, user
 
 
 @router.get("/invitations/mine")
@@ -1172,7 +1210,7 @@ async def accept_my_invitation(
         ):
             raise HTTPException(status_code=404, detail="Invitation not found")
         _require_invitation_usable(invitation, caller.email)
-        tenant, user, role = await _join_through(
+        membership, user = await _join_through(
             session, invitation, caller, user_store, invitation_store
         )
 
@@ -1183,9 +1221,7 @@ async def accept_my_invitation(
         config.gateway_cookie_secure,
         req.tenant_id,
     )
-    return TenantMembershipResponse(
-        id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
-    )
+    return membership
 
 
 # ── Joining by e-mail domain ──────────────────────────────────────────────────
@@ -1373,14 +1409,12 @@ async def join_tenant_by_domain(
                 target_id=caller.id,
                 details={"role": role, "domain": domain},
             )
-        tenant, user = await _enter(session, tenant_id, caller, user_store)
+        membership, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(
         response, user, config.keyring, config.gateway_cookie_secure, tenant_id
     )
-    return TenantMembershipResponse(
-        id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
-    )
+    return membership
 
 
 # ── Members ───────────────────────────────────────────────────────────────────
@@ -1428,6 +1462,7 @@ async def update_member_role(
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this tenant")
+    await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if req.role == "owner" and membership.role != "owner":
         _require_owner(is_owner, "grant ownership")
@@ -1502,6 +1537,7 @@ async def remove_member(
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
         raise HTTPException(status_code=404, detail="Not a member of this tenant")
+    await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
     if membership.role == "owner":
         _require_owner(is_owner, "remove an owner")

@@ -14,7 +14,9 @@ Model:
     request" — the deployment operator bypass (`User.role == "admin"`, global,
     never granted by anything self-service) OR an `owner`/`admin` membership
     row for this user in the bound tenant (`tenant_members.role`, granted per
-    tenant, e.g. by creating it). `administers_tenant` below computes it; a
+    tenant, e.g. by creating it) OR `org_admin` of the organization the bound
+    tenant belongs to (`organization_members.role`), which administers every
+    workspace in it. `administers_tenant` below computes it; a
     caller with a database session should use that rather than re-deriving it.
   - Owned entities carry a nullable owner plus independent `read_visibility`
     and `write_visibility` ("public" | "private").
@@ -56,19 +58,38 @@ class Principal:
 TENANT_ADMIN_ROLES = ("owner", "admin")
 
 
-def administers_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
-    """Whether a caller may administer the tenant they hold `tenant_role` in.
+ORGANIZATION_ADMIN_ROLE = "org_admin"
+
+# The workspace role an organization's `org_admin` is reported as holding in
+# each of its workspaces, membership row or not: everything `owns_tenant`
+# allows an `owner`, it allows them.
+ORGANIZATION_ADMIN_TENANT_ROLE = "owner"
+
+
+def administers_tenant(
+    *, is_operator: bool, tenant_role: str | None, organization_role: str | None
+) -> bool:
+    """Whether a caller may administer the tenant they hold `tenant_role` in,
+    and `organization_role` in the organization it belongs to.
 
     True for a deployment operator (the global bypass), regardless of
-    membership — an operator administers every tenant. Otherwise true only if
-    the membership role itself is `owner` or `admin`; a plain `member`, or no
-    membership row at all, is false. This is the one function that should ever
-    turn a role into an admin bit — see `Principal.is_admin`.
+    membership — an operator administers every tenant. True for the
+    organization's `org_admin`, with or without a membership row in the tenant.
+    Otherwise true only if the membership role itself is `owner` or `admin`; a
+    plain `member`, or no membership row at all, is false. This is the one
+    function that should ever turn a role into an admin bit — see
+    `Principal.is_admin`.
     """
-    return is_operator or tenant_role in TENANT_ADMIN_ROLES
+    return (
+        is_operator
+        or organization_role == ORGANIZATION_ADMIN_ROLE
+        or tenant_role in TENANT_ADMIN_ROLES
+    )
 
 
-def owns_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
+def owns_tenant(
+    *, is_operator: bool, tenant_role: str | None, organization_role: str | None
+) -> bool:
     """Whether a caller may dispose of the tenant they hold `tenant_role` in.
 
     Narrower than `administers_tenant` on purpose. An `admin` runs a workspace;
@@ -77,8 +98,16 @@ def owns_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
     ownership set itself: if an admin may grant `owner`, demote an owner, or
     remove one, then an admin may take the workspace, and each of those steps
     passes a last-owner guard on its own. Gate those three on this.
+
+    The organization's `org_admin` owns every workspace in it: the
+    organization decides who runs its workspaces, and a workspace owner
+    cannot take one away from it.
     """
-    return is_operator or tenant_role == "owner"
+    return (
+        is_operator
+        or organization_role == ORGANIZATION_ADMIN_ROLE
+        or tenant_role == "owner"
+    )
 
 
 @runtime_checkable

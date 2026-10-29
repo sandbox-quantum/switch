@@ -114,18 +114,46 @@ class TestAdministersTenant:
     per-tenant `owner`/`admin` membership role, combined."""
 
     def test_operator_administers_regardless_of_tenant_role(self) -> None:
-        assert administers_tenant(is_operator=True, tenant_role=None)
-        assert administers_tenant(is_operator=True, tenant_role="member")
+        assert administers_tenant(
+            is_operator=True, tenant_role=None, organization_role=None
+        )
+        assert administers_tenant(
+            is_operator=True, tenant_role="member", organization_role=None
+        )
 
     def test_owner_or_admin_membership_administers(self) -> None:
-        assert administers_tenant(is_operator=False, tenant_role="owner")
-        assert administers_tenant(is_operator=False, tenant_role="admin")
+        assert administers_tenant(
+            is_operator=False, tenant_role="owner", organization_role=None
+        )
+        assert administers_tenant(
+            is_operator=False, tenant_role="admin", organization_role=None
+        )
 
     def test_plain_member_does_not_administer(self) -> None:
-        assert not administers_tenant(is_operator=False, tenant_role="member")
+        assert not administers_tenant(
+            is_operator=False, tenant_role="member", organization_role=None
+        )
 
     def test_no_membership_does_not_administer(self) -> None:
-        assert not administers_tenant(is_operator=False, tenant_role=None)
+        assert not administers_tenant(
+            is_operator=False, tenant_role=None, organization_role=None
+        )
+
+    def test_organization_admin_administers_every_workspace_of_it(self) -> None:
+        for tenant_role in (None, "member", "admin"):
+            assert administers_tenant(
+                is_operator=False,
+                tenant_role=tenant_role,
+                organization_role="org_admin",
+            )
+
+    def test_organization_member_is_no_more_than_their_workspace_role(self) -> None:
+        assert not administers_tenant(
+            is_operator=False, tenant_role="member", organization_role="member"
+        )
+        assert administers_tenant(
+            is_operator=False, tenant_role="admin", organization_role="member"
+        )
 
 
 class TestOwnsTenant:
@@ -133,22 +161,44 @@ class TestOwnsTenant:
     which is not everyone who may administer the workspace."""
 
     def test_operator_owns_regardless_of_tenant_role(self) -> None:
-        assert owns_tenant(is_operator=True, tenant_role=None)
-        assert owns_tenant(is_operator=True, tenant_role="member")
+        assert owns_tenant(is_operator=True, tenant_role=None, organization_role=None)
+        assert owns_tenant(
+            is_operator=True, tenant_role="member", organization_role=None
+        )
 
     def test_owner_membership_owns(self) -> None:
-        assert owns_tenant(is_operator=False, tenant_role="owner")
+        assert owns_tenant(
+            is_operator=False, tenant_role="owner", organization_role=None
+        )
 
     def test_admin_membership_administers_but_does_not_own(self) -> None:
         """The whole point of there being two functions: an admin who also
         owned could take the workspace from its owner one safe-looking
         request at a time."""
-        assert administers_tenant(is_operator=False, tenant_role="admin")
-        assert not owns_tenant(is_operator=False, tenant_role="admin")
+        assert administers_tenant(
+            is_operator=False, tenant_role="admin", organization_role=None
+        )
+        assert not owns_tenant(
+            is_operator=False, tenant_role="admin", organization_role=None
+        )
+
+    def test_organization_admin_owns_every_workspace_of_it(self) -> None:
+        """A workspace owner cannot take a workspace away from the
+        organization it belongs to."""
+        assert owns_tenant(
+            is_operator=False, tenant_role=None, organization_role="org_admin"
+        )
+        assert not owns_tenant(
+            is_operator=False, tenant_role="admin", organization_role="member"
+        )
 
     def test_plain_member_and_no_membership_do_not_own(self) -> None:
-        assert not owns_tenant(is_operator=False, tenant_role="member")
-        assert not owns_tenant(is_operator=False, tenant_role=None)
+        assert not owns_tenant(
+            is_operator=False, tenant_role="member", organization_role=None
+        )
+        assert not owns_tenant(
+            is_operator=False, tenant_role=None, organization_role=None
+        )
 
 
 class TestValidateVisibilityPair:

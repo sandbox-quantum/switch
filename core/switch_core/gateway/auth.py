@@ -22,6 +22,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
     tenant_of_invitation,
+    tenants_administered_through_organization,
     tenants_inviting_email,
     tenants_of_user,
     tenants_open_to_domain,
@@ -349,17 +350,28 @@ async def tenants_open_to(
     return await tenants_open_to_domain(session_factory, domain)
 
 
-async def is_tenant_member(
+async def tenants_bindable_by(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> list[str]:
+    """Every tenant `user_id` may bind: those they are a member of, and those
+    they administer as their organization's `org_admin`. Sorted, each once."""
+    return sorted(
+        set(await tenants_of_user(session_factory, user_id))
+        | set(await tenants_administered_through_organization(session_factory, user_id))
+    )
+
+
+async def may_bind_tenant(
     session_factory: async_sessionmaker[AsyncSession], user_id: str, tenant_id: str
 ) -> bool:
-    """Whether `user_id` has a membership in `tenant_id`.
+    """Whether `user_id` may bind `tenant_id` (`tenants_bindable_by`).
 
     Backs `POST /tenants/{id}/switch`: the claim it goes on to mint never
     authorises by itself (`_resolve_tenant_id` re-checks it on every request
     regardless), but switching still must not let someone select a tenant
-    they do not belong to.
+    they may not bind.
     """
-    return tenant_id in await tenants_of_user(session_factory, user_id)
+    return tenant_id in await tenants_bindable_by(session_factory, user_id)
 
 
 async def _describe_memberships(
@@ -387,22 +399,29 @@ async def _describe_memberships(
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             tenant = await session.get(Tenant, tenant_id)
-            role = await user_store.tenant_role(session, tenant_id, user_id)
+            role = await user_store.effective_tenant_role(session, tenant_id, user_id)
+            organization_role = await user_store.organization_role(
+                session, tenant_id, user_id
+            )
         if tenant is None or role is None:
-            # tenants_of_user just said this tenant has a membership row for
-            # this user; either read failing to confirm it a moment later is
-            # a genuine race (removed between the two calls), not a bug to
-            # paper over by including a tenant we can no longer describe.
+            # tenants_bindable_by just said this user may bind this tenant;
+            # either read failing to confirm it a moment later is a genuine
+            # race (removed between the two calls), not a bug to paper over by
+            # including a tenant we can no longer describe.
             logger.warning(
-                "tenants_of_user named tenant %s for user %s, but it or the "
-                "membership row was gone by the time it was read",
+                "tenants_bindable_by named tenant %s for user %s, but it or the "
+                "role there was gone by the time it was read",
                 tenant_id,
                 user_id,
             )
             continue
         memberships.append(
             TenantMembershipResponse(
-                id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
+                id=tenant.id,
+                slug=tenant.slug,
+                name=tenant.name,
+                role=role,
+                organization_role=organization_role,
             )
         )
     return memberships
@@ -424,7 +443,7 @@ async def list_tenant_memberships(
         session_factory,
         user_store,
         user_id,
-        await tenants_of_user(session_factory, user_id),
+        await tenants_bindable_by(session_factory, user_id),
     )
 
 
@@ -443,7 +462,7 @@ async def initial_tenant_claim(
     is checked against current memberships here too, so signing in again is
     still how a session whose workspace was taken away recovers.
     """
-    memberships = await tenants_of_user(session_factory, user.id)
+    memberships = await tenants_bindable_by(session_factory, user.id)
     last = user_store.last_tenant_id(user)
     if last is not None and last in memberships:
         return last
@@ -541,6 +560,10 @@ async def _resolve_tenant_id(
     """Which tenant a request binds, in the order set out in
     `docs/old/multi-tenancy-phase2-tenants.md`, §4:
 
+    "Membership" below is any tenant the caller may bind
+    (`tenants_bindable_by`): one they hold a membership row in, or one their
+    organization's `org_admin` role covers.
+
     1. A claim naming a tenant the caller belongs to → bind it.
     2. A claim naming a tenant the caller does not belong to → 403
        `tenant_selection_invalid`. The caller can fix this unaided — `GET
@@ -566,15 +589,16 @@ async def _resolve_tenant_id(
     5. No memberships → 403 `tenant_membership_unresolved`, the one of the
        three the caller genuinely cannot resolve alone.
 
-    `tenants_of_user` is read once and used for every case below it, including
-    the 409's body, so this is one round trip to the exemption regardless of
+    `tenants_bindable_by` is read once and used for every case below it,
+    including the 409's body, so this is the same two lookups regardless of
     which case answers.
 
-    It also stands in for the account check: a `tenant_members` row references
-    its `users` row, so a caller with a membership exists. Only with none is
+    It also stands in for the account check: a `tenant_members` or
+    `organization_members` row references its `users` row, so a caller with a
+    membership exists. Only with none is
     `users` asked, so a deleted account still gets 401 rather than a 403.
     """
-    memberships = await tenants_of_user(session_factory, user_id)
+    memberships = await tenants_bindable_by(session_factory, user_id)
     if not memberships:
         await _require_user_exists(session_factory, user_store, user_id)
 

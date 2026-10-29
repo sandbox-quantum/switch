@@ -44,6 +44,7 @@ from switch_core.db.models import (
     Client,
     Invitation,
     Organization,
+    OrganizationMember,
     ServiceTokenIssuance,
     SignInFlow,
     Tenant,
@@ -1754,6 +1755,7 @@ class TestCurrentTenantRoute:
             "slug": TENANT_A,
             "name": TENANT_A,
             "role": "member",
+            "organization_role": None,
             "administers": False,
         }
 
@@ -1782,6 +1784,192 @@ class TestCurrentTenantRoute:
 
         assert response.status_code == 200
         assert response.json()["administers"] is True
+
+
+class TestOrganizationAdmins:
+    """An organization's `org_admin` administers every workspace in it, and
+    may bind one without holding a membership row there."""
+
+    async def _organization_of(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *tenant_ids: str,
+        members: dict[str, str],
+    ) -> str:
+        """An organization owning `tenant_ids`, with `members` (user id ->
+        organization role)."""
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="Acme")
+            )
+            await session.flush()
+            for tenant_id in tenant_ids:
+                session.add(
+                    Tenant(
+                        id=tenant_id,
+                        slug=tenant_id,
+                        name=tenant_id,
+                        organization_id=organization_id,
+                    )
+                )
+            for user_id, role in members.items():
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=user_id, role=role
+                    )
+                )
+            await session.commit()
+        return organization_id
+
+    async def test_an_org_admin_binds_a_workspace_they_are_not_a_member_of(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "id": TENANT_A,
+            "slug": TENANT_A,
+            "name": TENANT_A,
+            "role": "owner",
+            "organization_role": "org_admin",
+            "administers": True,
+        }
+
+    async def test_an_org_admin_is_offered_and_may_switch_to_every_workspace_of_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, TENANT_B, members={admin_id: "org_admin"}
+        )
+        token = _token(admin_id, "org-admin@example.invalid", None)
+
+        async with _client(_app(session_factory), token) as client:
+            listed = await client.get("/tenants")
+            switched = await client.post(f"/tenants/{TENANT_B}/switch")
+
+        assert listed.status_code == 200, listed.text
+        assert {
+            (t["id"], t["role"], t["organization_role"]) for t in listed.json()
+        } == {
+            (TENANT_A, "owner", "org_admin"),
+            (TENANT_B, "owner", "org_admin"),
+        }
+        assert switched.status_code == 200, switched.text
+        assert _tenant_claim(switched) == TENANT_B
+
+    async def test_an_org_admin_may_not_bind_another_organizations_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        await self._organization_of(session_factory, TENANT_B, members={})
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_B)
+
+        async with _client(_app(session_factory), token) as client:
+            current = await client.get("/tenants/current")
+            switched = await client.post(f"/tenants/{TENANT_B}/switch")
+
+        assert current.status_code == 403
+        assert switched.status_code == 403
+
+    async def test_an_organization_member_binds_only_their_own_workspaces(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member_id = await _make_unaffiliated_user(
+            session_factory, name="org-member", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={member_id: "member"}
+        )
+        token = _token(member_id, "org-member@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 403
+
+    async def test_an_org_admin_manages_a_workspaces_members_and_owners(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        owner_id = await _make_member(
+            session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
+        )
+        await _make_member(
+            session_factory, name="ws-owner-2", tenant_id=TENANT_A, role="owner"
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.patch(
+                f"/tenants/{TENANT_A}/members/{owner_id}", json={"role": "member"}
+            )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["role"] == "member"
+
+    @pytest.mark.parametrize("method", ["patch", "delete"])
+    async def test_a_workspace_cannot_demote_or_remove_an_org_admin(
+        self, session_factory: async_sessionmaker[AsyncSession], method: str
+    ) -> None:
+        """Their standing comes from the organization; changing the row here
+        would take nothing away while looking as if it had."""
+        organization_id = await self._organization_of(
+            session_factory, TENANT_A, members={}
+        )
+        owner_id = await _make_member(
+            session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
+        )
+        admin_id = await _make_member(
+            session_factory, name="org-admin", tenant_id=TENANT_A, role="owner"
+        )
+        async with session_factory() as session:
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id, user_id=admin_id, role="org_admin"
+                )
+            )
+            await session.commit()
+        token = _token(owner_id, "ws-owner@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            if method == "patch":
+                response = await client.patch(
+                    f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
+                )
+            else:
+                response = await client.delete(
+                    f"/tenants/{TENANT_A}/members/{admin_id}"
+                )
+
+        assert response.status_code == 409, response.text
+        assert "organization" in response.json()["detail"]
+        async with session_factory() as session:
+            membership = await session.get(TenantMember, (TENANT_A, admin_id))
+        assert membership is not None and membership.role == "owner"
 
 
 class TestUsageRoute:

@@ -397,8 +397,13 @@ class ChatService:
         self, session: AsyncSession, tenant_id: str, user: User
     ) -> bool:
         """Whether the user manages every room in the tenant (`can_manage`)."""
-        role = await self._user_store.tenant_role(session, tenant_id, user.id)
-        return administers_tenant(is_operator=user.role == "admin", tenant_role=role)
+        return administers_tenant(
+            is_operator=user.role == "admin",
+            tenant_role=await self._user_store.tenant_role(session, tenant_id, user.id),
+            organization_role=await self._user_store.organization_role(
+                session, tenant_id, user.id
+            ),
+        )
 
     async def head_seqs(
         self, session: AsyncSession, room_ids: list[str]

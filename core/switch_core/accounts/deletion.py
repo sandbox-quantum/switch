@@ -14,6 +14,8 @@ ahead would strand something nobody else could reach:
 - the server's own administrator account, which the server recreates on every
   start anyway;
 - a workspace with other people in it whose only owner is this person;
+- an organization with other people in it whose only `org_admin` is this
+  person;
 - a cloud machine, whose teardown is driven from its row;
 - an active messaging app installed in a workspace nobody else is in, which
   would keep receiving messages for no one.
@@ -34,6 +36,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from sqlalchemy import delete, func, or_, select, update
 
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -49,6 +52,8 @@ from switch_core.db.models import (
     MessagingInstall,
     MessagingInstallState,
     OidcIdentity,
+    Organization,
+    OrganizationMember,
     Package,
     Reference,
     ReferenceType,
@@ -198,11 +203,17 @@ class AccountDeletion:
 
     async def _workspace_refusal(self, user: User, workspace: Workspace) -> str | None:
         async with tenant_session(self.session_factory, workspace.id) as session:
+            organization_refusal = await self._organization_refusal(
+                session, user, workspace.id
+            )
+            if organization_refusal is not None:
+                return organization_refusal
             members = await self.users.list_tenant_members(session)
             alone = all(member.id == user.id for member, _ in members)
             if (
                 not alone
-                and workspace.role == "owner"
+                and await self.users.tenant_role(session, workspace.id, user.id)
+                == "owner"
                 and await self.users.count_owners(session) <= 1
             ):
                 return (
@@ -222,6 +233,34 @@ class AccountDeletion:
                         "nobody else is in it. Disconnect it first."
                     )
         return None
+
+    async def _organization_refusal(
+        self, session: AsyncSession, user: User, tenant_id: str
+    ) -> str | None:
+        """Refuse the last `org_admin` of the organization `tenant_id` belongs
+        to while anyone else is in it: nobody would be left to run it.
+        Asked on a session bound to `tenant_id`, which the organization's
+        policy derives the organization from."""
+        if (
+            await self.users.organization_role(session, tenant_id, user.id)
+            != ORGANIZATION_ADMIN_ROLE
+        ):
+            return None
+        others = (
+            await session.execute(
+                select(OrganizationMember.role).where(
+                    OrganizationMember.user_id != user.id
+                )
+            )
+        ).scalars()
+        roles = set(others)
+        if not roles or ORGANIZATION_ADMIN_ROLE in roles:
+            return None
+        organization = await session.scalar(select(Organization.name))
+        return (
+            f"You're the only organization admin of {organization}, which has "
+            "other members. Make one of them an organization admin first."
+        )
 
     async def delete(
         self, session: AsyncSession, user: User, workspaces: list[Workspace]

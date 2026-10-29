@@ -906,7 +906,10 @@ class TenantMembershipResponse(BaseModel):
     id: str
     slug: str
     name: str
+    # The role the caller acts with here: an organization's `org_admin` is
+    # reported as `owner` of each of its workspaces, membership row or not.
     role: str
+    organization_role: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
