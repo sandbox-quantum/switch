@@ -12,6 +12,7 @@ import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import {
   IS_CANARY,
+  PRODUCT_NAME,
   RELEASE_REPO_NAME,
   RELEASE_REPO_OWNER,
   UPDATE_CHANNEL,
@@ -22,6 +23,7 @@ import {
   updateDownloadedEvent,
   updateDownloadingEvent,
   updateErrorEvent,
+  updateInstallFailedEvent,
   updateInstallingEvent,
   updateNotAvailableEvent,
   updateProgressEvent,
@@ -36,7 +38,8 @@ import {
   readFakeDownloadDuration,
   readFakeUpdateScenario,
 } from './dev-harness';
-import { pendingInstall } from './pending-install';
+import { type InstallBlocker, findInstallBlocker, macAppBundlePath } from './install-preflight';
+import { type PendingHandover, pendingInstall } from './pending-install';
 import { formatUpdaterError, sanitizeUpdaterLogArgs, updaterErrorCode } from './utils';
 
 const { autoUpdater } = _electronUpdater;
@@ -51,8 +54,38 @@ const FAKE_STARTUP_DELAY_MS = 1_500;
 /** Dev builds cannot restart into a new binary, so the fake install unwinds. */
 const FAKE_INSTALL_ROLLBACK_MS = 3_000;
 
+/** Why an install did not happen, as logged with `event: 'update.install'`. */
+type InstallFailureCode =
+  | 'installer_error'
+  | 'restart_timeout'
+  | 'handover_threw'
+  | 'relaunched_unchanged'
+  | `blocked_${InstallBlocker['reason']}`;
+
+function describeBlocker(blocker: InstallBlocker, version: string): string {
+  switch (blocker.reason) {
+    case 'translocated':
+      return (
+        `${PRODUCT_NAME} can't install version ${version} while macOS runs it from a ` +
+        'temporary location. Move it to your Applications folder and open it from there.'
+      );
+    case 'not_owned':
+      return `${PRODUCT_NAME} can't install version ${version} because the app belongs to another account on this Mac.`;
+    case 'not_writable':
+      return `${PRODUCT_NAME} can't install version ${version} because it can't write to ${blocker.deniedPath}.`;
+  }
+}
+
 export interface UpdateState {
-  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
+  status:
+    | 'idle'
+    | 'checking'
+    | 'available'
+    | 'downloading'
+    | 'downloaded'
+    | 'installing'
+    | 'install-failed'
+    | 'error';
   lastCheck?: Date;
   nextCheck?: Date;
   currentVersion: string;
@@ -76,6 +109,12 @@ class UpdateService implements IInitializable, IDisposable {
   private initialized = false;
   private active = false;
   private installRequested = false;
+  private installingVersion?: string;
+  /**
+   * The install that last failed. Offering the same version again would only
+   * fail the same way, so a check that finds it again shows the failure instead.
+   */
+  private installFailure?: { version: string; message: string };
   private installRestartGuardTimer?: NodeJS.Timeout;
   private fake?: FakeUpdateDriver;
 
@@ -95,9 +134,8 @@ class UpdateService implements IInitializable, IDisposable {
     // Before the dev-harness branch and before `active`: the install this
     // reports belonged to the run that ended, and whether this one can check
     // for updates has no bearing on it.
-    if (await pendingInstall.take()) {
-      trackEvent('update_install_started', { outcome: 'success' });
-    }
+    const handover = await pendingInstall.take();
+    if (handover) this.reportHandover(handover);
 
     if (import.meta.env.DEV) {
       this.setupDevHarness();
@@ -144,6 +182,104 @@ class UpdateService implements IInitializable, IDisposable {
     this.scheduleNextCheck(FAKE_STARTUP_DELAY_MS);
   }
 
+  /**
+   * Report the install the previous run handed over. The app going down for the
+   * installer is not proof it came back on the new version: on macOS a
+   * Squirrel.Mac failure relaunches the old bundle without an error.
+   */
+  private reportHandover({ targetVersion }: PendingHandover): void {
+    const current = this.updateState.currentVersion;
+    if (targetVersion === null || targetVersion === current) {
+      trackEvent('update_install_started', { outcome: 'success' });
+      return;
+    }
+    trackEvent('update_install_started', { outcome: 'failure' });
+    this.failInstall(
+      targetVersion,
+      'relaunched_unchanged',
+      `Version ${targetVersion} didn't install: ${PRODUCT_NAME} restarted on version ${current}.`
+    );
+  }
+
+  /** Record an install that did not happen, and show it until it is resolved. */
+  private failInstall(version: string, errorCode: InstallFailureCode, message: string): void {
+    log.error('Update did not install', {
+      event: 'update.install',
+      errorCode,
+      fromVersion: this.updateState.currentVersion,
+      toVersion: version,
+      message,
+    });
+    this.installFailure = { version, message };
+    this.presentInstallFailure(this.installFailure);
+  }
+
+  private presentInstallFailure({ version, message }: { version: string; message: string }): void {
+    this.updateState.status = 'install-failed';
+    this.updateState.availableVersion = version;
+    this.updateState.error = message;
+    events.emit(updateInstallFailedEvent, { version, message });
+  }
+
+  /**
+   * Why this copy of the app cannot install an update in place, checked before a
+   * restart is offered. Only macOS replaces the running bundle; elsewhere the
+   * installer handles its own permissions.
+   */
+  private async findInstallBlocker(): Promise<InstallBlocker | null> {
+    if (this.fake || process.platform !== 'darwin') return null;
+    const bundlePath = macAppBundlePath(process.execPath);
+    const uid = process.getuid?.();
+    if (!bundlePath || uid === undefined) {
+      log.warn('Cannot check whether the update can be installed', {
+        event: 'update.install',
+        stage: 'preflight',
+        errorCode: 'no_app_bundle',
+        executable: process.execPath,
+      });
+      return null;
+    }
+    try {
+      return await findInstallBlocker(bundlePath, uid);
+    } catch (error) {
+      log.warn('Cannot check whether the update can be installed', {
+        event: 'update.install',
+        stage: 'preflight',
+        errorCode: 'stat_failed',
+        bundlePath,
+        error: String(error),
+      });
+      return null;
+    }
+  }
+
+  private async offerInstall(version: string): Promise<void> {
+    const blocker = await this.findInstallBlocker();
+    if (blocker) {
+      this.failInstall(version, `blocked_${blocker.reason}`, describeBlocker(blocker, version));
+      return;
+    }
+    this.updateState.status = 'downloaded';
+    this.updateState.rollbackVersion = this.updateState.currentVersion;
+    events.emit(updateDownloadedEvent, { version });
+  }
+
+  /**
+   * End the install attempt in progress without the app having gone down. One
+   * attempt is one event: the app goes down for the installer, or it is still
+   * here afterwards, and the latch keeps a handover that later unwinds from
+   * being counted in both directions.
+   */
+  private abandonInstallAttempt(): void {
+    if (this.installRestartGuardTimer) {
+      clearTimeout(this.installRestartGuardTimer);
+      this.installRestartGuardTimer = undefined;
+    }
+    void pendingInstall.clear();
+    trackEvent('update_install_started', { outcome: 'failure' });
+    this.installRequested = false;
+  }
+
   private setupAutoUpdater(): void {
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
@@ -172,6 +308,11 @@ class UpdateService implements IInitializable, IDisposable {
     },
 
     available: (info: UpdateInfo) => {
+      if (this.installFailure && info.version === this.installFailure.version) {
+        this.updateState.updateInfo = info;
+        this.presentInstallFailure(this.installFailure);
+        return;
+      }
       this.updateState.status = 'available';
       this.updateState.availableVersion = info.version;
       this.updateState.updateInfo = info;
@@ -179,6 +320,7 @@ class UpdateService implements IInitializable, IDisposable {
     },
 
     notAvailable: () => {
+      this.installFailure = undefined;
       this.updateState.status = 'idle';
       events.emit(updateNotAvailableEvent, undefined);
     },
@@ -191,8 +333,15 @@ class UpdateService implements IInitializable, IDisposable {
         message: errorMessage,
       });
 
-      if (this.updateState.status === 'installing') {
-        log.warn('Ignoring auto-updater error while install is in progress');
+      // Squirrel.Mac reports a bundle it cannot replace here, after the
+      // handover and before the app would have quit.
+      if (this.installRequested && this.installingVersion) {
+        this.abandonInstallAttempt();
+        this.failInstall(
+          this.installingVersion,
+          'installer_error',
+          `Version ${this.installingVersion} didn't install: ${errorMessage}`
+        );
         return;
       }
 
@@ -217,9 +366,7 @@ class UpdateService implements IInitializable, IDisposable {
     },
 
     downloaded: (version: string) => {
-      this.updateState.status = 'downloaded';
-      this.updateState.rollbackVersion = this.updateState.currentVersion;
-      events.emit(updateDownloadedEvent, { version });
+      void this.offerInstall(version);
     },
   };
 
@@ -384,44 +531,36 @@ class UpdateService implements IInitializable, IDisposable {
       );
     }
 
+    const version = this.updateState.availableVersion;
+    if (!version) throw new Error('Cannot install update: no version was downloaded');
+
     this.installRequested = true;
+    this.installingVersion = version;
     this.updateState.status = 'installing';
     events.emit(updateInstallingEvent, undefined);
 
     log.info('Installing update', {
       fromVersion: this.updateState.currentVersion,
-      toVersion: this.updateState.availableVersion,
+      toVersion: version,
     });
-
-    // One attempt, one event. Only one of the two outcomes can happen — the app
-    // goes down for the installer, or it is still here afterwards — and the
-    // latch is what keeps a handover that later unwinds from being counted in
-    // both directions.
-    const rollback = (reason: string) => {
-      clearGuard();
-      void pendingInstall.clear();
-      trackEvent('update_install_started', { outcome: 'failure' });
-      this.installRequested = false;
-      this.updateState.status = 'downloaded';
-      if (this.updateState.availableVersion) {
-        events.emit(updateDownloadedEvent, { version: this.updateState.availableVersion });
-      }
-      log.error(reason);
-    };
-
-    const clearGuard = () => {
-      if (this.installRestartGuardTimer) {
-        clearTimeout(this.installRestartGuardTimer);
-        this.installRestartGuardTimer = undefined;
-      }
-    };
 
     if (this.fake) {
       // A dev build has no new binary to restart into. Unwind quickly so the
       // "ready to install" state is reachable again instead of stranding the UI
       // on "installing" until the two-minute guard fires.
       this.installRestartGuardTimer = setTimeout(() => {
-        rollback('[dev] Simulated install complete — no restart happens under the update harness');
+        this.abandonInstallAttempt();
+        if (this.fake?.scenario === 'install-error') {
+          this.failInstall(
+            version,
+            'installer_error',
+            `Version ${version} didn't install: simulated installer failure`
+          );
+          return;
+        }
+        this.updateState.status = 'downloaded';
+        events.emit(updateDownloadedEvent, { version });
+        log.info('[dev] Simulated install complete — no restart happens under the update harness');
       }, FAKE_INSTALL_ROLLBACK_MS);
       return;
     }
@@ -432,19 +571,29 @@ class UpdateService implements IInitializable, IDisposable {
     // handler that calls `app.exit`, and even first in the queue it would be
     // racing a consent read and an HTTP post against the process ending. A
     // record that survives the restart is the only version of this that is not
-    // a guess, and the marker's absence is what `rollback` uses to say the
-    // handover did not take.
-    void pendingInstall.set();
+    // a guess, and the marker's absence is what an abandoned attempt uses to say
+    // the handover did not take.
+    void pendingInstall.set(version);
 
     this.installRestartGuardTimer = setTimeout(() => {
-      rollback('quitAndInstall timed out before app quit; allowing retry');
+      this.abandonInstallAttempt();
+      this.failInstall(
+        version,
+        'restart_timeout',
+        `Version ${version} didn't install: ${PRODUCT_NAME} was still running two minutes after the restart.`
+      );
     }, INSTALL_RESTART_GUARD_TIMEOUT_MS);
 
     setTimeout(() => {
       try {
         autoUpdater.quitAndInstall(false, true);
       } catch (error) {
-        rollback(`quitAndInstall threw: ${formatUpdaterError(error)}`);
+        this.abandonInstallAttempt();
+        this.failInstall(
+          version,
+          'handover_threw',
+          `Version ${version} didn't install: ${formatUpdaterError(error)}`
+        );
       }
     }, 250);
   }

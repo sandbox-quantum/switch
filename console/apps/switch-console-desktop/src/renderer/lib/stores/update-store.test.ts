@@ -3,12 +3,18 @@ import {
   updateAvailableEvent,
   updateDownloadedEvent,
   updateDownloadingEvent,
+  updateInstallFailedEvent,
   updateInstallingEvent,
   updateNotAvailableEvent,
 } from '@shared/events/updateEvents';
 
 const handlers = vi.hoisted(() => new Map<unknown, (payload?: unknown) => void>());
 const toast = vi.hoisted(() => Object.assign(vi.fn(), { dismiss: vi.fn(), error: vi.fn() }));
+const rpcUpdate = vi.hoisted(() => ({
+  getState: vi.fn(),
+  check: vi.fn(),
+  openLatest: vi.fn(),
+}));
 
 vi.mock('sonner', () => ({ toast }));
 vi.mock('@renderer/lib/components/update-toast-action-label', () => ({
@@ -26,10 +32,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
   rpc: {
     app: { getAppVersion: () => Promise.resolve('1.0.0') },
-    update: {
-      getState: () => Promise.resolve({ success: false }),
-      check: () => Promise.resolve(null),
-    },
+    update: rpcUpdate,
   },
 }));
 
@@ -41,7 +44,18 @@ vi.stubGlobal('localStorage', {
   clear: () => stored.clear(),
 });
 
-const { UPDATE_AVAILABLE_TOAST_ID, UpdateStore } = await import('./update-store');
+const {
+  UPDATE_AVAILABLE_TOAST_ID,
+  UPDATE_INSTALL_FAILED_TOAST_ID,
+  UpdateStore,
+  mainStateToRendererState,
+} = await import('./update-store');
+
+beforeEach(() => {
+  rpcUpdate.getState.mockResolvedValue({ success: false });
+  rpcUpdate.check.mockResolvedValue(null);
+  rpcUpdate.openLatest.mockResolvedValue({ success: true });
+});
 
 function emit(event: unknown, payload?: unknown): void {
   const handler = handlers.get(event);
@@ -81,5 +95,64 @@ describe('the "Update Available" toast', () => {
     for (const args of toast.dismiss.mock.calls) {
       expect(args).toEqual([UPDATE_AVAILABLE_TOAST_ID]);
     }
+  });
+});
+
+describe('an update that did not install', () => {
+  const message = "Version 2.0.0 didn't install: Switch Console restarted on version 1.0.0.";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlers.clear();
+    localStorage.clear();
+  });
+
+  it('says so, and offers the manual download', () => {
+    const store = new UpdateStore();
+    store.start();
+
+    emit(updateInstallFailedEvent, { version: '2.0.0', message });
+
+    expect(store.state).toEqual({ status: 'install-failed', message });
+    expect(store.latestVersion).toBe('2.0.0');
+    expect(toast.error).toHaveBeenCalledWith(
+      "Update didn't install",
+      expect.objectContaining({ id: UPDATE_INSTALL_FAILED_TOAST_ID, description: message })
+    );
+
+    const [, options] = toast.error.mock.calls[0] as [string, { action: { onClick(): void } }];
+    options.action.onClick();
+    expect(rpcUpdate.openLatest).toHaveBeenCalled();
+  });
+
+  it('is told on the launch that found it, before any window was listening', async () => {
+    rpcUpdate.getState.mockResolvedValue({
+      success: true,
+      data: {
+        status: 'install-failed',
+        currentVersion: '1.0.0',
+        availableVersion: '2.0.0',
+        error: message,
+      },
+    });
+    const store = new UpdateStore();
+    store.start();
+
+    await vi.waitFor(() => expect(store.state.status).toBe('install-failed'));
+    expect(store.availableVersion).toBe('2.0.0');
+    expect(toast.error).toHaveBeenCalledWith(
+      "Update didn't install",
+      expect.objectContaining({ description: message })
+    );
+  });
+
+  it('keeps the reason main gave when mapping its state', () => {
+    expect(
+      mainStateToRendererState({
+        status: 'install-failed',
+        currentVersion: '1.0.0',
+        error: message,
+      })
+    ).toEqual({ status: 'install-failed', message });
   });
 });

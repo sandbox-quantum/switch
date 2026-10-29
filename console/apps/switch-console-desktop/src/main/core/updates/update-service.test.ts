@@ -15,8 +15,9 @@ const h = vi.hoisted(() => ({
   downloadUpdate: vi.fn(),
   quitAndInstall: vi.fn(),
   trackEvent: vi.fn(),
+  findInstallBlocker: vi.fn(),
   /** The handover marker, which outlives the process in the real thing. */
-  pending: { handover: false },
+  pending: { target: null as string | null, legacy: false },
 }));
 
 vi.mock('electron', async () => {
@@ -41,18 +42,26 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: h.trackEv
 // app to open.
 vi.mock('./pending-install', () => ({
   pendingInstall: {
-    set: async () => {
-      h.pending.handover = true;
+    set: async (target: string) => {
+      h.pending.target = target;
     },
     clear: async () => {
-      h.pending.handover = false;
+      h.pending.target = null;
+      h.pending.legacy = false;
     },
     take: async () => {
-      const held = h.pending.handover;
-      h.pending.handover = false;
-      return held;
+      const { target, legacy } = h.pending;
+      h.pending.target = null;
+      h.pending.legacy = false;
+      return target !== null || legacy ? { targetVersion: target } : null;
     },
   },
+}));
+// The real check reads the running bundle off disk; install-preflight.test.ts
+// covers it against real folders.
+vi.mock('./install-preflight', () => ({
+  macAppBundlePath: () => '/Applications/Switch Console.app',
+  findInstallBlocker: h.findInstallBlocker,
 }));
 vi.mock('@main/core/app/utils', () => ({ resolveAppVersion: async () => '1.2.3' }));
 vi.mock('@main/lib/events', () => ({ events: { emit: vi.fn() } }));
@@ -62,7 +71,9 @@ vi.mock('@main/lib/logger', () => ({
 
 import type { EventEmitter } from 'node:events';
 import { app } from 'electron';
+import { events } from '@main/lib/events';
 import type * as AppIdentity from '@shared/app-identity';
+import { updateInstallFailedEvent } from '@shared/events/updateEvents';
 import { updateService } from './update-service';
 
 /** The app going down for the installer, as the service observes it. */
@@ -72,6 +83,31 @@ function quitApp(): void {
 
 function installEvents(): unknown[] {
   return h.trackEvent.mock.calls.filter(([name]) => name === 'update_install_started');
+}
+
+function installFailures(): unknown[] {
+  return vi.mocked(events.emit).mock.calls.filter(([event]) => event === updateInstallFailedEvent);
+}
+
+/**
+ * Drive the service to "ready to install" through its own listeners: that state
+ * is not reachable any other way, and going round them would test a state the
+ * app cannot be in. The bundle check that precedes it is asynchronous.
+ */
+async function downloadVersion(version: string): Promise<void> {
+  h.handlers.get('update-not-available')?.();
+  h.handlers.get('update-available')?.({ version });
+  h.handlers.get('update-downloaded')?.({ version });
+  await vi.advanceTimersByTimeAsync(0);
+}
+
+/** Run a test as if on macOS, the one platform whose bundle is checked. */
+function onMac(): () => void {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'darwin' });
+  return () => {
+    if (original) Object.defineProperty(process, 'platform', original);
+  };
 }
 
 beforeAll(async () => {
@@ -91,6 +127,9 @@ afterAll(() => {
 
 beforeEach(() => {
   h.trackEvent.mockClear();
+  vi.mocked(events.emit).mockClear();
+  h.findInstallBlocker.mockReset();
+  h.findInstallBlocker.mockResolvedValue(null);
 });
 
 describe('what a check reports', () => {
@@ -141,13 +180,11 @@ describe('what a check reports', () => {
 });
 
 describe('what one install attempt reports', () => {
-  beforeEach(() => {
-    // Through the service's own listeners: "downloaded" is not reachable any
-    // other way, and going round them would test a state the app cannot be in.
-    h.handlers.get('update-available')?.({ version: '1.3.0' });
-    h.handlers.get('update-downloaded')?.({ version: '1.3.0' });
+  beforeEach(async () => {
+    await downloadVersion('1.3.0');
     h.quitAndInstall.mockReset();
     h.trackEvent.mockClear();
+    vi.mocked(events.emit).mockClear();
   });
 
   afterEach(() => {
@@ -166,7 +203,8 @@ describe('what one install attempt reports', () => {
     // marker, which the next launch reports from.
     expect(h.quitAndInstall).toHaveBeenCalled();
     expect(installEvents()).toEqual([]);
-    expect(h.pending.handover).toBe(true);
+    // The version, so the next launch can tell an install from a relaunch.
+    expect(h.pending.target).toBe('1.3.0');
   });
 
   it('reports a handover that threw, and reports only that', () => {
@@ -178,6 +216,37 @@ describe('what one install attempt reports', () => {
     vi.advanceTimersByTime(250);
 
     expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
+    expect(updateService.getState()).toMatchObject({ status: 'install-failed' });
+    expect(updateService.getState().error).toContain('installer is missing');
+  });
+
+  it('shows an installer error that arrives after the handover', () => {
+    // Squirrel.Mac's failure to replace the bundle reaches the updater's error
+    // listener while the app is still on "installing".
+    updateService.quitAndInstall();
+    vi.advanceTimersByTime(250);
+    h.handlers.get('error')?.(new Error('Could not write the app bundle'));
+
+    expect(updateService.getState()).toMatchObject({
+      status: 'install-failed',
+      availableVersion: '1.3.0',
+    });
+    expect(installFailures()).toEqual([
+      [
+        updateInstallFailedEvent,
+        {
+          version: '1.3.0',
+          message: "Version 1.3.0 didn't install: Could not write the app bundle",
+        },
+      ],
+    ]);
+    expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
+    expect(h.pending.target).toBeNull();
+
+    // The guard that would have fired later has nothing left to report.
+    vi.advanceTimersByTime(2 * 60 * 1000);
+    expect(installEvents()).toHaveLength(1);
+    expect(installFailures()).toHaveLength(1);
   });
 
   it('reports an install that never left as one failure', () => {
@@ -186,6 +255,9 @@ describe('what one install attempt reports', () => {
     vi.advanceTimersByTime(2 * 60 * 1000);
 
     expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
+    // Not back to "ready to install": restarting again would fail the same way.
+    expect(updateService.getState()).toMatchObject({ status: 'install-failed' });
+    expect(installFailures()).toHaveLength(1);
   });
 
   it('adds nothing when the app quits long after an attempt was written off', () => {
@@ -197,7 +269,66 @@ describe('what one install attempt reports', () => {
     expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
     // An attempt that unwound leaves nothing for the next launch to find, or it
     // would be reported as a success as well as a failure.
-    expect(h.pending.handover).toBe(false);
+    expect(h.pending.target).toBeNull();
+  });
+});
+
+describe('a copy of the app that cannot update itself', () => {
+  let restorePlatform: () => void;
+
+  beforeEach(() => {
+    restorePlatform = onMac();
+  });
+
+  afterEach(() => {
+    restorePlatform();
+  });
+
+  it('is never offered a restart', async () => {
+    h.findInstallBlocker.mockResolvedValue({
+      reason: 'not_owned',
+      bundlePath: '/Applications/Switch Console.app',
+    });
+
+    await downloadVersion('1.4.0');
+
+    expect(h.findInstallBlocker).toHaveBeenCalledWith(
+      '/Applications/Switch Console.app',
+      expect.any(Number)
+    );
+    expect(updateService.getState()).toMatchObject({ status: 'install-failed' });
+    expect(updateService.getState().error).toMatch(/belongs to another account/);
+    expect(() => updateService.quitAndInstall()).toThrow(/install-failed/);
+    expect(h.quitAndInstall).not.toHaveBeenCalled();
+  });
+
+  it('names the folder it cannot write to', async () => {
+    h.findInstallBlocker.mockResolvedValue({
+      reason: 'not_writable',
+      bundlePath: '/Applications/Switch Console.app',
+      deniedPath: '/Applications',
+    });
+
+    await downloadVersion('1.4.0');
+
+    expect(updateService.getState().error).toContain("can't write to /Applications");
+  });
+
+  it('is told to move a translocated copy', async () => {
+    h.findInstallBlocker.mockResolvedValue({
+      reason: 'translocated',
+      bundlePath: '/private/var/folders/x/AppTranslocation/1/d/Switch Console.app',
+    });
+
+    await downloadVersion('1.4.0');
+
+    expect(updateService.getState().error).toMatch(/Applications folder/);
+  });
+
+  it('is offered a restart when nothing is in the way', async () => {
+    await downloadVersion('1.4.0');
+
+    expect(updateService.getState()).toMatchObject({ status: 'downloaded' });
   });
 });
 
@@ -208,18 +339,80 @@ describe('the launch after an install', () => {
   });
 
   it('reports the handover the previous run wrote down', async () => {
-    h.pending.handover = true;
+    h.pending.target = '1.2.3';
     const { updateService: restarted } = await import('./update-service');
     await restarted.initialize();
 
     expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(restarted.getState()).toMatchObject({ status: 'idle' });
     // Taken, not just read: a launch is counted once, and a user who never
     // updates again does not report this install on every start from here on.
-    expect(h.pending.handover).toBe(false);
+    expect(h.pending.target).toBeNull();
+  });
+
+  it('counts a marker from a build that recorded no version as a success', async () => {
+    h.pending.legacy = true;
+    const { updateService: restarted } = await import('./update-service');
+    await restarted.initialize();
+
+    expect(installEvents()).toEqual([['update_install_started', { outcome: 'success' }]]);
+    expect(h.pending.legacy).toBe(false);
+  });
+
+  it('says the update did not install when the app came back on the old version', async () => {
+    // Squirrel.Mac can take the app down, fail to replace the bundle, and
+    // relaunch the old one with nothing on screen.
+    h.pending.target = '1.3.0';
+    const { updateService: restarted } = await import('./update-service');
+    const { events: restartedEvents } = await import('@main/lib/events');
+    const { updateInstallFailedEvent: failedEvent } = await import('@shared/events/updateEvents');
+    vi.mocked(restartedEvents.emit).mockClear();
+    await restarted.initialize();
+    restarted.dispose();
+
+    expect(installEvents()).toEqual([['update_install_started', { outcome: 'failure' }]]);
+    expect(restarted.getState()).toMatchObject({
+      status: 'install-failed',
+      availableVersion: '1.3.0',
+      error: "Version 1.3.0 didn't install: Switch Console restarted on version 1.2.3.",
+    });
+    expect(restartedEvents.emit).toHaveBeenCalledWith(failedEvent, {
+      version: '1.3.0',
+      message: expect.stringContaining('1.3.0'),
+    });
+
+    // The check that follows finds the same release. Offering it again would
+    // only fail the same way, so the failure stays on screen.
+    h.checkForUpdatesAndNotify.mockImplementation(async () => {
+      h.handlers.get('checking-for-update')?.();
+      h.handlers.get('update-available')?.({ version: '1.3.0' });
+      return { isUpdateAvailable: true, updateInfo: { version: '1.3.0' } };
+    });
+    // A check that fails in between does not replace the reason.
+    h.checkForUpdatesAndNotify.mockImplementationOnce(async () => {
+      h.handlers.get('error')?.(new Error('getaddrinfo ENOTFOUND github.com'));
+      throw new Error('getaddrinfo ENOTFOUND github.com');
+    });
+    await expect(restarted.checkForUpdates('scheduled')).rejects.toThrow('ENOTFOUND');
+    await restarted.checkForUpdates('scheduled');
+    expect(restarted.getState()).toMatchObject({
+      status: 'install-failed',
+      error: "Version 1.3.0 didn't install: Switch Console restarted on version 1.2.3.",
+    });
+
+    // A newer release is a new chance, and is offered as usual.
+    h.checkForUpdatesAndNotify.mockImplementation(async () => {
+      h.handlers.get('update-available')?.({ version: '1.4.0' });
+      return { isUpdateAvailable: true, updateInfo: { version: '1.4.0' } };
+    });
+    await restarted.checkForUpdates('scheduled');
+    expect(restarted.getState()).toMatchObject({ status: 'available', availableVersion: '1.4.0' });
+    restarted.dispose();
+    h.checkForUpdatesAndNotify.mockReset();
   });
 
   it('reports nothing on an ordinary launch', async () => {
-    h.pending.handover = false;
+    h.pending.target = null;
     const { updateService: restarted } = await import('./update-service');
     await restarted.initialize();
 

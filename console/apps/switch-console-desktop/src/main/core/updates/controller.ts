@@ -2,7 +2,7 @@ import { app, shell } from 'electron';
 import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
 import { updateService } from '@main/core/updates/update-service';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { SWITCH_CONSOLE_RELEASES_URL } from '@shared/urls';
+import { switchConsoleReleaseUrl } from '@shared/urls';
 import { formatUpdaterError } from './utils';
 
 export const updateController = createRPCController({
@@ -33,9 +33,14 @@ export const updateController = createRPCController({
     }
   },
 
+  /**
+   * Hand the update to the user: open the release page of the version being
+   * offered and quit, so the app can be replaced while it is not running. The
+   * releases list itself is mostly other components' builds.
+   */
   openLatest: async () => {
     try {
-      await shell.openExternal(SWITCH_CONSOLE_RELEASES_URL);
+      await shell.openExternal(switchConsoleReleaseUrl(updateService.getState().availableVersion));
       setTimeout(() => {
         try {
           app.quit();

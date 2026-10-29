@@ -51,6 +51,7 @@ const ACTION_ICONS: Record<UpdateActionKind, React.ComponentType<{ className?: s
   restart: RefreshCw,
   retry: RefreshCw,
   check: RefreshCw,
+  manual: ExternalLink,
 };
 
 export const UpdateSection = observer(function UpdateSection() {
@@ -76,6 +77,9 @@ export const UpdateSection = observer(function UpdateSection() {
         break;
       case 'check':
         void update.check();
+        break;
+      case 'manual':
+        void update.openLatest();
         break;
       default:
         break;
