@@ -789,6 +789,103 @@ class TestConnectOnly:
         assert vendor.refreshes == 1 and vendor.issued == []
 
 
+READ_ONLY = (
+    "This server's GitHub App lets agents read only, so GitHub can't be granted "
+    "for writing. Whoever runs your Switch server can change that in Switch "
+    "Console, under Admin → Connector apps."
+)
+
+
+class TestReadOnlyApp:
+    """A GitHub App short of the write level's permissions lets agents read
+    only: a write grant on it is refused before GitHub is asked, and so is a
+    token for one made before. Read grants are untouched."""
+
+    async def test_a_write_grant_is_refused_saying_who_can_change_that(
+        self, broker, session_factory, vendor
+    ) -> None:
+        vendor.read_only = True
+        world = await _world(session_factory, access="read")
+        assert broker.read_only("github") == READ_ONLY
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            with pytest.raises(ServiceError) as caught:
+                await broker.set_grant(
+                    session,
+                    agent=agent,
+                    actor_id=world.owner.id,
+                    service="github",
+                    access="write",
+                    tool_mode=None,
+                    tools=None,
+                    resources=RESOURCES,
+                )
+        assert (
+            caught.value.status_code,
+            caught.value.code,
+            caught.value.message,
+            caught.value.retryable,
+        ) == (403, "forbidden", READ_ONLY, False)
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as checked:
+                await broker.check_grant_terms(
+                    session,
+                    owner_id=world.owner.id,
+                    service="github",
+                    access="write",
+                    repositories=["example-org/app"],
+                )
+        assert checked.value.message == READ_ONLY
+        # Refused before GitHub, or the owner's sign-in, was asked anything.
+        assert vendor.checked == [] and vendor.resolved == []
+        assert vendor.refreshes == 0
+        async with session_factory() as session:
+            grant = await session.get(ServiceGrant, (TENANT_ZERO_ID, world.grant.id))
+            assert grant is not None and grant.access == "read"
+
+    async def test_a_read_grant_is_made_as_ever(
+        self, broker, session_factory, vendor
+    ) -> None:
+        vendor.read_only = True
+        world = await _world(session_factory, access="read")
+        async with session_factory() as session:
+            agent = await session.get(Agent, world.agent.id)
+            assert agent is not None
+            grant, _ = await broker.set_grant(
+                session,
+                agent=agent,
+                actor_id=world.owner.id,
+                service="github",
+                access="read",
+                tool_mode=None,
+                tools=None,
+                resources=RESOURCES,
+            )
+        assert grant.access == "read"
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert vendor.issued == [("gho_access_0", token.token)]
+
+    async def test_a_write_grant_made_before_gets_no_token(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory, access="write")
+        vendor.read_only = True
+        refused = await _refused(broker, session_factory, world.agent.id)
+        assert (
+            refused.status_code,
+            refused.code,
+            refused.message,
+            refused.retryable,
+        ) == (403, "forbidden", READ_ONLY, False)
+        assert vendor.issued == [] and await _issuances(session_factory) == []
+        # The grant is kept: once the App can write again, so can the agent.
+        vendor.read_only = False
+        assert broker.read_only("github") is None
+        token = await _issue(broker, session_factory, world.agent.id)
+        assert vendor.issued == [("gho_access_0", token.token)]
+
+
 class TestAccessEndsInFlight:
     async def test_a_token_issued_as_the_agents_access_ends_is_taken_back(
         self, broker, session_factory, vendor

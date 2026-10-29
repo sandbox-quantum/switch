@@ -1541,7 +1541,7 @@ class TestMemberRoutes:
             session_factory=session_factory,
             keyring=_KEYRING,
             catalog=CATALOG,
-            adapters={"github": GitHubAdapter(github, AsyncMock())},  # type: ignore[arg-type]
+            adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},  # type: ignore[arg-type]
             disabled={},
             store=ServiceConnectionStore(),
             token_retention=timedelta(days=30),
