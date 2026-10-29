@@ -202,7 +202,8 @@ def _client_replaced(
 ) -> bool:
     """Whether `connection` signed in through a client other than the one
     `adapter` signs in through, so it must reconnect. Unknown either side
-    is no."""
+    is no; a client Core registers for itself is known once this process has
+    used it, to sign in or to refresh."""
     current = None if adapter is None else adapter.current_client_id()
     return (
         connection.oauth_client_id is not None
@@ -292,6 +293,36 @@ class ServiceError(Exception):
                 "retryable": self.retryable,
             }
         }
+
+
+# Who reads a refusal: the person whose connection it is, acting for
+# themselves, or an agent asking for a token on its owner's behalf.
+Reader = Literal["owner", "agent"]
+
+
+def _reconnect(name: str, why: str, reader: Reader) -> ServiceError:
+    """The refusal for a connection that must be signed in again, worded for
+    whoever reads it: the owner reconnects; an agent's owner must."""
+    who = "Reconnect" if reader == "owner" else "The agent's owner must reconnect"
+    return ServiceError(
+        409,
+        CONNECTOR_REVOKED,
+        f"{why} {who} {name} from Connectors in Switch Console.",
+        retryable=False,
+    )
+
+
+class _MustReconnect(ServiceError):
+    """A connection that must be signed in again, and why, raised where who
+    will read the refusal is not known: `_access_token` words it for them."""
+
+    def __init__(self, why: str) -> None:
+        super().__init__(409, CONNECTOR_REVOKED, why, retryable=False)
+        self.why = why
+
+
+def _through_replaced_client(name: str) -> str:
+    return f"{name} was connected through an app Switch no longer uses."
 
 
 @dataclass(frozen=True)
@@ -866,7 +897,9 @@ class ServiceBroker:
         decision = await self.decide(session, agent_id, principal, service)
         adapter = await self._adapter(session, service)
         await session.commit()
-        access = await self._access_token(decision.owner_id, service, adapter)
+        access = await self._access_token(
+            decision.owner_id, service, adapter, reader="agent"
+        )
         request = IssueRequest(
             service=service,
             access=decision.access,
@@ -877,7 +910,7 @@ class ServiceBroker:
             issued = await adapter.issue(access, request)
         except ReauthorizationRequiredError as error:
             raise await self._needs_reauthorization(
-                decision.owner_id, service, error
+                decision.owner_id, service, error, reader="agent"
             ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
@@ -1105,7 +1138,7 @@ class ServiceBroker:
     # ── Connection credential ────────────────────────────────────────────────
 
     async def _access_token(
-        self, owner_id: str, service: str, adapter: ServiceAdapter
+        self, owner_id: str, service: str, adapter: ServiceAdapter, *, reader: Reader
     ) -> AccessToken:
         """A usable access token for the owner's connection, and its expiry.
 
@@ -1117,7 +1150,8 @@ class ServiceBroker:
         connection's lock still serialises refreshes, but every agent of an
         owner renewing together would otherwise each hold a database
         connection queued on that lock while one refresh takes its time, and
-        give up at the lock's timeout.
+        give up at the lock's timeout. So a refusal to reconnect is worded
+        here, for `reader`, rather than in the fetch they share.
         """
         key = (require_tenant_id(), owner_id, service)
         fetching = self._fetching.get(key)
@@ -1125,7 +1159,11 @@ class ServiceBroker:
             fetching = asyncio.create_task(self._fresh_access_token(*key, adapter))
             self._fetching[key] = fetching
             fetching.add_done_callback(lambda done: self._fetched(key, done))
-        return await asyncio.shield(fetching)
+        try:
+            return await asyncio.shield(fetching)
+        except _MustReconnect as lapsed:
+            name = self._entry(service).definition.name
+            raise _reconnect(name, lapsed.why, reader) from None
 
     def _fetched(
         self, key: tuple[str, str, str], done: asyncio.Task[AccessToken]
@@ -1164,24 +1202,13 @@ class ServiceBroker:
                     retryable=False,
                 )
             if connection.status != "active":
-                raise ServiceError(
-                    409,
-                    CONNECTOR_REVOKED,
-                    f"The agent's owner must reconnect {name} in Switch Console, "
-                    "under Connectors.",
-                    retryable=False,
+                raise _MustReconnect(
+                    _through_replaced_client(name)
+                    if connection.error_code == CLIENT_REPLACED
+                    else f"The {name} sign-in was revoked or has lapsed."
                 )
             if _client_replaced(connection, adapter):
-                await self._store.mark_needs_reauthorization(
-                    session, owner_id, service, CLIENT_REPLACED
-                )
-                await session.commit()
-                raise self._revoked(
-                    service,
-                    ReauthorizationRequiredError(
-                        f"{name} was connected through an app Switch no longer uses."
-                    ),
-                )
+                raise await self._replaced_client(session, owner_id, service)
             secret = self._secret(connection)
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
@@ -1197,16 +1224,25 @@ class ServiceBroker:
                 return AccessToken(token, _expiry(secret))
             try:
                 renewed = await adapter.refresh(secret)
-            except ReauthorizationRequiredError as error:
+            except ServiceUnavailableError as error:
+                raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+            except ServiceAdapterError as error:
+                # A client Core registers for itself is known only once it is
+                # used, so one registered anew since this sign-in shows here,
+                # as the vendor refuses the old client's refresh token.
+                if _client_replaced(connection, adapter):
+                    raise await self._replaced_client(
+                        session, owner_id, service
+                    ) from None
+                if not isinstance(error, ReauthorizationRequiredError):
+                    raise ServiceError(
+                        503, INTERNAL, str(error), retryable=False
+                    ) from None
                 await self._store.mark_needs_reauthorization(
                     session, owner_id, service, "refresh_refused"
                 )
                 await session.commit()
-                raise self._revoked(service, error) from None
-            except ServiceUnavailableError as error:
-                raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
-            except ServiceAdapterError as error:
-                raise ServiceError(503, INTERNAL, str(error), retryable=False) from None
+                raise _MustReconnect(str(error)) from None
             token = renewed.access_token
             if token is None:
                 raise ServiceError(
@@ -1225,20 +1261,24 @@ class ServiceBroker:
             await session.commit()
             return AccessToken(token, _expiry(renewed))
 
-    def _revoked(self, service: str, error: Exception) -> ServiceError:
-        name = self._entry(service).definition.name
-        return ServiceError(
-            409,
-            CONNECTOR_REVOKED,
-            f"{error} The agent's owner must reconnect {name} in Switch Console, "
-            "under Connectors.",
-            retryable=False,
+    async def _replaced_client(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> _MustReconnect:
+        """Record that the connection signed in through a client its service
+        no longer uses; the refusal to raise."""
+        await self._store.mark_needs_reauthorization(
+            session, owner_id, service, CLIENT_REPLACED
+        )
+        await session.commit()
+        return _MustReconnect(
+            _through_replaced_client(self._entry(service).definition.name)
         )
 
     async def _needs_reauthorization(
-        self, owner_id: str, service: str, error: Exception
+        self, owner_id: str, service: str, error: Exception, *, reader: Reader
     ) -> ServiceError:
-        """Record that the vendor refused the owner's sign-in; the refusal to raise.
+        """Record that the vendor refused the owner's sign-in; the refusal to
+        raise, worded for `reader`.
 
         In a transaction of its own: the vendor's answer stands whatever the
         caller's transaction does next.
@@ -1253,7 +1293,7 @@ class ServiceBroker:
                 await session.commit()
 
         await finish_shielded(mark())
-        return self._revoked(service, error)
+        return _reconnect(self._entry(service).definition.name, str(error), reader)
 
     def _signed_in(self, connection: ServiceConnection) -> SignIn:
         return SignIn(self._secret(connection), connection.oauth_client_id)
@@ -1410,10 +1450,12 @@ class ServiceBroker:
     def connection_status(
         self, standing: ServiceStanding, connection: ServiceConnection | None
     ) -> str:
-        """The connection's status, as a person or their agent acts on it: one
-        made through an app this server has since replaced, or granted other
-        scopes than this server now asks for, needs reconnecting before anyone
-        uses it and finds out."""
+        """A connection's status as people and agents act on it, where its
+        service stands as `standing`: "not_connected", "active",
+        "needs_reauthorization" or "error". One made through a client its
+        service no longer uses, or granted other scopes than this server now
+        asks for, needs reconnecting before anyone uses it and finds out,
+        though its row stays active until a token is asked for."""
         if connection is None:
             return "not_connected"
         if connection.status == "active" and (
@@ -1630,7 +1672,9 @@ class ServiceBroker:
             tools=None,
         )
         await session.commit()
-        owner_token = await self._access_token(owner_id, service, terms.adapter)
+        owner_token = await self._access_token(
+            owner_id, service, terms.adapter, reader="owner"
+        )
         resources: dict[str, Any] = {}
         try:
             if repositories:
@@ -1654,7 +1698,9 @@ class ServiceBroker:
                 ),
             )
         except ReauthorizationRequiredError as error:
-            raise await self._needs_reauthorization(owner_id, service, error) from None
+            raise await self._needs_reauthorization(
+                owner_id, service, error, reader="owner"
+            ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:
@@ -1707,14 +1753,18 @@ class ServiceBroker:
         )
         await session.commit()
 
-        owner_token = await self._access_token(actor_id, service, adapter)
+        owner_token = await self._access_token(
+            actor_id, service, adapter, reader="owner"
+        )
         request = IssueRequest(
             service=service, access=level_name, reach=reach, resources=resources
         )
         try:
             checked = await adapter.check_grant(owner_token.token, request)
         except ReauthorizationRequiredError as error:
-            raise await self._needs_reauthorization(actor_id, service, error) from None
+            raise await self._needs_reauthorization(
+                actor_id, service, error, reader="owner"
+            ) from None
         except ServiceUnavailableError as error:
             raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
         except ServiceAdapterError as error:
@@ -2008,7 +2058,10 @@ class ServiceBroker:
         await session.commit()
         return (
             await self._access_token(
-                user_id, service, await self._refresher(session, service)
+                user_id,
+                service,
+                await self._refresher(session, service),
+                reader="owner",
             )
         ).token
 

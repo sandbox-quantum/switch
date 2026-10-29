@@ -109,8 +109,10 @@ async def get_my_context() -> dict[str, Any]:
         which a workspace admin changes under Admin → Connectors in Switch
         Console; until then nobody in it can connect it or give it to agents.
         `connection` is your owner's: "not_connected", "active",
-        "needs_reauthorization" or "error". `agents_using` names your owner's
-        agents granted it. Empty when this server has service connections off.
+        "needs_reauthorization" (including one made through an app this server
+        no longer uses) or "error"; only an "active" one can be given to an
+        agent. `agents_using` names your owner's agents granted it. Empty
+        when this server has service connections off.
 
         `agents`: your owner's agents, each {id, name, display_name,
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
