@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const fetchTenants = vi.hoisted(() => vi.fn());
+const fetchOrganizationNames = vi.hoisted(() => vi.fn());
 const decodeJwtTenantId = vi.hoisted(() => vi.fn((_jwt: string): string | null => null));
 const getSessionCookie = vi.hoisted(() => vi.fn(async (): Promise<string | null> => null));
 const listServers = vi.hoisted(() => vi.fn(async (): Promise<{ id: string }[]> => []));
@@ -25,7 +26,11 @@ vi.mock('@main/db/client', () => ({
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning: () => true,
 }));
-vi.mock('@main/core/switch-servers/gateway-client', () => ({ decodeJwtTenantId, fetchTenants }));
+vi.mock('@main/core/switch-servers/gateway-client', () => ({
+  decodeJwtTenantId,
+  fetchOrganizationNames,
+  fetchTenants,
+}));
 vi.mock('@main/core/switch-servers/require-server', () => ({
   requireServer: async (id: string) => ({ id, name: id }),
 }));
@@ -49,8 +54,20 @@ const {
   setActiveWorkspaceId,
 } = await import('./workspaces-store');
 
-function tenant(id: string, name: string, role = 'member') {
-  return { id, slug: id, name, role };
+function tenant(
+  id: string,
+  name: string,
+  role = 'member',
+  organization: { id: string; role: string } | null = null
+) {
+  return {
+    id,
+    slug: id,
+    name,
+    role,
+    organizationId: organization?.id ?? null,
+    organizationRole: organization?.role ?? null,
+  };
 }
 
 describe('reconcile-workspaces', () => {
@@ -109,6 +126,85 @@ describe('reconcile-workspaces', () => {
     expect(found[0]!.id).toBe(before.id);
     expect(found[0]!.tenantId).toBe('t-1');
     expect(found[0]!.role).toBe('owner');
+  });
+
+  it('records each workspace’s organization, its name and the account’s role in it', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([
+      tenant('t-1', 'Default', 'owner', { id: 'o-1', role: 'org_admin' }),
+      tenant('t-2', 'Research', 'member', { id: 'o-2', role: 'member' }),
+    ]);
+    fetchOrganizationNames.mockResolvedValue(
+      new Map([
+        ['o-1', 'Acme'],
+        ['o-2', 'Globex'],
+      ])
+    );
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const found = await listWorkspacesForServer('srv-1');
+    expect(
+      found.map((w) => [w.tenantId, w.organizationId, w.organizationName, w.organizationRole])
+    ).toEqual(
+      expect.arrayContaining([
+        ['t-1', 'o-1', 'Acme', 'org_admin'],
+        ['t-2', 'o-2', 'Globex', 'member'],
+      ])
+    );
+  });
+
+  it('does not ask a server from before organizations to name any', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    expect(fetchOrganizationNames).not.toHaveBeenCalled();
+    const [found] = await listWorkspacesForServer('srv-1');
+    expect([found!.organizationId, found!.organizationName, found!.organizationRole]).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it('keeps the organization without a name, and says so, where the server cannot name it', async () => {
+    await ensureServerWorkspace({ id: 'srv-1', name: 'Local dev' });
+    fetchTenants.mockResolvedValue([
+      tenant('t-1', 'Default', 'owner', { id: 'o-1', role: 'org_admin' }),
+    ]);
+    fetchOrganizationNames.mockResolvedValue(null);
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const [found] = await listWorkspacesForServer('srv-1');
+    expect([found!.organizationId, found!.organizationName]).toEqual(['o-1', null]);
+    expect(warn).toHaveBeenCalledWith(
+      'workspaces: the server reports organizations but could not name them',
+      { server: 'srv-1' }
+    );
+  });
+
+  it('forgets the organization role along with the workspace role when a membership goes', async () => {
+    await createTenantWorkspace('srv-1', {
+      id: 't-1',
+      slug: 't-1',
+      name: 'Default',
+      role: 'owner',
+      organizationId: 'o-1',
+      organizationName: 'Acme',
+      organizationRole: 'org_admin',
+    });
+    fetchTenants.mockResolvedValue([
+      tenant('t-2', 'Research', 'member', { id: 'o-2', role: 'member' }),
+    ]);
+    fetchOrganizationNames.mockResolvedValue(new Map([['o-2', 'Globex']]));
+
+    await reconcileServerWorkspaces('srv-1');
+
+    const withdrawn = (await listWorkspacesForServer('srv-1')).find((w) => w.tenantId === 't-1');
+    expect([withdrawn!.role, withdrawn!.organizationRole]).toEqual([null, null]);
   });
 
   it('remembers a server whose account belongs to no workspace, until it joins one', async () => {
@@ -263,12 +359,18 @@ describe('reconcile-workspaces', () => {
       slug: 't-1',
       name: 'Default',
       role: 'owner',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     await createTenantWorkspace('srv-1', {
       id: 't-2',
       slug: 't-2',
       name: 'Research',
       role: 'member',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     fetchTenants.mockResolvedValue([tenant('t-1', 'Default'), tenant('t-2', 'Research')]);
 
@@ -328,6 +430,9 @@ describe('reconcile-workspaces', () => {
       slug: 't-1',
       name: 'Research',
       role: 'member',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     fetchTenants.mockResolvedValue([tenant('t-1', 'Research', 'admin')]);
 
@@ -349,6 +454,9 @@ describe('reconcile-workspaces', () => {
       slug: 't-gone',
       name: 'Research',
       role: 'member',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
 
@@ -373,6 +481,9 @@ describe('reconcile-workspaces', () => {
       slug: 't-back',
       name: 'Research',
       role: 'admin',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     fetchTenants.mockResolvedValue([tenant('t-1', 'Default')]);
     await reconcileServerWorkspaces('srv-1');
@@ -394,6 +505,9 @@ describe('reconcile-workspaces', () => {
       slug: 't-previous',
       name: 'Previous account’s',
       role: 'owner',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     await setActiveWorkspaceId(previous.id);
     fetchTenants.mockResolvedValue([tenant('t-1', 'Default', 'owner')]);
@@ -410,6 +524,9 @@ describe('reconcile-workspaces', () => {
       slug: 't-gone',
       name: 'Research',
       role: 'member',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     await setActiveWorkspaceId(held.id);
     fetchTenants.mockResolvedValue([]);
@@ -444,6 +561,9 @@ describe('reconcile-workspaces', () => {
       slug: 't-gone',
       name: 'Research',
       role: 'member',
+      organizationId: null,
+      organizationName: null,
+      organizationRole: null,
     });
     fetchTenants.mockResolvedValue([]);
 

@@ -3,12 +3,36 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { db, type DrizzleTx } from '@main/db/client';
 import { agents, kv, type WorkspaceRow, workspaces } from '@main/db/schema';
 import {
+  type OrganizationRole,
   type Workspace,
   type WorkspaceRole,
   workspaceUnavailability,
 } from '@shared/core/workspaces/workspaces';
 
 const ACTIVE_WORKSPACE_KV_KEY = 'activeWorkspaceId';
+
+/** What the gateway owns about a tenant the account belongs to. */
+export type TenantRecord = {
+  id: string;
+  slug: string;
+  name: string;
+  role: WorkspaceRole;
+  organizationId: string | null;
+  organizationName: string | null;
+  organizationRole: OrganizationRole | null;
+};
+
+function tenantColumns(tenant: TenantRecord) {
+  return {
+    tenantId: tenant.id,
+    slug: tenant.slug,
+    name: tenant.name,
+    role: tenant.role,
+    organizationId: tenant.organizationId,
+    organizationName: tenant.organizationName,
+    organizationRole: tenant.organizationRole,
+  };
+}
 
 function mapRow(row: WorkspaceRow): Workspace {
   return {
@@ -18,6 +42,9 @@ function mapRow(row: WorkspaceRow): Workspace {
     tenantId: row.tenantId ?? null,
     slug: row.slug ?? null,
     role: row.role ?? null,
+    organizationId: row.organizationId ?? null,
+    organizationName: row.organizationName ?? null,
+    organizationRole: row.organizationRole ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -156,17 +183,11 @@ export function insertServerWorkspace(
  * from either side. The row a server is registered with is named after the
  * server only for as long as it belongs to no tenant.
  */
-export async function setWorkspaceTenant(
-  workspaceId: string,
-  tenant: { id: string; slug: string; name: string; role: WorkspaceRole }
-): Promise<void> {
+export async function setWorkspaceTenant(workspaceId: string, tenant: TenantRecord): Promise<void> {
   await db
     .update(workspaces)
     .set({
-      tenantId: tenant.id,
-      slug: tenant.slug,
-      name: tenant.name,
-      role: tenant.role,
+      ...tenantColumns(tenant),
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .where(eq(workspaces.id, workspaceId));
@@ -184,7 +205,7 @@ export async function setWorkspaceTenant(
 export async function clearWorkspaceRole(workspaceId: string): Promise<void> {
   await db
     .update(workspaces)
-    .set({ role: null, updatedAt: sql`CURRENT_TIMESTAMP` })
+    .set({ role: null, organizationRole: null, updatedAt: sql`CURRENT_TIMESTAMP` })
     .where(eq(workspaces.id, workspaceId));
 }
 
@@ -229,17 +250,14 @@ export async function discardEmptyWorkspace(workspaceId: string): Promise<void> 
 /** Record a workspace the user belongs to that this install has no row for. */
 export async function createTenantWorkspace(
   serverId: string,
-  tenant: { id: string; slug: string; name: string; role: WorkspaceRole }
+  tenant: TenantRecord
 ): Promise<Workspace> {
   const [row] = await db
     .insert(workspaces)
     .values({
       id: randomUUID(),
       serverId,
-      name: tenant.name,
-      tenantId: tenant.id,
-      slug: tenant.slug,
-      role: tenant.role,
+      ...tenantColumns(tenant),
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .returning();
