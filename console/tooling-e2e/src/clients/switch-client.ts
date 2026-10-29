@@ -511,6 +511,15 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/audit-events");
   }
 
+  /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
+  async currentOrganization(): Promise<{
+    id: string;
+    name: string;
+    role: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current");
+  }
+
   /** `GET /gateway/organizations` — the caller's organizations and their role in each. */
   async organizations(): Promise<OrganizationSummary[]> {
     return this.gateway<OrganizationSummary[]>("GET", "/organizations");
