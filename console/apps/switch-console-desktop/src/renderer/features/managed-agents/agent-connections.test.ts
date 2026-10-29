@@ -74,11 +74,47 @@ describe("an agent's connection cards", () => {
 
   it('names the services you have not connected instead of giving them cards', () => {
     const { cards, unconnected } = agentConnectionCards(
-      [service('atlassian'), service('datadog', { status: 'not_connected' })],
+      [service('datadog'), service('atlassian', { status: 'not_connected' })],
       []
     );
-    expect(cards.map((card) => card.slug)).toEqual(['atlassian']);
-    expect(unconnected).toEqual(['Datadog']);
+    expect(cards.map((card) => card.slug)).toEqual(['datadog']);
+    expect(unconnected).toEqual(['Atlassian']);
+  });
+
+  it('names only what you could connect and then turn on here', () => {
+    const { cards, unconnected } = agentConnectionCards(
+      [
+        service('datadog', {
+          status: 'not_connected',
+          connectable: false,
+          unavailable_code: 'key_never_expires',
+          unavailable_reason: 'Datadog keys do not expire.',
+        }),
+        service('github', {
+          pass_through: false,
+          status: 'not_connected',
+          connectable: false,
+          unavailable_code: 'needs_https',
+          unavailable_reason: 'GitHub needs an https address.',
+        }),
+        service('google', {
+          status: 'not_connected',
+          connectable: false,
+          unavailable_code: 'app_not_set_up',
+          unavailable_reason: 'Google is not set up on this server.',
+        }),
+        service('box', {
+          status: 'not_connected',
+          unavailable_code: 'not_fully_set_up',
+          unavailable_reason: 'Box can be connected but not granted.',
+        }),
+        service('airtable', { status: 'not_connected', workspace_enabled: false }),
+        service('atlassian', { status: 'not_connected' }),
+      ],
+      []
+    );
+    expect(cards).toEqual([]);
+    expect(unconnected).toEqual(['Atlassian']);
   });
 
   it('leaves out coming-soon and switched-off placeholders, and services nothing here can grant', () => {
@@ -137,15 +173,30 @@ describe("an agent's connection cards", () => {
     );
     expect(connectionCardDetail(plain)).toBe('What box is.');
   });
+
+  it('says when the workspace or the server stops a service, even one turned on', () => {
+    const [off, stopped] = agentConnectionCards(
+      [
+        service('atlassian', { workspace_enabled: false }),
+        service('box', { unavailable_reason: 'Maintenance' }),
+      ],
+      [grant('box')]
+    ).cards;
+    expect(connectionCardDetail(off)).toBe(
+      'Atlassian is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors.'
+    );
+    expect(connectionCardStatus(stopped)).toBe('On');
+    expect(connectionCardDetail(stopped)).toBe('Maintenance');
+  });
 });
 
 describe('the note naming unconnected services', () => {
   it('sends them to Connectors', () => {
-    expect(unconnectedNote(['Datadog'])).toBe(
-      'Not connected: Datadog. Connect it from Connectors to turn it on here.'
+    expect(unconnectedNote(['Atlassian'])).toBe(
+      'Not connected: Atlassian. Connect it from Connectors to turn it on here.'
     );
-    expect(unconnectedNote(['Atlassian', 'Datadog'])).toBe(
-      'Not connected: Atlassian, Datadog. Connect them from Connectors to turn them on here.'
+    expect(unconnectedNote(['Atlassian', 'Google Workspace'])).toBe(
+      'Not connected: Atlassian, Google Workspace. Connect them from Connectors to turn them on here.'
     );
   });
 
