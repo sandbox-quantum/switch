@@ -1130,11 +1130,15 @@ export interface AuthConfig {
 
 export type TenantRole = "owner" | "admin" | "member";
 
+export type OrganizationRole = "org_admin" | "member";
+
 export interface TenantMembership {
   id: string;
   slug: string;
   name: string;
   role: TenantRole;
+  organization_role: OrganizationRole | null;
+  organization_id: string | null;
 }
 
 export interface SessionUser {
@@ -1151,7 +1155,10 @@ export interface Session {
   tenant: TenantMembership | null;
   tenants: TenantMembership[];
   state: SessionStateName;
+  // Whether the caller may create a new organization with its first workspace.
   can_create_workspace: boolean;
+  // Whether the caller may add a workspace to the current organization.
+  can_add_workspace: boolean;
   // Whether an invitation naming an e-mail is sent there by this server.
   invite_email_enabled: boolean;
 }
@@ -1188,6 +1195,10 @@ export interface Member {
   email: string;
   role: TenantRole;
   created_at: string;
+  organization_role: OrganizationRole | null;
+  // An organization admin with no membership of their own here, listed
+  // because the organization makes them an admin of every workspace.
+  via_organization: boolean;
 }
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
@@ -1211,6 +1222,79 @@ export async function removeMember(tenantId: string, userId: string): Promise<vo
     `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     "DELETE",
   );
+}
+
+export interface OrganizationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: OrganizationRole;
+}
+
+export interface OrganizationMember {
+  user_id: string;
+  name: string;
+  email: string;
+  role: OrganizationRole;
+  created_at: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  occurred_at: string;
+  actor_user_id: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface OperatorWorkspace {
+  id: string;
+  slug: string;
+  name: string;
+  organization_id: string | null;
+}
+
+export async function fetchOrganizations(): Promise<OrganizationSummary[]> {
+  return jsonRequest<OrganizationSummary[]>("/organizations", "GET");
+}
+
+export async function fetchOrganizationWorkspaces(): Promise<TenantMembership[]> {
+  return jsonRequest<TenantMembership[]>("/organizations/current/workspaces", "GET");
+}
+
+/** Add a workspace to the current organization. The session stays where it is. */
+export async function createOrganizationWorkspace(name: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>("/organizations/current/workspaces", "POST", { name });
+}
+
+export async function fetchOrganizationMembers(): Promise<OrganizationMember[]> {
+  return jsonRequest<OrganizationMember[]>("/organizations/current/members", "GET");
+}
+
+export async function updateOrganizationRole(
+  userId: string,
+  role: OrganizationRole,
+): Promise<OrganizationMember> {
+  return jsonRequest<OrganizationMember>(
+    `/organizations/current/members/${encodeURIComponent(userId)}`,
+    "PATCH",
+    { role },
+  );
+}
+
+export async function removeOrganizationMember(userId: string): Promise<void> {
+  await jsonRequest(`/organizations/current/members/${encodeURIComponent(userId)}`, "DELETE");
+}
+
+export async function fetchOrganizationAuditEvents(): Promise<AuditEvent[]> {
+  return jsonRequest<AuditEvent[]>("/organizations/current/audit-events", "GET");
+}
+
+/** Every workspace on the server; the platform operator only. */
+export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
+  return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");
 }
 
 export interface Invitation {

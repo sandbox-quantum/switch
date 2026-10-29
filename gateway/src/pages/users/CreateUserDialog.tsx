@@ -88,7 +88,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
             onChange={(e) => setRole(e.target.value as UserRole)}
           >
             <MenuItem value="user">User</MenuItem>
-            <MenuItem value="admin">Admin</MenuItem>
+            <MenuItem value="admin">Platform operator</MenuItem>
           </TextField>
         </Stack>
       </DialogContent>

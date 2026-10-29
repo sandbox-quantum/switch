@@ -12,6 +12,8 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/registration-keys", "API Keys"],
   ["/users", "Users"],
   ["/workspace", "Workspace"],
+  ["/organization", "Organization"],
+  ["/operator/workspaces", "All workspaces"],
 ];
 
 const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/getting-started";

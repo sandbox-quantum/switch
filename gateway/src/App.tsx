@@ -29,6 +29,8 @@ import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
 import UsagePage from "./pages/usage/UsagePage";
 import UsersPage from "./pages/users/UsersPage";
 import WorkspacePage from "./pages/workspace/WorkspacePage";
+import OrganizationPage from "./pages/organization/OrganizationPage";
+import OperatorWorkspacesPage from "./pages/operator/OperatorWorkspacesPage";
 
 function FullScreen({ children }: { children: React.ReactNode }) {
   return (
@@ -144,6 +146,8 @@ export function AppRoutes() {
         <Route path="users" element={<UsersPage />} />
         <Route path="connectors" element={<ConnectorAppsPage />} />
         <Route path="workspace" element={<WorkspacePage />} />
+        <Route path="organization" element={<OrganizationPage />} />
+        <Route path="operator/workspaces" element={<OperatorWorkspacesPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
       <Route path="/login" element={<Navigate to="/" replace />} />

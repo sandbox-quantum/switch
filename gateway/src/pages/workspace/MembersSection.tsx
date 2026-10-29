@@ -35,7 +35,12 @@ interface Props {
 
 /** An admin may manage members and admins; only an owner may grant the owner
  * role or touch an existing owner. The server enforces the same, and refuses
- * the last owner — its message is shown as is. */
+ * the last owner — its message is shown as is.
+ *
+ * An organization admin administers every workspace of the organization, so
+ * their row here is read-only: the role comes from the organization, and is
+ * changed on its page. One with no membership of their own here is listed
+ * "via the organization". */
 export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
@@ -62,7 +67,8 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(() => {
-    const mayManage = (row: MemberRow) => canAdmin && (isOwner || row.role !== "owner");
+    const mayManage = (row: MemberRow) =>
+      canAdmin && row.organization_role !== "org_admin" && (isOwner || row.role !== "owner");
     const roles: TenantRole[] = isOwner ? ["owner", "admin", "member"] : ["admin", "member"];
     return [
       {
@@ -76,7 +82,7 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
       {
         field: "role",
         headerName: "Role",
-        width: 150,
+        width: 210,
         renderCell: ({ row }) =>
           mayManage(row) ? (
             <Select
@@ -97,6 +103,21 @@ export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: 
                 </MenuItem>
               ))}
             </Select>
+          ) : row.organization_role === "org_admin" ? (
+            <Tooltip
+              title={
+                row.via_organization
+                  ? "Administers this workspace through the organization. Change it on the Organization page."
+                  : "An organization admin, and so an admin of every workspace in it. Change it on the Organization page."
+              }
+            >
+              <Chip
+                label={row.via_organization ? "Org Admin, via organization" : "Org Admin"}
+                size="small"
+                color="primary"
+                variant="outlined"
+              />
+            </Tooltip>
           ) : (
             <Chip
               label={titleCase(row.role)}
