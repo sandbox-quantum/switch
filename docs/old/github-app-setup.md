@@ -6,9 +6,9 @@ An agent's token is an installation token for exactly the repositories
 granted, acting as the App, and lasts at most an hour. How it works is in
 [`docs/design/service-connections-v2.md`](../design/service-connections-v2.md).
 
-Without the App, GitHub is listed on the server as "GitHub is not set up on
-this server. Ask whoever runs your Switch server to add it under Connector
-apps in the Switch dashboard."
+Without the App, GitHub is listed on the server as "GitHub is not set up
+here. Whoever runs Switch can set it up in Switch Console, under Admin →
+Connector apps."
 
 ## What you need
 

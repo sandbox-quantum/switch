@@ -394,7 +394,7 @@ deploying a template already has it, or it could not create agents at all.
 Only on a server with agent management.
 
 **`connections`**. The deployer's own connections (GitHub, Atlassian, and
-the rest of Settings, Connections) granted to the agent once it exists.
+the rest of Connectors) granted to the agent once it exists.
 Each entry is a service name, or `{service, access, repos}`: `access` is
 `read` (the default) or `write`, and `repos` lists the GitHub repositories,
 as `owner/name`, a GitHub grant reaches; they must all be reachable through
