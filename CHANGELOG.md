@@ -2221,6 +2221,13 @@ version of their own to them without also giving them a release of their own.
   Switch now also leaves a service out once the server can no longer hand it
   out, so the session's notice says that as well as the workspace's switch
   and a removed grant.
+- **An agent's Connectors tab no longer sends you to connect what can't be
+  turned on.** Its "Not connected" note named every service you had not
+  connected: Datadog, whose keys Switch never hands to agents, GitHub on a
+  server where its App can't work, a service whose app isn't set up, and one
+  the workspace has switched off. It now names only what you could connect
+  and then turn on here. A card for a service the workspace or the server
+  stops says why, as Connectors does, even when it is turned on.
 
 ### [0.40.1] - 2026-10-21
 
