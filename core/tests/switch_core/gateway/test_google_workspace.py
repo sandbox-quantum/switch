@@ -480,6 +480,7 @@ class TestTheProfileChanging:
                 {SERVICE: connection},
                 [],
                 {},
+                set(),
             )
         [google] = [entry for entry in services if entry["slug"] == SERVICE]
         assert google["connection"] == "needs_reauthorization"
