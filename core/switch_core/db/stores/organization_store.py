@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Organization, OrganizationMember
+from switch_core.db.models import Organization, OrganizationMember, User
 
 # Postgres's default name for `organizations.slug`'s unique constraint.
 _SLUG_CONSTRAINT = "organizations_slug_key"
@@ -64,3 +64,24 @@ class OrganizationStore:
         """`user_id`'s role in `organization_id`, or None if not a member."""
         member = await session.get(OrganizationMember, (organization_id, user_id))
         return member.role if member is not None else None
+
+    async def list_members(
+        self, session: AsyncSession
+    ) -> list[tuple[User, OrganizationMember]]:
+        """Every member of the bound organization, with their user row."""
+        result = await session.execute(
+            select(User, OrganizationMember)
+            .join(OrganizationMember, OrganizationMember.user_id == User.id)
+            .order_by(User.name, User.id)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def count_admins(self, session: AsyncSession) -> int:
+        """How many `org_admin`s the bound organization has."""
+        return (
+            await session.execute(
+                select(func.count())
+                .select_from(OrganizationMember)
+                .where(OrganizationMember.role == "org_admin")
+            )
+        ).scalar_one()

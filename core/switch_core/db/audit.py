@@ -28,6 +28,7 @@ class AuditAction(StrEnum):
     MEMBER_JOINED_BY_DOMAIN = "member.joined_by_domain"
     MEMBER_ROLE_CHANGED = "member.role_changed"
     MEMBER_REMOVED = "member.removed"
+    ORGANIZATION_ROLE_CHANGED = "organization.role_changed"
     ACCOUNT_DELETED = "account.deleted"
     JOIN_DOMAIN_ADDED = "join_domain.added"
     JOIN_DOMAIN_REMOVED = "join_domain.removed"

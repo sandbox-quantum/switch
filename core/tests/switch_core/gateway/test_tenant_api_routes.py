@@ -1841,7 +1841,7 @@ class TestOrganizationAdmins:
             "id": TENANT_A,
             "slug": TENANT_A,
             "name": TENANT_A,
-            "role": "owner",
+            "role": "admin",
             "organization_role": "org_admin",
             "administers": True,
         }
@@ -1865,8 +1865,8 @@ class TestOrganizationAdmins:
         assert {
             (t["id"], t["role"], t["organization_role"]) for t in listed.json()
         } == {
-            (TENANT_A, "owner", "org_admin"),
-            (TENANT_B, "owner", "org_admin"),
+            (TENANT_A, "admin", "org_admin"),
+            (TENANT_B, "admin", "org_admin"),
         }
         assert switched.status_code == 200, switched.text
         assert _tenant_claim(switched) == TENANT_B
@@ -1906,30 +1906,36 @@ class TestOrganizationAdmins:
 
         assert response.status_code == 403
 
-    async def test_an_org_admin_manages_a_workspaces_members_and_owners(
+    async def test_an_org_admin_manages_members_as_a_workspace_admin_does(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Admin-level, not owner-level: the ownership set is still the
+        workspace owners' own."""
         admin_id = await _make_unaffiliated_user(
             session_factory, name="org-admin", role="user"
         )
         await self._organization_of(
             session_factory, TENANT_A, members={admin_id: "org_admin"}
         )
+        member_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
         owner_id = await _make_member(
             session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
-        )
-        await _make_member(
-            session_factory, name="ws-owner-2", tenant_id=TENANT_A, role="owner"
         )
         token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
 
         async with _client(_app(session_factory), token) as client:
-            response = await client.patch(
+            demoted = await client.patch(
+                f"/tenants/{TENANT_A}/members/{member_id}", json={"role": "member"}
+            )
+            owner = await client.patch(
                 f"/tenants/{TENANT_A}/members/{owner_id}", json={"role": "member"}
             )
 
-        assert response.status_code == 200, response.text
-        assert response.json()["role"] == "member"
+        assert demoted.status_code == 200, demoted.text
+        assert demoted.json()["role"] == "member"
+        assert owner.status_code == 403
 
     @pytest.mark.parametrize("method", ["patch", "delete"])
     async def test_a_workspace_cannot_demote_or_remove_an_org_admin(

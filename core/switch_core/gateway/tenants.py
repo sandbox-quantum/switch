@@ -224,7 +224,7 @@ async def _refuse_organization_admin(
             detail=(
                 "This member administers the workspace's organization, which "
                 "gives them admin rights in every one of its workspaces. Change "
-                "their role in the organization instead."
+                "their role in the organization's members first."
             ),
         )
 

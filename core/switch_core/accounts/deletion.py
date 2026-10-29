@@ -377,7 +377,10 @@ class AccountDeletion:
                 target_type="user",
                 target_id=user_id,
                 details={
-                    "role": workspace.role,
+                    "role": await self.users.tenant_role(session, tenant_id, user_id),
+                    "organization_role": await self.users.organization_role(
+                        session, tenant_id, user_id
+                    ),
                     "agents_deleted": len(agent_ids),
                     "machines_deleted": len(controller_ids),
                     "handed_to": successor,

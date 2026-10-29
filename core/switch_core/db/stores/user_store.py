@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
+    TENANT_ADMIN_ROLES,
     administers_tenant,
     owns_tenant,
 )
@@ -527,13 +528,17 @@ class UserStore:
     ) -> str | None:
         """The role `user_id` acts with in `tenant_id`: their membership role,
         or `ORGANIZATION_ADMIN_TENANT_ROLE` when they are the organization's
-        `org_admin`, membership row or not. None when they hold neither."""
+        `org_admin` and hold no higher role there. None when they hold
+        neither."""
+        role = await self.tenant_role(session, tenant_id, user_id)
+        if role in TENANT_ADMIN_ROLES:
+            return role
         if (
             await self.organization_role(session, tenant_id, user_id)
             == ORGANIZATION_ADMIN_ROLE
         ):
             return ORGANIZATION_ADMIN_TENANT_ROLE
-        return await self.tenant_role(session, tenant_id, user_id)
+        return role
 
     async def list_tenant_members(
         self, session: AsyncSession
@@ -594,8 +599,7 @@ class UserStore:
 
     async def owns(self, session: AsyncSession, user: User) -> bool:
         """Whether `user` may decide who owns the tenant bound to `session`'s
-        context — the operator bypass, an `owner` membership in it, or
-        `org_admin` of its organization.
+        context — the operator bypass, or an `owner` membership in it.
 
         The same composition as `administers`, over `authz.owns_tenant`; see
         there for why the two are separate bits rather than one.
@@ -610,8 +614,5 @@ class UserStore:
                 "owns requires a bound tenant; whether someone owns a "
                 "workspace is only answerable about a particular one"
             )
-        return owns_tenant(
-            is_operator=user.role == "admin",
-            tenant_role=await self.tenant_role(session, tenant_id, user.id),
-            organization_role=await self.organization_role(session, tenant_id, user.id),
-        )
+        role = await self.tenant_role(session, tenant_id, user.id)
+        return owns_tenant(is_operator=user.role == "admin", tenant_role=role)

@@ -61,9 +61,8 @@ TENANT_ADMIN_ROLES = ("owner", "admin")
 ORGANIZATION_ADMIN_ROLE = "org_admin"
 
 # The workspace role an organization's `org_admin` is reported as holding in
-# each of its workspaces, membership row or not: everything `owns_tenant`
-# allows an `owner`, it allows them.
-ORGANIZATION_ADMIN_TENANT_ROLE = "owner"
+# each of its workspaces, membership row or not.
+ORGANIZATION_ADMIN_TENANT_ROLE = "admin"
 
 
 def administers_tenant(
@@ -87,9 +86,7 @@ def administers_tenant(
     )
 
 
-def owns_tenant(
-    *, is_operator: bool, tenant_role: str | None, organization_role: str | None
-) -> bool:
+def owns_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
     """Whether a caller may dispose of the tenant they hold `tenant_role` in.
 
     Narrower than `administers_tenant` on purpose. An `admin` runs a workspace;
@@ -99,15 +96,10 @@ def owns_tenant(
     remove one, then an admin may take the workspace, and each of those steps
     passes a last-owner guard on its own. Gate those three on this.
 
-    The organization's `org_admin` owns every workspace in it: the
-    organization decides who runs its workspaces, and a workspace owner
-    cannot take one away from it.
+    An organization's `org_admin` administers its workspaces but does not own
+    them: the organization's role is `admin`-level in each workspace.
     """
-    return (
-        is_operator
-        or organization_role == ORGANIZATION_ADMIN_ROLE
-        or tenant_role == "owner"
-    )
+    return is_operator or tenant_role == "owner"
 
 
 @runtime_checkable

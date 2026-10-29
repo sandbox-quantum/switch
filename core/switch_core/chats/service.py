@@ -337,8 +337,11 @@ class ChatService:
     async def has_tenant_role(
         self, session: AsyncSession, tenant_id: str, user_id: str
     ) -> bool:
+        """Whether `user_id` stands in `tenant_id`: a membership row, or
+        `org_admin` of its organization."""
         return (
-            await self._user_store.tenant_role(session, tenant_id, user_id) is not None
+            await self._user_store.effective_tenant_role(session, tenant_id, user_id)
+            is not None
         )
 
     async def _room(self, session: AsyncSession, tenant_id: str, room_id: str) -> Room:

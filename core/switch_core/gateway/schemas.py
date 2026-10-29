@@ -907,7 +907,8 @@ class TenantMembershipResponse(BaseModel):
     slug: str
     name: str
     # The role the caller acts with here: an organization's `org_admin` is
-    # reported as `owner` of each of its workspaces, membership row or not.
+    # reported as at least `admin` of each of its workspaces, membership row
+    # or not.
     role: str
     organization_role: str | None
 
@@ -1120,6 +1121,18 @@ class UsageTotalResponse(BaseModel):
 
 class MemberUpdateRequest(BaseModel):
     role: str
+
+
+class OrganizationMemberDetail(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    role: str
+    created_at: str
+
+
+class OrganizationMemberUpdateRequest(BaseModel):
+    role: Literal["org_admin", "member"]
 
 
 class OidcLoginOptionView(BaseModel):
