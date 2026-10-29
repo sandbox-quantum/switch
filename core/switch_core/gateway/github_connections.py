@@ -178,7 +178,7 @@ async def start(
         )
     except FlowUsedError:
         raise HTTPException(
-            503, "This authorization has already been used. Connect again."
+            409, "This authorization has already been used. Connect again."
         ) from None
     except FlowsBusyError:
         raise HTTPException(

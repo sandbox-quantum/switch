@@ -68,10 +68,12 @@ async def list_workspace_services(
     organizations: Annotated[bool, Depends(organization_apps_on)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
-    """Every catalog service that can be connected, whether the workspace has
-    it on, and who it reaches: what an admin weighs before switching it off.
-    A member counts as connected while their connection works, by the status
-    their own Connectors page shows, not one that needs reconnecting."""
+    """Every service the catalog enables, whether the workspace has it on,
+    and who it reaches: what an admin weighs before switching it off. One this
+    server cannot connect (its app not set up, or switched off here) is
+    listed too. A member counts as connected while their connection works, by
+    the status their own Connectors page shows, not one that needs
+    reconnecting."""
     settings = await STORE.list_settings(session)
     above = await STORE.organization_settings(session) if organizations else {}
     switches = await STORE.switches(
