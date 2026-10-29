@@ -124,12 +124,14 @@ export function ServiceConnectStep({
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
-          <p className="flex items-center gap-2 text-sm">
-            <Spinner />
-            {flow?.status === 'checking'
-              ? `Connecting ${connection.name}…`
-              : 'Finish signing in in your browser, then return here.'}
-          </p>
+          flow?.status !== 'failed' && (
+            <p className="flex items-center gap-2 text-sm">
+              <Spinner />
+              {flow?.status === 'checking'
+                ? `Connecting ${connection.name}…`
+                : 'Finish signing in in your browser, then return here.'}
+            </p>
+          )
         ) : (
           <>
             <p className="text-sm text-foreground-muted">{connection.description}</p>

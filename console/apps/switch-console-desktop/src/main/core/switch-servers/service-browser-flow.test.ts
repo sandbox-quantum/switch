@@ -1,11 +1,13 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { focusMainWindow } from '@main/app/window';
+import { log } from '@main/lib/logger';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelServiceConnection,
   completeServiceConnection,
+  failServiceConnection,
   getConnectionCatalog,
   getServiceFlow,
   startServiceConnection,
@@ -21,6 +23,7 @@ vi.mock('@main/app/window', () => ({ focusMainWindow: vi.fn() }));
 vi.mock('./gateway-client', () => ({
   cancelServiceConnection: vi.fn(),
   completeServiceConnection: vi.fn(),
+  failServiceConnection: vi.fn(),
   getConnectionCatalog: vi.fn(),
   getServiceFlow: vi.fn(),
   startServiceConnection: vi.fn(),
@@ -176,6 +179,76 @@ it('does not show Core’s refusal in the browser, and sends the person to Conso
   const text = await response.text();
   expect(text).not.toContain('Private server detail');
   expect(text).toContain('Switch Console says what happened');
+});
+
+it('ends the sign-in at once when the vendor refuses it, and says why in the browser', async () => {
+  const { id, input, url } = await start();
+  vi.mocked(failServiceConnection).mockResolvedValue(undefined);
+  const refusal = new URLSearchParams({
+    state: id,
+    error: 'server_error',
+    error_description: 'Your <b>identity provider</b> refused Example',
+  });
+  const response = await fetch(`${url}?${refusal}`);
+  expect(response.status).toBe(400);
+  const text = await response.text();
+  expect(text).toContain(
+    '<p>Example refused the sign-in: Your identity provider refused Example. Return to Switch Console.</p>'
+  );
+  expect(focusMainWindow).toHaveBeenCalledOnce();
+  expect(failServiceConnection).toHaveBeenCalledExactlyOnceWith(
+    server,
+    'example',
+    id,
+    'server_error',
+    'Your identity provider refused Example',
+    input.completion_secret
+  );
+  // The listener is done with this sign-in: a code after the refusal is not taken.
+  await fetch(url + `?state=${id}&code=SYNTHETIC`).then(
+    (again) => expect(again.status).toBe(400),
+    () => {}
+  );
+  expect(completeServiceConnection).not.toHaveBeenCalled();
+  const failed = {
+    status: 'failed' as const,
+    account: null,
+    error: 'Example refused the sign-in: Your identity provider refused Example.',
+    warning: null,
+  };
+  vi.mocked(getServiceFlow).mockResolvedValue(failed);
+  expect(await getServiceBrowserFlow(server, 'example', id)).toEqual(failed);
+});
+
+it('takes a refusal only for this Console’s state', async () => {
+  const { id, url } = await start();
+  const response = await fetch(url + '?state=unknown&error=access_denied');
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain('was not started by this Switch Console');
+  expect(failServiceConnection).not.toHaveBeenCalled();
+  expect((await fetch(url + `?state=${id}&code=SYNTHETIC`)).status).toBe(200);
+});
+
+it('shows the vendor’s refusal even when the server cannot be told of it', async () => {
+  const { id, url } = await start();
+  vi.mocked(failServiceConnection).mockRejectedValue(new Error('Switch gateway returned 404'));
+  const response = await fetch(url + `?state=${id}&error=access_denied`);
+  expect(await response.text()).toContain(
+    'Example sign-in was cancelled. Return to Switch Console.'
+  );
+  expect(log.warn).toHaveBeenCalledOnce();
+  vi.mocked(getServiceFlow).mockResolvedValue({
+    status: 'pending',
+    account: null,
+    error: null,
+    warning: null,
+  });
+  expect(await getServiceBrowserFlow(server, 'example', id)).toEqual({
+    status: 'failed',
+    account: null,
+    error: 'Example sign-in was cancelled.',
+    warning: null,
+  });
 });
 
 it('closes the listener when the person cancels', async () => {

@@ -178,6 +178,26 @@ it("shows the server's reason when it refuses the account, and lets the dialog c
   expect(button(/^cancel$/i, dialog())).toBeDefined();
 });
 
+it('stops waiting on the browser once the vendor refused the sign-in', async () => {
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'failed',
+    account: null,
+    error: 'Example refused the sign-in: Your identity provider refused this app.',
+    warning: null,
+  });
+  await render(connectStep());
+  await signIn();
+
+  await vi.waitFor(() =>
+    expect(dialog().querySelector('[role="alert"]')?.textContent).toBe(
+      'Example refused the sign-in: Your identity provider refused this app.'
+    )
+  );
+  expect(dialog().textContent).not.toMatch(/Finish signing in in your browser/);
+  expect(switchServers.getServiceFlow).toHaveBeenCalledOnce();
+  expect(closable()).toBe(true);
+});
+
 it('counts a cancel of a sign-in the server already dropped as cancelled', async () => {
   switchServers.getServiceFlow.mockResolvedValue({
     status: 'pending',
