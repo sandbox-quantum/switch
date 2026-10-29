@@ -76,6 +76,7 @@ export function ConnectorAppsList({
                 return next;
               })
             }
+            onChecked={refetch}
             onChanged={(message) => {
               setToast(message);
               refetch();

@@ -15,6 +15,7 @@ import {
   peopleIn,
   primaryAction,
   notSetUpSentence,
+  readOnlySentence,
   removeWarning,
   secretSummary,
   sentBackTo,
@@ -391,5 +392,19 @@ describe("an organization's apps", () => {
     expect(removeWarning(app({ server_app: false, connected_members: 0 }))).toBe(
       "Nobody will be able to connect Google Workspace.",
     );
+  });
+});
+
+describe("a GitHub App that lets agents read only", () => {
+  it("names what it lacks to write, and that write grants are refused", () => {
+    expect(
+      readOnlySentence({ ...GITHUB, read_only: true, lacks_write: ["Contents", "Pull requests"] }),
+    ).toBe(
+      "Agents can read only: the App lacks Contents and Pull requests write. Write grants are refused.",
+    );
+    expect(readOnlySentence({ ...GITHUB, read_only: true, lacks_write: ["Contents"] })).toBe(
+      "Agents can read only: the App lacks Contents write. Write grants are refused.",
+    );
+    expect(readOnlySentence(GITHUB)).toBeNull();
   });
 });

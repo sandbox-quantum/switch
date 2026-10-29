@@ -11,10 +11,10 @@ import {
 } from '@renderer/lib/ui/select';
 import {
   type ConnectedGitHub,
-  GITHUB_ACCESS_OPTIONS,
   type GitHubGrantChoice,
   chosenInstallation,
   chosenRepositories,
+  githubAccessOptions,
   matchingRepositories,
   withEveryRepository,
   withInstallation,
@@ -46,15 +46,19 @@ export function RepositoryChip({ name, onRemove }: { name: string; onRemove: () 
 /**
  * Chooses what an agent's GitHub access names: the account only where the
  * App is on several, the repositories as chips with a search to add one and
- * Add all for every one, and whether it may push.
+ * Add all for every one, and whether it may push, which the server may
+ * allow only reading of (`readOnlyReason`, said beside the choice).
  */
 export function GitHubGrantPicker({
   github,
   value,
+  readOnlyReason,
   onChange,
 }: {
   github: ConnectedGitHub;
   value: GitHubGrantChoice;
+  /** Why the server's App lets agents read only; null where pushing can be granted. */
+  readOnlyReason: string | null;
   onChange: (choice: GitHubGrantChoice) => void;
 }) {
   const [query, setQuery] = useState('');
@@ -166,8 +170,13 @@ export function GitHubGrantPicker({
         ariaLabel="Access"
         value={value.access}
         onChange={(access) => onChange({ ...value, access })}
-        options={GITHUB_ACCESS_OPTIONS}
+        options={githubAccessOptions(readOnlyReason)}
       />
+      {readOnlyReason && (
+        <p role="status" className="px-1 text-xs text-foreground-muted">
+          {readOnlyReason}
+        </p>
+      )}
     </div>
   );
 }
