@@ -597,6 +597,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/organizations/current/audit-events",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/organizations/current/members",
       "auth": "session",
       "flags": []

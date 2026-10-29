@@ -5,8 +5,9 @@ import type { FastScenario } from './scenario.ts';
 /**
  * An organization's admins manage who else is one: the harness admin, the
  * default workspace's organization admin, lists its members, makes a
- * colleague organization admin, and takes it back. The colleague can list
- * the members only while they hold the role. The workspace roster shows each
+ * colleague organization admin, and takes it back, both recorded in the
+ * organization's audit log. The colleague can list the members only while
+ * they hold the role. The workspace roster shows each
  * person's organization role. Removing the colleague from the organization is
  * refused while they are still in its workspace, and goes through once they
  * are not. Only the harness admin, a platform operator, lists every
@@ -22,6 +23,7 @@ export const organizationMembers: FastScenario = {
       'GET /gateway/organizations/current/members',
       'PATCH /gateway/organizations/current/members/{user_id}',
       'DELETE /gateway/organizations/current/members/{user_id}',
+      'GET /gateway/organizations/current/audit-events',
       'GET /gateway/operator/workspaces',
       'GET /gateway/tenants/{tenant_id}/members',
       'DELETE /gateway/tenants/{tenant_id}/members/{user_id}',
@@ -64,6 +66,13 @@ export const organizationMembers: FastScenario = {
 
     const taken = await switchClient.setOrganizationRole(id, 'member');
     expect(taken.role).toBe('member');
+    const changes = (await switchClient.organizationAuditEvents())
+      .filter((event) => event.action === 'organization.role_changed' && event.target_id === id)
+      .map((event) => event.details?.to);
+    expect(changes, 'both changes in the organization audit log, newest first').toEqual([
+      'member',
+      'org_admin',
+    ]);
     expect(await refused(), 'a member again').toBe(403);
 
     const status = async (call: () => Promise<unknown>): Promise<[number, string]> => {

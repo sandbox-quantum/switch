@@ -1,7 +1,9 @@
 """The audit logs: append an event in the caller's transaction, read it back.
 
-A tenant's changes go to `audit_events`; a change to the server as a whole,
-which no tenant owns, goes to `server_audit_events`.
+A tenant's changes go to `audit_events`; a change to an organization as a
+whole, its members and workspaces, goes to `organization_audit_events`; a
+change to the server as a whole, which no tenant owns, goes to
+`server_audit_events`.
 
 Functions rather than an injected store because there is nothing to hold: each
 call takes the session of the change it records, so the event commits or rolls
@@ -17,7 +19,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import AuditEvent, ServerAuditEvent
+from switch_core.db.models import (
+    AuditEvent,
+    OrganizationAuditEvent,
+    ServerAuditEvent,
+)
 
 
 class AuditAction(StrEnum):
@@ -28,8 +34,6 @@ class AuditAction(StrEnum):
     MEMBER_JOINED_BY_DOMAIN = "member.joined_by_domain"
     MEMBER_ROLE_CHANGED = "member.role_changed"
     MEMBER_REMOVED = "member.removed"
-    ORGANIZATION_ROLE_CHANGED = "organization.role_changed"
-    ORGANIZATION_MEMBER_REMOVED = "organization.member_removed"
     # The platform operator acting in a workspace on the operator flag alone:
     # entering it, and every write while there.
     PLATFORM_ACCESS = "platform.access"
@@ -58,6 +62,13 @@ class AuditAction(StrEnum):
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
 
 
+class OrganizationAuditAction(StrEnum):
+    ORGANIZATION_CREATED = "organization.created"
+    WORKSPACE_CREATED = "organization.workspace_created"
+    ROLE_CHANGED = "organization.role_changed"
+    MEMBER_REMOVED = "organization.member_removed"
+
+
 class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
@@ -77,6 +88,34 @@ async def record_audit_event(
     """Add an event to `session`; it lands when the caller commits."""
     event = AuditEvent(
         tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        action=action.value,
+        target_type=target_type,
+        target_id=target_id,
+        details=details,
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def record_organization_audit_event(
+    session: AsyncSession,
+    *,
+    organization_id: str,
+    actor_user_id: str | None,
+    action: OrganizationAuditAction,
+    target_type: str,
+    target_id: str | None,
+    details: dict[str, Any] | None,
+) -> OrganizationAuditEvent:
+    """Add an organization event to `session`; it lands when the caller commits.
+
+    `session` may be bound to the organization or to any of its workspaces:
+    the policy derives the organization from either.
+    """
+    event = OrganizationAuditEvent(
+        organization_id=organization_id,
         actor_user_id=actor_user_id,
         action=action.value,
         target_type=target_type,
@@ -124,5 +163,28 @@ async def list_audit_events(
         query = query.where(AuditEvent.occurred_at < before)
     result = await session.execute(
         query.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_organization_audit_events(
+    session: AsyncSession,
+    *,
+    organization_id: str,
+    limit: int,
+    before: datetime | None,
+) -> list[OrganizationAuditEvent]:
+    """Newest first. Names its organization as well as relying on the policy,
+    as `list_audit_events` does."""
+    query = select(OrganizationAuditEvent).where(
+        OrganizationAuditEvent.organization_id == organization_id
+    )
+    if before is not None:
+        query = query.where(OrganizationAuditEvent.occurred_at < before)
+    result = await session.execute(
+        query.order_by(
+            OrganizationAuditEvent.occurred_at.desc(),
+            OrganizationAuditEvent.id.desc(),
+        ).limit(limit)
     )
     return list(result.scalars().all())

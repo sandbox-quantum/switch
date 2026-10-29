@@ -712,6 +712,38 @@ class AuditEvent(TenantScoped, Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class OrganizationAuditEvent(OrganizationScoped, Base):
+    """One change to an organization as a whole: its members, their roles,
+    its workspaces. The organization's counterpart of `AuditEvent`, with the
+    same rules: written in the transaction of the change it records,
+    append-only for the runtime role, `actor_user_id` without a foreign key,
+    and `details` free of secrets.
+
+    A change inside one workspace stays in that workspace's `audit_events`;
+    this holds what no single workspace owns, so an organization's admins
+    read it in one place whichever workspace the change was made from.
+    """
+
+    __tablename__ = "organization_audit_events"
+    __table_args__ = (
+        Index(
+            "ix_organization_audit_events_organization_occurred_at",
+            "organization_id",
+            "occurred_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
 # ── Clients ────────────────────────────────────────────────────────────────────
 
 

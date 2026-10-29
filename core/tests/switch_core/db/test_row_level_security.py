@@ -381,6 +381,7 @@ class TestCatalogueCoverage:
         assert organization_scoped == {
             "organizations": "id",
             "organization_members": "organization_id",
+            "organization_audit_events": "organization_id",
         }
         assert len(scoped) >= 30, scoped
         assert scoped["tenants"] == "id"

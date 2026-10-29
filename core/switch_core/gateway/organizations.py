@@ -9,21 +9,29 @@ its `org_admin`s. The one exception is an organization with no `org_admin`
 left: the platform operator may list its members and make one of them
 `org_admin`, and being there on the operator flag alone, does so on
 `platform_access`, recorded as every operator write is (`gateway/auth.py`).
-See `docs/design/organizations-v1.md`.
+
+Changes to the organization itself are recorded in its own audit log
+(`organization_audit_events`), whichever workspace they were made from, and
+read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import (
+    OrganizationAuditAction,
+    list_organization_audit_events,
+    record_organization_audit_event,
+)
 from switch_core.db.models import (
     OrganizationMember,
     Tenant,
@@ -51,6 +59,7 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.schemas import (
+    AuditEventDetail,
     OrganizationCreateRequest,
     OrganizationCreateResponse,
     OrganizationMemberDetail,
@@ -254,6 +263,50 @@ async def create_organization_workspace(
     )
 
 
+def _made_from(request: Request) -> dict[str, object]:
+    """Where an organization change was made: the workspace the request was
+    bound to, and whether the platform operator made it on the operator flag
+    alone, which the organization's admins read here as they would in that
+    workspace's own log."""
+    details: dict[str, object] = {"workspace_id": require_tenant_id()}
+    if request.state.platform_access:
+        details["platform_access"] = True
+    return details
+
+
+@router.get("/organizations/current/audit-events")
+async def list_organization_audit_log(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    before: Annotated[datetime | None, Query()] = None,
+) -> list[AuditEventDetail]:
+    """The organization's audit log, newest first. `org_admin` only.
+
+    Page back by passing the oldest `occurred_at` returned as `before`.
+    """
+    organization_id = await _require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    events = await list_organization_audit_events(
+        session, organization_id=organization_id, limit=limit, before=before
+    )
+    return [
+        AuditEventDetail(
+            id=event.id,
+            occurred_at=event.occurred_at.isoformat(),
+            actor_user_id=event.actor_user_id,
+            action=event.action,
+            target_type=event.target_type,
+            target_id=event.target_id,
+            details=event.details,
+        )
+        for event in events
+    ]
+
+
 @router.get("/organizations/current/members")
 async def list_organization_members(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -274,6 +327,7 @@ async def list_organization_members(
 async def update_organization_member_role(
     user_id: str,
     req: OrganizationMemberUpdateRequest,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
@@ -283,7 +337,7 @@ async def update_organization_member_role(
     the one role that grants `org_admin`.
 
     Refuses to demote the last `org_admin`: nobody else could grant the role
-    again. Recorded in the bound workspace's audit log.
+    again. Recorded in the organization's audit log.
     """
     organization_id = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -301,17 +355,17 @@ async def update_organization_member_role(
         )
 
     if member.role != req.role:
-        await record_audit_event(
+        await record_organization_audit_event(
             session,
-            tenant_id=require_tenant_id(),
+            organization_id=organization_id,
             actor_user_id=user.id,
-            action=AuditAction.ORGANIZATION_ROLE_CHANGED,
+            action=OrganizationAuditAction.ROLE_CHANGED,
             target_type="user",
             target_id=user_id,
             details={
-                "organization_id": organization_id,
                 "from": member.role,
                 "to": req.role,
+                **_made_from(request),
             },
         )
     member.role = req.role
@@ -325,6 +379,7 @@ async def update_organization_member_role(
 @router.delete("/organizations/current/members/{user_id}")
 async def remove_organization_member(
     user_id: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
@@ -339,7 +394,7 @@ async def remove_organization_member(
     leaving a workspace revokes their keys and connections there and refuses
     while they own agents, and that is the workspace member route's to do,
     one workspace at a time. Refuses the last `org_admin` too. Recorded in
-    the bound workspace's audit log.
+    the organization's audit log.
     """
     organization_id = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -375,14 +430,14 @@ async def remove_organization_member(
             OrganizationMember.user_id == user_id,
         )
     )
-    await record_audit_event(
+    await record_organization_audit_event(
         session,
-        tenant_id=require_tenant_id(),
+        organization_id=organization_id,
         actor_user_id=user.id,
-        action=AuditAction.ORGANIZATION_MEMBER_REMOVED,
+        action=OrganizationAuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"organization_id": organization_id, "role": role},
+        details={"role": role, **_made_from(request)},
     )
     await session.commit()
     return {"ok": True}

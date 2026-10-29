@@ -499,6 +499,18 @@ export class SwitchClient {
     };
   }
 
+  /** `GET /gateway/organizations/current/audit-events` — the organization's audit log, newest first; organization admin only. */
+  async organizationAuditEvents(): Promise<
+    {
+      action: string;
+      actor_user_id: string | null;
+      target_id: string | null;
+      details: Record<string, unknown> | null;
+    }[]
+  > {
+    return this.gateway("GET", "/organizations/current/audit-events");
+  }
+
   /** `GET /gateway/organizations` — the caller's organizations and their role in each. */
   async organizations(): Promise<OrganizationSummary[]> {
     return this.gateway<OrganizationSummary[]>("GET", "/organizations");

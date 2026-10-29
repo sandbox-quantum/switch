@@ -25,7 +25,12 @@ from switch_core.clients.client_lifecycle_service import (
     TenantIsolationNotInForce,
 )
 from switch_core.config import SwitchConfig
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import (
+    AuditAction,
+    OrganizationAuditAction,
+    record_audit_event,
+    record_organization_audit_event,
+)
 from switch_core.db.models import Organization, Tenant, User
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.organization_store import (
@@ -286,12 +291,7 @@ async def create_organization(
         tenant,
         creator_id,
         organization_role=ORGANIZATION_ADMIN_ROLE,
-        details={
-            "name": tenant.name,
-            "slug": tenant.slug,
-            "organization_id": organization.id,
-            "organization_created": True,
-        },
+        new_organization=organization,
     )
     return organization, tenant
 
@@ -320,12 +320,7 @@ async def create_workspace(
         creator_id,
         # Already the organization's `org_admin`, a row joining leaves as it is.
         organization_role="member",
-        details={
-            "name": tenant.name,
-            "slug": tenant.slug,
-            "organization_id": organization_id,
-            "organization_created": False,
-        },
+        new_organization=None,
     )
     return tenant
 
@@ -353,9 +348,11 @@ async def _add_creator(
     creator_id: str,
     *,
     organization_role: str,
-    details: dict[str, object],
+    new_organization: Organization | None,
 ) -> None:
-    """Make `creator_id` the new workspace's `owner` and record its creation.
+    """Make `creator_id` the new workspace's `owner` and record its creation:
+    in the workspace's audit log, and in its organization's, with the
+    organization's own creation first when `new_organization` was made for it.
 
     A transaction of its own, after the workspace's: the tenant row has to be
     committed before `ensure_system_client` can provision against it, and that
@@ -379,7 +376,34 @@ async def _add_creator(
                 action=AuditAction.TENANT_CREATED,
                 target_type="tenant",
                 target_id=tenant.id,
-                details=details,
+                details={
+                    "name": tenant.name,
+                    "slug": tenant.slug,
+                    "organization_id": tenant.organization_id,
+                },
+            )
+            assert tenant.organization_id is not None
+            if new_organization is not None:
+                await record_organization_audit_event(
+                    session,
+                    organization_id=tenant.organization_id,
+                    actor_user_id=creator_id,
+                    action=OrganizationAuditAction.ORGANIZATION_CREATED,
+                    target_type="organization",
+                    target_id=new_organization.id,
+                    details={
+                        "name": new_organization.name,
+                        "slug": new_organization.slug,
+                    },
+                )
+            await record_organization_audit_event(
+                session,
+                organization_id=tenant.organization_id,
+                actor_user_id=creator_id,
+                action=OrganizationAuditAction.WORKSPACE_CREATED,
+                target_type="workspace",
+                target_id=tenant.id,
+                details={"name": tenant.name, "slug": tenant.slug},
             )
             await session.commit()
     except Exception:
