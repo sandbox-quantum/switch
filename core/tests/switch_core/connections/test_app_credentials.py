@@ -166,6 +166,7 @@ class TestSavedSecrets:
         with pytest.raises(UnreadableAppError) as unreadable:
             load_saved_app(
                 spec,
+                definition=CATALOG["google-workspace"].definition,
                 client_id="example-client-id",
                 settings={},
                 secrets=not_json,

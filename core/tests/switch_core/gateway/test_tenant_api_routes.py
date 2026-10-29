@@ -1613,7 +1613,7 @@ class TestMemberRoutes:
             session_factory=session_factory,
             keyring=_KEYRING,
             catalog=CATALOG,
-            adapters={"github": GitHubAdapter(github, AsyncMock())},  # type: ignore[arg-type]
+            adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},  # type: ignore[arg-type]
             organization_apps=None,
             disabled={},
             store=ServiceConnectionStore(),

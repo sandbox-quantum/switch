@@ -130,6 +130,8 @@ class _OrganizationApp:
     values: AppValues | None
     load_error: str | None
     unreadable: bool
+    # The write level's permissions its GitHub App is short of.
+    lacks_write: tuple[str, ...]
 
     @property
     def current(self) -> str | None:
@@ -148,18 +150,23 @@ async def _read(
 ) -> _OrganizationApp:
     row = await store.get(session, organization_id, spec.service)
     if row is None:
-        return _OrganizationApp(None, None, None, False)
+        return _OrganizationApp(None, None, None, False, ())
     values: AppValues | None = None
     load_error: str | None = None
     unreadable = False
+    lacks_write: tuple[str, ...] = ()
     try:
-        values = load_saved_app(
+        loaded = load_saved_app(
             spec,
+            definition=apps.definition(spec.service),
             client_id=row.client_id,
             settings=row.settings,
             secrets=lambda: store.secrets(row),
             public_url=apps.public_url,
-        ).values
+        )
+        values = loaded.values
+        if loaded.github_app is not None:
+            lacks_write = loaded.github_app.lacks_write
     except UnreadableAppError as error:
         load_error, unreadable = str(error), True
     except AppLoadError as error:
@@ -169,6 +176,7 @@ async def _read(
         values=values,
         load_error=load_error,
         unreadable=unreadable,
+        lacks_write=lacks_write,
     )
 
 
@@ -194,6 +202,7 @@ def _entry(
             load_error=read.load_error,
             redirects=saved_app_redirects(apps, spec),
             usage=usage,
+            lacks_write=read.lacks_write,
         ),
         # Whether the server's app serves the organization's workspaces while
         # it saves none of its own.
