@@ -52,5 +52,6 @@ it('does not suggest it when the controller says signing in would not help', () 
   });
   const html = render();
   expect(html).toContain('An administrator pins where Codex keeps logins.');
+  expect(html).toContain('Can’t be used yet');
   expect(html).not.toContain('codex login');
 });

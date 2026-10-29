@@ -322,7 +322,7 @@ class TestListMachines:
             client,
             laptop,
             providers=[
-                provider("claude"),
+                provider("claude", auth_problem="Said before a given login worked."),
                 provider("codex", auth="missing", auth_problem="In the OS keyring."),
                 provider("cursor", installed=False),
             ],
@@ -598,8 +598,8 @@ class TestCreateAgent:
                     )
                 ],
                 "provider_login_missing",
-                "claude cannot be used on machine 'laptop': An administrator pins "
-                "where it keeps logins.",
+                "claude cannot be used on machine 'laptop'; your owner needs to fix "
+                "this there: An administrator pins where it keeps logins.",
             ),
         ],
     )

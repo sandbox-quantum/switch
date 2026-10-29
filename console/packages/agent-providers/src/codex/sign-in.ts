@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, sep } from 'node:path';
 import { parse } from 'smol-toml';
 import { z } from 'zod';
 import { optionalText } from '../host/provider-home';
@@ -34,7 +35,17 @@ const FILE_STORE_WORKAROUND =
   'Unless your organization enforces the keyring, set cli_auth_credentials_store = "file" in its ' +
   'config.toml (it then keeps the login in plaintext) and run codex login again.';
 
-const inHome = (home: string) => `(Codex home: ${home})`;
+/**
+ * The home as a message names it: from `~` when it is under the user's own
+ * home directory, so a reason relayed to agents and rooms does not carry the
+ * user's name.
+ */
+function shown(home: string): string {
+  const user = homedir();
+  return home === user || home.startsWith(user + sep) ? `~${home.slice(user.length)}` : home;
+}
+
+const inHome = (home: string) => `(Codex home: ${shown(home)})`;
 
 export const codexKeyringLoginUnusable = (home: string) =>
   `Codex keeps this login in the OS keyring, where sessions can use only an OpenAI API key. ${FILE_STORE_WORKAROUND} ${inHome(home)}`;
@@ -53,6 +64,9 @@ export const codexSessionLoginUnchecked = (home: string, cause: string) =>
 
 const BEDROCK_UNSAID =
   'Codex did not say whether this Amazon Bedrock login runs on AWS credentials or on a key Codex keeps, so whether sessions can use it is not known.';
+
+const KIND_UNSAID =
+  'Codex did not say what kind of login this is, so whether sessions can use it is not known.';
 
 /** A Codex the check's deadline stopped before it answered. */
 class CheckTimeout extends Error {
@@ -84,11 +98,13 @@ export async function checkCodexSignIn(input: SignInCheckInput): Promise<Provide
   try {
     // The home this Codex read the login from, as Codex resolved it, when it says.
     found = await withAppServer(input, [], deadline, (client, codexHome) =>
-      machineLogin(input, client, codexHome ?? sourceHome)
+      machineLogin(input, client, codexHome ?? sourceHome, deadline)
     );
   } catch (error) {
     if (error instanceof CheckTimeout)
-      return readiness('unknown', `Could not check Codex's sign-in: ${error.message}`);
+      return loginWontHelp(
+        readiness('unknown', `Could not check Codex's sign-in: ${error.message}`)
+      );
     throw error;
   }
   // Asked only once the first Codex has stopped, within the same deadline.
@@ -105,7 +121,8 @@ export async function checkCodexSignIn(input: SignInCheckInput): Promise<Provide
 async function machineLogin(
   input: SignInCheckInput,
   client: StdioJsonRpcClient,
-  home: string
+  home: string,
+  deadline: number
 ): Promise<ProviderReadiness | HandOver> {
   const { account, requiresOpenaiAuth } = accountSchema.parse(
     await client.request('account/read', { refreshToken: false })
@@ -115,25 +132,31 @@ async function machineLogin(
   // Bedrock on AWS's own credentials keeps nothing in Codex's login store.
   if (account.type === 'amazonBedrock' && account.usesCodexManagedCredentials === false)
     return readiness('authenticated', 'Signed in.');
+  // Sessions on a backend that needs no OpenAI login never use one, so a
+  // leftover login does not matter; Bedrock's key in Codex's store does.
+  if (!requiresOpenaiAuth && account.type !== 'amazonBedrock')
+    return readiness('authenticated', 'Signed in.');
   let inFile: boolean;
   try {
     inFile = await hasCodexAuthFile(home);
   } catch (error) {
-    return readiness('unknown', codexSessionLoginUnchecked(home, describe(error)));
+    return unchecked(home, failure(error, deadline));
   }
   if (inFile) {
     let store: unknown;
     try {
       store = await credentialStore(client, input.cwd, home);
     } catch (error) {
-      return readiness('unknown', codexSessionLoginUnchecked(home, describe(error)));
+      return unchecked(home, failure(error, deadline));
     }
     return store === 'keyring'
       ? readiness('unauthenticated', codexKeyringIgnoresAuthFile(home))
       : readiness('authenticated', 'Signed in.');
   }
+  if (account.type === undefined)
+    return loginWontHelp(readiness('unknown', `${KIND_UNSAID} ${inHome(home)}`));
   if (account.type === 'amazonBedrock' && account.usesCodexManagedCredentials === undefined)
-    return readiness('unknown', `${BEDROCK_UNSAID} ${inHome(home)}`);
+    return loginWontHelp(readiness('unknown', `${BEDROCK_UNSAID} ${inHome(home)}`));
   if (account.type !== 'apiKey')
     return readiness('unauthenticated', codexKeyringLoginUnusable(home));
   let authMethod: string | null;
@@ -144,11 +167,21 @@ async function machineLogin(
   } catch (error) {
     return isUnknownCodexMethod(error, 'getAuthStatus')
       ? readiness('unauthenticated', codexKeyringApiKeyWithheld(home))
-      : readiness('unknown', codexSessionLoginUnchecked(home, describe(error)));
+      : unchecked(home, failure(error, deadline));
   }
   if (authMethod !== 'apikey')
     return readiness('unauthenticated', codexKeyringApiKeyWithheld(home));
   return { handOver: home };
+}
+
+/** A check that could not finish: no sign-in changes that, so it is not offered. */
+function unchecked(home: string, cause: string): ProviderReadiness {
+  return loginWontHelp(readiness('unknown', codexSessionLoginUnchecked(home, cause)));
+}
+
+/** Why a request failed: a Codex the deadline stopped fails as an exit, so say what stopped it. */
+function failure(error: unknown, deadline: number): string {
+  return Date.now() >= deadline ? new CheckTimeout().message : describe(error);
 }
 
 /**
@@ -175,15 +208,17 @@ async function handOverStore(
   deadline: number,
   home: string
 ): Promise<ProviderReadiness> {
-  if (deadline - Date.now() < START_BUDGET_MS)
-    return readiness('unknown', codexSessionLoginUnchecked(home, new CheckTimeout().message));
+  if (deadline - Date.now() < START_BUDGET_MS) return unchecked(home, new CheckTimeout().message);
   let store: unknown;
   try {
     store = await withAppServer(input, CODEX_EPHEMERAL_LOGIN_ARGS, deadline, (session) =>
       readCodexCredentialStore(session, input.cwd)
     );
   } catch (error) {
-    return readiness('unknown', codexSessionLoginUnchecked(home, describe(error)));
+    // The session asks the same, so a Codex that cannot answer fails it too.
+    if (isUnknownCodexMethod(error, 'config/read'))
+      return readiness('unauthenticated', codexKeyringApiKeyWithheld(home));
+    return unchecked(home, describe(error));
   }
   return store === 'ephemeral'
     ? readiness('authenticated', 'Signed in.')

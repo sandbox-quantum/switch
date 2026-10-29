@@ -1,7 +1,5 @@
-import type {
-  ControllerProviderReport,
-  ManagementController,
-} from '@main/core/switch-servers/gateway-client';
+import type { ControllerProviderReport } from '@main/core/switch-servers/controller-provider-report';
+import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import {
   isCloudMachine,
   type MachineProvider,

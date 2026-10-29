@@ -73,6 +73,8 @@ it('does not suggest signing in when the check says it would not help', () => {
   const html = render(false);
 
   expect(html).toContain(pinned);
+  expect(html).toContain('Can’t be used yet');
+  expect(html).not.toContain('Not signed in');
   expect(html).not.toContain('claude auth login');
 });
 

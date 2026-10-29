@@ -50,10 +50,11 @@ export function useProviderReadiness(
 
 /** What is wrong with a provider on a machine, in a few words, or null when nothing is known to be. */
 export function providerProblem(
-  data: { installed: boolean | null; status: string } | undefined
+  data: { installed: boolean | null; status: string; loginHelps?: boolean } | undefined
 ): string | null {
   if (!data) return null;
   if (data.installed === false) return 'CLI not installed';
+  if (data.status === 'unauthenticated' && data.loginHelps === false) return 'Can’t be used yet';
   if (data.status === 'unauthenticated') return 'Not signed in';
   if (data.status === 'unconfigured') return 'No backend configured';
   return null;
@@ -86,7 +87,9 @@ export function ProviderConnectionStatus({
       : missing
         ? 'CLI not installed'
         : data?.status === 'unauthenticated'
-          ? 'Not signed in'
+          ? data.loginHelps === false
+            ? 'Can’t be used yet'
+            : 'Not signed in'
           : data?.status === 'unconfigured'
             ? 'No backend configured'
             : ready

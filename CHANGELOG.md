@@ -2128,15 +2128,18 @@ version of their own to them without also giving them a release of their own.
   to use the keyring, and an API key in the keyring that Codex will not hand
   over or that an administrator's Codex configuration stops Switch handing to
   sessions. It gives the switch to file storage where that helps and names
-  the Codex home it checked, and when it cannot tell, it says so and why.
+  the Codex home it checked (from `~` when it is under your home folder), and
+  when it cannot tell, it says so and why.
   Otherwise an API key in the keyring still counts as signed in, since
   sessions are handed it. The provider status card and the warning beside an
   agent now show what the check said when a provider is not signed in,
   instead of a generic line.
 - **Console stops offering a sign-in that cannot help.** When a provider's
   check says signing in would not fix it (an administrator pinning where
-  Codex keeps logins, say), the status card, Settings → Agent providers and
-  switch-buddy show why instead of the login command or a Sign in button.
+  Codex keeps logins, or a check that could not finish, say), the status
+  card, Settings → Agent providers and switch-buddy say it can't be used yet
+  and why, instead of "Not signed in" with the login command or a Sign in
+  button.
 - **A relative `CODEX_HOME` is refused.** Codex reads one from whichever
   directory it starts in, which differed between Console's check and
   Switch's sessions, so the two could look at different Codex homes. Both

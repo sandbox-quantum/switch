@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as Protocol from '../transport/stdio-json-rpc';
 import { JsonRpcError } from '../transport/stdio-json-rpc';
@@ -24,7 +24,8 @@ const unknownMethod = (method: string) =>
  */
 const codex = vi.hoisted(() => ({
   codexHome: undefined as string | null | undefined,
-  accountDelayMs: 0,
+  /** How long each method takes to answer; a Codex stopped first fails as an exit. */
+  delayMs: {} as Record<string, number>,
   disposeError: null as Error | null,
   account: null as unknown,
   requiresOpenaiAuth: true,
@@ -46,18 +47,20 @@ vi.mock('../transport/stdio-json-rpc', async (original) => ({
       codex.events.push(`start ${this.name}`);
     }
     private stopped: (() => void) | null = null;
+    private disposed = false;
     async request(method: string) {
+      // As the real client does once its Codex is stopped.
+      if (this.disposed) throw new Error('Provider input is closed; command was not written.');
+      const delay = codex.delayMs[method];
+      if (delay)
+        await new Promise<void>((resolve, reject) => {
+          setTimeout(resolve, delay);
+          this.stopped = () => reject(new Error('provider process exited (signal SIGTERM)'));
+        });
       if (method === 'initialize')
         return codex.codexHome === undefined ? {} : { codexHome: codex.codexHome };
-      if (method === 'account/read') {
-        if (codex.accountDelayMs)
-          // Answers late, or fails as an exit if stopped first.
-          await new Promise<void>((resolve, reject) => {
-            setTimeout(resolve, codex.accountDelayMs);
-            this.stopped = () => reject(new Error('provider process exited (signal SIGTERM)'));
-          });
+      if (method === 'account/read')
         return { account: codex.account, requiresOpenaiAuth: codex.requiresOpenaiAuth };
-      }
       if (method === 'getAuthStatus') {
         if (codex.authStatusError) throw codex.authStatusError;
         return codex.authStatus;
@@ -71,6 +74,7 @@ vi.mock('../transport/stdio-json-rpc', async (original) => ({
     }
     notify() {}
     async dispose() {
+      this.disposed = true;
       codex.events.push(`stop ${this.name}`);
       this.stopped?.();
       if (codex.disposeError) throw codex.disposeError;
@@ -84,7 +88,7 @@ let home: string;
 beforeEach(async () => {
   Object.assign(codex, {
     codexHome: undefined,
-    accountDelayMs: 0,
+    delayMs: {},
     disposeError: null,
     account: null,
     requiresOpenaiAuth: true,
@@ -212,7 +216,7 @@ it('gives the cause when the hand-over cannot be checked', async () => {
   codex.account = API_KEY;
   codex.authStatusError = new JsonRpcError(-32603, 'keychain is locked');
   const result = await check();
-  expect(result.status).toBe('unknown');
+  expect(result).toMatchObject({ status: 'unknown', loginHelps: false });
   expect(result.message).toContain('keychain is locked');
 });
 
@@ -281,22 +285,68 @@ it('keeps what it read when a Codex will not stop afterwards', async () => {
 it('says the check ran out of time rather than that Codex crashed', async () => {
   vi.useFakeTimers();
   codex.account = CHATGPT;
-  codex.accountDelayMs = 60_000;
+  codex.delayMs = { 'account/read': 60_000 };
   const result = check();
   await vi.advanceTimersByTimeAsync(20_000);
   expect(await result).toEqual({
     status: 'unknown',
     message: "Could not check Codex's sign-in: the check ran out of its 20 seconds.",
     models: [],
+    loginHelps: false,
   });
 });
+
+it.each([
+  ['config/read', CHATGPT, true],
+  ['getAuthStatus', API_KEY, false],
+] as const)(
+  'says the check ran out of time when it stops Codex during %s',
+  async (method, account, withAuthFile) => {
+    if (withAuthFile) await authFile();
+    vi.useFakeTimers();
+    codex.account = account;
+    codex.delayMs = { 'account/read': 15_000, [method]: 30_000 };
+    const result = check();
+    await vi.advanceTimersByTimeAsync(20_000);
+    const answer = await result;
+    expect(answer.message).toContain('ran out of its 20 seconds');
+    expect(answer.message).not.toContain('exited');
+  }
+);
 
 it('does not start a second Codex with too little of the deadline left', async () => {
   vi.useFakeTimers();
   codex.account = API_KEY;
-  codex.accountDelayMs = 19_000;
+  codex.delayMs = { 'account/read': 19_000 };
   const result = check();
   await vi.advanceTimersByTimeAsync(19_000);
   expect((await result).message).toContain('ran out of its 20 seconds');
   expect(codex.events).toEqual(['start plain', 'stop plain']);
+});
+
+it('pays no mind to a leftover login on a backend that needs no OpenAI login', async () => {
+  codex.account = CHATGPT;
+  codex.requiresOpenaiAuth = false;
+  expect((await check()).status).toBe('authenticated');
+});
+
+it('says it cannot tell when Codex does not say what kind of login it has', async () => {
+  codex.account = {};
+  expect(await check()).toMatchObject({ status: 'unknown', loginHelps: false });
+  expect((await check()).message).toContain('did not say what kind of login');
+});
+
+it('reports a keyring API key as unusable when Codex cannot say where a session keeps it', async () => {
+  codex.account = API_KEY;
+  codex.configReadError = unknownMethod('config/read');
+  expect((await check()).message).toBe(codexKeyringApiKeyWithheld(home));
+});
+
+it('names a home under the user’s own from ~, so relayed reasons carry no user name', async () => {
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('USERPROFILE', root);
+  codex.account = CHATGPT;
+  const { message } = await check({});
+  expect(message).toContain(`(Codex home: ~${join('/', '.codex').replace('/', sep)})`);
+  expect(message).not.toContain(root);
 });

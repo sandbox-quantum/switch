@@ -3969,7 +3969,7 @@ function providerReports(status: unknown): ControllerProviderReport[] {
   });
 }
 
-export type { AdvancedConfigValue, ControllerProviderReport };
+export type { AdvancedConfigValue };
 
 const advancedConfigSchema = z.record(
   z.string(),

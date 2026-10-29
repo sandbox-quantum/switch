@@ -218,7 +218,13 @@ export function providerStatusFrom(
         ...(readiness.loginHelps === false ? { login_helps: false } : {}),
       };
     case 'unknown':
-      return { ...base, auth: 'unknown', auth_source: null, ...said };
+      return {
+        ...base,
+        auth: 'unknown',
+        auth_source: null,
+        ...said,
+        ...(readiness.loginHelps === false ? { login_helps: false } : {}),
+      };
   }
 }
 
@@ -344,12 +350,13 @@ export class ProviderStatuses {
         const signedIn = await this.probe(provider, located.path, given.login);
         if (signedIn?.status === 'authenticated') {
           login = given.login;
+          // What the machine's own check said is not about the login agents use now.
           status = {
             ...status,
             auth: 'ok',
             auth_source: 'sealed',
             reason: undefined,
-            login_helps: undefined,
+            auth_problem: undefined,
           };
         } else {
           problem = {
@@ -362,17 +369,11 @@ export class ProviderStatuses {
             auth_source: 'sealed',
             reason: 'provider_login_expired',
             auth_problem: problem.message.slice(0, 300),
-            login_helps: undefined,
           };
         }
       } else if (given) {
         problem = given.problem;
-        if (problem)
-          status = {
-            ...status,
-            auth_problem: problem.message.slice(0, 300),
-            login_helps: undefined,
-          };
+        if (problem) status = { ...status, auth_problem: problem.message.slice(0, 300) };
       } else {
         const held = this.entries.get(provider);
         login = held?.login ?? null;
@@ -384,12 +385,13 @@ export class ProviderStatuses {
             auth_source: 'sealed',
             reason: held.status.reason,
             ...(held.status.auth_problem ? { auth_problem: held.status.auth_problem } : {}),
-            login_helps: undefined,
           };
       }
     }
     if (status.reason === undefined) delete status.reason;
-    if (status.login_helps === undefined) delete status.login_helps;
+    if (status.auth_problem === undefined) delete status.auth_problem;
+    // Said of the machine's own login, which a given login now stands in for.
+    if (status.auth_source === 'sealed') delete status.login_helps;
     const previous = this.entries.get(provider);
     // A check that started before the one already recorded knows less.
     if (previous && previous.sequence > sequence) return previous.status;

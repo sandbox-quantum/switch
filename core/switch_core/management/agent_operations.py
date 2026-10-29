@@ -69,7 +69,10 @@ def _placement_sentence(
     machine said about the provider's login: a CLI that is signed in in a way
     its agents cannot use is not fixed by logging in, and that says so."""
     if code == reason_codes.PROVIDER_LOGIN_MISSING and problem:
-        return f"{provider} cannot be used on machine '{machine}': {problem}"
+        return (
+            f"{provider} cannot be used on machine '{machine}'; your owner "
+            f"needs to fix this there: {problem}"
+        )
     sentences = {
         reason_codes.CONTROLLER_REVOKED: (
             f"machine '{machine}' has been removed from Switch; pick another machine"
@@ -146,7 +149,11 @@ def _providers(controller: AgentController) -> list[dict[str, Any]]:
             "installed": entry.get("installed") is True,
             "version": entry.get("version"),
             "auth": provider_auth(entry),
-            "problem": _login_problem(entry),
+            # A login that works has nothing wrong with it, whatever else
+            # the machine said along the way.
+            "problem": (
+                _login_problem(entry) if provider_auth(entry) != "ok" else None
+            ),
         }
         for entry in _provider_entries(controller)
     ]
