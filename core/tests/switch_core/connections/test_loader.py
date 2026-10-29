@@ -65,6 +65,8 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
     assert oauth.authorization_params == {"access_type": "offline"}
     assert oauth.prompt == "consent select_account"
     assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    # Revoking the sign-in ends the access tokens agents were given too.
+    assert oauth.revocation_ends_tokens is True
     # Google refuses a made-up code before comparing the redirect URI.
     assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
     assert definition.auth.refresh == "reusable"
@@ -142,6 +144,8 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
     assert oauth.prompt == "consent"
     assert oauth.revocation_discovered is True
+    # Its tokens are taken to outlive a revoked sign-in, up to their 8 hours.
+    assert oauth.revocation_ends_tokens is False
     assert definition.auth.refresh == "rotating"
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
@@ -224,7 +228,12 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert "schema.bases:write" not in definition.access.write.scopes
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
-    assert definition.auth.identity.account_id == "id"
+    # whoami names no email without a scope Airtable's MCP server does not
+    # offer, so the account id names the connection too.
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "id",
+        "id",
+    )
 
 
 @pytest.fixture
@@ -649,6 +658,11 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "    remove_access: Remove Switch under Connected apps in Example.\n",
             "",
             "remove_access",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_ends_tokens: true\n",
+            "revocation_ends_tokens is for a vendor Switch can revoke",
         ),
         (
             "    redirect: [loopback, core]\n",

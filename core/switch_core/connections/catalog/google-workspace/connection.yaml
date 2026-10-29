@@ -22,6 +22,9 @@ auth:
     authorization_url: https://accounts.google.com/o/oauth2/v2/auth
     token_url: https://oauth2.googleapis.com/token
     revocation_url: https://oauth2.googleapis.com/revoke
+    # Revoking the refresh token ends every token of the person's sign-in to
+    # the app, the access tokens already handed to agents included.
+    revocation_ends_tokens: true
     # Google hands out a refresh token only for offline access, and again on
     # a later sign-in only when consent is asked for. The account chooser
     # comes first, so a browser signed in to another Google account (a

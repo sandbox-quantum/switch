@@ -76,7 +76,10 @@ class OAuthClient(BaseModel):
     authorization server's advertised revocation endpoint instead. A vendor
     with neither needs `remove_access`: where the person removes Switch
     themselves, and what the sign-in does until they do, said whenever Switch
-    drops one it cannot revoke.
+    drops one it cannot revoke. `revocation_ends_tokens`: revoking the
+    sign-in there also ends every access token issued on it, so a disconnect
+    that revoked it leaves no token already handed to an agent working. Where
+    it is not said, those tokens are taken to live until they expire.
 
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
@@ -111,6 +114,7 @@ class OAuthClient(BaseModel):
     token_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     revocation_discovered: bool = False
+    revocation_ends_tokens: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
 
@@ -147,6 +151,14 @@ class OAuthClient(BaseModel):
             raise ValueError(
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
+            )
+        if (
+            self.revocation_ends_tokens
+            and self.revocation_url is None
+            and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_ends_tokens is for a vendor Switch can revoke a sign-in at"
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
