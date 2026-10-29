@@ -11,6 +11,7 @@ import json
 import secrets
 import shutil
 from datetime import UTC, datetime, timedelta
+from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -36,7 +37,7 @@ from switch_core.gateway.service_connections import (
 )
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
-from tests.switch_core.connections.fake_vendor import FakeOAuthServer
+from tests.switch_core.connections.fake_vendor import ISSUER, FakeOAuthServer
 from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
 from tests.switch_core.management.harness import (
     Harness,
@@ -754,6 +755,67 @@ class TestRefusals:
             refused = await Console(client, ada).start("github")
         assert refused.status_code == 404
         assert "its own sign-in" in refused.json()["detail"]
+
+
+class TestRefusedOnTheWay:
+    """A sign-in refused before Core takes a code fails at once with the
+    reason, rather than read pending until it expires."""
+
+    async def test_an_app_removed_before_the_browser_leaves(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            world.broker.replace_adapter("example", None)
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            flow = (await console.status()).json()
+        said = world.broker.availability("example")
+        assert said is not None
+        assert left.status_code == 400
+        assert (flow["status"], flow["error"]) == ("failed", said)
+        assert f"<p>{escape(said)}</p>" in left.text
+        assert world.vendor.authorizations == []
+
+    async def test_a_vendor_that_will_not_register_switch(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", redirect="[core]", public_url=PUBLIC
+        )
+        world.vendor.fail[f"{ISSUER}/register"] = (400, {})
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            flow = (await console.status()).json()
+        said = "Example refused to register Switch as a client (HTTP 400)."
+        assert left.status_code == 400
+        assert (flow["status"], flow["error"]) == ("failed", said)
+        assert f"<p>{said}</p>" in left.text
+
+    async def test_an_app_removed_before_the_code_is_handed_back(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            code = await _loopback_code(world, console)
+            world.broker.replace_adapter("example", None)
+            refused = await console.complete(code)
+            flow = (await console.status()).json()
+        assert refused.status_code == 503
+        assert (flow["status"], flow["error"]) == (
+            "failed",
+            world.broker.availability("example"),
+        )
+        assert world.vendor.token_requests == []
 
 
 WORKSPACE_REFUSAL = {

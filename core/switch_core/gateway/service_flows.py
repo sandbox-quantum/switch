@@ -181,18 +181,26 @@ async def authorize(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
 ) -> Response:
-    """The browser leaves for the vendor through Core, which marks it."""
-    try:
-        definition, adapter = broker.sign_in(service)
-    except ServiceError:
-        return _page("Connections", INTERRUPTED, 400)
+    """The browser leaves for the vendor through Core, which marks it. A
+    refusal on the way, by this server or the vendor, fails the flow with its
+    reason, so Console shows it at once, and the page says it too."""
     try:
         flow = await flows.flow(state)
         if flow.service != service or flow.mode != "core":
             raise FlowError(INTERRUPTED)
+    except FlowError:
+        return _page("Connections", INTERRUPTED, 400)
+    try:
+        _, adapter = broker.sign_in(service)
+    except ServiceError as refusal:
+        await flows.refuse(flow.stored, refusal.message)
+        return _page(flow.name, refusal.message, 400)
+    try:
         url, nonce = await flows.vendor_url(flow, adapter)
-    except (FlowError, ServiceAdapterError):
-        return _page(definition.name, INTERRUPTED, 400)
+    except FlowError:
+        return _page(flow.name, INTERRUPTED, 400)
+    except ServiceAdapterError as error:
+        return _page(flow.name, str(error), 400)
     response = RedirectResponse(
         url, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
     )
@@ -266,6 +274,7 @@ async def complete(
     try:
         _, adapter = broker.sign_in(service)
     except ServiceError as error:
+        await flows.refuse(flow.stored, error.message)
         return service_refusal(error)
     try:
         exchange = await flows.complete(
