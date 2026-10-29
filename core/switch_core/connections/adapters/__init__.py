@@ -92,6 +92,10 @@ class ServiceAdapter(Protocol):
     # issue for it (GitHub without its App's signing key): people can connect,
     # nothing can be granted.
     can_issue: bool
+    # True where this server's app lets agents read only (a GitHub App short
+    # of the permissions the write level asks for): the broker refuses a
+    # write grant, and a token for one made before.
+    read_only: bool
 
     def current_client_id(self) -> str | None:
         """The vendor client this adapter signs in through, where it knows it

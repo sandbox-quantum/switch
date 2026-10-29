@@ -127,7 +127,11 @@ class TestGitHubApp:
             _github_values(self.KEY),
         )
         assert result.ok
-        assert result.settings == {"slug": "example-app"}
+        # Switch keeps what GitHub answered, to know later what agents can do.
+        assert result.settings == {
+            "slug": "example-app",
+            "permissions": self.PERMISSIONS,
+        }
         assert [check.name for check in result.checks] == [
             "private_key",
             "permissions",
@@ -171,10 +175,10 @@ class TestGitHubApp:
         failure = result.first_failure()
         assert failure is not None and "2048" in failure.message
 
-    async def test_an_app_short_of_a_permission_agents_are_granted_fails(
+    async def test_an_app_short_of_a_permission_agents_read_with_fails(
         self,
     ) -> None:
-        """Without it, the first grant to use it would fail at its token."""
+        """It can serve no grant: even a read grant's token would fail."""
         result = await check_github_app(
             _github(
                 _app({"contents": "read", "metadata": "read"}),
@@ -187,14 +191,51 @@ class TestGitHubApp:
         assert failure is not None
         assert (failure.name, failure.field) == ("permissions", None)
         assert failure.message == (
-            "The App lacks repository permissions agents are granted: Contents "
-            "needs Read and write, and it has Read-only; Pull requests needs Read "
-            "and write, and it has no access. Change them in the App's settings, "
-            "under Permissions & events; every account that installed the App is "
-            "then asked to accept the change."
+            "The App lacks repository permissions agents need to read: Pull "
+            "requests needs Read-only, and it has no access. For agents to write "
+            "as well: Contents needs Read and write, and it has Read-only; Pull "
+            "requests needs Read and write, and it has no access. Change them in "
+            "the App's settings, under Permissions & events; every account that "
+            "installed the App is then asked to accept the change."
         )
         # The secret is still checked, so one save says everything wrong.
         assert result.checks[-1].name == "client_secret" and result.checks[-1].ok
+
+    async def test_an_app_that_can_only_read_passes_saying_so(self) -> None:
+        """Agents read through it; a write grant on it is refused."""
+        permissions = {"contents": "read", "pull_requests": "read"}
+        result = await check_github_app(
+            _github(_app(permissions), {"error": "bad_verification_code"}),
+            GITHUB,
+            _github_values(self.KEY),
+        )
+        assert result.ok
+        check = result.checks[1]
+        assert (check.name, check.ok, check.field) == ("permissions", True, None)
+        assert check.message == (
+            "The App has the repository permissions agents need to read, but not "
+            "to write: Contents needs Read and write, and it has Read-only; Pull "
+            "requests needs Read and write, and it has Read-only. Agents can only "
+            "read through it, and a write grant is refused. To let them write, "
+            "change them in the App's settings, under Permissions & events; every "
+            "account that installed the App is then asked to accept the change."
+        )
+        assert result.settings == {"slug": "example-app", "permissions": permissions}
+
+    async def test_short_of_one_write_permission_names_that_one(self) -> None:
+        result = await check_github_app(
+            _github(
+                _app({"contents": "write", "pull_requests": "read"}),
+                {"error": "bad_verification_code"},
+            ),
+            GITHUB,
+            _github_values(self.KEY),
+        )
+        assert result.ok
+        assert (
+            "to write: Pull requests needs Read and write, and it has Read-only."
+            in (result.checks[1].message)
+        )
 
     async def test_more_than_the_catalog_asks_for_is_enough(self) -> None:
         result = await check_github_app(

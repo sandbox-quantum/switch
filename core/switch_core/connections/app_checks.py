@@ -5,10 +5,12 @@ request it must refuse, and reads which refusal it chose.
 
 - **GitHub App**: `GET /app` with a JWT the private key signs, issued by the
   client id, proves the key and the client id are one App's, and answers its
-  slug and its permissions, held against the most the catalog's access
-  levels ask for; a code exchange with a made-up code then tells a wrong
-  client secret (`incorrect_client_credentials`) from a right one
-  (`bad_verification_code`).
+  slug and its permissions, which Switch keeps. Held against the catalog's
+  access levels, an App short of what the read level asks for fails the
+  check; one short only of what the write level asks for passes, and lets
+  agents read only (`GitHubApp.lacks_write`). A code exchange with a made-up
+  code then tells a wrong client secret (`incorrect_client_credentials`)
+  from a right one (`bad_verification_code`).
 - **OAuth client**: a code exchange at the token endpoint with a made-up
   code and PKCE verifier, the secret sent as a sign-in sends it, to a
   redirect URI the client registers: Core's own callback, or Switch
@@ -33,6 +35,12 @@ from typing import Any, Literal
 import httpx
 
 from switch_core.connections.adapters import ServiceAdapterError
+from switch_core.connections.adapters.github import (
+    level_permissions,
+    permission_name,
+    permission_rank,
+    permissions_short,
+)
 from switch_core.connections.adapters.oauth import (
     OAuthAdapter,
     OAuthClientCredentials,
@@ -52,9 +60,8 @@ PLACEHOLDER_VERIFIER = "switch-connector-app-check-" + "0" * 32
 
 Field = Literal["client_id", "client_secret", "private_key"]
 
-# A GitHub App permission's levels as `GET /app` names them, least first, and
-# as the App's settings page words the two the catalog asks for.
-GITHUB_LEVELS = ("read", "write", "admin")
+# The two levels the catalog asks of a GitHub App permission, as the App's
+# settings page words them.
 GITHUB_LEVEL_WORDS = {"read": "Read-only", "write": "Read and write"}
 
 
@@ -76,8 +83,9 @@ class Check:
 @dataclass(frozen=True)
 class CheckResult:
     checks: list[Check]
-    # What the vendor said about the app that Switch keeps: a GitHub App's slug.
-    settings: dict[str, str]
+    # What the vendor said about the app that Switch keeps: a GitHub App's
+    # slug, and its permissions as `GET /app` answered them.
+    settings: dict[str, Any]
 
     @property
     def ok(self) -> bool:
@@ -114,27 +122,25 @@ def github_permissions_needed(
 ) -> dict[str, AccessLevel]:
     """The most each App permission is asked for across the catalog's access
     levels: what the App must have for every grant to mint a token."""
-    access = definition.access
-    if access is None:
-        raise ValueError(f"{definition.name} lists no access levels.")
     needed: dict[str, AccessLevel] = {}
-    for level in (access.read, access.write):
-        permissions = {} if level is None else level.permissions or {}
-        for name, wanted in permissions.items():
+    for access in ("read", "write"):
+        for name, wanted in level_permissions(definition, access).items():
             held = needed.get(name)
-            if held is None or _rank(wanted) > _rank(held):
+            if held is None or permission_rank(wanted) > permission_rank(held):
                 needed[name] = wanted
     return needed
 
 
-def _permission(name: str) -> str:
-    """A permission as the App's settings page names it: `Pull requests`."""
-    return name.replace("_", " ").capitalize()
-
-
-def _rank(level: object) -> int:
-    """Where `level` stands among GitHub's, -1 for none or one unknown."""
-    return GITHUB_LEVELS.index(level) if level in GITHUB_LEVELS else -1
+def github_permissions(answer: dict[str, Any]) -> dict[str, str]:
+    """The App's permissions as `GET /app` answered them, each a level."""
+    granted = answer.get("permissions")
+    if not isinstance(granted, dict):
+        return {}
+    return {
+        name: level
+        for name, level in granted.items()
+        if isinstance(name, str) and isinstance(level, str)
+    }
 
 
 def _held(level: object) -> str:
@@ -143,35 +149,67 @@ def _held(level: object) -> str:
     return GITHUB_LEVEL_WORDS.get(str(level), str(level))
 
 
-def _permissions_check(needed: dict[str, AccessLevel], granted: object) -> Check:
-    """Whether the App `GET /app` answered holds every permission `needed`."""
-    has = granted if isinstance(granted, dict) else {}
-    short = [
-        name for name, wanted in needed.items() if _rank(has.get(name)) < _rank(wanted)
-    ]
-    if not short:
-        listed = ", ".join(
-            f"{_permission(name)} ({GITHUB_LEVEL_WORDS[wanted]})"
-            for name, wanted in needed.items()
+def _shortfall(
+    short: list[str], wanted: dict[str, AccessLevel], has: dict[str, str]
+) -> str:
+    """Each permission `short` names: what it needs, and what the App has."""
+    return "; ".join(
+        f"{permission_name(name)} needs {GITHUB_LEVEL_WORDS[wanted[name]]}, and it "
+        f"has {_held(has.get(name))}"
+        for name in short
+    )
+
+
+def _how_to_change(lead: str) -> str:
+    return (
+        f"{lead} in the App's settings, under Permissions & events; every "
+        "account that installed the App is then asked to accept the change."
+    )
+
+
+def _permissions_check(definition: ConnectionDefinition, has: dict[str, str]) -> Check:
+    """Whether the App `GET /app` answered can serve the catalog's grants:
+    short of what the read level asks for, none, and the check fails; short
+    only of what the write level asks for, read grants alone, and it passes
+    saying so."""
+    read = level_permissions(definition, "read")
+    write = level_permissions(definition, "write")
+    short_read = permissions_short(read, has)
+    short_write = permissions_short(write, has)
+    if short_read:
+        also = (
+            f" For agents to write as well: {_shortfall(short_write, write, has)}."
+            if short_write
+            else ""
         )
         return Check(
             "permissions",
-            True,
-            f"The App has the repository permissions agents are granted: {listed}.",
+            False,
+            "The App lacks repository permissions agents need to read: "
+            f"{_shortfall(short_read, read, has)}.{also} "
+            + _how_to_change("Change them"),
             None,
             None,
         )
-    missing = "; ".join(
-        f"{_permission(name)} needs {GITHUB_LEVEL_WORDS[needed[name]]}, and it has "
-        f"{_held(has.get(name))}"
-        for name in short
+    if short_write:
+        return Check(
+            "permissions",
+            True,
+            "The App has the repository permissions agents need to read, but not "
+            f"to write: {_shortfall(short_write, write, has)}. Agents can only "
+            "read through it, and a write grant is refused. "
+            + _how_to_change("To let them write, change them"),
+            None,
+            None,
+        )
+    listed = ", ".join(
+        f"{permission_name(name)} ({GITHUB_LEVEL_WORDS[wanted]})"
+        for name, wanted in github_permissions_needed(definition).items()
     )
     return Check(
         "permissions",
-        False,
-        f"The App lacks repository permissions agents are granted: {missing}. "
-        "Change them in the App's settings, under Permissions & events; every "
-        "account that installed the App is then asked to accept the change.",
+        True,
+        f"The App has the repository permissions agents are granted: {listed}.",
         None,
         None,
     )
@@ -234,6 +272,7 @@ async def check_github_app(
             ],
             settings={},
         )
+    permissions = github_permissions(answer)
     checks = [
         Check(
             "private_key",
@@ -242,9 +281,7 @@ async def check_github_app(
             None,
             None,
         ),
-        _permissions_check(
-            github_permissions_needed(definition), answer.get("permissions")
-        ),
+        _permissions_check(definition, permissions),
     ]
     exchanged = await _send(
         http,
@@ -289,7 +326,7 @@ async def check_github_app(
                 None,
             )
         )
-    return CheckResult(checks, settings={"slug": slug})
+    return CheckResult(checks, settings={"slug": slug, "permissions": permissions})
 
 
 async def check_oauth_client(

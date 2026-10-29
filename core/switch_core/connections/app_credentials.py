@@ -20,7 +20,12 @@ bad row cannot lock the operator out of the page that fixes it.
 
 A GitHub App saved here is called back at `GATEWAY_PUBLIC_URL`, which must
 then be https, or http on this computer (`switch_core.loopback`); a
-configured one keeps the `origin` its file names, under the same rule.
+configured one keeps the `origin` its file names, under the same rule. A
+saved GitHub App keeps the permissions GitHub answered when it was saved or
+last checked (`settings["permissions"]`), and one short of the write
+level's lets agents read only (`GitHubApp.lacks_write`); a configured one is
+never checked, so it is taken to have them, as is a saved one copied in from
+configuration until it is checked.
 
 A change takes effect without a restart (`ConnectorApps.apply`): the
 service's adapter is rebuilt and swapped into the broker, and for GitHub the
@@ -38,7 +43,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -46,7 +51,12 @@ from starlette.datastructures import State
 
 from switch_core.config import SwitchConfig
 from switch_core.connections.adapters import ServiceAdapter
-from switch_core.connections.adapters.github import GitHubApp, load_github_app
+from switch_core.connections.adapters.github import (
+    GitHubApp,
+    level_permissions,
+    load_github_app,
+    permissions_short,
+)
 from switch_core.connections.adapters.oauth import OAuthClientCredentials
 from switch_core.connections.loader import Connection, ConnectionDefinition
 from switch_core.connections.registry import (
@@ -139,6 +149,23 @@ def cannot_work_here(name: str) -> str:
     )
 
 
+def reads_only(name: str, *, organization: bool) -> str:
+    """What people are told of a write grant on a service whose app lets
+    agents read only: a GitHub App short of the write permissions, this
+    server's or, with `organization`, the workspace's organization's."""
+    if organization:
+        return (
+            f"Your organization's {name} App lets agents read only, so {name} "
+            "can't be granted for writing. An organization admin can change "
+            "that under Organization, Connectors."
+        )
+    return (
+        f"This server's {name} App lets agents read only, so {name} can't be "
+        "granted for writing. Whoever runs your Switch server can change that "
+        "in Switch Console, under Admin → Connector apps."
+    )
+
+
 def needs_public_url(name: str) -> str:
     """What members are told about a service whose sign-ins return only to
     the server, on a server without a public address."""
@@ -186,10 +213,11 @@ def app_specs(catalog: Mapping[str, Connection]) -> dict[str, AppSpec]:
 
 @dataclass(frozen=True)
 class AppValues:
-    """An app's values: its client id, non-secret settings and secrets."""
+    """An app's values: its client id, non-secret settings (a GitHub App's
+    slug, and its permissions as GitHub last answered them) and secrets."""
 
     client_id: str
-    settings: dict[str, str]
+    settings: dict[str, Any]
     secrets: dict[str, str] = field(repr=False)
 
 
@@ -240,10 +268,24 @@ class ServerCannotUseAppError(AppLoadError):
     change."""
 
 
-def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubApp:
-    """A GitHub App from saved values, called back at `public_url`."""
+def github_app_from_values(
+    values: AppValues, public_url: str | None, definition: ConnectionDefinition
+) -> GitHubApp:
+    """A GitHub App from saved values, called back at `public_url`, short of
+    whatever `definition`'s write level asks for that it was last found
+    without."""
     if public_url is None or not https_or_loopback(public_url):
         raise ServerCannotUseAppError(GITHUB_NEEDS_HTTPS)
+    permissions = values.settings.get("permissions")
+    if permissions is not None and not isinstance(permissions, dict):
+        raise AppLoadError("The saved GitHub App's permissions are malformed.")
+    lacks_write = (
+        ()
+        if permissions is None
+        else tuple(
+            permissions_short(level_permissions(definition, "write"), permissions)
+        )
+    )
     try:
         connections = GitHubConnections(
             client_id=values.client_id,
@@ -258,7 +300,7 @@ def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubA
         raise AppLoadError(f"The saved GitHub App has no {missing.args[0]}.") from None
     except ValueError as error:
         raise AppLoadError(str(error)) from None
-    return GitHubApp(connections, signer)
+    return GitHubApp(connections, signer, lacks_write=lacks_write)
 
 
 @dataclass(frozen=True)
@@ -274,13 +316,15 @@ class LoadedApp:
 def load_saved_app(
     spec: AppSpec,
     *,
+    definition: ConnectionDefinition,
     client_id: str,
-    settings: Mapping[str, str],
+    settings: Mapping[str, Any],
     secrets: Callable[[], dict[str, str]],
     public_url: str | None,
 ) -> LoadedApp:
-    """A saved row's app, the server's or an organization's. `secrets`
-    decrypts the row's. Raises `AppLoadError` when it cannot be used."""
+    """A saved row's app, the server's or an organization's, for the catalog
+    entry `definition`. `secrets` decrypts the row's. Raises `AppLoadError`
+    when it cannot be used."""
     try:
         opened = secrets()
     except (UndecryptableError, ValueError):
@@ -289,7 +333,9 @@ def load_saved_app(
         raise UnreadableAppError(UNREADABLE) from None
     values = AppValues(client_id, dict(settings), opened)
     if spec.kind == "github_app":
-        return LoadedApp(values, github_app_from_values(values, public_url), None)
+        return LoadedApp(
+            values, github_app_from_values(values, public_url, definition), None
+        )
     if "client_secret" not in opened:
         raise AppLoadError("The saved client has no client secret.")
     return LoadedApp(
@@ -525,6 +571,7 @@ class ConnectorApps:
         try:
             loaded = load_saved_app(
                 spec,
+                definition=self.definition(spec.service),
                 client_id=row.client_id,
                 settings=row.settings,
                 secrets=lambda: self._store.secrets(row),

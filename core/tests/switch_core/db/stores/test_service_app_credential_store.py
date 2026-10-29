@@ -219,3 +219,68 @@ class TestRemove:
             assert await STORE.get(session, "github") is None
             assert await STORE.list_all(session) == {}
             assert await STORE.remove(session, "github") is None
+
+
+class TestRecordSettings:
+    async def test_what_the_vendor_says_again_replaces_the_settings_alone(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        operator = await _user(session_factory, "operator")
+        checker = await _user(session_factory, "checker")
+        settings = {"slug": "example-app", "permissions": {"contents": "read"}}
+        async with session_factory() as session:
+            await _save(
+                session,
+                operator,
+                {"client_secret": "example-secret-0000", "private_key": "pem-0000"},
+            )
+            await session.commit()
+            row = await STORE.record_settings(
+                session,
+                service="github",
+                client_id="example-client-id",
+                settings=settings,
+                updated_by=checker,
+            )
+            await session.commit()
+        assert row is not None
+        assert (row.settings, row.updated_by) == (settings, checker)
+        assert STORE.secrets(row) == {
+            "client_secret": "example-secret-0000",
+            "private_key": "pem-0000",
+        }
+
+    async def test_nothing_is_written_for_an_app_no_longer_saved(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        operator = await _user(session_factory, "operator")
+        async with session_factory() as session:
+            assert (
+                await STORE.record_settings(
+                    session,
+                    service="github",
+                    client_id="example-client-id",
+                    settings={"slug": "example-app"},
+                    updated_by=operator,
+                )
+                is None
+            )
+            await _save(
+                session,
+                operator,
+                {"client_secret": "example-secret-0000", "private_key": "pem-0000"},
+            )
+            await session.commit()
+            assert (
+                await STORE.record_settings(
+                    session,
+                    service="github",
+                    client_id="another-client-id",
+                    settings={"slug": "another-app"},
+                    updated_by=operator,
+                )
+                is None
+            )
+            await session.commit()
+            row = await STORE.get(session, "github")
+        assert row is not None and row.settings == {"slug": "example-app"}

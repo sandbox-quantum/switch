@@ -87,7 +87,7 @@ def signer() -> AsyncMock:
 
 @pytest.fixture
 def adapter(github: AsyncMock, signer: AsyncMock) -> GitHubAdapter:
-    return GitHubAdapter(github, signer)
+    return GitHubAdapter(github, signer, read_only=False)
 
 
 class TestRefresh:
@@ -350,5 +350,5 @@ class TestSettings:
         assert app is not None and app.signer is None
         assert "GITHUB_APP_CONFIG_PATH" in caplog.text
         assert "not granted to agents" in caplog.text
-        adapter = GitHubAdapter(app.connections, app.signer)
+        adapter = GitHubAdapter(app.connections, app.signer, read_only=app.read_only)
         assert not adapter.can_issue
