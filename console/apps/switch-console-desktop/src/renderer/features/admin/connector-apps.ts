@@ -3,8 +3,9 @@
  * displayed by the components: each app's state, the one sentence and button
  * that go with it, the order, which actions it offers, and the wording of
  * every dialog. Labels follow what Google and GitHub call things, so the
- * operator can copy values across. The gateway dashboard's page reads the
- * same rules from its own copy, until that page is retired.
+ * operator can copy values across. The gateway dashboard's Connectors page
+ * keeps its own copy of the same rules (`gateway/src/pages/connector-apps/
+ * connectorApps.ts`), so a change to one is made to the other.
  */
 import {
   redirectUris,
@@ -455,10 +456,7 @@ export function moveChecklist(app: ConnectorApp): ChecklistItem[] {
 
 export const sentBackTo = (publicUrl: string): string => `People are sent back to ${publicUrl}.`;
 
-/**
- * Whether an app can be set up or changed here now: a vendor that sends people
- * back to the server needs the public URL first.
- */
+/** Something the operator confirms is so, and what goes wrong when it isn't. */
 export interface Confirmation {
   label: string;
   /** What goes wrong when it isn't so. */
@@ -474,6 +472,11 @@ export function confirmBeforeCheck(app: Pick<ConnectorApp, 'slug'>): Confirmatio
   };
 }
 
+/**
+ * Whether the app can't be set up or changed here now: a vendor that sends
+ * people back to the server needs the public URL first, and the server may
+ * say why it can't have the app at all (`setup_blocked`).
+ */
 export function changeBlocked(app: ConnectorApp, publicUrl: string | null): boolean {
   return (publicUrl === null && app.needs_public_url) || app.setup_blocked !== null;
 }

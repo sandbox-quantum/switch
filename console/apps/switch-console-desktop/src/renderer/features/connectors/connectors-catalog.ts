@@ -63,13 +63,16 @@ export function cardQuickAction(
  * Whether the page is there at all. It is behind the server's
  * `service_connections` flag: with it off, the catalog route is not mounted,
  * so the page is absent rather than drawn empty. Until the flags have been
- * read it waits; flags that could never be read count as off.
+ * read it waits. Flags that could never be read are `unreadable`, which the
+ * page says rather than reading them as off; once read, the last values read
+ * stand while a later read fails.
  */
 export function connectorsPageAccess(
   flags: ServerFeatureFlags | null
-): 'loading' | 'absent' | 'shown' {
+): 'loading' | 'absent' | 'shown' | 'unreadable' {
   if (flags === null || (flags.fetchedAt === null && flags.error === FLAGS_NOT_READ_YET))
     return 'loading';
+  if (flags.fetchedAt === null) return 'unreadable';
   return flags.flags.service_connections ? 'shown' : 'absent';
 }
 
@@ -108,7 +111,7 @@ export function profileConnectAction(
   )
     return null;
   if (entry.status === 'not_connected') return 'connect';
-  if (entry.status === 'needs_reauthorization' || entry.status === 'error') return 'reconnect';
+  if (entry.status === 'needs_reauthorization') return 'reconnect';
   return entry.auth_type === 'api_key' ? 'replace' : null;
 }
 
