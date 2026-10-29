@@ -99,6 +99,8 @@ export interface UpdateState {
     total: number;
   };
   error?: string;
+  /** With `install-failed`: the failure was found at launch, with no one watching. */
+  installFailedAtLaunch?: boolean;
   rollbackVersion?: string;
   releaseNotes?: string;
 }
@@ -198,12 +200,24 @@ class UpdateService implements IInitializable, IDisposable {
     this.failInstall(
       targetVersion,
       'relaunched_unchanged',
-      `Version ${targetVersion} didn't install: ${PRODUCT_NAME} restarted on version ${current}.`
+      `Version ${targetVersion} didn't install: ${PRODUCT_NAME} restarted on version ${current}.`,
+      true
     );
   }
 
-  /** Record an install that did not happen, and show it until it is resolved. */
-  private failInstall(version: string, errorCode: InstallFailureCode, message: string): void {
+  /**
+   * Record an install that did not happen, and show it until it is resolved.
+   * `foundAtLaunch` says nobody was watching it fail: the previous run handed
+   * over and this one came back on the old version. Only then does the
+   * renderer raise a toast, because otherwise the panel or the Settings card the
+   * user clicked already shows the failure.
+   */
+  private failInstall(
+    version: string,
+    errorCode: InstallFailureCode,
+    message: string,
+    foundAtLaunch: boolean
+  ): void {
     log.error('Update did not install', {
       event: 'update.install',
       errorCode,
@@ -212,14 +226,18 @@ class UpdateService implements IInitializable, IDisposable {
       message,
     });
     this.installFailure = { version, message };
-    this.presentInstallFailure(this.installFailure);
+    this.presentInstallFailure(this.installFailure, foundAtLaunch);
   }
 
-  private presentInstallFailure({ version, message }: { version: string; message: string }): void {
+  private presentInstallFailure(
+    { version, message }: { version: string; message: string },
+    foundAtLaunch: boolean
+  ): void {
     this.updateState.status = 'install-failed';
     this.updateState.availableVersion = version;
     this.updateState.error = message;
-    events.emit(updateInstallFailedEvent, { version, message });
+    this.updateState.installFailedAtLaunch = foundAtLaunch;
+    events.emit(updateInstallFailedEvent, { version, message, foundAtLaunch });
   }
 
   /**
@@ -257,7 +275,12 @@ class UpdateService implements IInitializable, IDisposable {
   private async offerInstall(version: string): Promise<void> {
     const blocker = await this.findInstallBlocker();
     if (blocker) {
-      this.failInstall(version, `blocked_${blocker.reason}`, describeBlocker(blocker, version));
+      this.failInstall(
+        version,
+        `blocked_${blocker.reason}`,
+        describeBlocker(blocker, version),
+        false
+      );
       return;
     }
     this.updateState.status = 'downloaded';
@@ -311,7 +334,7 @@ class UpdateService implements IInitializable, IDisposable {
     available: (info: UpdateInfo) => {
       if (this.installFailure && info.version === this.installFailure.version) {
         this.updateState.updateInfo = info;
-        this.presentInstallFailure(this.installFailure);
+        this.presentInstallFailure(this.installFailure, false);
         return;
       }
       this.updateState.status = 'available';
@@ -341,7 +364,8 @@ class UpdateService implements IInitializable, IDisposable {
         this.failInstall(
           this.installingVersion,
           'installer_error',
-          `Version ${this.installingVersion} didn't install: ${errorMessage}`
+          `Version ${this.installingVersion} didn't install: ${errorMessage}`,
+          false
         );
         return;
       }
@@ -555,7 +579,8 @@ class UpdateService implements IInitializable, IDisposable {
           this.failInstall(
             version,
             'installer_error',
-            `Version ${version} didn't install: simulated installer failure`
+            `Version ${version} didn't install: simulated installer failure`,
+            false
           );
           return;
         }
@@ -581,7 +606,8 @@ class UpdateService implements IInitializable, IDisposable {
       this.failInstall(
         version,
         'restart_timeout',
-        `Version ${version} didn't install: ${PRODUCT_NAME} was still running two minutes after the restart.`
+        `Version ${version} didn't install: ${PRODUCT_NAME} was still running two minutes after the restart.`,
+        false
       );
     }, INSTALL_RESTART_GUARD_TIMEOUT_MS);
 
@@ -593,7 +619,8 @@ class UpdateService implements IInitializable, IDisposable {
         this.failInstall(
           version,
           'handover_threw',
-          `Version ${version} didn't install: ${formatUpdaterError(error)}`
+          `Version ${version} didn't install: ${formatUpdaterError(error)}`,
+          false
         );
       }
     }, 250);

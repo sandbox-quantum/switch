@@ -23,6 +23,11 @@ const SNOOZE_HOURS = 6;
 export const UPDATE_AVAILABLE_TOAST_ID = 'console-update-available';
 /** One "didn't install" toast at a time, however many times main repeats it. */
 export const UPDATE_INSTALL_FAILED_TOAST_ID = 'console-update-install-failed';
+/** Shared by the update toasts' action buttons, so they look and move alike. */
+const UPDATE_TOAST_CLASS_NAMES = {
+  actionButton:
+    'group/action cursor-pointer transition-all duration-150 hover:bg-primary/85 active:scale-[0.97]',
+};
 
 type DownloadProgress = {
   percent?: number;
@@ -76,6 +81,7 @@ type MainUpdateState = {
   updateInfo?: { version: string; releaseDate?: string; releaseName?: string | null };
   downloadProgress?: DownloadProgress;
   error?: string;
+  installFailedAtLaunch?: boolean;
 };
 
 export function mainStateToRendererState(main: MainUpdateState): UpdateState {
@@ -228,7 +234,9 @@ export class UpdateStore {
         this.availableVersion = d.version;
         this.state = { status: 'install-failed', message: d.message };
       });
-      this._toastInstallFailed(d.message);
+      // A failure after a click is already on the panel or the card that was
+      // clicked. Only one found at launch needs telling.
+      if (d.foundAtLaunch) this._toastInstallFailed(d.message);
     });
 
     events.on(updateErrorEvent, (d) => {
@@ -263,9 +271,11 @@ export class UpdateStore {
         this.availableVersion = main.availableVersion;
         this.state = mainStateToRendererState(main);
       });
-      // Main finds this out at launch, before any window is listening: the
+      // Main usually finds this out at launch before the window listens: the
       // update the user restarted for did not take, and they should hear so.
-      if (this.state.status === 'install-failed') this._toastInstallFailed(this.state.message);
+      if (this.state.status === 'install-failed' && main.installFailedAtLaunch) {
+        this._toastInstallFailed(this.state.message);
+      }
     } catch {
       // A failed resync is not itself an update failure — the check that
       // follows will establish real state.
@@ -366,12 +376,20 @@ export class UpdateStore {
     toast.error('Update failed', { description: message, duration: 8_000 });
   }
 
+  /**
+   * Point at the update card rather than repeat its button: "Download manually"
+   * quits the app, so it lives where the reason and the button are read together.
+   */
   private _toastInstallFailed(message: string): void {
     toast.error("Update didn't install", {
       id: UPDATE_INSTALL_FAILED_TOAST_ID,
       description: message,
-      duration: 15_000,
-      action: { label: 'Download manually', onClick: () => void this.openLatest() },
+      duration: 10_000,
+      classNames: UPDATE_TOAST_CLASS_NAMES,
+      action: {
+        label: createUpdateToastActionLabel('Details'),
+        onClick: () => appState.navigation.navigate('settings', { tab: 'general' }),
+      },
     });
   }
 
@@ -386,12 +404,9 @@ export class UpdateStore {
       id: UPDATE_AVAILABLE_TOAST_ID,
       description: `Version ${version} is available to download and install.`,
       duration: 10_000,
-      classNames: {
-        actionButton:
-          'group/action cursor-pointer transition-all duration-150 hover:bg-primary/85 active:scale-[0.97]',
-      },
+      classNames: UPDATE_TOAST_CLASS_NAMES,
       action: {
-        label: createUpdateToastActionLabel(),
+        label: createUpdateToastActionLabel('Update'),
         onClick: () => {
           appState.navigation.navigate('settings', { tab: 'general' });
           if (this.state.status === 'available') {
