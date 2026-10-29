@@ -2195,6 +2195,18 @@ version of their own to them without also giving them a release of their own.
   what happened, but Console said only that the sign-in was interrupted. It
   now shows the reason the server gave until you cancel, as other services'
   sign-ins already did.
+- **Connectors and Admin say when the server's settings can't be read.**
+  When Console had never read a server's feature flags, it took connectors to
+  be off and sent you from Connectors to Your Agents without a word, or left
+  Admin loading. Both pages now say the settings could not be read, with the
+  reason and Retry.
+- **Connector wording says what is so.** The note beside a service an agent
+  uses as you said an Atlassian token already handed out stays valid "until
+  it expires or you disconnect", but disconnecting Atlassian does not end it.
+  It now says the token may keep working until it expires, up to eight hours
+  after it was handed out; the disconnect's own warning says what it could
+  not take back. The Switch skill tells agents to link an agent's Connectors
+  tab, as it is named, rather than its Connections tab.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to
