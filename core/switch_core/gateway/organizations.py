@@ -18,9 +18,9 @@ read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -99,6 +99,14 @@ async def _current_organization_id(session: AsyncSession) -> str:
     return tenant.organization_id
 
 
+class _OrganizationAccess(NamedTuple):
+    organization_id: str
+    # Let through on the operator flag alone, to restore an `org_admin`,
+    # rather than as one: what the organization's audit log marks as
+    # `platform_access`.
+    platform_access: bool
+
+
 async def _require_organization_admin(
     session: AsyncSession,
     user_store: UserStore,
@@ -106,25 +114,28 @@ async def _require_organization_admin(
     user: User,
     *,
     operator_restores: bool,
-) -> str:
-    """The bound workspace's organization id; 403 unless `user` is its
-    `org_admin`, 404 when the workspace belongs to no organization.
+) -> _OrganizationAccess:
+    """The bound workspace's organization, and how `user` got in; 403 unless
+    they are its `org_admin`, 404 when the workspace belongs to no
+    organization.
 
     With `operator_restores`, the platform operator passes too while the
-    organization has no `org_admin`, so that someone can be made one.
+    organization has no `org_admin`, so that someone can be made one. That is
+    the organization's own decision, not the workspace's: an operator who
+    administers the bound workspace by role still has no role here.
     """
     organization_id = await _current_organization_id(session)
     if (
         await user_store.organization_role(session, require_tenant_id(), user.id)
         == ORGANIZATION_ADMIN_ROLE
     ):
-        return organization_id
+        return _OrganizationAccess(organization_id, platform_access=False)
     if (
         operator_restores
         and user.role == "admin"
         and await organization_store.count_admins(session, organization_id) == 0
     ):
-        return organization_id
+        return _OrganizationAccess(organization_id, platform_access=True)
     raise HTTPException(
         status_code=403, detail="Only an organization admin may do this"
     )
@@ -252,9 +263,10 @@ async def create_organization_workspace(
     sign-up, which governs who comes onto the server rather than what an
     organization adds. The platform operator is exempt, as everywhere.
     """
-    organization_id = await _require_organization_admin(
+    access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
+    organization_id = access.organization_id
     allowance = (
         None
         if user.role == "admin"
@@ -286,13 +298,12 @@ async def create_organization_workspace(
     )
 
 
-def _made_from(request: Request) -> dict[str, object]:
+def _made_from(access: _OrganizationAccess) -> dict[str, object]:
     """Where an organization change was made: the workspace the request was
     bound to, and whether the platform operator made it on the operator flag
-    alone, which the organization's admins read here as they would in that
-    workspace's own log."""
+    alone."""
     details: dict[str, object] = {"workspace_id": require_tenant_id()}
-    if request.state.platform_access:
+    if access.platform_access:
         details["platform_access"] = True
     return details
 
@@ -312,9 +323,10 @@ async def list_organization_audit_log(
     actor, and a target that is a person, come with their names, read from
     `users`, which outlives membership.
     """
-    organization_id = await _require_organization_admin(
+    access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
+    organization_id = access.organization_id
     events = await list_organization_audit_events(
         session, organization_id=organization_id, limit=limit, before=before
     )
@@ -356,9 +368,10 @@ async def list_organization_members(
 ) -> list[OrganizationMemberDetail]:
     """Every member of the organization and their role in it. `org_admin` only:
     the list spans every workspace of the organization, not only this one."""
-    organization_id = await _require_organization_admin(
+    access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
+    organization_id = access.organization_id
     members = await organization_store.list_members(session, organization_id)
     return [_member_detail(member_user, member) for member_user, member in members]
 
@@ -367,7 +380,6 @@ async def list_organization_members(
 async def update_organization_member_role(
     user_id: str,
     req: OrganizationMemberUpdateRequest,
-    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
@@ -379,9 +391,10 @@ async def update_organization_member_role(
     Refuses to demote the last `org_admin`: nobody else could grant the role
     again. Recorded in the organization's audit log.
     """
-    organization_id = await _require_organization_admin(
+    access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
+    organization_id = access.organization_id
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
@@ -405,7 +418,7 @@ async def update_organization_member_role(
             details={
                 "from": member.role,
                 "to": req.role,
-                **_made_from(request),
+                **_made_from(access),
             },
         )
     member.role = req.role
@@ -419,7 +432,6 @@ async def update_organization_member_role(
 @router.delete("/organizations/current/members/{user_id}")
 async def remove_organization_member(
     user_id: str,
-    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
@@ -436,9 +448,10 @@ async def remove_organization_member(
     one workspace at a time. Refuses the last `org_admin` too. Recorded in
     the organization's audit log.
     """
-    organization_id = await _require_organization_admin(
+    access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
     )
+    organization_id = access.organization_id
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
@@ -477,7 +490,7 @@ async def remove_organization_member(
         action=OrganizationAuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"role": role, **_made_from(request)},
+        details={"role": role, **_made_from(access)},
     )
     await session.commit()
     return {"ok": True}

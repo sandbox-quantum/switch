@@ -915,3 +915,81 @@ class TestNamesInTheOrganizationAuditLog:
         assert by_action["organization.role_changed"]["actor_name"] == operator_id
         assert by_action["organization.member_removed"]["target_name"] == cy
         assert by_action["organization.member_removed"]["actor_name"] == bob
+
+
+class TestMarkingTheOperatorsOrganizationChanges:
+    """`platform_access` on an organization event follows the organization's
+    own decision, not whether the operator administers the bound workspace."""
+
+    async def _operator_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tenant_id: str,
+        *,
+        workspace_role: str,
+        organization_role: str | None,
+    ) -> str:
+        operator_id = await _operator(session_factory)
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            assert tenant is not None and tenant.organization_id is not None
+            session.add(
+                TenantMember(
+                    tenant_id=tenant_id, user_id=operator_id, role=workspace_role
+                )
+            )
+            if organization_role is not None:
+                session.add(
+                    OrganizationMember(
+                        organization_id=tenant.organization_id,
+                        user_id=operator_id,
+                        role=organization_role,
+                    )
+                )
+            await session.commit()
+        return operator_id
+
+    async def test_restoring_an_admin_is_marked_though_the_operator_owns_the_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await self._operator_in(
+            session_factory, tenant_id, workspace_role="owner", organization_role=None
+        )
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            restored = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+
+        assert restored.status_code == 200, restored.text
+        [event] = await _organization_events(
+            session_factory, tenant_id, OrganizationAuditAction.ROLE_CHANGED
+        )
+        assert event.details is not None
+        assert event.details.get("platform_access") is True
+
+    async def test_a_change_made_as_org_admin_is_not_marked(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await self._operator_in(
+            session_factory,
+            tenant_id,
+            workspace_role="member",
+            organization_role="org_admin",
+        )
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            changed = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+
+        assert changed.status_code == 200, changed.text
+        [event] = await _organization_events(
+            session_factory, tenant_id, OrganizationAuditAction.ROLE_CHANGED
+        )
+        assert event.details is not None
+        assert "platform_access" not in event.details
