@@ -46,6 +46,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,

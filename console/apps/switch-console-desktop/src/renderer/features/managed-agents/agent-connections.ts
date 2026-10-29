@@ -94,7 +94,8 @@ export function connectionCardBlockedReason(card: AgentConnectionCard): string |
 
 /**
  * The card's one line: why the server or the workspace stops the service,
- * even for a grant that is on, which does nothing until that changes; else
+ * even for a grant that is on, which does nothing until that changes; why a
+ * write grant gets no token where the server lets agents read only; else
  * what the grant lets the agent do; else why it cannot be turned on; else
  * what the service is.
  */
@@ -102,6 +103,7 @@ export function connectionCardDetail(card: AgentConnectionCard): string {
   const { grant, service } = card;
   const blocked = connectionCardBlockedReason(card);
   if (blocked !== null) return blocked;
+  if (grant?.access === 'write' && service?.read_only_reason) return service.read_only_reason;
   if (grant) return grant.summary;
   if (service === null) return '';
   if (service.status === 'needs_reauthorization')
