@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OrganizationRole, Workspace } from '@shared/core/workspaces/workspaces';
-import { addWorkspaceThrough, groupByOrganization } from './organization-groups';
+import { addWorkspaceThrough, groupByOrganization, switcherSections } from './organization-groups';
 
 function workspace(
   id: string,
@@ -46,6 +46,40 @@ describe('groupByOrganization', () => {
     expect(groups).toEqual([
       { organizationId: null, name: null, workspaces: [expect.anything(), expect.anything()] },
     ]);
+  });
+});
+
+describe('switcherSections', () => {
+  it('heads each organization where there are several, all named', () => {
+    const { sections, headed } = switcherSections([
+      workspace('a', ACME_ADMIN),
+      workspace('b', GLOBEX_MEMBER),
+    ]);
+
+    expect(headed).toBe(true);
+    expect(sections.map((s) => s.name)).toEqual(['Acme', 'Globex']);
+  });
+
+  it('heads nothing where there is one organization', () => {
+    const { sections, headed } = switcherSections([workspace('a', ACME_ADMIN)]);
+
+    expect(headed).toBe(false);
+    expect(sections.map((s) => s.name)).toEqual(['Acme']);
+  });
+
+  it('lists everything in one run, in order, where an organization has no name', () => {
+    const unnamed = { id: 'o-2', name: null, role: 'member' } as const;
+    const { sections, headed } = switcherSections([
+      workspace('a', ACME_ADMIN),
+      workspace('b', unnamed),
+      workspace('c', ACME_ADMIN),
+    ]);
+
+    expect(headed).toBe(false);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]!.organizationId).toBeNull();
+    expect(sections[0]!.workspaces.map((w) => w.id)).toEqual(['a', 'b', 'c']);
+    expect(addWorkspaceThrough(sections[0]!, sections[0]!.workspaces, null)).toBeNull();
   });
 });
 

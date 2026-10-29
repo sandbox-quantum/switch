@@ -2406,14 +2406,11 @@ describe('organizations', () => {
     await expect(fetchTenants(SERVER)).rejects.toThrow(/unknown organization role: billing/);
   });
 
-  it('names the organizations by id, and says when the server has none', async () => {
+  it('names the organizations by id', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse([{ id: 'o1', slug: 'acme', name: 'Acme Inc', role: 'org_admin' }]) as never
     );
     await expect(fetchOrganizationNames(SERVER)).resolves.toEqual(new Map([['o1', 'Acme Inc']]));
-
-    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
-    await expect(fetchOrganizationNames(SERVER)).resolves.toBeNull();
   });
 
   it('creates an organization and answers with its first workspace', async () => {

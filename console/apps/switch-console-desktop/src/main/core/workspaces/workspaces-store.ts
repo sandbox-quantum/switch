@@ -34,6 +34,20 @@ function tenantColumns(tenant: TenantRecord) {
   };
 }
 
+/**
+ * The organization name to store on an update. A reconcile that could not read
+ * the names keeps the one the row already has for the same organization, so
+ * one failed lookup does not strip every heading in the switcher.
+ */
+function keptOrganizationName(tenant: TenantRecord) {
+  if (tenant.organizationName !== null || tenant.organizationId === null) {
+    return tenant.organizationName;
+  }
+  return sql<
+    string | null
+  >`CASE WHEN ${workspaces.organizationId} = ${tenant.organizationId} THEN ${workspaces.organizationName} END`;
+}
+
 function mapRow(row: WorkspaceRow): Workspace {
   return {
     id: row.id,
@@ -188,6 +202,7 @@ export async function setWorkspaceTenant(workspaceId: string, tenant: TenantReco
     .update(workspaces)
     .set({
       ...tenantColumns(tenant),
+      organizationName: keptOrganizationName(tenant),
       updatedAt: sql`CURRENT_TIMESTAMP`,
     })
     .where(eq(workspaces.id, workspaceId));

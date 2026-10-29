@@ -87,6 +87,11 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
+  workspaceCreationKey: (serverId: string, workspaceId: string | null) => [
+    'workspace-creation',
+    serverId,
+    workspaceId,
+  ],
   workspacesStore: {
     get activeId() {
       return state.activeId;
@@ -182,7 +187,7 @@ function workspace(
   patch: {
     tenantId?: string | null;
     role?: WorkspaceRole | null;
-    organization?: { id: string; name: string; role: OrganizationRole };
+    organization?: { id: string; name: string | null; role: OrganizationRole };
   } = {}
 ): Workspace {
   const tenantId = patch.tenantId === undefined ? `tenant-${id}` : patch.tenantId;
@@ -491,6 +496,22 @@ describe('organizations in the switcher', () => {
     expect(text.indexOf('Acme')).toBeLessThan(text.indexOf('ws-c'));
     expect(text.indexOf('ws-c')).toBeLessThan(text.indexOf('Globex'));
     expect(text.indexOf('Globex')).toBeLessThan(text.indexOf('ws-b'));
+  });
+
+  it('lists everything unheaded where an organization could not be named', async () => {
+    state.organizations.add('srv-1');
+    await openSwitcher(
+      [server('srv-1', 'Cloud')],
+      [
+        workspace('ws-a', 'srv-1', { organization: ACME, role: 'owner' }),
+        workspace('ws-b', 'srv-1', { organization: { id: 'o-9', name: null, role: 'member' } }),
+      ],
+      'ws-a'
+    );
+    await settle();
+
+    expect(document.querySelectorAll('[data-org-heading]')).toHaveLength(0);
+    expect(menuRows().some((text) => text.startsWith('Add workspace'))).toBe(false);
   });
 
   it('offers an org admin Add workspace in their organization only', async () => {

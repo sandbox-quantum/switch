@@ -661,19 +661,9 @@ export async function fetchTenants(server: SwitchServer): Promise<RemoteTenant[]
 /**
  * The names of the organizations the signed-in user belongs to, by id. Like
  * `GET /tenants` it needs no tenant selected.
- *
- * Null on a server from before organizations, which has no such route.
  */
-export async function fetchOrganizationNames(
-  server: SwitchServer
-): Promise<Map<string, string> | null> {
-  let res: Response;
-  try {
-    res = await gatewayFetch(server, '/organizations', { authenticated: true });
-  } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return null;
-    throw cause;
-  }
+export async function fetchOrganizationNames(server: SwitchServer): Promise<Map<string, string>> {
+  const res = await gatewayFetch(server, '/organizations', { authenticated: true });
   const json = (await res.json()) as Array<{ id: string; name: string }>;
   return new Map(json.map((o) => [o.id, o.name]));
 }

@@ -7,7 +7,7 @@ import type { CreateTarget } from '@renderer/features/workspaces/create-workspac
 import {
   addWorkspaceThrough,
   type CreationAnswer,
-  groupByOrganization,
+  switcherSections,
 } from '@renderer/features/workspaces/organization-groups';
 import {
   InvitedBadge,
@@ -21,7 +21,10 @@ import {
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
-import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import {
+  workspaceCreationKey,
+  workspacesStore,
+} from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
@@ -530,8 +533,15 @@ function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer
   // The server's own answer, so Create organization is not offered where
   // creating one is refused: a deployment that keeps to one workspace,
   // invite-only sign-up, or a spent allowance. Offered until it has said no.
+  // Keyed by the workspace the answer is for as well, so switching workspace on
+  // the server asks again rather than reusing one given for another.
+  const onServer = workspacesStore.onServer(server.id);
+  const scoped =
+    onServer.length === 1
+      ? onServer[0]!.id
+      : (onServer.find((w) => w.id === workspacesStore.activeId)?.id ?? null);
   const answer = useQuery({
-    queryKey: ['workspace-creation', server.id],
+    queryKey: workspaceCreationKey(server.id, scoped),
     queryFn: () => rpc.switchServers.workspaceCreation(server.id),
     staleTime: 60_000,
   });
@@ -543,7 +553,7 @@ function AvailableServerWorkspaceGroup({ server, query }: { server: SwitchServer
       }
     : {
         canCreate: true,
-        organizations: workspacesStore.onServer(server.id).some((w) => w.organizationId !== null),
+        organizations: onServer.some((w) => w.organizationId !== null),
         answer: null,
       };
   return (
@@ -635,9 +645,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
       target,
       onSuccess: (workspace) => navigate('server', { serverId: workspace.serverId }),
     });
-  const groups = groupByOrganization(workspaces);
-  // Headed only where there is more than one to tell apart.
-  const headed = groups.length > 1;
+  const { sections, headed } = switcherSections(workspaces);
 
   return (
     <DropdownMenuGroup>
@@ -690,7 +698,7 @@ const ServerWorkspaceGroupBody = observer(function ServerWorkspaceGroupBody({
               No workspace yet — this server has not finished being set up.
             </div>
           ) : (
-            groups.map((group) => {
+            sections.map((group) => {
               const through = whole ? addWorkspaceThrough(group, all, creation.answer) : null;
               return (
                 <Fragment key={group.organizationId ?? 'none'}>

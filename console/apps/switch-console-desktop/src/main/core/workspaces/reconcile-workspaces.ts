@@ -27,21 +27,29 @@ import {
  * The account's memberships on `server`, each with its organization's name.
  *
  * The names are asked for only where a membership names an organization, so a
- * server from before organizations is not asked about a route it lacks. One
- * that reports organization ids but cannot list them leaves the names null,
- * with a warning: the switcher then lists those workspaces without grouping
- * them, which is what it did before organizations.
+ * server from before organizations is not asked about a route it lacks. They
+ * only label the switcher, so failing to read them does not stop the
+ * reconcile — which records a workspace just created or joined — but leaves
+ * them null, with a warning, and the rows keep the names they already had.
  */
 async function fetchTenantRecords(server: SwitchServer): Promise<TenantRecord[]> {
   const tenants = await fetchTenants(server);
-  const organized = tenants.some((tenant) => tenant.organizationId !== null);
-  const names = organized ? await fetchOrganizationNames(server) : null;
-  if (organized && names === null) {
+  const names = tenants.some((tenant) => tenant.organizationId !== null)
+    ? await organizationNames(server)
+    : null;
+  return tenants.map((tenant) => withOrganizationName(tenant, names));
+}
+
+async function organizationNames(server: SwitchServer): Promise<Map<string, string> | null> {
+  try {
+    return await fetchOrganizationNames(server);
+  } catch (error) {
     log.warn('workspaces: the server reports organizations but could not name them', {
       server: server.id,
+      error: String(error),
     });
+    return null;
   }
-  return tenants.map((tenant) => withOrganizationName(tenant, names));
 }
 
 function withOrganizationName(
