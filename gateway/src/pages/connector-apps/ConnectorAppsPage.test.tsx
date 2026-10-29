@@ -110,8 +110,8 @@ describe("ConnectorAppsPage", () => {
     expect(screen.getByText(/People are sent back to https:\/\/switch\.example\.test\./)).toBeTruthy();
   });
 
-  it("holds GitHub's set-up when the public URL is not https, saying why", async () => {
-    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.";
+  it("holds GitHub's set-up when the public URL is neither https nor loopback, saying why", async () => {
+    const blocked = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.";
     serve({
       ...listOf(
         {
