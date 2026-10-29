@@ -487,7 +487,8 @@ class TestThePlatformOperator:
             refused = await client.get("/operator/workspaces")
 
         assert listed.status_code == 200, listed.text
-        assert tenant_id in {row["id"] for row in listed.json()}
+        [row] = [row for row in listed.json() if row["id"] == tenant_id]
+        assert row["organization_name"] == "Acme"
         assert refused.status_code == 403
 
     async def test_restores_an_org_admin_only_where_there_is_none(
@@ -858,3 +859,59 @@ class TestTheOrganizationAuditLog:
             response = await client.get("/organizations/current/audit-events")
 
         assert response.status_code == 403
+
+
+class TestTheCurrentOrganization:
+    async def test_a_member_and_the_operator_are_told_its_name(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("member", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), bob, tenant_id) as client:
+            as_member = await client.get("/organizations/current")
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            as_operator = await client.get("/organizations/current")
+
+        assert as_member.status_code == 200, as_member.text
+        assert (as_member.json()["name"], as_member.json()["role"]) == (
+            "Acme",
+            "member",
+        )
+        assert as_operator.status_code == 200, as_operator.text
+        assert as_operator.json()["role"] is None
+
+
+class TestNamesInTheOrganizationAuditLog:
+    async def test_people_no_longer_members_are_named(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The operator who restored an admin was never a member, and a
+        removed member no longer is; both are named all the same."""
+        bob, cy = _name("bob"), _name("cy")
+        tenant_id = await _workspace(
+            session_factory, {bob: ("owner", "member"), cy: ("member", "member")}
+        )
+        operator_id = await _operator(session_factory)
+        app = _app(session_factory)
+        async with _client(app, operator_id, tenant_id) as client:
+            restored = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+            assert restored.status_code == 200, restored.text
+        async with tenant_session(session_factory, tenant_id) as session:
+            membership = await session.get(TenantMember, (tenant_id, cy))
+            assert membership is not None
+            await session.delete(membership)
+            await session.commit()
+        async with _client(app, bob, tenant_id) as client:
+            removed = await client.delete(f"/organizations/current/members/{cy}")
+            assert removed.status_code == 200, removed.text
+            response = await client.get("/organizations/current/audit-events")
+
+        assert response.status_code == 200, response.text
+        by_action = {row["action"]: row for row in response.json()}
+        assert by_action["organization.role_changed"]["actor_name"] == operator_id
+        assert by_action["organization.member_removed"]["target_name"] == cy
+        assert by_action["organization.member_removed"]["actor_name"] == bob

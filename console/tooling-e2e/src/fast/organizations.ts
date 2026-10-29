@@ -18,6 +18,7 @@ export const organizations: FastScenario = {
     covers: [
       'GET /gateway/organizations',
       'POST /gateway/organizations',
+      'GET /gateway/organizations/current',
       'GET /gateway/organizations/current/workspaces',
       'POST /gateway/organizations/current/workspaces',
     ],
@@ -66,6 +67,10 @@ export const organizations: FastScenario = {
       organization_id: organization.id,
     });
     expect(await founder.tenantId(), 'switched into the first workspace').toBe(workspace.id);
+    expect(await founder.currentOrganization()).toMatchObject({
+      id: organization.id,
+      role: 'org_admin',
+    });
 
     const second = await founder.createOrganizationWorkspace(names.name('second'));
     expect(second.organization_id).toBe(organization.id);

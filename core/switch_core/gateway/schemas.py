@@ -923,6 +923,7 @@ class OperatorWorkspaceResponse(BaseModel):
     slug: str
     name: str
     organization_id: str | None
+    organization_name: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -950,6 +951,32 @@ class OrganizationSummary(BaseModel):
     slug: str
     name: str
     role: str
+
+
+class CurrentOrganizationResponse(BaseModel):
+    """The bound workspace's organization, and the caller's role in it: None
+    for the platform operator there on the operator flag alone."""
+
+    id: str
+    slug: str
+    name: str
+    role: str | None
+
+
+class OrganizationAuditEventDetail(BaseModel):
+    """An organization audit event, with the people it names resolved to
+    names: an actor or a target removed since, or never a member (the platform
+    operator), is not on the organization's member list to look up."""
+
+    id: str
+    occurred_at: str
+    actor_user_id: str | None
+    actor_name: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    target_name: str | None
+    details: dict[str, Any] | None
 
 
 class OrganizationCreateResponse(BaseModel):
