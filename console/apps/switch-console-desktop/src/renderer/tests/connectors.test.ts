@@ -32,6 +32,7 @@ import {
 } from '@renderer/features/connectors/github-access';
 import {
   emptyGitHubGrant,
+  githubAccessOptions,
   githubChoiceSummary,
   githubGrantResources,
   withEveryRepository,
@@ -68,6 +69,7 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
     loopback_ports: null,
@@ -530,6 +532,22 @@ describe('the agents on a connector page', () => {
       repositoryIds: [],
       access: 'read',
     });
+  });
+
+  it('offers pushing only where the server lets agents write', () => {
+    expect(githubAccessOptions(null)).toEqual([
+      { value: 'read', label: 'Read', disabled: false },
+      { value: 'write', label: 'Read and push', disabled: false },
+    ]);
+    expect(
+      githubAccessOptions("This server's GitHub App lets agents read only.").map((option) => [
+        option.value,
+        option.disabled,
+      ])
+    ).toEqual([
+      ['read', false],
+      ['write', true],
+    ]);
   });
 
   it('says a GitHub choice in a sentence, naming the account only among several', () => {

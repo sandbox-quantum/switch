@@ -73,6 +73,13 @@ export const connectionCatalogEntrySchema = z.object({
    */
   unavailable_code: z.enum(UNAVAILABLE_CODES).nullable(),
   /**
+   * Why it can be granted for reading only on the server (its GitHub App
+   * lacks the write permissions), for a form to say beside the write choice
+   * it disables. Null where writing can be granted too, and from a server
+   * that predates it.
+   */
+  read_only_reason: z.string().nullable(),
+  /**
    * Whether a grant hands the agent the owner's own token: on or off, at the
    * connection's level. False for GitHub, whose grant names repositories.
    */
@@ -107,6 +114,7 @@ export const connectionCatalogSchema = z.object({
         connectable: true,
         unavailable_reason: true,
         unavailable_code: true,
+        read_only_reason: true,
         pass_through: true,
         token_lifetime: true,
         loopback_ports: true,
@@ -133,6 +141,7 @@ export const serviceConnectionsSchema = z.object({
       unavailable_reason: z.string().nullable(),
       // Absent from a Switch that predates them.
       unavailable_code: z.string().nullable().default(null),
+      read_only_reason: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
       token_lifetime: z.number().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),

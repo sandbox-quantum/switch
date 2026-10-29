@@ -2512,6 +2512,12 @@ export interface ServiceConnection {
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";
   /**
+   * Why it can be granted for reading only here (its GitHub App lacks the
+   * write permissions), said beside the write choice it disables; null where
+   * writing can be granted too.
+   */
+  read_only_reason: string | null;
+  /**
    * Whether the workspace has it switched on. Off, nobody in the workspace
    * can connect it or turn it on for an agent until a workspace admin
    * switches it on.
@@ -2645,6 +2651,13 @@ export interface ConnectorApp {
   scopes: string[];
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
+  /**
+   * A GitHub App short of the write permissions, as GitHub last answered:
+   * agents can only read through it, and a write grant is refused.
+   */
+  read_only: boolean;
+  /** The permissions it lacks to write, as the App's settings page names them. */
+  lacks_write: string[];
   install_url: string | null;
   updated_by_name: string | null;
   updated_at: string | null;
