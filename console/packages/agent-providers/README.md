@@ -62,6 +62,7 @@ does not filter; use `pnpm exec vitest run <file>` for one provider.
 
 | Provider | Version | Conformance | Limit |
 |---|---|---|---|
+| kiro | Not installed | Not run | Kiro CLI ACP v3 integration has not been verified against a real CLI; `kiro-cli` was unavailable in the development environment on 2026-10-29. |
 | opencode | 1.18.27 | 10/10 | Auto-answers doom-loop and subagent asks in `full-access` with `once`, never `always` (OpenCode remembers `always` per directory). Config isolation only via `XDG_CONFIG_HOME`. |
 | claude | 2.1.260 | 10/10 | `AskUserQuestion` is offered to a session **only while a `canUseTool` callback is registered** — in `default` and `bypassPermissions` alike — so the adapter registers one in every mode and filters the SDK's `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning rather than obeying it. A mid-turn message is queued after the running turn, not folded into it; the adapter keeps the turn open until every queued send is answered. |
 | codex | 0.153.2 | 9/10 | `request_user_input` only works in Plan mode, so `user-input` is skipped. Subagents need `--enable multi_agent_v2`. `turn/steer` joins the running turn. |

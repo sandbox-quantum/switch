@@ -17,6 +17,7 @@ export interface AcpAgentCapabilities {
   promptCapabilities?: AcpPromptCapabilities;
   mcpCapabilities?: { http?: boolean; sse?: boolean };
   sessionCapabilities?: { resume?: unknown };
+  _meta?: Record<string, unknown>;
 }
 
 export interface AcpInitializeResult {

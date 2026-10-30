@@ -207,14 +207,20 @@ export class AcpAdapter implements ProviderAdapter {
     client.onServerRequest('session/request_permission', (params) =>
       this.permission(state, context, params as AcpPermissionRequest)
     );
-    hooks.extensions?.(context, {
-      request: (method, handler) => client.onServerRequest(method, async (p) => handler(p)),
-      notification: (method, handler) => client.onNotification(method, handler),
-    });
+
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
+
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
+      hooks.extensions?.(
+        context,
+        {
+          request: (method, handler) => client.onServerRequest(method, async (p) => handler(p)),
+          notification: (method, handler) => client.onNotification(method, handler),
+        },
+        agent
+      );
       requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
@@ -384,6 +390,14 @@ export class AcpAdapter implements ProviderAdapter {
   async setModel(id: string, model: ModelSelection): Promise<void> {
     const state = this.require(id);
     if (!modelConfigOption(state.configOptions)) {
+      if (this.hooks.noLegacySetModel) {
+        throw new ProviderSessionError(
+          this.provider,
+          id,
+          'Model switching is not supported: no model config option advertised by agent.'
+        );
+      }
+
       await state.client.request('session/set_model', {
         sessionId: state.nativeId,
         modelId: model.id,
