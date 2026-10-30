@@ -459,6 +459,7 @@ async def delete_my_account(
         templates=template_store,
         admin_email=config.gateway_admin_email,
     )
+    workspaces = await deletion.with_former_workspaces(user.id, workspaces)
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
