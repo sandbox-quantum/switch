@@ -118,7 +118,7 @@ def _world(
         http=vendor.client(),
         client_name="Switch (switch.example.com)",
         redirect_uris=redirect_uris(
-            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+            "example", oauth.redirect, named, PUBLIC, oauth.loopback_ports
         ),
         scopes=["read:items", "write:items"],
     )
@@ -850,12 +850,30 @@ class TestCoreCallback:
 
 
 class TestTheWayBackTheServerNames:
-    """An entry that lists both ways back signs in the way the server names
-    (`SERVICE_SIGN_IN_REDIRECT`) where it can offer it."""
+    """An entry that lists both ways back signs in through Switch Console
+    unless the server names Core's callback (`SERVICE_SIGN_IN_REDIRECT`), and
+    registers that callback only then."""
 
     LOOPBACK = [
         f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}" for port in (43123, 43124)
     ]
+
+    async def test_unnamed_it_returns_to_console_and_registers_only_console(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", public_url=PUBLIC)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "loopback"
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert (await console.complete(code)).status_code == 200
+        [registration] = world.vendor.registrations
+        assert registration["redirect_uris"] == self.LOOPBACK
 
     async def test_named_core_returns_through_the_callback_registered_for_it(
         self, session_factory, tmp_path
@@ -1132,7 +1150,7 @@ def _sites_world(
         http=sites.client(),
         client_name="Switch (switch.example.com)",
         redirect_uris=redirect_uris(
-            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+            "example", oauth.redirect, None, PUBLIC, oauth.loopback_ports
         ),
         scopes=["read:items", "write:items"],
     )

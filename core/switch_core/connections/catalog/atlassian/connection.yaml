@@ -10,10 +10,13 @@ auth:
   oauth:
     # Atlassian offers no client to configure: Core registers one itself.
     registration: dynamic
-    # It returns a sign-in to Core's own address only where a site admin has
-    # added it, so sign-ins come back to Switch Console, on a port registered
-    # with the client: Atlassian matches the port exactly.
-    redirect: [loopback]
+    # Sign-ins come back to Switch Console by default, on a port registered
+    # with the client: Atlassian matches the port exactly. A server may send
+    # them to Core's own callback instead (SERVICE_SIGN_IN_REDIRECT names
+    # `core` for atlassian), which Atlassian accepts only from sites whose
+    # admin has allow-listed it. Switching either way registers a new client,
+    # so every Atlassian connection on that server reconnects once.
+    redirect: [loopback, core]
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
     # Without it, consenting to the Jira scopes alone fails after Accept.
     prompt: consent

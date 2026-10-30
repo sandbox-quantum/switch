@@ -144,6 +144,7 @@ class _Server:
             keyring=TEST_KEYRING,
             public_url=public_url,
             server_name="switch.local",
+            redirects={},
         )
         self.apps = ConnectorApps(
             catalog=catalog,

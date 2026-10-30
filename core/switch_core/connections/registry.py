@@ -31,7 +31,11 @@ from switch_core.connections.adapters.oauth import (
     OAuthClientCredentials,
     StaticClient,
 )
-from switch_core.connections.loader import Connection, ConnectionDefinition
+from switch_core.connections.loader import (
+    Connection,
+    ConnectionDefinition,
+    RedirectMode,
+)
 from switch_core.connections.oauth_clients import (
     RegisteredClient,
     client_name,
@@ -82,13 +86,15 @@ def load_client_settings(
 
 @dataclass(frozen=True)
 class ClientRegistration:
-    """What a client Core registers for itself needs: where it is kept, and
-    the host the vendor's consent screen names and calls back."""
+    """What a client Core registers for itself needs: where it is kept, the
+    host the vendor's consent screen names and calls back, and the way back
+    the server names for each service (`SERVICE_SIGN_IN_REDIRECT`)."""
 
     session_factory: async_sessionmaker[AsyncSession]
     keyring: Keyring
     public_url: str | None
     server_name: str
+    redirects: Mapping[str, RedirectMode]
 
 
 def every_scope(definition: ConnectionDefinition) -> list[str]:
@@ -129,7 +135,11 @@ def build_adapter(
         assert oauth is not None
         if oauth.registration == "dynamic":
             uris = redirect_uris(
-                slug, oauth.redirect, registration.public_url, oauth.loopback_ports
+                slug,
+                oauth.redirect,
+                registration.redirects.get(slug),
+                registration.public_url,
+                oauth.loopback_ports,
             )
             if not uris:
                 raise ServiceSetupError(

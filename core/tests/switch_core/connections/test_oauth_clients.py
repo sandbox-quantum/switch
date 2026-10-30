@@ -413,19 +413,27 @@ async def test_the_runtime_role_registers_outside_any_tenant(
     assert row.oauth_client_id == client.client_id
 
 
-def test_registers_the_redirects_this_server_can_use() -> None:
-    public = "https://switch.example.com"
-    core = f"{public}/gateway/service-connections/example/flows/callback"
-    assert redirect_uris("example", ["loopback", "core"], public, None) == [
+def test_registers_cores_callback_only_where_sign_ins_use_it() -> None:
+    core = f"{PUBLIC}/gateway/service-connections/example/flows/callback"
+    both: list[RedirectMode] = ["loopback", "core"]
+    # Beside loopback, Core's callback is registered only once the server
+    # names it, and only where it has a public URL.
+    assert redirect_uris("example", both, None, PUBLIC, None) == [LOOPBACK_REDIRECT_URI]
+    assert redirect_uris("example", both, "loopback", PUBLIC, None) == [
+        LOOPBACK_REDIRECT_URI
+    ]
+    assert redirect_uris("example", both, "core", PUBLIC, None) == [
         LOOPBACK_REDIRECT_URI,
         core,
     ]
-    assert redirect_uris("example", ["loopback", "core"], None, [43123, 43124]) == [
+    assert redirect_uris("example", both, "core", None, [43123, 43124]) == [
         "http://127.0.0.1:43123/switch-services/callback",
         "http://127.0.0.1:43124/switch-services/callback",
     ]
-    assert redirect_uris("example", ["core"], None, None) == []
-    assert core_callback(public + "/", "example") == core
+    # Alone, it is registered wherever the server has a public URL.
+    assert redirect_uris("example", ["core"], None, PUBLIC, None) == [core]
+    assert redirect_uris("example", ["core"], None, None, None) == []
+    assert core_callback(PUBLIC + "/", "example") == core
 
 
 @pytest.mark.parametrize(
@@ -450,6 +458,36 @@ def test_signs_in_the_way_the_server_names_where_it_can_else_the_entrys_first(
     mode: RedirectMode | None,
 ) -> None:
     assert sign_in_mode(modes, named, public_url) == mode
+
+
+async def test_naming_core_registers_again_with_cores_callback(
+    session_factory, vendor
+) -> None:
+    def client(named: RedirectMode | None) -> RegisteredClient:
+        return RegisteredClient(
+            service="example",
+            name="Example",
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            http=vendor.client(),
+            client_name="Switch (switch.example.com)",
+            redirect_uris=redirect_uris(
+                "example", ["loopback", "core"], named, PUBLIC, PORTS
+            ),
+            scopes=SCOPES,
+        )
+
+    endpoints = await _adapter(client(None), vendor).endpoints({})
+    first = await client(None).credentials(endpoints, "")
+    loopback = [loopback_redirect(port) for port in PORTS]
+    assert vendor.registrations[-1]["redirect_uris"] == loopback
+    assert (await client(None).credentials(endpoints, "")) == first
+    second = await client("core").credentials(endpoints, "")
+    assert second.client_id != first.client_id
+    assert vendor.registrations[-1]["redirect_uris"] == [
+        *loopback,
+        core_callback(PUBLIC, "example"),
+    ]
 
 
 def test_names_switch_and_its_host_on_the_consent_screen() -> None:

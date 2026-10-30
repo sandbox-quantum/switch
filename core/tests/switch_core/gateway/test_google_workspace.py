@@ -115,6 +115,7 @@ def _world(
             keyring=TEST_KEYRING,
             public_url=PUBLIC,
             server_name="switch.example.com",
+            redirects={},
         ),
     )
     broker = ServiceBroker(
@@ -211,6 +212,7 @@ def _another_client(world: World, session_factory) -> OAuthAdapter:
             keyring=TEST_KEYRING,
             public_url=PUBLIC,
             server_name="switch.example.com",
+            redirects={},
         ),
     )[SERVICE]
     assert isinstance(adapter, OAuthAdapter)
