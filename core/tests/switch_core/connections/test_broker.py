@@ -1426,7 +1426,7 @@ class TestPassThrough:
             warning = await pt.broker.finish_disconnect(
                 session,
                 pt.world.owner.id,
-                [("unset", SignIn(ConnectionSecret({}), None))],
+                [("unset", SignIn(ConnectionSecret({}), None, {}))],
             )
         assert warning is not None
         assert "unset is not set up on this server" in warning
