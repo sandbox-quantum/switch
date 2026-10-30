@@ -28,7 +28,8 @@ type Outcome = { warning: string | null; error: string | null };
  * in the workspace can connect it, grant it to an agent or be issued a token
  * for it, and running sessions lose it; grants are kept.
  *
- * Switching off something anyone uses asks first, naming who. A switch shows
+ * Left out on a server without service connections, which has nothing to
+ * switch. Switching off something anyone uses asks first, naming who. A switch shows
  * what the server says: it never flips before the server has answered, and a
  * failure leaves it as it was, with the reason under it.
  */
@@ -71,6 +72,9 @@ export default function ServicesSection() {
     else void change(service, enabled);
   };
   const asked = confirming ? switchOffConfirmation(confirming) : null;
+
+  // A server without service connections offers nothing to switch.
+  if (!loading && !error && services === null) return null;
 
   return (
     <Stack spacing={1.5}>

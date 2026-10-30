@@ -19,6 +19,8 @@ function service(slug: string, name: string, patch: Record<string, unknown> = {}
 const USED = service("github", "GitHub", { connected_members: 2, granted_agents: 1 });
 const UNUSED = service("airtable", "Airtable", { enabled: false });
 
+const FLAGS_ON = { body: { flags: [{ key: "service_connections", enabled: true }] } };
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -31,6 +33,7 @@ function toggle(name: string) {
 describe("ServicesSection", () => {
   it("lists each service with who it reaches and who last switched it", async () => {
     routeFetch({
+      "GET /feature-flags": FLAGS_ON,
       "GET /workspace/services": {
         body: {
           services: [
@@ -53,6 +56,7 @@ describe("ServicesSection", () => {
 
   it("switches an unused service without asking", async () => {
     const calls = routeFetch({
+      "GET /feature-flags": FLAGS_ON,
       "GET /workspace/services": [
         { body: { services: [UNUSED] } },
         { body: { services: [{ ...UNUSED, enabled: true }] } },
@@ -72,6 +76,7 @@ describe("ServicesSection", () => {
 
   it("asks before switching off a service people use, then shows the server's warning", async () => {
     const calls = routeFetch({
+      "GET /feature-flags": FLAGS_ON,
       "GET /workspace/services": [
         { body: { services: [USED] } },
         { body: { services: [{ ...USED, enabled: false }] } },
@@ -96,6 +101,7 @@ describe("ServicesSection", () => {
 
   it("leaves the switch as it was, with the reason, when the server refuses", async () => {
     routeFetch({
+      "GET /feature-flags": FLAGS_ON,
       "GET /workspace/services": { body: { services: [UNUSED] } },
       "PUT /workspace/services/airtable": { status: 403, body: { detail: "Workspace admin access required" } },
     });
@@ -108,5 +114,16 @@ describe("ServicesSection", () => {
     expect(
       screen.getByRole("switch", { name: "Airtable for this workspace", checked: false }),
     ).toBeTruthy();
+  });
+
+  it("is left out, without asking for the services, on a server without service connections", async () => {
+    const calls = routeFetch({
+      "GET /feature-flags": { body: { flags: [{ key: "service_connections", enabled: false }] } },
+    });
+    const { container } = render(<ServicesSection />);
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    await vi.waitFor(() => expect(container.textContent).toBe(""));
+    expect(calls.map((c) => c.route)).toEqual(["GET /feature-flags"]);
   });
 });

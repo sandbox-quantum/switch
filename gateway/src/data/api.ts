@@ -1278,7 +1278,14 @@ export interface WorkspaceService {
   granted_agents: number;
 }
 
-export async function fetchWorkspaceServices(): Promise<WorkspaceService[]> {
+/** The workspace's services, or null on a server without service connections,
+ * which mounts none of their routes and so has nothing to switch. */
+export async function fetchWorkspaceServices(): Promise<WorkspaceService[] | null> {
+  const { flags } = await jsonRequest<{ flags: { key: string; enabled: boolean }[] }>(
+    "/feature-flags",
+    "GET",
+  );
+  if (!flags.some((flag) => flag.key === "service_connections" && flag.enabled)) return null;
   const body = await jsonRequest<{ services: WorkspaceService[] }>("/workspace/services", "GET");
   return body.services;
 }
