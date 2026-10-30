@@ -154,6 +154,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="droid",
+        label="Factory Droid",
+        sign_in_command="droid login",
+        connector_type="Droid CLI",
+    ),
 )
 
 
