@@ -134,7 +134,11 @@ def test_it_opens_like_the_event_stream(
     client: TestClient, protocol: _Protocol
 ) -> None:
     with client.websocket_connect(_url(scope="all")) as ws:
+        # The 50 ms heartbeat can beat the stream's first read on a busy
+        # machine, so a ping may come first; nothing else may.
         state = ws.receive_json()
+        while state["event"] == "ping":
+            state = ws.receive_json()
 
         assert state["event"] == "connection_state"
         assert state["data"]["connection_id"] == "c1"

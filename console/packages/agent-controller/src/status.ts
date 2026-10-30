@@ -215,9 +215,16 @@ export function providerStatusFrom(
         auth_source: null,
         reason: 'provider_login_missing',
         ...said,
+        ...(readiness.loginHelps === false ? { login_helps: false } : {}),
       };
     case 'unknown':
-      return { ...base, auth: 'unknown', auth_source: null, ...said };
+      return {
+        ...base,
+        auth: 'unknown',
+        auth_source: null,
+        ...said,
+        ...(readiness.loginHelps === false ? { login_helps: false } : {}),
+      };
   }
 }
 
@@ -343,7 +350,14 @@ export class ProviderStatuses {
         const signedIn = await this.probe(provider, located.path, given.login);
         if (signedIn?.status === 'authenticated') {
           login = given.login;
-          status = { ...status, auth: 'ok', auth_source: 'sealed', reason: undefined };
+          // What the machine's own check said is not about the login agents use now.
+          status = {
+            ...status,
+            auth: 'ok',
+            auth_source: 'sealed',
+            reason: undefined,
+            auth_problem: undefined,
+          };
         } else {
           problem = {
             code: 'provider_login_expired',
@@ -375,6 +389,9 @@ export class ProviderStatuses {
       }
     }
     if (status.reason === undefined) delete status.reason;
+    if (status.auth_problem === undefined) delete status.auth_problem;
+    // Said of the machine's own login, which a given login now stands in for.
+    if (status.auth_source === 'sealed') delete status.login_helps;
     const previous = this.entries.get(provider);
     // A check that started before the one already recorded knows less.
     if (previous && previous.sequence > sequence) return previous.status;
@@ -513,6 +530,7 @@ function fingerprintProvider(status: ProviderStatus): string {
     status.auth,
     status.reason ?? null,
     status.auth_problem ?? null,
+    status.login_helps ?? null,
   ]);
 }
 
@@ -729,6 +747,7 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
       p.auth,
       p.reason,
       p.auth_problem,
+      p.login_helps,
     ]),
     tools: report.tools.map((t) => [t.tool, t.state, t.reason]),
     agents: report.agents.map((a) => [

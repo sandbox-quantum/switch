@@ -8,7 +8,14 @@ import {
 } from './this-computer-status';
 
 function reported(patch: Partial<MachineProvider>): MachineProvider {
-  return { provider: 'claude', ready: false, problem: null, detail: null, ...patch };
+  return {
+    provider: 'claude',
+    ready: false,
+    problem: null,
+    detail: null,
+    loginHelps: true,
+    ...patch,
+  };
 }
 
 describe('Settings → Agent providers on this computer', () => {

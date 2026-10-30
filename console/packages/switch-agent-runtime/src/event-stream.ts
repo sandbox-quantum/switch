@@ -474,6 +474,12 @@ export class SwitchEventStream {
     return this.announces;
   }
 
+  /**
+   * Switch places a session itself when it calls `connect_to_room` over this
+   * connection, so a call's room never waits on the placements stated here.
+   */
+  readonly placementsNameCallRooms = false;
+
   start(): void {
     void this.streamLoop();
     void this.beatLoop();

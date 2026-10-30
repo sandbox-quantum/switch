@@ -80,7 +80,7 @@ export function machineProblem(
   const provider = machine?.providers.find((entry) => entry.provider === agent.definition.provider);
   if (provider && !provider.ready) {
     const label = providerDisplayName(provider.provider) ?? provider.provider;
-    return `${label} is not ready on ${name}${provider.problem ? `: ${provider.problem}` : ''}.`;
+    return `${label} is not ready on ${name}${provider.problem ? `: ${provider.problem}` : ''}.${provider.detail ? ` ${provider.detail}` : ''}`;
   }
   return null;
 }

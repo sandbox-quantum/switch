@@ -648,6 +648,15 @@ export class AgentHostAssignments {
 export type AgentEventStream = {
   /** The agent host, not Switch, tells a room when it starts a session for it. */
   readonly announcesSessionStarts: boolean;
+  /**
+   * The room of a session's tool call is the one this stream was last told
+   * the session is placed in, not one Switch recorded when the session called
+   * `connect_to_room`. True for an agent controller, whose relay names the
+   * room on every call from these placements, so a placement it did not take
+   * leaves the session calling from no room. False for the agent's own
+   * connection, where Switch places the session itself.
+   */
+  readonly placementsNameCallRooms: boolean;
   start(): void;
   setSpawnCapable(capable: boolean): void;
   /**
@@ -844,7 +853,15 @@ export async function runAgentHost(
           identity,
           connectionId,
           placements,
-          publish,
+          // Nothing is stated before the stream exists, so a move made then
+          // has not been taken by anyone: said rather than reported done.
+          publish: async () => {
+            if (!stream) throw new Error("this agent's stream to Switch is not open yet");
+            await publish();
+          },
+          // Without a stream there is no connection for Switch to have placed
+          // the session on either, so the move counts as not taken.
+          placementsNameCallRooms: () => stream?.placementsNameCallRooms ?? true,
           redactions: links.redactions,
         })
       )
@@ -1029,6 +1046,19 @@ export async function runAgentHost(
      * that runs into it is answered once, however often the host is retried.
      */
     const announced = new Set<string>();
+    /**
+     * States the placements before a notice posted as the session, so Switch
+     * answers it from the room it is in. A statement that is not taken is
+     * said and the notice still tried: it is posted once, and a room left
+     * with no word of its session is worse than a notice that fails too.
+     */
+    const publishBeforeNotice = async (what: string) => {
+      await publish().catch((error: unknown) =>
+        console.warn(
+          `Could not state the session placements before ${what}: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
+    };
     /** Says in the room that a session is starting for its message, once per message. */
     const startingNoticed = new Set<string>();
     const tellStarting = async (config: SharedHostConfig, event: Handoff) => {
@@ -1036,7 +1066,7 @@ export async function runAgentHost(
       if (startingNoticed.has(key)) return;
       startingNoticed.add(key);
       try {
-        await publish();
+        await publishBeforeNotice(`telling room ${event.roomId} a session is starting`);
         await announceSessionStart({
           identity,
           connectionId,
@@ -1060,7 +1090,9 @@ export async function runAgentHost(
       announced.add(key);
       try {
         // Switch answers the call from where it holds the session placed.
-        await publish();
+        await publishBeforeNotice(
+          `telling room ${event.roomId} session ${sessionId} failed to start`
+        );
         await announceStartFailure({
           identity,
           connectionId,

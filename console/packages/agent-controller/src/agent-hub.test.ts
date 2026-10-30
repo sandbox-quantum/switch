@@ -311,6 +311,19 @@ describe('placements', () => {
     expect(hub.roomFor(AGENT, 'session-1')).toBe('room-a');
   });
 
+  it('refuses placements from an agent host a newer one replaced, rather than dropping them', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const older = watcher();
+    older.stream.start();
+    const newer = watcher();
+    newer.stream.start();
+    await expect(older.stream.replacePlacements({ 'session-1': 'room-a' })).rejects.toThrow(
+      /a newer one does/
+    );
+    expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
+  });
+
   it('refuses one room for two sessions', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);

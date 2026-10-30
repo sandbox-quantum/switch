@@ -43,12 +43,19 @@ class CallerSession:
     The fence travels with it so an operation that *changes* the binding writes
     it back through the same guarded path the door read it through, instead of
     a second, weaker way into the session row.
+
+    `placed_by_controller` is set when an agent controller named the room
+    (`X-Switch-Room-Id`) rather than Switch recording it. Switch keeps no
+    record of such a session, so a call naming no room means the controller
+    had none for it, which is a different fault to report than a session that
+    never connected.
     """
 
     id: str
     host_id: str
     epoch: str
     room_id: str | None
+    placed_by_controller: bool
 
 
 @dataclass(frozen=True)

@@ -80,6 +80,8 @@ export type MachineProvider = {
   problem: string | null;
   /** What the machine said about it, when it said more than `problem` does. */
   detail: string | null;
+  /** False when signing in with the provider's login command would not make it ready. */
+  loginHelps: boolean;
 };
 
 /**

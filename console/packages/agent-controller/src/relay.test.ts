@@ -537,6 +537,18 @@ describe('forwarding to Switch', () => {
     expect(forwarded.body).toEqual({ row: 1 });
   });
 
+  it('refuses placements while the hub is not connected, rather than reporting them taken', async () => {
+    const agentHost = host();
+    await connected(agentHost);
+    await relay.close();
+    await waitFor(() => agentHost.seen.disconnected.length > 0, 'the hub to drop');
+    await expect(agentHost.stream.replacePlacements({ 'session-1': 'room-a' })).rejects.toThrow(
+      /hub is not connected/
+    );
+    relay = newRelay();
+    await relay.start(null);
+  });
+
   it('names the room of a call from its session’s placement on the hub', async () => {
     // An agent host in the controller's own process states its placements to the hub directly.
     hub.attach('agent-2', 0, ['room-shared']);

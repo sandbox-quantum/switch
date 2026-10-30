@@ -10,18 +10,51 @@ import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio
 export const CODEX_KEYRING_READ_TIMEOUT_MS = 30_000;
 
 const METHOD_NOT_FOUND = -32601;
+const INVALID_REQUEST = -32600;
+
+/**
+ * Whether Codex refused `method` because it does not have it. Codex answers
+ * that with -32600 naming the method as an unknown variant, not JSON-RPC's
+ * -32601; the same words about a parameter's value name the value instead.
+ */
+export function isUnknownCodexMethod(error: unknown, method: string): boolean {
+  return (
+    error instanceof JsonRpcError &&
+    (error.code === METHOD_NOT_FOUND ||
+      (error.code === INVALID_REQUEST && error.message.includes(`unknown variant \`${method}\``)))
+  );
+}
 
 export const CODEX_FILE_STORE_WORKAROUND =
   'Unless your organization enforces the keyring, set cli_auth_credentials_store = "file" in the ' +
   'Codex config.toml on the execution machine, which keeps the login in plaintext, then run codex ' +
   'login again and start a new session.';
 
+/**
+ * Where a session that is handed a keyring login keeps it: in the memory of
+ * its own Codex process, never in a file or the keyring. Given on the command
+ * line, it outranks the user's and the project's configuration, and survives
+ * Codex falling back to its defaults over a configuration it cannot read.
+ */
+export const CODEX_EPHEMERAL_LOGIN_ARGS = ['-c', 'cli_auth_credentials_store="ephemeral"'];
+
+/** Where the Codex behind `client` keeps logins, as its configuration for `cwd` resolves it. */
+export async function readCodexCredentialStore(
+  client: StdioJsonRpcClient,
+  cwd: string
+): Promise<unknown> {
+  const { config } = z
+    .object({ config: z.object({ cli_auth_credentials_store: z.unknown() }) })
+    .parse(await client.request('config/read', { cwd }));
+  return config.cli_auth_credentials_store;
+}
+
 const accountSchema = z.object({
   account: z.object({ type: z.string() }).nullable(),
   requiresOpenaiAuth: z.boolean(),
 });
 
-const authStatusSchema = z.object({
+export const codexAuthStatusSchema = z.object({
   authMethod: z.string().nullable(),
   authToken: z.string().nullish(),
 });
@@ -115,13 +148,13 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
     throw new KeyringLoginError(
       `Codex on the execution machine is signed in with ${loginKind(account.type)} and has no auth.json, so its login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"). A Switch session can take a login from the keyring only when it is an API key. ${CODEX_FILE_STORE_WORKAROUND}`
     );
-  let status: z.infer<typeof authStatusSchema>;
+  let status: z.infer<typeof codexAuthStatusSchema>;
   try {
-    status = authStatusSchema.parse(
+    status = codexAuthStatusSchema.parse(
       await client.request('getAuthStatus', { includeToken: true, refreshToken: false })
     );
   } catch (error) {
-    if (error instanceof JsonRpcError && error.code === METHOD_NOT_FOUND)
+    if (isUnknownCodexMethod(error, 'getAuthStatus'))
       throw new KeyringLoginError(
         `This version of Codex cannot hand Switch the API key it keeps in the OS keyring: it no longer answers getAuthStatus. ${CODEX_FILE_STORE_WORKAROUND}`,
         { cause: error }
