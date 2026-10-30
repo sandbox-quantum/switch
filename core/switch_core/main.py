@@ -199,10 +199,11 @@ from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
+from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_service import RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
-    maintenance_loop as session_activity_maintenance_loop,
+    own_maintenance as own_session_activity_maintenance,
 )
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
@@ -699,6 +700,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         store=OwnershipLeaseStore(),
         processes=SwitchCoreProcessStore(),
     )
+    own_session_activity_maintenance(ownership, session_factory)
     # Every owned consumer's progress, written in batches
     # (`transport/cursors.py`).
     cursor_writer = CursorWriter(
@@ -876,13 +878,14 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     signal_bus.on_recheck(lambda: _recheck_agent_rooms(session_factory, router))
 
     # ── Provisioning ─────────────────────────────────────────────────────────
-    provisioning: Provisioning = PostgresProvisioning(
+    postgres_provisioning = PostgresProvisioning(
         session_factory=session_factory,
         room_store=room_store,
         client_store=client_store,
         router=router,
         invites=invites,
     )
+    provisioning: Provisioning = postgres_provisioning
 
     # One shared read per room for every client in this process.
     room_cache = RoomDeliveryCache(
@@ -1014,6 +1017,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # sockets this process holds, reached from every process over the bus.
     user_changes = LocalUserChanges()
     user_change_publisher = SignalUserChanges(local=user_changes, bus=signal_bus)
+    room_changes = RoomChanges(
+        session_factory=session_factory,
+        publisher=user_change_publisher,
+        window_seconds=COALESCE_SECONDS,
+    )
+    room_service.on_room_changed(room_changes.room_changed)
+    postgres_provisioning.on_membership_changed(room_changes.room_changed)
     management = create_management(
         config,
         session_factory,
@@ -1157,6 +1167,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         id_server_name=config.id_server_name,
         media_max_bytes=config.agent_media_max_bytes,
         agent_chats_enabled=config.agent_chats_enabled,
+        group_chats_enabled=config.group_chats_enabled,
         connections=connections,
     )
     # Changes to people's chats made in another process wake the Console
@@ -1165,6 +1176,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
+    chat_service.on_agent_room_changed(room_changes.rooms_changed)
+    room_service.on_room_changed(chat_service.room_changed)
 
     # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,
@@ -1375,9 +1388,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             attachment_group_task = asyncio.create_task(
                 _attachment_group_sweep_loop(session_factory, router)
             )
-            session_activity_task = asyncio.create_task(
-                session_activity_maintenance_loop(session_factory)
-            )
             connection_sweep_task = asyncio.create_task(
                 _connection_sweep_loop(protocol)
             )
@@ -1426,7 +1436,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 retention_task.cancel()
                 attachment_group_task.cancel()
                 router.close()
-                session_activity_task.cancel()
                 connection_sweep_task.cancel()
                 service_token_task.cancel()
                 if snapshot_task is not None:

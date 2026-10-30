@@ -385,11 +385,18 @@ async def test_an_interrupted_turn_keeps_its_own_phrase_and_says_how_long_too() 
     assert state == "Turn interrupted. Worked for 45s."
 
 
-async def test_a_running_turn_shows_live_elapsed_seconds() -> None:
-    """The publisher refreshes this duration while the turn is running."""
-    state = turn_state([], _turn("running"), tool_detail=True, elapsed_seconds=80)
+async def test_a_running_turn_shows_the_whole_minutes_it_has_run() -> None:
+    """The clock alone redraws a running turn once a minute, so seconds would
+    sit still between redraws and read as a card that had stopped."""
 
-    assert state == "Working… 1m 20s"
+    def running(elapsed: float) -> str:
+        return turn_state(
+            [], _turn("running"), tool_detail=True, elapsed_seconds=elapsed
+        )
+
+    assert running(59) == "Working…"
+    assert running(80) == "Working… 1m"
+    assert running(3725) == "Working… 62m"
 
 
 async def test_with_no_elapsed_seconds_a_completed_turn_says_only_that() -> None:
@@ -686,12 +693,12 @@ async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> N
     items = await _items()
     running = _item(itemId="live", status="in-progress", title="Read")
 
-    drawn = render_activity_plan([*items, running], _turn(), elapsed_seconds=40)
+    drawn = render_activity_plan([*items, running], _turn(), elapsed_seconds=140)
 
     plan = drawn.blocks[0]
     assert plan["type"] == "plan"
     assert plan["title"].endswith("· Running: Read")
-    assert "40s" in plan["title"]
+    assert "2m" in plan["title"]
     assert _turn_cards(plan)[-1]["title"] == "Read"
 
 

@@ -118,6 +118,17 @@ async def test_a_step_is_upserted_by_revision_and_announced_by_turn(service, cha
     assert (step.revision, step.status, step.text) == (2, "completed", "done")
     announced = await changes.expect([("activity", "turn-1"), ("activity", "turn-1")])
     assert all(change.row is None for change in announced)
+    assert all(change.room_id is None for change in announced)
+
+
+async def test_a_step_in_a_room_is_announced_with_its_room(
+    service, session_factory, changes
+):
+    async with session_factory() as db, db.begin():
+        room = await make_room(db, member=AGENT)
+    await service.report_item(AGENT, SESSION, **_step(room_id=room))
+    [change] = await changes.expect([("activity", "turn-1")])
+    assert change.room_id == room
 
 
 def _turn(turn_id: str, revision: int, status: str, usage=()):
@@ -588,11 +599,19 @@ async def test_a_refused_answerer_leaves_the_request_open(service, people, chang
     assert await service.undelivered_outcomes(AGENT) == []
 
 
-async def test_a_row_too_large_to_announce_is_announced_by_key(service, changes):
-    await _open(service, detail="é" * 3990)
+async def test_a_row_too_large_to_announce_is_announced_by_key(
+    service, session_factory, changes
+):
+    async with session_factory() as db, db.begin():
+        room = await make_room(db, member=AGENT)
+    await _open(service, detail="é" * 3990, room_id=room)
     [change] = await changes.expect([("approval.changed", "req-1")])
     assert change.row is None
-    assert (change.agent_id, change.session_id) == (AGENT, SESSION)
+    assert (change.agent_id, change.session_id, change.room_id) == (
+        AGENT,
+        SESSION,
+        room,
+    )
 
 
 async def test_a_signed_in_owner_may_answer_outside_a_room(service, session_factory):

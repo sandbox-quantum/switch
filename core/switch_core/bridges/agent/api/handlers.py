@@ -1558,9 +1558,12 @@ async def connection_placements(
     here after each change and on every (re)connect, so a restart of either
     side converges on what the watcher knows. A room another connection holds
     is taken over, as `connect_to_room` takes it, and that connection is sent
-    `room_released`. Every room must be one the agent belongs to, and every
-    session id at most `MAX_ID_LENGTH` characters; a request that breaks
-    either is refused whole and changes nothing.
+    `room_released`. A session placed in a room the agent does not belong to
+    (any more: the room was deleted, or the agent taken out) is left out and
+    named in `refused`; the rest are placed. A watcher stating the whole set
+    each time would otherwise have every placement refused, again and again,
+    for one room that has gone. A session id longer than `MAX_ID_LENGTH`
+    characters refuses the request whole and changes nothing.
     """
     if agent_id != agent.id:
         raise HTTPException(
@@ -1575,20 +1578,24 @@ async def connection_placements(
         )
     conn = await _admitted_connection(protocol, agent, req)
 
+    refused: dict[str, str] = {}
     for room_id in sorted(set(req.placements.values())):
         try:
             await protocol.require_room_member(agent.id, room_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (ValueError, PermissionError) as exc:
+            refused[room_id] = str(exc)
+    placements = {
+        session_id: room_id
+        for session_id, room_id in req.placements.items()
+        if room_id not in refused
+    }
 
     async with protocol.connections.slots(agent.id):
         async with protocol.connections.recorded(agent.id):
             conn = _current_connection(protocol, agent, req)
             before = protocol.connections.connection_placements(conn)
             try:
-                released = protocol.connections.replace_placements(conn, req.placements)
+                released = protocol.connections.replace_placements(conn, placements)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1596,7 +1603,7 @@ async def connection_placements(
         # recorded, so a move that fails hands nothing over, and before the
         # slots are let go, so a later claim of the room cannot have its count
         # overwritten by this one.
-        for session_id, room_id in req.placements.items():
+        for session_id, room_id in placements.items():
             if before.get(session_id) != room_id:
                 await protocol.event_buffer.hand_counting_to(
                     agent.tenant_id,
@@ -1626,6 +1633,11 @@ async def connection_placements(
                 "session_id": lost.session_id,
             }
             for lost in released
+        ],
+        "refused": [
+            {"session_id": session_id, "room_id": room_id, "reason": refused[room_id]}
+            for session_id, room_id in req.placements.items()
+            if room_id in refused
         ],
     }
 

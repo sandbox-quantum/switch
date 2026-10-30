@@ -36,6 +36,7 @@ import type { AgentConnectionKind } from '@shared/core/agents/agent-connection';
 import { getProvider } from '@shared/core/providers/agent-provider-registry';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { type SidebarGrouping, UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
+import { newRowAction } from './new-row-action';
 import { listedRoomKeys } from './room-tree';
 import { agentExpandKey, roomViewGroupKey } from './sidebar-store';
 import { scopedAgents } from './sidebar-tree-data';
@@ -359,11 +360,15 @@ export const SessionsSectionHeader = observer(function SessionsSectionHeader({
       <div className={legacy ? 'pb-1' : 'px-2 pb-1'}>
         <button
           type="button"
-          onClick={() => showCreateSessionModal({ entryPoint: 'sidebar' })}
+          onClick={() =>
+            newRowAction(roomMode) === 'New Room'
+              ? showCreateRoomModal({})
+              : showCreateSessionModal({ entryPoint: 'sidebar' })
+          }
           className="flex w-full cursor-pointer items-center gap-[9px] rounded-lg px-[9px] py-[6px] text-sm text-foreground-muted transition-colors hover:bg-[var(--sel-soft)] hover:text-foreground"
         >
           <Plus className="size-4 shrink-0" />
-          New Session
+          {newRowAction(roomMode)}
         </button>
       </div>
     </>

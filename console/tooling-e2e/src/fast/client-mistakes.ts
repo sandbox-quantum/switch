@@ -11,8 +11,8 @@ export const clientMistakes: FastScenario = {
   header: {
     id: 'client-mistakes',
     covers: [
-      'POST /agents/{agent_id}/moderation/rooms/{room_id}/invite',
-      'GET /agents/{agent_id}/moderation/rooms/{room_id}',
+      'invite_agent_to_room',
+      'get_room_detail',
       'GET /agents/{agent_id}/rooms/{room_id}/history',
     ],
     lane: 'fast',
@@ -28,8 +28,8 @@ export const clientMistakes: FastScenario = {
     const invite = await switchClient.agentAttempt(
       outsider,
       'POST',
-      `/agents/${outsider.id}/moderation/rooms/${room.id}/invite`,
-      { agent_name: outsider.name }
+      `/agents/${outsider.id}/ops/invite_agent_to_room`,
+      { room_id: room.id, agent_name: outsider.name }
     );
     expect(invite, 'an outsider inviting itself into a room').toEqual({
       status: 403,
@@ -38,9 +38,9 @@ export const clientMistakes: FastScenario = {
 
     const lookup = await switchClient.agentAttempt(
       outsider,
-      'GET',
-      `/agents/${outsider.id}/moderation/rooms/${room.id}`,
-      null
+      'POST',
+      `/agents/${outsider.id}/ops/get_room_detail`,
+      { room_id: room.id }
     );
     expect(lookup, 'an outsider reading a room').toEqual({
       status: 403,

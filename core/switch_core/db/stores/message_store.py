@@ -1,7 +1,7 @@
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import BigInteger, Text, and_, column, func, or_, select, text, values
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Message, MessageAttachment
@@ -189,6 +189,29 @@ class MessageStore:
         )
         heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
         return {room_id: heads.get(room_id, 0) for room_id in room_ids}
+
+    async def rooms_past(
+        self, session: AsyncSession, cursors: dict[str, int]
+    ) -> set[str]:
+        """Of the rooms in `cursors`, the ones with a row after their cursor,
+        in one query whose result is only those rooms."""
+        if not cursors:
+            return set()
+        position = values(
+            column("room_id", Text), column("seq", BigInteger), name="position"
+        ).data(list(cursors.items()))
+        result = await session.execute(
+            select(Message.room_id)
+            .join(
+                position,
+                and_(
+                    Message.room_id == position.c.room_id,
+                    Message.seq > position.c.seq,
+                ),
+            )
+            .distinct()
+        )
+        return set(result.scalars().all())
 
     async def get_by_transport_event_id(
         self, session: AsyncSession, transport_event_id: str

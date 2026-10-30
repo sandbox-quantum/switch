@@ -24,6 +24,8 @@ export type Capability = {
   compact: boolean;
   modelChange: boolean;
   attachmentMimeTypes: string[];
+  /** The host runs `message.retry`; absent from a host built before it, which means no. */
+  retry?: boolean;
 };
 export type Attachment = {
   attachmentId: Id;
@@ -145,6 +147,8 @@ export type CommandBody =
   | { type: 'session.stop' }
   | { type: 'session.reset' }
   | { type: 'session.compact' }
+  /** Run again the turn a room message started, which ended without an answer; nothing is posted again. */
+  | { type: 'message.retry'; messageId: Id }
   | { type: 'session.model.set'; modelId: string; options: Record<string, string> };
 /** The server sets origin from a verified identity. Do not trust origin from a client. */
 export type Command = {

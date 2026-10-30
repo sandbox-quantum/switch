@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 import re
 import secrets
@@ -171,6 +173,25 @@ if TYPE_CHECKING:
     from switch_core.session_activity.outcomes import ApprovalOutcomes
 
 logger = logging.getLogger(__name__)
+
+LIST_ALL_ROOMS_MAX = 500
+
+
+def _encode_room_cursor(created_at: datetime | str, room_id: str) -> str:
+    stamp = created_at.isoformat() if isinstance(created_at, datetime) else created_at
+    raw = json.dumps([stamp, room_id]).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _decode_room_cursor(cursor: str) -> tuple[datetime, str]:
+    """A `list_all_rooms` cursor's position. It only says where a page starts
+    in this tenant's own rooms, so a cursor from elsewhere moves a page and
+    reveals nothing."""
+    try:
+        created_at, room_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        return datetime.fromisoformat(created_at), str(room_id)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("cursor is not one list_all_rooms returned") from exc
 
 
 # \A and \Z rather than ^ and $: Python's $ also matches before a single
@@ -3667,17 +3688,32 @@ class AgentCore:
             await session.commit()
 
     async def list_all_rooms(
-        self, agent_id: str, *, include_archived: bool = False
-    ) -> list[Room]:
-        """List all rooms (moderation only).
-
-        Archived rooms are excluded unless `include_archived` is set.
-        """
+        self,
+        agent_id: str,
+        *,
+        include_archived: bool,
+        name_contains: str | None,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[Room], str | None]:
+        """One page of every room, oldest first, and the cursor for the next
+        page (None on the last). Archived rooms are excluded unless
+        `include_archived` is set."""
+        if not 1 <= limit <= LIST_ALL_ROOMS_MAX:
+            raise ValueError(f"limit must be between 1 and {LIST_ALL_ROOMS_MAX}")
         async with self.session_factory() as session:
-            rooms = await self.room_store.get_all(
-                session, include_archived=include_archived
+            rooms = await self.room_store.page_all(
+                session,
+                include_archived=include_archived,
+                name_contains=name_contains,
+                limit=limit + 1,
+                after=_decode_room_cursor(cursor) if cursor is not None else None,
             )
-        return rooms
+        if len(rooms) <= limit:
+            return rooms, None
+        rooms = rooms[:limit]
+        last = rooms[-1]
+        return rooms, _encode_room_cursor(last.created_at, last.id)
 
     async def list_room_groups(self, agent_id: str) -> list[dict[str, Any]]:
         """List every room group on the instance, with room counts and paths.

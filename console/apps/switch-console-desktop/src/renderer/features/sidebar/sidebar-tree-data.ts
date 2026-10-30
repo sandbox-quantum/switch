@@ -1,15 +1,20 @@
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import type { LocationStore } from '@renderer/features/locations/stores/location';
+import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents-key';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { serverAvailability } from '@renderer/features/switch-servers/server-availability';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { toast } from '@renderer/lib/hooks/use-toast';
-import { rpc } from '@renderer/lib/ipc';
+import { events, rpc } from '@renderer/lib/ipc';
+import { queryClient } from '@renderer/lib/query-client';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
 import { log } from '@renderer/utils/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import type { AgentIconBackfill } from '@shared/core/switch-servers/switch-servers';
+import { userChangesChannel } from '@shared/events/userChangesEvents';
 
 /**
  * What the two sidebar trees agree on: which agents are in scope and which
@@ -99,11 +104,43 @@ export function agentSessions(entry: AgentEntry): SessionStore[] {
 export function switchIdentities(): { workspaceId: string; switchAgentId: string }[] {
   const identities: { workspaceId: string; switchAgentId: string }[] = [];
   for (const { agent } of agentsInActiveScope()) {
-    if (agent.workspaceId && agent.switchAgentId) {
+    // A moved agent's rooms come from the managed list, which drops them once it is gone.
+    if (agent.workspaceId && agent.switchAgentId && !agentsStore.isMoved(agent.id)) {
       identities.push({ workspaceId: agent.workspaceId, switchAgentId: agent.switchAgentId });
     }
   }
   return identities;
+}
+
+/**
+ * The user's managed agents, as the shared list last read them: their rooms
+ * belong in the sidebar too, wherever the agents run. Read from each server's
+ * current list only (the key `useManagedAgents` reads: server, the workspace
+ * in scope there, the signed-in user), so another account's or workspace's
+ * list left in the cache, or the machines kept under the same prefix, is not.
+ */
+export function managedIdentities(): { workspaceId: string; switchAgentId: string }[] {
+  const identities = new Map<string, { workspaceId: string; switchAgentId: string }>();
+  for (const server of switchServersStore.servers) {
+    const userId = switchServersStore.statusFor(server.id)?.user?.id ?? null;
+    if (userId === null) continue;
+    const workspaceId = workspacesStore.idOnServerInScope(server.id);
+    const agents = queryClient.getQueryData<unknown>([
+      MANAGED_AGENTS_KEY,
+      server.id,
+      workspaceId,
+      userId,
+    ]);
+    if (!Array.isArray(agents)) continue;
+    for (const agent of agents as Partial<ManagedAgentView>[]) {
+      if (typeof agent?.agentId !== 'string' || typeof agent.workspaceId !== 'string') continue;
+      identities.set(`${agent.workspaceId}:${agent.agentId}`, {
+        workspaceId: agent.workspaceId,
+        switchAgentId: agent.agentId,
+      });
+    }
+  }
+  return [...identities.values()];
 }
 
 /**
@@ -123,10 +160,21 @@ export function switchIdentities(): { workspaceId: string; switchAgentId: string
 export async function refreshSidebarRoomState(force: boolean): Promise<void> {
   await agentsStore.load();
   await Promise.all([
-    switchRoomsStore.ensureMembershipsFor(switchIdentities(), { force }),
+    switchRoomsStore.ensureMembershipsFor([...switchIdentities(), ...managedIdentities()], {
+      force,
+    }),
     switchRoomsStore.loadRoomNames(),
   ]);
   void giveExistingAgentsAnIcon();
+}
+
+/** Refresh as soon as a server says a room of this user's changed, ahead of the reconcile timer. */
+export function refreshSidebarOnRoomChanges(): () => void {
+  return events.on(userChangesChannel, (event) => {
+    if (event.type === 'changed' && event.changes.some((change) => change.kind === 'room')) {
+      void refreshSidebarRoomState(true);
+    }
+  });
 }
 
 /**

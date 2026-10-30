@@ -288,22 +288,28 @@ class ControllerStream {
       resolve?.();
     };
     let idle: ReturnType<typeof setTimeout> | null = null;
+    // Raised to three of the server's beats once it says how often it pings:
+    // a timeout no longer than its interval drops a healthy socket every beat.
+    let idleMs = this.options.idleTimeoutMs;
     const touch = () => {
       if (idle) clearTimeout(idle);
-      idle = setTimeout(
-        () => abort.abort(new IdleTimeout(this.options.idleTimeoutMs)),
-        this.options.idleTimeoutMs
-      );
+      const ms = idleMs;
+      idle = setTimeout(() => abort.abort(new IdleTimeout(ms)), ms);
     };
     const onMessage = (message: MessageEvent) => {
-      touch();
       let parsed: { event?: unknown; data?: unknown };
       try {
         parsed = JSON.parse(String(message.data)) as typeof parsed;
       } catch {
+        touch();
         this.options.log.error('Dropped a controller socket message that is not JSON');
         return;
       }
+      const beat = (parsed.data as { heartbeat_interval_s?: unknown } | null | undefined)
+        ?.heartbeat_interval_s;
+      if (parsed.event === 'connection_state' && typeof beat === 'number' && beat > 0)
+        idleMs = Math.max(this.options.idleTimeoutMs, beat * 3000);
+      touch();
       if (parsed.event === 'ping') {
         socket.send(JSON.stringify({ type: 'pong', cursors: this.options.confirmed() }));
         return;

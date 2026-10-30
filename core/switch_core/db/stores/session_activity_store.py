@@ -6,18 +6,38 @@ transaction, and the bound tenant scopes every read through row-level security.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    and_,
+    delete,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 
-from switch_core.db.models import Agent, AgentSessionActivityItem, ApprovalRequest
+from switch_core.db.models import (
+    Agent,
+    AgentConnectionRecord,
+    AgentSession,
+    AgentSessionActivityItem,
+    AgentSessionPlacement,
+    ApprovalRequest,
+    SwitchCoreProcess,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 TURN_ITEM_ID = "turn"
+# The ends a turn can be run again from: it failed, or it was stopped.
+RETRYABLE_TURN_STATUSES = frozenset({"error", "interrupted"})
 
 
 class ApprovalRequestStore:
@@ -138,6 +158,98 @@ class AgentSessionActivityStore:
         )
         return status
 
+    async def end_orphaned_turns(
+        self,
+        session: AsyncSession,
+        *,
+        offline_quiet: timedelta,
+        session_quiet: timedelta,
+        lease_ttl: timedelta,
+        heartbeat_ttl: timedelta,
+        text: str,
+    ) -> list[tuple[str, str, str]]:
+        """End, as interrupted, the turns still queued or running that their
+        session can no longer finish, keyed on the session rather than the
+        agent:
+
+        - its session is live when it is placed (`AgentSessionPlacement`) over
+          a connection whose process holds its lease, or when a heartbeat for
+          the turn's room is fresh. A live session's turn is never ended;
+        - otherwise the turn is ended once nothing in it has moved for
+          `offline_quiet` if the agent has no live connection and no fresh
+          heartbeat at all, or for the longer `session_quiet` if the agent is
+          still connected (its controller, or another session, is up while
+          this session went quiet).
+
+        The revision moves on, so the change is announced like a host's, and a
+        host that was in fact still working overrides it with its next report.
+        Returns (agent, session, turn) of each."""
+        other = AgentSessionActivityItem.__table__.alias("other")
+        turn = AgentSessionActivityItem
+
+        def quiet(for_: timedelta) -> ColumnElement[bool]:
+            return ~exists().where(
+                other.c.tenant_id == turn.tenant_id,
+                other.c.agent_id == turn.agent_id,
+                other.c.session_id == turn.session_id,
+                other.c.turn_id == turn.turn_id,
+                other.c.updated_at > func.now() - literal(for_),
+            )
+
+        def held(process_id: Any) -> ColumnElement[bool]:
+            return exists().where(
+                SwitchCoreProcess.id == process_id,
+                SwitchCoreProcess.stopped_at.is_(None),
+                SwitchCoreProcess.beat_at > func.now() - literal(lease_ttl),
+            )
+
+        placed = exists().where(
+            AgentSessionPlacement.agent_id == turn.agent_id,
+            AgentSessionPlacement.session_id == turn.session_id,
+            AgentConnectionRecord.id == AgentSessionPlacement.connection_id,
+            held(AgentConnectionRecord.process_id),
+        )
+        beating_here = exists().where(
+            AgentSession.agent_id == turn.agent_id,
+            AgentSession.room_id == turn.room_id,
+            AgentSession.lifecycle == "heartbeat",
+            AgentSession.last_seen_at > func.now() - literal(heartbeat_ttl),
+        )
+        connected = exists().where(
+            AgentConnectionRecord.agent_id == turn.agent_id,
+            AgentConnectionRecord.closed_at.is_(None),
+            held(AgentConnectionRecord.process_id),
+        )
+        beating = exists().where(
+            AgentSession.agent_id == turn.agent_id,
+            AgentSession.lifecycle == "heartbeat",
+            AgentSession.last_seen_at > func.now() - literal(heartbeat_ttl),
+        )
+        result = await session.execute(
+            update(turn)
+            .where(
+                turn.item_id == TURN_ITEM_ID,
+                turn.status.in_(("queued", "running")),
+                ~placed,
+                ~beating_here,
+                or_(
+                    and_(quiet(offline_quiet), ~connected, ~beating),
+                    quiet(session_quiet),
+                ),
+            )
+            .values(
+                status="interrupted",
+                text=text,
+                revision=turn.revision + 1,
+                updated_at=func.now(),
+            )
+            .returning(turn.agent_id, turn.session_id, turn.turn_id)
+        )
+        return [
+            (agent_id, session_id, turn_id)
+            for agent_id, session_id, turn_id in result.all()
+        ]
+
     async def upsert(
         self, session: AsyncSession, item: AgentSessionActivityItem
     ) -> bool:
@@ -214,6 +326,23 @@ class AgentSessionActivityStore:
             .order_by(AgentSessionActivityItem.created_at)
         )
         return list(result.scalars())
+
+    async def turn_for_message(
+        self, session: AsyncSession, agent_id: str, room_id: str, message_id: str
+    ) -> AgentSessionActivityItem | None:
+        """The agent's latest turn started by `message_id` in `room_id`, if it took one."""
+        result = await session.execute(
+            select(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.message_id == message_id,
+                AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+            )
+            .order_by(AgentSessionActivityItem.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def newest_running_turn(
         self, session: AsyncSession, agent_id: str

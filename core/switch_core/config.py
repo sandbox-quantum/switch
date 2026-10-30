@@ -18,6 +18,7 @@ from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
     FOLLOW_THE_CONVERSATION,
+    GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     SERVICE_CONNECTIONS,
@@ -739,11 +740,11 @@ class SwitchConfig(BaseSettings):
     # three round trips and a transaction before any work, which under agent
     # load was over a third of all the transactions core ran. What it catches
     # is a connection that died while it sat in the pool, as every pooled
-    # connection does when the database restarts or fails over. Without it the
-    # first query on such a connection fails, and SQLAlchemy then replaces
-    # every connection the pool held. So on each pod the first query fails
-    # (`test_pool_pre_ping.py`), along with any query that was running when the
-    # database went, which fails with the ping too. How soon a connection left
+    # connection does when the database restarts or fails over. A restart
+    # closes the socket, which asyncpg notices, and the engine's checkout check
+    # already replaces a closed connection without a round trip
+    # (`test_pool_pre_ping.py`); a query running when the database went fails
+    # with the ping or without it. How soon a connection left
     # open by a failover is known to be dead is up to `db_tcp_keepalive_*` and
     # `db_tcp_user_timeout` below, with the ping or without it.
     db_pool_pre_ping: bool = False
@@ -1318,6 +1319,10 @@ class SwitchConfig(BaseSettings):
     @property
     def agent_chats_enabled(self) -> bool:
         return self.feature_flags[AGENT_CHATS]
+
+    @property
+    def group_chats_enabled(self) -> bool:
+        return self.feature_flags[GROUP_CHATS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

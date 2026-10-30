@@ -917,8 +917,9 @@ async def create_room(
         name: Display name for the room.
         description: Free-text description shown to participants.
         agent_names: Names of agents to add to the room at creation. The
-            calling agent is not added automatically — include its name here
-            if it should join. Names must already exist in the registry.
+            calling agent is not a member unless listed here — include your
+            own name if you should join (`caller_is_member` in the result
+            says whether you did). Names must already exist in the registry.
         user_names: Optional list of people to add, each named by their
             username on the room's messaging app, or by the e-mail address of
             their account there (not on Discord, which never shares e-mail
@@ -977,7 +978,8 @@ async def create_room(
             with an agent's real name, a room role, or another alias.
 
     Returns:
-        `{"id", "name", "matrix_room_id", "failed_attachments": [...]}`.
+        `{"id", "name", "matrix_room_id", "caller_is_member",
+        "failed_attachments": [...]}`.
         `failed_attachments` is empty on full success; otherwise it lists
         `{kind, id, error}` for each attachment that could not be applied
         after the room was created (race-time failures only; predictable
@@ -1010,12 +1012,17 @@ async def create_room(
             aliases=aliases,
             from_room_id=await connected_room(),
         )
+    async with protocol.session_factory() as session:
+        caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
+            session, result.room.id
+        )
     return {
         "id": result.room.id,
         "name": result.room.name,
         "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
         "matrix_room_id": result.room.transport_room_id,
+        "caller_is_member": caller_is_member,
         "failed_attachments": result.failed_attachments,
     }
 
@@ -1456,31 +1463,50 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 
 @operation
-async def list_all_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
+async def list_all_rooms(
+    include_archived: bool = False,
+    name_contains: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict[str, Any]:
     """List every room on this Switch instance (not just rooms this agent
-    is a member of). Use `list_rooms` instead to see only the rooms this
-    agent is assigned to.
+    is a member of), a page at a time, oldest first. Use `list_rooms` instead
+    to see only the rooms this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
             Set true to also include archived rooms (each carries
             `archived: true`).
+        name_contains: Only rooms whose name contains this text, in any case.
+        limit: Rooms per page, 1 to 500 (default 100).
+        cursor: The `next_cursor` of the previous page, to read the next one.
+            Pass the same `include_archived` and `name_contains` with it.
 
     Returns:
-        List of {room_id, name, description, archived} dicts.
+        `{"rooms": [{room_id, name, description, archived}, ...],
+        "next_cursor"}`; `next_cursor` is null on the last page.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
-    rooms = await protocol.list_all_rooms(agent_id, include_archived=include_archived)
-    return [
-        {
-            "room_id": r.id,
-            "name": r.name,
-            "description": r.description,
-            "archived": r.archived_at is not None,
-        }
-        for r in rooms
-    ]
+    rooms, next_cursor = await protocol.list_all_rooms(
+        agent_id,
+        include_archived=include_archived,
+        name_contains=name_contains,
+        limit=limit,
+        cursor=cursor,
+    )
+    return {
+        "rooms": [
+            {
+                "room_id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "archived": r.archived_at is not None,
+            }
+            for r in rooms
+        ],
+        "next_cursor": next_cursor,
+    }
 
 
 @operation

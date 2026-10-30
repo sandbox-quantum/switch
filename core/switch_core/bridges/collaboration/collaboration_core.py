@@ -53,7 +53,10 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import (
+    LINKED_CHANNEL_NAME_KEY,
+    RoomStore,
+)
 from switch_core.db.tenant_lookup import tenant_of_room
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
@@ -494,6 +497,7 @@ class CollaborationCore:
         await self._load_existing_human_actors()
         self._adapter.set_channel_migration_handler(self._handle_channel_migrated)
         self._adapter.set_channel_type_handler(self._record_channel_type)
+        self._adapter.set_channel_rename_handler(self._handle_channel_named)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
@@ -853,6 +857,34 @@ class CollaborationCore:
                 channel_id,
                 channel_type,
             )
+
+    async def _handle_channel_named(
+        self, channel_id: str, old_name: str, new_name: str
+    ) -> None:
+        """The platform reports this channel's name (renamed from `old_name`,
+        or unchanged). The room linked to it follows when it is named after
+        the channel (`NAME_SOURCE_KEY` "channel"), or, from before that was
+        kept, when its name is exactly the one it was made with from the old
+        channel name. Any other room keeps its name, and the channel's is
+        recorded for whoever wants to take it (`/rooms/{id}/sync-name`)."""
+        bridge_name = self._bridge_display_name
+        name = f"{bridge_name}: {new_name}"
+        with tenant_scope(self._bridge_tenant_id):
+            async with tenant_session(
+                self._session_factory, self._bridge_tenant_id
+            ) as session:
+                room = await self._room_store.get_by_external_channel(
+                    session, bridge_id=self._bridge_id, external_channel_id=channel_id
+                )
+            if room is None:
+                return
+            metadata = room.metadata_ or {}
+            if room.name != name and await self._room_service.follow_channel_name(
+                room.id, name, new_name, f"{bridge_name}: {old_name}"
+            ):
+                return
+            if metadata.get(LINKED_CHANNEL_NAME_KEY) != new_name:
+                await self._room_service.record_channel_name(room.id, new_name)
 
     # ── Inbound (platform → room) ───────────────────────────────────────────
 
@@ -1531,6 +1563,9 @@ class CollaborationCore:
             # Adopted from a channel that appeared on the platform, not asked
             # for by anyone in Switch.
             created_by_kind="system",
+            named_after_channel=(
+                channel_name if channel_type != "direct" and channel_name else None
+            ),
         )
 
         try:

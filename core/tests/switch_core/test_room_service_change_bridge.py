@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -141,6 +142,11 @@ class _FakeLifecycle:
 class _FakeProvisioning:
     def __init__(self, events: list[Any]) -> None:
         self._events = events
+
+    async def record_join(
+        self, session: object, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        raise NotImplementedError
 
     async def invite_to_room(
         self, transport_room_id: str, transport_user_id: str

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { AgentIdentityActions } from '@renderer/features/agent-identity/agent-identity-actions';
+import { agentNamesChanged } from '@renderer/features/agent-identity/agent-names-changed';
 import { LocalDirectorySelector } from '@renderer/features/locations/components/add-agent-modal/local-directory-selector';
 import type {
   FormState,
@@ -54,6 +55,7 @@ import {
   isValidProviderId,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
+import { catalogueAsReported } from './catalogue-as-reported';
 import { InlineEditableText } from './inline-editable-text';
 import {
   type Draft,
@@ -155,6 +157,7 @@ function ManagedAgentPageContent({
       if (edit.displayName !== undefined) {
         await rpc.workspaces.updateAgentDisplayName({ ...target, displayName: edit.displayName });
         done.push('its display name');
+        agentNamesChanged();
       }
       if (edit.description !== undefined) {
         await rpc.workspaces.updateAgentDescription({ ...target, description: edit.description });
@@ -533,7 +536,12 @@ function useHostCatalogue(
     );
   if (query.error)
     return unavailable(failureText(query.error, 'The machine’s models could not be read.'));
-  return query.data;
+  return catalogueAsReported(
+    query.data,
+    agent.machine.name,
+    agent.definition.provider,
+    machine.providers.find((entry) => entry.provider === providerId)
+  );
 }
 
 /** A disabled control, with why it is disabled on hover. A span carries the tooltip: a disabled button emits no pointer events. */

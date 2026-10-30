@@ -20,7 +20,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -55,7 +55,13 @@ class Change:
     session_id: str
     # The step's `turn_id` or the approval `request_id`.
     key: str
+    # None for a step or request outside any room.
+    room_id: str | None
     row: dict[str, Any] | None
+    # The step and its revision, for `activity`; None for an approval, and on
+    # an announcement from before steps were named.
+    item_id: str | None = None
+    revision: int | None = None
 
     @staticmethod
     def parse(payload: str) -> Change | None:
@@ -77,13 +83,19 @@ class Change:
                 key = str(fields["request_id"] if row is not None else fields["key"])
             else:
                 raise ValueError(table)
+            room_id = fields["room_id"]
+            item_id = fields.get("item_id") if kind == "activity" else None
+            revision = fields.get("revision") if kind == "activity" else None
             return Change(
                 kind=kind,
                 tenant_id=str(fields["tenant_id"]),
                 agent_id=str(fields["agent_id"]),
                 session_id=str(fields["session_id"]),
                 key=key,
+                room_id=None if room_id is None else str(room_id),
                 row=row,
+                item_id=None if item_id is None else str(item_id),
+                revision=None if revision is None else int(revision),
             )
         except (ValueError, TypeError, KeyError):
             logger.warning(
@@ -104,6 +116,45 @@ class _Subscriber:
     on_resync: OnResync
 
 
+class RoomSubscription:
+    """A subscriber to the changes in a set of a tenant's rooms.
+
+    Only routing: a change for a room in the set wakes the subscriber, and
+    nothing else does. Whether its reader may still see the room is for the
+    subscriber to check.
+    """
+
+    def __init__(
+        self,
+        index: dict[tuple[str, str], set[_Subscriber]],
+        subscribers: dict[_Subscriber, str],
+        tenant_id: str,
+        subscriber: _Subscriber,
+    ) -> None:
+        self._index = index
+        self._subscribers = subscribers
+        self._tenant_id = tenant_id
+        self._subscriber = subscriber
+        self._rooms: set[str] = set()
+
+    def set_rooms(self, rooms: Iterable[str]) -> None:
+        wanted = set(rooms)
+        for room_id in self._rooms - wanted:
+            key = (self._tenant_id, room_id)
+            self._index[key].discard(self._subscriber)
+            if not self._index[key]:
+                del self._index[key]
+        for room_id in wanted - self._rooms:
+            self._index.setdefault((self._tenant_id, room_id), set()).add(
+                self._subscriber
+            )
+        self._rooms = wanted
+
+    def close(self) -> None:
+        self.set_rooms(())
+        self._subscribers.pop(self._subscriber, None)
+
+
 _RESYNC = object()
 
 
@@ -111,6 +162,9 @@ class AgentSessionActivityListener:
     def __init__(self, engine_factory: EngineFactory) -> None:
         self._engine_factory = engine_factory
         self._subscribers: dict[str, set[_Subscriber]] = {}
+        self._room_index: dict[tuple[str, str], set[_Subscriber]] = {}
+        # Every room subscriber, open, to its tenant.
+        self._room_subscribers: dict[_Subscriber, str] = {}
         self._queue: asyncio.Queue[Change | object] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
@@ -135,6 +189,23 @@ class AgentSessionActivityListener:
                     del self._subscribers[tenant_id]
 
         return unsubscribe
+
+    def subscribe_rooms(
+        self,
+        tenant_id: str,
+        rooms: Iterable[str],
+        on_change: OnChange,
+        on_resync: OnResync,
+    ) -> RoomSubscription:
+        """Receive the changes in these rooms only; a change outside any room
+        reaches none. `on_resync` runs as for `subscribe`."""
+        subscriber = _Subscriber(on_change, on_resync)
+        self._room_subscribers[subscriber] = tenant_id
+        subscription = RoomSubscription(
+            self._room_index, self._room_subscribers, tenant_id, subscriber
+        )
+        subscription.set_rooms(rooms)
+        return subscription
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -230,8 +301,13 @@ class AgentSessionActivityListener:
                 for tenant_id, subscribers in list(self._subscribers.items()):
                     for subscriber in list(subscribers):
                         await self._call(tenant_id, subscriber.on_resync())
+                for subscriber, tenant_id in list(self._room_subscribers.items()):
+                    await self._call(tenant_id, subscriber.on_resync())
             elif isinstance(item, Change):
-                for subscriber in list(self._subscribers.get(item.tenant_id, ())):
+                targets = list(self._subscribers.get(item.tenant_id, ()))
+                if item.room_id is not None:
+                    targets += self._room_index.get((item.tenant_id, item.room_id), ())
+                for subscriber in targets:
                     await self._call(item.tenant_id, subscriber.on_change(item))
 
     async def _call(self, tenant_id: str, handler: Awaitable[None]) -> None:

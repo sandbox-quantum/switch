@@ -87,6 +87,7 @@ export {
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
+  type AgentStreamDeps,
   type OpenAgentStream,
   openSwitchStream,
   runAgentHost,
@@ -161,7 +162,7 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
+export { codexSourceHome, prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 

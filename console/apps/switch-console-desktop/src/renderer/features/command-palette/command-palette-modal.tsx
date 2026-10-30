@@ -4,6 +4,7 @@ import { Activity, DoorOpen, Globe, type LucideIcon, MessageSquare, Server } fro
 import { observer, useObserver } from 'mobx-react-lite';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { agentChatsFlag } from '@renderer/features/chats/stores/agent-chats-flag';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { managedAgentLabel } from '@renderer/features/managed-agents/managed-agent-state';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { REMOTE_HOSTS_QUERY_KEY } from '@renderer/features/remote-hosts/views/remote-hosts-view';
@@ -19,6 +20,7 @@ import { commandRegistry } from '@renderer/lib/commands/registry';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useDebounce } from '@renderer/lib/hooks/useDebounce';
+import { useFeatureFlagsKnown } from '@renderer/lib/hooks/useFeatureFlags';
 import { getEffectiveHotkey } from '@renderer/lib/hooks/useKeyboardShortcuts';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -41,12 +43,14 @@ import {
   applyContextAffinity,
   indexedSearchLabel,
   instantMatchLabel,
+  matchDirectChats,
   matchHosts,
   matchManagedAgents,
   matchRooms,
   matchServers,
   paletteSearchPlaceholder,
   sectionResults,
+  withoutLegacy,
 } from './search-utils';
 
 interface CommandPaletteProps {
@@ -197,7 +201,8 @@ export function CommandPaletteModal({
   // sessions under Legacy; the palette leaves them out entirely and offers the
   // server's managed agents instead.
   const managementMode = useAgentManagementMode();
-  const includeLegacy = !managementMode;
+  // Until the flags are read, management mode is not known: legacy rows wait rather than flash.
+  const includeLegacy = useFeatureFlagsKnown(switchServersStore.activeServerId) && !managementMode;
   const managedAgents = useManagedAgents(managementMode ? switchServersStore.activeServerId : null);
 
   const handleClose = onClose;
@@ -240,7 +245,9 @@ export function CommandPaletteModal({
     // Keep results fresh for 5 s — re-opening the palette with the same query
     // returns cached data instantly rather than waiting for a round-trip.
     staleTime: 5_000,
-    placeholderData: (prev) => prev,
+    // Kept only while the same kinds are searched for, so legacy rows never linger once left out.
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey[2] === includeLegacy ? prev : undefined,
   });
 
   const registryActions = useObserver((): PaletteAction[] =>
@@ -287,7 +294,9 @@ export function CommandPaletteModal({
       .slice(0, 7);
   }, [registryActions, resourceMonitorAction, sessionId]);
 
-  const rankedDb = applyContextAffinity(searchResult.items, { locationId });
+  const rankedDb = applyContextAffinity(withoutLegacy(searchResult.items, includeLegacy), {
+    locationId,
+  });
   const actionResults = actions;
 
   // Rooms and servers come from MobX stores rather than the FTS index, read
@@ -304,6 +313,9 @@ export function CommandPaletteModal({
     )
   );
   const serverResults = useObserver(() => matchServers(switchServersStore.servers, debouncedQuery));
+  const chatResults = useObserver(() =>
+    matchDirectChats([...chatsStore.chats.values()], debouncedQuery)
+  );
 
   const { data: hosts = [] } = useQuery({
     queryKey: REMOTE_HOSTS_QUERY_KEY,
@@ -315,7 +327,11 @@ export function CommandPaletteModal({
     ? matchManagedAgents(managedAgents.data ?? [], debouncedQuery)
     : [];
   const rendererMatchCount =
-    managedAgentResults.length + roomResults.length + serverResults.length + hostResults.length;
+    managedAgentResults.length +
+    chatResults.length +
+    roomResults.length +
+    serverResults.length +
+    hostResults.length;
 
   const q = debouncedQuery.toLowerCase();
   const matchedResourceMonitor =
@@ -388,6 +404,14 @@ export function CommandPaletteModal({
       agentId: agent.agentId,
       name: managedAgentLabel(agent),
     });
+  };
+
+  const handleOpenChat = (item: SearchItem) => {
+    const serverId = chatsStore.serverId;
+    const chat = chatsStore.chat(item.id);
+    if (!serverId || !chat) return;
+    handleClose();
+    navigate('chat', { serverId, roomId: chat.roomId, agentId: chat.agents[0]?.id ?? null });
   };
 
   const handleNavigateToRoom = (item: SearchItem) => {
@@ -529,6 +553,18 @@ export function CommandPaletteModal({
             {indexed.session.length > 0 && (
               <Command.Group heading="Sessions" className={GROUP_CLASS}>
                 {indexed.session.map(renderSessionResult)}
+              </Command.Group>
+            )}
+            {chatResults.length > 0 && (
+              <Command.Group heading="Chats" className={GROUP_CLASS}>
+                {chatResults.map((item) => (
+                  <PaletteItem
+                    key={`chat:${item.id}`}
+                    value={`chat:${item.id}`}
+                    item={item}
+                    onSelect={() => handleOpenChat(item)}
+                  />
+                ))}
               </Command.Group>
             )}
             <PaletteResultGroup

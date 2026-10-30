@@ -2,6 +2,7 @@ import { AlertTriangle } from 'lucide-react';
 import { reaction } from 'mobx';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
@@ -22,7 +23,11 @@ import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
 import { showsAgentsAndRooms, sidebarEmptyState } from './sidebar-empty-state';
-import { agentsInActiveScope, refreshSidebarRoomState } from './sidebar-tree-data';
+import {
+  agentsInActiveScope,
+  refreshSidebarOnRoomChanges,
+  refreshSidebarRoomState,
+} from './sidebar-tree-data';
 
 /**
  * How often the room state is reconciled against the servers while the window
@@ -89,8 +94,11 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
       void loadSidebarState(true);
     }, ROOM_STATE_RECONCILE_MS);
 
+    const stopRoomChanges = refreshSidebarOnRoomChanges();
+
     return () => {
       window.removeEventListener('focus', onFocus);
+      stopRoomChanges();
       stopWatchingServers();
       clearInterval(reconcile);
     };
@@ -115,7 +123,9 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
   if (managementMode) {
     const managedIds = new Set((managedAgents.data ?? []).map((agent) => agent.agentId));
     const legacyCount = agentsInActiveScope().filter(
-      (entry) => entry.agent.switchAgentId === null || !managedIds.has(entry.agent.switchAgentId)
+      (entry) =>
+        !agentsStore.isMoved(entry.agent.id) &&
+        (entry.agent.switchAgentId === null || !managedIds.has(entry.agent.switchAgentId))
     ).length;
     return (
       <div

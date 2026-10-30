@@ -59,6 +59,8 @@ export function frozenSentence(server: SwitchServer, state: ManagedServerState):
       return `Docker isn't running, so ${name} can't start.`;
     case 'start-failed':
       return `${name} couldn't start, so agents and rooms are unavailable.`;
+    case 'stopped-unexpectedly':
+      return `${name} stopped unexpectedly, so agents and rooms are unavailable.`;
     case 'stop-failed':
       return `${name} didn't stop cleanly, so agents and rooms are unavailable.`;
     case 'reset-failed':
@@ -71,8 +73,10 @@ export function frozenSentence(server: SwitchServer, state: ManagedServerState):
 /**
  * Across the top of a frozen workspace: what is wrong, the way to the server's
  * page, and Start when starting is all it takes. Nothing to press while it is
- * already changing state, and no Start after a failure: the page says why it
- * failed, and starting blind would only fail again.
+ * already changing state, and no Start after a failed start: the page says why
+ * it failed, and starting blind would only fail again. A server that was
+ * running and stopped on its own is the exception: it has started before, so
+ * Restart is the likeliest way back.
  */
 export const FrozenBanner = observer(function FrozenBanner({ server }: { server: SwitchServer }) {
   const { navigate } = useNavigate();
@@ -103,10 +107,10 @@ export const FrozenBanner = observer(function FrozenBanner({ server }: { server:
       >
         Server details
       </button>
-      {state.tone === 'stopped' && (
+      {(state.tone === 'stopped' || state.reason === 'stopped-unexpectedly') && (
         <PrimaryButton onClick={() => startManagedServer(server)}>
           <Power />
-          Start
+          {state.reason === 'stopped-unexpectedly' ? 'Restart' : 'Start'}
         </PrimaryButton>
       )}
     </div>

@@ -1,4 +1,5 @@
 import type { RepoAgentAttributes } from '@switch-console/core/agents/plugins';
+import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import type { OnboardAgentParams } from '@shared/core/agents/onboarding';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentVerifyResult } from '@shared/core/switch-servers/switch-servers';
@@ -79,6 +80,9 @@ export const agentsController = createRPCController({
   removeLoadableAgentConfig: (params: RemoveLoadableAgentConfigParams) =>
     removeLoadableAgentConfig(params),
   getAgents: (locationId?: string) => getAgents(locationId),
+  /** The Console agents moved to agent management: shown through the managed list only, never as Console agents. */
+  movedAgentIds: async (): Promise<string[]> =>
+    (await listManagedAgentRecords()).map((record) => record.agentId),
   /**
    * Give a Console agent its new name locally, after its Switch server has
    * renamed it (`workspaces.renameAgent`): the row and the files keyed by the

@@ -1,6 +1,6 @@
 import { Bot, ExternalLink, MoreVertical, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { CloudMachineCard } from '@renderer/features/cloud-agents/cloud-machine-card';
 import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
@@ -34,10 +34,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
+import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { Agent } from '@shared/core/agents/agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { isFrozenServer } from './managed-server-state';
+import { matchesNameFilter } from './name-filter';
 import { openServerPage } from './open-server-page';
 import { ServerPage } from './server-page';
 import { ServerSectionTitlebar } from './server-section-titlebar';
@@ -65,7 +67,13 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
-  const agents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
+  const [filter, setFilter] = useState('');
+  const allAgents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
+  const agents = allAgents.filter((agent) => matchesNameFilter([agent.name], filter));
+  const managedAgents = (managed.data ?? []).filter((agent) =>
+    matchesNameFilter([managedAgentLabel(agent), agent.name], filter)
+  );
+  const any = allAgents.length > 0 || (managed.data?.length ?? 0) > 0;
 
   return (
     <ServerPage
@@ -91,6 +99,20 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           Four columns at the design's content width, reflowing narrower rather
           than squashing. The height is a floor rather than a ratio, so a card
           keeps its shape as the column width changes. */}
+      {any && (
+        <SearchInput
+          containerClassName="mb-4"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter agents by name…"
+          aria-label="Filter agents by name"
+        />
+      )}
+      {any && agents.length === 0 && managedAgents.length === 0 && (
+        <p className="mb-3 py-2 text-sm text-foreground-muted">
+          No agent here matches “{filter.trim()}”.
+        </p>
+      )}
       <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-[14px]">
         <button
           type="button"
@@ -103,7 +125,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
-        {managed.data?.map((agent) => (
+        {managedAgents.map((agent) => (
           <ManagedAgentCard key={agent.agentId} agent={agent} />
         ))}
       </div>

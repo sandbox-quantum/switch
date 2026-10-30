@@ -14,6 +14,7 @@ import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import type { AgentRenameOutcome } from '@shared/core/switch-servers/switch-servers';
 import { labelFollowsName, labelFromName } from './agent-label';
+import { agentNamesChanged } from './agent-names-changed';
 
 // The server's own rule, checked here only to say so before a round trip.
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -100,6 +101,7 @@ export function RenameAgentModal({
         );
       }
     }
+    agentNamesChanged();
     onSuccess({ outcome, localProblem });
   };
 

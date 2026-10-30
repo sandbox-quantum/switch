@@ -10,6 +10,7 @@ import switch_core.bridges.agent.commands as commands
 from switch_core.bridges.agent.commands import (
     _check_control_target,
     _cmd_reset,
+    _cmd_retry,
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.controller_presence import Binding
@@ -425,5 +426,80 @@ def test_an_interrupt_names_the_current_turn() -> None:
         thread_id=None,
         surface="slack",
         requester_name="louisa",
+        target_message_id=None,
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
+
+
+def test_a_retry_runs_again_the_message_it_names() -> None:
+    assert commands.retry_target("@helper $m1") == "$m1"
+    assert commands.retry_target("@helper") is None
+    assert commands.retry_target("$m1") is None
+    frame = commands.room_control_frame(
+        agent_id="a",
+        session_id=None,
+        room_id="r",
+        action="retry",
+        actor_id="@u:s",
+        message_id="$retry-command",
+        thread_id=None,
+        surface="switch-web",
+        requester_name="louisa",
+        target_message_id="$m1",
+    )
+    assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
+    with pytest.raises(ValueError):
+        commands.room_control_frame(
+            agent_id="a",
+            session_id=None,
+            room_id="r",
+            action="retry",
+            actor_id="@u:s",
+            message_id="$retry-command",
+            thread_id=None,
+            surface="switch-web",
+            requester_name="louisa",
+            target_message_id=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_controller_backed_agent_is_relayed_a_retry_of_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reply = _Reply()
+    monkeypatch.setattr(commands, "_reply", reply)
+
+    async def _surface(*_a: Any) -> str:
+        return "switch-web"
+
+    monkeypatch.setattr(commands, "_room_surface", _surface)
+    registry = AgentConnectionRegistry()
+    registry.controllers.bind(
+        Binding(
+            agent_id="agent-1",
+            controller_id="controller-1",
+            tenant_id="tenant",
+            controller_name="machine",
+            running=True,
+        )
+    )
+    conn = registry.controllers.open(
+        controller_id="controller-1", tenant_id="tenant", resume_cursors={}
+    )
+    registry.controllers.attach_stream(conn)
+    client = _client(reply, command_level="unsupported", enqueue=[])
+    client._connections = registry
+
+    async def _retryable(*_a: Any) -> None:
+        return None
+
+    monkeypatch.setattr(commands, "_retry_refusal", _retryable)
+    event = _event("retry")
+    event.args = "@agent $m1"
+    await _cmd_retry(client, SimpleNamespace(room_id="!m:server"), event, False)
+
+    [(agent_id, frame)] = conn.session_commands
+    assert agent_id == "agent-1"
+    assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
+    assert reply.bodies[-1] == "Trying that message again."

@@ -645,13 +645,19 @@ class TestTheRowNamesTheConnectionOpenedLast:
         async with there.client() as elsewhere:
             second = await open_connection(elsewhere, controller)
         stream = await open_stream(there, controller, second)
-        await take(stream, 1)
-        await there.management.ledger.flush_all()
-        written.set()
-        await here.management.ledger.flush_all()
-        await stream.aclose()  # type: ignore[attr-defined]
+        try:
+            await take(stream, 1)
+            await there.management.ledger.flush_all()
+            written.set()
+            await here.management.ledger.flush_all()
 
-        row = await _controller_row(here, controller.controller_id)
+            # Read while the second socket is still attached: closing it
+            # queues its own disconnected write, which may land before the
+            # read and is not what this test is about.
+            row = await _controller_row(here, controller.controller_id)
+        finally:
+            await stream.aclose()  # type: ignore[attr-defined]
+
         assert row.connection_id == second["connection_id"]
         assert row.connection_process_id == there.management.lease.process_id
         assert row.disconnected_at is None

@@ -312,6 +312,37 @@ class RichContentThrottled(RichContentFailed):
         self.retry_after = retry_after
 
 
+class RichContentFailedAfterPost(RichContentFailed):
+    """The message was posted, but what goes in it could not be drawn.
+
+    Slack opens a turn's stream and then takes its content in a separate call,
+    and the second can fail after the first has made the message. `ref` names
+    that message, so the caller keeps it and draws into it later rather than
+    posting again, which would leave a second message in the thread and the
+    first one empty.
+    """
+
+    def __init__(self, message: str, *, ref: str, text: str) -> None:
+        super().__init__(message, text=text)
+        self.ref = ref
+
+
+class RichContentThrottledAfterPost(RichContentThrottled, RichContentFailedAfterPost):
+    """The message was posted, and the platform asked for a wait before what
+    goes in it could be drawn.
+
+    A `RichContentThrottled` as well, so the wait is the one asked for.
+    """
+
+    def __init__(self, *, ref: str, retry_after: float, text: str) -> None:
+        # Not through `RichContentThrottled.__init__`: its `super()` call
+        # reaches `RichContentFailedAfterPost` here, which needs the ref.
+        RichContentFailedAfterPost.__init__(
+            self, "Platform updates are rate limited.", ref=ref, text=text
+        )
+        self.retry_after = retry_after
+
+
 class RichContentWedged(RichContentFailed):
     """The platform will not change this message, and never will again.
 
@@ -626,6 +657,10 @@ class PlatformAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_channel_rename_handler. Called with (channel_id, old_name,
+        # new_name) when the platform reports a change to a channel (the two
+        # names are the same when it was not a rename).
+        self._on_channel_named: Callable[[str, str, str], Awaitable[None]] | None = None
         # Set by set_channel_type_handler. Called with (channel_id, type) when
         # the adapter learns a channel's type from the platform.
         self._on_channel_type_learned: (
@@ -1389,6 +1424,26 @@ class PlatformAdapter(ABC):
         `supports_queue_reaction` is never asked for the queued one.
         """
 
+    def activity_closes_in(self, message_ref: str) -> float | None:
+        """Seconds until the platform closes this message to further streaming
+        on its own, or None where it never will.
+
+        Closing it rewrites what it shows (Slack marks the steps still running
+        as failed), so a redraw is owed just after, whatever the clock says.
+        Asked once, as the message is posted.
+        """
+        return None
+
+    def rich_updates_held_for(self) -> float:
+        """Seconds before this adapter will try another edit to rich content.
+
+        Nonzero while it is holding edits back after a rate limit. Asked before
+        work that can wait, such as redrawing a running turn's clock, so that
+        work is not queued only to be refused. Only an adapter that
+        `redraws_for_elapsed_time` is asked.
+        """
+        return 0.0
+
     async def notify_working(
         self, channel_id: str, agent_name: str, thread_root_id: str | None
     ) -> None:
@@ -1862,6 +1917,14 @@ class PlatformAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_channel_rename_handler(
+        self, handler: Callable[[str, str, str], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls with a channel's name when the
+        platform reports a change to it, so the room linked to it can follow.
+        Used by the adapters whose platform reports it (Discord)."""
+        self._on_channel_named = handler
 
     def set_channel_type_handler(
         self, handler: Callable[[str, ChannelType], Awaitable[None]]

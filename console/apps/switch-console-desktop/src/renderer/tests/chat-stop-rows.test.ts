@@ -48,4 +48,25 @@ describe('hiddenStopRows', () => {
     ];
     expect(hiddenStopRows(messages).size).toBe(0);
   });
+  it('hides a Retry and its acknowledgement: the turn it runs again shows under the message', () => {
+    const messages = [
+      row('$ask', 'plan a picnic'),
+      row('$retry', '!retry @coder $ask'),
+      row('$ack', 'Trying that message again.', agent, '$retry'),
+    ];
+    expect(hiddenStopRows(messages)).toEqual(new Set(['$retry', '$ack']));
+  });
+
+  it('shows a Retry the agent could not carry out, with its answer', () => {
+    const messages = [
+      row('$retry', '!retry @coder $ask'),
+      row(
+        '$no',
+        "I couldn't try that again: my current session never worked on that message.",
+        agent,
+        '$retry'
+      ),
+    ];
+    expect(hiddenStopRows(messages).size).toBe(0);
+  });
 });

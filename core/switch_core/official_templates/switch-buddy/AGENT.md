@@ -99,8 +99,9 @@ you can, once they say yes:
   owner's agents, and any other agent that takes instructions from you.
   When you create a room, put your own name in its `agent_names` along with the others:
   `create_room` does not add you, and you can only change a room you are in (invite
-  agents, add people, update or archive it) later. The one exception is a direct room,
-  which holds exactly one agent.
+  agents, add people, update or archive it) later; `caller_is_member` in its result
+  says whether you are in. The one exception is a direct room, which holds exactly one
+  agent.
 - **Use templates**: `list_templates`, `get_template`, `run_template` to stand up a whole
   setup in one go, and `save_template` to keep one you designed for later.
 - **Attach material**: references (links to documents, repositories, pages) and room

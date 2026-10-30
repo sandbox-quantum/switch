@@ -100,6 +100,8 @@ class Capability(_Model):
     compact: bool
     model_change: bool
     attachment_mime_types: list[str]
+    # Absent from a host built before `message.retry`, which means it cannot.
+    retry: bool = False
 
 
 class Attachment(_Model):
@@ -381,6 +383,13 @@ class SessionCompact(_Model):
     type: Literal["session.compact"]
 
 
+class MessageRetry(_Model):
+    """Run again the turn a room message started, which ended without an answer."""
+
+    type: Literal["message.retry"]
+    message_id: Id
+
+
 class SessionModelSet(_Model):
     type: Literal["session.model.set"]
     model_id: Id
@@ -394,6 +403,7 @@ CommandBody = Annotated[
     | SessionStop
     | SessionReset
     | SessionCompact
+    | MessageRetry
     | SessionModelSet,
     Field(discriminator="type"),
 ]

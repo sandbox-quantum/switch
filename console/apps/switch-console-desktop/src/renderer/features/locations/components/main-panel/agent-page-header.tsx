@@ -167,16 +167,15 @@ export const AgentPageHeader = observer(function AgentPageHeader() {
           )}
           {newChat && (
             <Button
-              onClick={async () => {
+              onClick={() => {
                 const serverId = agent.serverId as string;
                 const switchAgentId = agent.switchAgentId as string;
                 if (chatsTab) {
                   navigate('managedAgent', { serverId, agentId: switchAgentId, name: title });
                   return;
                 }
-                const chat = await directChats.start(serverId, switchAgentId);
-                if (chat)
-                  navigate('chat', { serverId, roomId: chat.roomId, agentId: switchAgentId });
+                const roomId = directChats.start(serverId, switchAgentId);
+                navigate('chat', { serverId, roomId, agentId: switchAgentId });
               }}
             >
               New chat
