@@ -11,6 +11,7 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/collaborations", "Messaging Apps"],
   ["/registration-keys", "API Keys"],
   ["/users", "Users"],
+  ["/guardrails", "Guardrails"],
   ["/workspace", "Workspace"],
 ];
 

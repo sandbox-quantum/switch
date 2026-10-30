@@ -60,6 +60,7 @@ PAGE_PATHS: tuple[str, ...] = (
     "/usage",
     "/users",
     "/connectors",
+    "/guardrails",
     "/workspace",
 )
 

@@ -21,11 +21,44 @@ import {
   isProvided,
   renderOptionFields,
 } from "../agents/optionFields";
+import SlackOwnAppGuide, {
+  SLACK_GUIDE_FILLED_FIELDS,
+  SLACK_GUIDE_REQUIRED_FIELDS,
+} from "./SlackOwnAppGuide";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onSuccess: (bridge: BridgeDetail) => void;
+}
+
+/** The schema with the fields the guide fills in itself taken out. */
+function withoutFilled(
+  schema: Record<string, unknown> | undefined,
+  filled: readonly string[],
+): Record<string, unknown> | undefined {
+  const properties = schema?.properties as Record<string, unknown> | undefined;
+  if (!schema || !properties) return schema;
+  return {
+    ...schema,
+    properties: Object.fromEntries(
+      Object.entries(properties).filter(([key]) => !filled.includes(key)),
+    ),
+  };
+}
+
+/** The config with the given fields' surrounding whitespace dropped: the guide
+ * checks the tokens trimmed, so they are saved as they were checked. */
+function withTrimmed(
+  config: Record<string, unknown>,
+  fields: readonly string[],
+): Record<string, unknown> {
+  const next = { ...config };
+  for (const key of fields) {
+    const value = next[key];
+    if (typeof value === "string") next[key] = value.trim();
+  }
+  return next;
 }
 
 function humanize(key: string): string {
@@ -84,7 +117,24 @@ export default function RegisterMessagingAppDialog({
     onClose();
   }, [submitting, reset, onClose]);
 
-  const requiredFields = configSchema?.required ?? [];
+  // A Slack app of the workspace's own is set up through the guide: it asks for
+  // both tokens as required and reads the workspace id from them.
+  const guided = selectedType === "slack";
+  const requiredFields = [
+    ...new Set([...(configSchema?.required ?? []), ...(guided ? SLACK_GUIDE_REQUIRED_FIELDS : [])]),
+  ];
+  const shownSchema = guided
+    ? withoutFilled(configSchema as Record<string, unknown> | undefined, SLACK_GUIDE_FILLED_FIELDS)
+    : (configSchema as Record<string, unknown> | undefined);
+  const setGuideField = useCallback((key: string, value: string | null) => {
+    setConfig((prev) => {
+      if ((prev[key] ?? null) === value) return prev;
+      const next = { ...prev };
+      if (value === null) delete next[key];
+      else next[key] = value;
+      return next;
+    });
+  }, []);
   const canSubmit =
     !!selectedType &&
     displayName.trim().length > 0 &&
@@ -98,7 +148,7 @@ export default function RegisterMessagingAppDialog({
       const bridge = await createBridge(
         selectedType,
         displayName.trim(),
-        config,
+        guided ? withTrimmed(config, SLACK_GUIDE_REQUIRED_FIELDS) : config,
         channelCreationSupported && channelCreationEnabled,
       );
       onSuccess(bridge);
@@ -112,6 +162,7 @@ export default function RegisterMessagingAppDialog({
   }, [
     canSubmit,
     selectedType,
+    guided,
     displayName,
     config,
     channelCreationSupported,
@@ -176,12 +227,8 @@ export default function RegisterMessagingAppDialog({
                   </Typography>
                 )}
               </Stack>
-              {renderOptionFields(
-                configSchema as Record<string, unknown> | undefined,
-                config,
-                setConfig,
-                requiredFields,
-              )}
+              {guided && <SlackOwnAppGuide config={config} setField={setGuideField} />}
+              {renderOptionFields(shownSchema, config, setConfig, requiredFields)}
             </>
           )}
         </Stack>

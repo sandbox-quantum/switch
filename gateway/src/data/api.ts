@@ -1232,6 +1232,73 @@ export interface CreateInvitationInput {
   uses_remaining: number;
 }
 
+// ── Joining by e-mail domain ──────────────────────────────────────────────────
+
+/** The domains a workspace lets people join from without an invitation. An
+ * admin may open it only to their own address's domain: `own_domain` is that
+ * domain, and `own_domain_refusal` says why it can't be added, when it can't
+ * (a public e-mail provider's, say). */
+export interface JoinDomains {
+  domains: { domain: string; created_by: string; created_at: string }[];
+  own_domain: string;
+  own_domain_refusal: string | null;
+}
+
+function joinDomainsPath(tenantId: string): string {
+  return `/tenants/${encodeURIComponent(tenantId)}/join-domains`;
+}
+
+export async function fetchJoinDomains(tenantId: string): Promise<JoinDomains> {
+  return jsonRequest<JoinDomains>(joinDomainsPath(tenantId), "GET");
+}
+
+export async function addJoinDomain(tenantId: string, domain: string): Promise<void> {
+  await jsonRequest(joinDomainsPath(tenantId), "POST", { domain });
+}
+
+export async function removeJoinDomain(tenantId: string, domain: string): Promise<void> {
+  await noContentRequest(
+    `${joinDomainsPath(tenantId)}/${encodeURIComponent(domain)}`,
+    "DELETE",
+  );
+}
+
+// ── Services on and off for the workspace ─────────────────────────────────────
+
+/** A catalog service, whether the bound workspace has it on, and who it
+ * reaches. `updated_at` is null for a switch nobody has touched, which takes
+ * the workspace's default. */
+export interface WorkspaceService {
+  slug: string;
+  name: string;
+  enabled: boolean;
+  updated_by_name: string | null;
+  updated_at: string | null;
+  connected_members: number;
+  granted_agents: number;
+}
+
+/** The workspace's services, or null on a server without service connections,
+ * which mounts none of their routes and so has nothing to switch. */
+export async function fetchWorkspaceServices(): Promise<WorkspaceService[] | null> {
+  const { flags } = await jsonRequest<{ flags: { key: string; enabled: boolean }[] }>(
+    "/feature-flags",
+    "GET",
+  );
+  if (!flags.some((flag) => flag.key === "service_connections" && flag.enabled)) return null;
+  const body = await jsonRequest<{ services: WorkspaceService[] }>("/workspace/services", "GET");
+  return body.services;
+}
+
+/** Switch a service on or off. `warning` says when switching off could not
+ * revoke every token handed out for it yet. */
+export async function setWorkspaceService(
+  slug: string,
+  enabled: boolean,
+): Promise<{ slug: string; enabled: boolean; warning: string | null }> {
+  return jsonRequest(`/workspace/services/${encodeURIComponent(slug)}`, "PUT", { enabled });
+}
+
 export async function fetchInvitations(tenantId: string): Promise<Invitation[]> {
   return jsonRequest<Invitation[]>(
     `/tenants/${encodeURIComponent(tenantId)}/invitations`,
@@ -2427,4 +2494,51 @@ export async function fetchConnectorAppImpact(
 
 export async function removeConnectorApp(service: string): Promise<ConnectorAppImpact> {
   return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}`, "DELETE");
+}
+
+// ── Guardrails (Switch Trust) ─────────────────────────────────────────────────
+
+/** The deployment's one Switch Trust settings row; platform operator only. The
+ * API key itself never comes back: `has_api_key` and `api_key_last4` confirm
+ * one is set, and `api_key_last4` is null for a stored key the server can no
+ * longer decrypt. */
+export interface TrustSettings {
+  endpoint: string;
+  policy_id: string | null;
+  has_api_key: boolean;
+  api_key_last4: string | null;
+  enabled: boolean;
+}
+
+export async function fetchTrustSettings(): Promise<TrustSettings> {
+  return jsonRequest<TrustSettings>("/trust-settings", "GET");
+}
+
+/** Save the settings. Leaving `api_key` out keeps the stored key. */
+export async function updateTrustSettings(update: {
+  endpoint: string;
+  policy_id: string | null;
+  api_key?: string;
+}): Promise<TrustSettings> {
+  return jsonRequest<TrustSettings>("/trust-settings", "PUT", update);
+}
+
+export async function clearTrustSettings(): Promise<TrustSettings> {
+  return jsonRequest<TrustSettings>("/trust-settings", "DELETE");
+}
+
+// ── A Slack app of the workspace's own ────────────────────────────────────────
+
+/** Slack's create-app page, filled in with the app this server needs. */
+export async function fetchSlackOwnAppSetup(): Promise<{ create_url: string }> {
+  return jsonRequest("/collaborations/setup/slack", "GET");
+}
+
+/** Whether both of a Slack app's tokens work, and the workspace they are for.
+ * A refusal carries Slack's reason, naming the token that is wrong. */
+export async function checkSlackTokens(tokens: {
+  bot_token: string;
+  app_token: string;
+}): Promise<{ workspace_id: string; workspace_name: string; bot_name: string }> {
+  return jsonRequest("/collaborations/setup/slack/check", "POST", tokens);
 }
