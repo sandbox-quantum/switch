@@ -308,8 +308,8 @@ person is left out.
 
 - **The person you are talking to:** their usernames on each app are `your_usernames` in
   `get_my_context` (`messaging_apps.connected`, matched to the room's `bridge_id` by `id`).
-  When the list is empty their account is not linked there yet (or not confirmed: see
-  `your_account_link`): ask for their username on that app, and link
+  When the list is empty their account is not linked there yet, or the link is still
+  waiting for its code (see `your_account_link`): ask for their username on that app, and link
   [the server's home](switchdash://open/home) so they can link it.
 - **Anyone else:** ask for their username on that app, or the e-mail address they use
   there. Never guess one from a first name.
@@ -430,8 +430,8 @@ Things people ask for that you should know:
   (`switchdash://open/agent/<agent-id>?tab=settings`); "Anyone" admits anyone in the
   rooms the agent is in. You can change it for an
   agent with `update_agent_detail` once they say so. Warn them: a person whose chat account
-  is not linked to Switch, and confirmed from that account, is not recognised, and the
-  agent will not answer them.
+  is not linked to Switch is not recognised, and the agent will not answer them. A new link
+  counts once they post, from that account, the code Switch Console shows them.
 - **"Put you (or an agent) in a channel."** Two steps, in this order, one message each:
   1. **Add the Switch app to the channel.** A channel does nothing for Switch until the
      Switch app is in it (on Slack: mention the app in the channel and accept the invite,
