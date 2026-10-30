@@ -92,7 +92,8 @@ async def get_my_context() -> dict[str, Any]:
         set up; `unavailable_code` says why not, one of "switched_off" (its
         operator turned it off), "needs_https" (it can't work on this
         server), "app_not_set_up" (its operator can set it up under Admin →
-        Connector apps in Switch Console), "not_set_up",
+        Connector apps in Switch Console), "organization_app_unusable" (the
+        app your organization saved for it can't be used), "not_set_up",
         "not_fully_set_up" or "key_never_expires" (it connects with a key
         that never expires, which Switch does not hand to agents);
         `connection` is your owner's: "not_connected", "active",
@@ -212,7 +213,7 @@ async def get_my_context() -> dict[str, Any]:
             ],
             "how_to_add": _how_to_add(protocol),
         },
-        "services": _services(protocol, connections, agents, grants),
+        "services": await _services(protocol, connections, agents, grants),
         "agents": [
             {
                 "id": agent.id,
@@ -268,7 +269,7 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _services(
+async def _services(
     protocol: Any,
     connections: dict[str, str],
     agents: list[Agent],
@@ -283,13 +284,13 @@ def _services(
         definition = entry.definition
         if not definition.enabled:
             continue
-        unavailable = broker.unavailable(definition.slug)
+        unavailable = await broker.unavailable(definition.slug)
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
                 "available": unavailable is None
-                and broker.connectable(definition.slug),
+                and await broker.connectable(definition.slug),
                 "unavailable_reason": None
                 if unavailable is None
                 else unavailable.reason,

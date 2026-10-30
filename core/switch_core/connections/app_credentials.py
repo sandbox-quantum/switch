@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.datastructures import State
 
 from switch_core.config import SwitchConfig
+from switch_core.connections.adapters import ServiceAdapter
 from switch_core.connections.adapters.github import GitHubApp, load_github_app
 from switch_core.connections.adapters.oauth import OAuthClientCredentials
 from switch_core.connections.loader import Connection, ConnectionDefinition
@@ -246,6 +247,21 @@ def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubA
     return GitHubApp(connections, signer)
 
 
+def app_from_values(
+    spec: AppSpec, values: AppValues, public_url: str | None
+) -> tuple[GitHubApp | None, OAuthClientCredentials | None]:
+    """The app saved values describe, as its adapter takes it: a GitHub App
+    or an OAuth client, the other None. Raises `AppLoadError` when they
+    cannot be used."""
+    if spec.kind == "github_app":
+        return github_app_from_values(values, public_url), None
+    if "client_secret" not in values.secrets:
+        raise AppLoadError("The saved client has no client secret.")
+    return None, OAuthClientCredentials(
+        values.client_id, values.secrets["client_secret"], authentication=None
+    )
+
+
 def install_github_app(state: State, app: GitHubApp | None) -> None:
     """Put `app` on the gateway's state. A sign-in under way is a row in
     `sign_in_flows`, so it outlives the swap on its own; one that started
@@ -363,18 +379,32 @@ class ConnectorApps:
         effective = await self.reload(service)
         broker.replace_adapter(
             service,
-            build_adapter(
+            self.build(
                 service,
-                self._catalog[service].definition,
                 github_app=effective.github_app,
                 oauth_client=effective.oauth_client,
-                http=self._http,
-                registration=self._registration,
             ),
         )
         if effective.spec.kind == "github_app":
             install_github_app(state, effective.github_app)
         return effective
+
+    def build(
+        self,
+        service: str,
+        *,
+        github_app: GitHubApp | None,
+        oauth_client: OAuthClientCredentials | None,
+    ) -> ServiceAdapter | None:
+        """`service`'s adapter over the given app, or None without one."""
+        return build_adapter(
+            service,
+            self._catalog[service].definition,
+            github_app=github_app,
+            oauth_client=oauth_client,
+            http=self._http,
+            registration=self._registration,
+        )
 
     def effective(self, service: str) -> EffectiveCredentials:
         effective = self._effective.get(service)
@@ -463,16 +493,7 @@ class ConnectorApps:
             return self._none(spec, load_error=UNREADABLE, unreadable=True)
         values = AppValues(row.client_id, dict(row.settings), secrets)
         try:
-            if spec.kind == "github_app":
-                github_app = github_app_from_values(values, self.public_url)
-                oauth_client = None
-            else:
-                if "client_secret" not in secrets:
-                    raise AppLoadError("The saved client has no client secret.")
-                github_app = None
-                oauth_client = OAuthClientCredentials(
-                    row.client_id, secrets["client_secret"], authentication=None
-                )
+            github_app, oauth_client = app_from_values(spec, values, self.public_url)
         except AppLoadError as error:
             logger.error(
                 "The app saved for %s cannot be used, so it is not set up: %s",

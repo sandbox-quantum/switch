@@ -108,6 +108,7 @@ def _world(
                 catalog["example"].definition, client, vendor.client()
             )
         },
+        organization_apps=None,
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),

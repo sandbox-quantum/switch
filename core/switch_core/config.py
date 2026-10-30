@@ -21,6 +21,7 @@ from switch_core.feature_flags import (
     GROUP_CHATS,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
+    ORGANIZATION_CONNECTOR_APPS,
     SERVICE_CONNECTIONS,
 )
 from switch_core.keys import Keyring
@@ -1300,6 +1301,10 @@ class SwitchConfig(BaseSettings):
     @property
     def service_connections_enabled(self) -> bool:
         return self.feature_flags[SERVICE_CONNECTIONS]
+
+    @property
+    def organization_connector_apps_enabled(self) -> bool:
+        return self.feature_flags[ORGANIZATION_CONNECTOR_APPS]
 
     @property
     def follow_the_conversation_enabled(self) -> bool:
