@@ -50,7 +50,7 @@ a verbatim copy of what the earlier revisions built, for the same reason
 every revision in this chain copies rather than imports.
 
 Revision ID: e223eae63078
-Revises: e5a9c3d71f08
+Revises: b7e1d4c9a2f6
 Create Date: 2026-10-26 00:00:00.000000
 
 """
@@ -65,7 +65,7 @@ from sqlalchemy.dialects import postgresql
 logger = logging.getLogger("alembic.runtime.migration")
 
 revision: str = "e223eae63078"
-down_revision: str | None = "e5a9c3d71f08"
+down_revision: str | None = "b7e1d4c9a2f6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 # Contracting: it drops a table and a lookup, and retires keys. It ships a
