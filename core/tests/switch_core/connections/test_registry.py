@@ -123,6 +123,25 @@ def test_airtable_is_set_up_by_its_operators_own_client() -> None:
     assert adapter._client.client.client_id == "c"
 
 
+def test_canva_is_set_up_by_its_operators_own_client() -> None:
+    assert "canva" not in build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "canva": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["canva"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, StaticClient)
+    assert adapter._client.client.client_id == "c"
+
+
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),

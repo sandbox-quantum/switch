@@ -1,7 +1,51 @@
 slug: canva
 name: Canva
 category: Design
-description: Create and export Canva designs.
-enabled: false
+description: Create and edit Canva designs, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Canva access tokens are refreshed using single-use rotating refresh tokens.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a Canva app in the Canva Developer Portal,
+    # enables Canva MCP under "Outside Canva", and configures credentials in
+    # CANVA_CLIENT_CONFIG_PATH or under Connector apps in Switch Console.
+    registration: static
+    client_settings: CANVA
+    # Canva connects through Switch Console in loopback mode on one of the
+    # fixed Console ports registered in the Canva Developer Portal.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Canva validates the client credentials on exchange and compares redirect
+    # URIs with an actual authorization code.
+    unchecked: >-
+      Switch can't check the redirect URL. Connect once to confirm.
+    # Canva provides an official revocation endpoint at /rest/v1/oauth/revoke.
+    # Revoking a refresh token revokes its lineage and user consent.
+    revocation_url: https://api.canva.com/rest/v1/oauth/revoke
+  identity:
+    # GET /rest/v1/users/me requires no specific scopes and returns team_user.user_id.
+    url: https://api.canva.com/rest/v1/users/me
+    account_id: team_user.user_id
+    label: team_user.user_id
+# Canva's access tokens live 4 hours (14,400 seconds), documented in Canva's
+# OAuth guide. An agent's copy is bounded by this lifetime cap.
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    - { name: canva, url: "https://api.canva.com/connect/v1/mcp" }
+access:
+  # Least access: design metadata and content read for discovery and inspection;
+  # content write added for the create and edit level.
+  read:
+    scopes:
+      - design:meta:read
+      - design:content:read
+  write:
+    scopes:
+      - design:meta:read
+      - design:content:read
+      - design:content:write
+tools: { mode: pass_through }

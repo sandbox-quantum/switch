@@ -68,6 +68,8 @@ GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
+CANVA = "canva"
+CANVA_CALLBACK = f"{PUBLIC}/gateway/service-connections/{CANVA}/flows/callback"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
 
@@ -364,7 +366,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, CANVA}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -387,6 +389,18 @@ class TestOnlyTheOperator:
             "workspacesAndBases:read",
             "data.records:write",
             "data.recordComments:write",
+        ]
+        canva_redirects = [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39231, 39232, 39233, 39234, 39235)
+        ]
+        assert apps[CANVA]["redirect_uris"] == canva_redirects
+        assert apps[CANVA]["redirect_uri"] == canva_redirects[0]
+        assert apps[CANVA]["needs_public_url"] is False
+        assert apps[CANVA]["scopes"] == [
+            "design:meta:read",
+            "design:content:read",
+            "design:content:write",
         ]
         assert [entry["slug"] for entry in body["registered"]] == ["atlassian"]
 
