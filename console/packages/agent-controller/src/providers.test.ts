@@ -4,8 +4,12 @@ import { expect, it } from 'vitest';
 import { PROVIDERS, registeredProviders } from './providers';
 
 it('runs every provider that has both a plugin and a runtime', () => {
-  expect([...PROVIDERS].sort()).toEqual([...pluginRegistry.ids()].sort());
-  expect([...PROVIDERS].sort()).toEqual([...providerRuntimeIds()].sort());
+  expect([...PROVIDERS].sort((a, b) => a.localeCompare(b))).toEqual(
+    [...pluginRegistry.ids()].sort((a, b) => a.localeCompare(b))
+  );
+  expect([...PROVIDERS].sort((a, b) => a.localeCompare(b))).toEqual(
+    [...providerRuntimeIds()].sort((a, b) => a.localeCompare(b))
+  );
 });
 
 it('refuses a provider registered on only one side, naming the missing half', () => {
