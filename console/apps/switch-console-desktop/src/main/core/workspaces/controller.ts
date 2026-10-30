@@ -11,6 +11,15 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  addRoomUsers,
+  createRoomRole,
+  deleteRoomRole,
+  fetchArchivedRooms,
+  fetchBridgeUserNames,
+  setRoomAgentJoinEvents,
+  setRoomArchived,
+  setRoomGroup,
+  updateRoomRole,
   agentExistsOnServer,
   checkSlackTokens,
   fetchSlackOwnAppSetup,
@@ -142,6 +151,7 @@ import type {
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
+  RoomRoleInput,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
@@ -902,7 +912,94 @@ export const workspacesController = createRPCController({
         name: params.name,
         description: params.description,
         instructions: params.instructions,
+        readVisibility: params.readVisibility,
+        writeVisibility: params.writeVisibility,
       })
+    ),
+
+  /** File a room under a group, or take it out of one (null). */
+  setRoomGroup: (params: {
+    workspaceId: string;
+    roomId: string;
+    groupId: string | null;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomGroup(server, params.roomId, params.groupId)
+    ),
+
+  /** Define a role in a room; resolves to the room's roles as they now stand. */
+  createRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    role: RoomRoleInput;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomRole(server, params.roomId, params.role)
+    ),
+
+  /** Change a role's instructions or exclusivity; its name is fixed. */
+  updateRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    name: string;
+    instructions?: string;
+    exclusive?: boolean;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomRole(server, params.roomId, params.name, {
+        instructions: params.instructions,
+        exclusive: params.exclusive,
+      })
+    ),
+
+  deleteRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    name: string;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomRole(server, params.roomId, params.name)
+    ),
+
+  /** Whether one member agent is told when someone joins the room. */
+  setRoomAgentJoinEvents: (params: {
+    workspaceId: string;
+    roomId: string;
+    agentId: string;
+    receivesJoinEvents: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAgentJoinEvents(server, params.roomId, params.agentId, params.receivesJoinEvents)
+    ),
+
+  /** Invite people to a bridged room by their messaging-app usernames. */
+  addRoomUsers: (params: {
+    workspaceId: string;
+    roomId: string;
+    userNames: string[];
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addRoomUsers(server, params.roomId, params.userNames)
+    ),
+
+  /** Archive a room, or bring it back. */
+  setRoomArchived: (params: {
+    workspaceId: string;
+    roomId: string;
+    archived: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomArchived(server, params.roomId, params.archived)
+    ),
+
+  /** The archived rooms the signed-in user can see. */
+  listArchivedRooms: (params: { workspaceId: string }): Promise<RemoteRoomSummary[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchArchivedRooms(server)),
+
+  /** The messaging-app usernames Switch knows on one bridge, for inviting people to a room. */
+  listBridgeUserNames: (params: { workspaceId: string; bridgeId: string }): Promise<string[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgeUserNames(server, params.bridgeId)
     ),
 
   /**

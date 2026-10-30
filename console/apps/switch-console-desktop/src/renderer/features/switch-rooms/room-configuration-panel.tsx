@@ -1,5 +1,15 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import {
+  Archive,
+  ExternalLink,
+  FileText,
+  Loader2,
+  Lock,
+  Plus,
+  RefreshCw,
+  Search,
+  X,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { chatMembersQueryKey, workspaceRosterQuery } from '@renderer/features/chats/chat-people';
@@ -7,9 +17,9 @@ import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actio
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
+import type { RoomPermissions } from '@renderer/features/switch-servers/room-permissions';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -36,29 +46,33 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from '@renderer/lib/ui/input-group';
+import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
 import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
-import {
-  knownAgentTypeDisplayName,
-  providerDisplayName,
-} from '@shared/core/providers/agent-provider-registry';
+import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
-import type {
-  RemoteAgentSummary,
-  RemoteRoomDetail,
-} from '@shared/core/switch-servers/switch-servers';
+import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { administersWorkspace } from '@shared/core/workspaces/workspaces';
+import { roomAgentPresence } from './room-agent-presence';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
-
-/** Query key for one room's own settings — shared so a save can write the
- * server's answer straight back into what the page is reading. */
-function roomDetailKey(workspaceId: string, roomId: string) {
-  return ['remote-room-detail', workspaceId, roomId] as const;
-}
+import { roomInviteability } from './room-membership';
+import {
+  AgentMark,
+  agentKindFor,
+  agentNameFor,
+  localAgentFor,
+  PersonMark,
+  roomDetailKey,
+} from './room-participants';
+import {
+  AccessAndGroupFields,
+  ArchiveRoomSection,
+  RolesSection,
+  RoomInfoSection,
+} from './room-settings-sections';
 
 /** One room read from its server; `workspaceId` is null until the room list has loaded. */
 function useRoomDetail(roomId: string) {
@@ -106,6 +120,16 @@ const ChatConfiguration = observer(function ChatConfiguration({
           </p>
         )}
         <ChatParticipantsSection serverId={serverId} workspaceId={workspaceId} chat={chat} />
+        {workspaceId !== null && detail.data && (
+          <>
+            <RolesSection
+              workspaceId={workspaceId}
+              room={detail.data}
+              permissions={{ canWrite: chat.canManage, canManage: chat.canManage }}
+            />
+            <RoomInfoSection room={detail.data} />
+          </>
+        )}
         <section className="border-t border-border pt-6">
           <div className="flex items-center justify-between gap-3">
             <div className="space-y-0.5">
@@ -495,20 +519,89 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
   }
 
   const room = query.data;
+  const permissions = switchRoomsStore.roomPermissions(workspaceId, room);
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-[880px] flex-col gap-8 px-10 py-8">
-        <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
-        {/* Keyed on the room so the drafts below belong to the room on screen:
-            switching rooms starts a fresh form rather than carrying half-typed
-            text across. */}
-        <GeneralSection key={room.id} workspaceId={workspaceId} room={room} />
-        <ParticipantsSection workspaceId={workspaceId} room={room} />
-        <DeleteRoomSection workspaceId={workspaceId} room={room} />
+      <div className="mx-auto flex w-full max-w-[1080px] gap-10 px-10 py-8">
+        <SettingsIndex />
+        <div className="flex min-w-0 flex-1 flex-col gap-8">
+          <RoomHeading serverId={switchRoomsStore.roomServerId(roomId)} room={room} />
+          {room.archived && (
+            <Notice icon={<Archive className="size-3.5" />}>
+              This room is archived. It is out of the room lists and agents cannot join it.
+            </Notice>
+          )}
+          {!permissions.canWrite && (
+            <Notice icon={<Lock className="size-3.5" />}>
+              Only {room.ownerName ?? 'the room’s owner'} or a workspace admin can change this
+              room’s settings.
+            </Notice>
+          )}
+          {/* Keyed on the room so the drafts below belong to the room on screen:
+              switching rooms starts a fresh form rather than carrying half-typed
+              text across. */}
+          <GeneralSection
+            key={room.id}
+            workspaceId={workspaceId}
+            room={room}
+            readOnly={!permissions.canWrite}
+          />
+          <AccessAndGroupFields workspaceId={workspaceId} room={room} permissions={permissions} />
+          <ParticipantsSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          <RolesSection workspaceId={workspaceId} room={room} permissions={permissions} />
+          <RoomInfoSection room={room} />
+          <section
+            id="room-settings-archive"
+            className="flex flex-col gap-5 border-t border-border pt-6"
+          >
+            <ArchiveRoomSection workspaceId={workspaceId} room={room} permissions={permissions} />
+            <DeleteRoomSection workspaceId={workspaceId} room={room} />
+          </section>
+        </div>
       </div>
     </div>
   );
 });
+
+const SETTINGS_SECTIONS = [
+  ['room-settings-general', 'General'],
+  ['room-settings-participants', 'Participants'],
+  ['room-settings-roles', 'Roles'],
+  ['room-settings-info', 'Room info'],
+  ['room-settings-archive', 'Archive & delete'],
+] as const;
+
+/** The page's sections, to jump between; it stays put while the page scrolls. */
+function SettingsIndex() {
+  return (
+    <nav
+      aria-label="Room settings sections"
+      className="sticky top-0 hidden w-[150px] shrink-0 self-start pt-1 lg:block"
+    >
+      {SETTINGS_SECTIONS.map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          className="block w-full cursor-pointer rounded-md px-2.5 py-1.5 text-left text-sm text-foreground-muted hover:bg-background-1 hover:text-foreground"
+          onClick={() =>
+            document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+          }
+        >
+          {label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function Notice({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-2 rounded-md bg-background-secondary px-3 py-2 text-xs text-foreground-muted">
+      {icon}
+      <span>{children}</span>
+    </div>
+  );
+}
 
 /**
  * Deleting the room, last on its page and below a rule.
@@ -619,7 +712,16 @@ type SaveState = { phase: 'idle' | 'saving' | 'saved' } | { phase: 'failed'; mes
  *
  * One request carries both fields, so the pair is stored together or not at all.
  */
-function GeneralSection({ workspaceId, room }: { workspaceId: string; room: RemoteRoomDetail }) {
+function GeneralSection({
+  workspaceId,
+  room,
+  readOnly = false,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+  /** For someone who may read the room but not change it: the fields show, and do not take edits. */
+  readOnly?: boolean;
+}) {
   const queryClient = useQueryClient();
   const savedName = room.name;
   const savedDescription = room.description;
@@ -656,13 +758,14 @@ function GeneralSection({ workspaceId, room }: { workspaceId: string; room: Remo
   }
 
   return (
-    <section className="flex flex-col gap-4">
+    <section id="room-settings-general" className="flex flex-col gap-4">
       <h2 className="text-sm font-semibold text-foreground">General</h2>
 
       <Field label="Name" hint="What everyone in the room sees it called.">
         <Input
           className="h-9"
           aria-label="Name"
+          disabled={readOnly}
           value={name}
           onChange={(e) => {
             setName(e.target.value);
@@ -683,6 +786,7 @@ function GeneralSection({ workspaceId, room }: { workspaceId: string; room: Remo
         <Input
           className="h-9"
           placeholder="What this room is for"
+          disabled={readOnly}
           value={description}
           onChange={(e) => {
             setDescription(e.target.value);
@@ -695,6 +799,7 @@ function GeneralSection({ workspaceId, room }: { workspaceId: string; room: Remo
         <Textarea
           rows={4}
           placeholder="Optional guidance shown to agents when they enter the room"
+          disabled={readOnly}
           value={instructions}
           onChange={(e) => {
             setInstructions(e.target.value);
@@ -705,7 +810,7 @@ function GeneralSection({ workspaceId, room }: { workspaceId: string; room: Remo
 
       {/* The status sits beside the button rather than under a field: one
           request covers both, so there is one answer to report. */}
-      <div className="flex items-center justify-end gap-3">
+      <div className={cn('flex items-center justify-end gap-3', readOnly && 'hidden')}>
         <SaveStatus state={state} dirty={dirty} />
         <Button
           type="button"
@@ -813,30 +918,51 @@ function Field({
 }
 
 /**
- * Who is in the room, and the one way to change it from here.
- *
- * Agents and people are drawn as the same kind of card because they are the same
- * kind of fact — membership — and separating them into two lists implied a
- * hierarchy the room does not have.
+ * Who is in the room: each agent with what it is doing here, whether it is told
+ * when someone joins, and a way to take it out; then the people. Someone who may
+ * write to the room adds agents — any agent on the server, as the gateway
+ * offers — and invites people from the messaging app.
  */
 const ParticipantsSection = observer(function ParticipantsSection({
   workspaceId,
   room,
+  permissions,
 }: {
   workspaceId: string;
   room: RemoteRoomDetail;
+  permissions: RoomPermissions;
 }) {
   const queryClient = useQueryClient();
-  const [adding, setAdding] = useState(false);
+  const [panel, setPanel] = useState<'agent' | 'people' | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
+  const remoteAgents = useWorkspaceAgents(workspaceId);
+  const remoteById = new Map((remoteAgents.data ?? []).map((agent) => [agent.id, agent]));
+  const detailQueryKey = roomDetailKey(workspaceId, room.id);
+  const canWrite = permissions.canWrite;
+  const inviteability = roomInviteability(room, bridgePlatformLabel(room.bridgeType));
+  const canInvitePeople = canWrite && inviteability.canInvite;
 
   async function refresh() {
-    await queryClient.invalidateQueries({ queryKey: roomDetailKey(workspaceId, room.id) });
+    await queryClient.invalidateQueries({ queryKey: detailQueryKey });
     await switchRoomsStore.refreshRoomState();
   }
 
+  async function act(key: string, action: () => Promise<void>, fallback: string) {
+    setBusy(key);
+    setError(null);
+    try {
+      await action();
+    } catch (cause) {
+      setError(failureText(cause, fallback));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
-    <section className="flex flex-col gap-3">
+    <section id="room-settings-participants" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-baseline gap-2">
           <h2 className="text-sm font-semibold text-foreground">Participants</h2>
@@ -844,41 +970,208 @@ const ParticipantsSection = observer(function ParticipantsSection({
             {membershipSummary(room.agentIds.length, room.connectedUserNames.length)}
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => showAddAgentsToRoomModal({ roomId: room.id })}
-          >
-            <FileText className="size-3.5" />
-            From a template
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            aria-expanded={adding}
-            onClick={() => setAdding((v) => !v)}
-          >
-            <Plus className="size-3.5" />
-            Add agent
-          </Button>
-        </div>
+        {canWrite && (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => showAddAgentsToRoomModal({ roomId: room.id })}
+            >
+              <FileText className="size-3.5" />
+              From a template
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-expanded={panel === 'agent'}
+              onClick={() => setPanel(panel === 'agent' ? null : 'agent')}
+            >
+              <Plus className="size-3.5" />
+              Add agent
+            </Button>
+            {canInvitePeople && (
+              <Button
+                variant="outline"
+                size="sm"
+                aria-expanded={panel === 'people'}
+                onClick={() => setPanel(panel === 'people' ? null : 'people')}
+              >
+                <Plus className="size-3.5" />
+                Add people
+              </Button>
+            )}
+          </div>
+        )}
       </div>
 
-      <ParticipantList
-        workspaceId={workspaceId}
-        agentIds={room.agentIds}
-        agentNames={new Map()}
-        people={room.connectedUserNames.map((name) => ({
-          id: `user:${name}`,
-          name,
-          detail: 'person',
-        }))}
-        manage={null}
-      />
+      {panel === 'agent' && (
+        <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refresh} />
+      )}
+      {panel === 'people' && room.bridgeId !== null && (
+        <AddPeoplePanel workspaceId={workspaceId} room={room} bridgeId={room.bridgeId} />
+      )}
+      {error !== null && <p className="text-xs text-destructive">{error}</p>}
+      {canWrite && !inviteability.canInvite && inviteability.reason !== null && (
+        <p className="text-xs text-foreground-muted">{inviteability.reason}</p>
+      )}
 
-      {adding && <AddAgentPanel workspaceId={workspaceId} room={room} onAdded={refresh} />}
+      {room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
+        <p className="text-sm text-foreground-muted">Nobody is in this room yet.</p>
+      ) : (
+        <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
+          {room.agentIds.map((agentId) => {
+            const name = agentNameFor(agentId, workspaceId, remoteById);
+            const presence = roomAgentPresence(room.agentStatuses[agentId]);
+            const role = room.roles.find((each) => each.heldBy.includes(name));
+            const listening = room.joinEventListeners.includes(agentId);
+            return (
+              <div key={agentId} className="flex items-center gap-3 px-3.5 py-2.5">
+                <AgentMark agentId={agentId} workspaceId={workspaceId} remoteById={remoteById} />
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-sm font-medium text-foreground">{name}</span>
+                  <span className="truncate text-xs text-foreground-muted">
+                    {[
+                      agentKindFor(agentId, workspaceId, remoteById),
+                      room.agentStatuses[agentId] === undefined ? null : presence.label,
+                      role ? `role: ${role.name}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                </div>
+                <label
+                  className="flex shrink-0 items-center gap-2 text-xs text-foreground-muted"
+                  title="Tell this agent when someone joins the room"
+                >
+                  Notify on join
+                  <Switch
+                    size="sm"
+                    checked={listening}
+                    disabled={!canWrite || busy === `join:${agentId}`}
+                    aria-label={`Tell ${name} when someone joins`}
+                    onCheckedChange={(next) =>
+                      void act(
+                        `join:${agentId}`,
+                        async () => {
+                          queryClient.setQueryData(
+                            detailQueryKey,
+                            await rpc.workspaces.setRoomAgentJoinEvents({
+                              workspaceId,
+                              roomId: room.id,
+                              agentId,
+                              receivesJoinEvents: next,
+                            })
+                          );
+                        },
+                        'Could not change the join notification.'
+                      )
+                    }
+                  />
+                </label>
+                {canWrite && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Remove ${name}`}
+                    title={`Remove ${name}`}
+                    disabled={busy === `remove:${agentId}`}
+                    onClick={() =>
+                      void act(
+                        `remove:${agentId}`,
+                        async () => {
+                          await rpc.workspaces.removeRoomAgent({
+                            workspaceId,
+                            roomId: room.id,
+                            agentId,
+                          });
+                          await refresh();
+                        },
+                        `Could not remove ${name}.`
+                      )
+                    }
+                  >
+                    {busy === `remove:${agentId}` ? <Loader2 className="animate-spin" /> : <X />}
+                  </Button>
+                )}
+              </div>
+            );
+          })}
+          {room.connectedUserNames.map((person) => (
+            <div key={`user:${person}`} className="flex items-center gap-3 px-3.5 py-2.5">
+              <PersonMark name={person} size="md" />
+              <span className="min-w-0 flex-1 truncate text-sm text-foreground">{person}</span>
+              <span className="shrink-0 text-xs text-foreground-muted">person</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {room.bridgeId !== null && room.connectedUserNames.length > 0 && (
+        <p className="text-xs text-foreground-muted">
+          People are those Switch has seen in the channel or added to it. The channel may have more.
+        </p>
+      )}
     </section>
+  );
+});
+
+/**
+ * Invite people to a bridged room from the messaging app's users Switch knows.
+ * The server does not say who it could not add, so the names asked for are
+ * compared with the room's people afterwards and any missing are named.
+ */
+const AddPeoplePanel = observer(function AddPeoplePanel({
+  workspaceId,
+  room,
+  bridgeId,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+  bridgeId: string;
+}) {
+  const queryClient = useQueryClient();
+  const [notAdded, setNotAdded] = useState<string | null>(null);
+  const users = useQuery({
+    queryKey: ['bridge-user-names', workspaceId, bridgeId],
+    queryFn: () => rpc.workspaces.listBridgeUserNames({ workspaceId, bridgeId }),
+  });
+  const present = new Set(room.connectedUserNames);
+  return (
+    <>
+      <AddParticipantPanel
+        noun="person"
+        searchPlaceholder={`Search people on ${room.bridgeDisplayName ?? 'the messaging app'}…`}
+        allInText="Everyone Switch knows on this messaging app is already in the room."
+        loading={users.isPending}
+        loadError={users.isError ? failureText(users.error, 'Could not list the people.') : null}
+        candidates={(users.data ?? [])
+          .filter((name) => !present.has(name))
+          .map((name) => ({
+            id: name,
+            name,
+            mark: <PersonMark name={name} size="sm" />,
+            detail: 'person',
+          }))}
+        footer={
+          <p className="px-1 text-xs text-foreground-muted">
+            Only people Switch has seen on this messaging app are listed.
+          </p>
+        }
+        onAdd={async (name) => {
+          setNotAdded(null);
+          const updated = await rpc.workspaces.addRoomUsers({
+            workspaceId,
+            roomId: room.id,
+            userNames: [name],
+          });
+          queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
+          if (!updated.connectedUserNames.includes(name))
+            setNotAdded(
+              `${name} was not added. The messaging app may not have let Switch invite them.`
+            );
+        }}
+      />
+      {notAdded !== null && <p className="text-xs text-destructive">{notAdded}</p>}
+    </>
   );
 });
 
@@ -937,20 +1230,6 @@ const ParticipantList = observer(function ParticipantList({
     </div>
   );
 });
-
-/** A person's initials disc: people have no picture in Switch. */
-function PersonMark({ name, size }: { name: string; size: 'sm' | 'md' }) {
-  return (
-    <span
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] font-medium text-foreground',
-        size === 'md' ? 'size-7 text-xs' : 'size-[22px] text-[10px]'
-      )}
-    >
-      {agentInitials(name)}
-    </span>
-  );
-}
 
 function ParticipantCard({
   mark,
@@ -1103,11 +1382,9 @@ function AddParticipantPanel({
 }
 
 /**
- * Search this computer's agents and put one in the room.
- *
- * Scoped to agents this install owns, like every other add-an-agent surface:
- * adding somebody else's agent from here would put a room in front of an agent
- * whose owner never agreed to it.
+ * Search the server's agents and put one in the room — any agent the viewer can
+ * see, as the gateway offers. Whether an agent then answers anyone in the room
+ * is still up to its own addressing rules.
  */
 const AddAgentPanel = observer(function AddAgentPanel({
   workspaceId,
@@ -1119,40 +1396,48 @@ const AddAgentPanel = observer(function AddAgentPanel({
   onAdded: () => Promise<void>;
 }) {
   const members = new Set(room.agentIds);
-  const { data: remoteAgents } = useWorkspaceAgents(workspaceId);
-  const remoteById = new Map((remoteAgents ?? []).map((agent) => [agent.id, agent]));
+  const remoteAgents = useWorkspaceAgents(workspaceId);
+  const serverId = workspacesStore.serverIdFor(workspaceId);
+  const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
   return (
     <AddParticipantPanel
       noun="agent"
       footer={null}
-      searchPlaceholder="Search agents on this computer…"
-      allInText="Every agent on this computer is already in this room."
-      loading={false}
-      loadError={null}
-      candidates={agentsStore
-        .agentsInWorkspace(workspaceId)
-        .filter((agent) => agent.switchAgentId !== null && !members.has(agent.switchAgentId))
-        .map((agent) => {
-          const switchAgentId = agent.switchAgentId as string;
-          return {
-            id: switchAgentId,
-            name: agent.name,
-            mark: (
-              <AgentAvatar
-                name={agent.name}
-                iconUrl={remoteById.get(switchAgentId)?.iconUrl ?? null}
-                serverId={agent.serverId}
-                size={22}
-              />
-            ),
-            detail: providerDisplayName(agent.providerId) ?? 'Agent',
-          };
-        })}
-      onAdd={async (switchAgentId) => {
+      searchPlaceholder="Search agents…"
+      allInText={
+        (remoteAgents.data ?? []).length === 0
+          ? 'There are no agents on this server yet.'
+          : 'Every agent on this server is already in this room.'
+      }
+      loading={remoteAgents.isPending}
+      loadError={
+        remoteAgents.isError ? failureText(remoteAgents.error, 'Could not list the agents.') : null
+      }
+      candidates={(remoteAgents.data ?? [])
+        .filter((agent) => !members.has(agent.id))
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          mark: (
+            <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={22} />
+          ),
+          detail: [
+            localAgentFor(agent.id, workspaceId) ||
+            (viewerId !== null && agent.ownerId === viewerId)
+              ? 'yours'
+              : agent.ownerName
+                ? `${agent.ownerName}’s`
+                : null,
+            agentKindFor(agent.id, workspaceId, new Map([[agent.id, agent]])),
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        }))}
+      onAdd={async (agentId) => {
         await rpc.workspaces.addRoomAgents({
           workspaceId,
           roomId: room.id,
-          agentIds: [switchAgentId],
+          agentIds: [agentId],
           direction: 'agents_to_room',
         });
         await onAdded();
@@ -1180,61 +1465,4 @@ function PanelNotice({
       {action}
     </div>
   );
-}
-
-/** An agent's own picture, beside the human participants' initials discs. */
-function AgentMark({
-  agentId,
-  workspaceId,
-  remoteById,
-}: {
-  agentId: string;
-  workspaceId: string | null;
-  remoteById: Map<string, RemoteAgentSummary>;
-}) {
-  const remote = remoteById.get(agentId) ?? null;
-  return (
-    <span className="flex size-7 shrink-0 items-center justify-center">
-      <AgentAvatar
-        name={agentNameFor(agentId, workspaceId, remoteById)}
-        iconUrl={remote?.iconUrl ?? null}
-        serverId={workspaceId && workspacesStore.serverIdFor(workspaceId)}
-        size={26}
-      />
-    </span>
-  );
-}
-
-/** This install's record of a Switch agent, which is where its provider is
- * known — the server says what type an agent is, not what runs it here. */
-function localAgentFor(switchAgentId: string, workspaceId: string | null) {
-  if (workspaceId === null) return null;
-  return (
-    agentsStore.agentsInWorkspace(workspaceId).find((a) => a.switchAgentId === switchAgentId) ??
-    null
-  );
-}
-
-function agentNameFor(
-  switchAgentId: string,
-  workspaceId: string | null,
-  remoteById: Map<string, RemoteAgentSummary>
-): string {
-  return (
-    localAgentFor(switchAgentId, workspaceId)?.name ??
-    remoteById.get(switchAgentId)?.name ??
-    'Agent'
-  );
-}
-
-/** What an agent runs, in words: this install's provider when it has one,
- * otherwise the type the server knows it by. */
-function agentKindFor(
-  switchAgentId: string,
-  workspaceId: string | null,
-  remoteById: Map<string, RemoteAgentSummary>
-): string {
-  const providerId = localAgentFor(switchAgentId, workspaceId)?.providerId ?? null;
-  const knownType = remoteById.get(switchAgentId)?.knownAgentType ?? null;
-  return providerDisplayName(providerId) ?? knownAgentTypeDisplayName(knownType) ?? 'agent';
 }

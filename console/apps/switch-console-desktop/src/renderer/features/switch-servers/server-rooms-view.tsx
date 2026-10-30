@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, DoorOpen, MessagesSquare, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
@@ -14,6 +15,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { rpc } from '@renderer/lib/ipc';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
@@ -69,6 +71,31 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
           .filter((chat) => query === '' || chat.name.toLowerCase().includes(query))
           .sort((a, b) => a.name.localeCompare(b.name))
       : [];
+  // Archived rooms in a messaging app; archived group chats come from the chats list above.
+  const queryClient = useQueryClient();
+  const archivedRoomsQuery = useQuery({
+    queryKey: ['archived-rooms', workspaceId],
+    queryFn: async () => {
+      const found = await rpc.workspaces.listArchivedRooms({ workspaceId: workspaceId as string });
+      switchRoomsStore.noteRooms(workspaceId as string, found);
+      return found.filter((room) => !room.isConsoleChat);
+    },
+    enabled: workspaceId !== null && !signedOut,
+  });
+  const archivedRooms = (archivedRoomsQuery.data ?? [])
+    .filter((room) => query === '' || room.name.toLowerCase().includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  async function unarchiveRoom(room: RemoteRoomSummary) {
+    if (workspaceId === null) return;
+    try {
+      await rpc.workspaces.setRoomArchived({ workspaceId, roomId: room.id, archived: false });
+      await queryClient.invalidateQueries({ queryKey: ['archived-rooms', workspaceId] });
+      await switchRoomsStore.refreshRoomState();
+      void refreshSidebarRoomState(true);
+    } catch (error) {
+      toast({ title: failureText(error, 'Could not unarchive the room.'), variant: 'destructive' });
+    }
+  }
 
   return (
     <ServerPage
@@ -152,10 +179,37 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
             ))
           )}
           <ArchivedFold
-            count={archived.length}
-            error={chatsStore.serverId === serverId ? chatsStore.archivedError : null}
+            count={archived.length + archivedRooms.length}
+            error={
+              (chatsStore.serverId === serverId ? chatsStore.archivedError : null) ??
+              (archivedRoomsQuery.isError
+                ? failureText(archivedRoomsQuery.error, 'Could not list the archived rooms.')
+                : null)
+            }
           >
             <div className="divide-y divide-border overflow-hidden rounded-[10px] border border-border">
+              {archivedRooms.map((room) => (
+                <div key={room.id} className="flex items-center gap-3 bg-background px-4 py-3">
+                  {hasBridgeIcon(room.bridgeType) ? (
+                    <BridgeIcon bridgeType={room.bridgeType} size={16} className="shrink-0" />
+                  ) : (
+                    <DoorOpen className="size-4 shrink-0 text-foreground-muted" />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void openRoom(room.id)}
+                    className="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium text-foreground hover:underline"
+                  >
+                    {roomTitle(room)}
+                  </button>
+                  {workspaceId !== null &&
+                    switchRoomsStore.roomPermissions(workspaceId, room).canWrite && (
+                      <Button size="sm" variant="outline" onClick={() => void unarchiveRoom(room)}>
+                        Unarchive
+                      </Button>
+                    )}
+                </div>
+              ))}
               {archived.map((chat) => (
                 <div key={chat.roomId} className="flex items-center gap-3 bg-background px-4 py-3">
                   <button
