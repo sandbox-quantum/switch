@@ -333,23 +333,27 @@ export function describeConformance(name: string, options: ConformanceOptions): 
       const { adapter, recorder, sessionId, input } = await setup();
       await adapter.startSession(input);
       const turnId = nextId('turn');
+
       await adapter.sendTurn({
         sessionId,
         turnId,
         text: `Delegate this to a subagent (spawn a sub-agent / task agent, do not do it yourself): read README.md in the current directory and report its first line. When the subagent returns, reply with that line followed by ${TOKEN}.`,
       });
+
       const started = await recorder.waitFor(
         'item.started',
         (e) => e.turnId === turnId && e.item.type === 'subagent',
         timeoutMs
       );
       expect(started.item.title.length).toBeGreaterThan(0);
+
       const finished = await recorder.waitFor(
         'item.completed',
         (e) => e.turnId === turnId && e.item.type === 'subagent' && e.item.id === started.item.id,
         timeoutMs
       );
       expect(finished.item.status).toBe('completed');
+
       const done = await recorder.waitFor('turn.completed', (e) => e.turnId === turnId, timeoutMs);
       expect(done.outcome).toBe('completed');
       expect(recorder.assistantText(turnId)).toContain(TOKEN);
@@ -379,6 +383,7 @@ export function describeConformance(name: string, options: ConformanceOptions): 
           `Call the echo tool from the MCP server named ${names} with the text ` +
           `${TOKEN}, then reply with what it returned.`,
       });
+
       const done = await recorder.waitFor('turn.completed', (e) => e.turnId === turnId, timeoutMs);
       expect(done.outcome).toBe('completed');
       expect(recorder.ofType('request.opened')).toEqual([]);

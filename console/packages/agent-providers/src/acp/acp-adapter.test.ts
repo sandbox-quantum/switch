@@ -114,6 +114,25 @@ it('selects models through the models list when the agent offers no model config
     modelId: 'fast',
   });
 });
+it('does not use legacy model switching when the provider disables it', async () => {
+  agent.session = {
+    models: { availableModels: [{ modelId: 'fast', name: 'Fast' }] },
+  };
+
+  const kiroHooks: AcpProviderHooks = {
+    ...dummy,
+    provider: 'kiro',
+    noLegacySetModel: true,
+  };
+
+  const { adapter, server } = await start(kiroHooks);
+
+  await expect(adapter.setModel('s', { id: 'fast' })).rejects.toThrow(
+    'Model switching is not supported'
+  );
+
+  expect(server.received.some((message) => message.method === 'session/set_model')).toBe(false);
+});
 
 it('selects models through the model config option, refusing one it does not offer', async () => {
   agent.session = {
@@ -131,7 +150,26 @@ it('selects models through the model config option, refusing one it does not off
   });
   expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
 });
+it('passes advertised agent capabilities to vendor extension hooks', async () => {
+  agent.capabilities = {
+    loadSession: true,
+    sessionCapabilities: { resume: true },
+  };
 
+  const receivedCapabilities = vi.fn();
+
+  await start({
+    ...dummy,
+    extensions: (_context, _registrar, capabilities) => {
+      receivedCapabilities(capabilities);
+    },
+  });
+
+  expect(receivedCapabilities).toHaveBeenCalledWith({
+    loadSession: true,
+    sessionCapabilities: { resume: true },
+  });
+});
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {
   agent.capabilities = { promptCapabilities: { image: true } };
   const { adapter, server } = await start();
