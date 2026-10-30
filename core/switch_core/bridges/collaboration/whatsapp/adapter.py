@@ -114,13 +114,6 @@ def sign(app_secret: str, body: bytes) -> str:
     return f"sha256={digest}"
 
 
-def appsecret_proof(app_secret: str, access_token: str) -> str:
-    """The access token signed with the app secret, as Graph checks it."""
-    return hmac.new(
-        app_secret.encode(), access_token.encode(), hashlib.sha256
-    ).hexdigest()
-
-
 class _WhatsAppMarkup(Markup):
     """WhatsApp's spelling of the marks a card makes: one star for bold, and a
     code span that cannot be fenced longer, so a literal holding a backtick
@@ -145,6 +138,13 @@ class WhatsAppConnectionConfig(BridgeConnectionConfig):
             "permissions. Business settings → Users → System users → Generate "
             "new token. The temporary token on the app's API Setup page also "
             "works, but expires after 24 hours."
+        ),
+    )
+    app_id: str = Field(
+        title="App ID",
+        description=(
+            "The numeric ID of your Meta app. App dashboard → App settings → "
+            "Basic → App ID."
         ),
     )
     phone_number_id: str = Field(
@@ -172,7 +172,9 @@ class WhatsAppConnectionConfig(BridgeConnectionConfig):
         ),
     )
 
-    @field_validator("access_token", "phone_number_id", "app_secret", "verify_token")
+    @field_validator(
+        "access_token", "app_id", "phone_number_id", "app_secret", "verify_token"
+    )
     @classmethod
     def _not_blank(cls, value: str, info: ValidationInfo) -> str:
         stripped = value.strip()
@@ -188,6 +190,15 @@ class WhatsAppConnectionConfig(BridgeConnectionConfig):
                 "phone_number_id is the numeric ID shown under the 'From' "
                 "number on the app's WhatsApp → API Setup page, not the phone "
                 "number itself."
+            )
+        return value
+
+    @field_validator("app_id")
+    @classmethod
+    def _numeric_app_id(cls, value: str) -> str:
+        if not value.isdigit():
+            raise ValueError(
+                "app_id is the numeric App ID on the app's App settings → Basic page."
             )
         return value
 
@@ -252,6 +263,7 @@ class WhatsAppAdapter(PlatformAdapter):
         self._client = WhatsAppGraphClient(
             http=self._http,
             access_token=config.access_token,
+            app_secret=config.app_secret,
             phone_number_id=config.phone_number_id,
         )
 
@@ -259,36 +271,52 @@ class WhatsAppAdapter(PlatformAdapter):
 
     @classmethod
     def claimed_workspace(cls, connection_config: dict[str, object]) -> str | None:
-        """One business number is connected at most once: Meta delivers its
-        events to one address, so a second bridge on it would hear nothing."""
-        return f"WhatsApp phone number {connection_config['phone_number_id']}"
+        """One Meta app is connected at most once. Its webhook address is set
+        per app, not per number, so a second bridge on the same app (even for
+        another of its numbers) would take the callback from the first."""
+        return f"WhatsApp Meta app {connection_config['app_id']}"
 
     @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
-        """Read the phone number back with the token, proved with the app secret.
+        """Check the token belongs to the app and reaches the phone number.
 
-        One call checks three of the four fields: the token is accepted, it
-        reaches this phone number, and the app secret is the app's own. The
-        verify token is checked by Meta itself, when the address is saved.
+        `app_id` is what an app is claimed by, so it has to be the token's
+        app and not merely a value someone typed. The token is described with
+        the app's own id and secret, which proves the secret is that app's;
+        then the phone number is read back with the token. The verify token is
+        checked by Meta itself, when the address is saved.
         """
         config = WhatsAppConnectionConfig.model_validate(connection_config)
         async with httpx.AsyncClient(timeout=30) as http:
             client = WhatsAppGraphClient(
                 http=http,
                 access_token=config.access_token,
+                app_secret=config.app_secret,
                 phone_number_id=config.phone_number_id,
             )
             try:
-                await client.phone_number(
-                    appsecret_proof=appsecret_proof(
-                        config.app_secret, config.access_token
+                token = await client.token_info(app_id=config.app_id)
+                if not token.get("is_valid"):
+                    error = token.get("error")
+                    reason = error.get("message") if isinstance(error, dict) else None
+                    raise BridgeCredentialError(
+                        "WhatsApp says the access token is not valid"
+                        + (f": {reason}" if reason else "")
+                        + ". Generate a new one for the system user."
                     )
-                )
+                if str(token.get("app_id")) != config.app_id:
+                    raise BridgeCredentialError(
+                        f"The access token was issued for Meta app "
+                        f"{token.get('app_id')}, not app {config.app_id}. Use "
+                        "the App ID and app secret of the app the token "
+                        "belongs to."
+                    )
+                await client.phone_number()
             except WhatsAppGraphError as exc:
                 raise BridgeCredentialError(
                     f"WhatsApp refused these credentials: {exc}. Check the "
-                    "access token, the phone number ID and the app secret "
-                    "against your Meta app."
+                    "access token, the App ID, the phone number ID and the app "
+                    "secret against your Meta app."
                 ) from exc
             except httpx.RequestError as exc:
                 raise BridgeCredentialError(

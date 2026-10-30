@@ -4,7 +4,7 @@ Connect a WhatsApp Business phone number to Switch, so people who write to that
 number reach a Switch room and its agents, and the agents answer in the chat.
 
 Switch uses the **WhatsApp Business Cloud API** on **your own Meta app and
-phone number**. You create the app, add WhatsApp to it, and paste four values
+phone number**. You create the app, add WhatsApp to it, and paste five values
 into Switch Console. Meta then delivers each message to Switch's webhook
 address for the connection.
 
@@ -28,13 +28,14 @@ address for the connection.
    **test phone number** and lets you add up to five recipient numbers. Add
    your own WhatsApp number there and confirm the code Meta sends to it.
 
-## 2. Collect the four connection values
+## 2. Collect the five connection values
 
 | Connection field | Where to find it | Why Switch needs it |
 |---|---|---|
 | **Access token** | A permanent token: **Business settings → Users → System users**. Add a system user (Admin), assign it the app and the WhatsApp account, then **Generate new token** with `whatsapp_business_messaging` and `whatsapp_business_management`. The temporary token on **API Setup** also works but expires after 24 hours. | Sends messages, uploads and downloads files, and marks messages read. `whatsapp_business_messaging` covers sending and media; `whatsapp_business_management` lets Switch read the phone number back to check the token when you save. |
-| **Phone number ID** | **WhatsApp → API Setup**, the numeric **Phone number ID** under the *From* number. This is an ID, not the phone number itself. | Every Graph API call is made for this number. One number can be connected to Switch only once. |
-| **App secret** | **App settings → Basic → App secret** (choose *Show*). | Meta signs every webhook with it. Switch refuses any webhook that isn't signed with it, and checks the secret against the token when you save. |
+| **App ID** | **App settings → Basic → App ID**. | Meta sets the webhook address per app, not per number, so one app can be connected to Switch only once. Switch checks that the token was issued for this app when you save. |
+| **Phone number ID** | **WhatsApp → API Setup**, the numeric **Phone number ID** under the *From* number. This is an ID, not the phone number itself. | Every Graph API call is made for this number. |
+| **App secret** | **App settings → Basic → App secret** (choose *Show*). | Meta signs every webhook with it. Switch refuses any webhook that isn't signed with it, and checks the secret against the token when you save. Every Graph API call carries an `appsecret_proof` made with it, so **Require App Secret** (App settings → Advanced) can be turned on. |
 | **Verify token** | Any string you choose, for example from `openssl rand -hex 16`. | Meta sends it back when it checks the webhook address, which proves the address is yours. |
 
 Console masks the token, the secret and the verify token. Leading and trailing
@@ -43,10 +44,10 @@ spaces are removed, and an empty field is refused before anything is saved.
 ## 3. Connect it in Switch Console
 
 1. Open **Connect a messaging app** and choose **WhatsApp**.
-2. Fill in the four fields and connect. Switch reads the phone number back from
-   Meta with the token, signed with the app secret. A wrong token, phone
-   number ID or app secret fails here, with Meta's own explanation and error
-   code.
+2. Fill in the five fields and connect. Switch asks Meta which app the token
+   was issued for, using the App ID and app secret, then reads the phone
+   number back with the token. A wrong token, App ID, phone number ID or app
+   secret fails here, with Meta's own explanation and error code.
 3. Once connected, Console shows the connection's **webhook address**. Copy it.
 
 ## The webhook address
