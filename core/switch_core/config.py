@@ -379,15 +379,19 @@ class SwitchConfig(BaseSettings):
     # services or profiles stop the server.
     service_access_profiles: dict[str, str] = Field(default_factory=dict)
     # Where a service's sign-ins come back, for a catalog entry that lists more
-    # than one way, as JSON: {"<slug>": "loopback" | "core"}.
+    # than one way (Atlassian's), as JSON: {"<slug>": "loopback" | "core"}.
     # `loopback` is Switch Console's listener on the person's computer; `core`
     # is this server's own callback,
     # `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<slug>/flows/callback`,
-    # which a vendor may refuse until its admin allow-lists it. A service not
-    # named comes back the first way its entry lists. A slug not in the
-    # catalog, or a way its entry does not list, stops the server; `core`
-    # without GATEWAY_PUBLIC_URL is a warning at startup, and that service
-    # signs in through loopback where its entry lists it.
+    # which a vendor may refuse until its admin allow-lists it (Atlassian: each
+    # site's admin). A service not named comes back the first way its entry
+    # lists. A slug not in the catalog, or a way its entry does not list, stops
+    # the server; `core` without GATEWAY_PUBLIC_URL is a warning at startup,
+    # and that service signs in through loopback where its entry lists it.
+    # Core's callback is registered with a vendor only where sign-ins use it,
+    # so naming `core` for a service whose client Core registers itself, or no
+    # longer naming it, registers a new client, and every connection to that
+    # service on this server must be reconnected once.
     service_sign_in_redirect: dict[str, RedirectMode] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
