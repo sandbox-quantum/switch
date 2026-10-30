@@ -119,6 +119,7 @@ class TenantMember(Base):
         CheckConstraint(
             "role IN ('owner', 'admin', 'member')", name="ck_tenant_members_role"
         ),
+        Index("ix_tenant_members_user_id", "user_id"),
     )
 
     tenant_id: Mapped[str] = mapped_column(

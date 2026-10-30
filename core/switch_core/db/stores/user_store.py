@@ -466,6 +466,26 @@ class UserStore:
         )
         return result.scalar_one()
 
+    async def lock_owners(self, session: AsyncSession) -> set[str]:
+        """The user ids of the session's bound tenant's owners, their rows
+        locked to the end of the transaction.
+
+        For a write that must leave at least one owner: count with this, then
+        write in the same transaction. A concurrent write to the same rows
+        waits here, then sees what the first one committed, so two owners
+        demoting or removing each other at once cannot both pass a count of
+        two.
+        """
+        result = await session.execute(
+            select(TenantMember.user_id)
+            .where(
+                TenantMember.tenant_id == require_tenant_id(),
+                TenantMember.role == "owner",
+            )
+            .with_for_update()
+        )
+        return set(result.scalars())
+
     async def administers(self, session: AsyncSession, user: User) -> bool:
         """Whether `user` may administer the tenant bound to `session`'s
         context — the operator bypass, or an owner/admin membership in it.

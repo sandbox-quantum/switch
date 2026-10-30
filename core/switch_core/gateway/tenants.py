@@ -1355,7 +1355,9 @@ async def update_member_role(
 
     if membership.role == "owner" and req.role != "owner":
         _require_owner(is_owner, "change an owner's role")
-        if await user_store.count_owners(session) <= 1:
+        owners = await user_store.lock_owners(session)
+        await session.refresh(membership)
+        if membership.role == "owner" and len(owners) <= 1:
             raise HTTPException(status_code=409, detail="Cannot demote the last owner")
 
     if membership.role != req.role:
@@ -1426,7 +1428,9 @@ async def remove_member(
 
     if membership.role == "owner":
         _require_owner(is_owner, "remove an owner")
-        if await user_store.count_owners(session) <= 1:
+        owners = await user_store.lock_owners(session)
+        await session.refresh(membership)
+        if membership.role == "owner" and len(owners) <= 1:
             raise HTTPException(status_code=409, detail="Cannot remove the last owner")
 
     owned_agents = await agent_store.get_by_owner(session, user_id)
