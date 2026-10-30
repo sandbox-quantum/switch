@@ -26,17 +26,27 @@ class CollaborationBridgeStore:
         if not bridge_ids:
             return []
         result = await session.execute(
-            select(CollaborationBridge).where(CollaborationBridge.id.in_(bridge_ids))
+            select(CollaborationBridge).where(
+                CollaborationBridge.tenant_id == require_tenant_id(),
+                CollaborationBridge.id.in_(bridge_ids),
+            )
         )
         return list(result.scalars().all())
 
     async def get_all(self, session: AsyncSession) -> list[CollaborationBridge]:
-        result = await session.execute(select(CollaborationBridge))
+        result = await session.execute(
+            select(CollaborationBridge).where(
+                CollaborationBridge.tenant_id == require_tenant_id()
+            )
+        )
         return list(result.scalars().all())
 
     async def get_active(self, session: AsyncSession) -> list[CollaborationBridge]:
         result = await session.execute(
-            select(CollaborationBridge).where(CollaborationBridge.status == "active")
+            select(CollaborationBridge).where(
+                CollaborationBridge.tenant_id == require_tenant_id(),
+                CollaborationBridge.status == "active",
+            )
         )
         return list(result.scalars().all())
 
