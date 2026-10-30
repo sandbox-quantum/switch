@@ -1178,6 +1178,38 @@ class TestChoices:
                 )
             assert token in world.sites[site].live_access
 
+    async def test_the_list_says_how_and_with_what_each_was_connected(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        # The list answers the catalog the server loaded at import.
+        monkeypatch.setattr(
+            "switch_core.gateway.service_connections.CATALOG",
+            load_catalog(tmp_path / "catalog"),
+        )
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "eu.example.test")
+            listed = {
+                person.name: {
+                    entry["slug"]: entry
+                    for entry in (
+                        await client.get(
+                            "/gateway/service-connections", cookies=cookies_for(person)
+                        )
+                    ).json()["connections"]
+                }["example"]
+                for person in (ada, grace)
+            }
+        assert {
+            name: (entry["status"], entry["method"], entry["choices"])
+            for name, entry in listed.items()
+        } == {
+            "ada": ("active", "oauth", {"site": "eu.example.test"}),
+            "grace": ("not_connected", None, None),
+        }
+
     async def test_a_session_calls_the_mcp_server_at_the_connections_site(
         self, session_factory, tmp_path
     ) -> None:

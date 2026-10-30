@@ -122,6 +122,8 @@ class TestConnections:
                 "status",
                 "consent",
                 "external_identity",
+                "method",
+                "choices",
             )
         } == {
             "configured": True,
@@ -130,6 +132,8 @@ class TestConnections:
             "status": "active",
             "consent": "read",
             "external_identity": "login-1001",
+            "method": "oauth",
+            "choices": {},
         }
         assert (github["enabled"], github["auth_type"]) == (True, "oauth")
         assert github["connectable"] is True
@@ -142,6 +146,7 @@ class TestConnections:
         assert asana["enabled"] is False
         assert asana["connectable"] is False
         assert asana["status"] == "not_connected"
+        assert (asana["method"], asana["choices"]) == (None, None)
         atlassian = entries["atlassian"]
         assert (atlassian["pass_through"], atlassian["token_lifetime"]) == (
             True,

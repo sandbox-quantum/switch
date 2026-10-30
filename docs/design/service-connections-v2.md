@@ -110,6 +110,65 @@ and is in use at once. Each connection records the client it signed in through
 operator has since replaced is told to reconnect rather than refused by the
 vendor.
 
+### Choices before a sign-in
+
+A vendor with regional deployments has a different MCP server, account API
+and authorization server at each site. Its entry lists what the person picks
+before signing in, as fields from a fixed list (an `api_key` entry's choice
+fields, never a secret), and names them in its URLs:
+
+```yaml
+auth:
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    choices:
+      - { name: site, label: Example site, secret: false,
+          choices: [example.com, eu.example.com] }
+  identity:
+    url: "https://api.{site}/me"
+mcp:
+  servers:
+    - { name: example, url: "https://mcp.{site}/v1/mcp" }
+```
+
+Any URL an OAuth entry names may hold `{name}` for one of its choices: its MCP
+servers' (which a dynamically registered client's endpoints are discovered
+from), its identity's, and its `authorization_url`, `token_url` and
+`revocation_url`. The loader refuses a template naming anything else, a
+choice that is secret or has no list, and any template at all in an entry
+without choices.
+
+Switch Console sends what was picked with the start of the sign-in
+(`POST /gateway/service-connections/{service}/flows` with
+`choices: {site: ...}`). Core refuses, with 422, a start that leaves one out,
+picks a value not in its list, or names a choice the entry does not have. The
+flow keeps the choices in `sign_in_flows.details`, and every step of the
+sign-in calls the URLs rendered with them. The connection keeps them twice:
+in `service_connections.choices`, from which the grants answer gives a
+session the MCP server at the connection's own site, and in its encrypted
+secret, so a refresh or a revocation calls the site the sign-in was made at
+without another read. A connection made with a choice the catalog no longer
+offers must reconnect.
+
+A client Core registers is registered once per choice: each site is another
+authorization server with its own registration endpoint. Its row in
+`service_oauth_clients` is keyed by the service and `choice`, the picked
+values as one string (a lone choice's value, or compact JSON of several in
+the order of their names), so one site's client never replaces another's,
+and a connection is held against the client for its own choice. A static
+client is the one client at every choice; checking it asks the vendor at the
+first of each list only, and says so.
+
+An entry without choices behaves as it always has: its connections keep `{}`,
+and its one registered client stays under the empty choice.
+
+Each connection also records how it was made, `service_connections.method`:
+`oauth` for a sign-in, `keys` for pasted keys (Datadog's connections from
+before the column read so), and `token` for a pasted token, which no entry
+offers yet. `GET /gateway/service-connections` answers each connection's
+`method` and `choices`, null where the person has not connected it.
+
 ## Tokens
 
 The broker holds every token to its entry's `max_lifetime`, and a minted one to
@@ -167,15 +226,21 @@ There is no confirm step: the person chose the account at the vendor. The
 flow then reads `connected` (with the account and any warning) or `failed`
 (with the reason), holding no token, until Console drops it or it expires.
 The consent recorded is what the vendor granted: write where every write
-scope was granted, else read. Flows are rows in `sign_in_flows`, so any
-process can take any step: ten minutes each, at most 256 per workspace, one
-per person.
+scope was granted, else read. A vendor whose consent page offers levels the
+scopes asked for cannot tell apart, and whose token answers with its own
+list of permissions, is read by markers instead,
+`access.consent: {read: <scope>, write: <scope>}`: write where the token's
+`scope` holds the write marker, read where it holds only the read marker, and
+the sign-in is refused where it holds neither. Only an OAuth entry with both
+levels names markers. Flows are rows in `sign_in_flows`, so any process can
+take any step: ten minutes each, at most 256 per workspace, one per person.
 
 A dynamically registered client is the deployment's own, kept in
-`service_oauth_clients` (one row per service, encrypted with the keyring,
-re-encrypted at key rotation, no tenant). Registration asks for a public client
-with the entry's redirects and scopes, under a lock held in the database, and is
-repeated when the registration endpoint, redirects or scopes change. A secret a
+`service_oauth_clients` (one row per service and choice, encrypted with the
+keyring, re-encrypted at key rotation, no tenant). Registration asks for a
+public client with the entry's redirects and scopes, under a lock held in the
+database, and is repeated when the registration endpoint, redirects or scopes
+change. A secret a
 vendor issues to such a client anyway is not used.
 
 ## Sessions
