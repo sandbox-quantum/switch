@@ -524,6 +524,35 @@ async def _operator_may_enter(
         return await session.get(Tenant, tenant_id) is not None
 
 
+async def operator_entered_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    tenant_claim: str | None,
+    tenants: list[TenantMembershipResponse],
+) -> TenantMembershipResponse | None:
+    """The workspace the platform operator's claim names, when it is none of
+    their own and exists: one they entered on the operator flag alone, which
+    `_resolve_tenant_id` binds. None for anyone else."""
+    if (
+        user.role != "admin"
+        or tenant_claim is None
+        or any(t.id == tenant_claim for t in tenants)
+    ):
+        return None
+    async with tenant_session(session_factory, tenant_claim) as session:
+        tenant = await session.get(Tenant, tenant_claim)
+    if tenant is None:
+        return None
+    return TenantMembershipResponse(
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role="admin",
+        organization_role=None,
+        organization_id=tenant.organization_id,
+    )
+
+
 async def record_operator_entry(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -726,19 +755,24 @@ def describe_session_state(
     user: User,
     tenant_claim: str | None,
     tenants: list[TenantMembershipResponse],
+    operator_entered: TenantMembershipResponse | None,
     tenants_isolated: bool,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 
     Follows its order exactly — a claim is honoured only if it names one of
-    `tenants`, and a bad claim is *not* rescued by a sole membership — so a
-    client told "ready" is never refused by the next request, and one told
-    otherwise knows which of `/tenants/{id}/switch`, `POST /organizations` or
-    `/invitations/accept` gets it unstuck.
+    `tenants`, or is the workspace the platform operator entered
+    (`operator_entered`, which `_resolve_tenant_id` binds on
+    `_operator_may_enter`), and a bad claim is *not* rescued by a sole
+    membership — so a client told "ready" is never refused by the next
+    request, and one told otherwise knows which of `/tenants/{id}/switch`,
+    `POST /organizations` or `/invitations/accept` gets it unstuck.
     """
     tenant: TenantMembershipResponse | None = None
     if tenant_claim is not None:
         tenant = next((t for t in tenants if t.id == tenant_claim), None)
+        if tenant is None and operator_entered is not None:
+            tenant = operator_entered if operator_entered.id == tenant_claim else None
     elif len(tenants) == 1:
         tenant = tenants[0]
 

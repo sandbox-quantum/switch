@@ -42,6 +42,7 @@ from switch_core.gateway.auth import (
     hash_password_off_loop,
     initial_tenant_claim,
     list_tenant_memberships,
+    operator_entered_workspace,
     require_admin,
     set_session_cookie,
     verify_password_off_loop,
@@ -366,8 +367,16 @@ async def session_state(
     # One connection at a time: release this one before the lookup opens its own.
     await session.commit()
     tenants = await list_tenant_memberships(session_factory, user_store, user.id)
+    entered = await operator_entered_workspace(
+        session_factory, user, auth.tenant_claim, tenants
+    )
     return describe_session_state(
-        config, user, auth.tenant_claim, tenants, client_lifecycle.tenants_isolated
+        config,
+        user,
+        auth.tenant_claim,
+        tenants,
+        entered,
+        client_lifecycle.tenants_isolated,
     )
 
 

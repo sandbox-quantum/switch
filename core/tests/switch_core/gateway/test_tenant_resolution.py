@@ -37,6 +37,7 @@ paper over here.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Annotated
@@ -467,6 +468,56 @@ class TestSessionStateEndpoint:
 
         assert body["state"] == "needs_selection"
         assert body["tenant"] is None
+
+    async def test_the_workspace_the_operator_entered_is_ready(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Tenant resolution lets the platform operator into any workspace that
+        exists, so the one they entered is where the session is, not a reason
+        to pick again."""
+        operator_id = await _make_user(
+            session_factory, name="operator", tenant_id=TENANT_ZERO_ID
+        )
+        entered = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            operator = await session.get(User, operator_id)
+            assert operator is not None
+            operator.role = "admin"
+            session.add(Tenant(id=entered, slug=entered, name="Elsewhere"))
+            await session.commit()
+        token = create_jwt(
+            operator_id, "operator@example.invalid", "admin", _KEYRING, entered
+        )
+
+        body = (
+            await self._get(session_factory, token, signup_mode="default_tenant")
+        ).json()
+
+        assert body["state"] == "ready"
+        assert body["tenant"]["id"] == entered
+        assert body["tenant"]["name"] == "Elsewhere"
+        assert {t["id"] for t in body["tenants"]} == {TENANT_ZERO_ID}
+
+    async def test_a_claim_naming_no_workspace_is_not_rescued_for_the_operator(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        operator_id = await _make_user(
+            session_factory, name="operator-stale", tenant_id=TENANT_ZERO_ID
+        )
+        async with session_factory() as session:
+            operator = await session.get(User, operator_id)
+            assert operator is not None
+            operator.role = "admin"
+            await session.commit()
+        token = create_jwt(
+            operator_id, "operator-stale@example.invalid", "admin", _KEYRING, "gone"
+        )
+
+        body = (
+            await self._get(session_factory, token, signup_mode="default_tenant")
+        ).json()
+
+        assert body["state"] == "needs_selection"
 
     async def test_no_membership_needs_a_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
