@@ -30,12 +30,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "github",
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "cloudflare",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["cloudflare"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -127,6 +130,40 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
         assert build.path == ("gws.exe" if target == "win32-x64" else "gws")
         if target.startswith("linux"):
             assert build.url.endswith("-unknown-linux-musl.tar.gz")
+
+
+def test_the_shipped_cloudflare_entry_registers_itself_and_reads_before_it_writes():
+    definition = CATALOG["cloudflare"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://api.cloudflare.com/client/v4/user",
+        "result.id",
+        "result.email",
+    )
+    assert definition.token is not None
+    assert definition.token.kind == "pass_through"
+    assert definition.token.max_lifetime == 3600
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("cloudflare", "https://mcp.cloudflare.com/mcp")
+    ]
+    access = definition.access
+    assert access is not None and access.write is not None
+    read, write = set(access.read.scopes), set(access.write.scopes)
+    assert {"offline_access", "user:read"} <= read < write
+    # A read-only sign-in writes nothing, and no level reaches admin,
+    # revoke or token scopes.
+    assert not any(scope.endswith(".write") for scope in read)
+    assert not any(
+        scope.endswith((".admin", ".revoke")) or "api-tokens" in scope
+        for scope in write
+    )
 
 
 def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
