@@ -56,6 +56,14 @@ spec:
             matchLabels:
               {{- include "switch.selectorLabels" (dict "Release" .Release "component" "switch-core") | nindent 14 }}
       {{- end }}
+      {{- with .Values.switchCore.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.switchCore.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
         # Migrates and re-issues grants as the schema owner, so the serving

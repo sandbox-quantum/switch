@@ -700,6 +700,15 @@ switchCore:
     maxSkew: 1
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
+  # Which nodes the switch-core pods may run on. Empty, they go wherever the
+  # cluster has room. To keep them to nodes of their own, label and taint those
+  # nodes and match both here, e.g. a load test on a node group that carries
+  # `workload: loadtest` and the taint `loadtest=true:NoSchedule`:
+  #   nodeSelector: {workload: loadtest}
+  #   tolerations:
+  #     - {key: loadtest, operator: Equal, value: "true", effect: NoSchedule}
+  nodeSelector: {}
+  tolerations: []
   # How long the kubelet waits after SIGTERM before killing the pod. On SIGTERM
   # switch-core hands the bridges and readers it owns to the other
   # pods (up to 10s), releases its lease (up to 1s), keeps serving for 5s while
