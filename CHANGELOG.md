@@ -2103,6 +2103,18 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Console no longer opens to a blank window on a database a newer build
+  has changed.** Stable and Canary share one database, so after Canary added a
+  migration, an older build found tables it was not written for, applied
+  nothing, and failed its first query with nothing on screen. Console now
+  refuses a database carrying a migration it does not know, before changing
+  anything, and says why: open the build that last used it, download a newer
+  release (a build that cannot start cannot update itself), or move the data
+  folder aside to start empty. Migrations are tracked one by one, so a
+  migration applied out of order is applied rather than skipped. Any other
+  startup failure now shows the error and a Reload button instead of a blank
+  window. drizzle-kit now defaults to the `switchdash-dev` database rather than
+  the installed app's.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to
