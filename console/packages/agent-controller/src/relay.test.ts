@@ -523,6 +523,23 @@ describe('forwarding to Switch', () => {
     expect(forwarded.headers['x-switch-room-id']).toBe('room-just-joined');
   });
 
+  it('names a session’s room while another session is still placed in a room the agent left', async () => {
+    // As in a Console log: one placement kept for a deleted room got every
+    // statement of the map refused, and each session's calls then named no
+    // room, so Switch told it "not connected" right after it connected.
+    const agentHost = host();
+    await connected(agentHost);
+    await agentHost.stream.replacePlacements({
+      'session-old': 'room-deleted',
+      'session-1': 'room-b',
+    });
+
+    const read = await callOperation(caller(), 'read_context', {});
+    expect(read.isError).toBeFalsy();
+    const forwarded = core.requests.findLast((r) => r.path.endsWith('/ops/read_context'))!;
+    expect(forwarded.headers['x-switch-room-id']).toBe('room-b');
+  });
+
   it('refuses placements while the hub is not connected, rather than reporting them taken', async () => {
     const agentHost = host();
     await connected(agentHost);

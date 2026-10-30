@@ -286,6 +286,18 @@ describe('placements', () => {
     expect(hub.roomFor(AGENT, 'session-1')).toBe('room-new');
   });
 
+  it('takes the whole map when one session is still placed in a room the agent is no longer in', async () => {
+    // What a Console log showed: a placement kept on disk for a room since
+    // deleted made every statement of the map refused, so no session of the
+    // agent had a room on its calls, in any room, until it was cleared.
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const { stream } = watcher();
+    stream.start();
+    await stream.replacePlacements({ 'session-old': 'room-deleted', 'session-1': 'room-a' });
+    expect(hub.roomFor(AGENT, 'session-1')).toBe('room-a');
+  });
+
   it('refuses placements from an agent host a newer one replaced, rather than dropping them', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);
