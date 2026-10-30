@@ -234,8 +234,10 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     (slot ? slotBox !== null : isRoomView) &&
     activeRoomId !== null &&
     !consoleChat &&
-    roomTabStore.tabFor(activeRoomId, slot ? embeddedRoomFallbackTab(activeRoomId) : 'chat') ===
-      'chat';
+    roomTabStore.tabFor(
+      activeRoomId,
+      slot ? (slot.fallback ?? embeddedRoomFallbackTab(activeRoomId)) : 'chat'
+    ) === 'chat';
   const active = activeState;
 
   return (

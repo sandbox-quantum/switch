@@ -56,7 +56,7 @@ import { openRoomChannel } from './room-links';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
-function roomDetailKey(workspaceId: string, roomId: string) {
+export function roomDetailKey(workspaceId: string, roomId: string) {
   return ['remote-room-detail', workspaceId, roomId] as const;
 }
 
@@ -939,7 +939,7 @@ const ParticipantList = observer(function ParticipantList({
 });
 
 /** A person's initials disc: people have no picture in Switch. */
-function PersonMark({ name, size }: { name: string; size: 'sm' | 'md' }) {
+export function PersonMark({ name, size }: { name: string; size: 'sm' | 'md' }) {
   return (
     <span
       className={cn(
@@ -1183,7 +1183,7 @@ function PanelNotice({
 }
 
 /** An agent's own picture, beside the human participants' initials discs. */
-function AgentMark({
+export function AgentMark({
   agentId,
   workspaceId,
   remoteById,
@@ -1215,7 +1215,7 @@ function localAgentFor(switchAgentId: string, workspaceId: string | null) {
   );
 }
 
-function agentNameFor(
+export function agentNameFor(
   switchAgentId: string,
   workspaceId: string | null,
   remoteById: Map<string, RemoteAgentSummary>
