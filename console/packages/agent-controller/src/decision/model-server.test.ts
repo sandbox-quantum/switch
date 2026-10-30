@@ -103,7 +103,10 @@ describe('the model server’s command line and environment', () => {
   });
 });
 
-describe('spawnModelServer', () => {
+// The fake model server is a Node script run through its shebang, which
+// Windows can't execute, and the catalogue offers no llama.cpp build for
+// Windows, so a Windows controller never spawns one.
+describe.skipIf(process.platform === 'win32')('spawnModelServer', () => {
   it('starts it on a free loopback port with a key for this launch, health-checks it and stops it', async () => {
     const launch = spawnModelServer({ PATH: process.env.PATH, ANTHROPIC_API_KEY: 'not-passed' });
     const server = await launch(spec());
