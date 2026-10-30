@@ -65,6 +65,7 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     TokenPolicy,
 )
+from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -157,12 +158,23 @@ UnavailableCode = Literal[
     "app_not_set_up",
     # Nothing on this server connects it, and nothing the operator saves would.
     "not_set_up",
+    # The workspace's organization saved its own app for it, and that app
+    # can't be used; the server's is not used in its place.
+    "organization_app_unusable",
     # It can be connected but not granted: its app is missing a part.
     "not_fully_set_up",
     # Its credential (a pasted key) never expires, so it is never handed to
     # an agent, and there is nothing to connect it for.
     "key_never_expires",
 ]
+
+
+@dataclass(frozen=True)
+class _Choice:
+    adapter: ServiceAdapter | None
+    # Why the workspace's organization's app can't be used, where that app
+    # is the one that applies.
+    problem: str | None
 
 
 @dataclass(frozen=True)
@@ -378,6 +390,7 @@ class ServiceBroker:
         keyring: Keyring,
         catalog: dict[str, Connection],
         adapters: dict[str, ServiceAdapter],
+        organization_apps: OrganizationApps | None,
         disabled: dict[str, str],
         store: ServiceConnectionStore,
         token_retention: timedelta,
@@ -396,7 +409,10 @@ class ServiceBroker:
         self._session_factory = session_factory
         self._keyring = keyring
         self._catalog = catalog
+        # The server's adapters, by service.
         self._adapters = adapters
+        # Organizations' own apps, with `organization_connector_apps` on.
+        self._organization_apps = organization_apps
         # Switched off here, by service, with the reason people are shown.
         self._disabled = {
             service: reason or SWITCHED_OFF for service, reason in disabled.items()
@@ -421,7 +437,7 @@ class ServiceBroker:
             )
         return entry
 
-    def sign_in(self, service: str) -> tuple[ConnectionDefinition, OAuthAdapter]:
+    async def sign_in(self, service: str) -> tuple[ConnectionDefinition, OAuthAdapter]:
         """The catalog entry and adapter a person signs in to `service`
         through, with Switch's generic OAuth flow (`connections/flows.py`)."""
         definition = self._entry(service).definition
@@ -433,12 +449,12 @@ class ServiceBroker:
                 f"{definition.name} is connected through its own sign-in.",
                 retryable=False,
             )
-        adapter = self._adapters.get(service)
+        adapter = await self._here(service)
         if not isinstance(adapter, OAuthAdapter):
             raise ServiceError(
                 503,
                 INTERNAL,
-                self.availability(service) or "Not available on this server.",
+                await self.availability(service) or "Not available on this server.",
                 retryable=False,
             )
         return definition, adapter
@@ -474,30 +490,46 @@ class ServiceBroker:
             return set()
         return await self._workspace_services.disabled_services(session, self._catalog)
 
-    def _adapter(self, service: str) -> ServiceAdapter:
+    async def _choose(self, service: str) -> _Choice:
+        """The adapter `service` goes through in the bound workspace: its
+        organization's app where it saved one, else the server's."""
+        if self._organization_apps is not None:
+            app = await self._organization_apps.for_workspace(
+                require_tenant_id(), service
+            )
+            if app is not None:
+                return _Choice(app.adapter, app.problem)
+        return _Choice(self._adapters.get(service), None)
+
+    async def _here(self, service: str) -> ServiceAdapter | None:
+        """`service`'s adapter in the bound workspace, or None."""
+        return (await self._choose(service)).adapter
+
+    async def _adapter(self, service: str) -> ServiceAdapter:
         """The adapter that issues for `service`, or the refusal saying why not."""
-        adapter = self._refresher(service)
+        adapter = await self._refresher(service)
         if not adapter.can_issue:
             raise ServiceError(
                 503,
                 INTERNAL,
-                self.availability(service) or "Not available on this server.",
+                await self.availability(service) or "Not available on this server.",
                 retryable=False,
             )
         return adapter
 
-    def _refresher(self, service: str) -> ServiceAdapter:
+    async def _refresher(self, service: str) -> ServiceAdapter:
         """The adapter that keeps `service`'s connections signed in."""
-        adapter = self._adapters.get(service)
-        if adapter is None:
+        choice = await self._choose(service)
+        if choice.adapter is None:
             raise ServiceError(
                 503,
                 INTERNAL,
-                f"{self._entry(service).definition.name} is not available on "
+                choice.problem
+                or f"{self._entry(service).definition.name} is not available on "
                 "this server.",
                 retryable=False,
             )
-        return adapter
+        return choice.adapter
 
     # ── Grant decision ───────────────────────────────────────────────────────
 
@@ -695,7 +727,7 @@ class ServiceBroker:
         service: str,
     ) -> ServiceToken:
         decision = await self.decide(session, agent_id, principal, service)
-        adapter = self._adapter(service)
+        adapter = await self._adapter(service)
         await session.commit()
         access = await self._access_token(decision.owner_id, service, adapter)
         request = IssueRequest(
@@ -1002,7 +1034,7 @@ class ServiceBroker:
                     "Connections.",
                     retryable=False,
                 )
-            if self.client_replaced(connection):
+            if self._client_replaced(connection, adapter):
                 await self._store.mark_needs_reauthorization(
                     session, owner_id, service, CLIENT_REPLACED
                 )
@@ -1157,7 +1189,7 @@ class ServiceBroker:
             )
         return grants
 
-    def connectable(self, service: str) -> bool:
+    async def connectable(self, service: str) -> bool:
         """Whether a person can connect `service` here: it has an adapter, is
         not switched off, and what it connects could be handed to an agent."""
         entry = self._catalog.get(service)
@@ -1165,26 +1197,36 @@ class ServiceBroker:
             entry is not None
             and entry.definition.enabled
             and _issued_to_agents(entry)
-            and service in self._adapters
             and service not in self._disabled
+            and await self._here(service) is not None
         )
 
-    def server_setup_needed(self, service: str) -> bool:
+    async def server_setup_needed(self, service: str) -> bool:
         """Whether `service` waits on the operator setting up its app here."""
-        unavailable = self.unavailable(service)
+        unavailable = await self.unavailable(service)
         return unavailable is not None and unavailable.code == "app_not_set_up"
 
-    def client_replaced(self, connection: ServiceConnection) -> bool:
+    async def client_replaced(self, connection: ServiceConnection) -> bool:
         """Whether `connection` signed in through a client its service no
-        longer uses, so it must reconnect. Unknown either side is no."""
+        longer uses here, so it must reconnect. Unknown either side is no."""
         if connection.oauth_client_id is None:
             return False
-        adapter = self._adapters.get(connection.service)
+        return self._client_replaced(connection, await self._here(connection.service))
+
+    @staticmethod
+    def _client_replaced(
+        connection: ServiceConnection, adapter: ServiceAdapter | None
+    ) -> bool:
         current = None if adapter is None else adapter.current_client_id()
-        return current is not None and current != connection.oauth_client_id
+        return (
+            connection.oauth_client_id is not None
+            and current is not None
+            and current != connection.oauth_client_id
+        )
 
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
-        """Use `adapter` for `service` from the next call on, or none.
+        """Use `adapter` for `service` from the next call on, or none, where
+        the server's app applies.
 
         One assignment on the event loop, so a reader sees the old adapter or
         the new one, never a mix. A call already under way finishes on the
@@ -1197,14 +1239,15 @@ class ServiceBroker:
         else:
             self._adapters[service] = adapter
 
-    def availability(self, service: str) -> str | None:
-        """Why `service` cannot be granted on this server, or None if it can."""
-        unavailable = self.unavailable(service)
+    async def availability(self, service: str) -> str | None:
+        """Why `service` cannot be granted in the bound workspace, or None if
+        it can."""
+        unavailable = await self.unavailable(service)
         return None if unavailable is None else unavailable.reason
 
-    def unavailable(self, service: str) -> Unavailable | None:
-        """Why `service` cannot be granted on this server, as a code and the
-        sentence people read, or None if it can."""
+    async def unavailable(self, service: str) -> Unavailable | None:
+        """Why `service` cannot be granted in the bound workspace, as a code
+        and the sentence people read, or None if it can."""
         entry = self._catalog.get(service)
         if entry is None or not entry.definition.enabled:
             return Unavailable("coming_soon", "Not available yet.")
@@ -1221,11 +1264,14 @@ class ServiceBroker:
             and "loopback" not in oauth.redirect
         ):
             return Unavailable("needs_public_url", needs_public_url(name))
-        adapter = self._adapters.get(service)
+        choice = await self._choose(service)
+        adapter = choice.adapter
         if adapter is None:
             kind = app_kind(entry.definition)
             if github_needs_https(kind, self._public_url):
                 return Unavailable("needs_https", cannot_work_here(name))
+            if choice.problem is not None:
+                return Unavailable("organization_app_unusable", choice.problem)
             if kind is not None:
                 return Unavailable("app_not_set_up", not_set_up(name))
             return Unavailable("not_set_up", f"{name} is not set up on this server.")
@@ -1237,10 +1283,10 @@ class ServiceBroker:
             )
         return None
 
-    def summary(self, agent_name: str, grant: ServiceGrant) -> str:
+    async def summary(self, agent_name: str, grant: ServiceGrant) -> str:
         """A grant's reach in a sentence, as the vendor's adapter words it."""
         access: AccessLevel = "write" if grant.access == "write" else "read"
-        adapter = self._adapters.get(grant.service)
+        adapter = await self._here(grant.service)
         if adapter is not None:
             return adapter.summary(agent_name, access, dict(grant.resources))
         verb = "read and write" if access == "write" else "read"
@@ -1263,13 +1309,13 @@ class ServiceBroker:
             raise ServiceError(
                 404, NOT_FOUND, f"No service named {service!r}.", retryable=False
             )
-        unavailable = self.availability(service)
+        unavailable = await self.availability(service)
         if unavailable is not None:
             raise ServiceError(422, VALIDATION_ERROR, unavailable, retryable=False)
         await self.require_workspace_enabled(session, service)
         entry = self._entry(service)
         name = entry.definition.name
-        adapter = self._adapter(service)
+        adapter = await self._adapter(service)
         connection = await self._store.get_connection(session, owner_id, service)
         if connection is None:
             raise ServiceError(
@@ -1594,7 +1640,7 @@ class ServiceBroker:
 
         warnings = []
         if replaced is not None and replaced.access_token != secret.access_token:
-            adapter = self._adapters.get(service)
+            adapter = await self._here(service)
             try:
                 if adapter is None:
                     raise ServiceUnavailableError(
@@ -1632,7 +1678,7 @@ class ServiceBroker:
             f"Switch could not revoke the sign-in {name} just issued. Remove "
             f"Switch from your {name} account's connected apps."
         )
-        adapter = self._adapters.get(service)
+        adapter = await self._here(service)
         try:
             if adapter is None:
                 raise ServiceUnavailableError(
@@ -1672,12 +1718,12 @@ class ServiceBroker:
             raise ServiceError(
                 403, FORBIDDEN, _never_expires(definition.name), retryable=False
             )
-        adapter = self._adapters.get(service)
+        adapter = await self._here(service)
         if not isinstance(adapter, ApiKeyAdapter):
             raise ServiceError(
                 503,
                 INTERNAL,
-                self.availability(service) or "Not available on this server.",
+                await self.availability(service) or "Not available on this server.",
                 retryable=False,
             )
         try:
@@ -1716,7 +1762,7 @@ class ServiceBroker:
             return None
         await session.commit()
         return (
-            await self._access_token(user_id, service, self._refresher(service))
+            await self._access_token(user_id, service, await self._refresher(service))
         ).token
 
     async def queue_agent_revocation(
@@ -1856,7 +1902,7 @@ class ServiceBroker:
         for service, secret in removed:
             entry = self._catalog.get(service)
             name = service if entry is None else entry.definition.name
-            adapter = self._adapters.get(service)
+            adapter = await self._here(service)
             if adapter is None:
                 logger.warning(
                     "%s sign-in not revoked: the service is not set up on this server",
@@ -2006,7 +2052,7 @@ class ServiceBroker:
         async def revoke(
             row_id: str, service: str, encrypted: str | None
         ) -> str | None:
-            adapter = self._adapters.get(service)
+            adapter = await self._here(service)
             try:
                 if adapter is None or encrypted is None:
                     raise ServiceUnavailableError(

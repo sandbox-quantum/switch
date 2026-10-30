@@ -120,7 +120,7 @@ async def start(
     """Begin signing in: where to send the browser, and which way it returns."""
     try:
         await broker.require_workspace_enabled(session, service)
-        definition, adapter = broker.sign_in(service)
+        definition, adapter = await broker.sign_in(service)
     except ServiceError as error:
         return service_refusal(error)
     tenant = await session.get(Tenant, require_tenant_id())
@@ -174,7 +174,7 @@ async def authorize(
 ) -> Response:
     """The browser leaves for the vendor through Core, which marks it."""
     try:
-        definition, adapter = broker.sign_in(service)
+        definition, adapter = await broker.sign_in(service)
     except ServiceError:
         return _page("Connections", INTERRUPTED, 400)
     try:
@@ -247,7 +247,7 @@ async def complete(
     Core exchanges it, reads the account and writes the connection."""
     flow = await _owned(flows, service, flow_id, user)
     try:
-        _, adapter = broker.sign_in(service)
+        _, adapter = await broker.sign_in(service)
     except ServiceError as error:
         return service_refusal(error)
     try:

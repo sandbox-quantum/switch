@@ -402,7 +402,7 @@ class TemplateAgents:
                 )
             )
         for connection in plan.connections:
-            unavailable = self._broker.availability(connection.service)
+            unavailable = await self._broker.availability(connection.service)
             if unavailable is not None:
                 problems.append(
                     Problem(

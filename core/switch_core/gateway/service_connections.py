@@ -68,7 +68,7 @@ async def _owned_agent(session: AsyncSession, agent_id: str, user: User) -> Agen
     return agent
 
 
-def _grant_view(broker: ServiceBroker, agent: Agent, grant: ServiceGrant) -> dict:
+async def _grant_view(broker: ServiceBroker, agent: Agent, grant: ServiceGrant) -> dict:
     entry = CATALOG.get(grant.service)
     access: AccessLevel = "write" if grant.access == "write" else "read"
     return {
@@ -83,17 +83,17 @@ def _grant_view(broker: ServiceBroker, agent: Agent, grant: ServiceGrant) -> dic
             else effective_tools(entry, access, grant.tool_mode, list(grant.tools))
         ),
         "resources": dict(grant.resources),
-        "summary": broker.summary(agent.display_name or agent.name, grant),
+        "summary": await broker.summary(agent.display_name or agent.name, grant),
     }
 
 
-def _status(broker: ServiceBroker, connection: ServiceConnection | None) -> str:
+async def _status(broker: ServiceBroker, connection: ServiceConnection | None) -> str:
     """The connection's status, as a person acts on it: one made through an
     app this server has since replaced needs reconnecting before anyone uses
     it and finds out."""
     if connection is None:
         return "not_connected"
-    if connection.status == "active" and broker.client_replaced(connection):
+    if connection.status == "active" and await broker.client_replaced(connection):
         return "needs_reauthorization"
     return connection.status
 
@@ -114,7 +114,7 @@ async def list_service_connections(
     for entry in CATALOG.values():
         definition = entry.definition
         connection = connections.get(definition.slug)
-        unavailable = broker.unavailable(definition.slug)
+        unavailable = await broker.unavailable(definition.slug)
         entries.append(
             {
                 "slug": definition.slug,
@@ -123,7 +123,7 @@ async def list_service_connections(
                 "description": definition.description,
                 "enabled": definition.enabled,
                 "auth_type": definition.auth.type,
-                "connectable": broker.connectable(definition.slug),
+                "connectable": await broker.connectable(definition.slug),
                 "configured": unavailable is None,
                 "unavailable_reason": None
                 if unavailable is None
@@ -133,7 +133,9 @@ async def list_service_connections(
                 "unavailable_code": None if unavailable is None else unavailable.code,
                 # Whether it waits on the server's operator setting up its app
                 # under Connectors, so a client can offer them that.
-                "server_setup_needed": broker.server_setup_needed(definition.slug),
+                "server_setup_needed": await broker.server_setup_needed(
+                    definition.slug
+                ),
                 # Whether a workspace admin left it on for this workspace.
                 "workspace_enabled": definition.slug not in switched_off,
                 # A grant hands the agent the owner's own token: it is on or
@@ -155,7 +157,7 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
-                "status": _status(broker, connection),
+                "status": await _status(broker, connection),
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
                     None if connection is None else connection.external_identity
@@ -314,7 +316,7 @@ async def list_service_grants(
     agent = await _owned_agent(session, agent_id, user)
     grants = await STORE.list_grants(session, agent.id)
     return {
-        "grants": [_grant_view(broker, agent, grant) for grant in grants],
+        "grants": [await _grant_view(broker, agent, grant) for grant in grants],
         "addressing_open": await _others_can_address(session, agent, user),
     }
 
@@ -372,7 +374,7 @@ async def set_service_grant(
         )
     except ServiceError as error:
         return service_refusal(error)
-    return {"grant": _grant_view(broker, agent, grant), "warning": warning}
+    return {"grant": await _grant_view(broker, agent, grant), "warning": warning}
 
 
 @router.delete("/agents/{agent_id}/service-grants/{service}", response_model=None)

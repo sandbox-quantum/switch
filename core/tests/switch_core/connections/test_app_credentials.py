@@ -124,6 +124,7 @@ def _broker(session_factory: async_sessionmaker[AsyncSession]) -> ServiceBroker:
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={},
+        organization_apps=None,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
@@ -331,7 +332,7 @@ class TestApply:
         apps = _apps(session_factory)
         await apps.load()
         broker = _broker(session_factory)
-        assert broker.connectable("google-workspace") is False
+        assert await broker.connectable("google-workspace") is False
 
         await _save(
             session_factory,
@@ -341,15 +342,15 @@ class TestApply:
         )
         await apps.apply("google-workspace", broker=broker, state=State())
 
-        assert broker.connectable("google-workspace") is True
-        _, adapter = broker.sign_in("google-workspace")
+        assert await broker.connectable("google-workspace") is True
+        _, adapter = await broker.sign_in("google-workspace")
         assert isinstance(adapter, OAuthAdapter)
 
         async with session_factory() as session:
             await apps.store.remove(session, "google-workspace")
             await session.commit()
         await apps.apply("google-workspace", broker=broker, state=State())
-        assert broker.connectable("google-workspace") is False
+        assert await broker.connectable("google-workspace") is False
 
     async def test_the_saved_github_app_is_swapped_in_place(
         self, session_factory

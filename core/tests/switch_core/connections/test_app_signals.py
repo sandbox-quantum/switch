@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 import pytest
@@ -58,13 +58,19 @@ async def _process(
     broker = _broker(session_factory)
     state = State()
     bus = _bus(postgres_url, session_factory)
-    signals = ConnectorAppSignals(apps=apps, broker=broker, state=state, bus=bus)
+    signals = ConnectorAppSignals(
+        apps=apps, organization_apps=None, broker=broker, state=state, bus=bus
+    )
     return _Process(apps, broker, state, bus, signals)
 
 
-async def _eventually(check: Callable[[], bool]) -> None:
+async def _not(answer: Awaitable[bool]) -> bool:
+    return not await answer
+
+
+async def _eventually(check: Callable[[], Awaitable[bool]]) -> None:
     async with asyncio.timeout(DELIVERY_TIMEOUT):
-        while not check():
+        while not await check():
             await asyncio.sleep(0.02)
 
 
@@ -89,7 +95,7 @@ class TestAcrossProcesses:
         two_processes: tuple[_Process, _Process],
     ) -> None:
         here, there = two_processes
-        assert there.broker.connectable(GOOGLE) is False
+        assert await there.broker.connectable(GOOGLE) is False
 
         # As the save route does: commit, apply here, announce.
         await _save(
@@ -118,7 +124,7 @@ class TestAcrossProcesses:
         )
         for process in (here, there):
             await process.apps.apply(GOOGLE, broker=process.broker, state=process.state)
-        assert there.broker.connectable(GOOGLE) is True
+        assert await there.broker.connectable(GOOGLE) is True
 
         async with session_factory() as session:
             await here.apps.store.remove(session, GOOGLE)
@@ -126,7 +132,7 @@ class TestAcrossProcesses:
         await here.apps.apply(GOOGLE, broker=here.broker, state=here.state)
         here.apps.announce(GOOGLE)
 
-        await _eventually(lambda: not there.broker.connectable(GOOGLE))
+        await _eventually(lambda: _not(there.broker.connectable(GOOGLE)))
 
 
 class TestRecheck:

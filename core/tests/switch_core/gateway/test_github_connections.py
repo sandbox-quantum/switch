@@ -116,6 +116,7 @@ def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={"github": GitHubAdapter(github, AsyncMock())},
+        organization_apps=None,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
