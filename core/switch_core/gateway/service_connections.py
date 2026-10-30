@@ -164,6 +164,11 @@ async def list_service_connections(
                 # Whether the caller may disconnect it: their own connection,
                 # the only one listed here, while they have one.
                 "can_revoke": connection is not None,
+                # How the person connected (`oauth`, `token` or `keys`), and
+                # what they picked from the entry's lists to (a site); null
+                # when not connected.
+                "method": None if connection is None else connection.method,
+                "choices": None if connection is None else dict(connection.choices),
             }
         )
     return {"connections": entries}
