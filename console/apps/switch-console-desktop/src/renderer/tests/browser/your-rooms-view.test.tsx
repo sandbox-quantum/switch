@@ -1,9 +1,10 @@
-import { observable, runInAction } from 'mobx';
 /**
  * Your Rooms lists the rooms the sidebar lists. Someone who can read more (an
  * admin, or public rooms) can switch to All rooms, which never offers a Switch
  * Console chat they are not in: the server would not open it.
  */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { observable, runInAction } from 'mobx';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -18,8 +19,13 @@ vi.hoisted(() => {
 });
 
 const rooms = vi.hoisted(() => ({ list: null as unknown as { all: RemoteRoomSummary[] } }));
+const archivedRooms = vi.hoisted(() => ({ list: [] as RemoteRoomSummary[] }));
+const setRoomArchived = vi.hoisted(() => vi.fn(async () => ({})));
 
-vi.mock('@renderer/lib/ipc', () => ({ events: { on: () => () => {} }, rpc: {} }));
+vi.mock('@renderer/lib/ipc', () => ({
+  events: { on: () => () => {} },
+  rpc: { workspaces: { listArchivedRooms: async () => archivedRooms.list, setRoomArchived } },
+}));
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
   useParams: () => ({ params: { serverId: 'srv' } }),
 }));
@@ -71,6 +77,9 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
     listedRoomsInWorkspace: () =>
       rooms.list.all.filter((room) => room.ownerId === 'me' || room.viewerIsMember),
     readableRoomsInWorkspace: () => rooms.list.all,
+    noteRooms: () => {},
+    roomPermissions: () => ({ canWrite: true, canManage: false }),
+    refreshRoomState: async () => {},
   },
 }));
 
@@ -111,6 +120,8 @@ function chat(id: string) {
 }
 
 beforeEach(() => {
+  archivedRooms.list = [];
+  setRoomArchived.mockClear();
   rooms.list = observable({
     all: [
       room('bobs-chat', {
@@ -155,7 +166,14 @@ async function render(): Promise<void> {
   document.body.appendChild(container);
   root = createRoot(container);
   const Panel = serverRoomsView.MainPanel;
-  await act(async () => root.render(<Panel />));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  await act(async () =>
+    root.render(
+      <QueryClientProvider client={client}>
+        <Panel />
+      </QueryClientProvider>
+    )
+  );
 }
 
 const names = () =>
@@ -188,4 +206,24 @@ it('offers no choice to someone who can read only their own rooms', async () => 
   ];
   await render();
   expect(toggle('All rooms')).toBeUndefined();
+});
+
+it('lists archived rooms under Archived, and brings one back', async () => {
+  archivedRooms.list = [
+    room('old-slack', { bridgeType: 'slack', bridgeDisplayName: 'Slack', archived: true }),
+  ];
+  await render();
+  for (let i = 0; i < 4; i++) await act(async () => await Promise.resolve());
+  const fold = [...container.querySelectorAll('button')].find((b) =>
+    /^Archived/.test(b.textContent ?? '')
+  );
+  expect(fold?.textContent).toBe('Archived (1)');
+  await act(async () => fold!.click());
+  expect(container.textContent).toContain('#old-slack');
+  await act(async () => toggle('Unarchive')!.click());
+  expect(setRoomArchived).toHaveBeenCalledWith({
+    workspaceId: 'ws',
+    roomId: 'old-slack',
+    archived: false,
+  });
 });

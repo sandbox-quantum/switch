@@ -120,6 +120,20 @@ export class SwitchRoomsStore {
     return this.channelUrlByRoom.get(roomId) ?? null;
   }
 
+  /**
+   * Remember rooms read outside the room list — archived ones, which the list
+   * leaves out — so a room page opened on one can still say where it lives and
+   * address calls about it. They are not added to any list.
+   */
+  noteRooms(workspaceId: string, rooms: RemoteRoomSummary[]): void {
+    for (const room of rooms) {
+      this.roomNames.set(room.id, room.name);
+      this.roomWorkspaceById.set(room.id, workspaceId);
+      if (room.bridgeType) this.bridgeTypeByRoom.set(room.id, room.bridgeType);
+      if (room.externalChannelUrl) this.channelUrlByRoom.set(room.id, room.externalChannelUrl);
+    }
+  }
+
   /** Id of the workspace a room belongs to, or null if not yet loaded. This is
    * what a call about the room is addressed with. */
   roomWorkspaceId(roomId: string): string | null {
