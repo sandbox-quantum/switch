@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as fourteen functions.
+"""The whole exemption from row-level security, written out as fifteen functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -65,7 +65,9 @@ them about *metadata* rather than rows:
 So the property this design actually holds is: **the exemption discloses the
 shape of the deployment — which tenants exist, and which tenant a given user,
 credential, room, bridge, connector, invitation or installed workspace belongs
-to — and no row of any tenant-scoped table.** It is a boundary on data, not on
+to — and no row of any tenant-scoped table.** The same holds for organizations:
+`all_organization_ids()` discloses which exist, and no row of an
+organization-scoped table. It is a boundary on data, not on
 metadata. Narrowing
 the second is a question about who may hold the runtime role's credentials at
 all, since everything above is reachable by anyone who has them.
@@ -177,6 +179,12 @@ to "any row of every table they read", and that a second engine connected as the
 would make the exemption ambient again — reachable from anything holding the
 factory, and no longer a list anybody can read.
 
+**`all_organization_ids` is the fifteenth**, and `all_tenant_ids` one level
+up. A few tables belong to an organization rather than a workspace, and a
+boot pass over them (rewriting an organization's connector-app secrets under
+the current key) has to visit every organization, including one with no
+workspace to reach it through. It discloses which organizations exist.
+
 **A fan-out over `all_tenant_ids()` filters what it reads back.** Every such
 loop keeps only the rows whose own `tenant_id` matches the tenant it bound.
 That looks redundant — the policy has already narrowed the read — and it is
@@ -261,7 +269,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The fourteen of them. Ordered as the three shapes above: enumeration, then
+# The fifteen of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -272,6 +280,17 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
             "Every tenant in the deployment, oldest first. The one question a "
             "scoped session cannot answer about itself, and the whole of what "
             "the boot enumerations and the runtime-state sweep need."
+        ),
+    ),
+    TenantLookup(
+        name="all_organization_ids",
+        arguments=(),
+        query="SELECT id FROM organizations ORDER BY created_at, id",
+        purpose=(
+            "Every organization in the deployment, oldest first, for the boot "
+            "passes over organization-scoped tables. An organization is "
+            "visited directly rather than through its workspaces, so one "
+            "with none is not missed."
         ),
     ),
     TenantLookup(
@@ -500,15 +519,18 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the fourteen names are fixed and known here, so there is nothing
+# at call time: the fifteen names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS`: a fifteenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS`: a sixteenth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
+    "all_organization_ids": text(
+        "SELECT organization_id FROM all_organization_ids() AS organization_id"
+    ),
     "tenants_of_user": text(
         "SELECT tenant_id FROM tenants_of_user(:user_id) AS tenant_id"
     ),
@@ -599,6 +621,12 @@ async def all_tenant_ids(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> list[str]:
     return await _call(session_factory, TENANT_LOOKUPS_BY_NAME["all_tenant_ids"])
+
+
+async def all_organization_ids(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[str]:
+    return await _call(session_factory, TENANT_LOOKUPS_BY_NAME["all_organization_ids"])
 
 
 async def tenants_of_user(

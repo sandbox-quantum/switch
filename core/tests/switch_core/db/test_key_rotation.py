@@ -27,6 +27,8 @@ from switch_core.db.models import (
     Client,
     CollaborationBridge,
     MessagingInstall,
+    Organization,
+    OrganizationAppCredential,
     ServiceAppCredential,
     ServiceConnection,
     ServiceTokenIssuance,
@@ -285,6 +287,40 @@ async def test_the_operators_connector_apps_end_up_under_the_current_key(
         rls_harness.owner,
         "SELECT encrypted_secrets FROM service_app_credentials WHERE service = :service",
         {"service": "google-workspace"},
+    )
+    assert isinstance(secret, str) and secret.startswith(_NEW.current_prefix())
+    assert _NEW.decrypt(secret) == '{"client_secret": "example"}'
+
+
+async def test_an_organizations_connector_app_ends_up_under_the_current_key(
+    rls_harness: RLSHarness,
+) -> None:
+    """Rewritten in a pass per organization, which reaches one with no
+    workspace to be seen through."""
+    _, admin = await _tenant_with_user(rls_harness.owner)
+    organization_id = f"org-{uuid.uuid4().hex[:8]}"
+    async with rls_harness.owner() as session:
+        session.add(Organization(id=organization_id, slug=organization_id, name="O"))
+        await session.flush()
+        session.add(
+            OrganizationAppCredential(
+                organization_id=organization_id,
+                service="github",
+                client_id="example-client-id",
+                settings={},
+                encrypted_secrets=_OLD.encrypt('{"client_secret": "example"}'),
+                updated_by=admin,
+            )
+        )
+        await session.commit()
+
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
+
+    secret = await _raw_where(
+        rls_harness.owner,
+        "SELECT encrypted_secrets FROM organization_app_credentials "
+        "WHERE organization_id = :organization_id",
+        {"organization_id": organization_id},
     )
     assert isinstance(secret, str) and secret.startswith(_NEW.current_prefix())
     assert _NEW.decrypt(secret) == '{"client_secret": "example"}'
