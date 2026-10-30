@@ -272,6 +272,7 @@ class TestLoopback:
             started = await console.start()
             assert started.status_code == 200, started.text
             assert started.json()["mode"] == "loopback"
+            assert started.json()["callback_url"] is None
             assert started.json()["id"] == console.state
             url = started.json()["url"]
             query = parse_qs(urlsplit(url).query)
@@ -672,6 +673,7 @@ class TestCoreCallback:
             started = await console.start()
             assert started.status_code == 200, started.text
             assert started.json()["mode"] == "core"
+            assert started.json()["callback_url"] == f"{PUBLIC}{FLOWS}/callback"
             authorize = started.json()["url"]
             assert authorize.startswith(f"{PUBLIC}{FLOWS}/authorize?state=")
 
@@ -867,7 +869,10 @@ class TestTheWayBackTheServerNames:
             console = Console(client, ada)
             started = await console.start()
             assert started.status_code == 200, started.text
-            assert started.json()["mode"] == "loopback"
+            assert (started.json()["mode"], started.json()["callback_url"]) == (
+                "loopback",
+                None,
+            )
             code = _listener_code(
                 world.vendor.authorize(started.json()["url"]), console.state
             )
@@ -886,7 +891,10 @@ class TestTheWayBackTheServerNames:
             console = Console(client, ada)
             started = await console.start()
             assert started.status_code == 200, started.text
-            assert started.json()["mode"] == "core"
+            assert (started.json()["mode"], started.json()["callback_url"]) == (
+                "core",
+                f"{PUBLIC}{FLOWS}/callback",
+            )
             left = await client.get(started.json()["url"].removeprefix(PUBLIC))
             cookie = f"switch_service_{console.state}"
             # The fake vendor refuses a redirect the client was not registered with.
@@ -911,7 +919,10 @@ class TestTheWayBackTheServerNames:
             console = Console(client, ada)
             started = await console.start()
             assert started.status_code == 200, started.text
-            assert started.json()["mode"] == "loopback"
+            assert (started.json()["mode"], started.json()["callback_url"]) == (
+                "loopback",
+                None,
+            )
             code = _listener_code(
                 world.vendor.authorize(started.json()["url"]), console.state
             )

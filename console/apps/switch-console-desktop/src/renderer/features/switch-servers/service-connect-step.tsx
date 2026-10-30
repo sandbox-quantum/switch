@@ -1,6 +1,7 @@
 import { ExternalLink } from 'lucide-react';
 import { useEffect, useReducer, useRef } from 'react';
 import {
+  allowListHint,
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
@@ -44,6 +45,7 @@ export function ServiceConnectStep({
   );
   const { connected, flowId, flow, busy, warning, error } = state;
   const closable = canCloseConnectFlow(state);
+  const hint = allowListHint(state, connection.name);
   useCloseGuard(!closable);
   // Callers build their calls as they render; polling follows the flow, not them.
   const callsRef = useRef(calls);
@@ -87,10 +89,8 @@ export function ServiceConnectStep({
   const start = async () => {
     dispatch({ type: 'act' });
     try {
-      dispatch({
-        type: 'started',
-        flowId: await calls.startSignIn(service),
-      });
+      const started = await calls.startSignIn(service);
+      dispatch({ type: 'started', flowId: started.id, callbackUrl: started.callbackUrl });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
     }
@@ -124,12 +124,19 @@ export function ServiceConnectStep({
       <DialogContentArea className="space-y-4 pt-0">
         {flowId ? (
           flow?.status !== 'failed' && (
-            <p className="flex items-center gap-2 text-sm">
-              <Spinner />
-              {flow?.status === 'checking'
-                ? `Connecting ${connection.name}…`
-                : 'Finish signing in in your browser, then return here.'}
-            </p>
+            <>
+              <p className="flex items-center gap-2 text-sm">
+                <Spinner />
+                {flow?.status === 'checking'
+                  ? `Connecting ${connection.name}…`
+                  : 'Finish signing in in your browser, then return here.'}
+              </p>
+              {hint && (
+                <p className="text-xs text-foreground-muted">
+                  {hint.text} <span className="font-mono break-all select-all">{hint.url}</span>
+                </p>
+              )}
+            </>
           )
         ) : (
           <>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type ConnectFlowState,
+  allowListHint,
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
@@ -688,6 +689,48 @@ describe('the sign-in flow', () => {
       failure: 'Signing in failed.',
     });
     expect(refused.error).toBe('Already linked elsewhere.');
+  });
+
+  it('names the server’s callback to allow-list only while a sign-in returning through it waits on the browser', () => {
+    const callback =
+      'https://switch.example.test/gateway/service-connections/example/flows/callback';
+    const started = run(
+      initialConnectFlow(false),
+      { type: 'act' },
+      { type: 'started', flowId: 'flow-1', callbackUrl: callback }
+    );
+    const hint = {
+      text: 'If Atlassian shows an error, an admin must allow-list this URL at Atlassian.',
+      url: callback,
+    };
+    expect(allowListHint(started, 'Atlassian')).toEqual(hint);
+    const pending = run(started, {
+      type: 'polled',
+      flow: { status: 'pending', account: null, error: null, warning: null },
+      failure: 'Signing in failed.',
+    });
+    expect(allowListHint(pending, 'Atlassian')).toEqual(hint);
+    for (const status of ['checking', 'failed'] as const)
+      expect(
+        allowListHint(
+          run(started, {
+            type: 'polled',
+            flow: { status, account: null, error: null, warning: null },
+            failure: 'Signing in failed.',
+          }),
+          'Atlassian'
+        )
+      ).toBeNull();
+    expect(allowListHint(run(started, { type: 'cancelled' }), 'Atlassian')).toBeNull();
+    expect(
+      allowListHint(run(started, { type: 'connected', warning: null }), 'Atlassian')
+    ).toBeNull();
+    const loopback = run(initialConnectFlow(false), {
+      type: 'started',
+      flowId: 'flow-1',
+      callbackUrl: null,
+    });
+    expect(allowListHint(loopback, 'Atlassian')).toBeNull();
   });
 
   it('is connected, with the warning, once the server has kept the account', () => {

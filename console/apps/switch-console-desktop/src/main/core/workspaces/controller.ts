@@ -1511,7 +1511,7 @@ export const workspacesController = createRPCController({
   /**
    * Start signing in to `service` for this workspace: the browser opens at the
    * vendor, and this Console's listener takes the result back. Resolves to the
-   * flow's id.
+   * flow's id, and the server's callback where the browser returns through it.
    */
   startServiceConnection: (params: { workspaceId: string; service: string }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
