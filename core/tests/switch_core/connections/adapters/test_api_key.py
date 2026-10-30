@@ -137,3 +137,87 @@ async def test_a_key_is_never_issued_to_an_agent() -> None:
             AccessToken(key, datetime.now(UTC) + timedelta(hours=1)),
             IssueRequest(service="example", access="write", reach={}, resources={}),
         )
+
+
+# ── A field checked by a pattern ──────────────────────────────────────────────
+
+
+def _ok(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200)
+
+
+def _subdomain_adapter(pattern: str, handler=_ok) -> ApiKeyAdapter:
+    entry = {
+        **ENTRY,
+        "auth": {
+            **ENTRY["auth"],
+            "api_key": {
+                "fields": [
+                    {"name": "api_key", "label": "API key", "secret": True},
+                    {
+                        "name": "subdomain",
+                        "label": "Subdomain",
+                        "secret": False,
+                        "pattern": pattern,
+                    },
+                ],
+                "identity": {
+                    "method": "GET",
+                    "url": "https://{subdomain}.example.test/api/me",
+                    "headers": {"X-Key": "{api_key}"},
+                },
+            },
+        },
+        "mcp": {
+            "servers": [
+                {
+                    "name": "example",
+                    "url": "https://mcp.example.test/v1/{subdomain}/mcp",
+                    "headers": {"X-Key": "{api_key}"},
+                }
+            ]
+        },
+    }
+    definition = ConnectionDefinition.model_validate(entry)
+    return ApiKeyAdapter(
+        definition,
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+
+def test_a_typed_field_that_matches_its_pattern_is_kept() -> None:
+    adapter = _subdomain_adapter("^[a-z0-9][a-z0-9-]{0,62}$")
+    assert adapter.checked_fields(
+        {"api_key": "SYNTHETIC-KEY", "subdomain": " acme-support "}
+    ) == {"api_key": "SYNTHETIC-KEY", "subdomain": "acme-support"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["acme.evil.test", "acme/evil", "acme@evil", "acme:443", "-acme", "acmé", "a" * 64],
+)
+def test_a_typed_field_that_breaks_its_pattern_is_refused(value: str) -> None:
+    adapter = _subdomain_adapter("^[a-z0-9][a-z0-9-]{0,62}$")
+    with pytest.raises(InvalidKeyError, match="Subdomain is not in the form"):
+        adapter.checked_fields({"api_key": "SYNTHETIC-KEY", "subdomain": value})
+
+
+@pytest.mark.parametrize("value", ["acme.evil.test", "..", "acme?x", "acme#x"])
+def test_a_loose_pattern_still_cannot_move_the_request(value: str) -> None:
+    """Where the value goes decides what it may be, whatever the entry allows."""
+    adapter = _subdomain_adapter("^.+$")
+    with pytest.raises(InvalidKeyError, match="Subdomain is not in the form"):
+        adapter.checked_fields({"api_key": "SYNTHETIC-KEY", "subdomain": value})
+
+
+async def test_a_typed_field_reaches_the_identity_call_as_its_host() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    adapter = _subdomain_adapter("^[a-z0-9][a-z0-9-]{0,62}$", handler)
+    values = adapter.checked_fields({"api_key": "SYNTHETIC-KEY", "subdomain": "acme"})
+    await adapter.identify(values)
+    assert seen == ["https://acme.example.test/api/me"]

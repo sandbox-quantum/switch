@@ -354,9 +354,13 @@ auth:
         label: Site
         secret: false
         choices: [example.com, eu.example.com]
+      - name: account           # or typed, and held to an anchored pattern
+        label: Account
+        secret: false
+        pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
     identity:                   # checks the key, before anything is stored
       method: GET               # or POST, with a JSON body
-      url: "https://api.{site}/me"          # a URL names only choices
+      url: "https://api.{site}/me"          # a URL names no secret field
       headers: { X-Api-Key: "{api_key}" }
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
@@ -374,6 +378,16 @@ tools: { mode: pass_through }
 The loader refuses a template naming an unknown field, a URL naming a secret
 one, a server without headers, an entry naming `access` (a key reaches
 whatever its vendor let it), and a `max_lifetime` other than null.
+
+A field that is neither secret nor a choice is typed, and held to its
+`pattern` (anchored, `^…$`): an account's subdomain, say. A URL may name one
+only as a whole host label whose domain the entry fixes
+(`https://{account}.example.com/…`) or as a whole path segment
+(`…/accounts/{account}/…`); beside other text, in the domain, the query or the
+fragment it could send the request elsewhere, and the loader refuses it. When
+the person connects, the value must match the entry's pattern and also what is
+safe where it is placed (one DNS label, or one path segment that is not `.` or
+`..`), so a pattern written too loosely still cannot move the request.
 
 **A key is never handed to an agent.** It does not expire and only its vendor
 can revoke it, so whatever ran beside the agent could keep it for good, past a

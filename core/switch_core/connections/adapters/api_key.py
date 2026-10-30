@@ -35,10 +35,13 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import (
+    PLACED_VALUE_PATTERNS,
     TEMPLATE_FIELD_RE,
     AccessLevel,
     ApiKeySignIn,
     ConnectionDefinition,
+    Placement,
+    url_placements,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -90,6 +93,13 @@ class ApiKeyAdapter:
         self._name = definition.name
         self._sign_in = sign_in
         self._http = http
+        urls = [sign_in.identity.url]
+        if definition.mcp is not None:
+            urls += [server.url for server in definition.mcp.servers]
+        self._placements: dict[str, set[Placement]] = {}
+        for url in urls:
+            for name, where in url_placements(url, sign_in.pattern_names()).items():
+                self._placements.setdefault(name, set()).update(where)
 
     def current_client_id(self) -> str | None:
         return None
@@ -111,6 +121,20 @@ class ApiKeyAdapter:
                 if value not in field.choices:
                     raise InvalidKeyError(
                         f"{field.label} must be one of {', '.join(field.choices)}."
+                    )
+            elif field.pattern is not None:
+                # The entry's pattern, and whatever is safe where the value
+                # goes in a URL, even if the pattern were written too loosely.
+                if (
+                    not FIELD_VALUE_RE.fullmatch(value)
+                    or not re.fullmatch(field.pattern, value)
+                    or not all(
+                        re.fullmatch(PLACED_VALUE_PATTERNS[where], value)
+                        for where in self._placements.get(name, ())
+                    )
+                ):
+                    raise InvalidKeyError(
+                        f"{field.label} is not in the form {self._name} uses."
                     )
             elif not FIELD_VALUE_RE.fullmatch(value):
                 raise InvalidKeyError(

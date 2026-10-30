@@ -1,13 +1,17 @@
 import shutil
 
 import pytest
+from pydantic import ValidationError
 
 from switch_core.connections.loader import (
     CATALOG,
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
+    ApiKeyField,
     CatalogError,
+    ConnectionDefinition,
     load_catalog,
+    url_placements,
 )
 
 PLACEHOLDERS = {
@@ -1046,3 +1050,126 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+# ── A key field checked by a pattern ──────────────────────────────────────────
+
+SUBDOMAIN = {
+    "name": "subdomain",
+    "label": "Subdomain",
+    "secret": False,
+    "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+}
+
+
+def test_a_field_may_be_typed_and_held_to_a_pattern():
+    field = ApiKeyField.model_validate(SUBDOMAIN)
+    assert field.pattern == "^[a-z0-9][a-z0-9-]{0,62}$"
+    assert field.choices is None
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"secret": True}, "one of the two"),
+        ({"choices": ["a.example.test"]}, "not both"),
+        ({"pattern": "[a-z]+"}, "anchored at both ends"),
+        ({"pattern": "^[a-z]+"}, "anchored at both ends"),
+        ({"pattern": "^[a-z+$"}, "not a regular expression"),
+    ],
+)
+def test_a_pattern_field_is_refused_when_it_is_not_one(change, message):
+    with pytest.raises(ValidationError, match=message):
+        ApiKeyField.model_validate({**SUBDOMAIN, **change})
+
+
+@pytest.mark.parametrize(
+    ("url", "placements"),
+    [
+        (
+            "https://{subdomain}.example.com/api/v2/users/me.json",
+            {"subdomain": {"host_label"}},
+        ),
+        ("https://api.{subdomain}.example.com/v1", {"subdomain": {"host_label"}}),
+        (
+            "https://api.example.test/v1/{subdomain}/mcp",
+            {"subdomain": {"path_segment"}},
+        ),
+        ("https://api.example.test/v1/{subdomain}", {"subdomain": {"path_segment"}}),
+        ("https://api.example.test/v1/{region}?q=1", {}),
+    ],
+)
+def test_a_pattern_field_may_be_a_whole_host_label_or_path_segment(url, placements):
+    assert url_placements(url, {"subdomain"}) == placements
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("https://{subdomain}x.example.com/", "part of a host label"),
+        ("https://x-{subdomain}.example.com/", "part of a host label"),
+        ("https://{subdomain}.com/", "domain after it is not fixed"),
+        ("https://example.{subdomain}/", "domain after it is not fixed"),
+        ("https://{subdomain}.{region}.example.com/", "domain after it is not fixed"),
+        ("https://{subdomain}/", "domain after it is not fixed"),
+        ("https://api.example.test/v1/x-{subdomain}", "part of a path segment"),
+        ("https://api.example.test/v1?account={subdomain}", "query or fragment"),
+        ("https://api.example.test/v1#{subdomain}", "query or fragment"),
+        ("https://{subdomain}@example.com/", "beside a user or a port"),
+        ("https://example.com:{subdomain}/", "beside a user or a port"),
+    ],
+)
+def test_a_pattern_field_that_could_change_the_host_is_refused(url, message):
+    with pytest.raises(ValueError, match=message):
+        url_placements(url, {"subdomain"})
+
+
+def _key_entry(identity_url: str, field: dict[str, object]) -> dict[str, object]:
+    return {
+        "slug": "example",
+        "name": "Example",
+        "category": "Support",
+        "description": "Read Example tickets.",
+        "enabled": False,
+        "adapter": "api_key",
+        "auth": {
+            "type": "api_key",
+            "refresh": "none",
+            "api_key": {
+                "fields": [
+                    {"name": "api_key", "label": "API key", "secret": True},
+                    field,
+                ],
+                "identity": {
+                    "method": "GET",
+                    "url": identity_url,
+                    "headers": {"X-Key": "{api_key}"},
+                },
+            },
+        },
+        "token": {"kind": "pass_through", "max_lifetime": None},
+        "tools": {"mode": "pass_through"},
+    }
+
+
+def test_an_entry_puts_a_pattern_field_in_its_host():
+    definition = ConnectionDefinition.model_validate(
+        _key_entry("https://{subdomain}.example.com/api/me", SUBDOMAIN)
+    )
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.pattern_names() == {"subdomain"}
+    assert sign_in.choice_names() == set()
+
+
+@pytest.mark.parametrize(
+    ("url", "message"),
+    [
+        ("https://example.com/api?s={subdomain}", "query or fragment"),
+        ("https://{subdomain}.com/api", "domain after it is not fixed"),
+        ("https://example.com/{api_key}", "may name only a choice field"),
+    ],
+)
+def test_an_entry_that_misplaces_a_typed_field_is_refused(url, message):
+    with pytest.raises(ValidationError, match=message):
+        ConnectionDefinition.model_validate(_key_entry(url, SUBDOMAIN))
