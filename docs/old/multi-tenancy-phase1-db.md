@@ -94,7 +94,7 @@ tenants(id)`:**
 `room_links`, `room_roles`, `role_leases`, `tasks`, `references`,
 `reference_types`, `documents`, `room_references`, `room_documents`,
 `packages`, `room_packages`, `package_references`, `package_documents`,
-`collaboration_bridges`, `server_connectors`, `external_users`,
+`collaboration_bridges`, `server_connectors` (dropped since), `external_users`,
 `external_user_claims`, `agent_sessions`, `agent_runtime_states`,
 `bridge_message_map`, `messages`, `message_attachments`, `delivery_cursors`,
 `media_blobs`.
@@ -765,6 +765,8 @@ handed. `ClientBase` and `PostgresTransport` now take a required `tenant_id`,
 `ClientFactory` reads it off the record, and revision `b1d7c4f0a92e` drops the
 function so it is not merely unused but uninstallable-by-accident. It was also
 the lookup called most — once per transport — so the round trip goes too.
+`tenant_of_server_connector` went the same way later, with the table it read,
+once server-side connectors were removed (revision `e223eae63078`).
 
 **It is a closed list**: `TENANT_LOOKUPS` is compared against the functions
 actually installed, against the migration's frozen copy (statement text, not
@@ -1248,7 +1250,8 @@ to prevent — in that file unless another is named:
   `require_tenant_id()` rather than restating a constant, so the two cannot
   drift apart again.
 - **Removing a server-side connector is scoped and fails loudly**
-  (`tests/switch_core/bridges/agent/server_connectors/test_lifecycle_remove_tenant.py`),
+  (`tests/switch_core/bridges/agent/server_connectors/test_lifecycle_remove_tenant.py`,
+  removed with the connectors),
   against `rls_harness.restricted` — the plain fixture is the owner and would
   pass with no policies at all. It covers both halves: the delete refuses to
   report a removal it did not make, and it refuses *before* tearing the
