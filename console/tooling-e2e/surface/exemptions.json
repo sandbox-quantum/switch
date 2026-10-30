@@ -25,7 +25,9 @@
     "POST /gateway/rooms/{room_id}/sync-name": "Needs a bridged room whose linked channel was renamed on the platform, which the fast lane's stacks cannot stage. Covered by core's test_room_sync_name.py against real Postgres.",
     "PUT /gateway/chats/{room_id}/read": "Switch Console read positions. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog).",
     "WS /gateway/changes/ws": "Console's change-notice socket. What it sends is covered by core's test_changes_socket.py, and the session probe checks it refuses a handshake without a session; no scenario drives Console's lists yet.",
-    "get_template_status": "Needs an agent created from an official template on a managed machine and then a newer revision of that template; no stack the harness builds has managed agents yet (create_agent is in the backlog). Covered by core's test_template_updates.py."
+    "get_decision_routing": "Needs agent management with an enrolled machine reporting decision.v1 (a real or stub controller), which no stack the harness builds has; covered by core's test_decision_machine.py and walked by hand (task 14.2).",
+    "get_template_status": "Needs an agent created from an official template on a managed machine and then a newer revision of that template; no stack the harness builds has managed agents yet (create_agent is in the backlog). Covered by core's test_template_updates.py.",
+    "set_decision_routing": "Needs agent management with an enrolled machine reporting decision.v1 (a real or stub controller), which no stack the harness builds has; covered by core's test_decision_machine.py and walked by hand (task 14.2)."
   },
   "unauthenticated": {
     "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",

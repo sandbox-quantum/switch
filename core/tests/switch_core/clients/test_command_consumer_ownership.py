@@ -31,6 +31,7 @@ from switch_core.clients.client_factory import ClientFactory
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import TENANT_ZERO_ID, Client, Message, Room
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
@@ -145,6 +146,7 @@ async def _process(
                 endpoint_url=None, api_key=None, bedrock_enabled=False
             ),
             store=DecisionSettingsStore(),
+            controllers=AgentControllerStore(),
         ),
     )
     lease = process_lease_on(session_factory)

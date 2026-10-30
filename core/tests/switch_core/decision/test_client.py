@@ -16,7 +16,9 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.decision.client import (
     ContextMessage,
@@ -32,6 +34,7 @@ from switch_core.decision.client import (
     confidence_bucket,
     decide_url,
 )
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.keys import Keyring
 from switch_core.outbound import OutboundPolicy, guarded_async_client
@@ -156,6 +159,7 @@ def _client(
                 endpoint_url=url, api_key=api_key, bedrock_enabled=bedrock
             ),
             store=DecisionSettingsStore(),
+            controllers=AgentControllerStore(),
         ),
         keyring=keyring,
         client=http,
@@ -164,6 +168,7 @@ def _client(
         timeout_seconds=0.5,
         telemetry=telemetry,  # type: ignore[arg-type]
         cache_seconds=cache_seconds,
+        machines=MachineDecisions(ControllerPresence(on_bound=lambda _agent_id: None)),
     )
 
 

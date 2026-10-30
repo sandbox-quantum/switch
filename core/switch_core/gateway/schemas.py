@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -9,8 +9,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StringConstraints,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -1662,18 +1664,86 @@ class BudgetResponse(BaseModel):
 # ── Switch Trust ──────────────────────────────────────────────────────────────
 
 
-DecisionBackendName = Literal["none", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+DecisionBackendName = Literal[
+    "none", "endpoint", "haiku_anthropic", "haiku_bedrock", "machine"
+]
+
+
+class _OmitsUnset(BaseModel):
+    """A response whose optional keys (`_omitted_when_none`) are left out
+    rather than sent as null, as the contract marks them optional."""
+
+    _omitted_when_none: ClassVar[frozenset[str]] = frozenset()
+
+    @model_serializer(mode="wrap")
+    def _omit_none(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        return {
+            key: value
+            for key, value in data.items()
+            if not (value is None and key in self._omitted_when_none)
+        }
+
+
+class DecisionMachineProgress(BaseModel):
+    done_bytes: int
+    total_bytes: int
+
+
+class DecisionMachineState(_OmitsUnset):
+    """The machine a workspace's decisions run on, as Switch last heard of
+    it. `state` is what its model is doing (`off`, `downloading`,
+    `starting`, `running`, `failed`), or `offline` (not connected now) or
+    `removed` (revoked). `ready` is whether it has reported the model running
+    for this choice; until then auto-route is unavailable, without notices.
+    `since` is when it went offline, or reached the state it reports."""
+
+    _omitted_when_none = frozenset({"progress", "reason", "last_decision_ms"})
+
+    id: str
+    name: str
+    model: str
+    state: str
+    progress: DecisionMachineProgress | None = None
+    ready: bool
+    connected: bool
+    since: str | None
+    reason: str | None = None
+    last_decision_ms: int | None = None
 
 
 class DecisionEffective(BaseModel):
     """What a workspace's rooms use now: its own choice, or the server
-    default, or nothing. `available` folds in the server's flag."""
+    default, or nothing. `available` folds in the server's flag. `machine` is
+    set for the `machine` backend."""
 
     backend: DecisionBackendName
     endpoint: str | None
     threshold: float | None
     available: bool
     reason: str | None
+    machine: DecisionMachineState | None
+
+
+class DecisionMachineSupport(_OmitsUnset):
+    """Whether a machine can run the decision model: its hardware and the
+    models it offers, or why not."""
+
+    _omitted_when_none = frozenset({"hardware", "reason"})
+
+    supported: bool
+    hardware: dict[str, Any] | None = None
+    offered: list[dict[str, Any]]
+    reason: str | None = None
+
+
+class DecisionMachineOption(BaseModel):
+    """One of the caller's own machines in this workspace, for the picker."""
+
+    id: str
+    name: str
+    connected: bool
+    decision: DecisionMachineSupport
 
 
 class DecisionWorkspaceSettings(BaseModel):
@@ -1688,6 +1758,8 @@ class DecisionWorkspaceSettings(BaseModel):
     api_key_last4: str | None
     api_key_unreadable: bool
     updated_at: str
+    machine_id: str | None
+    model: str | None
 
 
 class DecisionServerDefault(BaseModel):
@@ -1698,10 +1770,12 @@ class DecisionServerDefault(BaseModel):
 
 class DecisionOptions(BaseModel):
     """Which Haiku backends the server offers: both need the server's
-    decision service, and Bedrock also `DECISION_BEDROCK_ENABLED`."""
+    decision service, and Bedrock also `DECISION_BEDROCK_ENABLED`. `machines`
+    are the caller's own machines in this workspace, never anyone else's."""
 
     haiku_anthropic: bool
     haiku_bedrock: bool
+    machines: list[DecisionMachineOption]
 
 
 class DecisionSettingsResponse(BaseModel):
@@ -1715,13 +1789,17 @@ class DecisionSettingsResponse(BaseModel):
 class DecisionSettingsUpdateRequest(BaseModel):
     """`api_key` omitted keeps the stored key when the backend stays the
     same; `clear_api_key` drops it. A key is the bearer token for an
-    `endpoint`, and the Anthropic key for `haiku_anthropic`."""
+    `endpoint`, and the Anthropic key for `haiku_anthropic`. `machine` names
+    one of the caller's own machines (`machine_id`) and a model it offers
+    (`model`)."""
 
     backend: DecisionBackendName
     endpoint: str | None = None
     api_key: str | None = None
     clear_api_key: bool = False
     threshold: float | None = Field(default=None, ge=0, le=1)
+    machine_id: str | None = None
+    model: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> DecisionSettingsUpdateRequest:
@@ -1730,6 +1808,11 @@ class DecisionSettingsUpdateRequest(BaseModel):
                 "api_key must not be blank; omit it to keep the stored key, or "
                 "set clear_api_key"
             )
+        if self.backend == "machine":
+            if not (self.machine_id or "").strip():
+                raise ValueError("running on a machine needs its machine_id")
+            if not (self.model or "").strip():
+                raise ValueError("running on a machine needs the model to run")
         if self.backend == "endpoint":
             value = self.endpoint
             if value is None or not value.strip():
@@ -1760,6 +1843,8 @@ TestErrorCode = Literal[
     "backend_unavailable",
     "not_configured",
     "refused",
+    "machine_not_ready",
+    "machine_offline",
 ]
 
 

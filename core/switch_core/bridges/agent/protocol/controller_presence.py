@@ -131,6 +131,15 @@ class ControllerRevokedError(ControllerConnectionError):
         super().__init__(f"controller {controller_id} has been revoked")
 
 
+class ControllerGoneError(Exception):
+    """The socket a request was sent on went before its answer came back: the
+    controller was closed, taken over, revoked, or its socket dropped."""
+
+    def __init__(self, controller_id: str, why: str) -> None:
+        super().__init__(f"controller {controller_id}'s socket went ({why})")
+        self.why = why
+
+
 @dataclass(frozen=True)
 class Binding:
     """Which controller may act for an agent, and whether its owner wants it
@@ -177,6 +186,14 @@ class ControllerConnection:
     warms: set[tuple[str, str]] = field(default_factory=set)
     detached: dict[str, str] = field(default_factory=dict)
     rooms_changed: set[str] = field(default_factory=set)
+    # Frames the socket sends before anything the stream has queued, so a
+    # decision request never waits behind a catch-up backlog.
+    urgent: deque[dict[str, Any]] = field(default_factory=deque)
+    urgent_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # The decision requests sent on this connection and not yet answered, by
+    # request id. Resolved with the controller's `decision.result` message;
+    # failed with `ControllerGoneError` when the socket goes first.
+    decisions: dict[str, asyncio.Future[dict[str, Any]]] = field(default_factory=dict)
 
     def is_live(self, now: float) -> bool:
         return (
@@ -184,6 +201,52 @@ class ControllerConnection:
             and self.stream_attached
             and (now - self.last_beat) < HEARTBEAT_TTL_SECONDS
         )
+
+    def send_urgent(self, frame: dict[str, Any]) -> None:
+        """Queue `frame` for the socket ahead of the stream's own frames."""
+        self.urgent.append(frame)
+        self.urgent_ready.set()
+
+    def take_urgent(self) -> list[dict[str, Any]]:
+        owed = list(self.urgent)
+        self.urgent.clear()
+        self.urgent_ready.clear()
+        return owed
+
+    def expect_decision(self, request_id: str) -> asyncio.Future[dict[str, Any]]:
+        """The future the answer to decision request `request_id` resolves.
+        The caller removes it (`forget_decision`) once done with it."""
+        if request_id in self.decisions:
+            raise ValueError(f"decision request {request_id} is already waiting")
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.decisions[request_id] = future
+        return future
+
+    def forget_decision(self, request_id: str) -> None:
+        self.decisions.pop(request_id, None)
+
+    def settle_decision(self, message: dict[str, Any]) -> bool:
+        """Hand a `decision.result` message to the request it answers. False
+        when no request with its id is waiting here: it was never sent on
+        this connection, or its caller already stopped waiting."""
+        request_id = message.get("request_id")
+        future = self.decisions.get(request_id) if isinstance(request_id, str) else None
+        if future is None or future.done():
+            return False
+        future.set_result(message)
+        return True
+
+    def fail_decisions(self, why: str) -> None:
+        """The socket went: no answer can come back for what was sent on it,
+        and what was not sent yet is owed to nobody."""
+        self.urgent.clear()
+        self.urgent_ready.clear()
+        for future in self.decisions.values():
+            if not future.done():
+                future.set_exception(ControllerGoneError(self.controller_id, why))
+        self.decisions.clear()
 
 
 class ControllerConnectionLedger(Protocol):
@@ -394,6 +457,7 @@ class ControllerPresence:
             conn.closure = REVOKED
             self._record_disconnected(conn, DISCONNECT_REVOKED)
             conn.stream_attached = False
+            conn.fail_decisions(DISCONNECT_REVOKED)
             conn.wake.set()
 
     # ------------------------------------------------------------------
@@ -437,6 +501,12 @@ class ControllerPresence:
         if conn is None or not conn.is_live(time.monotonic()):
             return None
         return conn
+
+    def live_connection(self, controller_id: str) -> ControllerConnection | None:
+        """The controller's connection when this process holds its live
+        socket; None when it is not live here (another process may hold it:
+        `holder_elsewhere`)."""
+        return self._live_connection(controller_id)
 
     def _connected(self, controller_id: str) -> bool:
         """Whether the controller's socket is live here or in another process."""
@@ -567,6 +637,7 @@ class ControllerPresence:
         previous.closure = TAKEN_OVER
         self._record_disconnected(previous, TAKEN_OVER.code)
         previous.stream_attached = False
+        previous.fail_decisions(TAKEN_OVER.code)
         previous.wake.set()
         remembered = self._superseded.setdefault(
             previous.controller_id, deque(maxlen=_SUPERSEDED_REMEMBERED)
@@ -785,13 +856,14 @@ class ControllerPresence:
         the socket to reattach within the heartbeat TTL, but the machine is
         recorded as disconnected now."""
         if conn.stream_token == token:
-            self._record_disconnected(
-                conn,
+            reason = (
                 DISCONNECT_SERVER_SHUTDOWN
                 if self._shutting_down
-                else DISCONNECT_SOCKET_CLOSED,
+                else DISCONNECT_SOCKET_CLOSED
             )
+            self._record_disconnected(conn, reason)
             conn.stream_attached = False
+            conn.fail_decisions(reason)
 
     def beat(
         self, controller_id: str, connection_id: str, generation: int
@@ -876,6 +948,7 @@ class ControllerPresence:
             )
             self._record_disconnected(conn, closure.code)
         conn.stream_attached = False
+        conn.fail_decisions(closure.code)
         conn.wake.set()
 
     def _forget(self, binding: Binding) -> None:

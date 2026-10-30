@@ -188,8 +188,11 @@ TRISTATE = one_of("true", "false", "unknown")
 
 # Which decision backend a workspace's auto-route used: the server's own
 # decision service as its default, the workspace's own endpoint, or Haiku.
+# Which kind of backend answered: the server's own decision service as a
+# workspace's default, a workspace's own endpoint, Haiku, or a model served on
+# one of the workspace admin's own machines. Never which machine.
 DECISION_BACKEND = one_of(
-    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"
+    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock", "machine"
 )
 
 # The confidence the decision service gave its choice, in tenths above one
@@ -202,6 +205,9 @@ DECISION_CONFIDENCE = one_of(
 # connection, an answer other than 200, an answer that was not a decision (or
 # named an agent that was not a candidate), a workspace key the server can no
 # longer decrypt, or a workspace endpoint the server's outbound policy refuses.
+# For a model on a machine: the machine is not connected, its model is not
+# running, it has as many decisions in flight as it takes, or its model server
+# failed.
 DECISION_FAILURE_REASON = one_of(
     "timeout",
     "unreachable",
@@ -209,6 +215,10 @@ DECISION_FAILURE_REASON = one_of(
     "bad_answer",
     "key_unreadable",
     "endpoint_refused",
+    "machine_offline",
+    "machine_not_ready",
+    "machine_busy",
+    "machine_error",
 )
 
 

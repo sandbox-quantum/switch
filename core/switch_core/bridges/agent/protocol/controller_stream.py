@@ -32,6 +32,13 @@ of its agents' watchers exactly the stream it would have had from Switch:
 - `evicted {code, reason}`: the stream ends. `taken_over` is terminal for the
   client that receives it; the rest are recovered by opening again.
 
+Not from this stream, but on the same socket and ahead of its frames:
+`decision.request {request_id, kind, model, payload, deadline_ms}`, a decision
+for the model the controller serves for auto-route, sent through the
+connection's urgent queue (`ControllerConnection.send_urgent`,
+`decision/machine.py`). The controller answers on the socket with
+`{"type": "decision.result", request_id, ok, body?, model_ms?, error?}`.
+
 Frames are `{"event", "data"}` dicts, which the socket sends as JSON. When
 nothing has happened for the idle interval the stream yields `IDLE`, which is
 not sent: it only lets the loop look at the connection again.
@@ -73,6 +80,10 @@ IDLE: ControllerFrame = {"event": "idle", "data": {}}
 # The nudge after which nothing more is written: the controller stops every
 # agent on it and exits.
 CREDENTIAL_REVOKED = "credential.revoked"
+
+# A decision asked of the model the controller serves, and its answer.
+DECISION_REQUEST = "decision.request"
+DECISION_RESULT = "decision.result"
 
 
 class ControllerNudges(Protocol):

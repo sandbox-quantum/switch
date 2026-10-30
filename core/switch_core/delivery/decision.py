@@ -34,13 +34,23 @@ order:
 
 Nobody receives the message when the service names nobody. When the service
 fails (a timeout, a connection error, an error response, a malformed one, or
-one naming an agent that was not a candidate), the room is told auto-route is
-unavailable (`DECISION_NOTICE`), at most once an hour, and the message goes
+one naming an agent that was not a candidate; for a model on a machine, also
+the machine offline, busy or its model not running), the room is told
+auto-route is unavailable (`decision_notice`, naming the machine), at most
+once an hour, and the message goes
 to the room's triage agent if it has one (`!auto-route fallback @agent`),
 through the same checks, marked `routed_reason: "fallback"`; otherwise to
 nobody. A message still waiting after `DECISION_PENDING_MAX_AGE_SECONDS` is
 dropped and logged rather than answered late. Every decision is logged at
 INFO.
+
+A workspace whose model runs on one of its admin's machines is asked over
+that machine's controller connection, which lives in the process holding its
+socket (`decision/machine.py`). Only that process claims the workspace's
+waiting messages; a process that wrote one wakes the holder
+(`decision.wake`, `decision/signals.py`), and when no process holds the
+socket the messages fail at once as the machine being offline. Room content
+never crosses processes.
 """
 
 from __future__ import annotations
@@ -57,6 +67,7 @@ from switch_core.decision.client import (
     DecisionMessage,
     DecisionRequest,
     DecisionRoom,
+    Failed,
 )
 from switch_core.delivery.conversation import (
     CHANNEL_LOOKBACK,
@@ -76,9 +87,25 @@ if TYPE_CHECKING:
 
 # What the room is told when its decision backend fails, at most once every
 # `DECISION_NOTICE_EVERY_SECONDS` (room metadata `decision_notice_at`), and
-# never for a decision of nobody.
+# never for a decision of nobody. A machine is named (`decision_notice`).
 DECISION_NOTICE = "Auto-route is unavailable right now; tag an agent to reach it."
 DECISION_NOTICE_EVERY_SECONDS = 3600
+
+
+def decision_notice(failed: Failed) -> str:
+    """The notice for a failed decision: the plain one, or for a decision
+    model on a machine, one naming the machine and what went wrong."""
+    name = failed.machine
+    if name is None:
+        return DECISION_NOTICE
+    why = {
+        "machine_offline": f"{name} is offline",
+        "machine_busy": f"{name} is busy",
+        "machine_not_ready": f"the decision model on {name} isn't running",
+        "timeout": f"{name} did not answer in time",
+    }.get(failed.reason, f"the decision model on {name} failed")
+    return f"Auto-route is unavailable right now ({why}); tag an agent to reach it."
+
 
 # The most of a thread's latest messages, and of the room's latest top-level
 # messages, sent as context: enough to see who is talking to whom, and short

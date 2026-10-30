@@ -112,6 +112,18 @@ switch-core talks only to this contract; the backend behind it is configuration.
 | `ANTHROPIC_API_KEY` | unset | service-wide key when `DECISION_BACKEND=anthropic` |
 | `PORT` | `8230` | the image's listen port |
 
+## The package and the service
+
+`switch_decision` is two things. Its base (`prompt.py`, `models.py` and
+`readers.py`: the prompt, the request shape, reading a model's answer back
+and the threshold step) depends on pydantic alone. switch-core depends on it
+by path to ask a decision model served on a workspace admin's own machine
+(`core/switch_core/decision/machine.py`), so a decision there is made with
+exactly the code the service runs. The service itself (`app.py`,
+`backends.py`, `config.py`: FastAPI, the Anthropic and AWS clients) is the
+`service` extra, which the image installs and `uv sync` includes for
+development.
+
 ## Run locally
 
 Start a llama.cpp server with a Qwen3.5-4B GGUF (4-bit), then the service:
@@ -119,7 +131,7 @@ Start a llama.cpp server with a Qwen3.5-4B GGUF (4-bit), then the service:
 ```
 llama-server -m qwen3.5-4b-q4_k_m.gguf --port 8300
 cd decision
-uv sync
+uv sync --extra service
 uv run uvicorn switch_decision.app:app --port 8230
 curl localhost:8230/health
 uv run pytest

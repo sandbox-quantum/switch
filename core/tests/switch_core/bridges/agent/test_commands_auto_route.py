@@ -20,6 +20,7 @@ from switch_core.db.models import (
     User,
     room_agents,
 )
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.room_store import (
@@ -73,6 +74,7 @@ def _host(
                 bedrock_enabled=False,
             ),
             store=DecisionSettingsStore(),
+            controllers=AgentControllerStore(),
         ),
     )
     return host, posted

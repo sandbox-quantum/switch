@@ -100,6 +100,34 @@
     }
   },
   {
+    "event": "decision.request",
+    "data": {
+      "request_id": "8f14e45fceea167a5a36dedd4bea2543",
+      "kind": "llamacpp",
+      "model": "qwen3.5-4b-q4_k_m",
+      "payload": {
+        "messages": [
+          {
+            "role": "system",
+            "content": "You decide which single agent in a team chat room, if any, should answer the latest message."
+          },
+          {
+            "role": "user",
+            "content": "Room: ops\n\nWho should answer the latest message?\nA) deploy-bot: Runs deploys.\nN) none\n\nAnswer:"
+          }
+        ],
+        "max_tokens": 1,
+        "temperature": 0,
+        "logprobs": true,
+        "top_logprobs": 20,
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "deadline_ms": 5000
+    }
+  },
+  {
     "event": "agent.approval_outcome",
     "data": {
       "agent_id": "00000000-0000-4000-8000-0000000000a1",

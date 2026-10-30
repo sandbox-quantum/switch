@@ -11,10 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TENANT_ZERO_ID, DecisionSettings, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, DecisionSettings, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from tests.conftest import RLSHarness
+from tests.switch_core.decision.machine_helpers import MODEL, add_controller
 
 STORE = DecisionSettingsStore()
 TENANT_B = "decision-store-tenant-b"
@@ -145,3 +146,122 @@ async def test_a_workspace_cannot_read_anothers_row_under_row_level_security(
     async with tenant_session(rls_harness.restricted, tenant_a) as session:
         row = await STORE.get(session, tenant_a)
         assert row is not None and row.api_key_encrypted == "enc-a"
+
+
+async def _machine(session_factory: async_sessionmaker[AsyncSession]) -> str:
+    async with session_factory() as session:
+        user = User(
+            name="ada", email=f"ada-{uuid.uuid4().hex[:6]}@example.invalid", role="user"
+        )
+        session.add(user)
+        await session.flush()
+        controller = await add_controller(session, user.id)
+        await session.commit()
+        return controller.id
+
+
+async def test_a_machine_is_ready_only_once_it_reports_the_chosen_model(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    controller_id = await _machine(session_factory)
+    async with session_factory() as session:
+        saved = await STORE.save_machine(
+            session,
+            TENANT_ZERO_ID,
+            controller_id=controller_id,
+            model=MODEL,
+            threshold=0.7,
+        )
+        assert (saved.backend, saved.controller_id, saved.model) == (
+            "machine",
+            controller_id,
+            MODEL,
+        )
+        assert saved.machine_ready_at is None
+        # Another model running there does not make this choice ready.
+        assert not await STORE.mark_machine_ready(
+            session, TENANT_ZERO_ID, controller_id, "another-model"
+        )
+        assert await STORE.mark_machine_ready(
+            session, TENANT_ZERO_ID, controller_id, MODEL
+        )
+        # Once is enough: the time it became ready stays.
+        assert not await STORE.mark_machine_ready(
+            session, TENANT_ZERO_ID, controller_id, MODEL
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        row = await STORE.for_controller(session, TENANT_ZERO_ID, controller_id)
+        assert row is not None and row.machine_ready_at is not None
+        assert row.threshold == 0.7
+        assert await STORE.for_controller(session, TENANT_ZERO_ID, "elsewhere") is None
+
+
+async def test_choosing_the_same_machine_again_keeps_it_ready_and_another_starts_over(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    first = await _machine(session_factory)
+    second = await _machine(session_factory)
+    async with session_factory() as session:
+        await STORE.save_machine(
+            session, TENANT_ZERO_ID, controller_id=first, model=MODEL, threshold=None
+        )
+        await STORE.mark_machine_ready(session, TENANT_ZERO_ID, first, MODEL)
+        again = await STORE.save_machine(
+            session, TENANT_ZERO_ID, controller_id=first, model=MODEL, threshold=0.5
+        )
+        assert again.machine_ready_at is not None
+        moved = await STORE.save_machine(
+            session, TENANT_ZERO_ID, controller_id=second, model=MODEL, threshold=0.5
+        )
+        assert moved.machine_ready_at is None
+        await STORE.mark_machine_ready(session, TENANT_ZERO_ID, second, MODEL)
+        away = await STORE.save(
+            session,
+            TENANT_ZERO_ID,
+            backend="none",
+            endpoint=None,
+            api_key_encrypted=None,
+            threshold=None,
+        )
+        assert (away.controller_id, away.model, away.machine_ready_at) == (
+            None,
+            None,
+            None,
+        )
+        await session.commit()
+
+
+async def test_a_machine_needs_its_controller_and_model(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        with pytest.raises(ValueError, match="save_machine"):
+            await STORE.save(
+                session,
+                TENANT_ZERO_ID,
+                backend="machine",
+                endpoint=None,
+                api_key_encrypted=None,
+                threshold=None,
+            )
+        session.add(DecisionSettings(tenant_id=TENANT_ZERO_ID, backend="machine"))
+        with pytest.raises(IntegrityError, match="ck_decision_settings_machine"):
+            await session.flush()
+
+
+async def test_a_machine_in_another_workspace_cannot_be_chosen(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _tenant(session_factory, TENANT_B)
+    controller_id = await _machine(session_factory)
+    async with session_factory() as session:
+        with pytest.raises(IntegrityError, match="fk_decision_settings_controller"):
+            await STORE.save_machine(
+                session,
+                TENANT_B,
+                controller_id=controller_id,
+                model=MODEL,
+                threshold=None,
+            )

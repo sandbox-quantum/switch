@@ -748,7 +748,7 @@ failures by reason and latency percentiles can be read per backend.
 
 | Property | Type |
 |---|---|
-| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` — the server's own decision service as a workspace's default, a workspace's own endpoint, or Haiku |
+| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` \| `machine` — the server's own decision service as a workspace's default, a workspace's own endpoint, Haiku, or a model on one of the workspace admin's own machines (never which machine) |
 | `outcome` | `agent` \| `none` |
 | `confidence` | `none` \| `lt_0.5` \| `0.5_0.6` \| `0.6_0.7` \| `0.7_0.8` \| `0.8_0.9` \| `0.9_1.0` — the service's confidence in its choice, in tenths above one half; `none` when it gave none |
 | `latency_ms` | number — measured by Switch around the whole request |
@@ -759,7 +759,7 @@ to nobody or to the room's triage agent.
 | Property | Type |
 |---|---|
 | `backend` | as above |
-| `reason` | `timeout` \| `unreachable` \| `error_status` \| `bad_answer` (not a decision, or an agent that was not a candidate) \| `key_unreadable` (a workspace key the server can no longer decrypt) \| `endpoint_refused` (a workspace endpoint the server's outbound policy does not allow: link-local, or private and not in `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) |
+| `reason` | `timeout` \| `unreachable` \| `error_status` \| `bad_answer` (not a decision, or an agent that was not a candidate) \| `key_unreadable` (a workspace key the server can no longer decrypt) \| `endpoint_refused` (a workspace endpoint the server's outbound policy does not allow: link-local, or private and not in `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) \| `machine_offline` (the machine is not connected) \| `machine_not_ready` (its model is not running) \| `machine_busy` (it has as many decisions in flight as it takes) \| `machine_error` (its model server failed) |
 
 ### Resources, keys, groups and the rest
 
@@ -1044,6 +1044,8 @@ Two things to set up first, or a third of the list cannot fire at all:
   asked about, so it emits nothing.
 - `decision_failed` — the same with the decision service stopped
   (`unreachable`), or slower than `DECISION_TIMEOUT_SECONDS` (`timeout`).
+  With the workspace's decisions on a machine that has been ready, quit Switch
+  Console there (`machine_offline`).
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 

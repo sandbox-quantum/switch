@@ -2,6 +2,9 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+from switch_decision.prompt import DEFAULT_HISTORY_LIMIT
+from switch_decision.readers import DEFAULT_CONFIDENCE_THRESHOLD
+
 Backend = Literal["systemone", "ollama", "bedrock", "llamacpp", "anthropic"]
 
 DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-5-5-v1:0"
@@ -47,7 +50,11 @@ def load_settings() -> Settings:
         raise ValueError(
             f"DECISION_BACKEND must be one of {sorted(DEFAULT_MODELS)}, got {backend!r}"
         )
-    threshold = float(os.environ.get("DECISION_CONFIDENCE_THRESHOLD", "0.6"))
+    threshold = float(
+        os.environ.get(
+            "DECISION_CONFIDENCE_THRESHOLD", str(DEFAULT_CONFIDENCE_THRESHOLD)
+        )
+    )
     if not 0.0 <= threshold <= 1.0:
         raise ValueError(
             f"DECISION_CONFIDENCE_THRESHOLD must be between 0 and 1, got {threshold}"
@@ -66,7 +73,9 @@ def load_settings() -> Settings:
         aws_profile=os.environ.get("AWS_PROFILE") or None,
         confidence_threshold=threshold,
         timeout_s=float(os.environ.get("DECISION_TIMEOUT_S", "30")),
-        history_limit=int(os.environ.get("DECISION_HISTORY_LIMIT", "8")),
+        history_limit=int(
+            os.environ.get("DECISION_HISTORY_LIMIT", str(DEFAULT_HISTORY_LIMIT))
+        ),
         with_reason=os.environ.get("DECISION_WITH_REASON", "1") != "0",
         service_token=os.environ.get("DECISION_SERVICE_TOKEN") or None,
         bedrock_enabled=_flag("DECISION_BEDROCK_ENABLED"),

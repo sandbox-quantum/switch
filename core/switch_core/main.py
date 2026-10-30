@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.app import create_agent_bridge_app
+from switch_core.bridges.agent.operations.agent_management import use_decision_routing
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
     AgentConnectionRegistry,
@@ -170,7 +171,9 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.setup import build_decision_client
+from switch_core.decision.signals import DecisionSignals
 from switch_core.delivery.conversation import ConversationRules, ConversationSettings
 from switch_core.delivery.recipient import RecipientServices
 from switch_core.delivery.router import (
@@ -814,11 +817,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(session_factory, config)
 
-    # ── Decision routing (off unless the decision_routing flag is on) ────────
-    # Built either way, so workspace admins can set up and test a backend; only
-    # the router's copy is withheld with the flag off.
-    decision_client = build_decision_client(config, session_factory, telemetry)
-
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
         reference_store=reference_store,
@@ -875,6 +873,18 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         lease=process_lease,
     )
 
+    # ── Decision routing (off unless the decision_routing flag is on) ────────
+    # Built either way, so workspace admins can set up and test a backend; only
+    # the router's copy is withheld with the flag off. A workspace whose model
+    # runs on one of its admin's machines is asked over the controller
+    # connections this process holds.
+    decision_client = build_decision_client(
+        config,
+        session_factory,
+        telemetry,
+        MachineDecisions(connections.controllers),
+    )
+
     # ── Message router ───────────────────────────────────────────────────────
     # Every row written to a room goes through it, which decides in the same
     # transaction which agents the row is for (`delivery/router.py`).
@@ -909,6 +919,12 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)
+    # The process holding a workspace's machine is woken, and its Test relayed
+    # to, from wherever the message or the request arrived.
+    DecisionSignals(bus=signal_bus, router=router, client=decision_client)
+    # The agent operations that show and change a workspace's decision
+    # routing for an agent's owner (agent management's group).
+    use_decision_routing(decision_client)
     signal_bus.on_resync(lambda: _recheck_agent_rooms(session_factory, router))
     signal_bus.on_recheck(lambda: _recheck_agent_rooms(session_factory, router))
 
@@ -1349,6 +1365,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         )
         # What deleting an account needs of it: revoking the person's machines.
         gateway_app.state.controller_revoker = management.service
+        # A machine chosen for (or moved off) a workspace's auto-route is
+        # nudged like a managed agent placed on it.
+        decision_client.use_assignment_nudges(management.service.nudge_assignments)
         # Before the bridge serves: until Core knows which agents a controller
         # runs, their own keys would be let in and their presence misread.
         await management.load_bindings()

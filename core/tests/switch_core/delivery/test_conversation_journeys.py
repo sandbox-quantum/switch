@@ -34,6 +34,7 @@ from switch_core.clients.admin_messages import (
 )
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import AgentEventRow, Client, ClientRoom, Message, Room
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
@@ -199,6 +200,7 @@ class Journey:
                         endpoint_url=None, api_key=None, bedrock_enabled=False
                     ),
                     store=DecisionSettingsStore(),
+                    controllers=AgentControllerStore(),
                 )
             ),
         )

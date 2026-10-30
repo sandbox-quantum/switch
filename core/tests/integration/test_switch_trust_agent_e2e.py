@@ -16,6 +16,7 @@ from switch_core.bridges.agent.protocol.agent_connections import AgentConnection
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import Message
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.room_service import RoomCreateConfig
@@ -98,6 +99,7 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
                 endpoint_url=None, api_key=None, bedrock_enabled=False
             ),
             store=DecisionSettingsStore(),
+            controllers=AgentControllerStore(),
         ),
     )
     await harness.client_lifecycle.ensure_system_client("admin")

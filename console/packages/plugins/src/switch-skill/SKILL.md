@@ -162,12 +162,16 @@ does, and there is no polling tool to call.
 
   Which decision service a room uses is its workspace's choice, made by a
   workspace admin in Switch Console → Admin → Decision routing: the server's
-  own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
+  own default, the workspace's self-hosted endpoint, Claude Haiku, a decision
+  model running on one of that admin's own machines, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
-  it. When the decision service fails, the message goes to nobody and Switch
+  it. While a machine is still downloading or starting the model,
+  auto-route is unavailable there and says it is getting ready. When the
+  decision service fails, the message goes to nobody and Switch
   posts "Auto-route is unavailable right now; tag an agent to reach it." in
-  the room, at most once an hour. A room can name a triage agent for those
+  the room, at most once an hour (for a machine, the notice names it: "…right
+  now (Studio Mac is offline); tag an agent…"). A room can name a triage agent for those
   messages with `!auto-route fallback @agent` (`!auto-route fallback off`
   clears it; it can't be the room's assigned agent). If you are that agent,
   such a message reaches you marked as a fallback: auto-route was unavailable,
@@ -819,14 +823,16 @@ it was set in.
 
 Some Switch servers run agent management: the agents on them can run on their
 owner's own machines (a computer running Switch Console, or a headless agent
-controller), each machine reporting which agent CLIs it has. There, four more
+controller), each machine reporting which agent CLIs it has. There, six more
 tools exist, and only there — if they are not in your tool list, this server
 does not manage agents, so say so rather than looking for another way.
 
 - **`list_machines`** — your owner's machines: `id`, `name`, `description`,
   `state` (`online`, `offline`, or `unknown` if it never connected), the
-  providers each has (`installed`, `auth`) and how many agents it is running.
-  Removed machines are left out.
+  providers each has (`installed`, `auth`), how many agents it is running, and
+  `decision`: whether it can run auto-route's decision model (`supported`, the
+  models it `offered`, and the `state` of the one it serves). Removed machines
+  are left out.
 - **`get_advanced_config`** — the advanced settings a provider's agents can
   carry (the "Advanced configuration" Switch Console shows): each field's
   `key`, `label`, `type` (`text`, `textarea`, `number`, `boolean`, `list` of
@@ -850,6 +856,20 @@ does not manage agents, so say so rather than looking for another way.
   last reported (`actual.process`, and `actual.reason` when it crashed or
   failed), its working directory (`directory`; `actual.directory` is
   where it runs), and its `auto_mode` and `auto_approve`.
+- **`get_decision_routing`** — how auto-route decides in this workspace, as
+  Switch Console's Admin → Decision routing shows it: what applies now
+  (`effective`, with `available` and the `reason` when it is not, and for a
+  machine its `state`, `ready` and download `progress`), the workspace's
+  saved choice, the server default, and your owner's machines that can run
+  the model (`options.machines`).
+- **`set_decision_routing`** — run auto-route's decision model on one of your
+  owner's machines (`choice: "machine"`, `machine` its id or exact name, and
+  `model` from what it offers, left out when it offers one), or go back to the
+  server default (`choice: "server_default"`). Only for an owner who is an
+  admin of this workspace and owns the machine; otherwise it is refused with
+  a sentence to relay. Confirm with the person first: it changes how every
+  auto-route room in the workspace is decided. The machine then downloads and
+  starts the model by itself; check `get_decision_routing` until `ready`.
 
 **You act for your owner, on your owner's machines only.** The agent you
 create belongs to your owner, not to you; at first only your owner and their
@@ -864,7 +884,7 @@ setting out to leave it unset; never send `null`, `""` or `[]`. Changing
 `provider` with settings the new one does not take is refused too: pass its
 own `advanced_config` (or `{}`) with it.
 
-**It takes a capability your owner grants.** All four tools need "can manage
+**It takes a capability your owner grants.** All six tools need "can manage
 agents", which is off for every agent until its owner turns it on, on the
 agent's page in the Switch gateway. Without it each call is refused with a
 sentence saying so: relay it to the person asking ("ask my owner to enable
@@ -1139,6 +1159,8 @@ Every Switch tool you call in normal operation, one line each.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.
 - `create_agent` — create an agent for your owner on one of their machines. Confirm with the user first.
 - `list_managed_agents` — your owner's managed agents and whether each is up.
+- `get_decision_routing` — how auto-route decides in this workspace, and your owner's machines that can run its model.
+- `set_decision_routing` — run auto-route's decision model on one of your owner's machines, or go back to the server default. Workspace admins only; confirm first.
 - `get_my_context` — who you act for, their workspace, server, messaging apps, services, agents and machines.
 - `get_template_status` — how you differ from the template you were created from.
 - `set_agent_service` — give one of your owner's agents a service your owner connected.

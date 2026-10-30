@@ -605,7 +605,7 @@ class TestManagedAgents:
             )
         assert deleted.status_code == 200
         assert gone.status_code == 404
-        assert assignment.json() == {"revision": 2, "agents": []}
+        assert assignment.json() == {"revision": 2, "agents": [], "decision": None}
         async with harness.session_factory() as session:
             assert await AgentStore().get(session, agent_id) is not None
 
@@ -988,7 +988,7 @@ class TestDeletingAManagedAgentThroughCore:
             )
         assert subscription.drain() == [(ASSIGNMENT_CHANGED, {"revision": 2})]
         assert assignment.status_code == 200
-        assert assignment.json() == {"revision": 2, "agents": []}
+        assert assignment.json() == {"revision": 2, "agents": [], "decision": None}
 
 
 class TestMachineNameAndDescription:

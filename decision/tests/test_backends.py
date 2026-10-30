@@ -10,14 +10,9 @@ from fastapi.testclient import TestClient
 from switch_decision import app as app_module
 from switch_decision import backends
 from switch_decision.backends import (
-    InvalidChoiceError,
-    ModelServerError,
     anthropic_request,
     bedrock_request,
     read_anthropic,
-    read_bedrock,
-    read_letter_logprobs,
-    read_systemone,
 )
 from switch_decision.config import Settings
 from switch_decision.models import Agent, DecideRequest, Incoming, Message, Room
@@ -27,6 +22,13 @@ from switch_decision.prompt import (
     letter_messages,
     lettered_options,
     systemone_request,
+)
+from switch_decision.readers import (
+    InvalidChoiceError,
+    ModelServerError,
+    read_bedrock,
+    read_letter_logprobs,
+    read_systemone,
 )
 
 AGENTS = [

@@ -9,7 +9,9 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.config import SwitchConfig
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.setup import build_decision_client
 from switch_core.feature_flags import DECISION_ROUTING, FOLLOW_THE_CONVERSATION
 
@@ -45,6 +47,9 @@ def _no_ambient_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+_MACHINES = MachineDecisions(ControllerPresence(on_bound=lambda _agent_id: None))
+
+
 def _config(**overrides: object) -> SwitchConfig:
     return SwitchConfig(**{**_BASE_KWARGS, **overrides})  # type: ignore[arg-type]
 
@@ -58,7 +63,7 @@ def test_off_by_default_with_nothing_configured() -> None:
     assert config.decision_timeout_seconds == 5.0
     assert config.decision_bedrock_enabled is False
     assert config.decision_pending_max_age_seconds == 120
-    client = build_decision_client(config, _NO_DB, None)
+    client = build_decision_client(config, _NO_DB, None, _MACHINES)
     assert client.availability.enabled is False
     assert client.server.configured is False
 
@@ -79,7 +84,7 @@ def test_on_with_follow_the_conversation() -> None:
     assert config.decision_routing_enabled
     assert config.decision_endpoint_url == "http://127.0.0.1:8100/decide"
     assert config.decision_api_key == "placeholder"
-    client = build_decision_client(config, _NO_DB, None)
+    client = build_decision_client(config, _NO_DB, None, _MACHINES)
     assert client.availability.enabled
     assert client.server.endpoint_url == "http://127.0.0.1:8100/decide"
     assert client.server.api_key == "placeholder"
@@ -95,7 +100,7 @@ def test_bedrock_and_the_wait_are_settings() -> None:
         decision_pending_max_age_seconds=30,
     )
 
-    client = build_decision_client(config, _NO_DB, None)
+    client = build_decision_client(config, _NO_DB, None, _MACHINES)
     assert client.server.haiku_bedrock
     assert config.decision_pending_max_age_seconds == 30
 
@@ -133,7 +138,7 @@ def test_the_flag_without_an_endpoint_says_workspaces_must_choose(
     config = _config(feature_flags_enabled=_BOTH)
 
     with caplog.at_level("WARNING"):
-        client = build_decision_client(config, _NO_DB, None)
+        client = build_decision_client(config, _NO_DB, None, _MACHINES)
 
     assert client.server.configured is False
     assert "DECISION_ENDPOINT_URL is not set" in caplog.text

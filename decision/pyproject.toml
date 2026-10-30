@@ -4,11 +4,19 @@ version = "0.1.0"
 description = "Switch decision service: picks which agent in a room, if any, should answer a message nobody tagged."
 requires-python = ">=3.12"
 license = "LicenseRef-Apache-2.0-with-Commons-Clause"
+# The base package (prompt, request models, readers and the threshold step)
+# needs pydantic alone: switch-core depends on it to ask a model served on a
+# user's own machine exactly as the service asks its own. The service itself
+# is the `service` extra.
 dependencies = [
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+service = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "httpx>=0.27",
-    "pydantic>=2.7",
     "boto3>=1.43.117",
     "anthropic>=2.3.0",
 ]
@@ -23,6 +31,7 @@ packages = ["switch_decision"]
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "switch-decision[service]",
 ]
 
 [tool.pytest.ini_options]

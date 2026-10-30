@@ -17,7 +17,7 @@ infrastructure.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.operations.context import get_agent_id, get_protocol
 from switch_core.bridges.agent.operations.registry import (
@@ -30,12 +30,32 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import User, require_tenant_id
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.admin import (
+    DecisionSettingsRefused,
+    clear_settings,
+    save_settings,
+    settings_view,
+)
+from switch_core.decision.machine import is_removed, offered_models
+from switch_core.gateway.schemas import DecisionSettingsUpdateRequest
+
+if TYPE_CHECKING:
+    from switch_core.decision.client import DynamicDecisionClient
 
 AGENT_MANAGEMENT_OPERATIONS = "agent_management"
 
 CAPABILITY_LABEL = "can manage agents"
 
+NOT_A_WORKSPACE_ADMIN = (
+    "Your owner isn't an admin of this workspace, and only a workspace admin "
+    "can choose where auto-route's decisions run. A workspace admin can choose "
+    "it in Switch Console → Admin → Decision routing."
+)
+
 _port: AgentManagementPort | None = None
+_decisions: DynamicDecisionClient | None = None
 
 
 def enable_agent_management(port: AgentManagementPort) -> None:
@@ -50,6 +70,22 @@ def disable_agent_management() -> None:
     global _port
     disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     _port = None
+
+
+def use_decision_routing(client: DynamicDecisionClient) -> None:
+    """The decision client `get_decision_routing` and `set_decision_routing`
+    read and save the workspace's decision settings through."""
+    global _decisions
+    _decisions = client
+
+
+def _decision_client() -> DynamicDecisionClient:
+    if _decisions is None:
+        raise RuntimeError(
+            "decision-routing operations were called without a decision "
+            "client; use_decision_routing was never called"
+        )
+    return _decisions
 
 
 def management_port() -> AgentManagementPort | None:
@@ -131,7 +167,7 @@ async def list_machines() -> list[dict[str, Any]]:
 
     Returns:
         A list of machines, each {id, name, description, kind, state,
-        last_seen_at, providers, agents_running}.
+        last_seen_at, providers, agents_running, decision}.
         `kind` is "console" (Switch Console's own machine), "daemon" (a
         headless controller) or "ec2". `state` is "online" (connected to Switch
         now), "offline" (was connected, and is not now: stopped, asleep, off
@@ -141,6 +177,12 @@ async def list_machines() -> list[dict[str, Any]]:
         "expired" or "unknown". `agents_running` counts the managed agents
         whose process the machine last reported as running, null before it
         has reported. Pass a machine's `id` or exact `name` to `create_agent`.
+        `decision` says whether the machine can run auto-route's decision
+        model: {supported, offered?, state?, model?}, `offered` being the
+        models it can run ({model, label, speed}, speed "fast" or "slow"),
+        and `state` that of the one it serves ("off", "downloading",
+        "starting", "running" or "failed"). `set_decision_routing` chooses
+        one for the workspace.
     """
     permitted = await permitted_to_manage()
     return await _management().list_machines(permitted.tenant_id, permitted.owner.id)
@@ -304,3 +346,162 @@ async def list_managed_agents() -> list[dict[str, Any]]:
     return await _management().list_managed_agents(
         permitted.tenant_id, permitted.owner.id
     )
+
+
+async def _permitted_admin() -> Permitted:
+    """The calling agent's owner, once the agent may manage agents and its
+    owner administers this workspace; a sentence saying why not otherwise."""
+    permitted = await permitted_to_manage()
+    async with get_protocol().session_factory() as session:
+        if not await UserStore().administers(session, permitted.owner):
+            raise PermissionError(NOT_A_WORKSPACE_ADMIN)
+    return permitted
+
+
+@gated_operation(AGENT_MANAGEMENT_OPERATIONS)
+async def get_decision_routing() -> dict[str, Any]:
+    """Show how auto-route decides who answers in this workspace's rooms.
+
+    Requires the "can manage agents" capability, and an owner who is an admin
+    of this workspace; otherwise it is refused with a sentence to relay. This
+    is what Switch Console shows in Admin → Decision routing. Keys are never
+    shown.
+
+    Returns:
+        {source, effective, workspace, server_default, options}. `source` is
+        "workspace" (its admins chose) or "server_default". `effective` is
+        what applies now: {backend, endpoint, threshold, available, reason,
+        machine}, `backend` being "none", "endpoint", "haiku_anthropic",
+        "haiku_bedrock" or "machine", and `reason` saying why auto-route is
+        unavailable when it is. For "machine", `effective.machine` is {id,
+        name, model, state, ready, connected, since, progress?, reason?,
+        last_decision_ms?}: `state` is "off", "downloading", "starting",
+        "running", "failed", "offline" or "removed", and `ready` whether the
+        machine has reported the model running (until then auto-route is
+        unavailable, without notices in the rooms). `options.machines` are
+        your owner's own machines in this workspace, each {id, name,
+        connected, decision: {supported, offered, hardware?, reason?}};
+        `offered` lists the models it can run, each {model, label, speed,
+        ...}.
+    """
+    permitted = await _permitted_admin()
+    protocol = get_protocol()
+    async with tenant_session(protocol.session_factory, permitted.tenant_id) as session:
+        view = await settings_view(
+            session,
+            _decision_client(),
+            protocol.config.keyring,
+            tenant_id=permitted.tenant_id,
+            user_id=permitted.owner.id,
+        )
+    return view.model_dump(mode="json")
+
+
+@gated_operation(AGENT_MANAGEMENT_OPERATIONS)
+async def set_decision_routing(
+    choice: str,
+    machine: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Choose where auto-route's decisions run for this workspace: on one of
+    your owner's machines, or back on the server default.
+
+    Requires the "can manage agents" capability, and an owner who is an admin
+    of this workspace and owns the machine; otherwise it is refused with a
+    sentence to relay. Confirm with the person before you call this: it
+    changes how every auto-route room in the workspace is decided, and with
+    "machine" the room's messages are read by the model on that machine.
+
+    With "machine", the machine downloads and starts the model by itself;
+    until it reports the model running, auto-route is unavailable in the
+    workspace's rooms (without notices). Check progress with
+    `get_decision_routing`. Moving away stops the model there and keeps the
+    download.
+
+    Args:
+        choice: "machine" to run the decisions on one of your owner's
+            machines, or "server_default" to go back to the server's own
+            decision service.
+        machine: With "machine": the machine's `id`, or its exact `name`, from
+            `list_machines` or `get_decision_routing`'s `options.machines`.
+        model: With "machine": the model to run, from the machine's offered
+            models, such as "qwen3.5-4b-q4_k_m". Left out when the machine
+            offers exactly one.
+
+    Returns:
+        The workspace's decision routing afterwards, as `get_decision_routing`
+        returns it.
+    """
+    permitted = await _permitted_admin()
+    client = _decision_client()
+    protocol = get_protocol()
+    tenant_id = permitted.tenant_id
+    owner_id = permitted.owner.id
+    async with tenant_session(protocol.session_factory, tenant_id) as session:
+        if choice == "server_default":
+            await clear_settings(session, client, tenant_id=tenant_id)
+            view = await settings_view(
+                session,
+                client,
+                protocol.config.keyring,
+                tenant_id=tenant_id,
+                user_id=owner_id,
+            )
+            return view.model_dump(mode="json")
+        if choice != "machine":
+            raise ValueError('choice must be "machine" or "server_default".')
+        if not machine:
+            raise ValueError(
+                "Name the machine to run the decision model on: its id or exact "
+                "name from list_machines."
+            )
+        mine = [
+            c
+            for c in await client.availability.controllers.list_for_owner(
+                session, tenant_id, owner_id
+            )
+            if not is_removed(c)
+        ]
+        found = [c for c in mine if c.id == machine] or [
+            c for c in mine if c.name == machine
+        ]
+        if not found:
+            raise ValueError(
+                f"Nothing was changed: your owner has no machine with the id or "
+                f"name '{machine}' in this workspace. list_machines shows the "
+                "machines you can use."
+            )
+        if len(found) > 1:
+            listed = "; ".join(f"{c.id} ({c.name})" for c in found)
+            raise ValueError(
+                f"Nothing was changed: your owner has {len(found)} machines named "
+                f"'{machine}': {listed}. Pass the id of the one you mean."
+            )
+        controller = found[0]
+        if model is None:
+            offered = [str(entry.get("model")) for entry in offered_models(controller)]
+            if len(offered) != 1:
+                raise ValueError(
+                    f"Nothing was changed: name the model to run on "
+                    f"{controller.name}; it offers "
+                    f"{', '.join(offered) or 'none'}."
+                )
+            model = offered[0]
+        existing = await client.availability.store.get(session, tenant_id)
+        try:
+            view = await save_settings(
+                session,
+                client,
+                protocol.config.keyring,
+                tenant_id=tenant_id,
+                user_id=owner_id,
+                req=DecisionSettingsUpdateRequest(
+                    backend="machine",
+                    machine_id=controller.id,
+                    model=model,
+                    threshold=existing.threshold if existing is not None else None,
+                ),
+            )
+        except DecisionSettingsRefused as refused:
+            raise ValueError(f"Nothing was changed: {refused}") from refused
+    return view.model_dump(mode="json")

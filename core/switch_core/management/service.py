@@ -66,6 +66,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
@@ -169,6 +170,7 @@ class ManagementService:
         self.api_keys = api_keys
         self.agents = agents
         self.processes = processes
+        self.decision_settings = DecisionSettingsStore()
         self._clock = clock
 
     def now(self) -> datetime:
@@ -450,9 +452,19 @@ class ManagementService:
         rows = await self.definitions.list_for_controller(
             session, principal.tenant_id, controller.id
         )
+        decision = await self.decision_settings.for_controller(
+            session, principal.tenant_id, controller.id
+        )
         return {
             "revision": controller.assignment_revision,
             "agents": [assignment_entry(row, agent) for row, agent in rows],
+            # The decision model to serve for the workspace's auto-route,
+            # when its admin chose this machine (`decision/machine.py`).
+            "decision": (
+                {"revision": controller.assignment_revision, "model": decision.model}
+                if decision is not None
+                else None
+            ),
         }
 
     async def assignment_revision(
@@ -494,6 +506,24 @@ class ManagementService:
                 report.seq,
                 principal.controller_id,
             )
+        decision = report.decision
+        # The first report of the chosen model running makes the workspace's
+        # auto-route ready to ask it.
+        if (
+            stored
+            and decision is not None
+            and decision.state == "running"
+            and decision.model is not None
+        ):
+            if await self.decision_settings.mark_machine_ready(
+                session, principal.tenant_id, principal.controller_id, decision.model
+            ):
+                logger.info(
+                    "Controller %s reports decision model %s running: auto-route "
+                    "in its workspace is ready",
+                    principal.controller_id,
+                    decision.model,
+                )
         # Read again: the store wrote the row without touching the copy loaded
         # above, and the release the controller is told depends on the status
         # it just reported.
@@ -1254,6 +1284,11 @@ class ManagementService:
         for controller_id, revision in revisions.items():
             self.signals.assignment_changed(tenant_id, controller_id, revision)
 
+    def nudge_assignments(self, tenant_id: str, revisions: dict[str, int]) -> None:
+        """Tell controllers their assignment changed, after a change Core
+        committed (a workspace's decision model chosen on a machine)."""
+        self._nudge(tenant_id, revisions)
+
     async def _bind(
         self, session: AsyncSession, tenant_id: str, row: AgentDefinitionRow
     ) -> None:
@@ -1829,6 +1864,15 @@ def _status_signature(status: dict[str, Any] | None) -> dict[str, Any] | None:
     if isinstance(machine, dict):
         signature["machine"] = {
             k: v for k, v in machine.items() if k not in _VOLATILE_MACHINE
+        }
+    decision = signature.get("decision")
+    if isinstance(decision, dict) and isinstance(decision.get("progress"), dict):
+        # A download's progress moves on every report; its total does not.
+        signature["decision"] = {
+            **decision,
+            "progress": {
+                k: v for k, v in decision["progress"].items() if k != "done_bytes"
+            },
         }
     providers = signature.get("providers")
     if isinstance(providers, list):

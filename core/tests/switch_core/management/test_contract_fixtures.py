@@ -14,18 +14,21 @@ must be null in the response the test provokes, and the other way round.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from switch_decision.models import Agent, DecideRequest, Incoming, Room
 
 from switch_core.bridges.agent.commands import room_control_frame
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
 from switch_core.config import ControllerRelease
 from switch_core.db.models import TENANT_ZERO_ID
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.decision.machine import MachineDecisions
 from switch_core.management import controller_routes
 from switch_core.management.schemas import (
     ControllerConnectionRequest,
@@ -342,6 +345,13 @@ class _Outcomes:
         return [self._outcome]
 
 
+_DECISION = DecideRequest(
+    room=Room(name="ops"),
+    message=Incoming(sender="ada", text="the deploy failed, can someone look?"),
+    agents=[Agent(name="deploy-bot", description="Runs deploys.")],
+)
+
+
 class TestStreamFrames:
     async def test_each_frame_matches(self, harness: Harness) -> None:
         recorded = {entry["event"]: entry for entry in _fixture("stream_frames.json")}
@@ -414,6 +424,25 @@ class TestStreamFrames:
 
             assert presence.relay_warm(agent_id, room_id)
             provoked += await take(stream, 1)
+
+            # A decision for the model the machine serves goes out on the
+            # socket ahead of the stream, from the connection's urgent queue.
+            conn = presence.live_connection(controller.controller_id)
+            assert conn is not None
+            asking = asyncio.create_task(
+                MachineDecisions(presence).ask(
+                    controller_id=controller.controller_id,
+                    model="qwen3.5-4b-q4_k_m",
+                    request=_DECISION,
+                    threshold=0.6,
+                    timeout_seconds=5.0,
+                )
+            )
+            while not conn.urgent:
+                await asyncio.sleep(0)
+            [urgent] = conn.take_urgent()
+            provoked.append((urgent["event"], urgent["data"]))
+            asking.cancel()
 
             other_room = await add_room(harness.session_factory, agent_id, name="new")
             presence.room_joined(agent_id, other_room)

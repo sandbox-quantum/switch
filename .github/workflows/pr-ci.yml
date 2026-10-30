@@ -92,6 +92,10 @@ jobs:
             backend:
               - *shared
               - 'core/**'
+              # switch-core depends on the decision service's base package
+              # (its prompt and readers) by path.
+              - 'decision/pyproject.toml'
+              - 'decision/switch_decision/**'
               # switch-core serves the dashboard's pages from a list that
               # core/tests holds equal to this file's routes, so a new page
               # here has to run them too.
