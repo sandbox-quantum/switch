@@ -4,8 +4,10 @@ Two organization-scoped tables, `organizations` and `organization_members`,
 the `require_organization_id()` function their policies compare against, and
 a nullable `tenants.organization_id`. Every existing workspace gets an
 organization of its own, named and slugged as the workspace is; its owners
-and admins become the organization's `org_admin`s and everyone else its
-`member`s.
+become the organization's `org_admin`s and everyone else, admins included,
+its `member`s. Admins keep administering the workspace through their
+workspace role. Making them `org_admin` too would have let an admin demote
+the owner within the organization, and then lock them out of it.
 
 The row-level-security DDL is a verbatim copy of `switch_core/db/rls_ddl.py`
 as it stood when this migration was written, copied rather than imported for
@@ -150,7 +152,7 @@ def upgrade() -> None:
     op.execute(
         "INSERT INTO organization_members (organization_id, user_id, role, created_at) "
         "SELECT tenants.organization_id, tenant_members.user_id, "
-        "CASE WHEN tenant_members.role IN ('owner', 'admin') "
+        "CASE WHEN tenant_members.role = 'owner' "
         "THEN 'org_admin' ELSE 'member' END, tenant_members.created_at "
         "FROM tenant_members JOIN tenants ON tenants.id = tenant_members.tenant_id"
     )

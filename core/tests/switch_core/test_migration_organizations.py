@@ -2,8 +2,8 @@
 
 Seeds two workspaces, one with an owner, an admin and a member and one with
 nobody, stops the chain one revision short, runs it, and reads what it made:
-one organization per workspace, named as it is, its owners and admins as
-`org_admin` and everyone else as `member`.
+one organization per workspace, named as it is, its owners as `org_admin`
+and everyone else, admins included, as `member`.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ _MIGRATION_UNDER_TEST = "238c68b7306e"
 _TENANT_ZERO_ID = "00000000-0000-0000-0000-000000000000"
 
 
-async def test_every_workspace_gets_an_organization_and_its_admins_run_it(
+async def test_every_workspace_gets_an_organization_and_its_owners_run_it(
     postgres_url: str,
 ) -> None:
     engine = await _fixture_engine(postgres_url)
@@ -96,5 +96,5 @@ async def test_every_workspace_gets_an_organization_and_its_admins_run_it(
     assert organizations == 2
     assert workspaces[_TENANT_ZERO_ID][0] == "default"
     assert workspaces["empty"] == ("empty", "Empty")
-    assert members == {"ada": "org_admin", "bob": "org_admin", "cy": "member"}
+    assert members == {"ada": "org_admin", "bob": "member", "cy": "member"}
     assert empty_members == 0

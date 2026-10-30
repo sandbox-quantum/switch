@@ -121,9 +121,9 @@ class OrganizationMember(Base):
     changing or removing a workspace membership leaves this row as it is. Only
     an organization's own `org_admin`s grant or revoke `org_admin`, through
     the organization's API. The one exception is migration `238c68b7306e`:
-    it made each existing workspace's owners and admins `org_admin` of the
-    organization it created for that workspace alone, which gave them nothing
-    they did not already administer.
+    it made each existing workspace's owners `org_admin` of the organization
+    it created for that workspace alone, which gave them nothing they did not
+    already control.
     """
 
     __tablename__ = "organization_members"
