@@ -5,6 +5,7 @@ import { followUps } from "./follow-ups.ts";
 import { addressedDelivery, unaddressedHistory } from "./agent-messaging.ts";
 import { mattermostRoundtrip } from "./mattermost-roundtrip.ts";
 import { operationsFrontDoor } from "./operations.ts";
+import { outsiderInvite } from "./outsider-invite.ts";
 import { roomCapture } from "./room-capture.ts";
 import { roomGroupPaths } from "./room-groups.ts";
 import type { FastScenario } from "./scenario.ts";
@@ -19,6 +20,7 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   roomGroupPaths,
   attachmentNames,
   clientMistakes,
+  outsiderInvite,
   roomCapture,
   followUps,
 ];

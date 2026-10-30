@@ -456,7 +456,7 @@ export class SwitchClient {
   async registerAgentAsUser(params: {
     name: string;
     description: string;
-  }): Promise<AgentRef> {
+  }): Promise<RegisteredAgent> {
     const body = await this.gateway<{ id: string; api_key: string }>(
       "POST",
       "/agents/register",
@@ -468,7 +468,7 @@ export class SwitchClient {
       },
     );
     this.issued.record(body.api_key);
-    return { id: body.id, name: params.name };
+    return { id: body.id, name: params.name, apiKey: body.api_key };
   }
 
   /** `GET /gateway/feature-flags` — the flags this deployment has turned on. */

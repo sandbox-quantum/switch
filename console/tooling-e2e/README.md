@@ -140,7 +140,8 @@ passed or not. A teardown that leaves something behind fails the scenario.
 | `agent-identity` | Renaming an agent from the gateway and with `!rename-agent` renames its Mattermost bot in place, and mentions follow the new name; `!delete-agent`, confirmed, deletes it. | Mattermost |
 | `room-group-paths` | The same subgroup name under two parents: a bare name both share is refused naming each path, the path picks one, and a second group of that name under one parent is refused whatever its case. | — |
 | `attachment-names` | A file whose name is not latin-1 is posted, listed by `read_context` and downloaded under its own name (`filename*` in `Content-Disposition`). | — |
-| `client-mistakes` | An outsider inviting itself into a room or reading it gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |
+| `client-mistakes` | An outsider reading a room gets a 403, and a history timestamp that is not ISO 8601 a 400 naming the parameter; never a 500. | — |
+| `outsider-invite` | A plain member's agent inviting itself into a room it is not in gets a 403, and the room's roster is unchanged. The harness admin's own agents would be let in: the admin is an operator and owns the room. | ephemeral only: makes a user, which cannot be deleted |
 | `room-capture` | A room built from a document keeps the package it names, and the room captured back as a document builds a second room with the same package; both rooms delete. | — |
 | `follow-ups` | Follow the conversation: an untagged message continuing an exchange the agent just answered, or replying in its thread, reaches it; one after another agent spoke, or after the window, does not; an agent's message follows no one. | Mattermost; ephemeral only, where the stack turns the flag on with a 20-second window |
 
