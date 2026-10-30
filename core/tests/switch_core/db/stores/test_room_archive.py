@@ -175,3 +175,28 @@ class TestArchivedFilteringInListing:
                 roomless.id: set(),
             }
             assert await store.room_ids_by_agent(session, []) == {}
+
+    async def test_member_agent_clients_by_room_reads_many_rooms(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = RoomStore()
+        async with session_factory() as session:
+            first = await _make_agent(session, "agent-1")
+            second = await _make_agent(session, "agent-2")
+            shared = await _make_room(store, session, "shared")
+            solo = await _make_room(store, session, "solo")
+            empty = await _make_room(store, session, "empty")
+            await store.add_agents(session, shared.id, [first.id, second.id])
+            await store.add_agents(session, solo.id, [first.id])
+            await session.commit()
+
+            assert await store.member_agent_clients_by_room(
+                session, [shared.id, solo.id, empty.id]
+            ) == {
+                shared.id: {
+                    first.client_id: "@agent-1:test",
+                    second.client_id: "@agent-2:test",
+                },
+                solo.id: {first.client_id: "@agent-1:test"},
+            }
+            assert await store.member_agent_clients_by_room(session, []) == {}

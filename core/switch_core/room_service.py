@@ -16,7 +16,7 @@ room Switch has no record of it being in.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
@@ -63,6 +63,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SYSTEM_CLIENT_TYPES = ("observe", "admin")
+
+# Rooms whose memberships `reconcile_room_clients` reads in one query, kept
+# well under Postgres' limit on bound parameters.
+RECONCILE_BATCH_SIZE = 1000
 
 
 class LinkedRoomSpec(BaseModel):
@@ -1660,30 +1664,56 @@ class RoomService:
         tenant, because of one room belonging to one of them. The failures are
         counted and reported at `error`, so a contained one is still an
         operator's problem rather than a silent one.
+
+        The memberships are read for `RECONCILE_BATCH_SIZE` rooms at a time,
+        and only a room missing a client is written to. This runs under the
+        boot lock, so every process that starts waits for it: read room by
+        room, a deployment with tens of thousands of rooms took longer than
+        the liveness probe allows, and processes starting together were
+        restarted while they waited.
         """
         # Which tenants exist is the one read that spans them (the exemption,
         # `db/tenant_lookup.py`); each tenant's rooms are then an ordinary
         # scoped read, and each room's own tenant is bound again around
-        # reconciling that one room.
-        rooms: list[Room] = []
+        # repairing that one room.
+        missing_by_room: list[tuple[Room, dict[str, str]]] = []
+        room_count = 0
         for tenant_id in await all_tenant_ids(self._session_factory):
+            system_clients = self._resolve_system_clients(tenant_id)
             async with tenant_session(self._session_factory, tenant_id) as session:
                 # Filtered on the row's own tenant, not left to the policy: on an
                 # owner connection no policy narrows this read, and the fan-out
                 # would act on every tenant's rows once per tenant. See
                 # `db/tenant_lookup.py`, "a fan-out ... filters what it reads back".
-                rooms.extend(
+                rooms = [
                     room
                     for room in await self._room_store.get_all(
                         session, include_archived=True
                     )
                     if room.tenant_id == tenant_id
-                )
+                ]
+                room_count += len(rooms)
+                for start in range(0, len(rooms), RECONCILE_BATCH_SIZE):
+                    batch = rooms[start : start + RECONCILE_BATCH_SIZE]
+                    room_ids = [room.id for room in batch]
+                    existing = await self._room_store.client_ids_by_room(
+                        session, room_ids
+                    )
+                    agents = await self._room_store.member_agent_clients_by_room(
+                        session, room_ids
+                    )
+                    for room in batch:
+                        missing = _missing_clients(
+                            existing.get(room.id, []),
+                            {**agents.get(room.id, {}), **system_clients},
+                        )
+                        if missing:
+                            missing_by_room.append((room, missing))
 
         failures: list[str] = []
-        for room in rooms:
+        for room, missing in missing_by_room:
             try:
-                await self._reconcile_one_room(room)
+                await self._add_missing_clients(room, missing)
             except Exception:
                 logger.exception("Failed to reconcile clients into room %s", room.id)
                 failures.append(room.id)
@@ -1693,7 +1723,7 @@ class RoomService:
                 "rooms are missing system or agent clients until this is fixed "
                 "and the service restarted.",
                 len(failures),
-                len(rooms),
+                room_count,
                 ", ".join(failures),
             )
 
@@ -1708,23 +1738,29 @@ class RoomService:
     async def _reconcile_one_room(self, room: Room) -> None:
         with tenant_scope(room.tenant_id):
             async with self._session_factory() as session:
-                existing = set(await self._room_store.get_client_ids(session, room.id))
-                expected = await self._room_store.get_member_agent_clients(
+                existing = await self._room_store.get_client_ids(session, room.id)
+                agents = await self._room_store.get_member_agent_clients(
                     session, room.id
                 )
-            # Resolved per room rather than once for the fan-out: the system
-            # clients belong to a tenant, and which ones are this room's
-            # depends on the room.
-            expected.update(self._resolve_system_clients(room.tenant_id))
-            missing = {cid: uid for cid, uid in expected.items() if cid not in existing}
-            if not missing:
-                return
+        # Resolved per room rather than once for the fan-out: the system
+        # clients belong to a tenant, and which ones are this room's depends
+        # on the room.
+        missing = _missing_clients(
+            existing, {**agents, **self._resolve_system_clients(room.tenant_id)}
+        )
+        if missing:
+            await self._add_missing_clients(room, missing)
+
+    async def _add_missing_clients(self, room: Room, missing: dict[str, str]) -> None:
+        """Invite `missing` (`{client_id: transport_user_id}`) into the room and
+        record their memberships, as the room's own tenant."""
+        with tenant_scope(room.tenant_id):
             await self._invite_clients(room.transport_room_id, missing)
             async with self._session_factory() as session:
                 for client_id in missing:
                     await self._room_store.add_client(session, client_id, room.id)
                 await session.commit()
-            logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
+        logger.info("Reconciled %d client(s) into room %s", len(missing), room.id)
 
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
@@ -1770,3 +1806,12 @@ class RoomService:
                 async with self._session_factory() as session:
                     await self._room_store.add_client(session, client_id, room_id)
                     await session.commit()
+
+
+def _missing_clients(
+    existing: Collection[str], expected: dict[str, str]
+) -> dict[str, str]:
+    """The entries of `expected` (`{client_id: transport_user_id}`) whose
+    client is not among the room's `existing` client ids."""
+    present = set(existing)
+    return {cid: uid for cid, uid in expected.items() if cid not in present}

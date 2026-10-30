@@ -142,6 +142,12 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Pods start in seconds again with many rooms.** Every process checks at
+  startup that each room has its clients, under a lock that lets one
+  process at a time through, and read each room on its own to do it. With
+  tens of thousands of rooms that took about 100 seconds, so processes
+  starting together were restarted while they waited. Rooms are now read a
+  thousand at a time.
 - **Idle agents behind a controller cost the database far less.** A
   controller stream's pass, including the one after every idle interval,
   read each of its agents' events in a session of its own; it now reads all

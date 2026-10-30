@@ -711,6 +711,24 @@ class RoomStore:
             for client_id, transport_user_id in result.all()
         }
 
+    async def member_agent_clients_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, dict[str, str]]:
+        """`get_member_agent_clients` for many rooms in one query, keyed by
+        room id. A room with no agent members has no key."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(room_agents.c.room_id, Client.id, Client.transport_user_id)
+            .join(Agent, Agent.id == room_agents.c.agent_id)
+            .join(Client, Client.id == Agent.client_id)
+            .where(room_agents.c.room_id.in_(room_ids))
+        )
+        by_room: dict[str, dict[str, str]] = {}
+        for room_id, client_id, transport_user_id in result.all():
+            by_room.setdefault(room_id, {})[client_id] = transport_user_id
+        return by_room
+
     async def get_by_bridge(self, session: AsyncSession, bridge_id: str) -> list[Room]:
         result = await session.execute(select(Room).where(Room.bridge_id == bridge_id))
         return list(result.scalars().all())
