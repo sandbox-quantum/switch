@@ -259,6 +259,35 @@ async def test_the_only_owner_of_a_shared_workspace_is_refused(
     assert reason is not None and "only owner of Acme" in reason
 
 
+async def test_an_owner_demoted_after_the_refusals_stops_the_deletion(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The refusals pass with two owners; the other owner is demoted before
+    the membership goes. The check is made again under the owners' lock, in
+    the transaction that would delete the membership, and stops there."""
+    deletion, _, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        leaving = await _user(session, "leaving-owner")
+        other = await _user(session, "other-owner")
+        await _member(session, TENANT_ZERO_ID, leaving, "owner")
+        await _member(session, TENANT_ZERO_ID, other, "owner")
+        await session.commit()
+        workspaces = [Workspace(TENANT_ZERO_ID, "Acme", "owner")]
+        assert await deletion.refusal(session, leaving, workspaces) is None
+
+        demoted = await session.get(TenantMember, (TENANT_ZERO_ID, other.id))
+        assert demoted is not None
+        demoted.role = "member"
+        await session.commit()
+
+        with pytest.raises(RuntimeError, match="no owner"):
+            await deletion.delete(session, leaving, workspaces)
+
+    async with session_factory() as session:
+        kept = await session.get(TenantMember, (TENANT_ZERO_ID, leaving.id))
+        assert kept is not None and kept.role == "owner"
+
+
 async def test_a_connected_workspace_nobody_else_is_in_is_refused(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

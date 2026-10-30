@@ -59,6 +59,7 @@ from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway import tenants as tenants_module
 from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.invite_mail import (
     InviteEmail,
@@ -1471,6 +1472,66 @@ class TestMemberRoutes:
 
         async with session_factory() as session:
             assert await session.get(TenantMember, (TENANT_A, owner_id)) is not None
+
+    @pytest.mark.parametrize("method", ["patch", "delete"])
+    async def test_two_owners_acting_on_each_other_at_once_leave_one_owner(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        method: str,
+    ) -> None:
+        """Each demotes (or removes) the other, both requests in flight.
+
+        Both are held after their last-owner check until the other has passed
+        its own, or for a second: without a lock both pass a count of two and
+        the workspace is left with no owner. With the owners' rows locked, the
+        second waits on the lock, then counts one owner and is refused.
+        """
+        await _make_tenant(session_factory, TENANT_A)
+        ada = await _make_member(
+            session_factory, name="race-ada", tenant_id=TENANT_A, role="owner"
+        )
+        bea = await _make_member(
+            session_factory, name="race-bea", tenant_id=TENANT_A, role="owner"
+        )
+
+        barrier = asyncio.Barrier(2)
+        real_record = tenants_module.record_audit_event
+
+        async def held_record(*args: object, **kwargs: object) -> None:
+            try:
+                await asyncio.wait_for(barrier.wait(), timeout=1.0)
+            except (TimeoutError, asyncio.BrokenBarrierError):
+                pass
+            await real_record(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(tenants_module, "record_audit_event", held_record)
+
+        app = _app(session_factory)
+
+        async def act(actor: str, target: str) -> int:
+            token = _token(actor, f"race-{actor}@example.invalid", TENANT_A)
+            async with _client(app, token) as client:
+                url = f"/tenants/{TENANT_A}/members/{target}"
+                if method == "patch":
+                    response = await client.patch(url, json={"role": "member"})
+                else:
+                    response = await client.delete(url)
+            return response.status_code
+
+        statuses = await asyncio.gather(act(ada, bea), act(bea, ada))
+
+        assert sorted(statuses) == [200, 409], statuses
+        async with session_factory() as session:
+            owners = (
+                await session.scalars(
+                    select(TenantMember.user_id).where(
+                        TenantMember.tenant_id == TENANT_A,
+                        TenantMember.role == "owner",
+                    )
+                )
+            ).all()
+        assert len(owners) == 1, owners
 
     async def test_removing_a_member_deletes_their_membership(
         self, session_factory: async_sessionmaker[AsyncSession]

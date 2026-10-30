@@ -307,6 +307,7 @@ class AccountDeletion:
             await self._revoke_controllers(tenant_id, user_id, controller_ids)
 
         async with tenant_session(self.session_factory, tenant_id) as session:
+            await self._require_another_owner(session, user_id, workspace)
             successor = await self._successor(session, user_id)
             try:
                 removed_services = await self.broker.remove_connections(
@@ -362,6 +363,24 @@ class AccountDeletion:
                     tenant_id,
                     warning,
                 )
+
+    async def _require_another_owner(
+        self, session: AsyncSession, user_id: str, workspace: Workspace
+    ) -> None:
+        """The last-owner refusal again, under the owners' lock and in the
+        transaction that deletes the membership: an owner demoted or removed
+        since the refusals were checked would otherwise leave the workspace's
+        other members with no owner."""
+        owners = await self.users.lock_owners(session)
+        if owners != {user_id}:
+            return
+        members = await self.users.list_tenant_members(session)
+        if any(member.id != user_id for member, _ in members):
+            raise RuntimeError(
+                f"Deleting user {user_id} would leave workspace {workspace.id} "
+                "with members and no owner: its other owner was demoted or "
+                "removed while the account was being deleted."
+            )
 
     async def _successor(self, session: AsyncSession, user_id: str) -> str | None:
         """Who takes over what the workspace still needs from this person: an
