@@ -2,7 +2,9 @@ import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useAuth } from "../../data/AuthContext";
 import { ownsTenant } from "../../data/sessionState";
 import InvitationsSection from "./InvitationsSection";
+import JoinDomainsSection from "./JoinDomainsSection";
 import MembersSection from "./MembersSection";
+import ServicesSection from "./ServicesSection";
 
 export default function WorkspacePage() {
   const { session, canAdminTenant } = useAuth();
@@ -26,11 +28,15 @@ export default function WorkspacePage() {
           isOwner={isOwner}
         />
         {canAdminTenant ? (
-          <InvitationsSection
-            tenantId={tenant.id}
-            isOwner={isOwner}
-            emailEnabled={session.invite_email_enabled}
-          />
+          <>
+            <InvitationsSection
+              tenantId={tenant.id}
+              isOwner={isOwner}
+              emailEnabled={session.invite_email_enabled}
+            />
+            <JoinDomainsSection tenantId={tenant.id} />
+            <ServicesSection />
+          </>
         ) : (
           <Alert severity="info">
             Ask a workspace owner or admin to invite someone.

@@ -5,6 +5,7 @@ import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import GppGoodOutlined from "@mui/icons-material/GppGoodOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
@@ -64,6 +65,7 @@ const WORKSPACE_ADMIN_ITEMS: NavItem[] = [
 const ADMIN_ITEMS: NavItem[] = [
   { label: "Users", path: "/users", icon: PeopleOutlined },
   { label: "Connectors", path: "/connectors", icon: PowerOutlined },
+  { label: "Guardrails", path: "/guardrails", icon: GppGoodOutlined },
 ];
 
 // The rail follows the window's height: at a laptop's it is sized so an
