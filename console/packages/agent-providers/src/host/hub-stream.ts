@@ -56,6 +56,7 @@ export type HubServerMessage =
   | { type: 'gap'; id: number; gap: HubGap }
   | { type: 'session_command'; id: number; command: SessionCommand }
   | { type: 'approval_outcome'; id: number; outcome: ApprovalOutcome }
+  | { type: 'room_released'; id: number; released: { roomId: string; sessionId: string | null } }
   | { type: 'result'; id: number; error?: string };
 
 /** Node's WebSocket, which, unlike a browser's, takes request headers. */
@@ -235,6 +236,9 @@ class HubEventStream implements AgentEventStream {
           break;
         case 'approval_outcome':
           await deps.onApprovalOutcome?.(message.outcome);
+          break;
+        case 'room_released':
+          await deps.onRoomReleased?.(message.released);
           break;
       }
     } catch (failure) {

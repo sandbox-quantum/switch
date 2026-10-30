@@ -121,6 +121,7 @@ export class HubSocket {
         onEvent: (event) => request((id) => ({ type: 'event', id, event })),
         onGap: (gap) => request((id) => ({ type: 'gap', id, gap })),
         onSessionCommand: (command) => request((id) => ({ type: 'session_command', id, command })),
+        onRoomReleased: (released) => request((id) => ({ type: 'room_released', id, released })),
         onApprovalOutcome: (outcome) =>
           request((id) => ({ type: 'approval_outcome', id, outcome })),
         onConnected: () => send({ type: 'connected' }),
