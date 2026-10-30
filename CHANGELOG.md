@@ -142,6 +142,18 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Workspaces belong to organizations. Upgrade by replacing every pod, and
+  downgrade the database before rolling back.** Every existing workspace gets
+  an organization of its own, and its owners become the organization's admins.
+  An organization admin administers every workspace in it without being added
+  to each. A release from before organizations doesn't know about organization
+  admins: if old and new pods serve together during a rolling update, or after
+  a rollback that keeps the new database, an owner removed from a workspace by
+  an old pod is still the organization's admin and can come back into it. So
+  for this release, replace every switch-core pod at once rather than rolling
+  them, and to roll back, first downgrade the database to the revision before
+  `238c68b7306e` (`alembic downgrade 238c68b7306e-1`), then start the older
+  release.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
