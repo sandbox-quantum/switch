@@ -9,26 +9,40 @@ import { KV } from '@main/db/kv';
  * rollback, so on the next launch its presence means the app really did go down
  * for an installer rather than unwinding back to "ready to install".
  *
- * It says only that a handover happened — not that the new version is running.
- * That question is answered by the version `app_launched` carries.
+ * It records the version being installed, because going down for the installer
+ * is not the same as coming back on the new version: on macOS, Squirrel.Mac can
+ * fail to replace the bundle and relaunch the old one without a word.
  */
-const store = new KV<Record<string, boolean>>('updates:pending-install');
+const store = new KV<{
+  /** Written by builds that did not record a target version. */
+  handover: boolean;
+  target: string;
+}>('updates:pending-install');
 
-const KEY = 'handover';
+export interface PendingHandover {
+  /** The version handed to the installer; null for a marker an older build wrote. */
+  targetVersion: string | null;
+}
 
 export const pendingInstall = {
-  set: (): Promise<void> => store.set(KEY, true),
-  clear: (): Promise<void> => store.del(KEY),
+  set: (targetVersion: string): Promise<void> => store.set('target', targetVersion),
+
+  clear: async (): Promise<void> => {
+    await store.del('target');
+    await store.del('handover');
+  },
 
   /**
-   * Whether the previous run handed an update over, clearing the record so a
-   * launch is only ever counted once. Cleared before the caller reports, so a
-   * report that fails to send loses one event rather than repeating it on every
-   * launch from here on.
+   * The handover the previous run made, if any, clearing the record so a launch
+   * is only ever counted once. Cleared before the caller reports, so a report
+   * that fails to send loses one event rather than repeating it on every launch
+   * from here on.
    */
-  async take(): Promise<boolean> {
-    if ((await store.get(KEY)) !== true) return false;
-    await store.del(KEY);
-    return true;
+  async take(): Promise<PendingHandover | null> {
+    const target = await store.get('target');
+    const legacy = await store.get('handover');
+    if (typeof target !== 'string' && legacy !== true) return null;
+    await pendingInstall.clear();
+    return { targetVersion: typeof target === 'string' ? target : null };
   },
 };

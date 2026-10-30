@@ -21,7 +21,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: { workspaces: { beginMessagingAppInstall } },
   events: { on: () => () => {}, emit: () => {} },
 }));
-vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl, reportOpenAttempt: vi.fn() }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: unknown) => showModal(id, args),
 }));

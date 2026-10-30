@@ -23,4 +23,16 @@ export const updateDownloadedEvent = defineEvent<{ version: string }>('update:do
 
 export const updateInstallingEvent = defineEvent<void>('update:installing');
 
+/**
+ * An install did not happen: the installer failed, the app came back on the old
+ * version, or this copy of the app cannot be updated in place. The update has
+ * to be downloaded by hand.
+ */
+export const updateInstallFailedEvent = defineEvent<{
+  version: string;
+  message: string;
+  /** Found on the launch after a handover, rather than while someone watched. */
+  foundAtLaunch: boolean;
+}>('update:install-failed');
+
 export const updateErrorEvent = defineEvent<{ message: string }>('update:error');

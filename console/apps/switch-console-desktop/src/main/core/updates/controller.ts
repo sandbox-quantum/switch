@@ -1,8 +1,9 @@
 import { app, shell } from 'electron';
 import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
 import { updateService } from '@main/core/updates/update-service';
+import { IS_CANARY } from '@shared/app-identity';
 import { createRPCController } from '@shared/lib/ipc/rpc';
-import { SWITCH_CONSOLE_RELEASES_URL } from '@shared/urls';
+import { manualDownloadUrl } from './manual-download';
 import { formatUpdaterError } from './utils';
 
 export const updateController = createRPCController({
@@ -33,14 +34,27 @@ export const updateController = createRPCController({
     }
   },
 
+  /**
+   * Hand the update to the user: open the page of this channel's newest release
+   * and quit, so the app can be replaced while it is not running.
+   */
   openLatest: async () => {
     try {
-      await shell.openExternal(SWITCH_CONSOLE_RELEASES_URL);
+      await shell.openExternal(await manualDownloadUrl(IS_CANARY));
       setTimeout(() => {
         try {
           app.quit();
         } catch {}
       }, 500);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+
+  openReleaseNotes: async () => {
+    try {
+      await shell.openExternal(await updateService.releaseNotesUrl());
       return { success: true };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };

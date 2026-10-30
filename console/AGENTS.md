@@ -669,7 +669,7 @@ pnpm run test
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —
-  `available`, `download-error`, `check-error`, `auth-required`, or `up-to-date`.
+  `available`, `install-error`, `download-error`, `check-error`, or `up-to-date`.
   An unrecognised value fails at startup rather than silently doing nothing.
   `SWITCHDASH_FAKE_UPDATE_VERSION` overrides the offered version (default: the
   current minor, bumped) and `SWITCHDASH_FAKE_UPDATE_MS` the simulated download

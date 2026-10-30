@@ -8,25 +8,44 @@ function stripMarkupAndTruncate(raw: string): string {
   return collapsed.length > 240 ? `${collapsed.slice(0, 240)}…` : collapsed;
 }
 
+type UpdaterError = Error & {
+  statusCode?: unknown;
+  code?: unknown;
+  statusMessage?: string;
+  description?: string;
+};
+
+/**
+ * electron-updater's own failures (a feed it cannot parse, a release with no
+ * channel file) carry an `ERR_UPDATER_*` code and say what went wrong in the
+ * message. Their first line is the sentence; what follows is a stack trace or
+ * the feed XML the updater could not read.
+ */
+function isUpdaterErrorCode(code: unknown): code is string {
+  return typeof code === 'string' && code.startsWith('ERR_UPDATER_');
+}
+
+/** The error code to log next to a message, so failures can be counted. */
+export function updaterErrorCode(error: unknown): string | undefined {
+  const code = (error as UpdaterError | null)?.code;
+  return typeof code === 'string' ? code : undefined;
+}
+
 export function formatUpdaterError(error: unknown): string {
-  const err = error as Error & {
-    statusCode?: number;
-    code?: string;
-    status?: number;
-    statusMessage?: string;
-    description?: string;
-  };
-  const status = err.statusCode || err.status;
-  const statusText = err.statusMessage || err.description;
-  if (status) {
-    const base = `Update request failed with HTTP ${status}`;
+  const err = (error ?? {}) as UpdaterError;
+  const message = error instanceof Error ? error.message : String(error ?? 'Unknown update error');
+
+  if (isUpdaterErrorCode(err.code)) {
+    return stripMarkupAndTruncate(message.split('\n', 1)[0] ?? '');
+  }
+
+  if (typeof err.statusCode === 'number') {
+    const base = `Update request failed with HTTP ${err.statusCode}`;
+    const statusText = err.statusMessage || err.description;
     return statusText ? `${base}: ${stripMarkupAndTruncate(String(statusText))}` : base;
   }
-  const message = error instanceof Error ? error.message : String(error ?? 'Unknown update error');
-  // electron-updater's own failures carry an ERR_UPDATER_* code, not an HTTP status.
-  return err.code
-    ? `${stripMarkupAndTruncate(message)} (${err.code})`
-    : stripMarkupAndTruncate(message);
+
+  return stripMarkupAndTruncate(message);
 }
 
 export function sanitizeUpdaterLogArgs(args: unknown[]) {
