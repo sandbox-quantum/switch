@@ -570,6 +570,8 @@ async def upload_media(
         )
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
+    except GuardrailBlockedError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:

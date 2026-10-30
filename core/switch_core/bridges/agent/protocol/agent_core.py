@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -134,13 +135,16 @@ from switch_core.tenant_context import current_tenant_id, tenant_scope
 from switch_core.transport import (
     TransportError,
 )
+from switch_core.trust.attachments import check_attachments
 from switch_core.trust.client import (
     GuardrailBlockedError,
     NullTrustClient,
+    TrustCheckResult,
     TrustClient,
     TrustOutcome,
     check_message,
     trust_annotation,
+    trust_is_active,
 )
 
 if TYPE_CHECKING:
@@ -1622,6 +1626,21 @@ class AgentCore:
             content=content,
             room_id=room.id,
         )
+        return await self._apply_trust_check(
+            room, content, check, thread_root_id, client
+        )
+
+    async def _apply_trust_check(
+        self,
+        room: RoomDescriptor,
+        content: str,
+        check: TrustCheckResult,
+        thread_root_id: str | None,
+        client: AgentActor,
+    ) -> tuple[str, tuple[str, TrustOutcome] | None]:
+        """`_enforce_trust` for a check already made, so a caller can run it
+        alongside others (`send_media` checks a caption and its files at
+        once)."""
         if check.blocked or (
             check.outcome == "redacted" and check.redacted_content is None
         ):
@@ -1828,6 +1847,10 @@ class AgentCore:
         With more than one file the events share an attachment-group marker so
         receivers can coalesce them into one logical message, since a media
         event carries one file.
+
+        Raises GuardrailBlockedError if Switch Trust blocks the caption or any
+        file's text; a notice is posted to the room and nothing is sent. A
+        file Switch Trust cannot read is sent with a notice saying so.
         """
         if not files:
             raise ValueError("no attachments provided")
@@ -1854,35 +1877,88 @@ class AgentCore:
                 client, room.transport_room_id, thread_id
             )
 
+        # The caption is checked as `send_message` checks text, and each file
+        # through the text it carries (`trust/attachments.py`), all before
+        # anything is uploaded, so a refusal leaves nothing in the room.
+        caption_text = caption if caption and caption.strip() else None
+        trust_notes: list[str] = []
+        file_notes: tuple[str, ...] = ()
+        flagged = False
+        if await trust_is_active(self.trust_client):
+            files_check_task = check_attachments(
+                self.trust_client, role="assistant", files=files, room_id=room.id
+            )
+            if caption_text is not None:
+                caption_check, files_check = await asyncio.gather(
+                    check_message(
+                        self.trust_client,
+                        role="assistant",
+                        content=caption_text,
+                        room_id=room.id,
+                    ),
+                    files_check_task,
+                )
+                caption_text, pending_alert = await self._apply_trust_check(
+                    room, caption_text, caption_check, thread_root_id, client
+                )
+                if pending_alert is not None:
+                    annotation, outcome = pending_alert
+                    trust_notes.append(annotation)
+                    flagged = outcome == "alerted"
+            else:
+                files_check = await files_check_task
+            if files_check.block is not None:
+                await self._post_trust_blocked_notice(room, thread_root_id, client)
+                raise GuardrailBlockedError(
+                    files_check.block, "; ".join(files_check.block_reasons)
+                )
+            file_notes = files_check.notes
+            trust_notes.extend(file_notes)
+            flagged = flagged or files_check.flagged
+        # What Switch Trust says about the files rides in the first file's
+        # caption, so every agent that receives them receives it too.
+        first_caption = (
+            "\n\n".join(p for p in (caption_text, "\n".join(file_notes)) if p) or None
+        )
+
         total = len(files)
         group_id = str(uuid.uuid4()) if total > 1 else None
         posted: list[dict[str, str]] = []
-        for index, (data, filename, mimetype) in enumerate(files):
-            media_uri = await client.upload_media(data, mimetype, filename)
-            msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
-            event_id = await client.send_media(
-                room.transport_room_id,
-                media_uri,
-                filename,
-                mimetype,
-                len(data),
-                msgtype=msgtype,
-                caption=(
-                    caption if index == 0 and caption and caption.strip() else None
-                ),
-                thread_root_id=thread_root_id,
-                group=(
-                    {"id": group_id, "index": index, "total": total}
-                    if group_id is not None
-                    else None
-                ),
-                metered=True,
-            )
-            if event_id is None:
-                raise ValueError(f"Failed to send media message for '{filename}'")
-            posted.append(
-                {"event_id": event_id, "mxc": media_uri, "filename": filename}
-            )
+        try:
+            for index, (data, filename, mimetype) in enumerate(files):
+                media_uri = await client.upload_media(data, mimetype, filename)
+                msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
+                event_id = await client.send_media(
+                    room.transport_room_id,
+                    media_uri,
+                    filename,
+                    mimetype,
+                    len(data),
+                    msgtype=msgtype,
+                    caption=first_caption if index == 0 else None,
+                    thread_root_id=thread_root_id,
+                    group=(
+                        {"id": group_id, "index": index, "total": total}
+                        if group_id is not None
+                        else None
+                    ),
+                    metered=True,
+                )
+                if event_id is None:
+                    raise ValueError(f"Failed to send media message for '{filename}'")
+                posted.append(
+                    {"event_id": event_id, "mxc": media_uri, "filename": filename}
+                )
+        finally:
+            # Also told as a notice to the room's people, even when a later
+            # file failed to send after the first was posted.
+            if trust_notes and posted:
+                await self._post_trust_alert_notice(
+                    room,
+                    posted[0]["event_id"],
+                    "\n".join(trust_notes),
+                    "alerted" if flagged else "errored",
+                )
         try:
             await self._set_typing(agent_id, room, False)
         except Exception:

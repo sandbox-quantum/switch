@@ -69,12 +69,15 @@ class GuardrailBlockedError(Exception):
     without re-deriving it.
     """
 
-    def __init__(self, result: TrustCheckResult) -> None:
+    def __init__(self, result: TrustCheckResult, detail: str | None = None) -> None:
         self.result = result
         categories = (
             ", ".join(f.category for f in result.findings) or "policy violation"
         )
-        super().__init__(f"blocked by Switch Trust ({categories})")
+        message = f"blocked by Switch Trust ({categories})"
+        if detail is not None:
+            message = f"{message}: {detail}"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -114,9 +117,19 @@ class TrustClient(Protocol):
         self, *, role: Role, content: str, room_id: str
     ) -> TrustCheckResult: ...
 
+    async def is_active(self) -> bool:
+        """Whether a check would reach Switch Trust at all. Lets a caller skip
+        work that only matters when it does, such as reading text out of
+        attached files. Raises `GuardrailsCheckError` when that cannot be
+        told; `trust_is_active` below is the fail-open wrapper."""
+        ...
+
 
 class NullTrustClient:
     """Off: every message is allowed, and no request is made."""
+
+    async def is_active(self) -> bool:
+        return False
 
     async def check(
         self, *, role: Role, content: str, room_id: str
@@ -148,6 +161,22 @@ class DynamicTrustClient:
         self._keyring = keyring
         self._client = client
         self._timeout_seconds = timeout_seconds
+
+    async def is_active(self) -> bool:
+        """True when the settings row holds everything `check` needs to call
+        Switch Trust, the same test `check` applies before calling it."""
+        try:
+            async with self._session_factory() as session:
+                settings = await self._store.get(session)
+        except Exception as error:
+            raise GuardrailsCheckError(
+                f"Could not read Switch Trust settings: {error}"
+            ) from error
+        return (
+            settings is not None
+            and bool(settings.policy_id)
+            and bool(settings.api_key_encrypted)
+        )
 
     async def check(
         self, *, role: Role, content: str, room_id: str
@@ -208,6 +237,9 @@ class HttpTrustClient:
         }
         self._timeout_seconds = timeout_seconds
         self._client = client
+
+    async def is_active(self) -> bool:
+        return True
 
     async def check(
         self, *, role: Role, content: str, room_id: str
@@ -331,3 +363,18 @@ async def check_message(
             exc_info=True,
         )
         return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+
+
+async def trust_is_active(client: TrustClient) -> bool:
+    """`client.is_active`, failing towards checking: when the settings cannot
+    be read, the caller goes on to check, and each check then fails open with
+    the usual visible "could not check" annotation rather than the message
+    quietly skipping Switch Trust."""
+    try:
+        return await client.is_active()
+    except GuardrailsCheckError:
+        logger.warning(
+            "Could not tell whether Switch Trust is on; checking anyway",
+            exc_info=True,
+        )
+        return True
