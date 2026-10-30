@@ -59,8 +59,8 @@ from switch_core.bridges.collaboration.adapter import (
     PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
+    RichContentFailedAfterPost,
     RichContentThrottled,
-    RichContentThrottledAfterPost,
     RichContentWedged,
     ThreadUnavailable,
     TurnActivity,
@@ -130,8 +130,7 @@ _RESYNC_WINDOW = timedelta(minutes=15)
 # moved on a minute.
 _TICK_SECONDS = 5.0
 # How long after a platform closes a turn's message on its own the redraw that
-# repairs it is due: past the close, allowing for the message having been
-# opened a moment before it was recorded here.
+# repairs it is due, so that the redraw finds it closed.
 _AFTER_PLATFORM_CLOSE = timedelta(seconds=2)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
@@ -192,8 +191,8 @@ class _TurnDrawn:
     # When a running turn's message is next due a redraw without a change of
     # its own: its clock showing another minute, or the platform closing it.
     clock_due: datetime | None = None
-    # When this process posted the turn's message.
-    posted_at: datetime | None = None
+    # When the platform closes the turn's message on its own, if it does.
+    platform_closes_at: datetime | None = None
 
 
 @dataclass
@@ -1117,14 +1116,13 @@ class AgentSessionActivityPublisher:
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
         )
-        platform_closes_at = self._platform_closes_at(drawn)
         state = status_state(
             view,
             elapsed_seconds=elapsed,
             interrupt_turn_id=interrupt_turn_id,
             clock_redraws=self._adapter.redraws_for_elapsed_time,
-            closed_by_platform=platform_closes_at is not None
-            and platform_closes_at <= datetime.now(UTC),
+            closed_by_platform=drawn.platform_closes_at is not None
+            and drawn.platform_closes_at <= datetime.now(UTC),
         )
         if post is None:
             unposted = self._unposted.get(key)
@@ -1160,18 +1158,11 @@ class AgentSessionActivityPublisher:
             for other in unended:
                 self._enqueue(("turn", agent_id, session_id, other), _SOON)
 
-    def _platform_closes_at(self, drawn: _TurnDrawn) -> datetime | None:
-        """When the platform closes this turn's message on its own, if it does."""
-        closes = self._adapter.closes_activity_after
-        if closes is None or drawn.posted_at is None:
-            return None
-        return drawn.posted_at + timedelta(seconds=closes)
-
     def _redraw_due(self, drawn: _TurnDrawn, elapsed: float | None) -> datetime:
         """When a running turn is next due a redraw with no change of its own."""
         now = datetime.now(UTC)
         due = now + timedelta(seconds=_until_the_clock_moves(elapsed))
-        closes_at = self._platform_closes_at(drawn)
+        closes_at = drawn.platform_closes_at
         if closes_at is not None and now < closes_at + _AFTER_PLATFORM_CLOSE < due:
             due = closes_at + _AFTER_PLATFORM_CLOSE
         return due
@@ -1264,8 +1255,8 @@ class AgentSessionActivityPublisher:
 
         `post` is the turn's row as it stood before the message, marker and
         all, and is stored once the platform has the message. One the platform
-        made but asked to wait before drawing into is kept and drawn into after
-        the wait, rather than posted a second time.
+        made but could not draw into is kept and drawn into later, rather than
+        posted a second time: after the wait, where it asked for one.
 
         Once per turn, which is why the "agent has started" nudge belongs here.
         A refusal is logged; the next change to the turn tries again, and an
@@ -1286,18 +1277,33 @@ class AgentSessionActivityPublisher:
             ref = await self._adapter.post_rich(
                 target.channel_id, target.agent_name, content, target.thread_ref
             )
-        except RichContentThrottledAfterPost as throttled:
-            logger.warning(
-                "%s made the message for turn %s in channel %s but asked for a "
-                "%.1fs wait before drawing the turn into it; drawing it then.",
-                self._adapter.platform_name,
-                view.turn.turn_id,
-                target.channel_id,
-                throttled.retry_after,
-            )
-            ref = throttled.ref
+        except RichContentFailedAfterPost as failed:
+            ref = failed.ref
             drew = False
-            self._enqueue_later(key, throttled.retry_after, _SOON)
+            if isinstance(failed, RichContentThrottled):
+                logger.warning(
+                    "%s made the message for turn %s in channel %s but asked for "
+                    "a %.1fs wait before drawing the turn into it; drawing it then.",
+                    self._adapter.platform_name,
+                    view.turn.turn_id,
+                    target.channel_id,
+                    failed.retry_after,
+                )
+                self._enqueue_later(key, failed.retry_after, _SOON)
+            else:
+                logger.error(
+                    "%s made the message for turn %s in channel %s but could not "
+                    "draw the turn into it: %s. %s",
+                    self._adapter.platform_name,
+                    view.turn.turn_id,
+                    target.channel_id,
+                    failed,
+                    "The turn has ended; trying again after a wait."
+                    if view.ended
+                    else "The next change to the turn draws into the same message.",
+                )
+                if view.ended:
+                    self._retry_later(key)
         except RichContentThrottled:
             raise
         except RichContentFailed as error:
@@ -1313,7 +1319,12 @@ class AgentSessionActivityPublisher:
             if view.ended:
                 self._retry_later(key)
             return None
-        drawn.posted_at = datetime.now(UTC)
+        closes_in = self._adapter.activity_closes_in(ref)
+        drawn.platform_closes_at = (
+            None
+            if closes_in is None
+            else datetime.now(UTC) + timedelta(seconds=closes_in)
+        )
         post.external_post_id = ref
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             await self._turn_posts.create(db, post)

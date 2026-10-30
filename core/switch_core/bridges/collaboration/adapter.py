@@ -312,23 +312,35 @@ class RichContentThrottled(RichContentFailed):
         self.retry_after = retry_after
 
 
-class RichContentThrottledAfterPost(RichContentThrottled):
-    """The message was posted, but the platform asked for a wait before what
-    goes in it could be drawn.
+class RichContentFailedAfterPost(RichContentFailed):
+    """The message was posted, but what goes in it could not be drawn.
 
     Slack opens a turn's stream and then takes its content in a separate call,
-    and the second can be refused after the first has made the message. `ref`
-    names that message, so the caller keeps it and draws into it after the
-    wait rather than posting again, which would leave a second message in the
-    thread and the first one empty.
+    and the second can fail after the first has made the message. `ref` names
+    that message, so the caller keeps it and draws into it later rather than
+    posting again, which would leave a second message in the thread and the
+    first one empty.
+    """
 
-    A `RichContentThrottled`, so a caller that has no use for the message it
-    is told about still waits and tries again, as it did before.
+    def __init__(self, message: str, *, ref: str, text: str) -> None:
+        super().__init__(message, text=text)
+        self.ref = ref
+
+
+class RichContentThrottledAfterPost(RichContentThrottled, RichContentFailedAfterPost):
+    """The message was posted, and the platform asked for a wait before what
+    goes in it could be drawn.
+
+    A `RichContentThrottled` as well, so the wait is the one asked for.
     """
 
     def __init__(self, *, ref: str, retry_after: float, text: str) -> None:
-        super().__init__(retry_after=retry_after, text=text)
-        self.ref = ref
+        # Not through `RichContentThrottled.__init__`: its `super()` call
+        # reaches `RichContentFailedAfterPost` here, which needs the ref.
+        RichContentFailedAfterPost.__init__(
+            self, "Platform updates are rate limited.", ref=ref, text=text
+        )
+        self.retry_after = retry_after
 
 
 class RichContentWedged(RichContentFailed):
@@ -492,13 +504,6 @@ class PlatformAdapter(ABC):
     #: rather than rewriting the post a reader is in the middle of, and the
     #: final update still shows what the turn actually took.
     redraws_for_elapsed_time: ClassVar[bool] = False
-
-    #: Seconds after a turn's message is posted that the platform closes it to
-    #: further streaming on its own, or None where it never does.
-    #:
-    #: Closing it rewrites what it shows (Slack marks the steps still running
-    #: as failed), so a redraw is owed just after, whatever the clock says.
-    closes_activity_after: ClassVar[float | None] = None
 
     supports_activity_reactions: ClassVar[bool] = False
 
@@ -1418,6 +1423,16 @@ class PlatformAdapter(ABC):
         turn's working mark at the same time. An adapter that declares no
         `supports_queue_reaction` is never asked for the queued one.
         """
+
+    def activity_closes_in(self, message_ref: str) -> float | None:
+        """Seconds until the platform closes this message to further streaming
+        on its own, or None where it never will.
+
+        Closing it rewrites what it shows (Slack marks the steps still running
+        as failed), so a redraw is owed just after, whatever the clock says.
+        Asked once, as the message is posted.
+        """
+        return None
 
     def rich_updates_held_for(self) -> float:
         """Seconds before this adapter will try another edit to rich content.

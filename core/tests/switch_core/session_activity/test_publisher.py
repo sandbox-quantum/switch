@@ -772,6 +772,32 @@ async def test_a_card_opened_but_not_yet_drawn_is_drawn_into_rather_than_posted_
     assert (await _turn_post(session_factory)).external_post_id == opened.ref
 
 
+async def test_a_card_opened_but_not_drawn_into_is_kept_for_the_next_change(
+    service, publisher, platform, bridged, session_factory
+):
+    """Any failure once the message exists, not only a rate limit: posting
+    again would leave the empty one above the new one."""
+    platform.open_unfilled.add("turn-1")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(platform.of("opened")) == 1)
+    [opened] = platform.of("opened")
+    assert (await _turn_post(session_factory)).external_post_id == opened.ref
+
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="in-progress",
+        revision=1,
+        title="Ran `pytest`",
+    )
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    [drawn] = _turns(platform)
+    assert (drawn.call, drawn.ref) == ("update_rich", opened.ref)
+    assert platform.of("post_rich") == []
+
+
 async def test_a_running_turn_is_not_redrawn_every_few_seconds_for_its_clock(
     service, session_factory, bridged, listener, online, monkeypatch
 ):
@@ -811,9 +837,7 @@ async def test_a_message_the_platform_closes_on_its_own_is_redrawn_just_after(
     monkeypatch.setattr(
         publisher_module, "_AFTER_PLATFORM_CLOSE", timedelta(seconds=0.1)
     )
-    platform = RecordingPlatform(
-        redraws_for_elapsed_time=True, closes_activity_after=0.5
-    )
+    platform = RecordingPlatform(redraws_for_elapsed_time=True, closes_in=0.5)
     publisher = _publisher(session_factory, bridged, listener, platform, online)
     publisher.start()
     try:

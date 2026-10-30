@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
@@ -31,6 +32,7 @@ from switch_core.bridges.collaboration.adapter import (
     RequestCard,
     RichContent,
     RichContentFailed,
+    RichContentFailedAfterPost,
     RichContentThrottled,
     RichContentThrottledAfterPost,
     RichContentWedged,
@@ -317,6 +319,11 @@ _SLACK_FILE_DOMAINS = ("slack.com", "slack-gov.com")
 
 _MAX_OPEN_STREAMS = 100
 
+# Slack's own cap on a stream: it closes ten minutes after `chat.startStream`,
+# however recently it was appended to, and marks the steps still running as
+# failed.
+_STREAM_LIFETIME_SECONDS = 600.0
+
 # Far above the open-stream bound on purpose. An entry here is what stops a
 # message nothing can change from being asked about again, so evicting one
 # resumes that asking for as long as the process lives. Only turns still being
@@ -399,11 +406,14 @@ class _ActivityStream:
     cards that has not changed costs an append and risks nothing useful.
 
     `blocks` is the last thing written to each section, by `block_id`, so a
-    redraw sends only what moved.
+    redraw sends only what moved. `opened_at` is when this process opened it,
+    on the monotonic clock; None for one taken back after a restart, whose
+    opening this process never saw.
     """
 
     channel_id: str
     ts: str
+    opened_at: float | None
     blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
@@ -474,9 +484,6 @@ class SlackAdapter(PlatformAdapter):
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
     redraws_for_elapsed_time: ClassVar[bool] = True
-    #: Slack's own cap on a stream: ten minutes from `chat.startStream`,
-    #: however recently it was appended to.
-    closes_activity_after: ClassVar[float | None] = 600.0
     supports_activity_reactions: ClassVar[bool] = True
     supports_queue_reaction: ClassVar[bool] = True
     recovers_uncertain_posts: ClassVar[bool] = True
@@ -1103,7 +1110,10 @@ class SlackAdapter(PlatformAdapter):
                 f"Cannot recover an activity stream: invalid message ref {message_ref}."
             )
         stream = _ActivityStream(
-            channel_id=channel_id, ts=ts, blocks=dict(_STRANDED_BLOCKS)
+            channel_id=channel_id,
+            ts=ts,
+            opened_at=None,
+            blocks=dict(_STRANDED_BLOCKS),
         )
         self._register_stream(message_ref, stream)
         try:
@@ -1281,6 +1291,15 @@ class SlackAdapter(PlatformAdapter):
     def rich_updates_held_for(self) -> float:
         return self._rich_update_cooldown.remaining()
 
+    def activity_closes_in(self, message_ref: str) -> float | None:
+        """Only a stream closes on its own; an ordinary post never does."""
+        stream = self._streams.get(message_ref)
+        if stream is None or stream.opened_at is None:
+            return None
+        return max(
+            0.0, _STREAM_LIFETIME_SECONDS - (time.monotonic() - stream.opened_at)
+        )
+
     def _streamable(self, content: RichContent, thread_root_id: str | None) -> bool:
         """Whether this is a turn's activity, in a thread a stream can open in.
 
@@ -1417,16 +1436,22 @@ class SlackAdapter(PlatformAdapter):
             )
             return None
         ref = f"{channel_id}:{ts}"
-        stream = _ActivityStream(channel_id=channel_id, ts=str(ts))
+        stream = _ActivityStream(
+            channel_id=channel_id, ts=str(ts), opened_at=time.monotonic()
+        )
         self._register_stream(ref, stream)
+        # The message exists now. Reported as not posted, the turn would be
+        # posted again on the retry, leaving this one empty above it.
         try:
             await self._extend_stream(stream, ref, content)
         except RichContentThrottled as throttled:
-            # The message exists now. Reported as not posted, the turn would
-            # be posted again on the retry, leaving this one empty above it.
             raise RichContentThrottledAfterPost(
                 ref=ref, retry_after=throttled.retry_after, text=throttled.text
             ) from throttled
+        except RichContentFailed as failed:
+            raise RichContentFailedAfterPost(
+                str(failed), ref=ref, text=failed.text
+            ) from failed
         return ref
 
     def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:

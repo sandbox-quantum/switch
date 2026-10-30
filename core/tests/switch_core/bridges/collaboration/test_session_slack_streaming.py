@@ -39,6 +39,7 @@ from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import (
     RichContentFailed,
+    RichContentFailedAfterPost,
     RichContentThrottled,
     RichContentThrottledAfterPost,
     RichContentWedged,
@@ -1103,6 +1104,76 @@ async def test_a_stream_opened_but_throttled_before_its_first_append_is_kept() -
     assert len(client.started) == 1
     assert [call["ts"] for call in client.appended] == ["1.0"]
     assert _steps(client)[0]["title"] == "Read"
+
+
+async def test_a_stream_whose_first_append_fails_is_kept_rather_than_posted_again() -> (
+    None
+):
+    """Any failure once the stream has made the message, not only a rate
+    limit. One Slack may still take an append on stays a stream."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+
+    client.append_error = "internal_error"
+    with pytest.raises(RichContentFailedAfterPost) as failed:
+        await adapter.post_rich(
+            CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+        )
+    assert not isinstance(failed.value, RichContentThrottled)
+    ref = failed.value.ref
+    assert ref in adapter._streams
+
+    client.append_error = None
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 2.0), THREAD
+    )
+    assert len(client.started) == 1
+    assert [call["ts"] for call in client.appended] == ["1.0"]
+
+
+async def test_a_stream_closed_before_its_first_append_is_kept_and_edited() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+
+    client.append_error = "message_not_owned_by_app"
+    with pytest.raises(RichContentFailedAfterPost) as failed:
+        await adapter.post_rich(
+            CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+        )
+    ref = failed.value.ref
+    assert ref not in adapter._streams
+
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([tool], _turn(), 2.0), THREAD
+    )
+    assert len(client.started) == 1
+    assert [call["ts"] for call in client.updated] == ["1.0"]
+
+
+async def test_only_a_stream_is_said_to_close_on_its_own() -> None:
+    """Slack closes a stream ten minutes after opening it. An ordinary post it
+    never closes, and a redraw scheduled for one would be an edit wasted."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    tool = _tool("t1", "Read")
+    streamed = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), THREAD
+    )
+    posted = await adapter.post_rich(
+        CHANNEL, "Agent", TurnActivity([tool], _turn(), 1.0), None
+    )
+
+    closes = adapter.activity_closes_in(streamed)
+    assert closes is not None and 590.0 < closes <= 600.0
+    assert adapter.activity_closes_in(posted) is None
+
+    client.append_error = "message_not_in_streaming_state"
+    await adapter.update_rich(
+        CHANNEL, "Agent", streamed, TurnActivity([tool], _turn(), 61.0), THREAD
+    )
+    assert adapter.activity_closes_in(streamed) is None
 
 
 # ── When a restart strands a stream ──────────────────────────────
