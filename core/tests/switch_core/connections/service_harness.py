@@ -171,6 +171,8 @@ async def connect(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 

@@ -10,17 +10,19 @@ from __future__ import annotations
 import json
 import secrets
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 from html import escape
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters.oauth import OAuthAdapter
-from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import (
@@ -37,8 +39,17 @@ from switch_core.gateway.service_connections import (
 )
 from switch_core.gateway.service_flows import router as service_flows_router
 from tests.conftest import TEST_KEYRING
-from tests.switch_core.connections.fake_vendor import ISSUER, FakeOAuthServer
-from tests.switch_core.connections.test_loader import OAUTH_ENTRY, _write_example
+from tests.switch_core.connections.fake_vendor import (
+    ISSUER,
+    FakeOAuthServer,
+    FakeSites,
+)
+from tests.switch_core.connections.test_loader import (
+    CHOICES_ENTRY,
+    OAUTH_ENTRY,
+    _write_example,
+)
+from tests.switch_core.gateway.agent_route_harness import add_agent
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
@@ -134,10 +145,22 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
+    async def start(
+        self,
+        service: str = "example",
+        port: int = PORT,
+        choices: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        body: dict[str, object] = {
+            "port": port,
+            "state": self.state,
+            "completion_secret": self.secret,
+        }
+        if choices is not None:
+            body["choices"] = choices
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": port, "state": self.state, "completion_secret": self.secret},
+            json=body,
             cookies=cookies_for(self.user),
         )
 
@@ -920,3 +943,233 @@ class TestWorkspaceSwitch:
             "so it still works. Remove Switch under Connected apps in Example.",
         }
         assert await _connection(session_factory, ada.id) is None
+
+
+SITES = ("example.test", "eu.example.test")
+
+
+class SitesWorld:
+    def __init__(
+        self, harness: Harness, sites: FakeSites, broker: ServiceBroker
+    ) -> None:
+        self.harness = harness
+        self.sites = sites
+        self.broker = broker
+
+
+def _sites_world(
+    session_factory: async_sessionmaker[AsyncSession], root: Path
+) -> SitesWorld:
+    """Example at two sites, chosen before signing in, each its own
+    authorization server, accounts and MCP server."""
+    shutil.copytree(CATALOG_ROOT, root)
+    _write_example(
+        root,
+        CHOICES_ENTRY.replace(
+            "redirect: [loopback, core]",
+            "redirect: [loopback, core]\n    loopback_ports: [43123, 43124]\n"
+            "    revocation_discovered: true",
+        ),
+    )
+    catalog = load_catalog(root)
+    oauth = catalog["example"].definition.auth.oauth
+    assert oauth is not None
+    sites = FakeSites(*SITES)
+    sites["eu.example.test"].account = {"id": "acct-eu", "email": "ada@eu.example.test"}
+    client = RegisteredClient(
+        service="example",
+        name="Example",
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        http=sites.client(),
+        client_name="Switch (switch.example.com)",
+        redirect_uris=redirect_uris(
+            "example", oauth.redirect, PUBLIC, oauth.loopback_ports
+        ),
+        scopes=["read:items", "write:items"],
+    )
+    broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=catalog,
+        adapters={
+            "example": OAuthAdapter(
+                catalog["example"].definition, client, sites.client()
+            )
+        },
+        disabled={},
+        store=STORE,
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
+    )
+    harness = build_harness(session_factory)
+    harness.gateway_app.state.service_broker = broker
+    harness.gateway_app.state.service_flows = ServiceFlows(
+        None, SignInFlows(session_factory, TEST_KEYRING)
+    )
+    harness.gateway_app.include_router(service_connections_router)
+    harness.gateway_app.include_router(service_flows_router)
+    return SitesWorld(harness, sites, broker)
+
+
+async def _connect_at(world: SitesWorld, console: Console, site: str) -> httpx.Response:
+    started = await console.start(choices={"site": site})
+    assert started.status_code == 200, started.text
+    code = _listener_code(world.sites.authorize(started.json()["url"]), console.state)
+    completed = await console.complete(code)
+    assert completed.status_code == 200, completed.text
+    return completed
+
+
+async def _due_for_renewal(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> None:
+    async with session_factory() as session:
+        connection = await STORE.get_connection(session, user_id, "example")
+        assert connection is not None
+        values = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+        connection.encrypted_secret = TEST_KEYRING.encrypt(
+            json.dumps({**values, "expires_at": time.time() + 60})
+        )
+        await session.commit()
+
+
+class TestChoices:
+    async def test_signs_in_at_the_site_chosen_and_keeps_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start(choices={"site": "eu.example.test"})
+            assert started.status_code == 200, started.text
+            url = started.json()["url"]
+            assert url.startswith("https://auth.eu.example.test/authorize?")
+            assert parse_qs(urlsplit(url).query)["resource"] == [
+                "https://mcp.eu.example.test/v1/mcp"
+            ]
+            flow = await _flow_row(session_factory, console.state)
+            assert flow.details["choices"] == {"site": "eu.example.test"}
+            code = _listener_code(world.sites.authorize(url), console.state)
+            completed = await console.complete(code)
+            assert completed.status_code == 200, completed.text
+            assert completed.json()["account"] == "ada@eu.example.test"
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.choices, connection.method, connection.account_id) == (
+            {"site": "eu.example.test"},
+            "oauth",
+            "acct-eu",
+        )
+        secret = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
+        assert secret["choices"] == {"site": "eu.example.test"}
+        assert world.sites["example.test"].paths == []
+
+    @pytest.mark.parametrize(
+        ("choices", "detail"),
+        [
+            (None, "Example site is required."),
+            ({}, "Example site is required."),
+            (
+                {"site": "elsewhere.test"},
+                "Example site must be one of example.test, eu.example.test.",
+            ),
+            (
+                {"site": "example.test", "region": "eu"},
+                "There is no choice named region.",
+            ),
+        ],
+    )
+    async def test_a_start_without_a_choice_the_entry_offers_is_refused(
+        self, session_factory, tmp_path, choices, detail
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(choices=choices)
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == detail
+        assert await _flow_ids(session_factory) == set()
+        assert all(world.sites[site].paths == [] for site in SITES)
+
+    async def test_an_entry_without_choices_takes_none(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            refused = await Console(client, ada).start(choices={"site": "example.test"})
+            assert refused.status_code == 422
+            assert refused.json()["detail"] == "There is no choice named site."
+            console = Console(client, ada)
+            started = await console.start(choices={})
+            assert started.status_code == 200, started.text
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert (await console.complete(code)).status_code == 200
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.choices, connection.method) == ({}, "oauth")
+
+    async def test_refreshes_and_revokes_at_the_connections_own_site(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        eu = world.sites["eu.example.test"]
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "eu.example.test")
+            await _due_for_renewal(session_factory, ada.id)
+            async with session_factory() as session:
+                token = await world.broker.connection_access_token(
+                    session, ada.id, "example"
+                )
+            assert token in eu.live_access
+            assert eu.token_requests[-1]["grant_type"] == "refresh_token"
+            assert eu.token_requests[-1]["resource"] == (
+                "https://mcp.eu.example.test/v1/mcp"
+            )
+            removed = await client.delete(
+                "/gateway/service-connections/example", cookies=cookies_for(ada)
+            )
+            assert removed.status_code == 200, removed.text
+        assert [form["token_type_hint"] for form in eu.revoked] == ["refresh_token"]
+        assert eu.live_refresh == {}
+        assert world.sites["example.test"].paths == []
+
+    async def test_a_session_calls_the_mcp_server_at_the_connections_site(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "eu.example.test")
+        async with session_factory() as session:
+            agent = await add_agent(session, name="planner", owner_id=ada.id)
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=ada.id,
+                service="example",
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="acct-eu",
+                created_by=ada.id,
+            )
+            await session.commit()
+            [grant] = await world.broker.grants_for(
+                session, agent, Principal.agent_key()
+            )
+        assert grant["mcp_servers"] == [
+            {
+                "name": "example",
+                "url": "https://mcp.eu.example.test/v1/mcp",
+                "headers": {"Authorization": "Bearer {token}"},
+            }
+        ]

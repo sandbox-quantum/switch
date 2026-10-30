@@ -356,6 +356,8 @@ async def complete(
             external_identity=credentials["login"],
             secret=ConnectionSecret(credentials),
             oauth_client_id=github.client_id,
+            method="oauth",
+            choices={},
         )
     except ServiceError as error:
         await _settled(flows, checking, "failed", error=error.message)

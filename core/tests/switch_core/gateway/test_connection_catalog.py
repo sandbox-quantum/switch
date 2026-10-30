@@ -69,6 +69,8 @@ async def link_github(session_factory, user_id):
                 json.dumps({"access_token": "SYNTHETIC"})
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 

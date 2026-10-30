@@ -90,10 +90,15 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer, redirect: str
         state="s",
         code_challenge=s256(verifier),
         scopes=SCOPES,
+        choices={},
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
     return await adapter.exchange_code(
-        code=back["code"][0], verifier=verifier, redirect_uri=redirect, scopes=SCOPES
+        code=back["code"][0],
+        verifier=verifier,
+        redirect_uri=redirect,
+        scopes=SCOPES,
+        choices={},
     )
 
 
@@ -106,7 +111,7 @@ async def test_registers_once_and_keeps_the_client_encrypted(
     session_factory, vendor
 ) -> None:
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    endpoints = await adapter.endpoints()
+    endpoints = await adapter.endpoints({})
     first = await adapter._client.credentials(endpoints)
     again = await adapter._client.credentials(endpoints)
     assert first == again
@@ -136,7 +141,7 @@ async def test_two_replicas_connecting_at_once_register_one_client(
     session_factory, vendor
 ) -> None:
     adapters = [_adapter(_client(session_factory, vendor), vendor) for _ in range(3)]
-    endpoints = await adapters[0].endpoints()
+    endpoints = await adapters[0].endpoints({})
     clients = await asyncio.gather(
         *(adapter._client.credentials(endpoints) for adapter in adapters)
     )
@@ -149,10 +154,10 @@ async def test_a_moved_registration_endpoint_registers_again(
     session_factory, vendor
 ) -> None:
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    endpoints = await adapter.endpoints()
+    endpoints = await adapter.endpoints({})
     first = await adapter._client.credentials(endpoints)
     async with session_factory() as session:
-        row = await session.get(ServiceOAuthClient, "example")
+        row = await session.get(ServiceOAuthClient, ("example", ""))
         assert row is not None
         row.registration_endpoint = "https://old.example.test/register"
         await session.commit()
@@ -170,7 +175,7 @@ async def test_a_moved_registration_endpoint_registers_again(
 async def test_changed_ports_register_again_and_sign_in_on_the_new_ones(
     session_factory, vendor
 ) -> None:
-    endpoints = await _adapter(_client(session_factory, vendor), vendor).endpoints()
+    endpoints = await _adapter(_client(session_factory, vendor), vendor).endpoints({})
     first = await _client(session_factory, vendor).credentials(endpoints)
     adapter = _adapter(_client(session_factory, vendor, ports=[43125]), vendor)
     second = await adapter._client.credentials(endpoints)
@@ -219,6 +224,8 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
                 json.dumps({**signed_in.secret.values, "expires_at": time.time() + 60})
             ),
             oauth_client_id=signed_in.client_id,
+            method="oauth",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -271,7 +278,11 @@ async def test_a_vendor_without_registration_is_refused(
     adapter = _adapter(_client(session_factory, vendor), vendor)
     with pytest.raises(ServiceAdapterError, match="offers no client registration"):
         await adapter.authorization_url(
-            redirect_uri=REDIRECT, state="s", code_challenge="c", scopes=["read:items"]
+            redirect_uri=REDIRECT,
+            state="s",
+            code_challenge="c",
+            scopes=["read:items"],
+            choices={},
         )
     assert await _rows(session_factory) == []
 
@@ -337,7 +348,7 @@ async def test_a_client_registered_for_another_method_is_refused(
     vendor.register_as = "private_key_jwt"
     adapter = _adapter(_client(session_factory, vendor), vendor)
     with pytest.raises(ServiceAdapterError, match="private_key_jwt"):
-        await adapter.client_id()
+        await adapter.client_id({})
     assert await _rows(session_factory) == []
 
 
@@ -345,7 +356,7 @@ async def test_the_runtime_role_registers_outside_any_tenant(
     rls_harness: RLSHarness, vendor
 ) -> None:
     adapter = _adapter(_client(rls_harness.restricted, vendor), vendor)
-    client = await adapter._client.credentials(await adapter.endpoints())
+    client = await adapter._client.credentials(await adapter.endpoints({}))
     [row] = await _rows(rls_harness.owner)
     assert row.oauth_client_id == client.client_id
 

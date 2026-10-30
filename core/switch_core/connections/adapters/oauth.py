@@ -13,6 +13,11 @@ server as the MCP authorization spec describes: its protected-resource
 metadata (RFC 9728) names the authorization server, whose metadata
 (RFC 8414) names the endpoints. The OAuth client is the operator's
 (`StaticClient`) or one Core registered at the vendor.
+
+An entry that asks for choices before its sign-in (`auth.oauth.choices`, a
+vendor's site) has its URLs rendered with them: a sign-in's from its flow,
+and a connection's from its secret, which keeps the choices it was made
+with, so a refresh or a revocation calls the site the sign-in was made at.
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ import base64
 import hashlib
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlencode, urlsplit
@@ -37,7 +43,13 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    AccessLevel,
+    ChoicesError,
+    ConnectionDefinition,
+    choice_key,
+    render,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
 
@@ -186,7 +198,8 @@ class OAuthAdapter:
         )
         self._client = client
         self._http = http
-        self._endpoints: AuthorizationEndpoints | None = None
+        # By choice key: each choice may be another authorization server.
+        self._endpoints: dict[str, AuthorizationEndpoints] = {}
 
     @property
     def _name(self) -> str:
@@ -235,26 +248,54 @@ class OAuthAdapter:
                 )
         raise ServiceAdapterError(f"{self._name} publishes no {what}.")
 
-    async def endpoints(self) -> AuthorizationEndpoints:
-        """The vendor's OAuth endpoints: the catalog's, or discovered once."""
-        if self._endpoints is not None:
-            return self._endpoints
+    def _checked(self, choices: Mapping[str, str]) -> dict[str, str]:
+        """A sign-in's choices, as the entry offers them."""
+        try:
+            return self._oauth.checked_choices(choices)
+        except ChoicesError as error:
+            raise ServiceAdapterError(str(error)) from None
+
+    def _choices_of(self, secret: ConnectionSecret) -> dict[str, str]:
+        """The choices a connection was made with, which its secret keeps;
+        none for one made before an entry offered any."""
+        stored = secret.values.get("choices", {})
+        try:
+            return self._oauth.checked_choices(
+                stored if isinstance(stored, dict) else {}
+            )
+        except ChoicesError as error:
+            raise ReauthorizationRequiredError(
+                f"The {self._name} connection was made for a choice this server "
+                f"no longer offers. {error}"
+            ) from None
+
+    async def endpoints(self, choices: Mapping[str, str]) -> AuthorizationEndpoints:
+        """The vendor's OAuth endpoints for `choices`: the catalog's, or
+        discovered once per choice."""
+        checked = self._checked(choices)
+        key = choice_key(checked)
+        known = self._endpoints.get(key)
+        if known is None:
+            known = await self._find_endpoints(checked)
+            self._endpoints[key] = known
+        return known
+
+    async def _find_endpoints(self, choices: dict[str, str]) -> AuthorizationEndpoints:
         if self._oauth.authorization_url is not None and self._oauth.token_url:
-            self._endpoints = AuthorizationEndpoints(
-                authorization=self._oauth.authorization_url,
-                token=self._oauth.token_url,
+            return AuthorizationEndpoints(
+                authorization=render(self._oauth.authorization_url, choices),
+                token=render(self._oauth.token_url, choices),
                 registration=None,
                 revocation=None,
                 resource=None,
                 client_authentication="client_secret_post",
             )
-            return self._endpoints
-        mcp_url = self._mcp_url
-        if mcp_url is None:
+        if self._mcp_url is None:
             raise ServiceAdapterError(
                 f"{self._name} names no OAuth endpoints and has no MCP server to "
                 "discover them from."
             )
+        mcp_url = render(self._mcp_url, choices)
         server = urlsplit(mcp_url)
         origin = f"{server.scheme}://{server.netloc}"
         path = server.path.rstrip("/")
@@ -315,7 +356,7 @@ class OAuthAdapter:
             and "client_secret_basic" in auth_methods
             and "client_secret_post" not in auth_methods
         )
-        self._endpoints = AuthorizationEndpoints(
+        return AuthorizationEndpoints(
             authorization=_https(
                 metadata.get("authorization_endpoint"), "authorization endpoint"
             ),
@@ -335,7 +376,6 @@ class OAuthAdapter:
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
         )
-        return self._endpoints
 
     async def _resource_metadata_url(self, mcp_url: str) -> str | None:
         """Where the MCP server says its metadata is: the `resource_metadata`
@@ -367,12 +407,14 @@ class OAuthAdapter:
     def current_client_id(self) -> str | None:
         return self._client.known_client_id()
 
-    async def client_id(self) -> str:
-        """The client a sign-in starting now goes through."""
-        return (await self._client.credentials(await self.endpoints())).client_id
+    async def client_id(self, choices: Mapping[str, str]) -> str:
+        """The client a sign-in starting now with `choices` goes through."""
+        return (await self._client.credentials(await self.endpoints(choices))).client_id
 
-    async def _token_request(self, form: dict[str, str]) -> TokenAnswer:
-        endpoints = await self.endpoints()
+    async def _token_request(
+        self, form: dict[str, str], choices: Mapping[str, str]
+    ) -> TokenAnswer:
+        endpoints = await self.endpoints(choices)
         client = await self._client.credentials(endpoints)
         identifying, headers = client_fields(endpoints, client)
         data = {**form, **identifying}
@@ -445,9 +487,10 @@ class OAuthAdapter:
         state: str,
         code_challenge: str,
         scopes: list[str],
+        choices: Mapping[str, str],
     ) -> str:
         """Where the person's browser goes to sign in and consent."""
-        endpoints = await self.endpoints()
+        endpoints = await self.endpoints(choices)
         client = await self._client.credentials(endpoints)
         query: dict[str, str] = {
             "response_type": "code",
@@ -468,18 +511,27 @@ class OAuthAdapter:
         return f"{endpoints.authorization}{separator}{urlencode(query)}"
 
     async def exchange_code(
-        self, *, code: str, verifier: str, redirect_uri: str, scopes: list[str]
+        self,
+        *,
+        code: str,
+        verifier: str,
+        redirect_uri: str,
+        scopes: list[str],
+        choices: Mapping[str, str],
     ) -> SignIn:
-        """The sign-in an authorization code stands for; Core keeps it."""
+        """The sign-in an authorization code stands for; Core keeps it, with
+        the choices it was made with."""
+        checked = self._checked(choices)
         answer = await self._token_request(
             {
                 "grant_type": "authorization_code",
                 "code": code,
                 "code_verifier": verifier,
                 "redirect_uri": redirect_uri,
-            }
+            },
+            checked,
         )
-        values = self._credentials(answer.body, {})
+        values = self._credentials(answer.body, {"choices": checked})
         granted = values.get("scope")
         return SignIn(
             ConnectionSecret(values),
@@ -487,12 +539,12 @@ class OAuthAdapter:
             answer.client_id,
         )
 
-    async def identify(self, access_token: str) -> Identity:
+    async def identify(self, access_token: str, choices: Mapping[str, str]) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
         response = await self._send(
             self._http.build_request(
                 "GET",
-                self._identity.url,
+                render(self._identity.url, self._checked(choices)),
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
@@ -528,7 +580,8 @@ class OAuthAdapter:
                 f"The {self._name} connection holds no refresh token."
             )
         answer = await self._token_request(
-            {"grant_type": "refresh_token", "refresh_token": refresh_token}
+            {"grant_type": "refresh_token", "refresh_token": refresh_token},
+            self._choices_of(secret),
         )
         return ConnectionSecret(self._credentials(answer.body, secret.values))
 
@@ -562,11 +615,14 @@ class OAuthAdapter:
                 f"Switch has stopped using the {self._name} sign-in but cannot "
                 f"revoke it, so it still works. {self._oauth.remove_access}"
             )
-        endpoints = await self.endpoints()
+        choices = self._choices_of(secret)
+        endpoints = await self.endpoints(choices)
         url = (
             endpoints.revocation
             if self._oauth.revocation_discovered
-            else self._oauth.revocation_url
+            else None
+            if self._oauth.revocation_url is None
+            else render(self._oauth.revocation_url, choices)
         )
         if url is None:
             raise ServiceAdapterError(

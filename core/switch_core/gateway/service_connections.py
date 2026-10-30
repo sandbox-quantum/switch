@@ -275,6 +275,8 @@ async def connect_with_key(
             external_identity=checked.label,
             secret=checked.secret,
             oauth_client_id=None,
+            method="keys",
+            choices=checked.choices,
         )
     except ServiceError as error:
         return service_refusal(error)

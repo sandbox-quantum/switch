@@ -19,6 +19,11 @@ it. A vendor that sends the browser back with an error rather than a code
 fails the flow with what it said: at Core's callback in core mode, and
 through Console, whose listener received it, in loopback mode.
 
+What the person picked before signing in, where the entry asks
+(`auth.oauth.choices`, a vendor's site), Console gives with the start. The
+flow keeps it, every step calls the vendor where it says, and the
+connection is written with it.
+
 Flows are rows in `sign_in_flows` (`connections/sign_in_flows.py`), as
 GitHub's are, so any switch-core process can take any step: ten minutes each,
 at most 256 per workspace, one per person.
@@ -111,6 +116,12 @@ class ServiceFlow:
         return self.stored.port
 
     @property
+    def choices(self) -> dict[str, str]:
+        """What the person picked before signing in; none from a flow
+        started before flows kept it, when no entry offered a choice."""
+        return dict(self.stored.details.get("choices", {}))
+
+    @property
     def error(self) -> str | None:
         return self.stored.error
 
@@ -131,6 +142,7 @@ class Exchange:
     flow: StoredFlow
     signed_in: SignIn
     account: Identity
+    choices: dict[str, str]
 
 
 class ServiceFlows:
@@ -164,7 +176,10 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
+        choices: dict[str, str],
     ) -> ServiceFlow:
+        """Start a sign-in with `choices`, already checked against the
+        entry's (`OAuthClient.checked_choices`)."""
         mode = self.mode(definition)
         if mode is None:
             raise FlowError(
@@ -207,6 +222,7 @@ class ServiceFlows:
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
+                    "choices": choices,
                 },
                 completion_secret=completion_secret,
             )
@@ -249,7 +265,7 @@ class ServiceFlows:
         its reason, and the `ServiceAdapterError` is raised on."""
         nonce = secrets.token_urlsafe(32)
         try:
-            client_id = await adapter.client_id()
+            client_id = await adapter.client_id(flow.choices)
         except ServiceAdapterError as error:
             await self.refuse(flow.stored, str(error))
             raise
@@ -270,6 +286,7 @@ class ServiceFlows:
                 state=flow.state,
                 code_challenge=s256(flow.stored.verifier),
                 scopes=list(flow.stored.details["scopes"]),
+                choices=flow.choices,
             )
         except ServiceAdapterError as error:
             await self.refuse(taken, str(error))
@@ -376,15 +393,20 @@ class ServiceFlows:
             raise refused
         try:
             recorded = flow.stored.details.get("client_id")
-            if recorded is not None and recorded != await adapter.client_id():
+            if recorded is not None and recorded != await adapter.client_id(
+                flow.choices
+            ):
                 raise ServiceAdapterError(client_changed(flow.name))
             signed_in = await adapter.exchange_code(
                 code=code,
                 verifier=flow.stored.verifier,
                 redirect_uri=flow.stored.redirect_uri,
                 scopes=list(flow.stored.details["scopes"]),
+                choices=flow.choices,
             )
-            account = await adapter.identify(signed_in.secret.access_token or "")
+            account = await adapter.identify(
+                signed_in.secret.access_token or "", flow.choices
+            )
         except ReauthorizationRequiredError:
             await self.failed(
                 checking, f"{flow.name} refused the sign-in. Connect again."
@@ -398,7 +420,9 @@ class ServiceFlows:
         except BaseException:
             await self.failed(checking, INTERRUPTED)
             raise
-        return Exchange(flow=checking, signed_in=signed_in, account=account)
+        return Exchange(
+            flow=checking, signed_in=signed_in, account=account, choices=flow.choices
+        )
 
     def consent(self, exchange: Exchange) -> AccessLevel:
         """What the person consented to, as the vendor granted it."""

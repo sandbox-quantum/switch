@@ -48,7 +48,11 @@ from switch_core.connections.adapters.oauth import (
     client_fields,
 )
 from switch_core.connections.app_credentials import AppSpec, AppValues
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    AccessLevel,
+    ConnectionDefinition,
+    OAuthClient,
+)
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
 GITHUB_APP_URL = "https://api.github.com/app"
@@ -329,6 +333,14 @@ async def check_github_app(
     return CheckResult(checks, settings={"slug": slug, "permissions": permissions})
 
 
+def _checked_only_at(oauth: OAuthClient, choices: dict[str, str]) -> str | None:
+    """Where a check that passed asked, for an entry with choices."""
+    if not choices:
+        return None
+    asked = ", ".join(f"{field.label} {choices[field.name]}" for field in oauth.choices)
+    return f"Checked at {asked} only: confirm the client works at the others."
+
+
 async def check_oauth_client(
     http: httpx.AsyncClient,
     definition: ConnectionDefinition,
@@ -336,13 +348,18 @@ async def check_oauth_client(
     redirect_uri: str,
 ) -> CheckResult:
     name = definition.name
+    oauth = definition.auth.oauth
+    assert oauth is not None
     client = OAuthClientCredentials(
         values.client_id, values.secrets["client_secret"], authentication=None
     )
+    # Asked at the first of each choice's list: the vendor at every one would
+    # be a request per site.
+    choices = oauth.first_choices()
     try:
         endpoints = await OAuthAdapter(
             definition, StaticClient(client), http
-        ).endpoints()
+        ).endpoints(choices)
     except ServiceAdapterError as refused:
         raise VendorUnreachableError(str(refused)) from None
     identifying, headers = client_fields(endpoints, client)
@@ -364,8 +381,6 @@ async def check_oauth_client(
     )
     error = _body(response).get("error")
     if error == "invalid_grant":
-        oauth = definition.auth.oauth
-        assert oauth is not None
         return CheckResult(
             [
                 Check(
@@ -373,7 +388,12 @@ async def check_oauth_client(
                     True,
                     f"{name} accepts this client ID and secret.",
                     None,
-                    oauth.unchecked,
+                    " ".join(
+                        note
+                        for note in (oauth.unchecked, _checked_only_at(oauth, choices))
+                        if note is not None
+                    )
+                    or None,
                 )
             ],
             settings={},

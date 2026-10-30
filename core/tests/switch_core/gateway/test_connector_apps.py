@@ -1155,6 +1155,8 @@ class TestCheckAndImpact:
                         external_identity=f"{name}@example.invalid",
                         encrypted_secret=TEST_KEYRING.encrypt("{}"),
                         oauth_client_id=STATIC_CLIENT_ID,
+                        method="oauth",
+                        choices={},
                     )
                     await session.commit()
         async with world.harness.client() as client:
