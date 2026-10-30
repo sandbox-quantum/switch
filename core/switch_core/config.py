@@ -335,6 +335,12 @@ class SwitchConfig(BaseSettings):
     # reason, and cannot be connected, granted or issued; disconnecting still
     # works. Unknown slugs stop the server.
     disabled_services: dict[str, str] = Field(default_factory=dict)
+    # Catalog services that reach what one of their entry's access profiles
+    # does on this server, in place of the entry's own levels, as JSON:
+    # {"<slug>": "<profile>"}. For a vendor that reviews an app before it may
+    # ask for some scopes, e.g. {"google-workspace": "drive-file"}. Unknown
+    # services or profiles stop the server.
+    service_access_profiles: dict[str, str] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -1378,6 +1384,20 @@ class SwitchConfig(BaseSettings):
                 raise ValueError(
                     f"DISABLED_SERVICES' reason for {slug} must be one line of at "
                     "most 300 characters."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_service_access_profiles(self) -> "SwitchConfig":
+        for slug, profile in self.service_access_profiles.items():
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
+                raise ValueError(
+                    f"SERVICE_ACCESS_PROFILES names an invalid service: {slug!r}"
+                )
+            if not _SERVICE_SLUG_RE.fullmatch(profile):
+                raise ValueError(
+                    f"SERVICE_ACCESS_PROFILES names an invalid profile for {slug}: "
+                    f"{profile!r}"
                 )
         return self
 

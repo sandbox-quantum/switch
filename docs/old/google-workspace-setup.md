@@ -67,6 +67,40 @@ the app first. Switch cannot tell which a client is, and works with either.
   test users you list can connect, and their sign-ins lapse after seven days,
   so they reconnect every week.
 
+### An External app without the security assessment
+
+Of the scopes Switch asks for, only `drive` and `drive.readonly` are
+restricted; the Docs, Sheets, Slides and Calendar ones are sensitive, which
+Google reviews without a security assessment. To verify an External app
+against those alone, set
+
+```bash
+SERVICE_ACCESS_PROFILES='{"google-workspace": "drive-file"}'
+```
+
+and restart switch-core. Sign-ins then ask for `drive.file`, which is not
+sensitive, in place of `drive` and `drive.readonly`, so declare these scopes on
+the app's Data Access page:
+
+- `openid` and `userinfo.email`
+- `documents`, `spreadsheets`, `presentations` and their `.readonly` forms
+- `calendar.readonly` and `calendar.events`
+- `drive.file`
+
+What agents can do changes, and they are told so:
+
+- Docs, Sheets and Slides: every file the person can open, by its link, as
+  before.
+- Drive: only the files and folders agents created through the connection.
+  Agents cannot search or list the person's other files, or read PDFs,
+  uploaded Office files, images and other files they did not create; they ask
+  for a link instead.
+- Calendar: as before.
+
+People connected before the setting changed keep what they granted. Going the
+other way, from `drive-file` back to the full scopes, people connected under
+`drive-file` must connect again before agents can search Drive.
+
 ## Give Switch the client
 
 In Switch Console, open **Admin** in the sidebar and **Connector apps** under
@@ -132,7 +166,8 @@ same client, so nobody reconnects.
    browser opens Google's consent page, then comes back through the server to
    Switch Console, which asks the person to confirm the account.
 2. Google lists what Switch asks for: reading and changing Drive files, Docs,
-   Sheets, Slides and calendar events, and the account's address. Unticking the
+   Sheets, Slides and calendar events, and the account's address (with
+   `drive-file`, only the Drive files Switch creates). Unticking the
    change permissions connects read-only, and Google then refuses every change
    an agent tries.
 3. On an agent's page (in Switch Console or the dashboard), the agent's owner

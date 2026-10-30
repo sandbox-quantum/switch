@@ -105,4 +105,35 @@ access:
       - https://www.googleapis.com/auth/spreadsheets
       - https://www.googleapis.com/auth/presentations
       - https://www.googleapis.com/auth/calendar.events
+# Google reviews an External app before anyone outside its organization may
+# grant it drive or drive.readonly, and for those two also wants a security
+# assessment renewed every year. A server whose app has passed only the
+# review of the other scopes chooses drive-file (SERVICE_ACCESS_PROFILES):
+# Docs, Sheets and Slides reach every file the person can open, by its id;
+# Drive reaches only the files and folders created through this connection.
+access_profiles:
+  drive-file:
+    skill: drive-file/SKILL.md
+    access:
+      read:
+        scopes:
+          - openid
+          - https://www.googleapis.com/auth/userinfo.email
+          - https://www.googleapis.com/auth/documents.readonly
+          - https://www.googleapis.com/auth/spreadsheets.readonly
+          - https://www.googleapis.com/auth/presentations.readonly
+          - https://www.googleapis.com/auth/calendar.readonly
+      write:
+        scopes:
+          - openid
+          - https://www.googleapis.com/auth/userinfo.email
+          - https://www.googleapis.com/auth/documents.readonly
+          - https://www.googleapis.com/auth/spreadsheets.readonly
+          - https://www.googleapis.com/auth/presentations.readonly
+          - https://www.googleapis.com/auth/calendar.readonly
+          - https://www.googleapis.com/auth/drive.file
+          - https://www.googleapis.com/auth/documents
+          - https://www.googleapis.com/auth/spreadsheets
+          - https://www.googleapis.com/auth/presentations
+          - https://www.googleapis.com/auth/calendar.events
 tools: { mode: pass_through }

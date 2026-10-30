@@ -21,7 +21,11 @@ from switch_core.connections.adapters import ConnectionSecret
 from switch_core.connections.adapters.oauth import OAuthAdapter, OAuthClientCredentials
 from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.flows import ServiceFlows
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import (
+    CATALOG,
+    Connection,
+    with_access_profiles,
+)
 from switch_core.connections.oauth_clients import LOOPBACK_CALLBACK_PATH
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -79,10 +83,11 @@ def _world(
     *,
     client_settings: bool = True,
     disabled: dict[str, str] | None = None,
+    catalog: dict[str, Connection] = CATALOG,
 ) -> World:
     google = FakeGoogle()
     adapters = build_adapters(
-        CATALOG,
+        catalog,
         github_app=None,
         oauth_clients=(
             {
@@ -104,7 +109,7 @@ def _world(
     broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
-        catalog=CATALOG,
+        catalog=catalog,
         adapters=adapters,
         disabled=disabled or {},
         store=STORE,
@@ -292,6 +297,73 @@ class TestSignIn:
         connection = await _connection(session_factory, ada.id)
         assert connection.consent == "read"
         assert not WRITE_ONLY & set(connection.granted_scopes)
+
+
+DRIVE_FILE = with_access_profiles(CATALOG, {SERVICE: "drive-file"})
+WRITE_ONLY_DRIVE_FILE = (WRITE_ONLY - {GOOGLE_SCOPE + "drive"}) | {
+    GOOGLE_SCOPE + "drive.file"
+}
+
+
+class TestTheDriveFileProfile:
+    async def test_signs_in_without_googles_restricted_drive_scopes(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, catalog=DRIVE_FILE)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        [authorization] = world.google.authorizations
+        scopes = set(authorization["scope"].split())
+        assert {
+            "openid",
+            GOOGLE_SCOPE + "userinfo.email",
+        } | WRITE_ONLY_DRIVE_FILE <= scopes
+        assert not {GOOGLE_SCOPE + "drive", GOOGLE_SCOPE + "drive.readonly"} & scopes
+        connection = await _connection(session_factory, ada.id)
+        assert connection.consent == "write"
+
+    async def test_a_sign_in_without_the_write_scopes_is_read_only(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, catalog=DRIVE_FILE)
+        world.google.unticked = set(WRITE_ONLY_DRIVE_FILE)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        assert connection.consent == "read"
+
+    async def test_a_granted_agent_is_told_drive_reaches_only_what_it_creates(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, catalog=DRIVE_FILE)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            await _connect(world, client, ada)
+        connection = await _connection(session_factory, ada.id)
+        async with session_factory() as session:
+            agent = await add_agent(session, name="planner", owner_id=ada.id)
+            await STORE.save_grant(
+                session,
+                agent_id=agent.id,
+                owner_id=ada.id,
+                service=SERVICE,
+                access="write",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id=connection.account_id,
+                created_by=ada.id,
+            )
+            await session.commit()
+            [grant] = await world.broker.grants_for(
+                session, agent, Principal.agent_key()
+            )
+        assert (
+            grant["skill"]["content"]
+            == CATALOG[SERVICE].skill_files["drive-file/SKILL.md"]
+        )
 
 
 class TestAgents:

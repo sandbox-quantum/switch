@@ -102,7 +102,7 @@ from switch_core.connections.app_credentials import ConnectorApps
 from switch_core.connections.app_signals import ConnectorAppSignals
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.github_move import move_github_connections
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
@@ -1183,6 +1183,8 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     # Each connector's app, from configuration or a row the operator saved,
     # before anything that serves a sign-in reads them.
     service_http = guarded_async_client(config.outbound_policy, timeout=20)
+    # The catalog as this server offers it: an entry may reach less here.
+    catalog = with_access_profiles(CATALOG, config.service_access_profiles)
     service_registration = ClientRegistration(
         session_factory=session_factory,
         keyring=config.keyring,
@@ -1190,7 +1192,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         server_name=config.id_server_name,
     )
     connector_apps = ConnectorApps(
-        catalog=CATALOG,
+        catalog=catalog,
         config=config,
         environ=os.environ,
         session_factory=session_factory,
@@ -1333,9 +1335,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     service_broker = ServiceBroker(
         session_factory=session_factory,
         keyring=config.keyring,
-        catalog=CATALOG,
+        catalog=catalog,
         adapters=build_adapters(
-            CATALOG,
+            catalog,
             github_app=connector_apps.github_app(),
             oauth_clients=connector_apps.oauth_clients(),
             http=service_http,
