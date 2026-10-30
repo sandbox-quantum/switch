@@ -921,6 +921,11 @@ class TenantCreateRequest(BaseModel):
     name: str
 
 
+class TenantDeleteRequest(BaseModel):
+    # The workspace's name, typed by the person deleting it.
+    name: str
+
+
 class SessionStateUser(BaseModel):
     id: str
     name: str

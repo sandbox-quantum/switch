@@ -22,6 +22,7 @@ from switch_core.db.models import AuditEvent, ServerAuditEvent
 
 class AuditAction(StrEnum):
     TENANT_CREATED = "tenant.created"
+    TENANT_DELETED = "tenant.deleted"
     INVITATION_CREATED = "invitation.created"
     INVITATION_REVOKED = "invitation.revoked"
     INVITATION_ACCEPTED = "invitation.accepted"
@@ -61,6 +62,7 @@ class ServerAuditAction(StrEnum):
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"
+    WORKSPACE_DELETED = "workspace.deleted"
 
 
 async def record_audit_event(

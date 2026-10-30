@@ -22,7 +22,8 @@ from sqlalchemy.pool import NullPool
 from switch_core.chats import MEMBER_CLIENT_TYPE
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.clients.client_signals import ClientSignals
-from switch_core.db.models import TENANT_ZERO_ID, Agent, Client
+from switch_core.db.models import TENANT_ZERO_ID, Agent, ApiKey, Client, Tenant
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.signals import SignalBus
@@ -300,4 +301,41 @@ class TestReconcile:
             store.get_all = real_get_all  # type: ignore[method-assign]
 
         assert lifecycle.get(registered[0]) is not None
+        await lifecycle.stop_all()
+
+
+async def test_a_workspace_deleted_unannounced_stops_its_clients_on_the_recheck(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The signal that would have stopped them was missed, and the workspace
+    has no row left for the re-check to list: the clients running here for it
+    are what name it."""
+    lifecycle = _lifecycle(session_factory)
+    gone = f"gone-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        session.add(Tenant(id=gone, slug=gone, name=gone))
+        await session.commit()
+    async with tenant_session(session_factory, gone) as session:
+        agent = await _make_agent(session, f"doomed-{uuid.uuid4().hex[:8]}")
+        await session.commit()
+    client_id = agent.client_id
+    assert client_id is not None
+    await lifecycle.reconcile_tenant(gone)
+    copy = lifecycle.get(client_id)
+    assert copy is not None
+
+    async with tenant_session(session_factory, gone) as session:
+        await session.execute(delete(Agent).where(Agent.id == agent.id))
+        await session.execute(delete(Client).where(Client.id == client_id))
+        await session.execute(delete(ApiKey).where(ApiKey.tenant_id == gone))
+        await session.commit()
+    async with session_factory() as session:
+        await session.execute(delete(Tenant).where(Tenant.id == gone))
+        await session.commit()
+
+    await lifecycle.reconcile_all()
+    try:
+        assert lifecycle.get(client_id) is None
+        assert isinstance(copy, _Consumer) and copy.stopped
+    finally:
         await lifecycle.stop_all()

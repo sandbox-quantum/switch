@@ -1187,6 +1187,12 @@ export async function fetchMembers(tenantId: string): Promise<Member[]> {
   return jsonRequest<Member[]>(`/tenants/${encodeURIComponent(tenantId)}/members`, "GET");
 }
 
+// Owner only, and only once the workspace is empty: the server refuses
+// otherwise, listing what is left.
+export async function deleteWorkspace(tenantId: string, name: string): Promise<void> {
+  await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "DELETE", { name });
+}
+
 export type OwnershipKind =
   | "agent"
   | "room"

@@ -332,8 +332,12 @@ class ClientLifecycleService:
                 actor.preload_agent(agent)
 
     async def reconcile_all(self) -> None:
-        """`reconcile_tenant` for every tenant."""
-        for tenant_id in await all_tenant_ids(self._session_factory):
+        """`reconcile_tenant` for every tenant, and for every tenant a client
+        runs here for: a workspace deleted elsewhere has no row left to list,
+        and its clients here stop on the re-read finding none of theirs."""
+        tenant_ids = set(await all_tenant_ids(self._session_factory))
+        tenant_ids |= set(self._client_tenants.values())
+        for tenant_id in sorted(tenant_ids):
             await self.reconcile_tenant(tenant_id)
 
     async def reconcile_tenant(self, tenant_id: str) -> None:

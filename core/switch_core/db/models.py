@@ -83,9 +83,10 @@ def _uuid() -> str:
 class Tenant(Base):
     """The top-level customer boundary every scoped table hangs off.
 
-    Deliberately minimal: no `plan`, `status` or `deleted_at`. A later phase
-    adds plans and deletion; a `deleted_at` that nothing honours yet would
-    read as a guarantee the code does not make.
+    Deliberately minimal: no `plan`, `status` or `deleted_at`. Deleting a
+    workspace deletes this row (`accounts/workspace_deletion.py`); a
+    `deleted_at` that nothing honours would read as a guarantee the code does
+    not make.
     """
 
     __tablename__ = "tenants"
@@ -550,7 +551,7 @@ class TenantJoinDomain(TenantScoped, Base):
     )
 
 
-class AuditEvent(TenantScoped, Base):
+class AuditEvent(Base):
     """One security-relevant change in a tenant: who did what, to what, when.
 
     Written in the same transaction as the change it records wherever that
@@ -572,6 +573,11 @@ class AuditEvent(TenantScoped, Base):
     `occurred_at` defaults to `clock_timestamp()`, not `now()`: two events in
     one transaction would otherwise share a timestamp, and the read pages back
     by it.
+
+    `tenant_id` carries no foreign key either, for the same reason: deleting a
+    workspace leaves its history behind, readable by no member since none is
+    left, and the runtime role could not delete it anyway. It is still scoped
+    by the policy (`rls_ddl.HISTORY_TABLES`).
     """
 
     __tablename__ = "audit_events"
@@ -579,6 +585,9 @@ class AuditEvent(TenantScoped, Base):
         Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
     )
 
+    tenant_id: Mapped[str] = mapped_column(
+        Text, nullable=False, default=require_tenant_id
+    )
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False

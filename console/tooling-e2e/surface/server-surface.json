@@ -251,6 +251,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/tenants/{tenant_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/tenants/{tenant_id}/budgets/{budget_id}",
       "auth": "session",
       "flags": []
