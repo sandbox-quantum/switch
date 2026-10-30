@@ -83,6 +83,7 @@ def _apps(
             keyring=TEST_KEYRING,
             public_url=settings.gateway_public_url,
             server_name="switch.local",
+            redirects=settings.service_sign_in_redirect,
         ),
     )
 

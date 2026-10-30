@@ -11,7 +11,8 @@ and carries no tenant, so it is read in a session bound to none.
 
 Where a sign-in may return is fixed at registration: Switch Console's
 listener on 127.0.0.1 (any port, as RFC 8252 lets a native client ask), and
-Core's own callback where the server knows its public address.
+Core's own callback only where sign-ins come back through it, because the
+entry lists no other way or the server names it (`SERVICE_SIGN_IN_REDIRECT`).
 """
 
 from __future__ import annotations
@@ -78,21 +79,24 @@ def sign_in_mode(
 def redirect_uris(
     service: str,
     modes: list[RedirectMode],
+    named: RedirectMode | None,
     public_url: str | None,
     loopback_ports: list[int] | None,
 ) -> list[str]:
-    """Every redirect a registration lists, for the modes this server can use:
-    one per loopback port where the vendor matches the port too, or one with
-    no port, which RFC 8252 lets a native client use on any."""
+    """Every redirect a client lists for `service` on this server: Switch
+    Console's listener where the entry lists loopback, one per loopback port
+    where the vendor matches the port too, or one with no port, which RFC 8252
+    lets a native client use on any; and Core's callback only where sign-ins
+    come back through it. A vendor whose admin must allow-list the callback
+    is never sent it until the server names `core`."""
     uris = []
-    for mode in modes:
-        if mode == "loopback":
-            if loopback_ports is None:
-                uris.append(LOOPBACK_REDIRECT_URI)
-            else:
-                uris.extend(loopback_redirect(port) for port in loopback_ports)
-        elif public_url is not None:
-            uris.append(core_callback(public_url, service))
+    if "loopback" in modes:
+        if loopback_ports is None:
+            uris.append(LOOPBACK_REDIRECT_URI)
+        else:
+            uris.extend(loopback_redirect(port) for port in loopback_ports)
+    if public_url is not None and sign_in_mode(modes, named, public_url) == "core":
+        uris.append(core_callback(public_url, service))
     return uris
 
 

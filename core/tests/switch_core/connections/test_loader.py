@@ -138,10 +138,12 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     definition = CATALOG["atlassian"].definition
     oauth = definition.auth.oauth
     assert oauth is not None
+    # Console's listener by default; Core's callback where the server names it,
+    # since a site's admin must allow-list it first.
     assert (definition.adapter, oauth.registration, oauth.redirect) == (
         "oauth",
         "dynamic",
-        ["loopback"],
+        ["loopback", "core"],
     )
     # Atlassian matches a loopback redirect's port, so the ports are fixed.
     assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3

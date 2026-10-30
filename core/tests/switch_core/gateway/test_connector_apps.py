@@ -224,6 +224,7 @@ class World:
             keyring=TEST_KEYRING,
             public_url=self.public_url,
             server_name="switch.example.com",
+            redirects=config.service_sign_in_redirect,
         )
         apps = ConnectorApps(
             catalog=CATALOG,
