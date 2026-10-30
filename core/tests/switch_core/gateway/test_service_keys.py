@@ -126,6 +126,8 @@ async def _connected_before(
                 json.dumps({"access_token": token, "expires_at": time.time()})
             ),
             oauth_client_id=None,
+            method="keys",
+            choices={},
         )
         await STORE.save_grant(
             session,

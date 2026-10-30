@@ -137,7 +137,7 @@ class RegisteredClient:
                     {"key": f"service-oauth-client:{self._service}"},
                 )
                 row = await session.get(
-                    ServiceOAuthClient, self._service, populate_existing=True
+                    ServiceOAuthClient, (self._service, ""), populate_existing=True
                 )
                 stored = (
                     None
@@ -161,6 +161,7 @@ class RegisteredClient:
                         session.add(
                             ServiceOAuthClient(
                                 service=self._service,
+                                choice="",
                                 registration_endpoint=endpoint,
                                 oauth_client_id=client.client_id,
                                 encrypted_secret=encrypted,
