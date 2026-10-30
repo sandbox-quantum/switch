@@ -22,7 +22,9 @@ headers or each CLI run's environment, by template. Placeholder entries may
 leave all of those out.
 """
 
+import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -53,6 +55,9 @@ class CatalogError(RuntimeError):
 
 
 AccessLevel = Literal["read", "write"]
+# How a person connected a service: signed in (`oauth`), or pasted a token
+# (`token`) or keys (`keys`).
+ConnectionMethod = Literal["oauth", "token", "keys"]
 
 
 AdapterName = Literal["github", "oauth", "api_key"]
@@ -60,6 +65,82 @@ RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+
+
+FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
+HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+# A choice ends up in a URL's host or path, so it is a plain DNS-ish word.
+CHOICE_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,62}$"
+TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]*)\}")
+# What a session host puts in a template for a token that is not made of
+# fields: the whole token, as an OAuth entry's servers take it.
+TOKEN_PLACEHOLDER = "token"
+
+
+def template_fields(template: str) -> list[str]:
+    """The fields a template names, as `{name}`; a stray brace is refused."""
+    names = TEMPLATE_FIELD_RE.findall(template)
+    if TEMPLATE_FIELD_RE.sub("", template).count("{") or TEMPLATE_FIELD_RE.sub(
+        "", template
+    ).count("}"):
+        raise ValueError(f"{template!r} has a brace that names no field")
+    for name in names:
+        if not re.fullmatch(FIELD_NAME_PATTERN, name):
+            raise ValueError(f"{template!r} names a field that cannot be one: {name!r}")
+    return names
+
+
+def render(template: str, values: Mapping[str, str]) -> str:
+    """`template` with each `{field}` replaced by its value."""
+    return TEMPLATE_FIELD_RE.sub(lambda match: values[match.group(1)], template)
+
+
+def choice_key(choices: Mapping[str, str]) -> str:
+    """Choices as one stable string, which keys what is kept per choice (a
+    client Core registered): empty for none, a lone choice's value, or
+    several as compact JSON in the order of their names."""
+    if not choices:
+        return ""
+    if len(choices) == 1:
+        return next(iter(choices.values()))
+    return json.dumps(dict(sorted(choices.items())), separators=(",", ":"))
+
+
+class ChoicesError(ValueError):
+    """Choices that are not an entry's own; the message is for the person."""
+
+
+class ApiKeyField(BaseModel):
+    """One value a person pastes, or picks, to connect.
+
+    A `secret` field is the key itself, typed freely and never shown again.
+    Any other field is a choice among `choices` (a site, a region), which
+    templates may put in a URL: never free text.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: str = Field(pattern=FIELD_NAME_PATTERN)
+    label: str = Field(min_length=1, max_length=64)
+    secret: bool
+    help: str | None = Field(
+        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
+    )
+    choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
+
+    @model_validator(mode="after")
+    def _secret_or_choice(self) -> "ApiKeyField":
+        if self.name == TOKEN_PLACEHOLDER:
+            raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
+        if self.secret == (self.choices is not None):
+            raise ValueError(
+                f"field {self.name} is a secret typed freely, or a choice among "
+                "choices: one of the two"
+            )
+        if self.choices is not None and len(set(self.choices)) != len(self.choices):
+            raise ValueError(f"field {self.name} lists a choice twice")
+        return self
 
 
 class OAuthClient(BaseModel):
@@ -94,6 +175,14 @@ class OAuthClient(BaseModel):
     So are `authorization_params`, which only a vendor-specific key may name
     (`access_type: offline`, for a vendor that hands out a refresh token only
     when asked), never one Core sets itself.
+
+    `choices`: what the person picks from a fixed list before signing in (a
+    vendor's site or region), each a field that is never secret. The entry's
+    URLs (its MCP servers', which endpoints are discovered from, its
+    identity's, and its authorization, token and revocation URLs) may name
+    them as `{name}`, and are rendered with the choices each sign-in and each
+    connection was made with. A client Core registers is registered once per
+    choice, since each may be another authorization server.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -117,9 +206,17 @@ class OAuthClient(BaseModel):
     revocation_ends_tokens: bool = False
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
+    choices: list[ApiKeyField] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def _consistent(self) -> "OAuthClient":
+        names = [field.name for field in self.choices]
+        if len(set(names)) != len(names):
+            raise ValueError("two choices share a name")
+        if any(field.secret for field in self.choices):
+            raise ValueError(
+                "a choice before a sign-in is picked from a list, never a secret"
+            )
         if self.prompt is not None:
             prompts = self.prompt.split(" ")
             if len(set(prompts)) != len(prompts):
@@ -173,6 +270,28 @@ class OAuthClient(BaseModel):
             )
         return self
 
+    def checked_choices(self, submitted: Mapping[str, str]) -> dict[str, str]:
+        """`submitted` as this entry's choices: each one picked from its list,
+        and nothing else. `ChoicesError` says what does not fit."""
+        expected = {field.name: field for field in self.choices}
+        unknown = sorted(set(submitted) - set(expected))
+        if unknown:
+            raise ChoicesError(f"There is no choice named {', '.join(unknown)}.")
+        values: dict[str, str] = {}
+        for name, field in expected.items():
+            listed = field.choices or []
+            value = submitted.get(name)
+            if value is None:
+                raise ChoicesError(f"{field.label} is required.")
+            if value not in listed:
+                raise ChoicesError(f"{field.label} must be one of {', '.join(listed)}.")
+            values[name] = value
+        return values
+
+    def first_choices(self) -> dict[str, str]:
+        """The first of each choice's list."""
+        return {field.name: (field.choices or [])[0] for field in self.choices}
+
 
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
@@ -183,62 +302,6 @@ class ConnectionIdentity(BaseModel):
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
-
-
-FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
-HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
-# A choice ends up in a URL's host or path, so it is a plain DNS-ish word.
-CHOICE_PATTERN = r"^[a-z0-9][a-z0-9.-]{0,62}$"
-TEMPLATE_FIELD_RE = re.compile(r"\{([^{}]*)\}")
-# What a session host puts in a template for a token that is not made of
-# fields: the whole token, as an OAuth entry's servers take it.
-TOKEN_PLACEHOLDER = "token"
-
-
-def template_fields(template: str) -> list[str]:
-    """The fields a template names, as `{name}`; a stray brace is refused."""
-    names = TEMPLATE_FIELD_RE.findall(template)
-    if TEMPLATE_FIELD_RE.sub("", template).count("{") or TEMPLATE_FIELD_RE.sub(
-        "", template
-    ).count("}"):
-        raise ValueError(f"{template!r} has a brace that names no field")
-    for name in names:
-        if not re.fullmatch(FIELD_NAME_PATTERN, name):
-            raise ValueError(f"{template!r} names a field that cannot be one: {name!r}")
-    return names
-
-
-class ApiKeyField(BaseModel):
-    """One value a person pastes, or picks, to connect.
-
-    A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    name: str = Field(pattern=FIELD_NAME_PATTERN)
-    label: str = Field(min_length=1, max_length=64)
-    secret: bool
-    help: str | None = Field(
-        default=None, min_length=1, max_length=200, pattern=r"^[^\n]+$"
-    )
-    choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
-        default=None, min_length=1, max_length=20
-    )
-
-    @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
-        if self.name == TOKEN_PLACEHOLDER:
-            raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
-            raise ValueError(
-                f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
-            )
-        if self.choices is not None and len(set(self.choices)) != len(self.choices):
-            raise ValueError(f"field {self.name} lists a choice twice")
-        return self
 
 
 class ApiKeyIdentity(BaseModel):
@@ -282,7 +345,8 @@ class ApiKeySignIn(BaseModel):
         if not any(field.secret for field in self.fields):
             raise ValueError("an api_key sign-in has at least one secret field")
         check_templates(
-            self,
+            fields=self.field_names(),
+            choices=self.choice_names(),
             urls=[self.identity.url],
             values=list(self.identity.headers.values()),
             where="the identity call",
@@ -297,11 +361,15 @@ class ApiKeySignIn(BaseModel):
 
 
 def check_templates(
-    sign_in: "ApiKeySignIn", *, urls: list[str], values: list[str], where: str
+    *,
+    fields: set[str],
+    choices: set[str],
+    urls: list[str],
+    values: list[str],
+    where: str,
 ) -> None:
-    """Templates name only the sign-in's fields, and a URL only its choices."""
-    known = sign_in.field_names()
-    choices = sign_in.choice_names()
+    """Templates name only the entry's `fields`, and a URL only its `choices`:
+    the fields picked from a list, never a secret."""
     for url in urls:
         for name in template_fields(url):
             if name not in choices:
@@ -310,7 +378,7 @@ def check_templates(
                 )
     for value in values:
         for name in template_fields(value):
-            if name not in known:
+            if name not in fields:
                 raise ValueError(f"{where} names an unknown field {name!r}")
 
 
@@ -520,10 +588,36 @@ class LevelAccess(BaseModel):
         return self
 
 
+# A scope as a token answer lists it: one printable word.
+SCOPE_PATTERN = r"^[\x21-\x7e]{1,256}$"
+
+
+class ConsentMarkers(BaseModel):
+    """How a sign-in's level is read where the scopes asked for cannot tell
+    it: a vendor whose consent page offers levels of its own, and whose
+    token answers with its own list of permissions. The level is `write`
+    where the token's scope holds the `write` marker, `read` where it holds
+    only the `read` one; with neither, the sign-in is refused."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    read: str = Field(pattern=SCOPE_PATTERN)
+    write: str = Field(pattern=SCOPE_PATTERN)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> "ConsentMarkers":
+        if self.read == self.write:
+            raise ValueError("the read and write consent markers are one scope")
+        return self
+
+
 class ConnectionAccess(BaseModel):
+    """What each level reaches, and, where the scopes cannot say which one a
+    sign-in was given, the markers that do (`consent`)."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
+    consent: ConsentMarkers | None = None
 
 
 class ConnectionTools(BaseModel):
@@ -585,6 +679,13 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if self.access is not None and self.access.consent is not None:
+            if self.adapter != "oauth":
+                raise ValueError("only an oauth entry reads its consent from markers")
+            if self.access.write is None:
+                raise ValueError(
+                    "consent markers tell read from write: the entry names both levels"
+                )
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
@@ -635,7 +736,8 @@ class ConnectionDefinition(BaseModel):
                         f"MCP server {server.name} names the headers the key goes in"
                     )
                 check_templates(
-                    sign_in,
+                    fields=sign_in.field_names(),
+                    choices=sign_in.choice_names(),
                     urls=[server.url],
                     values=list(server.headers.values()),
                     where=f"MCP server {server.name}",
@@ -644,7 +746,8 @@ class ConnectionDefinition(BaseModel):
             if self.cli.env is None:
                 raise ValueError("an api_key entry's tool names env templates")
             check_templates(
-                sign_in,
+                fields=sign_in.field_names(),
+                choices=sign_in.choice_names(),
                 urls=[],
                 values=list(self.cli.env.values()),
                 where=f"command-line tool {self.cli.name}",
@@ -711,6 +814,33 @@ class ConnectionDefinition(BaseModel):
             for level in (self.access.read, self.access.write)
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
+        self._check_oauth_templates()
+
+    def _check_oauth_templates(self) -> None:
+        """An OAuth entry's URLs name only its choices, and only as `{name}`."""
+        oauth = self.auth.oauth
+        choices = set() if oauth is None else {field.name for field in oauth.choices}
+        urls: list[tuple[str, str | None]] = [
+            *(
+                (f"MCP server {server.name}", server.url)
+                for server in (self.mcp.servers if self.mcp is not None else [])
+            ),
+            (
+                "the identity call",
+                None if self.auth.identity is None else self.auth.identity.url,
+            ),
+        ]
+        if oauth is not None:
+            urls += [
+                ("the authorization endpoint", oauth.authorization_url),
+                ("the token endpoint", oauth.token_url),
+                ("the revocation endpoint", oauth.revocation_url),
+            ]
+        for where, url in urls:
+            if url is not None:
+                check_templates(
+                    fields=choices, choices=choices, urls=[url], values=[], where=where
+                )
 
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while

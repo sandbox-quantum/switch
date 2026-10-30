@@ -4070,6 +4070,9 @@ class ServiceConnection(TenantScoped, Base):
         CheckConstraint(
             "consent IN ('read', 'write')", name="ck_service_connections_consent"
         ),
+        CheckConstraint(
+            "method IN ('oauth', 'token', 'keys')", name="ck_service_connections_method"
+        ),
     )
 
     user_id: Mapped[str] = mapped_column(
@@ -4088,6 +4091,17 @@ class ServiceConnection(TenantScoped, Base):
     # a client the operator has since replaced is known to need reconnecting.
     # Null for a key, and for a sign-in made before it was recorded.
     oauth_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the person picked from the catalog entry's fixed lists to connect
+    # (a vendor's site), by name: every URL called for the connection is the
+    # one for its choices. Empty for an entry that offers none.
+    choices: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    # How the person connected: `oauth` (a sign-in), `token` (a pasted
+    # token) or `keys` (pasted keys).
+    method: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'oauth'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -4171,18 +4185,24 @@ class ServiceOAuthClient(Base):
     """The OAuth client Core registered for itself at a service's vendor.
 
     Dynamic client registration (RFC 7591), for a vendor that offers no other
-    way to have a client: one row per deployment and service, written on the
-    first connect. Deployment-wide, because the vendor sees one Switch, and
-    every workspace's connections sign in through it. `encrypted_secret` is
-    keyring-encrypted JSON of the vendor's registration answer, its
-    `client_secret` included where the vendor issued one;
-    `registration_endpoint` is where it was registered, so a vendor that moves
-    it gets a new registration rather than an unknown client.
+    way to have a client: one row per deployment, service and choice, written
+    on the first connect. Deployment-wide, because the vendor sees one Switch,
+    and every workspace's connections sign in through it. `choice` is the
+    catalog entry's choices as one string (`connections/loader.py`,
+    `choice_key`), empty for an entry that offers none: a vendor at several
+    sites is another authorization server at each, and registers a client at
+    each. `encrypted_secret` is keyring-encrypted JSON of the vendor's
+    registration answer, its `client_secret` included where the vendor issued
+    one; `registration_endpoint` is where it was registered, so a vendor that
+    moves it gets a new registration rather than an unknown client.
     """
 
     __tablename__ = "service_oauth_clients"
 
     service: Mapped[str] = mapped_column(Text, primary_key=True)
+    choice: Mapped[str] = mapped_column(
+        Text, primary_key=True, server_default=text("''")
+    )
     registration_endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     oauth_client_id: Mapped[str] = mapped_column(Text, nullable=False)
     encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,10 +36,10 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import (
-    TEMPLATE_FIELD_RE,
     AccessLevel,
     ApiKeySignIn,
     ConnectionDefinition,
+    render,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -55,11 +56,6 @@ class InvalidKeyError(ServiceAdapterError):
 class KeyIdentity:
     account_id: str
     label: str
-
-
-def render(template: str, values: dict[str, str]) -> str:
-    """`template` with each `{field}` replaced by its value."""
-    return TEMPLATE_FIELD_RE.sub(lambda match: values[match.group(1)], template)
 
 
 def key_token(sign_in: ApiKeySignIn, values: dict[str, str]) -> str:
@@ -92,7 +88,7 @@ class ApiKeyAdapter:
         self._sign_in = sign_in
         self._http = http
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return None
 
     def checked_fields(self, submitted: dict[str, str]) -> dict[str, str]:
@@ -199,6 +195,10 @@ class ApiKeyAdapter:
     def secret(self, values: dict[str, str]) -> ConnectionSecret:
         """What the connection stores: the token a session host is handed."""
         return ConnectionSecret({"access_token": key_token(self._sign_in, values)})
+
+    def choices(self, values: dict[str, str]) -> dict[str, str]:
+        """The fields picked from a list (a site), which are not secret."""
+        return {f.name: values[f.name] for f in self._sign_in.fields if not f.secret}
 
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 

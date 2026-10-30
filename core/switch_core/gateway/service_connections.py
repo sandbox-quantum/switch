@@ -153,6 +153,11 @@ async def list_service_connections(
                 "external_identity": (
                     None if connection is None else connection.external_identity
                 ),
+                # How the person connected (`oauth`, `token` or `keys`), and
+                # what they picked from the entry's lists to (a site); null
+                # when not connected.
+                "method": None if connection is None else connection.method,
+                "choices": None if connection is None else dict(connection.choices),
             }
         )
     return {"connections": entries}
@@ -275,6 +280,8 @@ async def connect_with_key(
             external_identity=checked.label,
             secret=checked.secret,
             oauth_client_id=None,
+            method="keys",
+            choices=checked.choices,
         )
     except ServiceError as error:
         return service_refusal(error)

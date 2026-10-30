@@ -121,6 +121,11 @@ def test_the_token_splits_secret_from_public_fields_and_templates_fill_in() -> N
     )
 
 
+def test_the_connection_keeps_the_fields_picked_from_a_list_as_its_choices() -> None:
+    adapter = _adapter(lambda request: httpx.Response(200))
+    assert adapter.choices(FIELDS) == {"region": "eu.example.test"}
+
+
 async def test_disconnecting_says_only_the_vendor_can_revoke_a_key() -> None:
     adapter = _adapter(lambda request: httpx.Response(200))
     with pytest.raises(ConnectionNotRevocable, match="Revoke it in Example"):

@@ -146,6 +146,8 @@ async def _connect(
             json.dumps(_secret(expires_in=expires_in))
         ),
         oauth_client_id=None,
+        method="oauth",
+        choices={},
     )
 
 
@@ -973,6 +975,8 @@ class TestSwitchedOff:
                     external_identity="ada-gh",
                     secret=ConnectionSecret(_secret(expires_in=3600)),
                     oauth_client_id=None,
+                    method="oauth",
+                    choices={},
                 )
             assert (caught.value.status_code, caught.value.message) == (403, reason)
 
@@ -1071,6 +1075,8 @@ async def _pass_through(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         grant = await STORE.save_grant(
             session,
@@ -1530,6 +1536,8 @@ async def _gated(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -1610,6 +1618,8 @@ async def _connect_github(g: Gated, session_factory) -> None:
             external_identity="ada-gh",
             secret=ConnectionSecret(dict(NEW_GITHUB_SIGN_IN)),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
 
 
@@ -1625,6 +1635,8 @@ async def _connect_key(g: Gated, session_factory) -> None:
             external_identity="Key · datadoghq.eu",
             secret=ConnectionSecret(dict(DATADOG_KEY)),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
 
 
@@ -1640,6 +1652,8 @@ async def _relink_oauth(g: Gated, session_factory) -> None:
             external_identity="ada@example.test",
             secret=ConnectionSecret(dict(NEW_EXAMPLE_SIGN_IN)),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
 
 

@@ -1,3 +1,4 @@
+import re
 import shutil
 
 import pytest
@@ -7,6 +8,8 @@ from switch_core.connections.loader import (
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    ChoicesError,
+    choice_key,
     load_catalog,
 )
 
@@ -677,6 +680,234 @@ def test_rejects_an_incomplete_or_inconsistent_oauth_entry(
     assert old in OAUTH_ENTRY
     _write_example(catalog_copy, OAUTH_ENTRY.replace(old, new))
     with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+CHOICES = (
+    "    choices:\n"
+    "      - name: site\n"
+    "        label: Example site\n"
+    "        secret: false\n"
+    "        choices: [example.test, eu.example.test]\n"
+)
+# Example at two sites, each its own MCP server, account API and
+# authorization server, as a vendor with regional deployments is.
+CHOICES_ENTRY = (
+    OAUTH_ENTRY.replace(
+        "    redirect: [loopback, core]\n", "    redirect: [loopback, core]\n" + CHOICES
+    )
+    .replace("https://api.example.test/me", "https://api.{site}/me")
+    .replace("https://mcp.example.test/v1/mcp", "https://mcp.{site}/v1/mcp")
+)
+
+
+def test_loads_an_oauth_entry_whose_urls_name_its_choices(catalog_copy):
+    _write_example(catalog_copy, CHOICES_ENTRY)
+    definition = load_catalog(catalog_copy)["example"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    [field] = oauth.choices
+    assert (field.name, field.secret, field.choices) == (
+        "site",
+        False,
+        ["example.test", "eu.example.test"],
+    )
+    assert definition.mcp is not None
+    assert definition.mcp.servers[0].url == "https://mcp.{site}/v1/mcp"
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.{site}/me"
+
+
+def test_an_entry_without_choices_has_none(catalog_copy):
+    _write_example(catalog_copy)
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None and oauth.choices == []
+    assert oauth.checked_choices({}) == {}
+
+
+def test_a_static_client_may_name_its_choices_in_its_endpoints(catalog_copy):
+    _write_example(
+        catalog_copy,
+        CHOICES_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    authorization_url: https://auth.{site}/authorize\n"
+            "    token_url: https://auth.{site}/token\n"
+            "    revocation_url: https://auth.{site}/revoke\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.authorization_url, oauth.token_url, oauth.revocation_url) == (
+        "https://auth.{site}/authorize",
+        "https://auth.{site}/token",
+        "https://auth.{site}/revoke",
+    )
+
+
+@pytest.mark.parametrize(
+    ("entry", "old", "new", "message"),
+    [
+        (
+            CHOICES_ENTRY,
+            "        secret: false\n        choices: [example.test, eu.example.test]\n",
+            "        secret: true\n",
+            "never a secret",
+        ),
+        (
+            CHOICES_ENTRY,
+            "        choices: [example.test, eu.example.test]\n",
+            "",
+            "one of the two",
+        ),
+        (
+            CHOICES_ENTRY,
+            "        choices: [example.test, eu.example.test]\n",
+            "        choices: [example.test, Example.test]\n",
+            "choices",
+        ),
+        (
+            CHOICES_ENTRY,
+            "        choices: [example.test, eu.example.test]\n",
+            "        choices: [example.test, eu.example.test]\n"
+            + CHOICES.removeprefix("    choices:\n"),
+            "two choices share a name",
+        ),
+        (
+            CHOICES_ENTRY,
+            "https://mcp.{site}/v1/mcp",
+            "https://mcp.{region}/v1/mcp",
+            "MCP server example's URL may name only a choice field, not 'region'",
+        ),
+        (
+            CHOICES_ENTRY,
+            "https://api.{site}/me",
+            "https://api.{region}/me",
+            "the identity call's URL may name only a choice field",
+        ),
+        (
+            CHOICES_ENTRY,
+            "https://mcp.{site}/v1/mcp",
+            "https://mcp.{site/v1/mcp",
+            "brace that names no field",
+        ),
+        (
+            CHOICES_ENTRY,
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    revocation_url: https://auth.{region}/revoke\n",
+            "the revocation endpoint's URL may name only a choice field",
+        ),
+        (
+            OAUTH_ENTRY,
+            "https://mcp.example.test/v1/mcp",
+            "https://mcp.{site}/v1/mcp",
+            "may name only a choice field, not 'site'",
+        ),
+    ],
+)
+def test_rejects_choices_or_templates_that_do_not_fit(
+    catalog_copy, entry, old, new, message
+):
+    assert old in entry
+    _write_example(catalog_copy, entry.replace(old, new))
+    with pytest.raises(
+        CatalogError, match=f"(?s)example is invalid.*{re.escape(message)}"
+    ):
+        load_catalog(catalog_copy)
+
+
+def test_checks_choices_against_the_entrys_lists(catalog_copy):
+    _write_example(catalog_copy, CHOICES_ENTRY)
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.checked_choices({"site": "eu.example.test"}) == {
+        "site": "eu.example.test"
+    }
+    with pytest.raises(ChoicesError, match="Example site is required"):
+        oauth.checked_choices({})
+    with pytest.raises(
+        ChoicesError, match="Example site must be one of example.test, eu.example.test"
+    ):
+        oauth.checked_choices({"site": "elsewhere.test"})
+    with pytest.raises(ChoicesError, match="no choice named region"):
+        oauth.checked_choices({"site": "example.test", "region": "eu"})
+
+
+def test_keys_choices_by_one_stable_string():
+    assert choice_key({}) == ""
+    assert choice_key({"site": "eu.example.test"}) == "eu.example.test"
+    assert (
+        choice_key({"site": "eu.example.test", "plan": "team"})
+        == choice_key({"plan": "team", "site": "eu.example.test"})
+        == '{"plan":"team","site":"eu.example.test"}'
+    )
+
+
+MARKERS = "  consent: { read: items_read, write: items_write }\n"
+MARKED_ENTRY = OAUTH_ENTRY.replace(
+    "tools: { mode: pass_through }", MARKERS + "tools: { mode: pass_through }"
+)
+
+
+def test_an_oauth_entry_may_read_its_consent_from_markers(catalog_copy):
+    _write_example(catalog_copy, MARKED_ENTRY)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.consent is not None
+    assert (access.consent.read, access.consent.write) == ("items_read", "items_write")
+
+
+def test_an_entry_without_markers_has_none(catalog_copy):
+    _write_example(catalog_copy)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.consent is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            '  write: { scopes: ["read:items", "write:items"] }\n',
+            "",
+            "the entry names both levels",
+        ),
+        (MARKERS, "  consent: { read: items_read }\n", "write"),
+        (
+            MARKERS,
+            "  consent: { read: items_read, write: items_read }\n",
+            "one scope",
+        ),
+        (
+            MARKERS,
+            '  consent: { read: "items read", write: items_write }\n',
+            "read",
+        ),
+        (
+            MARKERS,
+            "  consent: { read: items_read, write: items_write, admin: x }\n",
+            "admin",
+        ),
+    ],
+)
+def test_rejects_consent_markers_that_cannot_tell_the_levels(
+    catalog_copy, old, new, message
+):
+    assert old in MARKED_ENTRY
+    _write_example(catalog_copy, MARKED_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_only_an_oauth_entry_reads_consent_markers(catalog_copy):
+    path = catalog_copy / "asana" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access:\n  read: { scopes: [items_read] }\n"
+        + "  write: { scopes: [items_write] }\n"
+        + MARKERS
+    )
+    with pytest.raises(CatalogError, match="only an oauth entry reads its consent"):
         load_catalog(catalog_copy)
 
 

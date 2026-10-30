@@ -174,7 +174,7 @@ class GitHubAdapter:
         self.can_issue = signer is not None
         self.read_only = read_only
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return self._connections.client_id
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:

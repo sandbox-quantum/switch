@@ -149,6 +149,16 @@ export const serviceConnectionsSchema = z.object({
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
       workspace_enabled: z.boolean().nullable().default(null),
+      /**
+       * How the person connected: `oauth` (a sign-in), `token` (a pasted
+       * token) or `keys` (pasted keys). Null when not connected.
+       */
+      method: z.string().nullable().default(null),
+      /**
+       * What the person picked from the service's lists to connect (a site),
+       * by name. Null when not connected.
+       */
+      choices: z.record(z.string(), z.string()).nullable().default(null),
       status: z.enum(['not_connected', 'active', 'needs_reauthorization']),
     })
   ),

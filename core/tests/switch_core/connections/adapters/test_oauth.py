@@ -48,10 +48,15 @@ from tests.switch_core.connections.fake_vendor import (
     STATIC_CLIENT_ID,
     STATIC_CLIENT_SECRET,
     FakeOAuthServer,
+    FakeSites,
     s256,
 )
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import CLI_ENTRY, OAUTH_ENTRY
+from tests.switch_core.connections.test_loader import (
+    CHOICES_ENTRY,
+    CLI_ENTRY,
+    OAUTH_ENTRY,
+)
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STATIC = OAUTH_ENTRY.replace(
@@ -94,6 +99,7 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> Connection
         state="state-1",
         code_challenge=s256(verifier),
         scopes=["read:items", "write:items"],
+        choices={},
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
     signed_in = await adapter.exchange_code(
@@ -101,6 +107,7 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> Connection
         verifier=verifier,
         redirect_uri=REDIRECT,
         scopes=["read:items", "write:items"],
+        choices={},
     )
     return signed_in.secret
 
@@ -115,12 +122,12 @@ class TestDiscovery:
         self, vendor
     ) -> None:
         adapter, _ = _adapter(vendor)
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert endpoints.authorization == f"{ISSUER}/authorize"
         assert endpoints.token == f"{ISSUER}/token"
         assert endpoints.registration == f"{ISSUER}/register"
         assert endpoints.resource == MCP_URL
-        await adapter.endpoints()
+        await adapter.endpoints({})
         assert (
             vendor.paths.count(f"{ISSUER}/.well-known/oauth-authorization-server") == 1
         )
@@ -135,7 +142,7 @@ class TestDiscovery:
                 f"    token_url: {ISSUER}/token\n",
             ),
         )
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert (endpoints.token, endpoints.resource) == (f"{ISSUER}/token", None)
         assert vendor.paths == []
 
@@ -143,19 +150,19 @@ class TestDiscovery:
         vendor.metadata["code_challenge_methods_supported"] = ["plain"]
         adapter, _ = _adapter(vendor)
         with pytest.raises(ServiceAdapterError, match="S256"):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
     async def test_refuses_an_endpoint_that_is_not_https(self, vendor) -> None:
         vendor.metadata["token_endpoint"] = "http://auth.example.test/token"
         adapter, _ = _adapter(vendor)
         with pytest.raises(ServiceAdapterError, match="token endpoint is not an https"):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
     async def test_a_vendor_that_is_down_is_unavailable(self, vendor) -> None:
         vendor.fail[f"{ISSUER}/.well-known/oauth-authorization-server"] = (503, {})
         adapter, _ = _adapter(vendor)
         with pytest.raises(ServiceUnavailableError):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
 
 class TestSignIn:
@@ -167,6 +174,7 @@ class TestSignIn:
             state="state-1",
             code_challenge=s256(verifier),
             scopes=["read:items", "write:items"],
+            choices={},
         )
         query = parse_qs(urlsplit(url).query)
         assert query["client_id"] == [STATIC_CLIENT_ID]
@@ -183,6 +191,7 @@ class TestSignIn:
             verifier=verifier,
             redirect_uri=REDIRECT,
             scopes=["read:items", "write:items"],
+            choices={},
         )
         secret = signed_in.secret
         assert secret.access_token in vendor.live_access
@@ -197,6 +206,7 @@ class TestSignIn:
             state="s",
             code_challenge=s256("the-real-verifier"),
             scopes=["read:items"],
+            choices={},
         )
         back = parse_qs(urlsplit(vendor.authorize(url)).query)
         with pytest.raises(ReauthorizationRequiredError):
@@ -205,19 +215,20 @@ class TestSignIn:
                 verifier="another-verifier",
                 redirect_uri=REDIRECT,
                 scopes=["read:items"],
+                choices={},
             )
 
     async def test_reads_the_accounts_id_and_label(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("1001", "1001")
 
     async def test_an_account_without_an_id_is_refused(self, vendor) -> None:
@@ -225,7 +236,7 @@ class TestSignIn:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
 
 
 class TestRefresh:
@@ -390,6 +401,77 @@ class TestCommandLineTool:
         assert issued.revocable is False
 
 
+class TestChoices:
+    """An entry whose URLs name a choice calls the vendor where each sign-in,
+    and each connection made with it, chose."""
+
+    def _adapter(self, text: str = CHOICES_ENTRY) -> tuple[OAuthAdapter, FakeSites]:
+        sites = FakeSites("example.test", "eu.example.test")
+        client = StaticClient(
+            OAuthClientCredentials(
+                STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+            )
+        )
+        definition = _definition(
+            text.replace(
+                "    registration: dynamic\n",
+                "    registration: static\n    client_settings: EXAMPLE\n",
+            )
+        )
+        return OAuthAdapter(definition, client, sites.client()), sites
+
+    async def test_discovers_each_sites_endpoints_once(self) -> None:
+        adapter, sites = self._adapter()
+        here = await adapter.endpoints({"site": "example.test"})
+        there = await adapter.endpoints({"site": "eu.example.test"})
+        assert (here.token, here.resource) == (
+            "https://auth.example.test/token",
+            "https://mcp.example.test/v1/mcp",
+        )
+        assert (there.token, there.resource) == (
+            "https://auth.eu.example.test/token",
+            "https://mcp.eu.example.test/v1/mcp",
+        )
+        await adapter.endpoints({"site": "eu.example.test"})
+        metadata = "https://auth.eu.example.test/.well-known/oauth-authorization-server"
+        assert sites["eu.example.test"].paths.count(metadata) == 1
+
+    async def test_names_the_catalogs_endpoints_for_the_choice(self) -> None:
+        adapter, sites = self._adapter(
+            CHOICES_ENTRY.replace(
+                "    redirect: [loopback, core]\n",
+                "    redirect: [loopback, core]\n"
+                "    authorization_url: https://auth.{site}/authorize\n"
+                "    token_url: https://auth.{site}/token\n",
+            )
+        )
+        endpoints = await adapter.endpoints({"site": "eu.example.test"})
+        assert (endpoints.authorization, endpoints.token) == (
+            "https://auth.eu.example.test/authorize",
+            "https://auth.eu.example.test/token",
+        )
+        assert all(sites[site].paths == [] for site in sites.sites)
+
+    async def test_a_sign_in_needs_a_choice_the_entry_offers(self) -> None:
+        adapter, sites = self._adapter()
+        with pytest.raises(ServiceAdapterError, match="Example site is required"):
+            await adapter.endpoints({})
+        with pytest.raises(ServiceAdapterError, match="must be one of"):
+            await adapter.client_id({"site": "elsewhere.test"})
+        assert all(sites[site].paths == [] for site in sites.sites)
+
+    async def test_a_connection_for_a_choice_no_longer_offered_must_reconnect(
+        self,
+    ) -> None:
+        adapter, sites = self._adapter()
+        secret = ConnectionSecret(
+            {"refresh_token": "kept", "choices": {"site": "gone.example.test"}}
+        )
+        with pytest.raises(ReauthorizationRequiredError, match="no longer offers"):
+            await adapter.refresh(secret)
+        assert all(sites[site].paths == [] for site in sites.sites)
+
+
 class TestDisconnect:
     async def test_revokes_the_sign_in_where_the_catalog_names_how(
         self, vendor
@@ -457,7 +539,7 @@ class TestWhereTheMetadataIs:
     async def test_follows_the_metadata_the_servers_401_names(self, vendor) -> None:
         vendor.resource_metadata_path = "/resource-metadata/v1"
         adapter, _ = _adapter(vendor)
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert endpoints.token == f"{ISSUER}/token"
         assert "https://mcp.example.test/resource-metadata/v1" in vendor.paths
         # Never the host's root metadata, which describes another server.
@@ -469,7 +551,7 @@ class TestWhereTheMetadataIs:
     async def test_falls_back_to_the_well_known_address(self, vendor) -> None:
         vendor.advertise = False
         adapter, _ = _adapter(vendor)
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert endpoints.token == f"{ISSUER}/token"
         assert (
             "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
@@ -553,6 +635,8 @@ class TestThroughTheBroker:
                 external_identity="ada@example.test",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(values)),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             for agent in agents:
                 await STORE.save_grant(
@@ -628,6 +712,8 @@ class TestThroughTheBroker:
                 external_identity="ada@example.test",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret.values)),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             await session.commit()
 

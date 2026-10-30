@@ -126,6 +126,8 @@ async def _connected_before(
                 json.dumps({"access_token": token, "expires_at": time.time()})
             ),
             oauth_client_id=None,
+            method="keys",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -158,6 +160,20 @@ class TestConnect:
             NEVER_EXPIRES,
         )
         assert entry["token_lifetime"] is None
+
+    async def test_the_list_says_a_connection_made_before_pasted_keys(
+        self, service
+    ) -> None:
+        harness, _ = service
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "builder")
+        await _connected_before(harness.session_factory, owner.id, agent_id)
+        async with harness.client() as client:
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(owner)
+            )
+        entry = next(e for e in listed.json()["connections"] if e["slug"] == "datadog")
+        assert (entry["method"], entry["choices"]) == ("keys", {})
 
     async def test_a_key_is_neither_checked_nor_stored(
         self, service, datadog: DatadogStandIn

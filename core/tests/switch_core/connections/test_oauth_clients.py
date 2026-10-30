@@ -41,11 +41,12 @@ from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.connections.fake_vendor import (
     ISSUER,
     FakeOAuthServer,
+    FakeSites,
     UnregisteredRedirect,
     s256,
 )
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import OAUTH_ENTRY
+from tests.switch_core.connections.test_loader import CHOICES_ENTRY, OAUTH_ENTRY
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STORE = ServiceConnectionStore()
@@ -90,10 +91,15 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer, redirect: str
         state="s",
         code_challenge=s256(verifier),
         scopes=SCOPES,
+        choices={},
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
     return await adapter.exchange_code(
-        code=back["code"][0], verifier=verifier, redirect_uri=redirect, scopes=SCOPES
+        code=back["code"][0],
+        verifier=verifier,
+        redirect_uri=redirect,
+        scopes=SCOPES,
+        choices={},
     )
 
 
@@ -106,9 +112,9 @@ async def test_registers_once_and_keeps_the_client_encrypted(
     session_factory, vendor
 ) -> None:
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    endpoints = await adapter.endpoints()
-    first = await adapter._client.credentials(endpoints)
-    again = await adapter._client.credentials(endpoints)
+    endpoints = await adapter.endpoints({})
+    first = await adapter._client.credentials(endpoints, "")
+    again = await adapter._client.credentials(endpoints, "")
     assert first == again
     [registration] = vendor.registrations
     assert registration == {
@@ -128,7 +134,7 @@ async def test_registers_once_and_keeps_the_client_encrypted(
 
     # Another process, the same deployment: the stored client, no registration.
     restarted = _adapter(_client(session_factory, vendor), vendor)
-    assert await restarted._client.credentials(endpoints) == first
+    assert await restarted._client.credentials(endpoints, "") == first
     assert len(vendor.registrations) == 1
 
 
@@ -136,9 +142,9 @@ async def test_two_replicas_connecting_at_once_register_one_client(
     session_factory, vendor
 ) -> None:
     adapters = [_adapter(_client(session_factory, vendor), vendor) for _ in range(3)]
-    endpoints = await adapters[0].endpoints()
+    endpoints = await adapters[0].endpoints({})
     clients = await asyncio.gather(
-        *(adapter._client.credentials(endpoints) for adapter in adapters)
+        *(adapter._client.credentials(endpoints, "") for adapter in adapters)
     )
     assert len(vendor.registrations) == 1
     assert len({client.client_id for client in clients}) == 1
@@ -149,15 +155,15 @@ async def test_a_moved_registration_endpoint_registers_again(
     session_factory, vendor
 ) -> None:
     adapter = _adapter(_client(session_factory, vendor), vendor)
-    endpoints = await adapter.endpoints()
-    first = await adapter._client.credentials(endpoints)
+    endpoints = await adapter.endpoints({})
+    first = await adapter._client.credentials(endpoints, "")
     async with session_factory() as session:
-        row = await session.get(ServiceOAuthClient, "example")
+        row = await session.get(ServiceOAuthClient, ("example", ""))
         assert row is not None
         row.registration_endpoint = "https://old.example.test/register"
         await session.commit()
     second = await _client(session_factory, vendor).credentials(
-        replace(endpoints, registration=f"{ISSUER}/register")
+        replace(endpoints, registration=f"{ISSUER}/register"), ""
     )
     assert second.client_id != first.client_id
     [row] = await _rows(session_factory)
@@ -170,10 +176,10 @@ async def test_a_moved_registration_endpoint_registers_again(
 async def test_changed_ports_register_again_and_sign_in_on_the_new_ones(
     session_factory, vendor
 ) -> None:
-    endpoints = await _adapter(_client(session_factory, vendor), vendor).endpoints()
-    first = await _client(session_factory, vendor).credentials(endpoints)
+    endpoints = await _adapter(_client(session_factory, vendor), vendor).endpoints({})
+    first = await _client(session_factory, vendor).credentials(endpoints, "")
     adapter = _adapter(_client(session_factory, vendor, ports=[43125]), vendor)
-    second = await adapter._client.credentials(endpoints)
+    second = await adapter._client.credentials(endpoints, "")
     assert second.client_id != first.client_id
     assert vendor.registrations[-1]["redirect_uris"] == [loopback_redirect(43125)]
     signed_in = await _sign_in(adapter, vendor, loopback_redirect(43125))
@@ -219,6 +225,8 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
                 json.dumps({**signed_in.secret.values, "expires_at": time.time() + 60})
             ),
             oauth_client_id=signed_in.client_id,
+            method="oauth",
+            choices={},
         )
         await STORE.save_grant(
             session,
@@ -256,6 +264,50 @@ async def test_a_connection_through_a_client_registered_anew_must_reconnect(
     )
 
 
+async def test_registers_a_client_at_each_choice_and_keeps_each(
+    session_factory,
+) -> None:
+    """Each site is another authorization server: a client registered at
+    one is never replaced by one registered at another."""
+    sites = FakeSites("example.test", "eu.example.test")
+
+    def adapter() -> OAuthAdapter:
+        client = RegisteredClient(
+            service="example",
+            name="Example",
+            session_factory=session_factory,
+            keyring=TEST_KEYRING,
+            http=sites.client(),
+            client_name="Switch (switch.example.com)",
+            redirect_uris=[loopback_redirect(port) for port in PORTS],
+            scopes=SCOPES,
+        )
+        definition = ConnectionDefinition.model_validate(yaml.safe_load(CHOICES_ENTRY))
+        return OAuthAdapter(definition, client, sites.client())
+
+    first = adapter()
+    here = await first.client_id({"site": "example.test"})
+    there = await first.client_id({"site": "eu.example.test"})
+    assert (here, there) == (
+        "registered-1-at-example.test",
+        "registered-1-at-eu.example.test",
+    )
+    assert await first.client_id({"site": "example.test"}) == here
+    assert first.current_client_id({"site": "example.test"}) == here
+    assert first.current_client_id({"site": "eu.example.test"}) == there
+    assert first.current_client_id({}) is None
+    assert {
+        (row.service, row.choice): row.oauth_client_id
+        for row in await _rows(session_factory)
+    } == {("example", "example.test"): here, ("example", "eu.example.test"): there}
+
+    # Another process: each site's stored client, and no registration.
+    restarted = adapter()
+    assert await restarted.client_id({"site": "eu.example.test"}) == there
+    assert await restarted.client_id({"site": "example.test"}) == here
+    assert [len(sites[site].registrations) for site in sites.sites] == [1, 1]
+
+
 async def test_the_vendor_refuses_a_port_the_client_did_not_register(
     session_factory, vendor
 ) -> None:
@@ -271,7 +323,11 @@ async def test_a_vendor_without_registration_is_refused(
     adapter = _adapter(_client(session_factory, vendor), vendor)
     with pytest.raises(ServiceAdapterError, match="offers no client registration"):
         await adapter.authorization_url(
-            redirect_uri=REDIRECT, state="s", code_challenge="c", scopes=["read:items"]
+            redirect_uri=REDIRECT,
+            state="s",
+            code_challenge="c",
+            scopes=["read:items"],
+            choices={},
         )
     assert await _rows(session_factory) == []
 
@@ -337,7 +393,7 @@ async def test_a_client_registered_for_another_method_is_refused(
     vendor.register_as = "private_key_jwt"
     adapter = _adapter(_client(session_factory, vendor), vendor)
     with pytest.raises(ServiceAdapterError, match="private_key_jwt"):
-        await adapter.client_id()
+        await adapter.client_id({})
     assert await _rows(session_factory) == []
 
 
@@ -345,7 +401,7 @@ async def test_the_runtime_role_registers_outside_any_tenant(
     rls_harness: RLSHarness, vendor
 ) -> None:
     adapter = _adapter(_client(rls_harness.restricted, vendor), vendor)
-    client = await adapter._client.credentials(await adapter.endpoints())
+    client = await adapter._client.credentials(await adapter.endpoints({}), "")
     [row] = await _rows(rls_harness.owner)
     assert row.oauth_client_id == client.client_id
 
