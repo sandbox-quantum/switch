@@ -76,6 +76,7 @@ export function ThisComputerProviderStatus({
       )}
       {!recheck.isPending &&
         !reported.ready &&
+        reported.loginHelps &&
         provider &&
         reported.problem !== 'not installed' && (
           <p className="mt-2 text-foreground-muted">

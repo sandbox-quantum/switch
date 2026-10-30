@@ -74,7 +74,9 @@ export function ProviderCard({
             )}
           >
             {provider.state === 'checking' && <Spinner className="size-3" />}
-            {TAG[provider.state]}
+            {provider.state === 'sign-in' && !provider.loginHelps
+              ? 'Can’t be used yet'
+              : TAG[provider.state]}
           </span>
         </span>
       </button>
@@ -145,6 +147,27 @@ export function SelectedPanel({
       );
     case 'sign-in': {
       const running = login !== null && login.ended === null;
+      // A sign-in already under way stays, with its Cancel, whatever the report says now.
+      if (!provider.loginHelps && !running)
+        return (
+          <>
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">
+                {provider.name} can’t be used on this computer yet
+              </p>
+              {provider.detail && (
+                <p className="text-xs text-foreground-warning">{provider.detail}</p>
+              )}
+            </div>
+            <div>
+              <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
+                {busy === 'check' && <Spinner className="size-3.5" />}
+                Check again
+              </Button>
+            </div>
+            {checked && <p className="text-xs text-foreground-muted">{checked}</p>}
+          </>
+        );
       const links = login ? linksIn(login.lines) : [];
       return (
         <>

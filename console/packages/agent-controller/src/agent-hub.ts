@@ -413,6 +413,8 @@ export class AgentHub {
     return {
       // Switch keeps no record of an agent's sessions: the agent host says when it starts one.
       announcesSessionStarts: true,
+      // The relay names each call's room from these placements (`roomFor`).
+      placementsNameCallRooms: true,
       start: () => {
         if (host.started || host.closed) return;
         host.started = true;
@@ -447,7 +449,10 @@ export class AgentHub {
       // session of the agent unplaced, and its room tools answered "not
       // connected" though the session had just connected.
       replacePlacements: async (placements) => {
-        if (host.closed || agent.host !== host) return { refusedRooms: [] };
+        if (host.closed || agent.host !== host)
+          throw new Error(
+            `this agent host no longer holds agent ${agentId}'s stream on the agent controller; a newer one does`
+          );
         const refusedRooms = [...new Set(Object.values(placements))]
           .filter((roomId) => agent.rooms !== null && !agent.rooms.has(roomId))
           .sort();

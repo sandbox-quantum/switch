@@ -319,9 +319,15 @@ const BOX: OwnedMachine = {
   workspacesDir: null,
   os: null,
   providers: [
-    { provider: 'claude', ready: true, problem: null, detail: null },
-    { provider: 'codex', ready: false, problem: 'not logged in', detail: null },
-    { provider: 'opencode', ready: false, problem: 'not installed', detail: null },
+    { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true },
+    { provider: 'codex', ready: false, problem: 'not logged in', detail: null, loginHelps: true },
+    {
+      provider: 'opencode',
+      ready: false,
+      problem: 'not installed',
+      detail: null,
+      loginHelps: true,
+    },
   ],
 };
 

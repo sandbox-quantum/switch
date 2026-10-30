@@ -47,7 +47,7 @@ export function reportedHeadline(reported: MachineProvider): string {
     case 'not installed':
       return 'CLI not installed';
     case 'not logged in':
-      return 'Not signed in';
+      return reported.loginHelps ? 'Not signed in' : 'Can’t be used yet';
     case 'login expired':
       return 'Sign-in expired';
     case 'login not checked yet':

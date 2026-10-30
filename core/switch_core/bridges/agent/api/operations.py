@@ -214,6 +214,7 @@ async def resolve_caller(
             host_id=host_id or "",
             epoch=epoch or "",
             room_id=protocol.connections.session_room(agent_id, session_id),
+            placed_by_controller=False,
         )
 
     # Derived, never taken on trust: a connection belonging to another agent,
@@ -255,7 +256,9 @@ async def resolve_controller_caller(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    return holder, CallerSession(id=holder, host_id="", epoch="", room_id=room_id)
+    return holder, CallerSession(
+        id=holder, host_id="", epoch="", room_id=room_id, placed_by_controller=True
+    )
 
 
 router = APIRouter(prefix="/agents", tags=["operations"])

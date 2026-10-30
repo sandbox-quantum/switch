@@ -211,8 +211,15 @@ version of their own to them without also giving them a release of their own.
   and new turns go ahead of them. The 👀 goes on as soon as a turn starts
   rather than once its card has posted. A card is redrawn as soon as Slack
   closes its stream, instead of showing still-running steps as failed until
-  the next change. A turn whose first draw Slack throttles keeps its card
-  rather than posting a second one.
+  the next change. A turn whose first draw into its stream fails keeps that
+  card rather than posting a second one under it.
+- **An agent is told why a machine's CLI cannot be used.** When
+  `create_agent` or `update_agent_detail` was refused because a provider was
+  not logged in, it said the owner needed to log in, even when the machine had
+  reported a login its agents could not use, which logging in does not fix
+  (a Codex login in the OS keyring, say). The refusal now gives what the
+  machine said instead, and `list_machines` shows it as each provider's
+  `problem`.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
@@ -2125,6 +2132,31 @@ version of their own to them without also giving them a release of their own.
   A host reading another host's ownership ticket while that host replaced or
   deleted it got `EPERM` from Windows and exited. It now tries the read again
   for a few seconds, as it already did for its own writes.
+- **Codex is no longer shown as ready with a login sessions cannot use.** A
+  ChatGPT login kept in the OS keyring passed Console's sign-in check, so
+  Codex showed as signed in while every session failed: a session takes that
+  login only from `auth.json`. The check now reports a login sessions cannot
+  reach as not signed in, and says why: a ChatGPT login or a Bedrock key
+  Codex keeps in the keyring, an `auth.json` Codex ignores because it is set
+  to use the keyring, and an API key in the keyring that Codex will not hand
+  over or that an administrator's Codex configuration stops Switch handing to
+  sessions. It gives the switch to file storage where that helps and names
+  the Codex home it checked (from `~` when it is under your home folder), and
+  when it cannot tell, it says so and why.
+  Otherwise an API key in the keyring still counts as signed in, since
+  sessions are handed it. The provider status card and the warning beside an
+  agent now show what the check said when a provider is not signed in,
+  instead of a generic line.
+- **Console stops offering a sign-in that cannot help.** When a provider's
+  check says signing in would not fix it (an administrator pinning where
+  Codex keeps logins, or a check that could not finish, say), the status
+  card, Settings → Agent providers and switch-buddy say it can't be used yet
+  and why, instead of "Not signed in" with the login command or a Sign in
+  button.
+- **A relative `CODEX_HOME` is refused.** Codex reads one from whichever
+  directory it starts in, which differed between Console's check and
+  Switch's sessions, so the two could look at different Codex homes. Both
+  now say to set an absolute path, and a session will not start with one.
 - **Settings → Agent providers keeps this computer's report current.** It
   prefers the report from the server Console is on, rereads it while open and
   after the controller reports again, and the install section says so when
@@ -4126,6 +4158,10 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **A provider report says when signing in would not help.** A provider
+  whose check says its login command would not fix the problem is reported
+  with `login_helps: false` beside `auth_problem`, so Console does not offer
+  the command. Absent otherwise, as before.
 - **Provider logins given to the machine, on demand.** The controller makes an
   X25519 keypair at enrollment (or on its next run, for one enrolled before)
   and registers the public half. When its owner gives the machine a login

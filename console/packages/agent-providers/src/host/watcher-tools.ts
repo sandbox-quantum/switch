@@ -26,7 +26,11 @@ import { sharedConfigSchema } from './shared-config';
  * connection id, and the selector naming the session, its host and its
  * generation. `connect_to_room` is also a local move: the room is placed with
  * the calling session before Switch is asked, so the room's next message
- * reaches it, and put back as it was if Switch refuses.
+ * reaches it, and put back as it was if Switch refuses. Behind an agent
+ * controller, whose relay names each call's room from the placements, a move
+ * the controller does not take is put back and refused as well: Switch only
+ * checked membership, and the session would otherwise be told it connected
+ * and then find every call made from no room.
  *
  * It also answers the sessions' asks for service tokens (`AgentServiceTokens`),
  * and scrubs every token handed out from the arguments of every call it makes,
@@ -38,6 +42,11 @@ export function sessionToolAnswerer(deps: {
   placements: SessionPlacements;
   /** States every placement to Switch; raises when Switch does not take them. */
   publish: () => Promise<void>;
+  /**
+   * Whether a call's room is named from the stated placements rather than
+   * recorded by Switch on `connect_to_room` (`AgentEventStream`).
+   */
+  placementsNameCallRooms: () => boolean;
   /** The service tokens handed out in this process, added to as more are. */
   redactions: Redactions;
 }): AskHandler {
@@ -109,12 +118,44 @@ export function sessionToolAnswerer(deps: {
       await deps.placements.restore(before);
       return result;
     }
+    let notTaken: string | null = null;
     try {
       await deps.publish();
+      // A room the controller left out and named back (it does not count the
+      // agent as in it yet) is taken off the session by the publish itself.
+      if (deps.placementsNameCallRooms() && deps.placements.roomOf(caller.sessionId) !== roomId)
+        notTaken = `the agent controller does not count room ${roomId} among this agent's rooms yet`;
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // Over the agent's own connection Switch placed the session on connect,
+      // and a later statement puts the copy right.
+      if (deps.placementsNameCallRooms()) notTaken = reason;
+      else
+        console.warn(
+          `Switch did not take this agent's session placements after session ${caller.sessionId} connected to room ${roomId}: ${reason}. They are stated again on the next change or reconnect.`
+        );
+    }
+    if (notTaken !== null) {
+      await deps.placements.restore(before);
+      // So what the stream states on its next change or reconnect is the map
+      // put back, not the move it did not take.
+      await deps.publish().catch(() => {});
       console.warn(
-        `Switch did not take this agent's session placements after session ${caller.sessionId} connected to room ${roomId}: ${error instanceof Error ? error.message : String(error)}. They are stated again on the next change or reconnect.`
+        `The agent controller did not take session ${caller.sessionId}'s move to room ${roomId}: ${notTaken}. The move was put back and connect_to_room refused.`
       );
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text:
+              'connect_to_room did not take effect: Switch accepted it, but the agent controller ' +
+              `running this agent did not record the move to room ${roomId} (${notTaken}), so your ` +
+              'calls would not be made from that room. Call connect_to_room again; if it keeps ' +
+              "failing, the agent controller's log says why.",
+          },
+        ],
+      };
     }
     if (!displaced) return result;
     const warning =

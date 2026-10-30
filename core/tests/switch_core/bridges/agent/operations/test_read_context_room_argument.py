@@ -311,6 +311,7 @@ async def test_a_read_that_lands_after_losing_the_room_clears_nothing(
                 host_id="host-1",
                 epoch="epoch-1",
                 room_id=CONNECTED_ROOM,
+                placed_by_controller=False,
             ),
         )
     )
@@ -354,6 +355,7 @@ async def test_a_session_reading_after_a_restart_takes_its_rooms_count(
                 host_id="host-1",
                 epoch="epoch-1",
                 room_id=CONNECTED_ROOM,
+                placed_by_controller=False,
             ),
         )
     )

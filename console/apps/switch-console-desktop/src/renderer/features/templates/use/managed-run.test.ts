@@ -19,7 +19,7 @@ function machine(overrides: Partial<OwnedMachine>): OwnedMachine {
     name: 'laptop',
     kind: 'console',
     state: 'online',
-    providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+    providers: [{ provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true }],
     acceptsLogins: true,
     cloud: false,
     workspacesDir: '/home/me/.switch/agents',
@@ -75,7 +75,9 @@ describe('machineFor', () => {
     const coder = machine({
       id: 'm4',
       name: 'cluster',
-      providers: [{ provider: 'codex', ready: true, problem: null, detail: null }],
+      providers: [
+        { provider: 'codex', ready: true, problem: null, detail: null, loginHelps: true },
+      ],
     });
     // "local" or an SSH host is this Console's idea: the server's $first stands in.
     expect(machineFor([BOX, coder, LAPTOP], 'local', 'claude', true)).toBe(LAPTOP);
@@ -96,12 +98,37 @@ describe('machineProblem', () => {
     expect(
       machineProblem(
         machine({
-          providers: [{ provider: 'claude', ready: false, problem: 'not logged in', detail: null }],
+          providers: [
+            {
+              provider: 'claude',
+              ready: false,
+              problem: 'not logged in',
+              detail: null,
+              loginHelps: true,
+            },
+          ],
         }),
         'claude',
         'a'
       )
     ).toBe('claude on laptop is not ready: not logged in.');
+    expect(
+      machineProblem(
+        machine({
+          providers: [
+            {
+              provider: 'claude',
+              ready: false,
+              problem: 'not logged in',
+              detail: 'Its login is in the OS keyring.',
+              loginHelps: true,
+            },
+          ],
+        }),
+        'claude',
+        'a'
+      )
+    ).toBe('claude on laptop is not ready: not logged in. Its login is in the OS keyring.');
     expect(machineProblem(LAPTOP, 'claude', 'a')).toBeNull();
   });
 });

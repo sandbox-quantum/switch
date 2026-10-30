@@ -4,6 +4,12 @@ export const providerReadinessSchema = z.object({
   status: z.enum(['authenticated', 'unauthenticated', 'unconfigured', 'unknown']),
   message: z.string(),
   models: z.array(z.object({ id: z.string(), name: z.string() })),
+  /**
+   * False when signing in with the provider's login command would not fix
+   * what `message` says, so Console does not offer it. Absent from a check
+   * older than this field, and wherever signing in may help.
+   */
+  loginHelps: z.boolean().optional(),
 });
 export type ProviderReadiness = z.infer<typeof providerReadinessSchema>;
 
@@ -16,6 +22,11 @@ export interface SignInCheckInput {
 
 export function readiness(status: ProviderReadiness['status'], message: string): ProviderReadiness {
   return { status, message, models: [] };
+}
+
+/** `result`, marked as something the provider's login command cannot fix. */
+export function loginWontHelp(result: ProviderReadiness): ProviderReadiness {
+  return { ...result, loginHelps: false };
 }
 
 export function signInWith(loginCommand: string): string {
