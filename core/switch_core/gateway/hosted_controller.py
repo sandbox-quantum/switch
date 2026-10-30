@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
-from switch_core.db.models import CloudMachine, TenantMember
+from switch_core.db.models import CloudMachine
+from switch_core.db.standing import stands_in
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
     CloudMachineStore,
@@ -244,12 +245,7 @@ async def prepare(
     for workspace in await workspaces_on(factory, machine.id):
         with tenant_scope(workspace.tenant_id):
             async with factory() as scoped:
-                if (
-                    await scoped.get(
-                        TenantMember, (workspace.tenant_id, machine.owner_id)
-                    )
-                    is None
-                ):
+                if not await stands_in(scoped, workspace.tenant_id, machine.owner_id):
                     logger.warning(
                         "Cloud machine %s: its owner left workspace %s, so it runs no controller there.",
                         machine.id,
