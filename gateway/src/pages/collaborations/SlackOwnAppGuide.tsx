@@ -77,10 +77,8 @@ export default function SlackOwnAppGuide({
 
   useEffect(() => {
     setField("workspace_id", null);
-    if (botToken === "" || appToken === "") {
-      setCheck({ state: "idle" });
-      return;
-    }
+    setCheck({ state: "idle" });
+    if (botToken === "" || appToken === "") return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
       setCheck({ state: "checking" });

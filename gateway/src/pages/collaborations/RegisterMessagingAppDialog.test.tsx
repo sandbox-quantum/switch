@@ -56,7 +56,8 @@ describe("registering a Slack app of the workspace's own", () => {
     expect(screen.queryByLabelText(/Workspace Id/i)).toBeNull();
     expect(screen.getByRole("button", { name: "Register" })).toHaveProperty("disabled", true);
 
-    typeTokens("xoxb-1", "xapp-1");
+    // Pasted with the whitespace a copy often brings; saved as it was checked.
+    typeTokens("xoxb-1\n", " xapp-1 ");
 
     expect(await screen.findByText("Acme", {}, { timeout: 3000 })).toBeTruthy();
     expect(calls.find((c) => c.route === "POST /collaborations/setup/slack/check")?.body).toEqual({
@@ -74,6 +75,28 @@ describe("registering a Slack app of the workspace's own", () => {
       app_token: "xapp-1",
       workspace_id: "T123",
     });
+  });
+
+  it("takes back a passed check as soon as a token changes", async () => {
+    routeFetch({
+      "GET /collaborations/types": { body: [SLACK_TYPE] },
+      "GET /collaborations/setup/slack": { body: { manifest: {}, create_url: "https://slack.example" } },
+      "POST /collaborations/setup/slack/check": [
+        { body: { workspace_id: "T123", workspace_name: "Acme", bot_name: "switch" } },
+        { body: { workspace_id: "T456", workspace_name: "Globex", bot_name: "switch" } },
+      ],
+    });
+    render(<RegisterMessagingAppDialog open onClose={() => {}} onSuccess={() => {}} />);
+
+    await pickSlack();
+    typeTokens("xoxb-1", "xapp-1");
+    expect(await screen.findByText("Acme", {}, { timeout: 3000 })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText(/Bot Token/), { target: { value: "xoxb-2" } });
+
+    expect(screen.queryByText("Acme")).toBeNull();
+    expect(screen.getByRole("button", { name: "Register" })).toHaveProperty("disabled", true);
+    expect(await screen.findByText("Globex", {}, { timeout: 3000 })).toBeTruthy();
   });
 
   it("shows Slack's refusal and keeps Register off", async () => {

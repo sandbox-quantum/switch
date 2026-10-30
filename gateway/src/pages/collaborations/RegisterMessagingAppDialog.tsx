@@ -47,6 +47,20 @@ function withoutFilled(
   };
 }
 
+/** The config with the given fields' surrounding whitespace dropped: the guide
+ * checks the tokens trimmed, so they are saved as they were checked. */
+function withTrimmed(
+  config: Record<string, unknown>,
+  fields: readonly string[],
+): Record<string, unknown> {
+  const next = { ...config };
+  for (const key of fields) {
+    const value = next[key];
+    if (typeof value === "string") next[key] = value.trim();
+  }
+  return next;
+}
+
 function humanize(key: string): string {
   return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -134,7 +148,7 @@ export default function RegisterMessagingAppDialog({
       const bridge = await createBridge(
         selectedType,
         displayName.trim(),
-        config,
+        guided ? withTrimmed(config, SLACK_GUIDE_REQUIRED_FIELDS) : config,
         channelCreationSupported && channelCreationEnabled,
       );
       onSuccess(bridge);
@@ -148,6 +162,7 @@ export default function RegisterMessagingAppDialog({
   }, [
     canSubmit,
     selectedType,
+    guided,
     displayName,
     config,
     channelCreationSupported,
