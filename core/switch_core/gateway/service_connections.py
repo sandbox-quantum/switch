@@ -87,17 +87,6 @@ def _grant_view(broker: ServiceBroker, agent: Agent, grant: ServiceGrant) -> dic
     }
 
 
-def _status(broker: ServiceBroker, connection: ServiceConnection | None) -> str:
-    """The connection's status, as a person acts on it: one made through an
-    app this server has since replaced needs reconnecting before anyone uses
-    it and finds out."""
-    if connection is None:
-        return "not_connected"
-    if connection.status == "active" and broker.client_replaced(connection):
-        return "needs_reauthorization"
-    return connection.status
-
-
 @router.get("/service-connections")
 async def list_service_connections(
     user: Annotated[User, Depends(get_current_user)],
@@ -155,7 +144,7 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
-                "status": _status(broker, connection),
+                "status": broker.connection_status(connection),
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
                     None if connection is None else connection.external_identity

@@ -291,6 +291,44 @@ version of their own to them without also giving them a release of their own.
   and `/room-url` leaves the menu but still works when typed. A self-hosted
   Teams app shows the change once its package is rebuilt with `--bump` and
   uploaded again.
+- **A session is no longer given a service whose every token request is
+  refused.** A session got the skill and tools of each service its agent was
+  granted, leaving out only one the workspace switched off or whose key never
+  expires. A service the operator switched off (`DISABLED_SERVICES`), one
+  whose app is not set up or was removed, and GitHub without its App's
+  signing key still came with tools whose every call failed. A session now
+  gets a service only where Switch hands out its tokens, and a running one is
+  restarted without a service that stops being usable, as it already was for
+  the workspace's switch. The grant is kept, so the service comes back once
+  it can be used again. A service whose sign-ins need the server's public
+  address is also no longer handed out on a server without one, which already
+  showed it as unavailable.
+- **`get_my_context` no longer calls a service available when the workspace
+  has it switched off.** `available` now also needs the workspace's switch to
+  be on, and the new `workspace_enabled` says whether it is, so an agent tells
+  its owner to ask a workspace admin rather than to connect it.
+- **A connection made through an app the server no longer uses needs
+  reconnecting everywhere it is shown.** Connectors already said so, but its
+  row stays active until something asks for a token, and `get_my_context`
+  and a workspace admin's counts read the row: switch-buddy was told the
+  connection was active, offered to give it to an agent, and failed. Both now
+  read it as Connectors does, and the counts leave out every connection that
+  needs reconnecting. A client Switch registers for itself (Atlassian's),
+  registered again when its redirects or scopes change, now counts as
+  replaced too, where it used to surface later as a refused sign-in.
+- **A refusal to reconnect is worded for who reads it.** Opening your own
+  GitHub repositories, or granting a service, could answer "The agent's owner
+  must reconnect GitHub under Settings, Connections", addressed to someone
+  else and naming a page that does not exist. You are now told to reconnect
+  it from Connectors in Switch Console, and an agent asking for a token is
+  told its owner must.
+- **The dashboard says when the workspace has a service switched off.** An
+  agent's Service access offered to turn on, or to grant GitHub for, a
+  service the workspace had switched off, and the server refused. It now
+  says the service is not enabled in the workspace and who can switch it on,
+  as Switch Console does, and a grant that is on can still be turned off.
+  GitHub that this server can't grant for another reason says so in place of
+  its form, rather than only when its App is not set up.
 
 #### Removed
 - **Breaking for HTTP clients: the `/agents/{id}/moderation/…` routes are
@@ -2186,6 +2224,17 @@ version of their own to them without also giving them a release of their own.
   which cannot be given to another machine, and gives the workaround for a
   machine whose organization does not enforce the keyring: switch Codex to file
   storage, which keeps the login in plaintext, and sign in again (#1048).
+- **A session that loses a service gives every reason it may have gone.**
+  Switch now also leaves a service out once the server can no longer hand it
+  out, so the session's notice says that as well as the workspace's switch
+  and a removed grant.
+- **An agent's Connectors tab no longer sends you to connect what can't be
+  turned on.** Its "Not connected" note named every service you had not
+  connected: Datadog, whose keys Switch never hands to agents, GitHub on a
+  server where its App can't work, a service whose app isn't set up, and one
+  the workspace has switched off. It now names only what you could connect
+  and then turn on here. A card for a service the workspace or the server
+  stops says why, as Connectors does, even when it is turned on.
 
 ### [0.40.1] - 2026-10-21
 

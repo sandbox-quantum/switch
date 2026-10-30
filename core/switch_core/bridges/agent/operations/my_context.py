@@ -28,6 +28,7 @@ from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     Agent,
     MessagingInstall,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -88,16 +89,22 @@ async def get_my_context() -> dict[str, Any]:
 
         `services`: what agents can be given access to (GitHub and the like),
         each {slug, name, available, unavailable_reason, unavailable_code,
-        connection, agents_using}. `available` is whether this server has it
-        set up; `unavailable_code` says why not, one of "switched_off" (its
-        operator turned it off), "needs_https" (it can't work on this
-        server), "app_not_set_up" (its operator can set it up under Admin →
-        Connector apps in Switch Console), "not_set_up",
+        workspace_enabled, connection, agents_using}. `available` is whether
+        your owner can use it here: this server has it set up and the
+        workspace has it on. `unavailable_code` says why this server can't,
+        one of "switched_off" (its operator turned it off), "needs_https" (it
+        can't work on this server), "app_not_set_up" (its operator can set it
+        up under Admin → Connector apps in Switch Console), "not_set_up",
         "not_fully_set_up" or "key_never_expires" (it connects with a key
-        that never expires, which Switch does not hand to agents);
+        that never expires, which Switch does not hand to agents).
+        `workspace_enabled` is false where the workspace has it switched off,
+        which a workspace admin changes under Admin → Connectors in Switch
+        Console; until then nobody in it can connect it or give it to agents.
         `connection` is your owner's: "not_connected", "active",
-        "needs_reauthorization" or "error". `agents_using` names your owner's
-        agents granted it. Empty when this server has service connections off.
+        "needs_reauthorization" (including one made through an app this server
+        no longer uses) or "error"; only an "active" one can be given to an
+        agent. `agents_using` names your owner's agents granted it. Empty
+        when this server has service connections off.
 
         `agents`: your owner's agents, each {id, name, display_name,
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
@@ -145,7 +152,7 @@ async def get_my_context() -> dict[str, Any]:
             )
         )
         connections = {
-            connection.service: connection.status
+            connection.service: connection
             for connection in await _CONNECTIONS.list_connections(session, owner.id)
         }
         grants = {
@@ -155,6 +162,11 @@ async def get_my_context() -> dict[str, Any]:
             ]
             for agent in agents
         }
+        switched_off = (
+            set()
+            if protocol.service_broker is None
+            else await protocol.service_broker.workspace_disabled(session)
+        )
         bridges = await protocol.bridge_store.get_all(session)
 
     admin = role in {"owner", "admin"} or owner.role == "admin"
@@ -210,7 +222,7 @@ async def get_my_context() -> dict[str, Any]:
             ],
             "how_to_add": _how_to_add(protocol),
         },
-        "services": _services(protocol, connections, agents, grants),
+        "services": _services(protocol, connections, agents, grants, switched_off),
         "agents": [
             {
                 "id": agent.id,
@@ -268,9 +280,10 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
 
 def _services(
     protocol: Any,
-    connections: dict[str, str],
+    connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
+    switched_off: set[str],
 ) -> list[dict[str, Any]]:
     broker = protocol.service_broker
     if broker is None:
@@ -282,17 +295,22 @@ def _services(
         if not definition.enabled:
             continue
         unavailable = broker.unavailable(definition.slug)
+        workspace_enabled = definition.slug not in switched_off
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
                 "available": unavailable is None
-                and broker.connectable(definition.slug),
+                and broker.connectable(definition.slug)
+                and workspace_enabled,
                 "unavailable_reason": None
                 if unavailable is None
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
-                "connection": connections.get(definition.slug, "not_connected"),
+                "workspace_enabled": workspace_enabled,
+                "connection": broker.connection_status(
+                    connections.get(definition.slug)
+                ),
                 "agents_using": sorted(
                     names[agent_id]
                     for agent_id, services in grants.items()

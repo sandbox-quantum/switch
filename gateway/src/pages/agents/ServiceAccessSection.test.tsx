@@ -180,7 +180,9 @@ describe("ServiceAccessSection", () => {
     enabled: true,
     connectable: true,
     unavailable_reason: null,
+    unavailable_code: null,
     server_setup_needed: false,
+    workspace_enabled: true,
     status,
     pass_through: true,
     token_lifetime: 3600,
@@ -274,6 +276,64 @@ describe("ServiceAccessSection", () => {
     expect(screen.getByText(/first connect it from Switch Console/)).toBeTruthy();
     expect(screen.getByText("Coming to this server soon.")).toBeTruthy();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  const SWITCHED_OFF = (name: string) =>
+    `${name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
+
+  it("says a service switched off in the workspace cannot be turned on, and still turns one off", async () => {
+    const calls = mockServer(
+      {
+        grants: [
+          {
+            service: "example",
+            name: "Example",
+            access: "read",
+            tool_mode: "allow",
+            tools: [],
+            effective_tools: [],
+            resources: {},
+            summary: "helper reads Example as you.",
+          },
+        ],
+        addressing_open: false,
+      },
+      [
+        onOff("active", { workspace_enabled: false }),
+        onOff("active", { slug: "other", name: "Other", workspace_enabled: false }),
+      ],
+    );
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    const other = await screen.findByLabelText("Other for helper");
+    expect((other as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText(SWITCHED_OFF("Other"))).toBeTruthy();
+    // On, it does nothing until the workspace switches it back on; it can be turned off.
+    expect(screen.getByText(SWITCHED_OFF("Example"))).toBeTruthy();
+    const example = screen.getByLabelText("Example for helper") as HTMLInputElement;
+    expect(example.disabled).toBe(false);
+    fireEvent.click(example);
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "/gateway/agents/a1/service-grants/example",
+        method: "DELETE",
+        body: null,
+      }),
+    );
+  });
+
+  it("says GitHub is switched off in the workspace instead of offering to grant it", async () => {
+    mockServer(NONE, [
+      onOff("active", {
+        slug: "github",
+        name: "GitHub",
+        pass_through: false,
+        workspace_enabled: false,
+      }),
+    ]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(SWITCHED_OFF("GitHub"))).toBeTruthy();
+    expect(screen.queryByLabelText("GitHub account")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Grant" })).toBeNull();
   });
 
   const NOT_SET_UP =

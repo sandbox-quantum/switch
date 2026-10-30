@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import time
 from dataclasses import replace
+from datetime import timedelta
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -15,6 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import ServiceAdapterError
 from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.broker import (
+    CLIENT_REPLACED,
+    CONNECTOR_REVOKED,
+    Principal,
+    ServiceBroker,
+    ServiceError,
+)
 from switch_core.connections.loader import ConnectionDefinition
 from switch_core.connections.oauth_clients import (
     LOOPBACK_REDIRECT_URI,
@@ -25,6 +35,8 @@ from switch_core.connections.oauth_clients import (
     redirect_uris,
 )
 from switch_core.db.models import ServiceOAuthClient
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.connections.fake_vendor import (
     ISSUER,
@@ -32,8 +44,11 @@ from tests.switch_core.connections.fake_vendor import (
     UnregisteredRedirect,
     s256,
 )
+from tests.switch_core.connections.test_broker import _user, pass_through_catalog
 from tests.switch_core.connections.test_loader import OAUTH_ENTRY
+from tests.switch_core.gateway.agent_route_harness import add_agent
 
+STORE = ServiceConnectionStore()
 PORTS = [43123, 43124]
 REDIRECT = loopback_redirect(43123)
 SCOPES = ["read:items", "write:items"]
@@ -163,6 +178,82 @@ async def test_changed_ports_register_again_and_sign_in_on_the_new_ones(
     assert vendor.registrations[-1]["redirect_uris"] == [loopback_redirect(43125)]
     signed_in = await _sign_in(adapter, vendor, loopback_redirect(43125))
     assert signed_in.secret.access_token in vendor.live_access
+
+
+async def test_a_connection_through_a_client_registered_anew_must_reconnect(
+    session_factory, vendor, tmp_path: Path
+) -> None:
+    """A process knows the client it registered only once it uses it, so a
+    connection through one since replaced is found out by the refresh that
+    registers anew: as a replaced client, not as a refused sign-in."""
+    signed_in = await _sign_in(
+        _adapter(_client(session_factory, vendor), vendor), vendor, REDIRECT
+    )
+    # Restarted with other redirects: the stored registration no longer fits.
+    adapter = _adapter(_client(session_factory, vendor, ports=[43125]), vendor)
+    broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=pass_through_catalog(tmp_path / "catalog"),
+        adapters={"example": adapter},
+        disabled={},
+        store=STORE,
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
+    )
+    async with session_factory() as session:
+        owner = await _user(session, "ada")
+        agent = await add_agent(session, name="planner", owner_id=owner.id)
+        await STORE.save_connection(
+            session,
+            user_id=owner.id,
+            service="example",
+            consent="write",
+            granted_scopes=SCOPES,
+            account_id="acct-1",
+            external_identity="ada@example.test",
+            # Due for renewal, so the token asked for below is refreshed.
+            encrypted_secret=TEST_KEYRING.encrypt(
+                json.dumps({**signed_in.secret.values, "expires_at": time.time() + 60})
+            ),
+            oauth_client_id=signed_in.client_id,
+        )
+        await STORE.save_grant(
+            session,
+            agent_id=agent.id,
+            owner_id=owner.id,
+            service="example",
+            access="write",
+            tool_mode="deny",
+            tools=[],
+            resources={},
+            account_id="acct-1",
+            created_by=owner.id,
+        )
+        await session.commit()
+        connection = await STORE.get_connection(session, owner.id, "example")
+    assert connection is not None
+    assert broker.connection_status(connection) == "active"
+
+    with pytest.raises(ServiceError) as caught:
+        async with session_factory() as session:
+            await broker.issue(session, agent.id, Principal.agent_key(), "example")
+
+    assert caught.value.code == CONNECTOR_REVOKED
+    assert caught.value.message == (
+        "Example was connected through an app this server no longer uses. The "
+        "agent's owner must reconnect Example from Connectors in Switch Console."
+    )
+    assert len(vendor.registrations) == 2
+    async with session_factory() as session:
+        connection = await STORE.get_connection(session, owner.id, "example")
+    assert connection is not None
+    assert (connection.status, connection.error_code) == (
+        "needs_reauthorization",
+        CLIENT_REPLACED,
+    )
 
 
 async def test_the_vendor_refuses_a_port_the_client_did_not_register(
