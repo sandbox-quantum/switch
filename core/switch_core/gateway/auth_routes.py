@@ -70,6 +70,7 @@ from switch_core.gateway.schemas import (
     LinkedIdentity,
     LoginRequest,
     OidcLoginOptionView,
+    PendingIdentity,
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
@@ -383,11 +384,12 @@ async def my_identities(
 
     An owner-only agent is only reachable by its owner over a bridge that
     appears in this list, so Switch Console reads it to warn when an agent has
-    been sealed on a platform where its owner cannot be recognised.
+    been sealed on a platform where its owner cannot be recognised. A link
+    still waiting for the account to confirm it is not one of them: see
+    `my_pending_identities`.
     """
-    identities = await external_user_store.get_by_user(session, user.id)
     linked: list[LinkedIdentity] = []
-    for identity in identities:
+    for identity, claim in await external_user_store.claims_of_user(session, user.id):
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
@@ -399,9 +401,48 @@ async def my_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                verified=claim.verified_at is not None,
             )
         )
     return linked
+
+
+@router.get("/auth/me/identities/pending")
+async def my_pending_identities(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[PendingIdentity]:
+    """The messaging-app accounts waiting to confirm a link to this user
+    (CHOO-3881), which count for nothing until they do."""
+    pending: list[PendingIdentity] = []
+    for identity, request in await external_user_store.link_requests_of_user(
+        session, user.id
+    ):
+        bridge = await bridge_store.get(session, identity.bridge_id)
+        if bridge is None:
+            continue
+        requested_by = request.requested_by_user_id
+        requester = (
+            await user_store.get(session, requested_by)
+            if requested_by is not None and requested_by != user.id
+            else None
+        )
+        pending.append(
+            PendingIdentity(
+                id=identity.id,
+                bridge_id=identity.bridge_id,
+                bridge_display_name=bridge.display_name,
+                bridge_type=bridge.type,
+                external_user_id=identity.external_user_id,
+                external_username=identity.external_username,
+                requested_by_name=requester.name if requester is not None else None,
+                code_expires_at=request.code_expires_at,
+            )
+        )
+    return pending
 
 
 @router.delete("/auth/me")

@@ -33,6 +33,7 @@ import { DeleteServerModal } from '@renderer/features/switch-servers/DeleteServe
 import { DisconnectMessagingAppModal } from '@renderer/features/switch-servers/DisconnectMessagingAppModal';
 import { RenameServerModal } from '@renderer/features/switch-servers/RenameServerModal';
 import { ReplaceTokenModal } from '@renderer/features/switch-servers/ReplaceTokenModal';
+import { RequireLinkConfirmationModal } from '@renderer/features/switch-servers/RequireLinkConfirmationModal';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
@@ -119,6 +120,10 @@ export const modalRegistry = {
   connectorAppRemoveModal: createModal(ConnectorAppRemoveDialog, { size: 'sm' }),
   connectorAppMoveModal: createModal(ConnectorAppMoveDialog, { size: 'sm' }),
   claimIdentityModal: createModal(ClaimIdentityModal, {
+    size: 'md',
+    dismissOnOutsideClick: false,
+  }),
+  requireLinkConfirmationModal: createModal(RequireLinkConfirmationModal, {
     size: 'md',
     dismissOnOutsideClick: false,
   }),

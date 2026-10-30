@@ -221,7 +221,9 @@ properly, and the person will hit the gaps later rather than sooner.
 
    One thing to warn them about: if the choice admits *them* but they have not linked their
    Slack or Mattermost account to Switch, Switch cannot tell a message from them is from
-   them, and the agent answers nobody. Switch Console says so on the setting itself.
+   them, and the agent answers nobody. Switch Console says so on the setting itself. A
+   link counts once they confirm it by posting, from that chat account, the code Switch
+   Console shows them.
 6. **Run it somewhere that stays up — and let Switch Console do that for you.** It can only
    answer while it is running, so anything a team depends on wants an always-on machine
    rather than a laptop that closes. **This is much less work than it sounds.** All you need

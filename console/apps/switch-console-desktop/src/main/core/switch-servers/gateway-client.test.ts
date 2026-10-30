@@ -80,6 +80,11 @@ const {
   fetchJoinableWorkspaces,
   fetchBridgeTeams,
   fetchMessagingAppInstalls,
+  fetchMyIdentities,
+  fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
+  requireLinkConfirmation,
+  searchBridgeDirectory,
   fetchTeamsPackage,
   joinWorkspaceByDomain,
   fetchJoinDomains,
@@ -2333,6 +2338,164 @@ describe('messaging-app installs', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
     expect(url).toBe('https://switch.example.com/gateway/messaging-apps/installs/install-1');
     expect(init.method).toBe('DELETE');
+  });
+});
+
+/**
+ * Links have to be confirmed with a code posted from the account (CHOO-3881).
+ * A server from before that sends none of the new fields, and every link it
+ * reports counts — so a missing `verified` reads as confirmed and a missing
+ * pending route as nothing pending.
+ */
+describe('linked messaging accounts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const LINKED = {
+    id: 'eu-1',
+    bridge_id: 'b1',
+    bridge_display_name: 'Acme',
+    bridge_type: 'slack',
+    external_user_id: 'U1',
+    external_username: 'ada',
+  };
+
+  it('reads whether each link is confirmed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([{ ...LINKED, verified: false }]) as never);
+
+    await expect(fetchMyIdentities(SERVER)).resolves.toMatchObject([{ verified: false }]);
+  });
+
+  it('reads a link from a server that predates confirming as confirmed', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([LINKED]) as never);
+
+    await expect(fetchMyIdentities(SERVER)).resolves.toMatchObject([{ verified: true }]);
+  });
+
+  it('lists the links waiting for a code', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { ...LINKED, requested_by_name: 'Grace', code_expires_at: '2026-10-27T12:30:00Z' },
+      ]) as never
+    );
+
+    await expect(fetchMyPendingIdentities(SERVER)).resolves.toEqual([
+      {
+        id: 'eu-1',
+        bridgeId: 'b1',
+        bridgeDisplayName: 'Acme',
+        bridgeType: 'slack',
+        externalUserId: 'U1',
+        externalUsername: 'ada',
+        requestedByName: 'Grace',
+        codeExpiresAt: '2026-10-27T12:30:00Z',
+      },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/auth/me/identities/pending');
+  });
+
+  it('reads a server without the pending route as having none pending', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchMyPendingIdentities(SERVER)).resolves.toEqual([]);
+  });
+
+  it('raises on any other failure to list them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(500, '{"detail":"boom"}') as never);
+
+    await expect(fetchMyPendingIdentities(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('reads who has confirmed a directory entry, old servers as confirmed', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        users: [
+          {
+            external_user_id: 'U1',
+            username: 'ada',
+            display_name: 'Ada',
+            claimed_by: [
+              { user_id: 'u1', user_name: 'Ada', verified: false },
+              { user_id: 'u2', user_name: 'Grace' },
+            ],
+          },
+        ],
+      }) as never
+    );
+
+    const { users } = await searchBridgeDirectory(SERVER, 'b1', 'ada');
+
+    expect(users[0]!.claimedBy).toEqual([
+      { userId: 'u1', userName: 'Ada', verified: false },
+      { userId: 'u2', userName: 'Grace', verified: true },
+    ]);
+  });
+});
+
+/**
+ * An admin can stop trusting a messaging app's links made before links had to
+ * be confirmed (CHOO-3881). A server from before that has neither route.
+ */
+describe('older links an admin can require confirming', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists them for one app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          id: 'eu-1',
+          external_user_id: 'U1',
+          external_username: 'ada',
+          user_id: 'u1',
+          user_name: 'Ada',
+        },
+      ]) as never
+    );
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([
+      { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/identities/unconfirmed');
+  });
+
+  it('reads a server without the route as having none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([]);
+  });
+
+  it('raises when the caller may not see them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admins only"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('requires confirming them, and says how many moved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ moved: 3 }) as never);
+
+    await expect(requireLinkConfirmation(SERVER, 'b1')).resolves.toBe(3);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/collaborations/b1/identities/require-confirmation'
+    );
+    expect(init.method).toBe('POST');
   });
 });
 

@@ -1945,6 +1945,11 @@ class ExternalUserClaim(TenantScoped, Base):
 
     An account with no claim at all satisfies no owner rule — unclaimed is
     not "trusted by default".
+
+    A claim is only ever written once the account itself has confirmed it
+    (`ExternalUserLinkRequest`), so every row here is trusted. `verified_at`
+    is null on the claims made before confirmation existed (CHOO-3881): they
+    keep working, and the claimant is asked to confirm them.
     """
 
     __tablename__ = "external_user_claims"
@@ -1966,6 +1971,66 @@ class ExternalUserClaim(TenantScoped, Base):
         primary_key=True,
     )
     created_at: Mapped[str] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ExternalUserLinkRequest(TenantScoped, Base):
+    """A link from a platform account to a Switch user, waiting for the account
+    to confirm it (CHOO-3881).
+
+    Kept out of `external_user_claims` on purpose: every reader of that table
+    treats a row as trusted, so a request living there would be trusted by any
+    reader that forgot to filter it out, including a release from before this
+    table existed.
+
+    The account confirms by posting `code` from itself, which proves the same
+    person holds the Switch user (only they are shown the code) and the
+    platform account (the platform says who posted it). Only a hash is
+    stored, and `code_hash` is null until the Switch user asks for a code: an
+    admin may start a link for someone else, and must not be the one who sees
+    it.
+    """
+
+    __tablename__ = "external_user_link_requests"
+    __table_args__ = (
+        Index("ix_external_user_link_requests_tenant_id", "tenant_id"),
+        Index("ix_external_user_link_requests_user_id", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "external_user_id"],
+            ["external_users.tenant_id", "external_users.id"],
+            name="fk_external_user_link_requests_external_user",
+            ondelete="CASCADE",
+        ),
+    )
+
+    external_user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            name="fk_external_user_link_requests_user",
+            ondelete="CASCADE",
+        ),
+        primary_key=True,
+    )
+    requested_by_user_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            name="fk_external_user_link_requests_requested_by",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    code_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

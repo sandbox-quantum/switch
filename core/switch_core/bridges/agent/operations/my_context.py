@@ -70,12 +70,18 @@ async def get_my_context() -> dict[str, Any]:
         `messaging_apps`: {connected, how_to_add}.
         `connected` lists the workspace's messaging apps, each {id, platform,
         name, status, is_default, installed_with, your_account_linked,
-        your_usernames}. `id` is the `bridge_id` that `create_room` takes.
+        your_account_link, your_usernames}. `id` is the `bridge_id` that `create_room` takes.
         `installed_with` is "official_app" (the Switch app, added with one
         click) or "own_app" (an app someone created and pasted tokens from).
         `your_account_linked` is whether your owner's account on that platform
         is linked to their Switch user; until it is, agents that answer only
         their owner do not recognise them there.
+        `your_account_link` says more: "verified" (linked and confirmed from
+        the chat account), "unverified" (linked before links needed
+        confirming; it works, and Console asks them to confirm it), "pending"
+        (waiting for them to post, from that account, the code Console
+        shows them, so it does not count yet: they started linking, or an
+        admin required them to confirm an older link) or "none".
         `your_usernames` are your owner's usernames on that app, empty until
         their account is linked. People are named by these, never by their
         Switch name, in `create_room`'s and `add_users_to_room`'s `user_names`
@@ -130,12 +136,24 @@ async def get_my_context() -> dict[str, Any]:
         members = await session.scalar(select(func.count()).select_from(TenantMember))
         agents = await protocol.agent_store.get_by_owner(session, owner.id)
         usernames_by_bridge: dict[str, list[str]] = {}
-        for identity in await protocol.external_user_store.get_by_user(
+        link_by_bridge: dict[str, str] = {}
+        for identity, claim in await protocol.external_user_store.claims_of_user(
             session, owner.id
         ):
             usernames_by_bridge.setdefault(identity.bridge_id, []).append(
                 identity.external_username
             )
+            if claim.verified_at is not None:
+                link_by_bridge[identity.bridge_id] = "verified"
+            else:
+                link_by_bridge.setdefault(identity.bridge_id, "unverified")
+        for (
+            identity,
+            _request,
+        ) in await protocol.external_user_store.link_requests_of_user(
+            session, owner.id
+        ):
+            link_by_bridge.setdefault(identity.bridge_id, "pending")
         installed_bridges = set(
             await session.scalars(
                 select(MessagingInstall.bridge_id).where(
@@ -204,6 +222,7 @@ async def get_my_context() -> dict[str, Any]:
                         "official_app" if bridge.id in installed_bridges else "own_app"
                     ),
                     "your_account_linked": bridge.id in usernames_by_bridge,
+                    "your_account_link": link_by_bridge.get(bridge.id, "none"),
                     "your_usernames": sorted(usernames_by_bridge.get(bridge.id, [])),
                 }
                 for bridge in bridges

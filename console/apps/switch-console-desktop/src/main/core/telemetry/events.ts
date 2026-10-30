@@ -191,6 +191,24 @@ export type TelemetryUpdateTrigger = 'user' | 'startup' | 'scheduled';
 
 export type TelemetryBridgeFailure = 'none' | 'unauthenticated' | 'forbidden' | 'invalid' | 'error';
 
+/**
+ * How linking a messaging account came out. `pending` is a link the server is
+ * holding until a one-time code is posted from the account, which counts for
+ * nothing yet — reported apart from `success` so the links that are never
+ * confirmed stay visible. A server that predates confirming links answers
+ * `success` straight away.
+ */
+export type TelemetryIdentityClaimOutcome = 'success' | 'pending' | 'failure';
+
+/**
+ * Which link a confirmation finished. `new` was claimed and waiting on its
+ * code, so it follows a `pending` claim; `existing` was made before links had to
+ * be confirmed and counted all along. Kept apart so confirmations can be read
+ * against the claims that were waiting for them. `unknown` when the caller did
+ * not say.
+ */
+export type TelemetryIdentityLinkKind = 'new' | 'existing' | 'unknown';
+
 export type TelemetryRoomCreateFailure =
   | 'none'
   | 'unauthenticated'
@@ -392,7 +410,16 @@ export type TelemetryEventMap = {
   /** Someone linked their account on a messaging platform to their Switch user. */
   bridge_identity_claimed: {
     bridge_platform: TelemetryBridgePlatform;
-    outcome: TelemetryOutcome;
+    outcome: TelemetryIdentityClaimOutcome;
+  };
+  /**
+   * A link was confirmed by posting its one-time code from the account. Only
+   * the confirmation screen sees this happen, and the server is asked before it
+   * is reported.
+   */
+  bridge_identity_confirmed: {
+    bridge_platform: TelemetryBridgePlatform;
+    link_kind: TelemetryIdentityLinkKind;
   };
   /**
    * An agent was removed. `delete_in_switch` says whether its identity on the
@@ -632,6 +659,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
+  bridge_identity_confirmed: ['bridge_platform', 'link_kind'],
   agent_removed: [
     'agent_type',
     'location',

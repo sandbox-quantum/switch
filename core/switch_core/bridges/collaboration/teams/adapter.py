@@ -2978,6 +2978,17 @@ class TeamsAdapter(PlatformAdapter):
             "`/invite-agent @agent-name` — the same thing, if you prefer the slash form"
         )
 
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Teams hands the bot a channel message only when it is mentioned, and
+        # a bare command name counts once it is.
+        return (
+            "From that account, @mention the Switch app in a channel or chat it "
+            f"is in and add `link-account {code}`."
+        )
+
     def is_placeholder_username(self, username: str) -> bool:
         # Every id Teams hands out for a person is one of two shapes: a
         # channel-account id, prefixed with digits and a colon (`29:1AbC…`,

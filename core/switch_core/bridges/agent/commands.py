@@ -36,6 +36,7 @@ from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     CollaborationBridge,
+    ExternalUser,
     Message,
     Room,
     User,
@@ -43,6 +44,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
+from switch_core.db.stores.external_user_store import NoSuchLink
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
@@ -1365,6 +1367,21 @@ class _Authority:
     refusal: str | None
 
 
+async def _sender_account(
+    host: CommandConsumer, session: AsyncSession, event: CommandEvent
+) -> ExternalUser | None:
+    """The chat account that sent this command, or None when it came from none.
+
+    A message written in Console, or by the platform on someone's behalf, is
+    no chat account's, so it proves nothing about one: only the platform
+    saying who posted a message does.
+    """
+    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
+    if client is None:
+        return None
+    return await host._external_user_store.get_by_client_id(session, client.id)
+
+
 async def _manage_authority(
     host: CommandConsumer, session: AsyncSession, event: CommandEvent, agent: Agent
 ) -> _Authority:
@@ -1376,12 +1393,7 @@ async def _manage_authority(
     account nobody has linked cannot be told apart from anyone else, so it is
     refused with what to do about it.
     """
-    client = await host.client_store.get_by_transport_user_id(session, event.user_id)
-    external = (
-        await host._external_user_store.get_by_client_id(session, client.id)
-        if client is not None
-        else None
-    )
+    external = await _sender_account(host, session, event)
     if external is None:
         return _Authority(
             None,
@@ -1393,7 +1405,8 @@ async def _manage_authority(
             None,
             "This chat account isn't linked to a Switch user, so I can't tell "
             "whether you own this agent. Link it to your Switch user in Switch "
-            "Console (Messaging apps), then try again.",
+            "Console (Messaging apps) and confirm it with the code shown there, "
+            "then try again.",
         )
     for user_id in claimants:
         user = await host._user_store.get(session, user_id)
@@ -1409,6 +1422,208 @@ async def _manage_authority(
             continue
     return _Authority(
         None, "Only the agent's owner or a workspace admin can rename or delete it."
+    )
+
+
+async def _cmd_link_account(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """Confirm a link to a Switch user with the code Console showed (CHOO-3881).
+
+    Only the Switch user was shown the code, and the platform says which
+    account posted it, so a match proves one person holds both. A code posted
+    from any other account matches nothing, which is why posting it in a busy
+    channel gives nothing away.
+    """
+    host = cast("CommandConsumer", client)
+    code = (event.args or "").strip()
+    if not code:
+        await _reply(
+            host,
+            room,
+            event,
+            "Usage: `!link-account CODE`, with the code Switch Console showed "
+            "you when you linked this account.",
+        )
+        return
+
+    async with host.session_factory() as session:
+        account = await _sender_account(host, session, event)
+        if account is None:
+            await _reply(
+                host,
+                room,
+                event,
+                "⚠️ Only a chat account can confirm a link to itself, by posting "
+                "the code from that account.",
+            )
+            return
+        request = await host._external_user_store.redeem_link_code(
+            session, account, code
+        )
+        if request is None:
+            await _reply(
+                host,
+                room,
+                event,
+                "⚠️ That code doesn't match a link waiting for this account, or "
+                "it has expired. Get a new code in Switch Console, and post it "
+                "from the account you're linking.",
+            )
+            return
+        user_id = request.user_id
+        linked = await host._user_store.get(session, user_id)
+        bridge = await session.get(CollaborationBridge, account.bridge_id)
+        # Both are held by foreign keys from the rows just written.
+        if linked is None or bridge is None:
+            raise RuntimeError(
+                f"Confirmed a link for user {user_id} on bridge "
+                f"{account.bridge_id}, but could not read either back"
+            )
+        name, platform = linked.name, bridge.display_name
+        username = account.external_username
+        await record_audit_event(
+            session,
+            tenant_id=account.tenant_id,
+            actor_user_id=user_id,
+            action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
+            target_type="external_user",
+            target_id=account.id,
+            details={"bridge_id": account.bridge_id, "user_id": user_id, "by": "code"},
+        )
+        await session.commit()
+
+    # Names the Switch user, so whoever posted it sees who the account is now
+    # recognised as, and how to take that back if it is not them. "The way you
+    # ran this" because platforms differ in how a command reaches Switch: typed
+    # with `!`, as a slash command, or with the app mentioned.
+    await _reply(
+        host,
+        room,
+        event,
+        f"✅ Linked this {platform} account ({username}) to Switch user "
+        f"**{name}**. If that isn't you, run `unlink-account {name}` the way "
+        "you ran this command.",
+    )
+
+
+async def _cmd_unlink_account(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    """Show which Switch users this chat account is linked to, or remove one.
+
+    The account's own say over its links, for someone who has no Switch login
+    to fix one with: a link confirmed by mistake, or one made before links
+    needed confirming. It only ever touches the account that sent it.
+    """
+    host = cast("CommandConsumer", client)
+    wanted = _strip_quotes((event.args or "").strip())
+
+    async with host.session_factory() as session:
+        account = await _sender_account(host, session, event)
+        if account is None:
+            await _reply(
+                host,
+                room,
+                event,
+                "⚠️ Only a chat account can unlink itself, from that account.",
+            )
+            return
+        claims = (
+            await host._external_user_store.claims_for(session, [account.id])
+        ).get(account.id, [])
+        users = {
+            user.id: user
+            for user in await session.scalars(
+                select(User).where(User.id.in_([c.user_id for c in claims]))
+            )
+        }
+        linked = sorted(
+            (
+                (users[c.user_id].name, users[c.user_id].email, c)
+                for c in claims
+                if c.user_id in users
+            ),
+            key=lambda entry: entry[0].casefold(),
+        )
+        listing = "\n".join(
+            f"- **{name}**"
+            + (
+                ""
+                if claim.verified_at is not None
+                else " (made before links needed confirming)"
+            )
+            for name, _email, claim in linked
+        )
+
+        if not wanted:
+            await _reply(
+                host,
+                room,
+                event,
+                (
+                    f"This account is linked to:\n{listing}\n\nRun "
+                    "`!unlink-account NAME` to remove one."
+                )
+                if linked
+                else "This account isn't linked to any Switch user.",
+            )
+            return
+
+        needle = wanted.casefold()
+        matches = [
+            claim
+            for name, email, claim in linked
+            if needle in (name.casefold(), email.casefold())
+        ]
+        if not matches:
+            await _reply(
+                host,
+                room,
+                event,
+                f"⚠️ This account isn't linked to a Switch user called "
+                f"**{wanted}**." + (f" It is linked to:\n{listing}" if linked else ""),
+            )
+            return
+        if len(matches) > 1:
+            await _reply(
+                host,
+                room,
+                event,
+                f"⚠️ More than one Switch user linked to this account goes by "
+                f"**{wanted}**. Run `!unlink-account` with their email instead.",
+            )
+            return
+        user_id = matches[0].user_id
+        name = users[user_id].name
+        try:
+            await host._external_user_store.release(session, account, user_id)
+        except NoSuchLink:
+            # Unlinked some other way while this ran: the outcome asked for.
+            await _reply(
+                host,
+                room,
+                event,
+                f"This account is no longer linked to Switch user **{name}**.",
+            )
+            return
+        await record_audit_event(
+            session,
+            tenant_id=account.tenant_id,
+            actor_user_id=None,
+            action=AuditAction.BRIDGE_IDENTITY_RELEASED,
+            target_type="external_user",
+            target_id=account.id,
+            details={
+                "bridge_id": account.bridge_id,
+                "user_id": user_id,
+                "by": "chat_account",
+            },
+        )
+        await session.commit()
+
+    await _reply(
+        host, room, event, f"Unlinked this account from Switch user **{name}**."
     )
 
 
@@ -2129,6 +2344,38 @@ COMMANDS: list[Command] = [
         _cmd_remove_agent,
         args_spec=(
             CommandArg("agent", "The agent to remove from this room", required=True),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "link-account",
+        "Confirm a link between this chat account and your Switch user, with "
+        "the code Switch Console showed you. Usage: `!link-account CODE`.",
+        _cmd_link_account,
+        args_spec=(
+            # Free text so a bridge passes it through as typed: a declared
+            # name-style argument comes back with an `@` in front.
+            CommandArg(
+                "code",
+                "The code Switch Console showed you",
+                required=True,
+                free_text=True,
+            ),
+        ),
+        admin_owned=True,
+    ),
+    Command(
+        "unlink-account",
+        "Show which Switch users this chat account is linked to, or remove "
+        "one. Usage: `!unlink-account`, or `!unlink-account NAME`.",
+        _cmd_unlink_account,
+        args_spec=(
+            CommandArg(
+                "user",
+                "The Switch user to unlink (leave empty to list them)",
+                required=False,
+                free_text=True,
+            ),
         ),
         admin_owned=True,
     ),

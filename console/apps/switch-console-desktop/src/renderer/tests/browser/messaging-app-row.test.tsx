@@ -14,11 +14,15 @@ vi.hoisted(() => {
 });
 
 const beginMessagingAppInstall = vi.hoisted(() => vi.fn());
+const releaseBridgeIdentity = vi.hoisted(() => vi.fn());
+const cancelIdentityLinkRequest = vi.hoisted(() => vi.fn());
 const openExternalUrl = vi.hoisted(() => vi.fn());
 const showModal = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { workspaces: { beginMessagingAppInstall } },
+  rpc: {
+    workspaces: { beginMessagingAppInstall, releaseBridgeIdentity, cancelIdentityLinkRequest },
+  },
   events: { on: () => () => {}, emit: () => {} },
 }));
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
@@ -38,7 +42,11 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
  * the row menu.
  */
 import { MessagingAppRow } from '@renderer/features/switch-servers/MessagingAppsCard';
-import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import type {
+  LinkedIdentity,
+  PendingIdentity,
+  RemoteBridge,
+} from '@shared/core/switch-servers/switch-servers';
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -85,6 +93,18 @@ const IDENTITY: LinkedIdentity = {
   bridgeType: 'slack',
   externalUserId: 'U1',
   externalUsername: 'amaudruz.louis',
+  verified: true,
+};
+
+const PENDING: PendingIdentity = {
+  id: 'eu-1',
+  bridgeId: 'b-slack',
+  bridgeDisplayName: 'Slack Test',
+  bridgeType: 'slack',
+  externalUserId: 'U1',
+  externalUsername: 'amaudruz.louis',
+  requestedByName: null,
+  codeExpiresAt: '2026-10-27T12:30:00Z',
 };
 
 function row(
@@ -92,6 +112,9 @@ function row(
     workspaceId?: string | null;
     bridge?: RemoteBridge;
     identities?: LinkedIdentity[] | null;
+    pending?: PendingIdentity[] | null;
+    onReleased?: () => void;
+    olderLinks?: { count: number; onRequireConfirmation: () => void } | null;
     isAdmin?: boolean;
     onConnectChat?: (() => void) | null;
     onDisconnect?: () => void;
@@ -103,8 +126,10 @@ function row(
       serverId="srv-1"
       bridge={overrides.bridge ?? bridge()}
       identities={overrides.identities === undefined ? [] : overrides.identities}
+      pending={overrides.pending === undefined ? [] : overrides.pending}
       currentUserId="u1"
-      onReleased={() => {}}
+      onReleased={overrides.onReleased ?? (() => {})}
+      olderLinks={overrides.olderLinks ?? null}
       showBundledSignIn={false}
       isAdmin={overrides.isAdmin ?? false}
       savingChannelCreation={false}
@@ -176,6 +201,116 @@ describe('the identity column', () => {
   });
 });
 
+/**
+ * Links have to be confirmed with a code posted from the account (CHOO-3881).
+ * One still waiting counts for nothing and must never read as linked; one made
+ * before confirming works, and asks to be confirmed.
+ */
+describe('a link that needs its code', () => {
+  it('shows a waiting link as waiting, with the code one click away', async () => {
+    const el = await render(row({ identities: [], pending: [PENDING] }));
+
+    expect(el.textContent).toContain('Waiting for confirmation');
+    expect(el.textContent).not.toContain('No account linked');
+    expect(buttonLabels(el)).not.toContain('Link');
+
+    const show = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Show code');
+    await act(async () => show!.click());
+    expect(showModal).toHaveBeenCalledWith('claimIdentityModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-slack',
+      confirm: { identityId: 'eu-1', externalUsername: 'amaudruz.louis', kind: 'pending' },
+    });
+  });
+
+  it('cancels a waiting link from the menu, withdrawing only the request', async () => {
+    releaseBridgeIdentity.mockReset();
+    cancelIdentityLinkRequest.mockReset().mockResolvedValue({ kind: 'cancelled' });
+    const onReleased = vi.fn();
+    const el = await render(row({ identities: [], pending: [PENDING], onReleased }));
+
+    expect(await openMenu(el)).toContain('Cancel link to @amaudruz.louis');
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Cancel link to @amaudruz.louis'
+    );
+    await act(async () => item!.click());
+    await settle();
+
+    expect(cancelIdentityLinkRequest).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      bridgeId: 'b-slack',
+      identityId: 'eu-1',
+    });
+    expect(releaseBridgeIdentity).not.toHaveBeenCalled();
+    expect(onReleased).toHaveBeenCalledTimes(1);
+  });
+
+  it('says why a cancel did nothing, in the server’s words', async () => {
+    cancelIdentityLinkRequest.mockReset().mockResolvedValue({
+      kind: 'refused',
+      message: 'Nothing is waiting to be confirmed.',
+    });
+    const el = await render(row({ identities: [], pending: [PENDING] }));
+
+    await openMenu(el);
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Cancel link to @amaudruz.louis'
+    );
+    await act(async () => item!.click());
+    await settle();
+
+    expect(el.textContent).toContain('Nothing is waiting to be confirmed.');
+  });
+
+  it('names the confirmed account when several are linked on the app', async () => {
+    const el = await render(
+      row({
+        identities: [
+          { ...IDENTITY, id: 'eu-old', externalUsername: 'old.handle', verified: false },
+          IDENTITY,
+        ],
+      })
+    );
+
+    expect(el.textContent).toContain('@amaudruz.louis');
+    expect(el.textContent).not.toContain('@old.handle');
+    expect(el.textContent).not.toContain('Not confirmed');
+    expect(buttonLabels(el)).not.toContain('Confirm');
+  });
+
+  it('marks a link made before confirming as not confirmed, and offers to confirm it', async () => {
+    const el = await render(row({ identities: [{ ...IDENTITY, verified: false }] }));
+
+    expect(el.textContent).toContain('@amaudruz.louis');
+    expect(el.textContent).toContain('Not confirmed');
+
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Confirm');
+    await act(async () => confirm!.click());
+    expect(showModal).toHaveBeenCalledWith('claimIdentityModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-slack',
+      confirm: { identityId: 'eu-1', externalUsername: 'amaudruz.louis', kind: 'unverified' },
+    });
+  });
+
+  it('keeps Unlink, not Cancel, for a link made before confirming', async () => {
+    // Cancelling drops the link outright, and this one works today.
+    const el = await render(row({ identities: [{ ...IDENTITY, verified: false }] }));
+
+    const labels = await openMenu(el);
+    expect(labels).toContain('Unlink @amaudruz.louis');
+    expect(labels.some((l) => l.startsWith('Cancel link'))).toBe(false);
+  });
+
+  it('shows a confirmed link as before, with nothing to confirm', async () => {
+    const el = await render(row({ identities: [IDENTITY], pending: [PENDING] }));
+
+    expect(el.textContent).not.toContain('Not confirmed');
+    expect(el.textContent).not.toContain('Waiting for confirmation');
+    expect(buttonLabels(el)).not.toContain('Confirm');
+  });
+});
+
 describe('the app name and its badges', () => {
   it('keeps Default beside the name rather than adrift in the row', async () => {
     // With the name set to grow, the badge was pushed away from what it
@@ -193,6 +328,30 @@ describe('the app name and its badges', () => {
     const el = await render(row({ bridge: bridge({ status: 'error' }) }));
 
     expect(el.textContent).toContain('error');
+  });
+});
+
+describe('requiring confirmation for older links', () => {
+  it('is offered with how many there are, and opens the confirmation', async () => {
+    const onRequireConfirmation = vi.fn();
+    const el = await render(
+      row({ isAdmin: true, olderLinks: { count: 3, onRequireConfirmation } })
+    );
+
+    expect(await openMenu(el)).toContain('Require confirmation for older links (3)…');
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Require confirmation for older links (3)…'
+    );
+    await act(async () => item!.click());
+
+    expect(onRequireConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not offered when the card has nothing to offer', async () => {
+    const el = await render(row({ isAdmin: true, olderLinks: null }));
+
+    const labels = await openMenu(el);
+    expect(labels.some((l) => l.startsWith('Require confirmation'))).toBe(false);
   });
 });
 

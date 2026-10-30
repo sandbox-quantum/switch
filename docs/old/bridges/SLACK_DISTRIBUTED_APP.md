@@ -125,6 +125,8 @@ the same job once installed — the differences are all in `settings` and
             { "command": "/set-alias", "url": "https://HOST/messaging/slack/commands", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
             { "command": "/remove-alias", "url": "https://HOST/messaging/slack/commands", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
             { "command": "/invite-agent", "url": "https://HOST/messaging/slack/commands", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
+            { "command": "/link-account", "url": "https://HOST/messaging/slack/commands", "description": "Confirm a link between your chat account and your Switch user", "usage_hint": "CODE", "should_escape": true },
+            { "command": "/unlink-account", "url": "https://HOST/messaging/slack/commands", "description": "List or remove the Switch users this chat account is linked to", "usage_hint": "[name]", "should_escape": true },
             { "command": "/rename-agent", "url": "https://HOST/messaging/slack/commands", "description": "Rename an agent (owner or admin)", "usage_hint": "@agent-name new-name [Display Name]", "should_escape": true },
             { "command": "/delete-agent", "url": "https://HOST/messaging/slack/commands", "description": "Delete an agent (owner or admin)", "usage_hint": "@agent-name [confirm]", "should_escape": true },
             { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },

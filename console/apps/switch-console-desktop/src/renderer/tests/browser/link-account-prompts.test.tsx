@@ -3,7 +3,9 @@
  *
  * Adding an app ends with a link step the person may skip. While their account
  * on an active app stays unlinked the server home keeps offering it, and the
- * offer goes away once the account is claimed.
+ * offer goes away once the account is claimed. A link waiting for its code, or
+ * one made before links had to be confirmed, gets a prompt of its own that
+ * opens on the code rather than the search.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -19,10 +21,11 @@ vi.hoisted(() => {
 });
 
 const listMyIdentities = vi.hoisted(() => vi.fn());
+const listMyPendingIdentities = vi.hoisted(() => vi.fn());
 const showModal = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
-  rpc: { workspaces: { listMyIdentities } },
+  rpc: { workspaces: { listMyIdentities, listMyPendingIdentities } },
   events: { on: () => () => {}, emit: () => {} },
 }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
@@ -33,8 +36,13 @@ import { LinkAccountPrompts } from '@renderer/features/switch-servers/link-accou
 import {
   myIdentitiesQueryKey,
   useMyIdentities,
+  useMyPendingIdentities,
 } from '@renderer/features/switch-servers/use-my-identities';
-import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import type {
+  LinkedIdentity,
+  PendingIdentity,
+  RemoteBridge,
+} from '@shared/core/switch-servers/switch-servers';
 
 function bridge(id: string, type: string, patch: Partial<RemoteBridge> = {}): RemoteBridge {
   return {
@@ -63,11 +71,31 @@ const SLACK_IDENTITY: LinkedIdentity = {
   bridgeType: 'slack',
   externalUserId: 'U1',
   externalUsername: 'me',
+  verified: true,
+};
+
+const SLACK_PENDING: PendingIdentity = {
+  id: 'eu-1',
+  bridgeId: 'b-slack',
+  bridgeDisplayName: 'slack workspace',
+  bridgeType: 'slack',
+  externalUserId: 'U1',
+  externalUsername: 'me',
+  requestedByName: null,
+  codeExpiresAt: '2026-10-27T12:30:00Z',
 };
 
 function Home({ bridges }: { bridges: RemoteBridge[] }) {
   const { identities } = useMyIdentities('ws-1');
-  return <LinkAccountPrompts workspaceId="ws-1" bridges={bridges} identities={identities} />;
+  const { pending } = useMyPendingIdentities('ws-1');
+  return (
+    <LinkAccountPrompts
+      workspaceId="ws-1"
+      bridges={bridges}
+      identities={identities}
+      pending={pending}
+    />
+  );
 }
 
 let container: HTMLDivElement | null = null;
@@ -76,6 +104,7 @@ let client: QueryClient;
 
 beforeEach(() => {
   listMyIdentities.mockReset();
+  listMyPendingIdentities.mockReset().mockResolvedValue([]);
   showModal.mockReset();
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
 });
@@ -151,5 +180,68 @@ describe('the link-your-account reminder', () => {
     const el = await render([bridge('b-slack', 'slack', { status: 'error' })]);
 
     expect(el.textContent).toBe('');
+  });
+
+  it('says a link is waiting for its code, and opens on a fresh one', async () => {
+    listMyIdentities.mockResolvedValue([]);
+    listMyPendingIdentities.mockResolvedValue([SLACK_PENDING]);
+    const el = await render([bridge('b-slack', 'slack')]);
+
+    expect(el.textContent).toContain('Finish linking your Slack account');
+    expect(el.textContent).toContain('Waiting for a code to be posted from @me');
+    expect(el.textContent).not.toContain('Link your Slack account');
+
+    const show = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Show code');
+    await act(async () => show!.click());
+    expect(showModal).toHaveBeenCalledWith('claimIdentityModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-slack',
+      confirm: { identityId: 'eu-1', externalUsername: 'me', kind: 'pending' },
+    });
+  });
+
+  it('names the admin who started a link on the person’s behalf', async () => {
+    listMyIdentities.mockResolvedValue([]);
+    listMyPendingIdentities.mockResolvedValue([
+      { ...SLACK_PENDING, requestedByName: 'Ada Admin', codeExpiresAt: null },
+    ]);
+    const el = await render([bridge('b-slack', 'slack')]);
+
+    expect(el.textContent).toContain('Ada Admin started linking @me');
+  });
+
+  it('asks to confirm a link made before links had to be confirmed', async () => {
+    listMyIdentities.mockResolvedValue([{ ...SLACK_IDENTITY, verified: false }]);
+    const el = await render([bridge('b-slack', 'slack')]);
+
+    expect(el.textContent).toContain('Confirm your Slack account');
+    expect(el.textContent).not.toContain('Link your Slack account');
+
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Confirm');
+    await act(async () => confirm!.click());
+    expect(showModal).toHaveBeenCalledWith('claimIdentityModal', {
+      workspaceId: 'ws-1',
+      bridgeId: 'b-slack',
+      confirm: { identityId: 'eu-1', externalUsername: 'me', kind: 'unverified' },
+    });
+  });
+
+  it('still asks to link when the pending links cannot be read', async () => {
+    listMyIdentities.mockResolvedValue([]);
+    listMyPendingIdentities.mockRejectedValue(new Error('pending links unavailable'));
+    const el = await render([bridge('b-slack', 'slack')]);
+
+    expect(el.textContent).toContain('Link your Slack account');
+  });
+
+  it('prompts as before against a server that predates confirming links', async () => {
+    // Such a server lists no pending links (its 404 reads as none) and every
+    // link it reports reads as confirmed.
+    listMyIdentities.mockResolvedValue([SLACK_IDENTITY]);
+    listMyPendingIdentities.mockResolvedValue([]);
+    const el = await render([bridge('b-slack', 'slack'), bridge('b-mm', 'mattermost')]);
+
+    expect(el.textContent).toContain('Link your Mattermost account');
+    expect(el.textContent).not.toContain('Slack');
   });
 });

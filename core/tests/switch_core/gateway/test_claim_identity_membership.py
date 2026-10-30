@@ -4,7 +4,8 @@
 this tenant has any business recognising. The claim decides who an account is
 treated as inside the tenant — owner-only addressing reads it — so the target
 must be a member, and a non-member gets the same 404 as an id that does not
-exist.
+exist. Either way the link only waits for the account to confirm it
+(CHOO-3881); nobody is recognised by it yet.
 """
 
 from __future__ import annotations
@@ -32,6 +33,21 @@ from switch_core.gateway.collaborations import claim_bridge_identity
 from switch_core.gateway.schemas import ClaimIdentityRequest
 
 _EXTERNAL_USERS = ExternalUserStore()
+
+
+class _Lifecycle:
+    """The bridge-type questions a claim asks, for a platform with no
+    stand-in accounts."""
+
+    def unlinkable_account_reason(
+        self, _bridge_type: str, _external_user_id: str
+    ) -> None:
+        return None
+
+    def link_code_instructions(
+        self, _bridge_type: str, _connection_config: object, code: str
+    ) -> str:
+        return f"Post `!link-account {code}`."
 
 
 async def _make_client(session: AsyncSession, client_type: str) -> str:
@@ -99,12 +115,13 @@ async def _claim(
                 external_user_id=external_user.external_user_id,
                 username=external_user.external_username,
                 user_id=target_user_id,
+                expects_confirmation=True,
             ),
             session,
             CollaborationBridgeStore(),
             _EXTERNAL_USERS,
             UserStore(),
-            None,  # type: ignore[arg-type]
+            _Lifecycle(),  # type: ignore[arg-type]
             caller,
             True,
         )
@@ -127,14 +144,20 @@ async def test_admin_cannot_claim_an_identity_for_another_tenants_user(
     assert refused.value.status_code == 404
     async with session_factory() as session:
         assert await _EXTERNAL_USERS.claimant_ids(session, external_user.id) == []
+        assert (
+            await _EXTERNAL_USERS.get_link_request(
+                session, external_user.id, outsider.id
+            )
+            is None
+        )
 
 
-async def test_admin_can_claim_an_identity_for_a_member(
+async def test_admin_can_start_linking_an_identity_to_a_member(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     bridge_id, external_user, admin, member, _outsider = await _setup(session_factory)
 
-    await _claim(
+    summary = await _claim(
         session_factory,
         bridge_id=bridge_id,
         external_user=external_user,
@@ -142,10 +165,18 @@ async def test_admin_can_claim_an_identity_for_a_member(
         target_user_id=member.id,
     )
 
+    # The admin never sees the code: the member gets their own.
+    assert summary.link_request is not None  # type: ignore[attr-defined]
+    assert summary.link_request.user_id == member.id  # type: ignore[attr-defined]
+    assert summary.link_request.code is None  # type: ignore[attr-defined]
     async with session_factory() as session:
-        assert await _EXTERNAL_USERS.claimant_ids(session, external_user.id) == [
-            member.id
-        ]
+        assert await _EXTERNAL_USERS.claimant_ids(session, external_user.id) == []
+        request = await _EXTERNAL_USERS.get_link_request(
+            session, external_user.id, member.id
+        )
+        assert request is not None
+        assert request.requested_by_user_id == admin.id
+        assert request.code_hash is None
 
 
 class _ProvisioningLifecycle:
@@ -167,6 +198,16 @@ class _ProvisioningLifecycle:
 
     def get(self, _bridge_id: str) -> _ProvisioningLifecycle:
         return self
+
+    def unlinkable_account_reason(
+        self, _bridge_type: str, _external_user_id: str
+    ) -> None:
+        return None
+
+    def link_code_instructions(
+        self, _bridge_type: str, _connection_config: object, code: str
+    ) -> str:
+        return f"Post `!link-account {code}`."
 
     async def search_directory_users(self, _query: str) -> list[DirectoryUser]:
         return [
@@ -193,7 +234,7 @@ class _ProvisioningLifecycle:
             return external_user
 
 
-async def test_claiming_an_account_switch_has_not_seen_links_it_to_the_caller(
+async def test_claiming_an_account_switch_has_not_seen_starts_linking_it(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     # What a fresh deployment does on its first run: the seeded admin claims
@@ -205,9 +246,11 @@ async def test_claiming_an_account_switch_has_not_seen_links_it_to_the_caller(
     async with session_factory() as session:
         caller = await session.get(User, admin.id)
         assert caller is not None
-        await claim_bridge_identity(
+        summary = await claim_bridge_identity(
             bridge_id,
-            ClaimIdentityRequest(external_user_id=unseen, username="user"),
+            ClaimIdentityRequest(
+                external_user_id=unseen, username="user", expects_confirmation=True
+            ),
             session,
             CollaborationBridgeStore(),
             _EXTERNAL_USERS,
@@ -222,4 +265,7 @@ async def test_claiming_an_account_switch_has_not_seen_links_it_to_the_caller(
             session, bridge_id, unseen
         )
         assert provisioned is not None
-        assert await _EXTERNAL_USERS.claimant_ids(session, provisioned.id) == [admin.id]
+        assert await _EXTERNAL_USERS.claimant_ids(session, provisioned.id) == []
+        assert await _EXTERNAL_USERS.get_link_request(session, provisioned.id, admin.id)
+    assert summary.link_request is not None
+    assert summary.link_request.code is not None

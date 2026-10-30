@@ -124,6 +124,8 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("provider_connections", "user_id"): "database cascades",
     ("template_installs", "owner_id"): "database cascades",
     ("external_user_claims", "user_id"): "database cascades",
+    ("external_user_link_requests", "user_id"): "database cascades",
+    ("external_user_link_requests", "requested_by_user_id"): "database clears",
     ("chat_operations", "user_id"): "database cascades",
     ("chat_hidden", "user_id"): "database cascades",
     ("chat_owner_grants", "user_id"): "database cascades",

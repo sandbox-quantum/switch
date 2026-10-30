@@ -5,7 +5,7 @@ import io
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -1111,6 +1111,21 @@ class DiscordAdapter(PlatformAdapter):
         # are registered from, so a renamed argument cannot leave this stale.
         option = COMMANDS_BY_NAME["invite-agent"].args_spec[0].name
         return f"`/invite-agent {option}:agent-name` — the Discord slash command"
+
+    @classmethod
+    def link_code_instructions(
+        cls, code: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["link-account"].args_spec[0].name
+        slash = f"`/link-account {option}:{code}`"
+        if connection_config.get("event_delivery") == "shared":
+            # The shared connection is not given message text, so a typed
+            # `!link-account` never reaches Switch; the slash command does.
+            return f"Run {slash} from that account in a server channel Switch is in."
+        return (
+            f"Run {slash} from that account in a server channel Switch is in, "
+            f"or post `!link-account {code}` there."
+        )
 
     async def admin_message(
         self,

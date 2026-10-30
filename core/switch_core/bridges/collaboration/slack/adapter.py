@@ -462,6 +462,11 @@ def _slack_failure_reason(exc: SlackApiError) -> FailureReason:
     return "platform_error"
 
 
+# The ids Slack gives an app's bot, under which `_handle_message` bridges its
+# posts. A person's id starts with U or W.
+_SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
+
+
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
     # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
@@ -1816,6 +1821,14 @@ class SlackAdapter(PlatformAdapter):
         # Slack passes a slash command's whole tail through as free text, so the
         # invocation reads exactly like the `!` form.
         return "`/invite-agent @agent-name` — the Slack slash command"
+
+    @classmethod
+    def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
+        # An app's or a bot's posts are bridged under its `bot_id` (`B…`), and
+        # whoever can post through the app (a webhook, a workflow) posts as it.
+        if external_user_id == "USLACKBOT" or _SLACK_BOT_ID.match(external_user_id):
+            return "This is a Slack app's or bot's account, which isn't one person's."
+        return None
 
     async def admin_message(
         self,
