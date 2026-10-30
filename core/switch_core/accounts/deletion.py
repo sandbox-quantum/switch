@@ -208,6 +208,20 @@ class AccountDeletionRefused(Exception):
     do first, in words for the person."""
 
 
+class AccountDeletionIncomplete(Exception):
+    """Deleting the account failed partway. Each workspace is left in its own
+    transaction, so the ones in `completed` stay left; the account itself and
+    every other workspace are as they were. The cause is chained."""
+
+    def __init__(self, user_id: str, completed: list[Workspace]) -> None:
+        super().__init__(
+            f"Deleting the account of user {user_id} failed after leaving "
+            f"{len(completed)} workspace(s)"
+        )
+        self.user_id = user_id
+        self.completed = completed
+
+
 @dataclass(frozen=True)
 class Workspace:
     id: str
@@ -310,26 +324,41 @@ class AccountDeletion:
         return None
 
     async def delete(
-        self, session: AsyncSession, user: User, workspaces: list[Workspace]
+        self,
+        session: AsyncSession,
+        user: User,
+        workspaces: list[Workspace],
+        actor_id: str,
     ) -> None:
         """Delete the account. `session` is the caller's, and carries the
         deletion of the rows that belong to no workspace; the caller has
-        checked `refusal` first."""
+        checked `refusal` first. `actor_id` is who asked: the person
+        themselves, or the server's operator; each workspace's audit log names
+        them.
+
+        Raises `AccountDeletionIncomplete` when it fails partway."""
         user_id = user.id
-        for workspace in workspaces:
-            await self._leave_workspace(user_id, workspace)
-        await self._hand_over_server_settings(session, user_id)
-        await session.execute(
-            delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
-        )
-        await session.execute(
-            delete(CloudMachine).where(
-                CloudMachine.owner_id == user_id, CloudMachine.state == "deleted"
+        completed: list[Workspace] = []
+        try:
+            for workspace in workspaces:
+                await self._leave_workspace(user_id, workspace, actor_id)
+                completed.append(workspace)
+            await self._hand_over_server_settings(session, user_id)
+            await session.execute(
+                delete(OidcIdentity).where(OidcIdentity.user_id == user_id)
             )
+            await session.execute(
+                delete(CloudMachine).where(
+                    CloudMachine.owner_id == user_id, CloudMachine.state == "deleted"
+                )
+            )
+            await session.execute(delete(User).where(User.id == user_id))
+            await session.commit()
+        except Exception as error:
+            raise AccountDeletionIncomplete(user_id, completed) from error
+        logger.info(
+            "Deleted the account of user %s at the request of %s", user_id, actor_id
         )
-        await session.execute(delete(User).where(User.id == user_id))
-        await session.commit()
-        logger.info("Deleted the account of user %s", user_id)
 
     async def _hand_over_server_settings(
         self, session: AsyncSession, user_id: str
@@ -358,7 +387,9 @@ class AccountDeletion:
             .values(updated_by=admin_id)
         )
 
-    async def _leave_workspace(self, user_id: str, workspace: Workspace) -> None:
+    async def _leave_workspace(
+        self, user_id: str, workspace: Workspace, actor_id: str
+    ) -> None:
         tenant_id = workspace.id
         async with tenant_session(self.session_factory, tenant_id) as session:
             agent_ids = [
@@ -419,7 +450,7 @@ class AccountDeletion:
             await record_audit_event(
                 session,
                 tenant_id=tenant_id,
-                actor_user_id=user_id,
+                actor_user_id=actor_id,
                 action=AuditAction.ACCOUNT_DELETED,
                 target_type="user",
                 target_id=user_id,

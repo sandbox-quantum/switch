@@ -1,16 +1,31 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
-import { Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
+import DeleteOutline from "@mui/icons-material/DeleteOutline";
+import {
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  IconButton,
+  Stack,
+  Tooltip,
+  Typography,
+} from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
+import { useAuth } from "../../data/AuthContext";
 import type { UserInfo } from "../../data/api";
 import { useUsers } from "../../data/hooks";
 import { formatDate, titleCase } from "../../theme/hootFormat";
 import CreateUserDialog from "./CreateUserDialog";
+import DeleteUserDialog from "./DeleteUserDialog";
 
 export default function UsersPage() {
   const { data: users, loading, refetch } = useUsers();
   const [createOpen, setCreateOpen] = useState(false);
+  const [deleting, setDeleting] = useState<UserInfo | null>(null);
+  const { user: self } = useAuth();
+  const selfId = self?.id;
 
   const columns = useMemo<GridColDef<UserInfo>[]>(
     () => [
@@ -34,8 +49,28 @@ export default function UsersPage() {
         width: 140,
         valueFormatter: (value) => formatDate(value as string),
       },
+      {
+        field: "actions",
+        headerName: "",
+        width: 60,
+        sortable: false,
+        // The server refuses administrator accounts and your own, so neither
+        // is offered. You delete your own account from your account settings.
+        renderCell: ({ row }) =>
+          row.role !== "admin" && row.id !== selfId ? (
+            <Tooltip title="Delete account">
+              <IconButton
+                size="small"
+                onClick={() => setDeleting(row)}
+                aria-label={`Delete ${row.email}`}
+              >
+                <DeleteOutline fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          ) : null,
+      },
     ],
-    [],
+    [selfId],
   );
 
   return (
@@ -66,6 +101,11 @@ export default function UsersPage() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={refetch}
+      />
+      <DeleteUserDialog
+        user={deleting}
+        onClose={() => setDeleting(null)}
+        onDeleted={refetch}
       />
     </Box>
   );

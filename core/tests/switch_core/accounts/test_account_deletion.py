@@ -365,7 +365,7 @@ async def test_deleting_a_member_hands_over_and_clears_what_others_need(
         user = await session.get(User, ids["user"])
         assert user is not None
         assert await deletion.refusal(session, user, workspaces) is None
-        await deletion.delete(session, user, workspaces)
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
 
     assert protocol.deleted == [ids["agent"]]
     assert rooms.archived == [ids["chat"]]
@@ -435,7 +435,7 @@ async def test_a_workspace_left_empty_stays_with_nothing_pointing_at_the_person(
         user = await session.get(User, user_id)
         assert user is not None
         assert await deletion.refusal(session, user, workspaces) is None
-        await deletion.delete(session, user, workspaces)
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
 
     async with session_factory() as session:
         assert await session.get(User, user_id) is None
@@ -498,7 +498,7 @@ async def test_a_messaging_app_left_in_a_workspace_since_emptied_does_not_refuse
         workspaces = await deletion.with_former_workspaces(user.id, [])
         assert [(w.id, w.role) for w in workspaces] == [(empty, "former member")]
         assert await deletion.refusal(session, user, workspaces) is None
-        await deletion.delete(session, user, workspaces)
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
 
     async with session_factory() as session:
         assert await session.get(User, removed_id) is None
@@ -544,7 +544,7 @@ async def test_a_workspace_the_person_was_removed_from_is_cleared_too(
         workspaces = await deletion.with_former_workspaces(user.id, [])
         assert [(w.id, w.role) for w in workspaces] == [(left, "former member")]
         assert await deletion.refusal(session, user, workspaces) is None
-        await deletion.delete(session, user, workspaces)
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
 
     async with session_factory() as session:
         assert await session.get(User, ids["removed"]) is None
@@ -629,7 +629,7 @@ async def test_a_reference_type_in_use_passes_to_an_admin_else_the_oldest_refere
     async with session_factory() as session:
         user = await session.get(User, leaving_id)
         assert user is not None
-        await deletion.delete(session, user, workspaces)
+        await deletion.delete(session, user, workspaces, actor_id=user.id)
 
     async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
         assert (

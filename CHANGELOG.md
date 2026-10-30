@@ -85,6 +85,11 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **The server's administrator can delete someone's account.** The Users page
+  has a Delete action (`DELETE /users/{id}`) that removes the account in every
+  workspace, with the same refusals as deleting your own. Administrator
+  accounts and your own account are refused, and every attempt is recorded in
+  the server audit log with its outcome.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
