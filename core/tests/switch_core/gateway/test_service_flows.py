@@ -90,6 +90,7 @@ def _world(
     public_url: str | None = None,
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
+    markers: str = "",
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
@@ -98,7 +99,7 @@ def _world(
         root,
         OAUTH_ENTRY.replace(
             "redirect: [loopback, core]", f"redirect: {redirect}{ports}"
-        ),
+        ).replace("tools: {", f"{markers}tools: {{"),
     )
     catalog = load_catalog(root)
     oauth = catalog["example"].definition.auth.oauth
@@ -1209,3 +1210,66 @@ class TestChoices:
                 "headers": {"Authorization": "Bearer {token}"},
             }
         ]
+
+
+MARKERS = "  consent: { read: items_read, write: items_write }\n"
+
+
+def _granting(vendor: FakeOAuthServer, granted: list[str]) -> None:
+    """The vendor answers every sign-in with `granted` as the token's scope,
+    whatever was asked for."""
+    mint = vendor.mint
+    vendor.mint = lambda scopes, client_id: mint(granted, client_id)  # type: ignore[method-assign]
+
+
+class TestConsentMarkers:
+    """A vendor whose token lists its own permissions, rather than the
+    scopes asked for, is read by the entry's consent markers."""
+
+    @pytest.mark.parametrize(
+        ("granted", "consent"),
+        [
+            (["items_read", "items_write", "items_list"], "write"),
+            (["items_read", "items_list"], "read"),
+        ],
+    )
+    async def test_reads_the_level_from_the_marker_the_token_holds(
+        self, session_factory, tmp_path, granted, consent
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", markers=MARKERS)
+        _granting(world.vendor, granted)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            connected = await _loopback_connect(world, Console(client, ada))
+        assert connected.json()["consent"] == consent
+        connection = await _connection(session_factory, ada.id)
+        assert connection is not None
+        assert (connection.consent, connection.granted_scopes) == (consent, granted)
+
+    async def test_a_token_with_neither_marker_is_refused(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", markers=MARKERS)
+        # Every scope asked for, but neither marker.
+        _granting(world.vendor, ["read:items", "write:items", "items_list"])
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            refused = await console.complete(await _loopback_code(world, console))
+            assert refused.status_code == 400
+            assert refused.json()["detail"] == (
+                "Example granted less than Switch needs to read. Connect again "
+                "and allow what it asks for."
+            )
+            assert (await console.status()).json()["status"] == "failed"
+        assert await _connection(session_factory, ada.id) is None
+
+    async def test_without_markers_the_scopes_asked_for_decide(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog")
+        _granting(world.vendor, ["read:items", "items_write"])
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            connected = await _loopback_connect(world, Console(client, ada))
+        assert connected.json()["consent"] == "read"

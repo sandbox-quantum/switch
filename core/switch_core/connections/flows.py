@@ -222,6 +222,11 @@ class ServiceFlows:
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
+                    "consent_markers": (
+                        None
+                        if access.consent is None
+                        else access.consent.model_dump(mode="json")
+                    ),
                     "choices": choices,
                 },
                 completion_secret=completion_secret,
@@ -425,14 +430,23 @@ class ServiceFlows:
         )
 
     def consent(self, exchange: Exchange) -> AccessLevel:
-        """What the person consented to, as the vendor granted it."""
+        """What the person consented to, as the vendor granted it: by the
+        entry's consent markers where it names them, else write where every
+        write scope was granted and read where every read one was."""
         granted = set(exchange.signed_in.granted_scopes)
         details = exchange.flow.details
-        write_scopes = set(details["write_scopes"])
-        if write_scopes and write_scopes <= granted:
-            return "write"
-        if set(details["read_scopes"]) <= granted:
-            return "read"
+        markers = details.get("consent_markers")
+        if markers is not None:
+            if markers["write"] in granted:
+                return "write"
+            if markers["read"] in granted:
+                return "read"
+        else:
+            write_scopes = set(details["write_scopes"])
+            if write_scopes and write_scopes <= granted:
+                return "write"
+            if set(details["read_scopes"]) <= granted:
+                return "read"
         raise FlowError(
             f"{details['name']} granted less than Switch needs to read. Connect "
             "again and allow what it asks for."
