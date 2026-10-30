@@ -10,6 +10,7 @@ service with none cannot be issued.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -97,10 +98,11 @@ class ServiceAdapter(Protocol):
     # write grant, and a token for one made before.
     read_only: bool
 
-    def current_client_id(self) -> str | None:
-        """The vendor client this adapter signs in through, where it knows it
-        without asking anyone; None for a service with no client, or one not
-        yet known. A connection signed in through another must reconnect."""
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
+        """The vendor client this adapter signs in through for a connection
+        made with `choices` (a vendor's site), where it knows it without
+        asking anyone; None for a service with no client, or one not yet
+        known. A connection signed in through another must reconnect."""
         ...
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:

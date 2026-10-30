@@ -101,28 +101,30 @@ def client_fields(
 
 
 class ClientSource(Protocol):
-    """Where the adapter has its OAuth client from."""
+    """Where the adapter has its OAuth client from, for each choice (the
+    entry's choices as `choice_key` writes them, empty for none)."""
 
-    def known_client_id(self) -> str | None:
+    def known_client_id(self, choice: str) -> str | None:
         """The client's id where it is already known, without asking anyone."""
         ...
 
     async def credentials(
-        self, endpoints: AuthorizationEndpoints
+        self, endpoints: AuthorizationEndpoints, choice: str
     ) -> OAuthClientCredentials: ...
 
 
 @dataclass(frozen=True)
 class StaticClient:
-    """A client the operator registered, from its settings file."""
+    """A client the operator registered, from its settings file: the one
+    client for every choice."""
 
     client: OAuthClientCredentials
 
-    def known_client_id(self) -> str | None:
+    def known_client_id(self, choice: str) -> str | None:
         return self.client.client_id
 
     async def credentials(
-        self, endpoints: AuthorizationEndpoints
+        self, endpoints: AuthorizationEndpoints, choice: str
     ) -> OAuthClientCredentials:
         return self.client
 
@@ -404,18 +406,23 @@ class OAuthAdapter:
         )
         return None if match is None else _https(match.group(1), "resource metadata")
 
-    def current_client_id(self) -> str | None:
-        return self._client.known_client_id()
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
+        return self._client.known_client_id(choice_key(choices))
 
     async def client_id(self, choices: Mapping[str, str]) -> str:
         """The client a sign-in starting now with `choices` goes through."""
-        return (await self._client.credentials(await self.endpoints(choices))).client_id
+        checked = self._checked(choices)
+        return (
+            await self._client.credentials(
+                await self.endpoints(checked), choice_key(checked)
+            )
+        ).client_id
 
     async def _token_request(
         self, form: dict[str, str], choices: Mapping[str, str]
     ) -> TokenAnswer:
         endpoints = await self.endpoints(choices)
-        client = await self._client.credentials(endpoints)
+        client = await self._client.credentials(endpoints, choice_key(choices))
         identifying, headers = client_fields(endpoints, client)
         data = {**form, **identifying}
         if endpoints.resource is not None:
@@ -491,7 +498,7 @@ class OAuthAdapter:
     ) -> str:
         """Where the person's browser goes to sign in and consent."""
         endpoints = await self.endpoints(choices)
-        client = await self._client.credentials(endpoints)
+        client = await self._client.credentials(endpoints, choice_key(choices))
         query: dict[str, str] = {
             "response_type": "code",
             "client_id": client.client_id,
@@ -636,7 +643,7 @@ class OAuthAdapter:
         )
         if token is None:
             return
-        client = await self._client.credentials(endpoints)
+        client = await self._client.credentials(endpoints, choice_key(choices))
         identifying, headers = client_fields(endpoints, client)
         response = await self._send(
             self._http.build_request(

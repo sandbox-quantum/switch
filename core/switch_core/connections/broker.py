@@ -1276,13 +1276,17 @@ class ServiceBroker:
 
     def client_replaced(self, connection: ServiceConnection) -> bool:
         """Whether `connection` signed in through a client its service no
-        longer uses, so it must reconnect. Unknown either side is no; a
-        client Core registers for itself is known once this process has used
-        it, to sign in or to refresh."""
+        longer uses for the connection's choices, so it must reconnect.
+        Unknown either side is no; a client Core registers for itself is
+        known once this process has used it, to sign in or to refresh."""
         if connection.oauth_client_id is None:
             return False
         adapter = self._adapters.get(connection.service)
-        current = None if adapter is None else adapter.current_client_id()
+        current = (
+            None
+            if adapter is None
+            else adapter.current_client_id(dict(connection.choices))
+        )
         return current is not None and current != connection.oauth_client_id
 
     def connection_status(self, connection: ServiceConnection | None) -> str:

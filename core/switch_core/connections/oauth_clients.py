@@ -3,9 +3,11 @@
 Dynamic client registration (RFC 7591): on the first connect to such a
 service, Core registers once for the whole deployment and keeps the vendor's
 answer in `service_oauth_clients`, encrypted with the keyring. Every
-workspace's sign-ins to the service then go through that one client. The
-table is deployment-wide and carries no tenant, so it is read in a session
-bound to none.
+workspace's sign-ins to the service then go through that one client. A
+service whose entry asks for a choice before signing in (a vendor's site)
+registers once per choice, since each may be another authorization server:
+one client per site, none replacing another. The table is deployment-wide
+and carries no tenant, so it is read in a session bound to none.
 
 Where a sign-in may return is fixed at registration: Switch Console's
 listener on 127.0.0.1 (any port, as RFC 8252 lets a native client ask), and
@@ -79,7 +81,8 @@ def client_name(public_url: str | None, server_name: str) -> str:
 
 
 class RegisteredClient:
-    """The client Core registered at `service`'s vendor, registering it once.
+    """The client Core registered at `service`'s vendor for each choice,
+    registering each once.
 
     Registration takes a lock held in the database, so two connects at once,
     on any replica, register one client. A vendor that moves its registration
@@ -113,14 +116,16 @@ class RegisteredClient:
         self._client_name = client_name
         # What the registration asks for, kept beside the vendor's answer.
         self._request = {"redirect_uris": redirect_uris, "scope": " ".join(scopes)}
-        self._known: tuple[str, OAuthClientCredentials] | None = None
+        # By choice: where each was registered, and the client.
+        self._known: dict[str, tuple[str, OAuthClientCredentials]] = {}
         self._lock = asyncio.Lock()
 
-    def known_client_id(self) -> str | None:
-        return None if self._known is None else self._known[1].client_id
+    def known_client_id(self, choice: str) -> str | None:
+        known = self._known.get(choice)
+        return None if known is None else known[1].client_id
 
     async def credentials(
-        self, endpoints: AuthorizationEndpoints
+        self, endpoints: AuthorizationEndpoints, choice: str
     ) -> OAuthClientCredentials:
         endpoint = endpoints.registration
         if endpoint is None:
@@ -129,15 +134,21 @@ class RegisteredClient:
                 "registration, so Switch has no client to sign in with."
             )
         async with self._lock:
-            if self._known is not None and self._known[0] == endpoint:
-                return self._known[1]
+            known = self._known.get(choice)
+            if known is not None and known[0] == endpoint:
+                return known[1]
+            # The empty choice takes the lock a release from before choices
+            # took, so the two register one client between them.
+            lock = f"service-oauth-client:{self._service}" + (
+                f":{choice}" if choice else ""
+            )
             async with self._session_factory() as session:
                 await session.execute(
                     text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-                    {"key": f"service-oauth-client:{self._service}"},
+                    {"key": lock},
                 )
                 row = await session.get(
-                    ServiceOAuthClient, (self._service, ""), populate_existing=True
+                    ServiceOAuthClient, (self._service, choice), populate_existing=True
                 )
                 stored = (
                     None
@@ -161,7 +172,7 @@ class RegisteredClient:
                         session.add(
                             ServiceOAuthClient(
                                 service=self._service,
-                                choice="",
+                                choice=choice,
                                 registration_endpoint=endpoint,
                                 oauth_client_id=client.client_id,
                                 encrypted_secret=encrypted,
@@ -172,7 +183,7 @@ class RegisteredClient:
                         row.oauth_client_id = client.client_id
                         row.encrypted_secret = encrypted
                 await session.commit()
-            self._known = (endpoint, client)
+            self._known[choice] = (endpoint, client)
             return client
 
     async def _register(self, endpoint: str) -> dict[str, Any]:

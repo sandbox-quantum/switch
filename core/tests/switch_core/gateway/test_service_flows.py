@@ -31,7 +31,12 @@ from switch_core.connections.oauth_clients import (
     redirect_uris,
 )
 from switch_core.connections.sign_in_flows import MAX_FLOWS, SignInFlows
-from switch_core.db.models import ServiceConnection, SignInFlow, User
+from switch_core.db.models import (
+    ServiceConnection,
+    ServiceOAuthClient,
+    SignInFlow,
+    User,
+)
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.service_connections import (
@@ -1140,6 +1145,37 @@ class TestChoices:
         assert [form["token_type_hint"] for form in eu.revoked] == ["refresh_token"]
         assert eu.live_refresh == {}
         assert world.sites["example.test"].paths == []
+
+    async def test_people_at_two_sites_keep_both_connections(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _sites_world(session_factory, tmp_path / "catalog")
+        ada = await add_member(session_factory, "ada")
+        grace = await add_member(session_factory, "grace")
+        async with world.harness.client() as client:
+            await _connect_at(world, Console(client, ada), "example.test")
+            await _connect_at(world, Console(client, grace), "eu.example.test")
+        async with session_factory() as session:
+            clients = {
+                row.choice: row.oauth_client_id
+                for row in await session.scalars(select(ServiceOAuthClient))
+            }
+        assert clients == {
+            "example.test": "registered-1-at-example.test",
+            "eu.example.test": "registered-1-at-eu.example.test",
+        }
+        for person, site in ((ada, "example.test"), (grace, "eu.example.test")):
+            connection = await _connection(session_factory, person.id)
+            assert connection is not None
+            assert connection.oauth_client_id == clients[site]
+            assert world.broker.connection_status(connection) == "active"
+            # Its refresh token is still good at its own site's client.
+            await _due_for_renewal(session_factory, person.id)
+            async with session_factory() as session:
+                token = await world.broker.connection_access_token(
+                    session, person.id, "example"
+                )
+            assert token in world.sites[site].live_access
 
     async def test_a_session_calls_the_mcp_server_at_the_connections_site(
         self, session_factory, tmp_path

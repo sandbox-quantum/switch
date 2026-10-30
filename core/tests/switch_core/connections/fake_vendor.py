@@ -18,7 +18,7 @@ import json
 import secrets
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -59,7 +59,7 @@ class FakeVendor:
         self.resolved: list[list[str]] = []
         self.client_id: str | None = None
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return self.client_id
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
@@ -519,7 +519,7 @@ class FakeOAuthServer:
     def _register(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.registrations.append(body)
-        client_id = f"registered-{len(self.registrations)}"
+        client_id = f"registered-{len(self.registrations)}-at-{self.site}"
         method = self.register_as or body.get(
             "token_endpoint_auth_method", "client_secret_basic"
         )
