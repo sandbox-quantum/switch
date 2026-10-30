@@ -19,7 +19,6 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
-from switch_core.authz import Principal, administers_tenant, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -521,9 +520,14 @@ async def _manages_room(
         if room is not None and room.owner_id == user_id:
             return True
         user = await session.get(User, user_id)
-        role = await users.tenant_role(session, client.tenant_id, user_id)
-        if user is not None and administers_tenant(
-            is_operator=user.role == "admin", tenant_role=role
+        if user is not None and await administers_on_record(
+            session,
+            client.session_factory,
+            users,
+            user,
+            target_type="room",
+            target_id=room_id,
+            details={"event": "chat_command", "command": "retry"},
         ):
             return True
     return False

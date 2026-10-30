@@ -19,7 +19,7 @@ why the column is nullable; the revision that makes it `NOT NULL` gives those
 workspaces one first.
 
 Revision ID: 238c68b7306e
-Revises: e5a9c3d71f08
+Revises: b7e1d4c9a2f6
 Create Date: 2026-10-28 00:00:00.000000
 
 """
@@ -30,7 +30,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "238c68b7306e"
-down_revision: str | Sequence[str] | None = "e5a9c3d71f08"
+down_revision: str | Sequence[str] | None = "b7e1d4c9a2f6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
