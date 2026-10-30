@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -87,7 +88,7 @@ class ApiKeyAdapter:
         self._sign_in = sign_in
         self._http = http
 
-    def current_client_id(self) -> str | None:
+    def current_client_id(self, choices: Mapping[str, str]) -> str | None:
         return None
 
     def checked_fields(self, submitted: dict[str, str]) -> dict[str, str]:

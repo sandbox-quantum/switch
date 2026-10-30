@@ -207,10 +207,12 @@ def _client_replaced(
     connection: ServiceConnection, adapter: ServiceAdapter | None
 ) -> bool:
     """Whether `connection` signed in through a client other than the one
-    `adapter` signs in through, so it must reconnect. Unknown either side
-    is no; a client Core registers for itself is known once this process has
-    used it, to sign in or to refresh."""
-    current = None if adapter is None else adapter.current_client_id()
+    `adapter` signs in through for the connection's choices, so it must
+    reconnect. Unknown either side is no; a client Core registers for itself
+    is known once this process has used it, to sign in or to refresh."""
+    current = (
+        None if adapter is None else adapter.current_client_id(dict(connection.choices))
+    )
     return (
         connection.oauth_client_id is not None
         and current is not None
@@ -264,11 +266,13 @@ class ServiceStanding:
 @dataclass(frozen=True)
 class SignIn:
     """A connection's sign-in, kept to revoke it once the row is gone: its
-    secret, and the OAuth client it was made through, None for a key or a
-    connection from before clients were recorded."""
+    secret, the OAuth client it was made through, None for a key or a
+    connection from before clients were recorded, and the choices it was
+    made with (a vendor's site), whose client that is."""
 
     secret: ConnectionSecret = field(repr=False)
     oauth_client_id: str | None
+    choices: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -1324,39 +1328,51 @@ class ServiceBroker:
         return _reconnect(self._entry(service).definition.name, str(error), reader)
 
     def _signed_in(self, connection: ServiceConnection) -> SignIn:
-        return SignIn(self._secret(connection), connection.oauth_client_id)
+        return SignIn(
+            self._secret(connection),
+            connection.oauth_client_id,
+            dict(connection.choices),
+        )
 
     def _shares_grant(
         self,
         service: str,
-        held: tuple[str | None, str],
-        revoked: tuple[str | None, str],
+        held: tuple[str | None, str, dict[str, str]],
+        revoked: tuple[str | None, str, dict[str, str]],
     ) -> bool:
         """Whether revoking a sign-in would also end the one held: the vendor
         ends every sign-in of an account through a client when one is revoked
         (`revocation_ends_grant`), and both are the same account's through the
-        same client. Each is (OAuth client, account id); a sign-in from before
-        clients were recorded went through the server's client.
+        same client. Each is (OAuth client, account id, choices); a sign-in
+        from before clients were recorded went through the server's client
+        for its choices.
         """
         entry = self._catalog.get(service)
         oauth = None if entry is None else entry.definition.auth.oauth
         if oauth is None or not oauth.revocation_ends_grant:
             return False
         server = self._adapters.get(service)
-        server_client = None if server is None else server.current_client_id()
-        held_client = held[0] or server_client
+        held_client, revoked_client = (
+            sign_in[0]
+            or (None if server is None else server.current_client_id(sign_in[2]))
+            for sign_in in (held, revoked)
+        )
         return (
             held_client is not None
-            and held_client == (revoked[0] or server_client)
+            and held_client == revoked_client
             and held[1] == revoked[1]
         )
 
     async def _revoker(
-        self, session: AsyncSession, service: str, oauth_client_id: str | None
+        self,
+        session: AsyncSession,
+        service: str,
+        oauth_client_id: str | None,
+        choices: dict[str, str],
     ) -> ServiceAdapter:
-        """The adapter to revoke a sign-in made through `oauth_client_id`
-        with: the one that applies here, or else the server's, whichever is
-        that client's. A sign-in can outlive its app (an organization saved
+        """The adapter to revoke a sign-in made through `oauth_client_id`,
+        for `choices`, with: the one that applies here, or else the server's,
+        whichever is that client's. A sign-in can outlive its app (an organization saved
         its own since, or replaced or removed it), and the vendor refuses a
         revocation from any other client. Raises `ServiceUnavailableError`,
         with what the person can do, when neither is."""
@@ -1376,7 +1392,7 @@ class ServiceBroker:
         ):
             if adapter is not None and (
                 oauth_client_id is None
-                or adapter.current_client_id() in (None, oauth_client_id)
+                or adapter.current_client_id(choices) in (None, oauth_client_id)
             ):
                 return adapter
         raise ServiceUnavailableError(
@@ -1962,8 +1978,12 @@ class ServiceBroker:
                 # grant the kept one holds.
                 or self._shares_grant(
                     service,
-                    (previous.oauth_client_id, previous.account_id),
-                    (oauth_client_id, account_id),
+                    (
+                        previous.oauth_client_id,
+                        previous.account_id,
+                        dict(previous.choices),
+                    ),
+                    (oauth_client_id, account_id, choices),
                 )
             )
             await session.rollback()
@@ -1971,7 +1991,7 @@ class ServiceBroker:
                 None
                 if kept
                 else await self._revoke_unkept(
-                    session, service, secret, oauth_client_id
+                    session, service, secret, oauth_client_id, choices
                 )
             )
             raise ServiceError(
@@ -2025,13 +2045,13 @@ class ServiceBroker:
             # account's old sign-in would end the new one too.
             and not self._shares_grant(
                 service,
-                (oauth_client_id, account_id),
-                (replaced.oauth_client_id, replaced_account),
+                (oauth_client_id, account_id, choices),
+                (replaced.oauth_client_id, replaced_account, replaced.choices),
             )
         ):
             try:
                 adapter = await self._revoker(
-                    session, service, replaced.oauth_client_id
+                    session, service, replaced.oauth_client_id, replaced.choices
                 )
                 async with asyncio.timeout(VENDOR_CALL_SECONDS):
                     await adapter.revoke_connection(replaced.secret)
@@ -2061,6 +2081,7 @@ class ServiceBroker:
         service: str,
         secret: ConnectionSecret,
         oauth_client_id: str | None,
+        choices: dict[str, str],
     ) -> str | None:
         """Revoke a new sign-in that was not kept; a sentence for the person
         when it could not be. A key is the person's own, and theirs to keep."""
@@ -2073,7 +2094,7 @@ class ServiceBroker:
             f"Switch from your {name} account's connected apps."
         )
         try:
-            adapter = await self._revoker(session, service, oauth_client_id)
+            adapter = await self._revoker(session, service, oauth_client_id, choices)
             async with asyncio.timeout(VENDOR_CALL_SECONDS):
                 await adapter.revoke_connection(secret)
         except ConnectionNotRevocable as error:
@@ -2303,7 +2324,7 @@ class ServiceBroker:
             name = service if entry is None else entry.definition.name
             try:
                 adapter = await self._revoker(
-                    session, service, signed_in.oauth_client_id
+                    session, service, signed_in.oauth_client_id, signed_in.choices
                 )
             except ServiceUnavailableError as error:
                 logger.warning("%s sign-in not revoked: %s", service, error)
