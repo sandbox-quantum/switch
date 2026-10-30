@@ -1217,7 +1217,10 @@ class TestLosingOrgAdmin:
                 ),
             )
 
-        assert sorted(response.status_code for response in responses) == [200, 409]
+        # The refusal is 409 when the two overlap and the lock decides, and 403
+        # when one finished before the other was authorized: either way, one.
+        first, second = sorted(response.status_code for response in responses)
+        assert first == 200 and second in (403, 409)
         organization_id = await _organization_id(session_factory, tenant_id)
         assert organization_id is not None
         async with session_factory() as session:
@@ -1256,6 +1259,9 @@ class TestLosingOrgAdmin:
                 as_bob.delete(f"/organizations/current/members/{ada}"),
             )
 
-        assert sorted(response.status_code for response in responses) == [200, 409]
+        # The refusal is 409 when the two overlap and the lock decides, and 403
+        # when one finished before the other was authorized: either way, one.
+        first, second = sorted(response.status_code for response in responses)
+        assert first == 200 and second in (403, 409)
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
