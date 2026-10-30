@@ -95,6 +95,7 @@ def status_state(
     elapsed_seconds: float | None,
     interrupt_turn_id: str | None,
     clock_redraws: bool,
+    closed_by_platform: bool,
 ) -> str:
     """What the turn's message is showing, so an unchanged redraw can be skipped.
 
@@ -104,7 +105,8 @@ def status_state(
     revised on every token, and it goes out with the next change to either,
     and with the edit that ends the turn. The turn a stop control names
     counts, so a queued turn's message stops offering to stop a turn that
-    has ended.
+    has ended. So does the platform having closed the message on its own,
+    since closing it changed what it shows.
     """
     clock = (
         str(int(elapsed_seconds // RUNNING_CLOCK_SECONDS))
@@ -116,4 +118,5 @@ def status_state(
         for item in view.items
         if item.kind == "tool-activity"
     )
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}"
+    closed = ":closed" if closed_by_platform else ""
+    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"

@@ -26,16 +26,16 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
-# Where the turn itself has got to. One message per turn is edited in place, so
-# without this a turn that finished and a turn that stalled read identically:
-# the same tool log, the last line still marked in progress, and nothing to say
-# which of the two a reader is looking at. Plain sentences, not markup, so
-# every renderer reads the same wording rather than each keeping its own copy.
 # How finely a running turn's clock is shown, and so how often the clock alone
 # is worth redrawing a message for. Seconds would sit still between those
 # redraws and read as a card that had stopped.
 RUNNING_CLOCK_SECONDS = 60
 
+# Where the turn itself has got to. One message per turn is edited in place, so
+# without this a turn that finished and a turn that stalled read identically:
+# the same tool log, the last line still marked in progress, and nothing to say
+# which of the two a reader is looking at. Plain sentences, not markup, so
+# every renderer reads the same wording rather than each keeping its own copy.
 TURN_STATE = {
     "queued": "Queued. Waiting for the agent to start…",
     "running": "Working…",

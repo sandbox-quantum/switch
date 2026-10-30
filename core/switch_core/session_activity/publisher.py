@@ -129,6 +129,10 @@ _RESYNC_WINDOW = timedelta(minutes=15)
 # or coming back, and, where the platform redraws for it, for a clock that has
 # moved on a minute.
 _TICK_SECONDS = 5.0
+# How long after a platform closes a turn's message on its own the redraw that
+# repairs it is due: past the close, allowing for the message having been
+# opened a moment before it was recorded here.
+_AFTER_PLATFORM_CLOSE = timedelta(seconds=2)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
 # How many turns' drawn state one bridge remembers. Forgetting one costs a
@@ -185,8 +189,11 @@ class _TurnDrawn:
     status: str | None = None
     final: bool = False
     wedged: bool = False
-    # When the clock on a running turn's message next shows another minute.
+    # When a running turn's message is next due a redraw without a change of
+    # its own: its clock showing another minute, or the platform closing it.
     clock_due: datetime | None = None
+    # When this process posted the turn's message.
+    posted_at: datetime | None = None
 
 
 @dataclass
@@ -1110,11 +1117,14 @@ class AgentSessionActivityPublisher:
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
         )
+        platform_closes_at = self._platform_closes_at(drawn)
         state = status_state(
             view,
             elapsed_seconds=elapsed,
             interrupt_turn_id=interrupt_turn_id,
             clock_redraws=self._adapter.redraws_for_elapsed_time,
+            closed_by_platform=platform_closes_at is not None
+            and platform_closes_at <= datetime.now(UTC),
         )
         if post is None:
             unposted = self._unposted.get(key)
@@ -1138,9 +1148,7 @@ class AgentSessionActivityPublisher:
             await self._attention(post, view, target, error_summary, recipient, drawn)
         if post is not None and not view.ended:
             self._live_turns[key] = agent_id
-            drawn.clock_due = datetime.now(UTC) + timedelta(
-                seconds=_until_the_clock_moves(elapsed)
-            )
+            drawn.clock_due = self._redraw_due(drawn, elapsed)
         else:
             self._live_turns.pop(key, None)
         if post is not None and drawn.final and not was_final:
@@ -1151,6 +1159,22 @@ class AgentSessionActivityPublisher:
             # running turn, which may just have changed.
             for other in unended:
                 self._enqueue(("turn", agent_id, session_id, other), _SOON)
+
+    def _platform_closes_at(self, drawn: _TurnDrawn) -> datetime | None:
+        """When the platform closes this turn's message on its own, if it does."""
+        closes = self._adapter.closes_activity_after
+        if closes is None or drawn.posted_at is None:
+            return None
+        return drawn.posted_at + timedelta(seconds=closes)
+
+    def _redraw_due(self, drawn: _TurnDrawn, elapsed: float | None) -> datetime:
+        """When a running turn is next due a redraw with no change of its own."""
+        now = datetime.now(UTC)
+        due = now + timedelta(seconds=_until_the_clock_moves(elapsed))
+        closes_at = self._platform_closes_at(drawn)
+        if closes_at is not None and now < closes_at + _AFTER_PLATFORM_CLOSE < due:
+            due = closes_at + _AFTER_PLATFORM_CLOSE
+        return due
 
     def _forget_turn(self, key: _Key) -> None:
         """Stop watching a turn that is gone, or no longer published here."""
@@ -1289,6 +1313,7 @@ class AgentSessionActivityPublisher:
             if view.ended:
                 self._retry_later(key)
             return None
+        drawn.posted_at = datetime.now(UTC)
         post.external_post_id = ref
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             await self._turn_posts.create(db, post)

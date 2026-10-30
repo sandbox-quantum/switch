@@ -802,6 +802,32 @@ async def test_a_running_turn_is_not_redrawn_every_few_seconds_for_its_clock(
         await publisher.stop()
 
 
+async def test_a_message_the_platform_closes_on_its_own_is_redrawn_just_after(
+    service, session_factory, bridged, listener, online, monkeypatch
+):
+    """Slack closes a stream ten minutes after it opens and marks the steps
+    still running as failed. Left to the clock, that could show for a minute."""
+    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.05)
+    monkeypatch.setattr(
+        publisher_module, "_AFTER_PLATFORM_CLOSE", timedelta(seconds=0.1)
+    )
+    platform = RecordingPlatform(
+        redraws_for_elapsed_time=True, closes_activity_after=0.5
+    )
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 2)
+        assert _turns(platform)[1].call == "update_rich"
+
+        await asyncio.sleep(1.0)
+        assert len(_turns(platform)) == 2, "once, and then the clock again"
+    finally:
+        await publisher.stop()
+
+
 async def test_the_clock_asks_for_a_redraw_when_its_minute_turns_and_edits_are_taken():
     publisher = _bare_publisher()
     platform = publisher._adapter

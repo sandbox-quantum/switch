@@ -493,6 +493,13 @@ class PlatformAdapter(ABC):
     #: final update still shows what the turn actually took.
     redraws_for_elapsed_time: ClassVar[bool] = False
 
+    #: Seconds after a turn's message is posted that the platform closes it to
+    #: further streaming on its own, or None where it never does.
+    #:
+    #: Closing it rewrites what it shows (Slack marks the steps still running
+    #: as failed), so a redraw is owed just after, whatever the clock says.
+    closes_activity_after: ClassVar[float | None] = None
+
     supports_activity_reactions: ClassVar[bool] = False
 
     #: Whether a prompt still waiting its turn can be marked as well.

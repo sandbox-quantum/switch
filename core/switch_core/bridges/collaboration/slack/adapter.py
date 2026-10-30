@@ -474,6 +474,9 @@ class SlackAdapter(PlatformAdapter):
     #: limited at 100+/min and redraws nothing, so the clock ticks in the one
     #: message without disturbing what is open in front of a reader.
     redraws_for_elapsed_time: ClassVar[bool] = True
+    #: Slack's own cap on a stream: ten minutes from `chat.startStream`,
+    #: however recently it was appended to.
+    closes_activity_after: ClassVar[float | None] = 600.0
     supports_activity_reactions: ClassVar[bool] = True
     supports_queue_reaction: ClassVar[bool] = True
     recovers_uncertain_posts: ClassVar[bool] = True

@@ -74,6 +74,7 @@ class RecordingPlatform:
     separate_attention_slot: bool = True
     notifies_only_by_mention: bool = False
     redraws_for_elapsed_time: bool = False
+    closes_activity_after: float | None = None
     supports_activity_reactions: bool = True
     supports_queue_reaction: bool = True
     activity_reactions_per_agent: bool = False
@@ -89,8 +90,6 @@ class RecordingPlatform:
     # Turns whose next post opens a message, then is asked to wait before
     # drawing into it.
     open_undrawn: set[str] = field(default_factory=set)
-    # Raised for every update while set.
-    update_error: RichContentFailed | None = None
     held_for: float = 0.0
     found_card: str | None = None
     first_reply: bool = True
@@ -132,8 +131,6 @@ class RecordingPlatform:
         content: RichContent,
         thread_root_id: str | None,
     ) -> None:
-        if self.update_error is not None:
-            raise self.update_error
         self.drawn.append(
             Drawn("update_rich", channel_id, message_ref, thread_root_id, content)
         )
