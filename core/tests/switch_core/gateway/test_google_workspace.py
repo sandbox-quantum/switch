@@ -133,7 +133,7 @@ def _world(
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
     harness.gateway_app.state.service_flows = ServiceFlows(
-        PUBLIC, SignInFlows(harness.session_factory, TEST_KEYRING)
+        PUBLIC, {}, SignInFlows(harness.session_factory, TEST_KEYRING)
     )
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
