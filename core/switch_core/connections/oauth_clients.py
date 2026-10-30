@@ -53,6 +53,28 @@ def loopback_redirect(port: int) -> str:
     return f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}"
 
 
+def preferred_mode(
+    modes: list[RedirectMode], named: RedirectMode | None
+) -> RedirectMode:
+    """The way back a service's sign-ins take on a server that can offer
+    every way: the one `SERVICE_SIGN_IN_REDIRECT` names, which the server
+    checked its entry lists as it started, else the first the entry lists."""
+    return named if named is not None else modes[0]
+
+
+def sign_in_mode(
+    modes: list[RedirectMode], named: RedirectMode | None, public_url: str | None
+) -> RedirectMode | None:
+    """The way back a service's sign-ins take on this server: the preferred
+    one where this server can offer it, else loopback where the entry lists
+    it, since Core's callback needs the public URL; None where it can offer
+    neither."""
+    preferred = preferred_mode(modes, named)
+    if preferred == "loopback" or public_url is not None:
+        return preferred
+    return "loopback" if "loopback" in modes else None
+
+
 def redirect_uris(
     service: str,
     modes: list[RedirectMode],

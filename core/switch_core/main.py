@@ -2386,6 +2386,8 @@ def main() -> None:
     )
     for warning in deprecated_env_names():
         logger.warning(warning)
+    for warning in config.sign_in_redirect_warnings():
+        logger.warning(warning)
 
     if config.db_migrate_on_boot:
         asyncio.run(_migrate_and_grant(config))
