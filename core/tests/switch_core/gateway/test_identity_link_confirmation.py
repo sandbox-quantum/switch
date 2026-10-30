@@ -36,7 +36,9 @@ from switch_core.gateway.collaborations import (
     cancel_identity_link_request,
     claim_bridge_identity,
     issue_identity_link_code,
+    list_unconfirmed_identity_links,
     release_bridge_identity,
+    require_identity_confirmation,
     verify_identity_with_session,
 )
 from switch_core.gateway.schemas import (
@@ -646,3 +648,159 @@ class TestListingYourLinks:
             )
 
         assert pending == []
+
+
+class TestRequiringConfirmationForOlderLinks:
+    """An admin can stop trusting the links made before links needed
+    confirming, until each owner confirms theirs."""
+
+    async def _older_link(self, world: _World, user: User) -> None:
+        async with world.session_factory() as session:
+            session.add(
+                ExternalUserClaim(external_user_id=world.account.id, user_id=user.id)
+            )
+            await session.commit()
+
+    async def _list(self, world: _World) -> list[object]:
+        async with world.session_factory() as session:
+            return list(
+                await list_unconfirmed_identity_links(
+                    world.bridge_id,
+                    session,
+                    CollaborationBridgeStore(),
+                    _STORE,
+                    UserStore(),
+                    world.bob,
+                )
+            )
+
+    async def _require(self, world: _World) -> int:
+        async with world.session_factory() as session:
+            result = await require_identity_confirmation(
+                world.bridge_id,
+                session,
+                CollaborationBridgeStore(),
+                _STORE,
+                world.bob,
+            )
+        return result.moved
+
+    async def test_the_older_links_are_listed(self, world: _World) -> None:
+        await self._older_link(world, world.ada)
+
+        [link] = await self._list(world)
+
+        assert (link.id, link.user_id, link.user_name, link.external_username) == (  # type: ignore[attr-defined]
+            world.account.id,
+            world.ada.id,
+            "ada",
+            "ada",
+        )
+
+    async def test_an_older_link_stops_counting_until_its_owner_confirms_it(
+        self, world: _World
+    ) -> None:
+        await self._older_link(world, world.ada)
+
+        assert await self._require(world) == 1
+
+        assert await _claim_of(world, world.ada) is None
+        async with world.session_factory() as session:
+            assert await _STORE.claimant_ids(session, world.account.id) == []
+            pending = await my_pending_identities(
+                session, _STORE, CollaborationBridgeStore(), UserStore(), world.ada
+            )
+        assert [(p.id, p.requested_by_name) for p in pending] == [
+            (world.account.id, "bob")
+        ]
+        # Confirmed the usual way, it counts again, now verified.
+        code = await _issue(world, world.ada)
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                code.code,  # type: ignore[attr-defined]
+            )
+            await session.commit()
+        claim = await _claim_of(world, world.ada)
+        assert claim is not None and claim.verified_at is not None
+
+    async def test_a_confirmed_link_is_untouched(self, world: _World) -> None:
+        summary = await _claim(world, world.ada)
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                summary.link_request.code.code,  # type: ignore[attr-defined]
+            )
+            await session.commit()
+
+        assert await self._require(world) == 0
+        assert await self._list(world) == []
+        claim = await _claim_of(world, world.ada)
+        assert claim is not None and claim.verified_at is not None
+
+    async def test_a_code_already_on_its_way_still_works(self, world: _World) -> None:
+        await self._older_link(world, world.ada)
+        code = await _issue(world, world.ada)
+
+        assert await self._require(world) == 1
+
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                code.code,  # type: ignore[attr-defined]
+            )
+
+    async def test_running_it_again_moves_nothing(self, world: _World) -> None:
+        await self._older_link(world, world.ada)
+
+        assert await self._require(world) == 1
+        assert await self._require(world) == 0
+
+    async def test_another_bridges_older_links_are_untouched(
+        self, world: _World
+    ) -> None:
+        async with world.session_factory() as session:
+            other = CollaborationBridge(
+                type="slack",
+                display_name="Other Slack",
+                client_id=await _client(session, "bridge"),
+                status="active",
+            )
+            session.add(other)
+            await session.flush()
+            elsewhere = ExternalUser(
+                bridge_id=other.id,
+                external_user_id="U-ada-elsewhere",
+                external_username="ada",
+                client_id=await _client(session, "external_user"),
+            )
+            session.add(elsewhere)
+            await session.flush()
+            session.add(
+                ExternalUserClaim(external_user_id=elsewhere.id, user_id=world.ada.id)
+            )
+            await session.commit()
+
+        assert await self._require(world) == 0
+
+        async with world.session_factory() as session:
+            assert await _STORE.claimant_ids(session, elsewhere.id) == [world.ada.id]
+
+    async def test_it_is_audited(self, world: _World) -> None:
+        await self._older_link(world, world.ada)
+
+        await self._require(world)
+
+        async with world.session_factory() as session:
+            event = await session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.action
+                    == AuditAction.BRIDGE_IDENTITY_CONFIRMATION_REQUIRED
+                )
+            )
+        assert event is not None
+        assert event.actor_user_id == world.bob.id
+        assert event.details == {"moved": 1}

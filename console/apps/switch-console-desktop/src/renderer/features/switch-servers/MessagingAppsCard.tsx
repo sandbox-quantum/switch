@@ -12,6 +12,7 @@ import {
   MoreVertical,
   Plus,
   PlusCircle,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
   TriangleAlert,
@@ -64,6 +65,7 @@ import {
 import { mayReplaceToken, offersTokenReplacement, tokenFields } from './replace-token';
 import { switchRoomsStore } from './switch-rooms-store';
 import { switchServersStore } from './switch-servers-store';
+import { unconfirmedLinksQuery } from './unconfirmed-links';
 import { useMyIdentities, useMyPendingIdentities } from './use-my-identities';
 import { administersWorkspaceInScope } from './workspace-admin';
 
@@ -118,6 +120,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showDisconnectMessagingApp = useShowModal('disconnectMessagingAppModal');
   const showReplaceToken = useShowModal('replaceTokenModal');
   const showConnectChat = useShowModal('connectChatModal');
+  const showRequireLinkConfirmation = useShowModal('requireLinkConfirmationModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const isAdmin = administersWorkspaceInScope(serverId);
   const flags = useFeatureFlags(serverId);
@@ -210,6 +213,28 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
   const installStateOf = (bridge: RemoteBridge) =>
     installStates[tokenCandidates.findIndex((b) => b.id === bridge.id)]?.data;
+
+  // Links made before links had to be confirmed, per app, which an admin can
+  // stop trusting. Never asked for anyone else: the route is admin-only.
+  const olderLinkQueries = useQueries({
+    queries: bridges.map((bridge) => ({
+      ...unconfirmedLinksQuery(workspaceId, bridge.id),
+      enabled: isAdmin && workspaceId !== null,
+    })),
+  });
+  const olderLinkCountOf = (bridge: RemoteBridge): number =>
+    isAdmin ? (olderLinkQueries[bridges.indexOf(bridge)]?.data?.length ?? 0) : 0;
+  // Like the probe above, a failure here costs only a menu item, so it is
+  // logged rather than shown.
+  const olderLinksError = olderLinkQueries.find((q) => q.error !== null)?.error ?? null;
+  useEffect(() => {
+    if (olderLinksError) {
+      log.warn('Could not read the older links on a messaging app', {
+        workspaceId,
+        error: olderLinksError,
+      });
+    }
+  }, [olderLinksError, workspaceId]);
 
   const unrecognisedIn = unrecognisedMessagingApps({
     bridges,
@@ -366,6 +391,19 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                 pending={pending}
                 currentUserId={currentUserId}
                 onReleased={refreshIdentities}
+                olderLinks={
+                  workspaceId !== null && olderLinkCountOf(bridge) > 0
+                    ? {
+                        count: olderLinkCountOf(bridge),
+                        onRequireConfirmation: () =>
+                          showRequireLinkConfirmation({
+                            workspaceId,
+                            bridgeId: bridge.id,
+                            bridgeDisplayName: bridge.displayName,
+                          }),
+                      }
+                    : null
+                }
                 showBundledSignIn={isManaged && bridge.type === 'mattermost'}
                 isAdmin={isAdmin}
                 savingChannelCreation={savingBridgeId === bridge.id}
@@ -453,8 +491,9 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * Only Link stays outside the menu: an app you have not claimed an account on
  * has exactly one thing worth doing to it, and burying that is what would make
  * the row's warning unactionable. Everything else — changing or dropping the
- * account, channel creation, the bundled chat's credentials, opening the app,
- * replacing its token, disconnecting it — is in the menu.
+ * account, requiring older links be confirmed, channel creation, the bundled
+ * chat's credentials, opening the app, replacing its token, disconnecting it —
+ * is in the menu.
  */
 export function MessagingAppRow({
   workspaceId,
@@ -464,6 +503,7 @@ export function MessagingAppRow({
   pending,
   currentUserId,
   onReleased,
+  olderLinks,
   showBundledSignIn,
   isAdmin,
   savingChannelCreation,
@@ -484,6 +524,9 @@ export function MessagingAppRow({
   pending: PendingIdentity[] | null;
   currentUserId: string | null;
   onReleased: () => void;
+  /** Set for an admin when the app has links made before links had to be
+   *  confirmed: how many, and how to stop trusting them. */
+  olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
   savingChannelCreation: boolean;
@@ -773,6 +816,12 @@ export function MessagingAppRow({
               <DropdownMenuItem onClick={() => void cancelRequest(waiting.id)}>
                 <X className="size-4" />
                 Cancel link to {accountHandle(waiting.externalUsername)}
+              </DropdownMenuItem>
+            )}
+            {olderLinks !== null && (
+              <DropdownMenuItem onClick={olderLinks.onRequireConfirmation}>
+                <ShieldAlert className="size-4" />
+                Require confirmation for older links ({olderLinks.count})…
               </DropdownMenuItem>
             )}
 

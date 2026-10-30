@@ -286,8 +286,9 @@ workspace. Offer to draft the message.
 - `none`: agents that answer only their owner won't recognise them there. Link
   [the server's home](switchdash://open/home), where Messaging apps lets them
   link their account.
-- `pending`: they started linking but the account hasn't confirmed it, so it
-  doesn't count yet. Switch Console showed them a code to post from that chat
+- `pending`: the link is waiting for the account to confirm it, so it doesn't
+  count yet. Either they started linking, or a workspace admin required them
+  to confirm a link made before links needed confirming. Switch Console showed them a code to post from that chat
   account (for example `!link-account 7KQ2-M9XD`); tell them to post it, or to
   get a new code from [the server's home](switchdash://open/home) if it has
   expired.

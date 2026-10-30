@@ -40,6 +40,7 @@ import {
   fetchMessagingApps,
   fetchMyIdentities,
   fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
   fetchRoomAgentIds,
   fetchRoomDetail,
   fetchRoomGroups,
@@ -84,6 +85,7 @@ import {
   cancelLinkRequestOnServer,
   claimIdentityOnServer,
   issueLinkCodeOnServer,
+  requireLinkConfirmationOnServer,
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
@@ -142,6 +144,8 @@ import type {
   LinkedIdentity,
   MessagingApps,
   PendingIdentity,
+  RequireLinkConfirmationResult,
+  UnconfirmedLink,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -1077,6 +1081,26 @@ export const workspacesController = createRPCController({
       });
     }
   },
+
+  /** The links on a messaging app made before links had to be confirmed, which
+   * still count. Admin only; empty on a server that predates them. */
+  listUnconfirmedLinks: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<UnconfirmedLink[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchUnconfirmedLinks(server, params.bridgeId)
+    ),
+
+  /** Stop trusting a messaging app's older links until each owner confirms
+   * theirs with a code. Admin only. */
+  requireLinkConfirmation: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<RequireLinkConfirmationResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      requireLinkConfirmationOnServer(server, params.bridgeId)
+    ),
 
   /** Withdraw the signed-in user's confirmation waiting on a code. A link that
    * already works stays; unlinking is {@link releaseBridgeIdentity}. */

@@ -864,6 +864,22 @@ class PendingIdentity(BaseModel):
     code_expires_at: datetime | None
 
 
+class UnconfirmedLink(BaseModel):
+    """A link made before links needed confirming. It counts until its owner
+    confirms it, or an admin requires them to."""
+
+    id: str
+    external_user_id: str
+    external_username: str
+    user_id: str
+    user_name: str
+
+
+class RequireConfirmationResult(BaseModel):
+    # How many links stopped counting and now wait for their owners' codes.
+    moved: int
+
+
 class VerifyIdentitySessionRequest(BaseModel):
     """Confirm a link with the platform account's own session token."""
 

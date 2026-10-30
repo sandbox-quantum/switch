@@ -25,8 +25,12 @@ vi.mock('./auth', () => ({
 }));
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
-const { cancelLinkRequestOnServer, claimIdentityOnServer, issueLinkCodeOnServer } =
-  await import('./identities');
+const {
+  cancelLinkRequestOnServer,
+  claimIdentityOnServer,
+  issueLinkCodeOnServer,
+  requireLinkConfirmationOnServer,
+} = await import('./identities');
 
 const SERVER = {
   id: 'srv-1',
@@ -283,6 +287,35 @@ describe('cancelLinkRequestOnServer', () => {
 
     await expect(cancelLinkRequestOnServer(SERVER, 'b1', 'eu-1')).rejects.toMatchObject({
       status: 500,
+    });
+  });
+});
+
+describe('requireLinkConfirmationOnServer', () => {
+  it('says how many links now wait for their code', async () => {
+    fetchMock.mockResolvedValue(response(200, { moved: 2 }));
+
+    await expect(requireLinkConfirmationOnServer(SERVER, 'b1')).resolves.toEqual({
+      kind: 'required',
+      moved: 2,
+    });
+  });
+
+  it('passes on the server’s reason when the caller is not an admin', async () => {
+    fetchMock.mockResolvedValue(response(403, { detail: 'Workspace admin access required' }));
+
+    await expect(requireLinkConfirmationOnServer(SERVER, 'b1')).resolves.toEqual({
+      kind: 'refused',
+      message: 'Workspace admin access required',
+    });
+  });
+
+  it('passes on the server’s reason when the app is gone', async () => {
+    fetchMock.mockResolvedValue(response(404, { detail: 'Bridge not found' }));
+
+    await expect(requireLinkConfirmationOnServer(SERVER, 'b1')).resolves.toEqual({
+      kind: 'refused',
+      message: 'Bridge not found',
     });
   });
 });

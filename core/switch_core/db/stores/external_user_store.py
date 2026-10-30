@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy import CursorResult, delete, func, literal, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +241,65 @@ class ExternalUserStore:
                 f"User {switch_user_id} has no link to account {external_user.id}"
             )
         return released
+
+    async def unconfirmed_claims(
+        self, session: AsyncSession, bridge_id: str
+    ) -> list[tuple[ExternalUser, ExternalUserClaim]]:
+        """The claims on this bridge made before links needed confirming,
+        which count until their owners confirm them or an admin requires it."""
+        result = await session.execute(
+            select(ExternalUser, ExternalUserClaim)
+            .join(
+                ExternalUserClaim,
+                ExternalUserClaim.external_user_id == ExternalUser.id,
+            )
+            .where(
+                ExternalUser.bridge_id == bridge_id,
+                ExternalUserClaim.verified_at.is_(None),
+            )
+        )
+        return [(external, claim) for external, claim in result.tuples()]
+
+    async def require_confirmation(
+        self, session: AsyncSession, bridge_id: str, requested_by_user_id: str
+    ) -> list[tuple[str, str]]:
+        """Stop trusting this bridge's claims made before links needed
+        confirming, turning each into a request its owner confirms with a
+        code. Returns the `(external_user_id, user_id)` pairs moved.
+
+        A request already waiting (its owner started confirming) is kept, code
+        and all. The requests are written before the claims go, the order a
+        confirmation takes the two in, so the two cannot deadlock.
+        """
+        on_bridge = select(ExternalUser.id).where(ExternalUser.bridge_id == bridge_id)
+        unconfirmed = select(
+            ExternalUserClaim.tenant_id,
+            ExternalUserClaim.external_user_id,
+            ExternalUserClaim.user_id,
+            literal(requested_by_user_id),
+        ).where(
+            ExternalUserClaim.external_user_id.in_(on_bridge),
+            ExternalUserClaim.verified_at.is_(None),
+        )
+        await session.execute(
+            pg_insert(ExternalUserLinkRequest)
+            .from_select(
+                ["tenant_id", "external_user_id", "user_id", "requested_by_user_id"],
+                unconfirmed,
+            )
+            .on_conflict_do_nothing(index_elements=["external_user_id", "user_id"])
+        )
+        moved = await session.execute(
+            delete(ExternalUserClaim)
+            .where(
+                ExternalUserClaim.external_user_id.in_(on_bridge),
+                ExternalUserClaim.verified_at.is_(None),
+            )
+            .returning(ExternalUserClaim.external_user_id, ExternalUserClaim.user_id)
+        )
+        pairs = [(external_user_id, user_id) for external_user_id, user_id in moved]
+        await session.flush()
+        return pairs
 
     # ── Link requests (CHOO-3881) ────────────────────────────────────────────
 

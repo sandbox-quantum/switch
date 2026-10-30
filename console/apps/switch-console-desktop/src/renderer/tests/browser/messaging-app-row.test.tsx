@@ -114,6 +114,7 @@ function row(
     identities?: LinkedIdentity[] | null;
     pending?: PendingIdentity[] | null;
     onReleased?: () => void;
+    olderLinks?: { count: number; onRequireConfirmation: () => void } | null;
     isAdmin?: boolean;
     onConnectChat?: (() => void) | null;
     onDisconnect?: () => void;
@@ -128,6 +129,7 @@ function row(
       pending={overrides.pending === undefined ? [] : overrides.pending}
       currentUserId="u1"
       onReleased={overrides.onReleased ?? (() => {})}
+      olderLinks={overrides.olderLinks ?? null}
       showBundledSignIn={false}
       isAdmin={overrides.isAdmin ?? false}
       savingChannelCreation={false}
@@ -326,6 +328,30 @@ describe('the app name and its badges', () => {
     const el = await render(row({ bridge: bridge({ status: 'error' }) }));
 
     expect(el.textContent).toContain('error');
+  });
+});
+
+describe('requiring confirmation for older links', () => {
+  it('is offered with how many there are, and opens the confirmation', async () => {
+    const onRequireConfirmation = vi.fn();
+    const el = await render(
+      row({ isAdmin: true, olderLinks: { count: 3, onRequireConfirmation } })
+    );
+
+    expect(await openMenu(el)).toContain('Require confirmation for older links (3)…');
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (i) => i.textContent?.trim() === 'Require confirmation for older links (3)…'
+    );
+    await act(async () => item!.click());
+
+    expect(onRequireConfirmation).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not offered when the card has nothing to offer', async () => {
+    const el = await render(row({ isAdmin: true, olderLinks: null }));
+
+    const labels = await openMenu(el);
+    expect(labels.some((l) => l.startsWith('Require confirmation'))).toBe(false);
   });
 });
 

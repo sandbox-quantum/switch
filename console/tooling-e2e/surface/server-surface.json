@@ -438,6 +438,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/collaborations/{bridge_id}/identities/unconfirmed",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/collaborations/{bridge_id}/teams",
       "auth": "session",
       "flags": []
@@ -1034,6 +1039,11 @@
     },
     {
       "route": "POST /gateway/collaborations/{bridge_id}/identities",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/collaborations/{bridge_id}/identities/require-confirmation",
       "auth": "session",
       "flags": []
     },

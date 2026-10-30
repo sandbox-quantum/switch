@@ -104,6 +104,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type UnconfirmedLink,
   type UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
@@ -2283,6 +2284,61 @@ export async function cancelIdentityLinkRequest(
     `/collaborations/${encodeURIComponent(bridgeId)}/identities/${encodeURIComponent(externalUserRowId)}/request`,
     { authenticated: true, method: 'DELETE' }
   );
+}
+
+/**
+ * The links on a messaging app made before links had to be confirmed
+ * (`GET /collaborations/{id}/identities/unconfirmed`), which still count. Admin
+ * only. A server that predates confirming links has no such route and no such
+ * links, so its 404 reads as none — as does a bridge removed meanwhile.
+ */
+export async function fetchUnconfirmedLinks(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<UnconfirmedLink[]> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(
+      server,
+      `/collaborations/${encodeURIComponent(bridgeId)}/identities/unconfirmed`,
+      { authenticated: true }
+    );
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return [];
+    throw cause;
+  }
+  const json = (await res.json()) as Array<{
+    id: string;
+    external_user_id: string;
+    external_username: string;
+    user_id: string;
+    user_name: string;
+  }>;
+  return json.map((l) => ({
+    id: l.id,
+    externalUserId: l.external_user_id,
+    externalUsername: l.external_username,
+    userId: l.user_id,
+    userName: l.user_name,
+  }));
+}
+
+/**
+ * Stop trusting a messaging app's older links until each owner confirms theirs
+ * (`POST /collaborations/{id}/identities/require-confirmation`). Admin only.
+ * Each becomes a link waiting for its code and stops counting at once. Returns
+ * how many moved.
+ */
+export async function requireLinkConfirmation(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<number> {
+  const res = await gatewayFetch(
+    server,
+    `/collaborations/${encodeURIComponent(bridgeId)}/identities/require-confirmation`,
+    { authenticated: true, method: 'POST' }
+  );
+  return ((await res.json()) as { moved: number }).moved;
 }
 
 /**

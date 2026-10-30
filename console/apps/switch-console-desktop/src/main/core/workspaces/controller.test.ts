@@ -21,6 +21,8 @@ const fetchManagedAgent = vi.hoisted(() => vi.fn());
 const claimIdentityOnServer = vi.hoisted(() => vi.fn());
 const cancelLinkRequestOnServer = vi.hoisted(() => vi.fn());
 const fetchMyIdentities = vi.hoisted(() => vi.fn());
+const fetchUnconfirmedLinks = vi.hoisted(() => vi.fn());
+const requireLinkConfirmationOnServer = vi.hoisted(() => vi.fn());
 const managedAgentLocator = vi.hoisted(() =>
   vi.fn(async () => (controllerId: string) => (controllerId === 'c1' ? 'local' : 'remote'))
 );
@@ -96,6 +98,7 @@ vi.mock('@main/core/switch-servers/identities', () => ({
   cancelLinkRequestOnServer,
   claimIdentityOnServer,
   issueLinkCodeOnServer: vi.fn(),
+  requireLinkConfirmationOnServer,
   searchDirectoryOnServer: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage }));
@@ -122,6 +125,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchWorkspaceServices,
   fetchMyIdentities,
   fetchMyPendingIdentities: vi.fn(),
+  fetchUnconfirmedLinks,
   fetchRoomAgentIds: vi.fn(),
   fetchManagedAgent,
   fetchRoomDetail,
@@ -330,6 +334,27 @@ describe('linking a messaging account', () => {
       await expect(workspacesController.reportIdentityConfirmed(REPORT)).resolves.toBeUndefined();
       expect(trackEvent).not.toHaveBeenCalled();
     });
+  });
+
+  it('lists one app’s older links from its server', async () => {
+    const LINKS = [
+      { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },
+    ];
+    fetchUnconfirmedLinks.mockResolvedValue(LINKS);
+
+    await expect(
+      workspacesController.listUnconfirmedLinks({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toEqual(LINKS);
+    expect(fetchUnconfirmedLinks).toHaveBeenCalledWith(expect.anything(), 'b1');
+  });
+
+  it('requires confirming one app’s older links', async () => {
+    requireLinkConfirmationOnServer.mockResolvedValue({ kind: 'required', moved: 2 });
+
+    await expect(
+      workspacesController.requireLinkConfirmation({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toEqual({ kind: 'required', moved: 2 });
+    expect(requireLinkConfirmationOnServer).toHaveBeenCalledWith(expect.anything(), 'b1');
   });
 
   it('reports a refused claim as a failure', async () => {

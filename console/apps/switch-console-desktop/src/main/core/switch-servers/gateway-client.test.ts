@@ -82,6 +82,8 @@ const {
   fetchMessagingAppInstalls,
   fetchMyIdentities,
   fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
+  requireLinkConfirmation,
   searchBridgeDirectory,
   fetchTeamsPackage,
   joinWorkspaceByDomain,
@@ -2435,6 +2437,65 @@ describe('linked messaging accounts', () => {
       { userId: 'u1', userName: 'Ada', verified: false },
       { userId: 'u2', userName: 'Grace', verified: true },
     ]);
+  });
+});
+
+/**
+ * An admin can stop trusting a messaging app's links made before links had to
+ * be confirmed (CHOO-3881). A server from before that has neither route.
+ */
+describe('older links an admin can require confirming', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists them for one app', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          id: 'eu-1',
+          external_user_id: 'U1',
+          external_username: 'ada',
+          user_id: 'u1',
+          user_name: 'Ada',
+        },
+      ]) as never
+    );
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([
+      { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/identities/unconfirmed');
+  });
+
+  it('reads a server without the route as having none', async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).resolves.toEqual([]);
+  });
+
+  it('raises when the caller may not see them', async () => {
+    fetchMock.mockResolvedValue(errorResponse(403, '{"detail":"Admins only"}') as never);
+
+    await expect(fetchUnconfirmedLinks(SERVER, 'b1')).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('requires confirming them, and says how many moved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ moved: 3 }) as never);
+
+    await expect(requireLinkConfirmation(SERVER, 'b1')).resolves.toBe(3);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    expect(url).toBe(
+      'https://switch.example.com/gateway/collaborations/b1/identities/require-confirmation'
+    );
+    expect(init.method).toBe('POST');
   });
 });
 

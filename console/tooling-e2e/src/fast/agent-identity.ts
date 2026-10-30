@@ -38,6 +38,7 @@ export const agentIdentity: FastScenario = {
       "DELETE /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}",
       "DELETE /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}/request",
       "GET /gateway/auth/me/identities/pending",
+      "GET /gateway/collaborations/{bridge_id}/identities/unconfirmed",
       "POST /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}/code",
     ],
     lane: "fast",
@@ -91,6 +92,10 @@ export const agentIdentity: FastScenario = {
     await mm.post({ channelId, message: `!link-account ${code}` });
     await switchReply(mm, channelId, admin.id, sinceLink, /Linked this/);
     expect(await switchClient.pendingIdentityIds()).not.toContain(
+      link.identityId,
+    );
+    // Confirmed, so not among the older links an admin could demote.
+    expect(await switchClient.unconfirmedLinkIds(link.bridgeId)).not.toContain(
       link.identityId,
     );
     log("linked the chat account by posting its code");

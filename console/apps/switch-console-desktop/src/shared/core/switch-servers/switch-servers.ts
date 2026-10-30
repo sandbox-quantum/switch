@@ -917,9 +917,9 @@ export type LinkCode = {
 };
 
 /**
- * Why a request about a waiting confirmation did nothing. `refused` is the
- * server saying there is nothing to act on — the link was confirmed or
- * cancelled meanwhile — in its own words.
+ * Why a request about confirming links did nothing. `refused` is the server
+ * declining in its own words: there is nothing to act on — the link was
+ * confirmed or cancelled meanwhile — or the caller may not do it.
  */
 export type LinkRequestFailure =
   | { kind: 'refused'; message: string }
@@ -934,6 +934,29 @@ export type IssueLinkCodeResult = { kind: 'issued'; code: LinkCode } | LinkReque
  * request goes: a link that already works stays.
  */
 export type CancelLinkRequestResult = { kind: 'cancelled' } | LinkRequestFailure;
+
+/**
+ * A link made before links had to be confirmed, as a workspace admin sees it
+ * (mirrors the gateway `UnconfirmedLink`). It counts until its owner confirms
+ * it, or until an admin requires that they do.
+ */
+export type UnconfirmedLink = {
+  /** The `ExternalUser` row id. */
+  id: string;
+  externalUserId: string;
+  externalUsername: string;
+  /** The Switch user who holds the link. */
+  userId: string;
+  userName: string;
+};
+
+/**
+ * Outcome of requiring confirmation of a messaging app's older links. `moved`
+ * is how many became links waiting for their code; a second run moves none.
+ */
+export type RequireLinkConfirmationResult =
+  | { kind: 'required'; moved: number }
+  | LinkRequestFailure;
 
 /**
  * Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)

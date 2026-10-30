@@ -5,6 +5,7 @@ import {
   GatewayError,
   issueIdentityLinkCode,
   mapLinkCode,
+  requireLinkConfirmation,
   searchBridgeDirectory,
 } from '@main/core/switch-servers/gateway-client';
 import type {
@@ -13,6 +14,7 @@ import type {
   ClaimIdentityParams,
   ClaimIdentityResult,
   IssueLinkCodeResult,
+  RequireLinkConfirmationResult,
   SwitchServer,
 } from '@shared/core/switch-servers/switch-servers';
 
@@ -165,6 +167,29 @@ export async function cancelLinkRequestOnServer(
     if (cause instanceof GatewayError) {
       if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
       if (cause.kind === 'http' && cause.status === 404) {
+        return { kind: 'refused', message: cause.detail ?? cause.message };
+      }
+      if (cause.kind === 'network') return { kind: 'error', message: cause.message };
+    }
+    throw cause;
+  }
+}
+
+/**
+ * Require confirmation of a messaging app's older links. 403 — the caller is
+ * not an admin of the workspace — and 404 — the app is gone, or the server
+ * predates this — are the server's to word.
+ */
+export async function requireLinkConfirmationOnServer(
+  server: SwitchServer,
+  bridgeId: string
+): Promise<RequireLinkConfirmationResult> {
+  try {
+    return { kind: 'required', moved: await requireLinkConfirmation(server, bridgeId) };
+  } catch (cause) {
+    if (cause instanceof GatewayError) {
+      if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
+      if (cause.kind === 'http' && (cause.status === 403 || cause.status === 404)) {
         return { kind: 'refused', message: cause.detail ?? cause.message };
       }
       if (cause.kind === 'network') return { kind: 'error', message: cause.message };

@@ -42,6 +42,9 @@ class AuditAction(StrEnum):
     BRIDGE_IDENTITY_CLAIMED = "collaboration_bridge.identity_claimed"
     BRIDGE_IDENTITY_LINK_REQUESTED = "collaboration_bridge.identity_link_requested"
     BRIDGE_IDENTITY_LINK_CANCELLED = "collaboration_bridge.identity_link_cancelled"
+    BRIDGE_IDENTITY_CONFIRMATION_REQUIRED = (
+        "collaboration_bridge.identity_confirmation_required"
+    )
     BRIDGE_IDENTITY_RELEASED = "collaboration_bridge.identity_released"
     MESSAGING_INSTALL_STARTED = "messaging_install.started"
     MESSAGING_INSTALL_CONNECTED = "messaging_install.connected"

@@ -839,6 +839,19 @@ export class SwitchClient {
   }
 
   /**
+   * `GET /gateway/collaborations/{bridge}/identities/unconfirmed` — the
+   * links on a bridge made before links needed confirming, by identity id.
+   * Admin only.
+   */
+  async unconfirmedLinkIds(bridgeId: string): Promise<string[]> {
+    const rows = await this.gateway<{ id: string }[]>(
+      "GET",
+      `/collaborations/${bridgeId}/identities/unconfirmed`,
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
    * `GET /gateway/auth/me/identities/pending` — the chat accounts waiting to
    * confirm a link to the signed-in user, by identity id.
    */

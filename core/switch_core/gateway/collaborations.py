@@ -76,9 +76,11 @@ from switch_core.gateway.schemas import (
     IdentityClaimant,
     LinkCode,
     LinkRequestSummary,
+    RequireConfirmationResult,
     SlackOwnAppSetup,
     SlackTokensCheck,
     SlackTokensChecked,
+    UnconfirmedLink,
     VerifyIdentitySessionRequest,
 )
 from switch_core.request_validation import describe_errors
@@ -1213,6 +1215,76 @@ async def verify_identity_with_session(
     return await _identity_summary(
         session, external_user_store, user_store, external_user, None
     )
+
+
+@router.get("/{bridge_id}/identities/unconfirmed")
+async def list_unconfirmed_identity_links(
+    bridge_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    _admin: Annotated[User, Depends(require_tenant_admin)],
+) -> list[UnconfirmedLink]:
+    """The links on this bridge made before links needed confirming
+    (CHOO-3881), which count until their owners confirm them. What an admin
+    reads before `require_identity_confirmation` stops trusting them."""
+    if await bridge_store.get(session, bridge_id) is None:
+        raise HTTPException(status_code=404, detail="Bridge not found")
+    found = await external_user_store.unconfirmed_claims(session, bridge_id)
+    claims: dict[str, list[ExternalUserClaim]] = {}
+    for external, claim in found:
+        claims.setdefault(external.id, []).append(claim)
+    names = await _user_names(session, user_store, claims)
+    return sorted(
+        (
+            UnconfirmedLink(
+                id=external.id,
+                external_user_id=external.external_user_id,
+                external_username=external.external_username,
+                user_id=claim.user_id,
+                user_name=names.get(claim.user_id) or claim.user_id,
+            )
+            for external, claim in found
+        ),
+        key=lambda link: (link.user_name.casefold(), link.external_username.casefold()),
+    )
+
+
+@router.post("/{bridge_id}/identities/require-confirmation")
+async def require_identity_confirmation(
+    bridge_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    admin: Annotated[User, Depends(require_tenant_admin)],
+) -> RequireConfirmationResult:
+    """Stop trusting this bridge's links made before links needed confirming
+    (CHOO-3881), until each owner confirms theirs with a code.
+
+    Each becomes a link waiting for its account, as if its owner had just
+    started it, so it counts for nothing until then. Their owner-only agents
+    stop recognising them in the meantime, which is the point and what an
+    admin is told before running it. Links already confirmed, and other
+    bridges, are untouched; running it again moves nothing.
+    """
+    bridge = await bridge_store.get(session, bridge_id)
+    if bridge is None:
+        raise HTTPException(status_code=404, detail="Bridge not found")
+    moved = await external_user_store.require_confirmation(
+        session, bridge_id, requested_by_user_id=admin.id
+    )
+    await record_audit_event(
+        session,
+        tenant_id=bridge.tenant_id,
+        actor_user_id=admin.id,
+        action=AuditAction.BRIDGE_IDENTITY_CONFIRMATION_REQUIRED,
+        target_type="collaboration_bridge",
+        target_id=bridge_id,
+        details={"moved": len(moved)},
+    )
+    await session.commit()
+    return RequireConfirmationResult(moved=len(moved))
 
 
 @router.delete("/{bridge_id}/identities/{external_user_row_id}/request")

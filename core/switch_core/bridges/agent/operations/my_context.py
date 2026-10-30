@@ -79,8 +79,9 @@ async def get_my_context() -> dict[str, Any]:
         `your_account_link` says more: "verified" (linked and confirmed from
         the chat account), "unverified" (linked before links needed
         confirming; it works, and Console asks them to confirm it), "pending"
-        (they started linking but have not posted the code Console showed
-        them from that account, so it does not count yet) or "none".
+        (waiting for them to post, from that account, the code Console
+        shows them, so it does not count yet: they started linking, or an
+        admin required them to confirm an older link) or "none".
         `your_usernames` are your owner's usernames on that app, empty until
         their account is linked. People are named by these, never by their
         Switch name, in `create_room`'s and `add_users_to_room`'s `user_names`
