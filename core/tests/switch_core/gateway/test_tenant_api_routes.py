@@ -74,6 +74,7 @@ from switch_core.gateway.invite_mail import (
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
 from tests.ownership import NeverOwned
+from tests.switch_core.statement_counts import StatementCounts
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -1733,6 +1734,55 @@ def _window() -> dict[str, str]:
 
 
 class TestCurrentTenantRoute:
+    async def test_a_members_request_reads_the_organization_once_at_most(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+    ) -> None:
+        """Checking a member's role reads their membership row, and the
+        organization only when that row does not answer, so a workspace in an
+        organization costs a member no more statements than one without."""
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="O")
+            )
+            await session.flush()
+            session.add(
+                Tenant(
+                    id=tenant_id,
+                    slug=tenant_id,
+                    name=tenant_id,
+                    organization_id=organization_id,
+                )
+            )
+            await session.commit()
+        user_id = await _make_member(
+            session_factory,
+            name=f"counted-{uuid.uuid4().hex[:6]}",
+            tenant_id=tenant_id,
+            role="member",
+        )
+        async with session_factory() as session:
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id, user_id=user_id, role="member"
+                )
+            )
+            await session.commit()
+        token = _token(user_id, "counted@example.invalid", tenant_id)
+
+        async with _client(
+            statement_counts.wrap(_app(session_factory)), token
+        ) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        statements = statement_counts.scopes[-1].statements
+        assert sum("organization_members" in s for s in statements) == 1
+        assert len(statements) <= 7, statements
+
     async def test_a_member_is_told_the_workspace_they_are_bound_to(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

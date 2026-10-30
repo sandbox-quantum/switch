@@ -10,10 +10,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import (
-    ORGANIZATION_ADMIN_ROLE,
-    ORGANIZATION_ADMIN_TENANT_ROLE,
     TENANT_ADMIN_ROLES,
     administers_tenant,
+    effective_tenant_role,
     owns_tenant,
 )
 from switch_core.db.models import (
@@ -515,13 +514,12 @@ class UserStore:
         `tenants.organization_id` `NOT NULL`; nobody holds a role in it, and
         the policy would refuse the read, so it is not made.
         """
-        tenant = await session.get(Tenant, tenant_id)
-        if tenant is None or tenant.organization_id is None:
-            return None
-        member = await session.get(
-            OrganizationMember, (tenant.organization_id, user_id)
+        role: str | None = await session.scalar(
+            select(OrganizationMember.role)
+            .join(Tenant, Tenant.organization_id == OrganizationMember.organization_id)
+            .where(Tenant.id == tenant_id, OrganizationMember.user_id == user_id)
         )
-        return member.role if member is not None else None
+        return role
 
     async def administers_by_role(
         self, session: AsyncSession, tenant_id: str, user_id: str
@@ -530,9 +528,22 @@ class UserStore:
         (a workspace admin or owner membership, or `org_admin` of its
         organization), leaving the operator flag out. An operator who does
         not is there on `platform_access`."""
+        return await self._administers(session, tenant_id, user_id, is_operator=False)
+
+    async def _administers(
+        self, session: AsyncSession, tenant_id: str, user_id: str, *, is_operator: bool
+    ) -> bool:
+        """`authz.administers_tenant`, reading the organization only when the
+        membership row does not already answer: most callers are a
+        workspace's own admins and members."""
+        tenant_role = await self.tenant_role(session, tenant_id, user_id)
+        if administers_tenant(
+            is_operator=is_operator, tenant_role=tenant_role, organization_role=None
+        ):
+            return True
         return administers_tenant(
-            is_operator=False,
-            tenant_role=await self.tenant_role(session, tenant_id, user_id),
+            is_operator=is_operator,
+            tenant_role=tenant_role,
             organization_role=await self.organization_role(session, tenant_id, user_id),
         )
 
@@ -546,12 +557,10 @@ class UserStore:
         role = await self.tenant_role(session, tenant_id, user_id)
         if role in TENANT_ADMIN_ROLES:
             return role
-        if (
-            await self.organization_role(session, tenant_id, user_id)
-            == ORGANIZATION_ADMIN_ROLE
-        ):
-            return ORGANIZATION_ADMIN_TENANT_ROLE
-        return role
+        return effective_tenant_role(
+            tenant_role=role,
+            organization_role=await self.organization_role(session, tenant_id, user_id),
+        )
 
     async def list_tenant_members(
         self, session: AsyncSession
@@ -604,10 +613,8 @@ class UserStore:
                 "administer a workspace is only answerable about a particular "
                 "one"
             )
-        return administers_tenant(
-            is_operator=user.role == "admin",
-            tenant_role=await self.tenant_role(session, tenant_id, user.id),
-            organization_role=await self.organization_role(session, tenant_id, user.id),
+        return await self._administers(
+            session, tenant_id, user.id, is_operator=user.role == "admin"
         )
 
     async def owns(self, session: AsyncSession, user: User) -> bool:

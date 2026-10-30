@@ -10,7 +10,12 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE, ORGANIZATION_ADMIN_TENANT_ROLE
+from switch_core.authz import (
+    ORGANIZATION_ADMIN_ROLE,
+    ORGANIZATION_ADMIN_TENANT_ROLE,
+    administers_tenant,
+    effective_tenant_role,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -56,7 +61,6 @@ from switch_core.gateway.auth import (
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
-    get_tenant_is_admin,
     get_tenant_is_owner,
     list_tenant_memberships,
     may_bind_tenant,
@@ -281,17 +285,21 @@ async def current_tenant(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> CurrentTenantResponse:
     """The tenant this request is bound to, and the caller's standing in it.
 
     A client needs the id for every `/tenants/{tenant_id}/...` path, and the
     binding is settled server-side (see `_resolve_tenant_id`), so this is the
-    one place it can ask rather than guess from `GET /tenants`.
+    one place it can ask rather than guess from `GET /tenants`. The two roles
+    are read once each, and every answer below is worked out from them.
     """
     tenant_id = require_tenant_id()
     tenant = await session.get(Tenant, tenant_id)
-    role = await user_store.effective_tenant_role(session, tenant_id, user.id)
+    tenant_role = await user_store.tenant_role(session, tenant_id, user.id)
+    organization_role = await user_store.organization_role(session, tenant_id, user.id)
+    role = effective_tenant_role(
+        tenant_role=tenant_role, organization_role=organization_role
+    )
     if role is None and request.state.platform_access:
         # The platform operator, there on the operator flag alone, acts as
         # an admin and holds no role to report.
@@ -303,11 +311,13 @@ async def current_tenant(
         slug=tenant.slug,
         name=tenant.name,
         role=role,
-        organization_role=await user_store.organization_role(
-            session, tenant_id, user.id
-        ),
+        organization_role=organization_role,
         organization_id=tenant.organization_id,
-        administers=is_admin,
+        administers=administers_tenant(
+            is_operator=user.role == "admin",
+            tenant_role=tenant_role,
+            organization_role=organization_role,
+        ),
     )
 
 

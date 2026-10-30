@@ -46,7 +46,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
-from switch_core.authz import administers_tenant
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE, administers_tenant
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats import MEMBER_CLIENT_TYPE
@@ -338,10 +338,13 @@ class ChatService:
         self, session: AsyncSession, tenant_id: str, user_id: str
     ) -> bool:
         """Whether `user_id` stands in `tenant_id`: a membership row, or
-        `org_admin` of its organization."""
+        `org_admin` of its organization, read only when there is no row. Asked
+        on every chat read and write."""
+        if await self._user_store.tenant_role(session, tenant_id, user_id) is not None:
+            return True
         return (
-            await self._user_store.effective_tenant_role(session, tenant_id, user_id)
-            is not None
+            await self._user_store.organization_role(session, tenant_id, user_id)
+            == ORGANIZATION_ADMIN_ROLE
         )
 
     async def _room(self, session: AsyncSession, tenant_id: str, room_id: str) -> Room:

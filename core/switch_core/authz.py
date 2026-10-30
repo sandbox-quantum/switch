@@ -86,6 +86,19 @@ def administers_tenant(
     )
 
 
+def effective_tenant_role(
+    *, tenant_role: str | None, organization_role: str | None
+) -> str | None:
+    """The role someone acts with in a workspace: their membership role, or
+    `ORGANIZATION_ADMIN_TENANT_ROLE` when they are its organization's
+    `org_admin` and hold no higher role there. None when they hold neither."""
+    if tenant_role in TENANT_ADMIN_ROLES:
+        return tenant_role
+    if organization_role == ORGANIZATION_ADMIN_ROLE:
+        return ORGANIZATION_ADMIN_TENANT_ROLE
+    return tenant_role
+
+
 def owns_tenant(*, is_operator: bool, tenant_role: str | None) -> bool:
     """Whether a caller may dispose of the tenant they hold `tenant_role` in.
 
