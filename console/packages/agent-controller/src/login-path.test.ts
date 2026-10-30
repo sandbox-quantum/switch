@@ -2,7 +2,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loginShellPath, withUserBinDirs } from './login-path';
+import {
+  loginShellPath,
+  mergeWindowsPath,
+  parseRegPath,
+  pathRefresher,
+  windowsRegistryPath,
+  withUserBinDirs,
+} from './login-path';
 
 const dirs: string[] = [];
 
@@ -65,11 +72,99 @@ describe('withUserBinDirs', () => {
   it('adds ~/.local/bin after the PATH when it exists and is missing', async () => {
     const home = await mkdtemp(join(tmpdir(), 'login-path-home-'));
     dirs.push(home);
-    expect(withUserBinDirs('/usr/bin', home)).toBe('/usr/bin');
+    expect(withUserBinDirs('/usr/bin', home, 'linux')).toBe('/usr/bin');
     await mkdir(join(home, '.local', 'bin'), { recursive: true });
     const bin = join(home, '.local', 'bin');
-    expect(withUserBinDirs('/usr/bin', home)).toBe(['/usr/bin', bin].join(delimiter));
+    expect(withUserBinDirs('/usr/bin', home, 'linux')).toBe(['/usr/bin', bin].join(delimiter));
     const already = [bin, '/usr/bin'].join(delimiter);
-    expect(withUserBinDirs(already, home)).toBe(already);
+    expect(withUserBinDirs(already, home, 'linux')).toBe(already);
+  });
+});
+
+describe('refreshing PATH on Windows', () => {
+  const quiet = { warn: () => {} };
+
+  async function windowsHome(): Promise<{ home: string; bin: string }> {
+    const home = await mkdtemp(join(tmpdir(), 'login-path-win-'));
+    dirs.push(home);
+    const bin = join(home, '.local', 'bin');
+    await mkdir(bin, { recursive: true });
+    return { home, bin };
+  }
+
+  it("adds the user's .local\\bin, where Claude Code's installer writes, once it exists", async () => {
+    const { home, bin } = await windowsHome();
+    const env: NodeJS.ProcessEnv = { PATH: 'C:\\Windows\\system32' };
+    await pathRefresher({
+      platform: 'win32',
+      env,
+      home,
+      log: quiet,
+      windowsPath: async () => null,
+    })();
+    expect(env.PATH).toBe(`C:\\Windows\\system32;${bin}`);
+  });
+
+  it('adds what an installer wrote to the registry since this process started', async () => {
+    const env: NodeJS.ProcessEnv = { PATH: 'C:\\Windows\\system32;C:\\Tools' };
+    await pathRefresher({
+      platform: 'win32',
+      env,
+      home: 'C:\\Users\\nobody-here',
+      log: quiet,
+      windowsPath: async () => 'c:\\windows\\System32\\;C:\\Users\\me\\AppData\\Local\\Codex',
+    })();
+    expect(env.PATH).toBe('C:\\Windows\\system32;C:\\Tools;C:\\Users\\me\\AppData\\Local\\Codex');
+  });
+
+  it("says so, and keeps this process's PATH, when the registry cannot be read", async () => {
+    const warnings: string[] = [];
+    const env: NodeJS.ProcessEnv = { PATH: 'C:\\Windows\\system32' };
+    await pathRefresher({
+      platform: 'win32',
+      env,
+      home: 'C:\\Users\\nobody-here',
+      log: { warn: (message) => warnings.push(message) },
+      windowsPath: async () => null,
+    })();
+    expect(env.PATH).toBe('C:\\Windows\\system32');
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("reads the machine's PATH then the user's, expanding variables", async () => {
+    const outputs: Record<string, string> = {
+      'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment':
+        '\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\...\\Environment\r\n    Path    REG_EXPAND_SZ    %SystemRoot%\\system32;C:\\Git\\cmd\r\n\r\n',
+      'HKCU\\Environment':
+        '\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %USERPROFILE%\\.local\\bin;%UNSET%\\x\r\n\r\n',
+    };
+    const path = await windowsRegistryPath(
+      { SYSTEMROOT: 'C:\\Windows', UserProfile: 'C:\\Users\\me' },
+      async (key) => outputs[key]!
+    );
+    expect(path).toBe('C:\\Windows\\system32;C:\\Git\\cmd;C:\\Users\\me\\.local\\bin;%UNSET%\\x');
+  });
+
+  it('uses whichever of the two it can read, and null when it can read neither', async () => {
+    const userOnly = await windowsRegistryPath({}, async (key) => {
+      if (key.startsWith('HKCU')) return '    Path    REG_SZ    C:\\Users\\me\\bin\r\n';
+      throw new Error('ERROR: The system was unable to find the specified registry key or value.');
+    });
+    expect(userOnly).toBe('C:\\Users\\me\\bin');
+    expect(
+      await windowsRegistryPath({}, async () => {
+        throw new Error('no reg');
+      })
+    ).toBeNull();
+  });
+
+  it('parses nothing from output without a Path value', () => {
+    expect(
+      parseRegPath('\r\nHKEY_CURRENT_USER\\Environment\r\n    TEMP    REG_SZ    x\r\n')
+    ).toBeNull();
+  });
+
+  it('keeps the current order and adds only entries it lacks', () => {
+    expect(mergeWindowsPath('C:\\B;c:\\a\\;C:\\C', 'C:\\A;C:\\B')).toBe('C:\\A;C:\\B;C:\\C');
   });
 });

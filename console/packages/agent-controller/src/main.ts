@@ -45,7 +45,7 @@ import {
   resolveSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage, type Logger } from './log';
-import { loginShellPath, withUserBinDirs } from './login-path';
+import { pathRefresher, windowsRegistryPath } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
@@ -389,25 +389,6 @@ async function setInfoCommand(args: string[]): Promise<number> {
 }
 
 /**
- * Puts the login shell's PATH, and the user's own bin folders, on this
- * process's: a controller started by a service or an app has neither, and
- * would not find the provider CLIs a person installed.
- */
-function pathRefresher(log: Logger): () => Promise<void> {
-  return async () => {
-    if (process.platform === 'win32') return;
-    const shell = process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
-    const path = await loginShellPath(shell, process.env.PATH ?? '');
-    if (path === null)
-      log.warn(
-        "Could not read the login shell's PATH; provider CLIs, git and gh are looked for on this process's own",
-        { shell, path: process.env.PATH }
-      );
-    process.env.PATH = withUserBinDirs(path ?? process.env.PATH ?? '', homedir());
-  };
-}
-
-/**
  * Checks every provider as `run` would, before there is any enrollment, and
  * writes what it finds to `--out` as each check comes back, for a `run`
  * started later to take (`--provider-seed`).
@@ -431,7 +412,7 @@ async function precheckCommand(args: string[]): Promise<number> {
     level: process.env.SWITCH_CONTROLLER_LOG_LEVEL,
     write: (line) => process.stderr.write(line),
   });
-  await pathRefresher(log)();
+  await processPathRefresher(log)();
   const sharedHostBundle = bundlePath(values['shared-host-bundle']);
   const providers = new ProviderStatuses({
     locator: new PathProviderLocator(() => process.env.PATH, join(probeDir, 'version-probe')),
@@ -506,7 +487,7 @@ async function runCommand(args: string[]): Promise<number> {
     write: (line) => process.stderr.write(line),
   });
   // Read again on every provider recheck, so a CLI installed since start is found.
-  const refreshPath = pathRefresher(log);
+  const refreshPath = processPathRefresher(log);
   await refreshPath();
   const providerSeed = values['provider-seed']
     ? await readProviderSeed(resolve(values['provider-seed']), log)
@@ -776,6 +757,16 @@ async function statusCommand(args: string[]): Promise<number> {
   } finally {
     store.close();
   }
+}
+
+function processPathRefresher(log: Logger): () => Promise<void> {
+  return pathRefresher({
+    platform: process.platform,
+    env: process.env,
+    home: homedir(),
+    log,
+    windowsPath: (env) => windowsRegistryPath(env),
+  });
 }
 
 /** Logs that a newer release exists; a check that fails says so at debug and changes nothing. */
