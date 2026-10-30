@@ -24,6 +24,7 @@ from sqlalchemy import Text, cast, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import owner_only_policy
+from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
 from switch_core.bridges.agent.protocol.event_buffer import is_notifiable
 from switch_core.bridges.agent.protocol.message_events import message_event
 from switch_core.bridges.agent.protocol.types import AgentEvent, MessagePayload
@@ -38,11 +39,13 @@ from switch_core.db.models import (
     Room,
     RoomRole,
 )
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.db.stores.pending_decision_store import PendingDecisionStore
 from switch_core.db.stores.room_store import DECISION_NOTICE_AT_KEY, RoomStore
 from switch_core.db.tenant_lookup import tenants_with_pending_decisions
 from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.machine import MachineDecisions
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.decision import DECISION_NOTICE, THREAD_CONTEXT
 from switch_core.delivery.recipient import AgentRecipient
@@ -103,6 +106,7 @@ class DecisionService:
                     bedrock_enabled=False,
                 ),
                 store=DecisionSettingsStore(),
+                controllers=AgentControllerStore(),
             ),
             keyring=TEST_KEYRING,
             client=httpx.AsyncClient(transport=httpx.MockTransport(self.handle)),
@@ -113,6 +117,9 @@ class DecisionService:
             timeout_seconds=1.0,
             telemetry=None,
             cache_seconds=0,
+            machines=MachineDecisions(
+                ControllerPresence(on_bound=lambda _agent_id: None)
+            ),
         )
 
 

@@ -27,6 +27,7 @@ from switch_core.db.models import (
     User,
     room_agents,
 )
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
@@ -96,6 +97,7 @@ def _app(
                     endpoint_url=server_url, api_key=None, bedrock_enabled=False
                 ),
                 store=DecisionSettingsStore(),
+                controllers=AgentControllerStore(),
             ),
         }
     )
