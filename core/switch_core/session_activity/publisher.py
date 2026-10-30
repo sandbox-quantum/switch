@@ -127,11 +127,13 @@ _MAX_REMEMBERED_TURNS = 4096
 # A card that froze in the last hour is plausibly still on someone's screen and
 # misleading them; under an older one a notice reaches nobody.
 _WEDGE_NOTICE_MAX_AGE = timedelta(hours=1)
+# Written for the person in the channel: what is stuck, that the work is fine,
+# and that there is nothing to do. Why it froze is for the operator, and the
+# log line beside the notice already says it.
 _WEDGE_NOTICE = (
-    "⚠️ This platform dropped the live stream behind the message above, so that "
-    "card is frozen and cannot be updated, finished, or removed. Whatever it is "
-    "showing is the last thing the stream wrote, not where the turn got to — "
-    "the turn itself was unaffected."
+    "⚠️ The progress above stopped updating and is now out of date — ignore "
+    "it. The agent's work carried on, and its reply arrives here as usual. "
+    "Nothing to do."
 )
 _HOST_OFFLINE = "Host offline. Answers are unavailable until the session reconnects."
 

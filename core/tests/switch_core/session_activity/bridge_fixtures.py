@@ -11,7 +11,11 @@ from typing import Any
 
 from sqlalchemy import insert
 
-from switch_core.bridges.collaboration.adapter import RichContent, RichContentFailed
+from switch_core.bridges.collaboration.adapter import (
+    RichContent,
+    RichContentFailed,
+    RichContentWedged,
+)
 from switch_core.db.models import Client, CollaborationBridge, Room, room_agents
 
 
@@ -79,6 +83,9 @@ class RecordingPlatform:
     drawn: list[Drawn] = field(default_factory=list)
     marks: list[tuple[str, str, bool]] = field(default_factory=list)
     refuse_posts: bool = False
+    # Every edit is refused for good, as Slack does a message whose stream it dropped.
+    wedge_updates: bool = False
+    refused_updates: int = 0
     found_card: str | None = None
     first_reply: bool = True
     _next: int = 0
@@ -108,6 +115,9 @@ class RecordingPlatform:
         content: RichContent,
         thread_root_id: str | None,
     ) -> None:
+        if self.wedge_updates:
+            self.refused_updates += 1
+            raise RichContentWedged(f"{message_ref} is frozen", text="")
         self.drawn.append(
             Drawn("update_rich", channel_id, message_ref, thread_root_id, content)
         )

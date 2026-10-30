@@ -3,18 +3,19 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
     ApprovalRequestPost,
     BridgeMessageMap,
     Client,
@@ -622,6 +623,60 @@ async def test_a_turn_that_failed_says_so(service, publisher, platform, bridged)
             for d in platform.drawn
         )
     )
+
+
+async def test_a_frozen_turn_message_is_explained_once_beneath_it(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_for(1)
+    platform.wedge_updates = True
+
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="in-progress",
+        revision=1,
+        title="Ran `pytest`",
+    )
+    await platform.wait_until(lambda: platform.of("send_message") != [])
+    [notice] = platform.of("send_message")
+    assert notice.content == publisher_module._WEDGE_NOTICE
+    assert notice.thread_ref == ASKED_POST
+    # The reader is someone in a channel, not an operator.
+    for jargon in ("stream", "card", "turn", "platform"):
+        assert jargon not in notice.content.lower(), jargon
+
+    await _turn(service, bridged.room_id, "completed", 2)
+    await asyncio.sleep(0.5)
+    assert len(platform.of("send_message")) == 1
+    assert platform.refused_updates == 1, "a frozen message is not tried again"
+
+
+async def test_a_turn_message_that_froze_long_ago_gets_no_notice(
+    service, publisher, platform, bridged, session_factory, caplog
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_for(1)
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.turn_id == "turn-1",
+                AgentSessionActivityItem.item_id == "turn",
+            )
+            .values(created_at=datetime.now(UTC) - timedelta(hours=2))
+        )
+    platform.wedge_updates = True
+
+    with caplog.at_level("WARNING"):
+        await _turn(service, bridged.room_id, "completed", 2)
+        await platform.wait_until(lambda: platform.refused_updates == 1)
+
+    assert platform.of("send_message") == []
+    assert any("Not saying" in r.getMessage() for r in caplog.records)
 
 
 async def test_a_queued_turns_stop_control_follows_the_running_turn(
