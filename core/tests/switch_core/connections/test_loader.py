@@ -845,6 +845,72 @@ def test_keys_choices_by_one_stable_string():
     )
 
 
+MARKERS = "  consent: { read: items_read, write: items_write }\n"
+MARKED_ENTRY = OAUTH_ENTRY.replace(
+    "tools: { mode: pass_through }", MARKERS + "tools: { mode: pass_through }"
+)
+
+
+def test_an_oauth_entry_may_read_its_consent_from_markers(catalog_copy):
+    _write_example(catalog_copy, MARKED_ENTRY)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.consent is not None
+    assert (access.consent.read, access.consent.write) == ("items_read", "items_write")
+
+
+def test_an_entry_without_markers_has_none(catalog_copy):
+    _write_example(catalog_copy)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.consent is None
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        (
+            '  write: { scopes: ["read:items", "write:items"] }\n',
+            "",
+            "the entry names both levels",
+        ),
+        (MARKERS, "  consent: { read: items_read }\n", "write"),
+        (
+            MARKERS,
+            "  consent: { read: items_read, write: items_read }\n",
+            "one scope",
+        ),
+        (
+            MARKERS,
+            '  consent: { read: "items read", write: items_write }\n',
+            "read",
+        ),
+        (
+            MARKERS,
+            "  consent: { read: items_read, write: items_write, admin: x }\n",
+            "admin",
+        ),
+    ],
+)
+def test_rejects_consent_markers_that_cannot_tell_the_levels(
+    catalog_copy, old, new, message
+):
+    assert old in MARKED_ENTRY
+    _write_example(catalog_copy, MARKED_ENTRY.replace(old, new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
+
+
+def test_only_an_oauth_entry_reads_consent_markers(catalog_copy):
+    path = catalog_copy / "asana" / "connection.yaml"
+    path.write_text(
+        path.read_text()
+        + "access:\n  read: { scopes: [items_read] }\n"
+        + "  write: { scopes: [items_write] }\n"
+        + MARKERS
+    )
+    with pytest.raises(CatalogError, match="only an oauth entry reads its consent"):
+        load_catalog(catalog_copy)
+
+
 def test_placeholders_keep_their_short_form():
     for slug in PLACEHOLDERS:
         definition = CATALOG[slug].definition

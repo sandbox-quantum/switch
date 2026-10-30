@@ -588,10 +588,36 @@ class LevelAccess(BaseModel):
         return self
 
 
+# A scope as a token answer lists it: one printable word.
+SCOPE_PATTERN = r"^[\x21-\x7e]{1,256}$"
+
+
+class ConsentMarkers(BaseModel):
+    """How a sign-in's level is read where the scopes asked for cannot tell
+    it: a vendor whose consent page offers levels of its own, and whose
+    token answers with its own list of permissions. The level is `write`
+    where the token's scope holds the `write` marker, `read` where it holds
+    only the `read` one; with neither, the sign-in is refused."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    read: str = Field(pattern=SCOPE_PATTERN)
+    write: str = Field(pattern=SCOPE_PATTERN)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> "ConsentMarkers":
+        if self.read == self.write:
+            raise ValueError("the read and write consent markers are one scope")
+        return self
+
+
 class ConnectionAccess(BaseModel):
+    """What each level reaches, and, where the scopes cannot say which one a
+    sign-in was given, the markers that do (`consent`)."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     read: LevelAccess
     write: LevelAccess | None = None
+    consent: ConsentMarkers | None = None
 
 
 class ConnectionTools(BaseModel):
@@ -653,6 +679,13 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an enabled entry needs {', '.join(missing)}")
+        if self.access is not None and self.access.consent is not None:
+            if self.adapter != "oauth":
+                raise ValueError("only an oauth entry reads its consent from markers")
+            if self.access.write is None:
+                raise ValueError(
+                    "consent markers tell read from write: the entry names both levels"
+                )
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
