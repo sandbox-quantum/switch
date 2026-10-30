@@ -363,6 +363,7 @@ function RoleForm({
         <Input
           className="h-9"
           aria-label="Role name"
+          autoFocus
           placeholder="Role name, e.g. reviewer"
           value={name}
           onChange={(e) => setName(e.target.value)}
