@@ -154,6 +154,24 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="auggie",
+        label="Auggie",
+        sign_in_command="auggie login",
+        connector_type="Auggie CLI",
+        tools=(
+            ToolSpec(name="terminal", description="Executes shell commands"),
+            ToolSpec(name="read", description="Reads file contents"),
+            ToolSpec(name="edit", description="Edits existing files"),
+            ToolSpec(name="write", description="Creates or overwrites files"),
+            ToolSpec(name="web-search", description="Performs web searches"),
+            ToolSpec(name="web-fetch", description="Fetches web content"),
+            ToolSpec(
+                name="codebase-retrieval",
+                description="Searches the codebase using semantic and keyword retrieval",
+            ),
+        ),
+    ),
 )
 
 
