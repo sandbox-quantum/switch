@@ -142,6 +142,13 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Idle agents behind a controller cost the database far less.** A
+  controller stream's pass, including the one after every idle interval,
+  read each of its agents' events in a session of its own; it now reads all
+  their heads in one query and reads only the agents with something new. And
+  each process's 30-second re-check of controllers held by another process
+  read every agent's rooms with a query of its own, which grew with
+  processes times agents; it is now one query per controller.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
