@@ -57,6 +57,7 @@ from switch_core.gateway.messaging_installs import (
 )
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
+from switch_core.gateway.ownership import router as ownership_router
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.providers import router as providers_router
 from switch_core.gateway.references import router as references_router
@@ -215,6 +216,7 @@ def create_gateway_app(
     app.include_router(documents_router, tags=["documents"])
     app.include_router(packages_router, tags=["packages"])
     app.include_router(templates_router, tags=["templates"])
+    app.include_router(ownership_router, tags=["ownership"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])

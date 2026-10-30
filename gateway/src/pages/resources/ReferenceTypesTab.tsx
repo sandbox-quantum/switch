@@ -1,5 +1,6 @@
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
+import SwapHoriz from "@mui/icons-material/SwapHoriz";
 import {
   Alert,
   Box,
@@ -18,6 +19,7 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useEffect, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
+import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
   deleteReferenceType,
@@ -67,6 +69,7 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
   } = useOwnedReferenceTypes();
   const [editing, setEditing] = useState<ReferenceTypeDetail | null>(null);
   const [deleting, setDeleting] = useState<ReferenceTypeDetail | null>(null);
+  const [transferring, setTransferring] = useState<ReferenceTypeDetail | null>(null);
 
   useEffect(() => {
     refetchVisible();
@@ -147,7 +150,7 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
       {
         field: "actions",
         headerName: "",
-        width: 96,
+        width: 128,
         sortable: false,
         filterable: false,
         renderCell: ({ row }) =>
@@ -159,6 +162,13 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
                 aria-label={`Edit ${row.display_name}`}
               >
                 <EditOutlined fontSize="small" />
+              </IconButton>
+              <IconButton
+                size="small"
+                onClick={() => setTransferring(row.detail)}
+                aria-label={`Transfer ${row.display_name}`}
+              >
+                <SwapHoriz fontSize="small" />
               </IconButton>
               <IconButton
                 size="small"
@@ -196,6 +206,19 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
+            refreshBoth();
+          }}
+        />
+      )}
+      {transferring && (
+        <TransferOwnershipDialog
+          kind="reference_type"
+          resourceId={transferring.type}
+          resourceLabel={transferring.display_name}
+          ownerId={transferring.owner_id}
+          onClose={() => setTransferring(null)}
+          onTransferred={() => {
+            setTransferring(null);
             refreshBoth();
           }}
         />

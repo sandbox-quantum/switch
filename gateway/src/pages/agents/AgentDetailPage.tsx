@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import EditOutlined from "@mui/icons-material/EditOutlined";
 import {
   Alert,
@@ -78,7 +79,7 @@ function StatusDot({ color, title }: { color: string; title?: string }) {
 export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, canAdminTenant } = useAuth();
   const { data: agent, loading, error, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
@@ -187,6 +188,18 @@ export default function AgentDetailPage() {
           onUpdated={refetch}
         />
         {isOwner && <ServiceAccessSection agent={agent} onAgentUpdated={refetch} />}
+        {(isOwner || canAdminTenant) && (
+          <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="agent"
+              resourceId={agent.id}
+              resourceLabel={agent.name}
+              ownerId={agent.owner_id}
+              onTransferred={refetch}
+            />
+          </>
+        )}
         <Divider />
         <SessionsSection sessions={agent.sessions} />
         <Divider />

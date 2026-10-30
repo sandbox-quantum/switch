@@ -26,8 +26,9 @@ After each write the other processes are told to look, over the `SignalBus`
 holding a connection that lost a room is told which, so it can send
 `room_released`. A connection whose row now names another process or a later
 incarnation was taken over, and its holder closes it `taken_over`. One whose
-row is gone was its agent's, deleted since, and its holder closes it too: told
-by the process that deleted the agent, or on its next read of every tenant.
+row is gone was ended, with its agent or because the agent's key was re-issued,
+and its holder closes it too: told by the process that ended it, with why, or
+on its next read of every tenant.
 
 Liveness is the holding process's lease: a row counts while it is not closed
 and its process's lease is held. A lost signal costs a delay, never a wrong
@@ -59,6 +60,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from switch_core.bridges.agent.protocol.agent_connections import (
+    AGENT_DELETED,
+    ENDINGS,
     AgentConnection,
     AgentConnectionRegistry,
     Closure,
@@ -112,8 +115,8 @@ WATCH_SECONDS = RENEW_INTERVAL_SECONDS
 RELAY_KEPT = timedelta(seconds=60)
 
 # Room kept in every signal for what it carries beside its list of beats or
-# released rooms: its kind, the sending process's id, and the tenant and agent
-# a `changed` signal names, about 250 bytes at most.
+# released rooms: its kind, the sending process's id, and the tenant, agent and
+# ending a `changed` signal names, about 280 bytes at most.
 _SIGNAL_ENVELOPE_BYTES = 400
 
 _EMPTY = AgentSlotRows(connections={}, stored_claims={}, stored_placements={})
@@ -175,6 +178,11 @@ class SharedConnections:
         # took off connections held here, to be told once the read is in.
         self._changes_owed = bus.pending_work("agent connections", self._read_owed)
         self._released_owed: dict[tuple[str, str], list[Released]] = {}
+        # Why another process ended an agent's connections by deleting their
+        # rows (`ENDINGS`), by agent id, for the read that finds them gone to
+        # tell their clients. A pass that finds them gone untold says the agent
+        # was deleted.
+        self._endings: dict[str, str] = {}
         # Agents, by (tenant id, agent id), with session commands relayed to
         # this process and not yet taken.
         self._relays_owed = bus.pending_work(
@@ -295,7 +303,7 @@ class SharedConnections:
                 raise
             self._bump(agent_id)
         if opened or slots_after != slots_recorded or released:
-            self._publish_changed(tenant_id, agent_id, released)
+            self._publish_changed(tenant_id, agent_id, released, ending=None)
 
     async def refresh(self, agent_id: str) -> None:
         tenant_id = current_tenant_id()
@@ -306,19 +314,20 @@ class SharedConnections:
             )
         await self._refresh(tenant_id, agent_id)
 
-    async def agent_deleted(self, agent_id: str) -> None:
+    async def agent_ended(self, agent_id: str, ending: str) -> None:
         tenant_id = current_tenant_id()
         if tenant_id is None:
             raise RuntimeError(
                 f"Agent {agent_id}'s connections are recorded in its tenant, and "
                 "none is bound"
             )
-        # Its rows went with it, so there is nothing to read: what this
-        # process holds of the agent is made what no rows say, which closes
-        # the connections held here and drops the copies of the others'.
+        # Its rows are gone, so there is nothing to read: what this process
+        # holds of the agent is made what no rows say, which closes the
+        # connections held here and drops the copies of the others'.
         async with self._registry.slots(agent_id):
+            self._endings[agent_id] = ending
             self._apply(agent_id, tenant_id, _EMPTY)
-        self._publish_changed(tenant_id, agent_id, [])
+        self._publish_changed(tenant_id, agent_id, [], ending=ending)
 
     def closed(self, conn: AgentConnection) -> None:
         if conn.tenant_id is None or conn.closure is None:
@@ -362,8 +371,10 @@ class SharedConnections:
         )
 
     def _apply(self, agent_id: str, tenant_id: str, rows: AgentSlotRows) -> None:
+        ending = self._endings.pop(agent_id, None)
+        gone = AGENT_DELETED if ending is None else ENDINGS[ending]
         for conn in self._registry.apply_rows(
-            agent_id, tenant_id, rows, self.process_id
+            agent_id, tenant_id, rows, self.process_id, gone
         ):
             logger.info(
                 "[CONN] agent=%s connection=%s generation=%s was taken over by "
@@ -448,6 +459,17 @@ class SharedConnections:
 
     def _on_changed(self, signal: dict[str, Any]) -> None:
         key = (signal["tenant_id"], signal["agent_id"])
+        ending = signal.get("ending")
+        if ending is not None:
+            self._registry.ended_elsewhere(signal["agent_id"])
+        if ending in ENDINGS:
+            self._endings[signal["agent_id"]] = ending
+        elif ending is not None:
+            # From a newer process, during a rolling deploy: the read still
+            # closes the connections, saying the agent was deleted.
+            logger.warning(
+                "Unknown connection ending %r for agent %s", ending, signal["agent_id"]
+            )
         self._released_owed.setdefault(key, []).extend(
             Released(connection_id=entry[0], room_id=entry[1], session_id=entry[2])
             for entry in signal.get("released", [])
@@ -502,13 +524,22 @@ class SharedConnections:
             )
 
     def _publish_changed(
-        self, tenant_id: str, agent_id: str, released: list[Released]
+        self,
+        tenant_id: str,
+        agent_id: str,
+        released: list[Released],
+        *,
+        ending: str | None,
     ) -> None:
         entries = [[r.connection_id, r.room_id, r.session_id] for r in released]
         # Sent with no rooms released too: the change is what is announced.
         for chunk in payload_chunks(entries, _SIGNAL_ENVELOPE_BYTES) or [[]]:
             self._bus.publish(
-                CHANGED_SIGNAL, tenant_id=tenant_id, agent_id=agent_id, released=chunk
+                CHANGED_SIGNAL,
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                released=chunk,
+                ending=ending,
             )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -560,7 +591,9 @@ class SharedConnections:
                         await session.commit()
                     unwritten_closes.remove(close)
                     if written:
-                        self._publish_changed(close.tenant_id, close.agent_id, [])
+                        self._publish_changed(
+                            close.tenant_id, close.agent_id, [], ending=None
+                        )
                 for relay in relays:
                     async with tenant_session(
                         self._session_factory, relay.tenant_id

@@ -1,4 +1,5 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
@@ -107,6 +108,14 @@ export default function PackageDetailPage() {
         <ResourceAttachmentsSection kind="package" resourceId={id} />
         {canMutate && (
           <>
+            <Divider />
+            <TransferOwnershipSection
+              kind="package"
+              resourceId={id}
+              resourceLabel={pkg.name || id}
+              ownerId={pkg.owner_id}
+              onTransferred={() => navigate(0)}
+            />
             <Divider />
             <DangerSection onDelete={() => setDeleteOpen(true)} />
           </>

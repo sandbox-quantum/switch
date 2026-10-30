@@ -37,6 +37,7 @@ from switch_core.bridges.agent.api.schemas import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
+    KEY_REISSUED,
     PROTOCOL_VERSION,
     AgentConnection,
     AgentConnectionRegistry,
@@ -1098,6 +1099,74 @@ async def _delete_agent_row(session_factory: SessionFactory) -> None:
     async with session_factory() as session:
         await session.execute(delete(Agent).where(Agent.id == AGENT))
         await session.commit()
+
+
+async def _end_agent_rows(session_factory: SessionFactory) -> None:
+    """Delete the agent's connection rows and keep the agent, as handing it to
+    a new owner does when it re-issues the agent's key."""
+    async with session_factory() as session:
+        await AgentConnectionStore().delete_agent(
+            session, tenant_id=TENANT_ZERO_ID, agent_id=AGENT
+        )
+        await session.commit()
+
+
+class TestAnAgentWhoseKeyWasReissued:
+    """The agent stays, but its connections authenticated with the old key
+    when they opened. They end wherever their sockets are held."""
+
+    async def test_reissued_through_the_other_process_its_connection_closes(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        told: list[str] = []
+        a.registry.set_ended_elsewhere_listener(told.append)
+        conn = await _open(a)
+        await _eventually(lambda: b.registry.is_live(AGENT))
+
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await b.registry.agent_key_reissued(AGENT)
+
+        await _eventually(lambda: conn.closure is not None)
+        assert conn.closure == KEY_REISSUED
+        assert told == [AGENT]
+        assert not a.registry.is_live(AGENT)
+        assert not b.registry.is_live(AGENT)
+        async with session_factory() as session:
+            assert await session.get(Agent, AGENT) is not None
+
+    async def test_a_holder_never_told_closes_it_on_its_next_pass(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, _ = processes
+        conn = await _open(a)
+
+        await _end_agent_rows(session_factory)
+        await a.shared.reload_all()
+
+        assert conn.closure is not None
+        assert conn.closure.code == "closed"
+        assert not a.registry.is_live(AGENT)
+
+    async def test_the_agent_reconnects_afterwards(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+    ) -> None:
+        a, b = processes
+        await _open(a)
+        await _end_agent_rows(session_factory)
+        with tenant_scope(TENANT_ZERO_ID):
+            await a.registry.agent_key_reissued(AGENT)
+        assert not a.registry.is_live(AGENT)
+
+        await _open(b)
+        await _eventually(lambda: a.registry.is_live(AGENT))
 
 
 class TestADeletedAgent:
