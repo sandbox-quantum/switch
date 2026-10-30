@@ -323,6 +323,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
         <GitHubAddAgentChoice
           github={reach}
           choice={choice}
+          readOnlyReason={connection.read_only_reason}
           onChange={setChoice}
           choosing={choosing}
           onChoosingChange={setChoosing}

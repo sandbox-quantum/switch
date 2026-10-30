@@ -203,6 +203,8 @@ const CONNECTOR_APP = {
   needs_public_url: true,
   scopes: [],
   setup_blocked: null,
+  read_only: false,
+  lacks_write: [],
   install_url: 'https://github.com/apps/switch-example/installations/new',
   updated_by_name: 'Ada',
   updated_at: '2026-10-16T09:00:00+00:00',
@@ -1317,6 +1319,7 @@ describe('GitHub connection transport', () => {
         unavailable_reason: entry.unavailable_reason,
         // A server that predates them says none of these.
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,
@@ -1372,6 +1375,35 @@ describe('GitHub connection transport', () => {
       ['jira', null, null],
     ]);
   });
+  it('reads why a service can be granted for reading only', async () => {
+    const reason =
+      "This server's GitHub App lets agents read only, so GitHub can't be granted for writing.";
+    const entry = {
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      description: 'Repositories.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      configured: true,
+      unavailable_reason: null,
+      read_only_reason: reason,
+      status: 'active',
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          connections: [entry, { ...entry, slug: 'jira', enabled: false }],
+        })
+      )
+    );
+    const catalog = await getConnectionCatalog(SERVER);
+    expect(catalog.map((item) => [item.slug, item.read_only_reason])).toEqual([
+      ['github', reason],
+      ['jira', null],
+    ]);
+  });
   it('reads the older catalog from a server without service connections', async () => {
     const github = {
       slug: 'github',
@@ -1391,6 +1423,7 @@ describe('GitHub connection transport', () => {
         connectable: true,
         unavailable_reason: null,
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         loopback_ports: null,

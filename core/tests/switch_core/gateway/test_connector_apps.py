@@ -63,6 +63,8 @@ from tests.switch_core.management.harness import Harness, build_harness, cookies
 
 PUBLIC = "https://switch.example.com"
 HTTP_PUBLIC = "http://switch.example.com"
+# The address a server Switch Console runs has.
+LOOPBACK_PUBLIC = "http://127.0.0.1:8000"
 APPS = "/gateway/connector-apps"
 GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
@@ -80,6 +82,11 @@ class FakeGitHub:
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.client_id = GITHUB_CLIENT_ID
         self.client_secret = GITHUB_SECRET
+        self.permissions = {
+            "contents": "write",
+            "pull_requests": "write",
+            "metadata": "read",
+        }
 
     def pem(self, key: rsa.RSAPrivateKey | None = None) -> str:
         return (
@@ -104,7 +111,12 @@ class FakeGitHub:
             if claims.get("iss") != self.client_id:
                 return httpx.Response(401, json={"message": "Integration not found"})
             return httpx.Response(
-                200, json={"slug": "example-app", "client_id": self.client_id}
+                200,
+                json={
+                    "slug": "example-app",
+                    "client_id": self.client_id,
+                    "permissions": self.permissions,
+                },
             )
         if request.url.path == "/login/oauth/access_token":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
@@ -317,6 +329,11 @@ async def world(session_factory) -> World:
 @pytest.fixture
 async def http_world(session_factory) -> World:
     return World(session_factory, HTTP_PUBLIC)
+
+
+@pytest.fixture
+async def loopback_world(session_factory) -> World:
+    return World(session_factory, LOOPBACK_PUBLIC)
 
 
 @pytest.fixture
@@ -603,6 +620,202 @@ class TestGitHub:
         assert answer.json()["field"] == "private_key"
         assert await _rows(session_factory) == []
 
+    async def test_an_app_short_of_a_read_permission_is_refused_saying_which(
+        self, world: World, operator, session_factory
+    ) -> None:
+        """Saved, it would fail at the first token any grant asks for."""
+        await world.install()
+        world.github.permissions = {"contents": "write", "metadata": "read"}
+        async with world.harness.client() as client:
+            answer = await client.put(
+                f"{APPS}/github",
+                json={
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_SECRET,
+                    "private_key": world.github.pem(),
+                    "replace": False,
+                },
+                cookies=cookies_for(operator),
+            )
+        assert answer.status_code == 422, answer.text
+        assert answer.json()["detail"].startswith(
+            "The App lacks repository permissions agents need to read: Pull "
+            "requests needs Read-only, and it has no access."
+        )
+        checks = {check["name"]: check["ok"] for check in answer.json()["checks"]}
+        assert checks == {
+            "private_key": True,
+            "permissions": False,
+            "client_secret": True,
+        }
+        assert await _rows(session_factory) == []
+
+
+READ_ONLY = (
+    "This server's GitHub App lets agents read only, so GitHub can't be granted "
+    "for writing. Whoever runs your Switch server can change that in Switch "
+    "Console, under Admin → Connector apps."
+)
+
+
+def _github_body(world: World) -> dict[str, object]:
+    return {
+        "client_id": GITHUB_CLIENT_ID,
+        "client_secret": GITHUB_SECRET,
+        "private_key": world.github.pem(),
+        "replace": False,
+    }
+
+
+async def _github_entry(world: World, operator: User) -> dict[str, object]:
+    async with world.harness.client() as client:
+        listed = await client.get(APPS, cookies=cookies_for(operator))
+    assert listed.status_code == 200, listed.text
+    [entry] = [app for app in listed.json()["apps"] if app["slug"] == "github"]
+    return entry
+
+
+async def _github_service(world: World, operator: User) -> dict[str, object]:
+    async with world.harness.client() as client:
+        listed = await client.get(
+            "/gateway/service-connections", cookies=cookies_for(operator)
+        )
+    assert listed.status_code == 200, listed.text
+    [entry] = [c for c in listed.json()["connections"] if c["slug"] == "github"]
+    return entry
+
+
+class TestGitHubReadOnly:
+    """An App with the read permissions and not the write ones is saved, and
+    lets agents read only, until GitHub says otherwise."""
+
+    async def test_an_app_that_can_only_read_is_saved_read_only(
+        self, world: World, operator, session_factory
+    ) -> None:
+        await world.install()
+        world.github.permissions = {
+            "contents": "read",
+            "pull_requests": "read",
+            "metadata": "read",
+        }
+        async with world.harness.client() as client:
+            saved = await client.put(
+                f"{APPS}/github",
+                json=_github_body(world),
+                cookies=cookies_for(operator),
+            )
+        assert saved.status_code == 200, saved.text
+        entry = saved.json()
+        assert (entry["read_only"], entry["lacks_write"]) == (
+            True,
+            ["Contents", "Pull requests"],
+        )
+        checks = {check["name"]: check for check in entry["checks"]}
+        assert checks["permissions"]["ok"] is True
+        assert "Agents can only read through it" in checks["permissions"]["message"]
+        [row] = await _rows(session_factory)
+        assert row.settings == {
+            "slug": "example-app",
+            "permissions": world.github.permissions,
+        }
+        broker = world.harness.gateway_app.state.service_broker
+        assert broker.read_only("github") == READ_ONLY
+        assert (await _github_service(world, operator))["read_only_reason"] == (
+            READ_ONLY
+        )
+
+    async def test_an_app_that_can_write_is_not(
+        self, world: World, operator, session_factory
+    ) -> None:
+        await world.install()
+        async with world.harness.client() as client:
+            saved = await client.put(
+                f"{APPS}/github",
+                json=_github_body(world),
+                cookies=cookies_for(operator),
+            )
+        assert saved.status_code == 200, saved.text
+        assert (saved.json()["read_only"], saved.json()["lacks_write"]) == (False, [])
+        assert (await _github_service(world, operator))["read_only_reason"] is None
+
+    async def test_a_check_keeps_what_github_says_and_follows_a_change(
+        self, world: World, operator, session_factory
+    ) -> None:
+        await world.install()
+        world.github.permissions = {"contents": "read", "pull_requests": "read"}
+        broker = world.harness.gateway_app.state.service_broker
+        async with world.harness.client() as client:
+            cookies = cookies_for(operator)
+            saved = await client.put(
+                f"{APPS}/github", json=_github_body(world), cookies=cookies
+            )
+            assert saved.status_code == 200, saved.text
+            [before] = await _rows(session_factory)
+            # Checked again unchanged, it stays read-only, and nothing is written.
+            again = await client.post(f"{APPS}/github/check", cookies=cookies)
+            assert again.status_code == 200, again.text
+            assert again.json()["ok"] is True
+            [unchanged] = await _rows(session_factory)
+            assert unchanged.updated_at == before.updated_at
+            assert (await _github_entry(world, operator))["read_only"] is True
+            assert broker.read_only("github") == READ_ONLY
+
+            # The App is given write at GitHub: the next check says so, and
+            # agents can be granted writing at once.
+            world.github.permissions = {"contents": "write", "pull_requests": "write"}
+            granted = await client.post(f"{APPS}/github/check", cookies=cookies)
+            assert granted.status_code == 200, granted.text
+            assert (await _github_entry(world, operator))["read_only"] is False
+            assert broker.read_only("github") is None
+
+            # And taken away again.
+            world.github.permissions = {"contents": "read", "pull_requests": "write"}
+            await client.post(f"{APPS}/github/check", cookies=cookies)
+        entry = await _github_entry(world, operator)
+        assert (entry["read_only"], entry["lacks_write"]) == (True, ["Contents"])
+        assert broker.read_only("github") == READ_ONLY
+        [row] = await _rows(session_factory)
+        assert row.settings["permissions"] == world.github.permissions
+        assert row.updated_by == operator.id
+        # A check is not a save: the audit trail holds the one save.
+        assert [event.action for event in await _audit(session_factory)] == [
+            "connector_app.saved"
+        ]
+
+    async def test_an_app_from_configuration_is_taken_to_write(
+        self, world: World, operator, session_factory, tmp_path: Path
+    ) -> None:
+        """Switch never asks about a configured App before using it."""
+        config = tmp_path / "github.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_SECRET,
+                    "slug": "example-app",
+                    "origin": PUBLIC,
+                }
+            )
+        )
+        key = tmp_path / "github.pem"
+        key.write_text(world.github.pem())
+        world.config = {
+            "github_app_config_path": str(config),
+            "github_app_private_key_path": str(key),
+        }
+        await world.install()
+        world.github.permissions = {"contents": "read", "pull_requests": "read"}
+        async with world.harness.client() as client:
+            checked = await client.post(
+                f"{APPS}/github/check", cookies=cookies_for(operator)
+            )
+        assert checked.status_code == 200, checked.text
+        assert checked.json()["ok"] is True
+        assert (await _github_entry(world, operator))["read_only"] is False
+        broker = world.harness.gateway_app.state.service_broker
+        assert broker.read_only("github") is None
+        assert await _rows(session_factory) == []
+
 
 class TestGitHubNeedsHttps:
     def _body(self, world: World) -> dict[str, object]:
@@ -642,8 +855,8 @@ class TestGitHubNeedsHttps:
         services = {entry["slug"]: entry for entry in listed.json()["connections"]}
         assert services["github"]["unavailable_code"] == "needs_https"
         assert services["github"]["unavailable_reason"] == (
-            "GitHub can't be used on this server: it needs the server to have an "
-            "https address."
+            "GitHub can't be used on this server: its address must be https, or "
+            "http on your own computer (localhost or 127.0.0.1)."
         )
         assert services["github"]["server_setup_needed"] is False
         assert services[GOOGLE]["unavailable_code"] == "app_not_set_up"
@@ -708,6 +921,52 @@ class TestGitHubNeedsHttps:
             )
         assert saved.status_code == 200, saved.text
         assert saved.json()["setup_blocked"] is None
+        assert len(await _rows(session_factory)) == 1
+
+
+class TestGitHubOnThisComputer:
+    """A server only this computer reaches, as Switch Console runs one, is
+    called back over plain http on the loopback address, which GitHub takes."""
+
+    CALLBACK = f"{LOOPBACK_PUBLIC}/gateway/provider-connections/github/callback"
+
+    async def test_the_list_offers_github_with_its_callback(
+        self, loopback_world: World, operator
+    ) -> None:
+        await loopback_world.install()
+        async with loopback_world.harness.client() as client:
+            listed = await client.get(APPS, cookies=cookies_for(operator))
+            catalog = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(operator)
+            )
+        assert listed.status_code == 200, listed.text
+        apps = {entry["slug"]: entry for entry in listed.json()["apps"]}
+        assert apps["github"]["setup_blocked"] is None
+        assert apps["github"]["redirect_uris"] == [self.CALLBACK]
+        services = {entry["slug"]: entry for entry in catalog.json()["connections"]}
+        assert services["github"]["unavailable_code"] == "app_not_set_up"
+        assert services["github"]["server_setup_needed"] is True
+
+    async def test_a_github_app_is_saved_and_called_back_there(
+        self, loopback_world: World, operator, session_factory
+    ) -> None:
+        apps = await loopback_world.install()
+        async with loopback_world.harness.client() as client:
+            saved = await client.put(
+                f"{APPS}/github",
+                json={
+                    "client_id": GITHUB_CLIENT_ID,
+                    "client_secret": GITHUB_SECRET,
+                    "private_key": loopback_world.github.pem(),
+                    "replace": False,
+                },
+                cookies=cookies_for(operator),
+            )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["load_error"] is None
+        assert saved.json()["redirect_uris"] == [self.CALLBACK]
+        app = apps.github_app()
+        assert app is not None and app.connections.callback == self.CALLBACK
         assert len(await _rows(session_factory)) == 1
 
 

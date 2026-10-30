@@ -15,12 +15,15 @@ import { GitHubGrantPicker } from './github-grant-picker';
 export function GitHubAddAgentChoice({
   github,
   choice,
+  readOnlyReason,
   onChange,
   choosing,
   onChoosingChange,
 }: {
   github: ConnectedGitHub;
   choice: GitHubGrantChoice;
+  /** Why the server's App lets agents read only; null where pushing can be granted. */
+  readOnlyReason: string | null;
   onChange: (choice: GitHubGrantChoice) => void;
   choosing: boolean;
   onChoosingChange: (choosing: boolean) => void;
@@ -49,7 +52,12 @@ export function GitHubAddAgentChoice({
       </div>
       {choosing && (
         <div className="rounded-lg border border-border p-3">
-          <GitHubGrantPicker github={github} value={choice} onChange={onChange} />
+          <GitHubGrantPicker
+            github={github}
+            value={choice}
+            readOnlyReason={readOnlyReason}
+            onChange={onChange}
+          />
         </div>
       )}
     </div>

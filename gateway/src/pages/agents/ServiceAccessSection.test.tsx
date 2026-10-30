@@ -186,6 +186,7 @@ describe("ServiceAccessSection", () => {
     unavailable_reason: null,
     unavailable_code: null,
     server_setup_needed: false,
+    read_only_reason: null,
     workspace_enabled: true,
     status,
     pass_through: true,
@@ -384,5 +385,50 @@ describe("ServiceAccessSection", () => {
     ]);
     render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(reason)).toBeTruthy();
+  });
+
+  const READ_ONLY =
+    "This server's GitHub App lets agents read only, so GitHub can't be granted for writing. Whoever runs your Switch server can change that in Switch Console, under Admin → Connector apps.";
+  const readOnlyGitHub = onOff("active", {
+    slug: "github",
+    name: "GitHub",
+    pass_through: false,
+    read_only_reason: READ_ONLY,
+  });
+
+  it("offers GitHub for reading only where the server's App can't write, saying why", async () => {
+    const calls = mockServer(NONE, [readOnlyGitHub]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    await screen.findByLabelText("GitHub account");
+    expect(screen.getByText(READ_ONLY)).toBeTruthy();
+    const push = screen.getByLabelText("Read and push") as HTMLInputElement;
+    expect(push.disabled).toBe(true);
+    expect((screen.getByLabelText("Read") as HTMLInputElement).disabled).toBe(false);
+    fireEvent.mouseDown(screen.getByLabelText("GitHub account"));
+    fireEvent.click(await screen.findByText("example-org"));
+    fireEvent.mouseDown(screen.getByLabelText("Repositories"));
+    fireEvent.click(await screen.findByText("example-org/docs"));
+    fireEvent.click(screen.getByRole("button", { name: "Grant" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        path: "/gateway/agents/a1/service-grants/github",
+        method: "PUT",
+        body: { access: "read", resources: { installation_id: 7, repository_ids: [71] } },
+      }),
+    );
+  });
+
+  it("says why a write grant made before gets nothing on such a server", async () => {
+    mockServer(GRANTED, [readOnlyGitHub]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
+    expect(await screen.findByText(READ_ONLY)).toBeTruthy();
+  });
+
+  it("says nothing of it where the App can write", async () => {
+    mockServer(GRANTED, [{ ...readOnlyGitHub, read_only_reason: null }]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
+    expect(screen.queryByText(READ_ONLY)).toBeNull();
   });
 });

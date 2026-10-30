@@ -82,6 +82,7 @@ def _path_value(document: Any, path: str) -> Any:
 
 class ApiKeyAdapter:
     can_issue = False
+    read_only = False
 
     def __init__(self, definition: ConnectionDefinition, http: httpx.AsyncClient):
         sign_in = definition.auth.api_key

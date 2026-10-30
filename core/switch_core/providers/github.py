@@ -11,6 +11,8 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from switch_core.loopback import https_or_loopback
+
 
 class GitHubError(Exception):
     pass
@@ -104,19 +106,32 @@ class GitHubConnections:
         self.slug = slug
         self.origin = origin.rstrip("/")
         url = urlsplit(self.origin)
+        if not https_or_loopback(self.origin):
+            raise ValueError(
+                f"The GitHub App's origin {self.origin!r} is neither https nor "
+                "loopback http (localhost, 127.0.0.1 or ::1): GitHub sends people "
+                "back to Switch only there."
+            )
         if (
-            url.scheme != "https"
-            or not url.hostname
+            not url.hostname
             or url.username
             or url.password
             or url.path
             or url.query
             or url.fragment
-            or not re.fullmatch(r"[a-z0-9-]+", self.slug)
-            or not self.client_id
-            or not self.client_secret
         ):
-            raise ValueError("GitHub connection configuration is invalid")
+            raise ValueError(
+                f"The GitHub App's origin {self.origin!r} is not a bare origin: "
+                "a scheme and host, and a port if it needs one, with nothing "
+                "after."
+            )
+        if not re.fullmatch(r"[a-z0-9-]+", self.slug):
+            raise ValueError(
+                f"The GitHub App's slug {self.slug!r} is not its name as its URL "
+                "has it: lowercase letters, digits and hyphens."
+            )
+        if not self.client_id or not self.client_secret:
+            raise ValueError("The GitHub App needs a client id and a client secret.")
         self.callback = self.origin + "/gateway/provider-connections/github/callback"
         self.install_url = f"https://github.com/apps/{self.slug}/installations/new"
 

@@ -563,6 +563,16 @@ class SwitchConfig(BaseSettings):
     # unset, the raw `switchdash://` deeplink is posted as-is. Also the
     # `--server` an agent controller enrolls against, which the gateway's Add
     # machine dialog shows; unset, it shows no enrollment command.
+    #
+    # Connectors send people back here after they sign in at the vendor. A
+    # GitHub App saved under Connector apps is called back at
+    # `<this>/gateway/provider-connections/github/callback`, and GitHub calls
+    # back only to https, or to loopback http (localhost, 127.0.0.1 or ::1), as
+    # a server Switch Console runs has; any other http address leaves GitHub
+    # unavailable here. A connector that signs in through Core's own callback
+    # (Google Workspace, Airtable) is called back at
+    # `<this>/gateway/service-connections/<service>/flows/callback`. Unset,
+    # neither can be set up under Connector apps.
     gateway_public_url: str | None = None
 
     # The operator dashboard's build output (the `dist/` that `npm run build`

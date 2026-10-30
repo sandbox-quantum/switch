@@ -15,6 +15,7 @@ import {
   moveChecklist,
   peopleIn,
   primaryAction,
+  readOnlySentence,
   removeWarning,
   secretSummary,
   sentBackTo,
@@ -54,6 +55,8 @@ function app(overrides: Partial<ConnectorApp> = {}): ConnectorApp {
     needs_public_url: true,
     scopes: [],
     setup_blocked: null,
+    read_only: false,
+    lacks_write: [],
     install_url: null,
     updated_by_name: 'Ada',
     updated_at: '2026-10-15T10:00:00Z',
@@ -144,7 +147,7 @@ describe('card state', () => {
 
 describe('set-up blocked by the server', () => {
   const BLOCKED =
-    'GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.';
+    'GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.';
 
   it("is the card's one sentence, with Set up as the fix", () => {
     const github = {
@@ -460,6 +463,35 @@ describe('a tile', () => {
     // Checking and moving off configuration are the profile's.
     expect(tileAction(app(), null)).toBeNull();
     expect(tileAction(CONFIGURED, null)).toBeNull();
+  });
+});
+
+describe('a GitHub App that lets agents read only', () => {
+  const READ_ONLY = app({ ...GITHUB, read_only: true, lacks_write: ['Contents', 'Pull requests'] });
+
+  it('names what it lacks to write, and that write grants are refused', () => {
+    expect(readOnlySentence(READ_ONLY)).toBe(
+      'Agents can read only: the App lacks Contents and Pull requests write. Write grants are refused.'
+    );
+    expect(readOnlySentence(app({ ...GITHUB, read_only: true, lacks_write: ['Contents'] }))).toBe(
+      'Agents can read only: the App lacks Contents write. Write grants are refused.'
+    );
+    expect(readOnlySentence(GITHUB)).toBeNull();
+  });
+
+  it('says so on its tile, which is still ready: the operator chose it', () => {
+    expect(tileStanding(READ_ONLY, null)).toBe(readOnlySentence(READ_ONLY));
+    expect(cardState(READ_ONLY, null)).toBe('ready');
+    // What needs doing comes first.
+    expect(tileStanding(READ_ONLY, 'GitHub refused the key.')).toBe('GitHub refused the key.');
+  });
+
+  it('reads a server older than this as one whose App can write', () => {
+    const { read_only, lacks_write, ...older } = READ_ONLY;
+    void read_only;
+    void lacks_write;
+    const parsed = connectorAppSchema.parse(older);
+    expect([parsed.read_only, parsed.lacks_write]).toEqual([false, []]);
   });
 });
 

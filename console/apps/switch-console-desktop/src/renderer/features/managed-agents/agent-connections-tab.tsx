@@ -401,6 +401,7 @@ function GitHubDrawerBody({
         <GitHubGrantForm
           github={github}
           current={grant}
+          readOnlyReason={card.service?.read_only_reason ?? null}
           agentName={agentName}
           busy={busy}
           onCancel={grant ? () => onEdit(false) : null}

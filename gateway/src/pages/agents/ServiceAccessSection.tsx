@@ -213,6 +213,11 @@ export default function ServiceAccessSection({
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
               {grant.summary}
             </Typography>
+            {grant.access === "write" && readOnlyReasonFor(services, grant.service) && (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                {readOnlyReasonFor(services, grant.service)}
+              </Alert>
+            )}
             {grant.service === "github" && (
               <Typography variant="body2" sx={{ mt: 0.5 }}>
                 {repositoryNames(github, grant).join(", ")}
@@ -249,6 +254,7 @@ export default function ServiceAccessSection({
             github={github}
             githubError={githubError}
             current={githubGrant}
+            readOnlyReason={githubService?.read_only_reason ?? null}
             busy={busy}
             onCancel={githubGrant ? () => setEditing(false) : null}
             onSave={(access, resources) =>
@@ -302,6 +308,18 @@ export function serviceBlockedReason(
   if (!service.workspace_enabled)
     return `${service.name} is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors in Switch Console.`;
   return null;
+}
+
+/**
+ * Why a service can be granted for reading only on this server, which a
+ * write grant on it made before gets no token for; null where writing can
+ * be granted too.
+ */
+export function readOnlyReasonFor(
+  services: Pick<ServiceConnection, "slug" | "read_only_reason">[],
+  slug: string,
+): string | null {
+  return services.find((service) => service.slug === slug)?.read_only_reason ?? null;
 }
 
 /** The operator's way from a service that is not set up to where it is set up. */
@@ -377,6 +395,7 @@ function GitHubGrantForm({
   github,
   githubError,
   current,
+  readOnlyReason,
   busy,
   onCancel,
   onSave,
@@ -384,6 +403,8 @@ function GitHubGrantForm({
   github: GitHubConnection | null;
   githubError: string | null;
   current: ServiceGrant | null;
+  /** Why the server's App lets agents read only; null where pushing can be granted. */
+  readOnlyReason: string | null;
   busy: boolean;
   onCancel: (() => void) | null;
   onSave: (access: Access, resources: Record<string, unknown>) => void;
@@ -448,8 +469,14 @@ function GitHubGrantForm({
             value="write"
             control={<Radio size="small" />}
             label="Read and push"
+            disabled={readOnlyReason !== null}
           />
         </RadioGroup>
+        {readOnlyReason && (
+          <Typography variant="body2" color="text.secondary">
+            {readOnlyReason}
+          </Typography>
+        )}
         <Box sx={{ display: "flex", gap: 1 }}>
           <Button
             variant="contained"

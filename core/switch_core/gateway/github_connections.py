@@ -38,6 +38,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_session
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.loopback import secure_cookie
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
@@ -54,10 +55,21 @@ KIND = "github"
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
 
 
-def service(request: Request) -> GitHubConnections:
+def service(
+    request: Request,
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> GitHubConnections:
+    """This server's GitHub App, or a refusal giving the broker's reason
+    GitHub can't be used here, such as its App not being set up."""
     value = request.app.state.github_connections
     if value is None:
-        raise HTTPException(503, "GitHub connections are not enabled on this server.")
+        reason = broker.availability("github")
+        if reason is None:
+            logger.error(
+                "The broker can grant GitHub, but this process has no GitHub App."
+            )
+            reason = "GitHub is not set up on this server."
+        raise HTTPException(503, reason)
     return cast(GitHubConnections, value)
 
 
@@ -169,6 +181,7 @@ async def start(
 @router.get("/authorize")
 async def authorize(
     state: str,
+    request: Request,
     github: Annotated[GitHubConnections, Depends(service)],
     flows: Annotated[SignInFlows, Depends(get_sign_in_flows)],
 ) -> Response:
@@ -193,7 +206,7 @@ async def authorize(
         "switch_github_" + state,
         nonce,
         max_age=600,
-        secure=True,
+        secure=secure_cookie(request),
         httponly=True,
         samesite="lax",
         path="/gateway/provider-connections/github/callback",
@@ -250,7 +263,7 @@ async def callback(
         response.delete_cookie(
             "switch_github_" + state,
             path="/gateway/provider-connections/github/callback",
-            secure=True,
+            secure=secure_cookie(request),
             httponly=True,
             samesite="lax",
         )

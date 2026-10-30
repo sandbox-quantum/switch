@@ -7,12 +7,18 @@ repositories, with the level's permissions from the catalog, and acts as the
 App. Before every grant and every issue the person's own sign-in is asked
 which of those repositories they still see, and for write, can push to, so a
 grant never reaches further than its owner does.
+
+An App whose permissions stop short of what the catalog's write level asks
+for, as GitHub answered when it was saved or last checked
+(`connections/app_checks.py`), lets agents read only: the broker refuses a
+write grant on it, and a token for one made before.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,7 +32,7 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel
+from switch_core.connections.loader import AccessLevel, ConnectionDefinition
 from switch_core.providers.github import (
     GitHubAuthorizationError,
     GitHubConnections,
@@ -41,6 +47,43 @@ from switch_core.providers.github_installation import (
 
 logger = logging.getLogger(__name__)
 
+# A GitHub App permission's levels as `GET /app` names them, least first.
+PERMISSION_LEVELS = ("read", "write", "admin")
+
+
+def level_permissions(
+    definition: ConnectionDefinition, access: AccessLevel
+) -> dict[str, AccessLevel]:
+    """The App permissions the catalog's `access` level asks for; none for a
+    level the entry does not have."""
+    levels = definition.access
+    if levels is None:
+        raise ValueError(f"{definition.name} lists no access levels.")
+    level = getattr(levels, access)
+    return {} if level is None else dict(level.permissions or {})
+
+
+def permission_rank(level: object) -> int:
+    """Where `level` stands among GitHub's, -1 for none or one unknown."""
+    return PERMISSION_LEVELS.index(level) if level in PERMISSION_LEVELS else -1
+
+
+def permissions_short(
+    wanted: Mapping[str, AccessLevel], held: Mapping[str, object]
+) -> list[str]:
+    """The permissions `wanted` asks for that `held`, an App's permissions as
+    `GET /app` answers them, has at a lower level or not at all."""
+    return [
+        name
+        for name, level in wanted.items()
+        if permission_rank(held.get(name)) < permission_rank(level)
+    ]
+
+
+def permission_name(name: str) -> str:
+    """A permission as the App's settings page names it: `Pull requests`."""
+    return name.replace("_", " ").capitalize()
+
 
 @dataclass(frozen=True)
 class GitHubApp:
@@ -48,10 +91,20 @@ class GitHubApp:
 
     `signer` is None only on the deprecated `HOSTED_GITHUB_CONFIG_PATH`, which
     names no signing key: GitHub can then be connected, but nothing granted.
+    `lacks_write` names the permissions the catalog's write level asks for
+    that GitHub said the App lacks, when it was saved or last checked: while
+    it names any, agents can only read through the App. An App Switch has
+    not asked about (one from configuration, or copied in from it and not
+    checked since) is taken to lack none.
     """
 
     connections: GitHubConnections
     signer: GitHubInstallationCredentials | None
+    lacks_write: tuple[str, ...]
+
+    @property
+    def read_only(self) -> bool:
+        return bool(self.lacks_write)
 
 
 def load_github_app(config: SwitchConfig) -> GitHubApp | None:
@@ -65,6 +118,7 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
             GitHubInstallationCredentials.from_file(
                 connections.client_id, config.github_app_private_key_path
             ),
+            lacks_write=(),
         )
     if config.hosted_github_config_path is None:
         return None
@@ -75,7 +129,9 @@ def load_github_app(config: SwitchConfig) -> GitHubApp | None:
         "GITHUB_APP_CONFIG_PATH and GITHUB_APP_PRIVATE_KEY_PATH instead."
     )
     return GitHubApp(
-        GitHubConnections.from_file(config.hosted_github_config_path), None
+        GitHubConnections.from_file(config.hosted_github_config_path),
+        None,
+        lacks_write=(),
     )
 
 
@@ -110,10 +166,13 @@ class GitHubAdapter:
         self,
         connections: GitHubConnections,
         signer: GitHubInstallationCredentials | None,
+        *,
+        read_only: bool,
     ) -> None:
         self._connections = connections
         self._signer = signer
         self.can_issue = signer is not None
+        self.read_only = read_only
 
     def current_client_id(self) -> str | None:
         return self._connections.client_id

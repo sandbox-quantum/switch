@@ -11,9 +11,12 @@ loads at boot and serves GitHub's own sign-in.
 Where an app comes from, and why configuration wins over a saved one, is
 `connections/app_credentials.py`. A save is checked with the vendor first
 (`connections/app_checks.py`) and stored only if the vendor accepts it; it
-takes effect at once, in every process (`connections/app_signals.py`). No
-response carries a secret: a client secret shows its last four characters,
-a private key its fingerprint.
+takes effect at once, in every process (`connections/app_signals.py`). A
+check of a saved app stores again what the vendor says of it that Switch
+keeps (a GitHub App's slug and permissions) where that changed, so an App
+whose write permissions were taken away or added is read-only, or no longer
+is, from then on. No response carries a secret: a client secret shows its
+last four characters, a private key its fingerprint.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.adapters.github import permission_name
 from switch_core.connections.app_checks import (
     CheckResult,
     VendorUnreachableError,
@@ -161,8 +165,8 @@ def _spec(apps: ConnectorApps, service: str) -> AppSpec:
 
 def _setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
     """Why the operator can't set this app up here, known before any vendor
-    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; Google
-    accepts an http redirect for local development, GitHub does not."""
+    is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; GitHub
+    sends people back only to https, or to plain http on this computer."""
     if github_needs_https(spec.kind, public_url):
         return GITHUB_NEEDS_HTTPS
     return None
@@ -266,6 +270,9 @@ async def _entry(
         updated_by = None if user is None else user.name
     slug = None if shown is None else shown.settings.get("slug")
     redirects = _redirects(apps, spec, effective)
+    lacks_write = (
+        () if effective.github_app is None else effective.github_app.lacks_write
+    )
     return {
         "slug": spec.service,
         "name": spec.name,
@@ -294,6 +301,11 @@ async def _entry(
         "needs_public_url": _needs_public_url(apps, spec),
         "scopes": _scopes(apps, spec),
         "setup_blocked": _setup_blocked(spec, apps.public_url),
+        # A GitHub App short of the write level's permissions: agents can
+        # read only through it, and a write grant is refused.
+        "read_only": bool(lacks_write),
+        # Those it lacks, as the App's settings page names them.
+        "lacks_write": [permission_name(name) for name in lacks_write],
         "install_url": (
             f"https://github.com/apps/{slug}/installations/new"
             if spec.kind == "github_app" and slug
@@ -354,7 +366,7 @@ async def _check(apps: ConnectorApps, spec: AppSpec, values: AppValues) -> Check
 def _fields_changed(
     previous: AppValues | None,
     client_id: str,
-    settings: dict[str, str],
+    settings: dict[str, Any],
     given: dict[str, str],
 ) -> list[str]:
     if previous is None:
@@ -572,10 +584,15 @@ async def import_connector_app(
 @router.post("/{service}/check")
 async def check_connector_app(
     service: str,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
-    _admin: Annotated[User, Depends(require_admin)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
-    """Ask the vendor about the app in use; nothing is stored."""
+    """Ask the vendor about the app in use. What it says of a saved app that
+    Switch keeps is stored again where it changed, and in use at once;
+    nothing else is stored, and nothing of an app from configuration."""
     spec = _spec(apps, service)
     effective = apps.effective(service)
     # A configured GitHub App is called back at its own origin, not this URL.
@@ -587,7 +604,31 @@ async def check_connector_app(
         raise HTTPException(
             409, "HOSTED_GITHUB_CONFIG_PATH names no private key to check."
         )
-    result = await _check(apps, spec, effective.values)
+    values = effective.values
+    result = await _check(apps, spec, values)
+    if (
+        effective.source == "saved"
+        and result.settings
+        and result.settings != values.settings
+    ):
+        recorded = await apps.store.record_settings(
+            session,
+            service=service,
+            client_id=values.client_id,
+            settings=result.settings,
+            updated_by=admin.id,
+        )
+        await session.commit()
+        if recorded is not None:
+            await apps.apply(service, broker=broker, state=request.app.state)
+            apps.announce(service)
+            logger.warning(
+                "Checking %s's app stored what the vendor now says of it: user=%s "
+                "fields=%s",
+                spec.name,
+                admin.id,
+                _fields_changed(values, values.client_id, result.settings, {}),
+            )
     return {"ok": result.ok, "checks": _checks_body(result)}
 
 

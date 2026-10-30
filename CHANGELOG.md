@@ -243,6 +243,53 @@ version of their own to them without also giving them a release of their own.
   a service off for an agent stops its sessions using it within a minute (not
   an hour), and that disconnecting Airtable does not end a token already
   handed out.
+- **GitHub can be set up on a server at a loopback http address, such as one
+  Switch Console runs.** Switch refused a GitHub App on any server whose
+  `GATEWAY_PUBLIC_URL` was not https, on the belief that GitHub calls back
+  only to https. GitHub also calls back to plain http on the loopback address,
+  where a server Switch Console runs lives (`http://127.0.0.1:<port>`), so
+  GitHub could never be set up there: Connector apps held its Set up back
+  with a sentence saying https was needed, and the Connectors page called it
+  unavailable. A GitHub App is now saved, checked, loaded and signed in
+  through at `localhost`, `127.0.0.1` or `::1` over http, as at any https
+  address. A server at any other http address still refuses it, and the
+  reason now names both ways it can work. A `GITHUB_APP_CONFIG_PATH` file
+  whose `origin` GitHub would not call back stops the server naming that
+  origin, where it said only "GitHub connection configuration is invalid";
+  so does one with a path in its origin, a malformed slug, or no client
+  secret, each saying which. The GitHub sign-in's cookie is no longer marked
+  Secure over plain http on the loopback address, where a browser drops it,
+  as the other connectors' sign-ins already did. switch-buddy no longer tells
+  people on a server Switch Console runs that GitHub can't work there.
+- **GitHub says why it can't be used on a server with no GitHub App.** Its
+  routes answered "GitHub connections are not enabled on this server." for
+  every cause, which is what the dashboard's GitHub grant and Switch Console's
+  GitHub settings showed. They now give the reason the Connectors page does:
+  the App is not set up yet, and who sets it up, or the server's address is
+  one GitHub does not call back.
+- **`DISABLED_SERVICES` stops a GitHub sign-in without the
+  `service_connections` flag too.** With the flag off, a GitHub sign-in
+  started even where the operator had switched GitHub off, and was refused
+  only once GitHub had issued the person's token, which was then left live
+  at GitHub. The server's switch now refuses the sign-in before it starts,
+  flag or no flag, and a sign-in refused as it completes is revoked at
+  GitHub.
+- **Checking a GitHub App says whether it has the permissions agents are
+  granted, and an App that can only read lets agents read.** Saving or
+  checking a GitHub App under Connector apps proved its key, client ID and
+  secret, and said a check could not see its permissions, though GitHub's
+  answer carries them. An App without Contents or Pull requests set to Read
+  and write was saved, and failed only at the first token a grant asked for.
+  The check now holds the App's permissions against the catalog's levels and
+  names each one that falls short and what it has. Short of what agents need
+  to read, the save is refused. Short only of what they need to write, the
+  App is saved read-only, and the check passes saying so: read grants work,
+  and a write grant on it, or a token for one made before, is refused with
+  the reason and who can change it. Switch keeps what GitHub answered, and
+  checking the App again follows a change made at GitHub. The connector-apps
+  answer says `read_only` and `lacks_write`, and the service-connections
+  answer `read_only_reason`. An App from configuration is not checked before
+  use, so it is taken to have them, as before.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
@@ -2152,6 +2199,14 @@ version of their own to them without also giving them a release of their own.
 - **Saving a connector app shows what its check said.** After Check and save
   or an updated secret, the app's page opens with the vendor's answer and any
   note, as Check it works shows them.
+- **A GitHub App that can only read says so.** Under Admin → Connector apps,
+  a GitHub App without Contents or Pull requests at Read and write reads
+  "Agents can read only", naming what it lacks, and Check it works shows the
+  change once the App's permissions change at GitHub. Where the server says
+  so, granting GitHub offers Read and push disabled with the reason, and an
+  agent's Connectors card says why a write grant it already has gets
+  nothing. A server that does not send `read_only`, `lacks_write` or
+  `read_only_reason` is read as one whose App can write.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
@@ -2211,6 +2266,12 @@ version of their own to them without also giving them a release of their own.
   after it was handed out; the disconnect's own warning says what it could
   not take back. The Switch skill tells agents to link an agent's Connectors
   tab, as it is named, rather than its Connections tab.
+- **GitHub's card says what GitHub needs from a server.** Where GitHub can't
+  be used, the Connectors page said it needs a server with an https address.
+  A server on this computer works too, and a switch-core from this release
+  sets GitHub up there, so the card now says so. On a server Switch Console
+  runs at some other plain http address, it names the addresses GitHub
+  accepts.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to

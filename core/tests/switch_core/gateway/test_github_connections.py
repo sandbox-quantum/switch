@@ -115,7 +115,7 @@ def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,
-        adapters={"github": GitHubAdapter(github, AsyncMock())},
+        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
@@ -128,6 +128,30 @@ def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI
     app.dependency_overrides[get_session] = sessions
     app.dependency_overrides[get_config] = lambda: SimpleNamespace(keyring=TEST_KEYRING)
     return app
+
+
+def _rebroker(
+    client,
+    session_factory,
+    *,
+    adapters: dict,
+    disabled: dict[str, str],
+    public_url: str | None,
+) -> None:
+    """Give the process another broker, as a restart with other settings
+    would: other `DISABLED_SERVICES`, another public URL, or no App."""
+    client._transport.app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters=adapters,
+        disabled=disabled,
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=public_url,
+    )
 
 
 class _EachRequestToTheNextProcess(httpx.AsyncBaseTransport):
@@ -253,6 +277,36 @@ async def test_a_connection_through_a_replaced_app_tells_its_owner_to_reconnect(
             "GitHub was connected through an app this server no longer uses. "
             "Reconnect GitHub from Connectors in Switch Console."
         )
+
+
+@pytest.mark.parametrize(
+    ("base_url", "secure"),
+    [("https://switch.example.com", True), ("http://127.0.0.1:8000", False)],
+)
+async def test_the_cookie_is_secure_except_over_http_on_this_computer(
+    github_app, base_url, secure
+):
+    """A server Switch Console runs is reached over plain http on loopback,
+    where a browser drops a Secure cookie and nothing in between reads it."""
+    client, _, _, _ = github_app
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=client._transport.app), base_url=base_url
+    ) as local:
+        started = await local.post(
+            BASE + "/flows",
+            json={
+                "port": 12345,
+                "state": secrets.token_urlsafe(32),
+                "completion_secret": SECRET,
+            },
+        )
+        assert started.status_code == 200, started.text
+        authorized = await local.get(
+            urlsplit(started.json()["url"]).path, params={"state": started.json()["id"]}
+        )
+    cookie = authorized.headers["set-cookie"]
+    assert "HttpOnly" in cookie
+    assert ("Secure" in cookie) is secure
 
 
 async def test_callback_rejects_missing_cookie_and_replayed_completion(github_app):
@@ -607,6 +661,37 @@ async def test_disconnect_works_once_the_app_is_removed(github_app):
         )
 
 
+@pytest.mark.parametrize(
+    ("public_url", "reason"),
+    [
+        (
+            "https://switch.example.com",
+            "GitHub is not set up on this server. Whoever runs your Switch server "
+            "can set it up in Switch Console, under Admin → Connector apps.",
+        ),
+        (
+            "http://switch.example.com",
+            "GitHub can't be used on this server: its address must be https, or "
+            "http on your own computer (localhost or 127.0.0.1).",
+        ),
+    ],
+)
+async def test_with_no_app_every_route_says_why_github_cannot_be_used(
+    github_app, public_url, reason
+):
+    client, _, _, factory = github_app
+    client._transport.app.state.github_connections = None
+    _rebroker(client, factory, adapters={}, disabled={}, public_url=public_url)
+    answers = [
+        await client.get(BASE),
+        await _start(client),
+        await client.get(BASE + "/authorize", params={"state": "s" * 43}),
+    ]
+    for answer in answers:
+        assert answer.status_code == 503
+        assert answer.json()["detail"] == reason
+
+
 @pytest.mark.parametrize("status", [204, 404, 422])
 async def test_oauth_revocation_deletes_only_the_selected_token(
     github_app, monkeypatch, status
@@ -727,6 +812,62 @@ async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_
         assert flow is not None
         assert (flow.status, flow.encrypted_result) == ("failed", None)
         assert flow.error == GITHUB_REFUSAL["detail"]
+        assert await session.scalar(select(ServiceConnection)) is None
+
+
+SERVER_REFUSAL = {
+    "detail": "Switched off on this server.",
+    "code": "forbidden",
+    "retryable": False,
+}
+
+
+async def test_with_the_flag_off_the_servers_switch_still_refuses_a_sign_in(
+    github_app,
+):
+    """`DISABLED_SERVICES` is the operator's, and holds whether or not the
+    workspace switch applies."""
+    client, github, _, factory = github_app
+    _rebroker(
+        client,
+        factory,
+        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
+        disabled={"github": SERVER_REFUSAL["detail"]},
+        public_url=None,
+    )
+    response = await _start(client)
+    assert response.status_code == 403
+    assert response.json() == SERVER_REFUSAL
+    async with factory() as session:
+        assert await session.scalar(select(SignInFlow)) is None
+
+
+async def test_switched_off_on_the_server_mid_flow_the_sign_in_is_revoked(
+    github_app,
+):
+    """A restart with GitHub in `DISABLED_SERVICES` while someone is at
+    GitHub: the sign-in GitHub then issues is revoked, not left live."""
+    client, github, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    _rebroker(
+        client,
+        factory,
+        adapters={"github": GitHubAdapter(github, AsyncMock(), read_only=False)},
+        disabled={"github": SERVER_REFUSAL["detail"]},
+        public_url=None,
+    )
+
+    response = await complete(client, flow_id)
+
+    assert response.status_code == 403
+    assert response.json() == SERVER_REFUSAL
+    github.revoke.assert_awaited_once_with("SYNTHETIC-ACCESS")
+    async with factory() as session:
+        flow = await session.scalar(select(SignInFlow).where(SignInFlow.id == flow_id))
+        assert flow is not None
+        assert (flow.status, flow.encrypted_result) == ("failed", None)
+        assert flow.error == SERVER_REFUSAL["detail"]
         assert await session.scalar(select(ServiceConnection)) is None
 
 

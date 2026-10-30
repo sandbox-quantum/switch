@@ -38,6 +38,7 @@ class FakeVendor:
 
     def __init__(self) -> None:
         self.can_issue = True
+        self.read_only = False
         self.refreshes = 0
         self.refresh_error: Exception | None = None
         self.issue_error: Exception | None = None

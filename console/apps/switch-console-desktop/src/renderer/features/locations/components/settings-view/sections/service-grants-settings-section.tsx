@@ -227,6 +227,9 @@ export function ServiceGrantsRow({
         <GitHubGrantForm
           github={github}
           current={githubGrant}
+          readOnlyReason={
+            services.data?.find((service) => service.slug === 'github')?.read_only_reason ?? null
+          }
           agentName={agentName}
           busy={change.isPending}
           onCancel={githubGrant ? () => setEditing(false) : null}
@@ -329,6 +332,7 @@ export function GrantCard({
 export function GitHubGrantForm({
   github,
   current,
+  readOnlyReason,
   agentName,
   busy,
   onCancel,
@@ -336,6 +340,8 @@ export function GitHubGrantForm({
 }: {
   github: { data: GitHubConnection | undefined; isError: boolean; error: unknown };
   current: ServiceGrant | null;
+  /** Why the server's App lets agents read only; null where pushing can be granted. */
+  readOnlyReason: string | null;
   agentName: string;
   busy: boolean;
   onCancel: (() => void) | null;
@@ -378,7 +384,14 @@ export function GitHubGrantForm({
           ? `Change which repositories ${agentName} reaches`
           : `Turn GitHub on for ${agentName}`}
       </span>
-      {reach && <GitHubGrantPicker github={reach} value={choice} onChange={setChoice} />}
+      {reach && (
+        <GitHubGrantPicker
+          github={reach}
+          value={choice}
+          readOnlyReason={readOnlyReason}
+          onChange={setChoice}
+        />
+      )}
       <div className="flex gap-2">
         <Button
           size="sm"

@@ -8,10 +8,24 @@ import type { GitHubConnection } from '@shared/core/switch-servers/github-connec
 
 export type GitHubAccess = 'read' | 'write';
 
-export const GITHUB_ACCESS_OPTIONS = [
+const GITHUB_ACCESS_OPTIONS = [
   { value: 'read', label: 'Read' },
   { value: 'write', label: 'Read and push' },
 ] as const;
+
+/**
+ * The access choices, pushing disabled where the server says GitHub can be
+ * granted for reading only (`read_only_reason`: its App lacks the write
+ * permissions), whose reason the picker shows beside them.
+ */
+export function githubAccessOptions(
+  readOnlyReason: string | null
+): { value: GitHubAccess; label: string; disabled: boolean }[] {
+  return GITHUB_ACCESS_OPTIONS.map((option) => ({
+    ...option,
+    disabled: option.value === 'write' && readOnlyReason !== null,
+  }));
+}
 
 export type ConnectedGitHub = Extract<GitHubConnection, { status: 'connected' }>;
 export type GitHubInstallation = ConnectedGitHub['installations'][number];

@@ -57,6 +57,7 @@ from switch_core.connections.app_credentials import (
     github_needs_https,
     needs_public_url,
     not_set_up,
+    reads_only,
 )
 from switch_core.connections.loader import (
     TOKEN_PLACEHOLDER,
@@ -148,7 +149,8 @@ UnavailableCode = Literal[
     "coming_soon",
     # The operator switched it off on this server (`DISABLED_SERVICES`).
     "switched_off",
-    # Its app can't be set up on this server: GitHub's needs an https address.
+    # Its app can't be set up on this server: GitHub's needs an https address,
+    # or plain http on this computer.
     "needs_https",
     # Its sign-ins return only to the server's own callback, and the server
     # has no public address (`GATEWAY_PUBLIC_URL`).
@@ -488,13 +490,14 @@ class ServiceBroker:
     async def require_workspace_enabled(
         self, session: AsyncSession, service: str
     ) -> None:
-        """Refuse `service` where a workspace admin switched it off. The
-        server's own switch (`DISABLED_SERVICES`) is checked first, so its
-        reason is the one people see when both apply."""
+        """Refuse `service` where the operator switched it off on this server
+        (`DISABLED_SERVICES`) or a workspace admin switched it off here. The
+        server's switch applies with the workspace gate off too, and is
+        checked first, so its reason is the one people see when both apply."""
         name = self._entry(service).definition.name
+        self._require_switched_on(service)
         if not self._workspace_gate:
             return
-        self._require_switched_on(service)
         if not await self._workspace_services.is_enabled(session, service):
             raise ServiceError(
                 403,
@@ -665,6 +668,9 @@ class ServiceBroker:
             if grant.access == "write"
             else "read"
         )
+        read_only = self.read_only(service)
+        if access == "write" and read_only is not None:
+            raise ServiceError(403, FORBIDDEN, read_only, retryable=False)
         if access == "write" and connection.consent != "write":
             raise ServiceError(
                 403,
@@ -1299,6 +1305,16 @@ class ServiceBroker:
             )
         return None
 
+    def read_only(self, service: str) -> str | None:
+        """Why agents can only read through `service` on this server, or
+        None where a write grant can be made: its app lets them read only (a
+        GitHub App short of the write level's permissions). A write grant is
+        refused, and so is a token for one made before."""
+        adapter = self._adapters.get(service)
+        if adapter is None or not adapter.read_only:
+            return None
+        return reads_only(self._catalog[service].definition.name)
+
     def summary(self, agent_name: str, grant: ServiceGrant) -> str:
         """A grant's reach in a sentence, as the vendor's adapter words it."""
         access: AccessLevel = "write" if grant.access == "write" else "read"
@@ -1358,6 +1374,9 @@ class ServiceBroker:
                 )
             access = _consent(connection)
         level_name: AccessLevel = access or "read"
+        read_only = self.read_only(service)
+        if level_name == "write" and read_only is not None:
+            raise ServiceError(403, FORBIDDEN, read_only, retryable=False)
         if level_name == "write" and connection.consent != "write":
             raise ServiceError(
                 422,
@@ -1609,10 +1628,12 @@ class ServiceBroker:
         """
         entry = self._entry(service)
         name = entry.definition.name
-        self._require_switched_on(service)
-        if not _issued_to_agents(entry):
-            raise ServiceError(403, FORBIDDEN, _never_expires(name), retryable=False)
         try:
+            self._require_switched_on(service)
+            if not _issued_to_agents(entry):
+                raise ServiceError(
+                    403, FORBIDDEN, _never_expires(name), retryable=False
+                )
             await self.require_workspace_enabled(session, service)
         except ServiceError as refusal:
             # The vendor has already issued this sign-in: one Switch will not
