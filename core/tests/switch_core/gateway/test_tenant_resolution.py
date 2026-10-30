@@ -788,14 +788,15 @@ class TestNoClaimWithSeveralMemberships:
         goes through, and the case that builds a body is the one where a
         second `SECURITY DEFINER` round trip would be easiest not to notice."""
         calls = 0
-        real = gw_auth.tenants_of_user
+        real = gw_auth.tenants_bindable_by_user
 
         async def counting(*args: object, **kwargs: object) -> list[str]:
             nonlocal calls
             calls += 1
             return await real(*args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(gw_auth, "tenants_of_user", counting)
+        monkeypatch.setattr(gw_auth, "tenants_bindable_by_user", counting)
+        monkeypatch.setattr(gw_auth, "tenants_of_user", _never)
 
         user_id = await _make_user_with_memberships(
             session_factory, name="counted", tenant_ids=[TENANT_ZERO_ID, TENANT_B]
@@ -807,6 +808,10 @@ class TestNoClaimWithSeveralMemberships:
 
         assert response.status_code == 409
         assert calls == 1
+
+
+async def _never(*args: object, **kwargs: object) -> list[str]:
+    raise AssertionError("tenant resolution asked a second lookup")
 
 
 class TestAUserWithNoMembership:

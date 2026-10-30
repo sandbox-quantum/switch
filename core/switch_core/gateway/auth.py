@@ -30,7 +30,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
     all_tenant_ids,
     tenant_of_invitation,
-    tenants_administered_through_organization,
+    tenants_bindable_by_user,
     tenants_inviting_email,
     tenants_of_user,
     tenants_open_to_domain,
@@ -365,11 +365,9 @@ async def tenants_bindable_by(
     session_factory: async_sessionmaker[AsyncSession], user_id: str
 ) -> list[str]:
     """Every tenant `user_id` may bind: those they are a member of, and those
-    they administer as their organization's `org_admin`. Sorted, each once."""
-    return sorted(
-        set(await tenants_of_user(session_factory, user_id))
-        | set(await tenants_administered_through_organization(session_factory, user_id))
-    )
+    they administer as their organization's `org_admin`. Sorted, each once.
+    One lookup, read on every authenticated request."""
+    return await tenants_bindable_by_user(session_factory, user_id)
 
 
 async def workspaces_in_organization(
@@ -400,9 +398,7 @@ async def workspaces_reached_through_organization(
     `workspaces_in_organization` does."""
     members_of = set(await tenants_of_user(session_factory, user_id))
     found: list[Tenant] = []
-    for tenant_id in await tenants_administered_through_organization(
-        session_factory, user_id
-    ):
+    for tenant_id in await tenants_bindable_by_user(session_factory, user_id):
         if tenant_id in members_of:
             continue
         async with tenant_session(session_factory, tenant_id) as session:

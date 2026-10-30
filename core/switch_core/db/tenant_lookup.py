@@ -159,13 +159,15 @@ those are, so each row is read with its own tenant bound. It discloses which
 workspaces a machine, and so its owner, belongs to: what `tenants_of_user`
 already discloses about the same person.
 
-**`tenants_administered_through_organization` is the fourteenth**, and the
-same question as `tenants_of_user` asked of the organization above the
-workspace. An organization's `org_admin` administers every workspace in it,
-and may bind one without holding a membership row there, so resolving a
-request's workspace has to read which workspaces those are before any is
-bound. It discloses which workspaces a person administers through an
-organization; the gateway asks it only about the signed-in caller.
+**`tenants_bindable_by_user` is the fourteenth**, and `tenants_of_user`
+widened to the organization above the workspace. An organization's
+`org_admin` administers every workspace in it, and may bind one without
+holding a membership row there, so resolving a request's workspace has to
+read which workspaces those are before any is bound. One function answers
+both halves, so every authenticated request costs one lookup rather than
+two. It discloses which workspaces a person belongs to or administers
+through an organization; the gateway asks it only about the signed-in
+caller.
 
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
@@ -286,19 +288,21 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
-        name="tenants_administered_through_organization",
+        name="tenants_bindable_by_user",
         arguments=("user_id",),
         query=(
-            "SELECT tenants.id FROM tenants "
+            "SELECT tenant_id FROM tenant_members WHERE user_id = p_user_id "
+            "UNION SELECT tenants.id FROM tenants "
             "JOIN organization_members "
             "ON organization_members.organization_id = tenants.organization_id "
             "WHERE organization_members.user_id = p_user_id "
-            "AND organization_members.role = 'org_admin' ORDER BY tenants.id"
+            "AND organization_members.role = 'org_admin' ORDER BY 1"
         ),
         purpose=(
-            "Which tenants a gateway login administers as its organization's "
-            "`org_admin`, holding a membership row there or not. Read before "
-            "a tenant is bound, for the same reason as `tenants_of_user`."
+            "Which tenants a gateway login may bind: those it holds a "
+            "membership row in, and those it administers as its "
+            "organization's `org_admin`. Read before a tenant is bound, for "
+            "the same reason as `tenants_of_user`, and once per request."
         ),
     ),
     TenantLookup(
@@ -508,9 +512,8 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "tenants_of_user": text(
         "SELECT tenant_id FROM tenants_of_user(:user_id) AS tenant_id"
     ),
-    "tenants_administered_through_organization": text(
-        "SELECT tenant_id FROM "
-        "tenants_administered_through_organization(:user_id) AS tenant_id"
+    "tenants_bindable_by_user": text(
+        "SELECT tenant_id FROM tenants_bindable_by_user(:user_id) AS tenant_id"
     ),
     "tenant_of_api_key": text(
         "SELECT tenant_id FROM tenant_of_api_key(:key_hash) AS tenant_id"
@@ -606,13 +609,11 @@ async def tenants_of_user(
     )
 
 
-async def tenants_administered_through_organization(
+async def tenants_bindable_by_user(
     session_factory: async_sessionmaker[AsyncSession], user_id: str
 ) -> list[str]:
     return await _call(
-        session_factory,
-        TENANT_LOOKUPS_BY_NAME["tenants_administered_through_organization"],
-        user_id,
+        session_factory, TENANT_LOOKUPS_BY_NAME["tenants_bindable_by_user"], user_id
     )
 
 

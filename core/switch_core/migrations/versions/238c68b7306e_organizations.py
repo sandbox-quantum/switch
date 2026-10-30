@@ -138,6 +138,12 @@ def upgrade() -> None:
         ["organization_id"],
         ["id"],
     )
+    # Read by user, and joined on the organization, on every authenticated
+    # request (`tenants_bindable_by_user`).
+    op.create_index(
+        "ix_organization_members_user_id", "organization_members", ["user_id"]
+    )
+    op.create_index("ix_tenants_organization_id", "tenants", ["organization_id"])
 
     # One organization per workspace. Workspace slugs are unique, so the slug
     # carries each organization back to the workspace it was made for.
@@ -159,6 +165,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index("ix_tenants_organization_id", table_name="tenants")
+    op.drop_index("ix_organization_members_user_id", table_name="organization_members")
     op.drop_constraint("fk_tenants_organization", "tenants", type_="foreignkey")
     op.drop_column("tenants", "organization_id")
     op.execute(

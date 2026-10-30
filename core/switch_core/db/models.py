@@ -131,6 +131,9 @@ class OrganizationMember(Base):
         CheckConstraint(
             "role IN ('org_admin', 'member')", name="ck_organization_members_role"
         ),
+        # Which workspaces a person may enter is read by user on every
+        # authenticated request (`tenants_bindable_by_user`).
+        Index("ix_organization_members_user_id", "user_id"),
     )
 
     organization_id: Mapped[str] = mapped_column(
@@ -159,6 +162,7 @@ class Tenant(Base):
     """
 
     __tablename__ = "tenants"
+    __table_args__ = (Index("ix_tenants_organization_id", "organization_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
