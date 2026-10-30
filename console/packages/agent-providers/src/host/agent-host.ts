@@ -1310,7 +1310,8 @@ export async function runAgentHost(
      */
     const forgetLeftRooms = async (): Promise<void> => {
       const placed = placements.snapshot();
-      if (Object.keys(placed).length === 0) return;
+      const shared = placements.sharesSnapshot();
+      if (Object.keys(placed).length === 0 && Object.keys(shared).length === 0) return;
       const listed = await callOperation(
         {
           identity,
@@ -1339,6 +1340,14 @@ export async function runAgentHost(
         changed = true;
         console.warn(
           `Session ${sessionId} was placed in room ${roomId}, which this agent is no longer in; it no longer attends it.`
+        );
+      }
+      for (const [roomId, sessionId] of Object.entries(shared)) {
+        if (rooms.has(roomId) || placements.sharerOf(roomId) !== sessionId) continue;
+        await placements.unshare(roomId);
+        changed = true;
+        console.warn(
+          `Session ${sessionId} answered room ${roomId} from its home room, but this agent is no longer in it; it no longer answers it.`
         );
       }
       if (changed) publishQuietly();

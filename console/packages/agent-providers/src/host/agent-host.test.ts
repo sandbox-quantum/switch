@@ -20,6 +20,7 @@ import {
 } from './agent-host';
 import type { Handoff } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
+import { SessionPlacements } from './placements';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import type * as sessionServices from './session-services';
 import { sharedConfigSchema } from './shared-config';
@@ -1111,6 +1112,50 @@ it('takes a session out of a room the agent is no longer in when its stream conn
   expect(JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'))).toEqual({
     placements: { [staying.sessionId]: 'room-kept' },
   });
+});
+
+it('stops a session answering a shared room the agent is no longer in when its stream connects', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-left-shared-room-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const lead = await existing(root, config);
+  await assignTo(root, config, 1, 'home', lead.sessionId);
+  const saved = await SessionPlacements.open(root, () => []);
+  await saved.place(lead.sessionId, 'home');
+  await saved.share(lead.sessionId, 'shared-deleted');
+  vi.stubGlobal('fetch', async (url: string) => {
+    const name = String(url).split('/ops/')[1] ?? '';
+    if (name === 'list_rooms')
+      return new Response(JSON.stringify({ result: [{ room_id: 'home', name: 'Home' }] }));
+    return new Response(JSON.stringify({ result: null }));
+  });
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    sessionHosts().supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    streams[0]!.onConnected!();
+    await eventually(async () => {
+      const file = JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'));
+      return file.shares === undefined || !('shared-deleted' in file.shares);
+    });
+  } finally {
+    abort.abort();
+    await run;
+  }
+  const file = JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'));
+  expect(file.placements).toEqual({ [lead.sessionId]: 'home' });
+  expect(file.shares?.['shared-deleted']).toBeUndefined();
 });
 
 it('keeps every placement when the agent’s rooms cannot be read', async () => {
