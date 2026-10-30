@@ -50,6 +50,7 @@ from switch_core.keys import Keyring
 from switch_core.signals import SignalBus
 from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.connections.adapters.test_github import _config
+from tests.switch_core.connections.test_app_credentials import _rsa_pem
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -212,6 +213,40 @@ class TestWhichApp:
         assert await _client_in(broker, without_app) == SERVER_CLIENT
         assert await _client_in(broker, no_organization) == SERVER_CLIENT
 
+    async def test_github_goes_through_the_organizations_app(
+        self, rls_harness: RLSHarness, tmp_path: Path
+    ) -> None:
+        organization_id, tenant_id = await _workspace(
+            rls_harness.owner, in_organization=True
+        )
+        assert organization_id is not None
+        async with rls_harness.owner() as session:
+            user = User(name="admin", email=f"{_id('a')}@example.invalid", role="user")
+            session.add(user)
+            await session.flush()
+            await OrganizationAppCredentialStore(TEST_KEYRING).save(
+                session,
+                organization_id=organization_id,
+                service="github",
+                client_id="organization-app-client",
+                settings={"slug": "organization-app"},
+                secrets={"client_secret": "example-secret", "private_key": _rsa_pem()},
+                secret_names=SECRET_NAMES["github_app"],
+                updated_by=user.id,
+            )
+            await session.commit()
+        server = _Server(rls_harness.restricted, tmp_path)
+        await server.start()
+
+        app = await server.lookup(tenant_id, "github")
+
+        assert app is not None and app.github_app is not None
+        assert app.github_app.connections.client_id == "organization-app-client"
+        assert app.github_app.connections.callback == (
+            f"{PUBLIC_URL}/gateway/provider-connections/github/callback"
+        )
+        assert app.adapter is not None and app.adapter.can_issue
+
     async def test_an_unusable_organization_app_does_not_fall_back_to_the_servers(
         self, rls_harness: RLSHarness, tmp_path: Path
     ) -> None:
@@ -241,7 +276,8 @@ class TestWhichApp:
         server = _Server(rls_harness.restricted, tmp_path)
         await server.start()
 
-        for service in ("atlassian", "github"):
+        # Atlassian registers itself with the vendor, and Datadog takes keys.
+        for service in ("atlassian", "datadog"):
             assert (
                 await server.organization_apps.for_workspace(
                     _Unread(), "no-such", service
