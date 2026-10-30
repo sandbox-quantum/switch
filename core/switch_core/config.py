@@ -474,8 +474,9 @@ class SwitchConfig(BaseSettings):
     # — and carries how the server is behaving. This one carries how the
     # product is being used, and goes to the analytics relay. A self-hosted
     # deployment pointing its metrics at its own Datadog must not thereby send
-    # its usage analytics there too, and Flint must not receive a customer's
-    # operational metrics. Same wire format, same client, two destinations.
+    # its usage analytics there too, and the relay must not receive a
+    # customer's operational metrics. Same wire format, same client, two
+    # destinations.
     #
     # **Off unless switched on, and that default is deliberate.** A Switch
     # server may be a customer's, and the usage may be theirs, so reporting it

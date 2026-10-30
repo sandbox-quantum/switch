@@ -81,11 +81,12 @@ anything else is dropped and counted. So every event says where it belongs,
 even `prod`:
 
 - **The server** sends `TELEMETRY_ENVIRONMENT`, which defaults to `prod`
-  because every customer's deployment is production. Flint's own development
-  deployment sets `dev`; `.env.example`, which `just init-env` copies for a
-  developer's machine, sets `local`. Any other value stops the server at
-  startup. It is set by the Helm chart's `switchCore.telemetry.environment`,
-  and forwarded by the standalone compose file.
+  because every customer's deployment is production. The Switch team's own
+  development deployment sets `dev`; `.env.example`, which `just init-env`
+  copies for a developer's machine, sets `local`. Any other value stops the
+  server at startup. It is set by the Helm chart's
+  `switchCore.telemetry.environment`, and forwarded by the standalone compose
+  file.
 - **Switch Console** sends one per build: `prod` from a released stable build,
   `staging` from a released canary, `dev` from a packaged build that is not a
   release (a test build, or one packaged on a laptop), and `local` when run

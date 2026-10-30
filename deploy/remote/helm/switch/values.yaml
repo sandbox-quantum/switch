@@ -276,7 +276,7 @@ switchCore:
     timeoutSeconds: 10
 
   # Anonymous product telemetry: usage counts and timings reported to the
-  # Flint relay, which is the same pipeline Switch Console reports to.
+  # Switch telemetry relay, the same pipeline Switch Console reports to.
   #
   # Off by default, and that is deliberate — this deployment's usage may be
   # yours rather than ours, so reporting it is a choice you make rather than
@@ -298,11 +298,11 @@ switchCore:
     # How often the usage snapshot is collected and sent.
     snapshotIntervalHours: 24
     # Which Amplitude project the usage lands in: prod, staging, dev or local.
-    # Leave it at prod unless this is one of Flint's own non-production
-    # deployments; anything else is refused at startup.
+    # Leave it at prod unless this is one of the Switch team's own
+    # non-production deployments; anything else is refused at startup.
     environment: prod
-    # Whether this is one of Flint's own deployments, so staff usage can be
-    # told from adoption. Leave it false on any other deployment.
+    # Whether this is one of the Switch team's own deployments, so staff usage
+    # can be told from adoption. Leave it false on any other deployment.
     internal: false
 
   # Agents and people drawn by outside avatar services. An agent with no icon

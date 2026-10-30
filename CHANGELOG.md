@@ -2091,6 +2091,8 @@ version of their own to them without also giving them a release of their own.
   removed.
 
 #### Changed
+- **The welcome screen credits Switch AI.** Its footer now reads "Switch
+  Rooms is a project of Switch AI by SandboxAQ".
 - **Managed agents and machines update when the server says they changed.**
   Against a server that pushes change notices, Console reads those lists
   again when told to, and otherwise only every five minutes instead of every
