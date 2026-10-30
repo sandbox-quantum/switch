@@ -12,7 +12,12 @@ organization-scoped table carries (`db/rls_ddl.py`), compared against the
 
 `updated_by` on both is cleared when the account is deleted.
 
-The policy DDL is a verbatim copy of `switch_core/db/rls_ddl.py` as it stood
+And the fifteenth lookup exempt from row-level security,
+`all_organization_ids()`, so the boot's key rotation reaches every
+organization directly. See `db/tenant_lookup.py` for what it discloses.
+
+The policy and function DDL are verbatim copies of `switch_core/db/rls_ddl.py`
+and `switch_core/db/tenant_lookup.py` as they stood
 when this migration was written, copied rather than imported for the reason
 `265ed188ad6f` gives.
 
@@ -40,6 +45,15 @@ REQUIRE_ORGANIZATION_FUNCTION_NAME = "require_organization_id"
 ORGANIZATION_POLICY_NAME = "organization_isolation"
 _PREDICATE = f'"organization_id" = (SELECT {REQUIRE_ORGANIZATION_FUNCTION_NAME}())'
 _TABLES = ("organization_app_credentials", "organization_service_settings")
+SECURE_SEARCH_PATH = "pg_catalog, public, pg_temp"
+
+CREATE_ALL_ORGANIZATION_IDS = f"""CREATE OR REPLACE FUNCTION all_organization_ids()
+    RETURNS SETOF text
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path = {SECURE_SEARCH_PATH}
+AS $$SELECT id FROM organizations ORDER BY created_at, id$$"""
+
+DROP_ALL_ORGANIZATION_IDS = "DROP FUNCTION IF EXISTS all_organization_ids()"
 
 
 def _timestamp(name: str) -> sa.Column:
@@ -97,9 +111,11 @@ def upgrade() -> None:
             f"    USING ({_PREDICATE})\n"
             f"    WITH CHECK ({_PREDICATE})"
         )
+    op.execute(CREATE_ALL_ORGANIZATION_IDS)
 
 
 def downgrade() -> None:
+    op.execute(DROP_ALL_ORGANIZATION_IDS)
     for table in reversed(_TABLES):
         op.execute(f'DROP POLICY IF EXISTS {ORGANIZATION_POLICY_NAME} ON "{table}"')
         op.drop_table(table)

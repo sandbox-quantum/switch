@@ -295,16 +295,13 @@ async def test_the_operators_connector_apps_end_up_under_the_current_key(
 async def test_an_organizations_connector_app_ends_up_under_the_current_key(
     rls_harness: RLSHarness,
 ) -> None:
-    """An organization's app is rewritten through its workspace's session, by
-    the per-tenant fan-out."""
-    tenant_id, admin = await _tenant_with_user(rls_harness.owner)
-    organization_id = f"org-{tenant_id}"
+    """Rewritten in a pass per organization, which reaches one with no
+    workspace to be seen through."""
+    _, admin = await _tenant_with_user(rls_harness.owner)
+    organization_id = f"org-{uuid.uuid4().hex[:8]}"
     async with rls_harness.owner() as session:
         session.add(Organization(id=organization_id, slug=organization_id, name="O"))
         await session.flush()
-        tenant = await session.get(Tenant, tenant_id)
-        assert tenant is not None
-        tenant.organization_id = organization_id
         session.add(
             OrganizationAppCredential(
                 organization_id=organization_id,
@@ -317,7 +314,7 @@ async def test_an_organizations_connector_app_ends_up_under_the_current_key(
         )
         await session.commit()
 
-    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [tenant_id])
+    await reencrypt_stored_secrets(rls_harness.restricted, _NEW, [])
 
     secret = await _raw_where(
         rls_harness.owner,

@@ -37,7 +37,7 @@ class OrganizationServiceStore:
         *,
         enabled: bool,
         locked: bool,
-        user_id: str,
+        updated_by: str,
     ) -> None:
         await session.execute(
             insert(OrganizationServiceSetting)
@@ -46,14 +46,14 @@ class OrganizationServiceStore:
                 service=service,
                 enabled=enabled,
                 locked=locked,
-                updated_by=user_id,
+                updated_by=updated_by,
             )
             .on_conflict_do_update(
                 index_elements=["organization_id", "service"],
                 set_={
                     "enabled": enabled,
                     "locked": locked,
-                    "updated_by": user_id,
+                    "updated_by": updated_by,
                     "updated_at": func.now(),
                 },
             )

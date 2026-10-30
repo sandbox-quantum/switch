@@ -14,7 +14,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import OrganizationAppCredential
-from switch_core.db.stores.service_app_credential_store import (
+from switch_core.db.stores.app_secrets import (
     decrypt_app_secrets,
     encrypt_merged_secrets,
 )
