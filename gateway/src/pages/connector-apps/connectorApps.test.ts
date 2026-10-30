@@ -14,6 +14,7 @@ import {
   moveChecklist,
   peopleIn,
   primaryAction,
+  notSetUpSentence,
   removeWarning,
   secretSummary,
   sentBackTo,
@@ -368,5 +369,27 @@ describe("moving off configuration", () => {
     );
     const after = moveChecklist(app({ source: "configuration", saved_ignored: true }));
     expect(after.map((item) => item.done)).toEqual([true, false, false]);
+  });
+});
+
+describe("an organization's apps", () => {
+  const none = { source: "none" as const, client_id: null, saved_client_id: null };
+
+  it("says whether its workspaces fall back to the server's app", () => {
+    expect(notSetUpSentence(app({ ...none, server_app: true }))).toBe(
+      "Your workspaces use the server's Google client. Add your organization's own to use that instead.",
+    );
+    expect(notSetUpSentence(app({ ...none, server_app: false }))).toBe(
+      "People in your organization can't connect Google Workspace until you add your organization's Google client.",
+    );
+  });
+
+  it("warns that removing one sends its workspaces back to the server's", () => {
+    expect(removeWarning(app({ server_app: true, connected_members: 1 }))).toBe(
+      "Your workspaces go back to the server's Google Workspace app. The 1 person connected now must reconnect.",
+    );
+    expect(removeWarning(app({ server_app: false, connected_members: 0 }))).toBe(
+      "Nobody will be able to connect Google Workspace.",
+    );
   });
 });

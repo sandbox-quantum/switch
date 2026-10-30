@@ -40,6 +40,7 @@ import {
   switchWarning,
   vendorName,
 } from "./connectorApps";
+import { useConnectorAppScope } from "./scope";
 
 export type SetupMode = "set_up" | "switch" | "enter_again";
 
@@ -147,6 +148,7 @@ export default function SetupDialog({
   onClose: () => void;
   onSaved: (saved: SavedConnectorApp) => void;
 }) {
+  const scope = useConnectorAppScope();
   const first = mode === "switch" ? 0 : 1;
   const [step, setStep] = useState(first);
   const [audience, setAudience] = useState<Audience>("internal");
@@ -176,18 +178,21 @@ export default function SetupDialog({
     fields.every((f) => (secrets[f.name] ?? "") !== "") &&
     (confirmation === null || confirmed);
   const replacing = app.saved_client_id !== null && clientId.trim() !== app.saved_client_id;
+  // An organization taking its own app over from the server's moves everyone
+  // connected through that, as switching does.
+  const movesPeople = mode === "switch" || (mode === "set_up" && app.server_app === true);
 
   const save = async () => {
     setBusy(true);
     setError(null);
     setField(null);
     try {
-      if (mode === "switch" && impact === null) {
-        setImpact(await fetchConnectorAppImpact(app.slug, clientId.trim()));
+      if (movesPeople && impact === null) {
+        setImpact(await fetchConnectorAppImpact(scope, app.slug, clientId.trim()));
         setBusy(false);
         return;
       }
-      const saved = await saveConnectorApp(app.slug, {
+      const saved = await saveConnectorApp(scope, app.slug, {
         client_id: clientId.trim(),
         ...secrets,
         replace: mode === "switch",
@@ -375,9 +380,11 @@ export default function SetupDialog({
           >
             {busy
               ? "Checking…"
-              : mode === "switch"
+              : movesPeople
                 ? impact
-                  ? "Switch app"
+                  ? mode === "switch"
+                    ? "Switch app"
+                    : "Check and save"
                   : "Check who reconnects"
                 : "Check and save"}
           </Button>

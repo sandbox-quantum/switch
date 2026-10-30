@@ -5,6 +5,7 @@ import { fetchCurrentOrganization } from "../../data/api";
 import { administersOrganization } from "../../data/sessionState";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
+import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
 import OrganizationMembersSection from "./OrganizationMembersSection";
 import WorkspacesSection from "./WorkspacesSection";
 
@@ -42,6 +43,7 @@ export default function OrganizationPage() {
         {(isAdmin || session.user.is_operator) && (
           <OrganizationMembersSection selfId={session.user.id} asOperator={!isAdmin} />
         )}
+        {isAdmin && <OrganizationConnectorsSection />}
         {isAdmin && <OrganizationAuditSection />}
       </Stack>
     </Box>

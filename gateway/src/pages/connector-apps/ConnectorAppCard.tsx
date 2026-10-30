@@ -46,6 +46,7 @@ import {
   usedBy,
 } from "./connectorApps";
 import RemoveDialog from "./RemoveDialog";
+import { useConnectorAppScope } from "./scope";
 import SetupDialog, { type SetupMode } from "./SetupDialog";
 import UpdateSecretDialog from "./UpdateSecretDialog";
 
@@ -160,6 +161,7 @@ export default function ConnectorAppCard({
   onCheckFailure: (message: string | null) => void;
   onChanged: (message: string) => void;
 }) {
+  const scope = useConnectorAppScope();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const [setup, setSetup] = useState<SetupMode | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -180,7 +182,7 @@ export default function ConnectorAppCard({
     setChecking(true);
     setError(null);
     try {
-      const result = await checkConnectorApp(app.slug);
+      const result = await checkConnectorApp(scope, app.slug);
       setChecks(result.checks);
       onCheckFailure(result.ok ? null : (result.checks.find((c) => !c.ok)?.message ?? null));
     } catch (err) {
