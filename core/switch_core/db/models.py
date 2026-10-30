@@ -4467,7 +4467,8 @@ class OrganizationServiceSetting(OrganizationScoped, Base):
     Unlocked, it is what a workspace gets until its own admin touches the
     switch. Locked, it overrides every workspace's setting, and an
     organization's setting of off, locked, is how it keeps a service out of
-    all its workspaces. No row means the organization has no say. `updated_by`
+    all its workspaces. No row means the organization has no say. Stored
+    ahead of being applied: workspaces do not consult it yet. `updated_by`
     is cleared when that account is deleted, for the reason
     `OrganizationAppCredential` gives.
     """

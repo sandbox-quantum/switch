@@ -53,7 +53,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.service_app_credential_store import MissingSecretsError
+from switch_core.db.stores.app_secrets import MissingSecretsError
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.gateway.auth import require_admin
 from switch_core.gateway.dependencies import get_session, get_session_factory

@@ -8,7 +8,6 @@ with the server's store and tested there
 
 from __future__ import annotations
 
-import json
 import uuid
 
 import pytest
@@ -24,11 +23,11 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.stores.app_secrets import MissingSecretsError
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
 )
 from switch_core.db.stores.organization_service_store import OrganizationServiceStore
-from switch_core.db.stores.service_app_credential_store import MissingSecretsError
 from tests.conftest import TEST_KEYRING, RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -186,7 +185,12 @@ class TestAppCredentials:
                 s, organization_id, admin, {"client_secret": "a", "private_key": "k"}
             )
             await SERVICES.set(
-                s, organization_id, "github", enabled=False, locked=True, user_id=admin
+                s,
+                organization_id,
+                "github",
+                enabled=False,
+                locked=True,
+                updated_by=admin,
             )
             await s.commit()
         async with rls_harness.owner() as s:
@@ -197,7 +201,7 @@ class TestAppCredentials:
             row = await APPS.get(s, organization_id, "github")
             setting = (await SERVICES.list_settings(s, organization_id))["github"]
             assert row is not None and row.updated_by is None
-            assert json.loads(TEST_KEYRING.decrypt(row.encrypted_secrets))
+            assert APPS.secrets(row) == {"client_secret": "a", "private_key": "k"}
             assert setting.updated_by is None
 
 
@@ -209,10 +213,20 @@ class TestServiceSettings:
         admin = await _user(rls_harness.owner)
         async with organization_session(rls_harness.restricted, organization_id) as s:
             await SERVICES.set(
-                s, organization_id, "github", enabled=True, locked=False, user_id=admin
+                s,
+                organization_id,
+                "github",
+                enabled=True,
+                locked=False,
+                updated_by=admin,
             )
             await SERVICES.set(
-                s, organization_id, "github", enabled=False, locked=True, user_id=admin
+                s,
+                organization_id,
+                "github",
+                enabled=False,
+                locked=True,
+                updated_by=admin,
             )
             await s.commit()
 
@@ -245,7 +259,7 @@ class TestServiceSettings:
                     "github",
                     enabled=True,
                     locked=True,
-                    user_id=admin,
+                    updated_by=admin,
                 )
                 await s.commit()
 

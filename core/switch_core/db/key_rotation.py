@@ -44,11 +44,11 @@ from switch_core.db.models import (
     ServiceOAuthClient,
     ServiceTokenIssuance,
     SignInFlow,
-    Tenant,
     TrustSettings,
 )
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
+from switch_core.db.tenant_lookup import all_organization_ids
 from switch_core.keys import Keyring
 from switch_core.process_lease import read_leases
 
@@ -70,11 +70,8 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (SignInFlow, "encrypted_verifier"),
     (SignInFlow, "encrypted_result"),
 )
-# In organization-scoped tables: rewritten through each workspace's session,
-# which sees its own organization's rows (`db/rls_ddl.py`). That reaches every
-# organization, since each has at least one workspace and none can be
-# deleted; one with several is visited once per workspace, and a value already
-# under the current key is left alone.
+# In organization-scoped tables: rewritten once per organization, in a session
+# bound to it alone.
 _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (OrganizationAppCredential, "encrypted_secrets"),
 )
@@ -182,8 +179,8 @@ async def reencrypt_stored_secrets(
     keyring: Keyring,
     tenant_ids: list[str],
 ) -> None:
-    """Bring every tenant's encrypted values, plus the deployment's global
-    ones, onto the current key."""
+    """Bring every tenant's and every organization's encrypted values, plus
+    the deployment's global ones, onto the current key."""
     total = 0
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
@@ -191,11 +188,11 @@ async def reencrypt_stored_secrets(
                 total += await reencrypt_stale_values(session, model, column)
             for model, column in _ENCRYPTED_TEXT_COLUMNS:
                 total += await reencrypt_stale_text(session, keyring, model, column)
-            if await session.scalar(
-                select(Tenant.organization_id).where(Tenant.id == tenant_id)
-            ):
-                for model, column in _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS:
-                    total += await reencrypt_stale_text(session, keyring, model, column)
+            await session.commit()
+    for organization_id in await all_organization_ids(session_factory):
+        async with organization_session(session_factory, organization_id) as session:
+            for model, column in _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS:
+                total += await reencrypt_stale_text(session, keyring, model, column)
             await session.commit()
     async with session_factory() as session:
         for model, column in _GLOBAL_ENCRYPTED_TEXT_COLUMNS:
