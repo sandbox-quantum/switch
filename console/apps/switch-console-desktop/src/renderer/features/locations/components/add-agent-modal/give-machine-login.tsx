@@ -42,6 +42,10 @@ export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; la
       ];
     case 'cursor':
       return [{ value: 'api-key', label: 'API key' }];
+    case 'mistral-vibe':
+      // Vibe stores its sign-in locally and has no portable credential that
+      // Switch can seal and transfer to another machine.
+      return [];
     default:
       return [{ value: 'this-computer', label: "This computer's sign-in" }];
   }

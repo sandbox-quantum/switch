@@ -7,7 +7,7 @@ describe('knownAgentTypeForProvider', () => {
     expect(knownAgentTypeForProvider('claude')).toBe('claude-code');
   });
 
-  it.each(['codex', 'opencode', 'antigravity', 'cursor'])(
+  it.each(['codex', 'opencode', 'antigravity', 'cursor', 'mistral-vibe'])(
     'registers %s under its own gateway known-agent type',
     (providerId) => {
       // Without this OpenCode fell through to a fallback and registered as

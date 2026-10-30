@@ -51,7 +51,7 @@ A condition reads one param: "{param}" (true when it has a value) or
 ## An agent (type: agent)
 
   instructions: text             # REQUIRED. The agent's brief.
-  provider: claude | codex | opencode | antigravity | cursor | "{param}"   # REQUIRED
+  provider: claude | codex | opencode | antigravity | cursor | mistral-vibe | "{param}"   # REQUIRED
   machine: machine name or id | "{param}"           # REQUIRED: where it runs
   directory: path | "{param}"                       # REQUIRED
   name: identifier               # optional; else derived from display_name.

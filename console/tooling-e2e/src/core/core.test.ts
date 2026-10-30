@@ -73,6 +73,14 @@ describe('configuration', () => {
     expect(loadEnv('fast', BASE, { SWITCH_E2E_STRICT: '1' }).strict).toBe(true);
     expect(laneFrom({ SWITCH_E2E_LANE: 'provider' }, { SWITCH_E2E_LANE: 'fast' })).toBe('provider');
   });
+
+  it('uses prose questions by default for Mistral Vibe, which has no native question tool', () => {
+    expect(
+      loadEnv('provider', { ...BASE, SWITCH_E2E_AGENT_TYPE: 'mistral-vibe' }, {}).provider
+        .questionMode
+    ).toBe('prose');
+    expect(loadEnv('provider', BASE, {}).provider.questionMode).toBe('numbered');
+  });
 });
 
 describe('read-only guard', () => {

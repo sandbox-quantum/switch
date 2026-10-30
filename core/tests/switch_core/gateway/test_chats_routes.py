@@ -228,18 +228,24 @@ async def test_a_new_chat_is_a_private_direct_room_owned_by_its_creator(
     assert [c["roomId"] for c in listed.json()["chats"]] == [chat["roomId"]]
 
 
-async def test_a_registered_agent_reports_its_provider(chats: _Harness) -> None:
+@pytest.mark.parametrize(
+    ("known_type", "provider"),
+    [("claude-code", "claude"), ("mistral-vibe", "mistral-vibe")],
+)
+async def test_a_registered_agent_reports_its_provider(
+    chats: _Harness, known_type: str, provider: str
+) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     async with chats.factory() as session:
         row = await session.get(Agent, agent.id)
         assert row is not None
-        row.metadata_ = {"known_agent_type": "claude-code"}
+        row.metadata_ = {"known_agent_type": known_type}
         await session.commit()
     other = await chats.agent("plain", owner=chats.alice)
 
     first = await chats.create_chat(chats.alice, agent, "c1")
     second = await chats.create_chat(chats.alice, other, "c2")
-    assert first.json()["chat"]["agents"][0]["provider"] == "claude"
+    assert first.json()["chat"]["agents"][0]["provider"] == provider
     assert second.json()["chat"]["agents"][0]["provider"] is None
 
 

@@ -135,6 +135,10 @@ describe('giving a machine a Claude login through Vertex AI', () => {
     expect(loginKindsFor('codex').map((kind) => kind.value)).not.toContain('vertex');
   });
 
+  it('does not offer a portable login for Mistral Vibe', () => {
+    expect(loginKindsFor('mistral-vibe')).toEqual([]);
+  });
+
   it('recommends a service account key, and sends a pasted one with the project and region', async () => {
     const el = await render();
     await chooseVertex(el);

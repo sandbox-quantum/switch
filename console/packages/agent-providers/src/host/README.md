@@ -1,6 +1,7 @@
 # Persistent local SDK host
 
-The host runs Claude, Codex, OpenCode, Antigravity and Cursor outside Electron.
+The host runs Claude, Codex, OpenCode, Antigravity, Cursor and Mistral Vibe
+outside Electron.
 It owns provider processes, a durable command inbox and a replayable chat journal.
 Closing a client leaves execution running. Restarting the host resumes the native
 provider conversation and retains the transcript. Interrupted work is reported;
@@ -119,8 +120,8 @@ controller writes it on a new revision, Console when the agent's settings are
 saved — and restarts each live session saved under an earlier definition on
 its own conversation, once that session is idle, so no turn is cut short. The
 native conversation is resumed under the new model and
-instructions; every provider takes both on resume (Cursor and Antigravity send
-the instructions with the first message after the restart).
+instructions; every provider takes both on resume (Cursor, Antigravity and
+Mistral Vibe send the instructions with the first message after the restart).
 
 Shared commands currently support queued text and request answers. SSH deployment
 and production session routing remain outside this experimental path.

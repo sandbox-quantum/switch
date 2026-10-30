@@ -42,7 +42,13 @@ export function isLane(raw: string): raw is Lane {
 export type Environment = 'ephemeral' | 'local' | 'dev' | 'staging' | 'prod';
 
 /** The Switch known-agent type the provider lane registers its throwaway agent as. */
-export type HarnessAgentType = 'opencode' | 'claude-code' | 'codex' | 'antigravity' | 'cursor';
+export type HarnessAgentType =
+  | 'opencode'
+  | 'claude-code'
+  | 'codex'
+  | 'antigravity'
+  | 'cursor'
+  | 'mistral-vibe';
 
 /**
  * How the `question` scenario expects the agent to ask.
@@ -278,6 +284,7 @@ export function loadEnv(
       'SWITCH_E2E_NO_MATTERMOST=1 says this environment has no Mattermost, but MATTERMOST_* is set too. Unset one.'
     );
   }
+  const agentType = agentTypeFrom(get('SWITCH_E2E_AGENT_TYPE'));
 
   return {
     lane,
@@ -305,8 +312,8 @@ export function loadEnv(
     provider: {
       agentRepoDir: get('SWITCH_E2E_AGENT_DIR') ?? null,
       manifestPath: get('SWITCH_E2E_MANIFEST') ?? null,
-      agentType: agentTypeFrom(get('SWITCH_E2E_AGENT_TYPE')),
-      questionMode: questionModeFrom(get('SWITCH_E2E_QUESTION_MODE')),
+      agentType,
+      questionMode: questionModeFrom(get('SWITCH_E2E_QUESTION_MODE'), agentType),
       controllerId: get('SWITCH_E2E_CONTROLLER_ID') ?? null,
     },
     agentic: {
@@ -336,6 +343,7 @@ const AGENT_TYPES: readonly HarnessAgentType[] = [
   'codex',
   'antigravity',
   'cursor',
+  'mistral-vibe',
 ];
 
 function agentTypeFrom(raw: string | undefined): HarnessAgentType {
@@ -349,8 +357,9 @@ function agentTypeFrom(raw: string | undefined): HarnessAgentType {
   return found;
 }
 
-function questionModeFrom(raw: string | undefined): QuestionMode {
-  if (raw === undefined || raw === 'numbered') return 'numbered';
+function questionModeFrom(raw: string | undefined, agentType: HarnessAgentType): QuestionMode {
+  if (raw === undefined) return agentType === 'mistral-vibe' ? 'prose' : 'numbered';
+  if (raw === 'numbered') return 'numbered';
   if (raw === 'prose') return 'prose';
   throw new Error(`SWITCH_E2E_QUESTION_MODE must be 'numbered' or 'prose' — got '${raw}'.`);
 }

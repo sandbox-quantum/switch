@@ -71,6 +71,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
+        "mistral-vibe": ("mistral-vibe", "Mistral Vibe"),
     }
 
 
@@ -85,6 +86,10 @@ _CONSOLE_SIGN_IN = {
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
     "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+    "mistral-vibe": (
+        "mistral-vibe/mistral-vibe-acp.ts",
+        r"MISTRAL_VIBE_LOGIN = '([^']+)'",
+    ),
 }
 
 
@@ -103,7 +108,7 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
     assert str(raised.value) == (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, mistral-vibe"
     )
 
 

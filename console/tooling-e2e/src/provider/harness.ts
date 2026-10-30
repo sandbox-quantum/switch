@@ -66,6 +66,7 @@ const ROLE_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   opencode: 'opencode',
   antigravity: 'antigrav',
   cursor: 'cursor',
+  'mistral-vibe': 'vibe',
   'claude-code': 'claude',
   codex: 'codex',
 };
@@ -90,6 +91,7 @@ export const PROVIDER_BY_AGENT_TYPE: Record<HarnessAgentType, string> = {
   codex: 'codex',
   antigravity: 'antigravity',
   cursor: 'cursor',
+  'mistral-vibe': 'mistral-vibe',
 };
 
 /** How long to keep asking a controller to take the agent while it comes up. */

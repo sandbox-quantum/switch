@@ -10,7 +10,7 @@ import { startHostServer } from './server';
 
 it
   .skipIf(process.env.SDK_HOST_LIVE !== '1')
-  .each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+  .each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'mistral-vibe'] as const)(
   'runs %s chat, tools, deduplication and persistent resume through HTTP',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), `sdk-host-${provider}-`));

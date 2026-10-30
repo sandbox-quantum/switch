@@ -11,7 +11,7 @@ import { HostedSession } from './session-host';
 
 it
   .skipIf(process.env.SDK_ATTACHMENTS_LIVE !== '1')
-  .each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
+  .each(['claude', 'codex', 'opencode', 'antigravity', 'cursor', 'mistral-vibe'] as const)(
   'delivers real file bytes, a project skill and MCP to %s',
   async (provider) => {
     const root = await mkdtemp(join(tmpdir(), 'sdk-attachment-live-'));
@@ -46,6 +46,7 @@ it
       opencode: '.opencode',
       antigravity: '.agents',
       cursor: '.cursor',
+      'mistral-vibe': '.vibe',
     }[provider];
     const skill = join(cwd, skillDirectory, 'skills/sdk-verification');
     await mkdir(skill, { recursive: true });

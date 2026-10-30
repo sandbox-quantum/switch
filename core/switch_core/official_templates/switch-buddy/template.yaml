@@ -16,7 +16,7 @@ params:
   provider:
     type: provider
     description: The coding agent that runs it. The first one ready on its machine is chosen.
-    default: [claude, codex, opencode, cursor, antigravity]
+    default: [claude, codex, opencode, cursor, antigravity, mistral-vibe]
     input: advanced
   machine:
     type: machine

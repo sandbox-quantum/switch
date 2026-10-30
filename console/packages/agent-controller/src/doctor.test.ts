@@ -72,6 +72,7 @@ describe('doctor', () => {
     expect(status(checks, 'Node')).toBe('fail');
     expect(status(checks, 'claude')).toBe('warn');
     expect(status(checks, 'Providers')).toBe('fail');
+    expect(checks.find((check) => check.name === 'Providers')?.detail).toContain('mistral-vibe');
   });
 
   it('points at the proxy when the server answers, but not as the Switch API', async () => {

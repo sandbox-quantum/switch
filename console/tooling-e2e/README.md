@@ -218,8 +218,8 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_MANIFEST` | provider lane | File the setup records its agent and room in, so a second process can reuse them. See "Seeding first". |
 | `SWITCH_E2E_REPLY_TIMEOUT_MS` | provider lane | How long a scenario waits for the agent (default 5 min). |
 | `SWITCH_E2E_SESSION_TIMEOUT_MS` | provider lane | How long setup waits for a live session (default 2 min). |
-| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity` or `cursor` — which provider's runtime is under test. |
-| `SWITCH_E2E_QUESTION_MODE` | provider lane | `numbered` (default) or `prose`; see the `question` row below. |
+| `SWITCH_E2E_AGENT_TYPE` | provider lane | `opencode` (default), `claude-code`, `codex`, `antigravity`, `cursor` or `mistral-vibe` — which provider's runtime is under test. |
+| `SWITCH_E2E_QUESTION_MODE` | provider lane | `numbered` (default, except Mistral Vibe) or `prose`; see the `question` row below. |
 | `SWITCH_E2E_CONTROLLER_ID` | provider lane | An agent controller to run the agent on. `just e2e-provider` sets it. Unset, a Switch Console session is expected instead. |
 | `SWITCH_E2E_PROVIDER_ENV_FILE` | `just e2e-provider`, `just e2e-agentic` | A file of provider keys, handed to the controller as `--env-file`, and to the agentic lane's driver and judge. Leave it unset to use the CLI's own sign-in. |
 
@@ -591,6 +591,10 @@ For Codex, use `SWITCH_E2E_AGENT_TYPE=codex` and `SWITCH_E2E_QUESTION_MODE=prose
 with `provider_id` and `providerId` both `codex`. The normal Codex mode does
 not expose its native question tool; the prose scenario verifies the room
 round trip without claiming to test a native question card.
+
+For Mistral Vibe, the question mode defaults to `prose` because Vibe 3.0.2 does
+not advertise an ACP question tool. Set `SWITCH_E2E_QUESTION_MODE=numbered` only
+when testing a Vibe version that advertises native elicitation support.
 
 Setup finds the manifest, reuses what is in it rather than registering a second
 agent, and deletes it during teardown — so a manifest never outlives its room.

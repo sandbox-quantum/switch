@@ -141,8 +141,7 @@ async function providerChecks(inputs: DoctorInputs, bundle: string | null): Prom
     checks.push({
       name: 'Providers',
       status: 'fail',
-      detail:
-        'No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (claude, codex, opencode, cursor or antigravity) and sign in, or set its API key in the --env-file the service runs with.',
+      detail: `No provider CLI is installed and signed in on PATH for this user, so no agent can run here. Install one (${PROVIDERS.join(', ')}) and sign in, or set its API key in the --env-file the service runs with.`,
     });
   return checks;
 }

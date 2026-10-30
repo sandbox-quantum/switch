@@ -215,7 +215,11 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      requireHttpMcp(
+        hooks.label,
+        input.mcpServers,
+        agent.mcpCapabilities?.http ?? hooks.mcpCapabilities?.http
+      );
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -496,7 +500,9 @@ export class AcpAdapter implements ProviderAdapter {
     if (vendor) return await vendor;
     const { toolCall } = request;
     const once = request.options.find((option) => option.kind === 'allow_once');
-    const server = this.hooks.mcpServerOf?.(toolCall) ?? state.toolServers.get(toolCall.toolCallId);
+    const server =
+      this.hooks.mcpServerOf?.(toolCall, state.mcpNames) ??
+      state.toolServers.get(toolCall.toolCallId);
     // In auto mode whatever automatic review the agent has ran before it
     // asked (see `sessionMode`), so a request that reaches here goes to a person.
     if (
@@ -596,7 +602,7 @@ export class AcpAdapter implements ProviderAdapter {
 
   private toolUpdate(state: State, turnId: string, update: AcpToolCall): void {
     const old = state.items.get(update.toolCallId);
-    const server = this.hooks.mcpServerOf?.(update);
+    const server = this.hooks.mcpServerOf?.(update, state.mcpNames);
     if (server !== undefined) state.toolServers.set(update.toolCallId, server);
     const text = (update.content ?? [])
       .map((part) =>

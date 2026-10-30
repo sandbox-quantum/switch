@@ -125,6 +125,11 @@ export interface AcpProviderHooks {
    * advertises in `initialize` is always honoured as well.
    */
   promptCapabilities?: AcpPromptCapabilities;
+  /**
+   * ACP capabilities known for a provider version that may omit them from
+   * `initialize`. Advertised capabilities always take precedence.
+   */
+  mcpCapabilities?: { http?: boolean };
   /** The ACP mode to put a new session in for Switch's runtime mode. Omit to leave the agent's default. */
   sessionMode?(runtimeMode: RuntimeMode): string;
   /**
@@ -134,7 +139,7 @@ export interface AcpProviderHooks {
    */
   nativeSessionIdPrefix?: { prefix: string; legacyMessage: string };
   /** The MCP server a tool call belongs to, when the agent says so. */
-  mcpServerOf?(toolCall: AcpToolCall): string | undefined;
+  mcpServerOf?(toolCall: AcpToolCall, serverNames?: ReadonlySet<string>): string | undefined;
   /** Vendor item typing, consulted before the protocol's own `kind`. */
   itemType?(toolCall: AcpToolCall): ItemType | undefined;
   /**

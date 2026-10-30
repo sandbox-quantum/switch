@@ -150,6 +150,14 @@ describe('pluginRegistry', () => {
       expect(typeof p.behavior.prompt?.buildCommand).toBe('function');
     }
   });
+
+  it('updates Mistral Vibe with uv instead of reinstalling it on Windows', () => {
+    expect(
+      pluginRegistry.get('mistral-vibe')!.capabilities.hostDependency.installCommands.windows
+    ).toContainEqual(
+      expect.objectContaining({ updateCommand: 'uv tool install --upgrade mistral-vibe' })
+    );
+  });
 });
 
 describe('permission flags', () => {
