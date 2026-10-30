@@ -17,6 +17,7 @@ and the broker refuses before it gets here.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -39,6 +40,7 @@ from switch_core.connections.loader import (
     TEMPLATE_FIELD_RE,
     AccessLevel,
     ApiKeySignIn,
+    BasicCredentials,
     ConnectionDefinition,
     Placement,
     url_placements,
@@ -151,16 +153,15 @@ class ApiKeyAdapter:
         the person's to fix, so it says which fields to check.
         """
         identity = self._sign_in.identity
+        headers = {
+            name: render(value, values) for name, value in identity.headers.items()
+        }
+        if identity.basic is not None:
+            headers["Authorization"] = self._basic(identity.basic, values)
         request = self._http.build_request(
             identity.method,
             render(identity.url, values),
-            headers={
-                **{
-                    name: render(value, values)
-                    for name, value in identity.headers.items()
-                },
-                "Accept": "application/json",
-            },
+            headers={**headers, "Accept": "application/json"},
             json=identity.body,
         )
         try:
@@ -186,6 +187,16 @@ class ApiKeyAdapter:
             )
         account_id, label = self._read_identity(response, values)
         return KeyIdentity(account_id, label)
+
+    def _basic(self, basic: BasicCredentials, values: dict[str, str]) -> str:
+        username = render(basic.username, values)
+        if ":" in username:
+            # RFC 7617: the user-id ends at the first colon.
+            raise InvalidKeyError(
+                f"{self._name} takes no colon in what names the key's user."
+            )
+        pair = f"{username}:{render(basic.password, values)}".encode()
+        return f"Basic {base64.b64encode(pair).decode()}"
 
     def _read_identity(
         self, response: httpx.Response, values: dict[str, str]

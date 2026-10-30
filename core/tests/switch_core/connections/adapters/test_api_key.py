@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -221,3 +222,95 @@ async def test_a_typed_field_reaches_the_identity_call_as_its_host() -> None:
     values = adapter.checked_fields({"api_key": "SYNTHETIC-KEY", "subdomain": "acme"})
     await adapter.identify(values)
     assert seen == ["https://acme.example.test/api/me"]
+
+
+# ── Basic credentials ─────────────────────────────────────────────────────────
+
+
+def _basic_adapter(handler) -> ApiKeyAdapter:
+    entry = {
+        **ENTRY,
+        "enabled": False,
+        "auth": {
+            **ENTRY["auth"],
+            "api_key": {
+                "fields": [
+                    {"name": "api_token", "label": "API token", "secret": True},
+                    {
+                        "name": "subdomain",
+                        "label": "Subdomain",
+                        "secret": False,
+                        "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                    },
+                    {
+                        "name": "email",
+                        "label": "Email",
+                        "secret": False,
+                        "pattern": "^[^@\s]+@[^@\s]+$",
+                    },
+                ],
+                "identity": {
+                    "method": "GET",
+                    "url": "https://{subdomain}.example.test/api/v2/users/me.json",
+                    "basic": {"username": "{email}/token", "password": "{api_token}"},
+                    "account_id": "user.id",
+                    "label": "user.email",
+                },
+            },
+        },
+    }
+    entry.pop("mcp")
+    definition = ConnectionDefinition.model_validate(entry)
+    return ApiKeyAdapter(
+        definition, httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+
+
+BASIC_FIELDS = {
+    "api_token": "SYNTHETIC-TOKEN",
+    "subdomain": "acme",
+    "email": "agent@example.test",
+}
+
+
+async def test_basic_credentials_reach_the_identity_call_encoded() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200, json={"user": {"id": 1234, "email": "agent@example.test"}}
+        )
+
+    adapter = _basic_adapter(handler)
+    identity = await adapter.identify(adapter.checked_fields(BASIC_FIELDS))
+
+    assert identity.account_id == "1234"
+    assert identity.label == "agent@example.test"
+    (request,) = seen
+    assert str(request.url) == "https://acme.example.test/api/v2/users/me.json"
+    assert (
+        request.headers["Authorization"]
+        == "Basic "
+        + base64.b64encode(b"agent@example.test/token:SYNTHETIC-TOKEN").decode()
+    )
+
+
+async def test_a_basic_user_with_a_colon_is_refused_before_any_call() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={})
+
+    adapter = _basic_adapter(handler)
+    values = adapter.checked_fields({**BASIC_FIELDS, "email": "a:b@example.test"})
+    with pytest.raises(InvalidKeyError, match="no colon"):
+        await adapter.identify(values)
+    assert calls == []
+
+
+async def test_a_refused_basic_key_says_which_fields_to_check() -> None:
+    adapter = _basic_adapter(lambda request: httpx.Response(401))
+    with pytest.raises(InvalidKeyError, match="refused the key"):
+        await adapter.identify(adapter.checked_fields(BASIC_FIELDS))

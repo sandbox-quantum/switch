@@ -362,6 +362,8 @@ auth:
       method: GET               # or POST, with a JSON body
       url: "https://api.{site}/me"          # a URL names no secret field
       headers: { X-Api-Key: "{api_key}" }
+      # or basic: { username: "{email}/token", password: "{api_key}" },
+      # sent as Authorization: Basic, for a vendor that takes its key so
       account_id: user.id       # optional: without it, the key's SHA-256
       label: user.email         # optional: without it, the name and choices
     help_url: https://docs.example.com/keys

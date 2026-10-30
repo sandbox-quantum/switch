@@ -1173,3 +1173,58 @@ def test_an_entry_puts_a_pattern_field_in_its_host():
 def test_an_entry_that_misplaces_a_typed_field_is_refused(url, message):
     with pytest.raises(ValidationError, match=message):
         ConnectionDefinition.model_validate(_key_entry(url, SUBDOMAIN))
+
+
+# ── Basic credentials on the identity call ────────────────────────────────────
+
+
+def _basic_entry(identity: dict[str, object]) -> dict[str, object]:
+    entry = _key_entry("https://{subdomain}.example.com/api/me", SUBDOMAIN)
+    sign_in = entry["auth"]["api_key"]  # type: ignore[index]
+    sign_in["fields"].append(  # type: ignore[index]
+        {
+            "name": "email",
+            "label": "Email",
+            "secret": False,
+            "pattern": "^[^@\s]+@[^@\s]+$",
+        }
+    )
+    sign_in["identity"] = {  # type: ignore[index]
+        "method": "GET",
+        "url": "https://{subdomain}.example.com/api/me",
+        **identity,
+    }
+    return entry
+
+
+def test_an_identity_call_may_send_the_key_as_basic_credentials():
+    definition = ConnectionDefinition.model_validate(
+        _basic_entry({"basic": {"username": "{email}/token", "password": "{api_key}"}})
+    )
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert sign_in.identity.headers == {}
+    assert sign_in.identity.basic is not None
+    assert sign_in.identity.basic.username == "{email}/token"
+
+
+@pytest.mark.parametrize(
+    ("identity", "message"),
+    [
+        ({}, "in headers or as basic"),
+        (
+            {
+                "basic": {"username": "{email}/token", "password": "{api_key}"},
+                "headers": {"Authorization": "Bearer {api_key}"},
+            },
+            "names no other",
+        ),
+        (
+            {"basic": {"username": "{email}/token", "password": "{secret}"}},
+            "unknown field",
+        ),
+    ],
+)
+def test_basic_credentials_are_refused_when_inconsistent(identity, message):
+    with pytest.raises(ValidationError, match=message):
+        ConnectionDefinition.model_validate(_basic_entry(identity))
