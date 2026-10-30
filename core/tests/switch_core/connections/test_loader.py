@@ -1,3 +1,4 @@
+import re
 import shutil
 
 import pytest
@@ -36,6 +37,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "zendesk",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -1228,3 +1230,82 @@ def test_an_identity_call_may_send_the_key_as_basic_credentials():
 def test_basic_credentials_are_refused_when_inconsistent(identity, message):
     with pytest.raises(ValidationError, match=message):
         ConnectionDefinition.model_validate(_basic_entry(identity))
+
+
+# ── The shipped Zendesk entry ─────────────────────────────────────────────────
+
+
+def test_the_shipped_zendesk_entry_is_off_until_a_transport_exists():
+    entry = CATALOG["zendesk"]
+    definition = entry.definition
+    assert definition.enabled is False
+    assert definition.adapter == "api_key"
+    # Nothing a session could call yet, so nothing to grant and no skill.
+    assert definition.mcp is None
+    assert definition.cli is None
+    assert entry.skill_files == {}
+    # A token does not expire, so it is never handed to an agent.
+    assert definition.token is not None
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+    assert definition.access is None
+
+
+def test_the_shipped_zendesk_entry_checks_the_token_as_basic_credentials():
+    sign_in = CATALOG["zendesk"].definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("subdomain", False),
+        ("email", False),
+        ("api_token", True),
+    ]
+    assert sign_in.pattern_names() == {"subdomain", "email"}
+    identity = sign_in.identity
+    assert identity.method == "GET"
+    assert identity.url == "https://{subdomain}.zendesk.com/api/v2/users/me.json"
+    assert identity.headers == {}
+    assert identity.basic is not None
+    assert (identity.basic.username, identity.basic.password) == (
+        "{email}/token",
+        "{api_token}",
+    )
+    # An anonymous answer has no user id, and is refused for naming no account.
+    assert (identity.account_id, identity.label) == ("user.id", "user.email")
+    assert url_placements(identity.url, sign_in.pattern_names()) == {
+        "subdomain": {"host_label"}
+    }
+
+
+@pytest.mark.parametrize("value", ["acme", "acme-support", "a1"])
+def test_the_zendesk_subdomain_takes_one_label(value):
+    (field,) = [
+        f
+        for f in CATALOG["zendesk"].definition.auth.api_key.fields  # type: ignore[union-attr]
+        if f.name == "subdomain"
+    ]
+    assert field.pattern is not None
+    assert re.fullmatch(field.pattern, value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "acme.evil.test",
+        "evil.test/x",
+        "acme@evil.test",
+        "acme:443",
+        "-acme",
+        "ACME",
+        "acmé",
+        "",
+        "a" * 64,
+    ],
+)
+def test_the_zendesk_subdomain_refuses_anything_that_could_change_the_host(value):
+    (field,) = [
+        f
+        for f in CATALOG["zendesk"].definition.auth.api_key.fields  # type: ignore[union-attr]
+        if f.name == "subdomain"
+    ]
+    assert field.pattern is not None
+    assert not re.fullmatch(field.pattern, value)

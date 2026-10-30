@@ -1,0 +1,52 @@
+slug: zendesk
+name: Zendesk
+category: Customer support
+description: Read and update Zendesk tickets, users and organizations, with your API token.
+# Off until there is something for a session to call with the token. An
+# api_key entry's tools are a vendor MCP server or an official command-line
+# tool, and Zendesk has neither for its Support API yet: its announced MCP
+# server has no public documentation or endpoint, and zcli builds Zendesk apps
+# and themes rather than reading tickets. Switch also does not hand a key that
+# never expires to an agent, so a key entry is not granted to one in any case.
+# The sign-in below is complete and tested against a stand-in, ready for when
+# a transport exists.
+enabled: false
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: subdomain
+        label: Zendesk subdomain
+        secret: false
+        help: The part before .zendesk.com in your Zendesk address.
+        # One DNS label, only ever the host label of https://{subdomain}.zendesk.com.
+        pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+      - name: email
+        label: Email address
+        secret: false
+        help: The email you sign in to Zendesk with. The token acts as this user.
+        pattern: "^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}$"
+      - name: api_token
+        label: API token
+        secret: true
+        help: Admin Center, Apps and integrations, APIs, API tokens.
+    # Zendesk takes a token as Basic credentials, `{email}/token` and the
+    # token. It answers this call for a caller it did not authenticate too,
+    # with an anonymous user whose id is null; an answer that names no
+    # account is refused, so a wrong token is never stored.
+    identity:
+      method: GET
+      url: "https://{subdomain}.zendesk.com/api/v2/users/me.json"
+      basic: { username: "{email}/token", password: "{api_token}" }
+      account_id: user.id
+      label: user.email
+    help_url: https://developer.zendesk.com/api-reference/introduction/security-and-auth/
+# Zendesk is retiring API tokens: accounts created on or after 2026-07-28
+# cannot use them, no account can create a new one from 2026-10-27, and every
+# remaining token is deactivated on 2027-04-30
+# (https://developer.zendesk.com/documentation/authentication/oauth-migration/).
+# A token does not expire before then, and only Zendesk can revoke it.
+token: { kind: pass_through, max_lifetime: null }
+tools: { mode: pass_through }
