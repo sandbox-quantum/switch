@@ -87,6 +87,10 @@ class ServiceFlow:
         return self.stored.service
 
     @property
+    def tenant_id(self) -> str:
+        return self.stored.tenant_id
+
+    @property
     def name(self) -> str:
         return str(self.stored.details["name"])
 

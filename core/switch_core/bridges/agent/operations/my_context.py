@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import messaging_platforms
 from switch_core.addressing import policy_kind
@@ -159,6 +160,7 @@ async def get_my_context() -> dict[str, Any]:
             for agent in agents
         }
         bridges = await protocol.bridge_store.get_all(session)
+        services = await _services(session, protocol, connections, agents, grants)
 
     admin = role in {"owner", "admin"} or owner.role == "admin"
     port = management_port()
@@ -213,7 +215,7 @@ async def get_my_context() -> dict[str, Any]:
             ],
             "how_to_add": _how_to_add(protocol),
         },
-        "services": await _services(protocol, connections, agents, grants),
+        "services": services,
         "agents": [
             {
                 "id": agent.id,
@@ -270,6 +272,7 @@ def _how_to_add(protocol: Any) -> list[dict[str, Any]]:
 
 
 async def _services(
+    session: AsyncSession,
     protocol: Any,
     connections: dict[str, str],
     agents: list[Agent],
@@ -284,13 +287,13 @@ async def _services(
         definition = entry.definition
         if not definition.enabled:
             continue
-        unavailable = await broker.unavailable(definition.slug)
+        standing = await broker.standing(session, definition.slug)
+        unavailable = standing.unavailable
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
-                "available": unavailable is None
-                and await broker.connectable(definition.slug),
+                "available": unavailable is None and standing.connectable,
                 "unavailable_reason": None
                 if unavailable is None
                 else unavailable.reason,

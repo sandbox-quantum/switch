@@ -1343,7 +1343,6 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         OrganizationApps(
             apps=connector_apps,
             store=OrganizationAppCredentialStore(config.keyring),
-            session_factory=session_factory,
         )
         if config.organization_connector_apps_enabled
         else None
