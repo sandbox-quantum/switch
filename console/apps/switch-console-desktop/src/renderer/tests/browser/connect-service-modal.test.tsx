@@ -151,7 +151,7 @@ it('opens any other service on the sign-in', async () => {
 
 /** Signs in through the browser; the flow then reads whatever `getServiceFlow` answers. */
 async function signIn(modal: HTMLElement): Promise<void> {
-  workspaces.startServiceConnection.mockResolvedValue('flow-1');
+  workspaces.startServiceConnection.mockResolvedValue({ id: 'flow-1', callbackUrl: null });
   await act(async () => button(/^connect example/i, modal)!.click());
 }
 

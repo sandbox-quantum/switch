@@ -2,6 +2,7 @@ import { rpc } from '@renderer/lib/ipc';
 import type {
   ServiceFlow,
   ServiceKeyConnected,
+  ServiceSignInStarted,
 } from '@shared/core/switch-servers/service-connection';
 
 /**
@@ -10,7 +11,7 @@ import type {
  * shows, so a page for one workspace never connects or disconnects in another.
  */
 export type ServiceCalls = {
-  startSignIn: (service: string) => Promise<string>;
+  startSignIn: (service: string) => Promise<ServiceSignInStarted>;
   getSignIn: (service: string, flowId: string) => Promise<ServiceFlow>;
   cancelSignIn: (service: string, flowId: string) => Promise<void>;
   connectWithKey: (service: string, fields: Record<string, string>) => Promise<ServiceKeyConnected>;

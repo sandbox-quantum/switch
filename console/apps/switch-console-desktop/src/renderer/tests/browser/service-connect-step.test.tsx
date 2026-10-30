@@ -116,9 +116,14 @@ function connectStep(onConnected: (warning: string | null) => void = () => {}) {
   );
 }
 
-/** Starts a sign-in; the flow then reads whatever `getServiceFlow` answers. */
-async function signIn(): Promise<void> {
-  switchServers.startServiceConnection.mockResolvedValue('flow-1');
+const CALLBACK = 'https://switch.example.test/gateway/service-connections/example/flows/callback';
+
+/**
+ * Starts a sign-in, returning to the server's `callbackUrl` where one is given;
+ * the flow then reads whatever `getServiceFlow` answers.
+ */
+async function signIn(callbackUrl: string | null = null): Promise<void> {
+  switchServers.startServiceConnection.mockResolvedValue({ id: 'flow-1', callbackUrl });
   await vi.waitFor(() => expect(button(/^connect example/i, dialog())).toBeDefined());
   await act(async () => button(/^connect example/i, dialog())!.click());
   expect(switchServers.startServiceConnection).toHaveBeenCalledWith('server', 'example');
@@ -155,6 +160,26 @@ it('waits on the browser, and cannot be closed meanwhile', async () => {
   await vi.waitFor(() => expect(dialog().textContent).toMatch(/Finish signing in in your browser/));
   expect(closable()).toBe(false);
   expect(button(/^cancel$/i, dialog())).toBeDefined();
+  expect(dialog().textContent).not.toMatch(/allow-list/);
+});
+
+it('names the server’s callback to allow-list while a sign-in returns through it', async () => {
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'pending',
+    account: null,
+    error: null,
+    warning: null,
+  });
+  await render(connectStep());
+  await signIn(CALLBACK);
+
+  await vi.waitFor(() => expect(dialog().textContent).toMatch(/Finish signing in in your browser/));
+  const hint = [...dialog().querySelectorAll('p')].find((p) =>
+    p.textContent?.startsWith('If Example shows an error')
+  );
+  expect(hint?.textContent).toBe(
+    `If Example shows an error, an admin must allow-list this URL at Example. ${CALLBACK}`
+  );
 });
 
 it("shows the server's reason when it refuses the account, and lets the dialog close", async () => {

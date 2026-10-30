@@ -132,7 +132,9 @@ async def start(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
 ) -> dict | JSONResponse:
-    """Begin signing in: where to send the browser, and which way it returns."""
+    """Begin signing in: where to send the browser, which way it returns,
+    and, in core mode, Core's callback it returns to, for Console to show in
+    case the vendor refuses it."""
     try:
         await broker.require_workspace_enabled(session, service)
         definition, adapter = await broker.sign_in(session, service)
@@ -169,7 +171,12 @@ async def start(
             raise HTTPException(503, str(error)) from None
         except ServiceAdapterError as error:
             raise HTTPException(502, str(error)) from None
-    return {"id": body.state, "url": url, "mode": flow.mode}
+    return {
+        "id": body.state,
+        "url": url,
+        "mode": flow.mode,
+        "callback_url": flow.callback_url,
+    }
 
 
 @router.get("/authorize")

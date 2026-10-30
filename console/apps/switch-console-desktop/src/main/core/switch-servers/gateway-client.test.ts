@@ -1811,8 +1811,48 @@ describe('a service sign-in', () => {
 
   it('accepts Core’s own authorize step on this server in core mode', async () => {
     answer({ id: state, mode: 'core', url: `${flows}/authorize?state=${state}` });
-    expect((await startServiceConnection(SERVER, 'example', input)).url).toBe(
-      `${flows}/authorize?state=${state}`
+    expect(await startServiceConnection(SERVER, 'example', input)).toEqual({
+      id: state,
+      mode: 'core',
+      url: `${flows}/authorize?state=${state}`,
+      callback_url: null,
+    });
+  });
+
+  it('reads the callback Core’s authorize step returns the browser to, in core mode', async () => {
+    answer({
+      id: state,
+      mode: 'core',
+      url: `${flows}/authorize?state=${state}`,
+      callback_url: `${flows}/callback`,
+    });
+    expect((await startServiceConnection(SERVER, 'example', input)).callback_url).toBe(
+      `${flows}/callback`
+    );
+  });
+
+  it.each([
+    [
+      'on another server',
+      'core',
+      'https://other.example.com/gateway/service-connections/example/flows/callback',
+    ],
+    ['for another service', 'core', `${flows.replace('/example/', '/other/')}/callback`],
+    ['with a query', 'core', `${flows}/callback?next=elsewhere`],
+    ['that is not a URL', 'core', 'not a url'],
+    ['in loopback mode', 'loopback', `${flows}/callback`],
+  ])('refuses a callback %s', async (_name, mode, callback) => {
+    answer({
+      id: state,
+      mode,
+      url:
+        mode === 'core'
+          ? `${flows}/authorize?state=${state}`
+          : vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
+      callback_url: callback,
+    });
+    await expect(startServiceConnection(SERVER, 'example', input)).rejects.toThrow(
+      'invalid sign-in URL'
     );
   });
 

@@ -78,9 +78,11 @@ async function start(service = 'example') {
     id: input.state,
     url: 'https://auth.example.test/authorize',
     mode: 'loopback',
+    callback_url: null,
   }));
   const open = vi.fn().mockResolvedValue(undefined);
-  const id = await startServiceBrowserFlow(server, service, open);
+  const { id, callbackUrl } = await startServiceBrowserFlow(server, service, open);
+  expect(callbackUrl).toBeNull();
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
   return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
@@ -262,11 +264,32 @@ it('closes the listener when the person cancels', async () => {
   );
 });
 
+it('hands on the server’s callback when the sign-in returns through it', async () => {
+  const callback = 'https://switch.example.test/gateway/service-connections/example/flows/callback';
+  vi.mocked(startServiceConnection).mockImplementation(async (_server, _service, input) => ({
+    id: input.state,
+    url: `https://switch.example.test/gateway/service-connections/example/flows/authorize?state=${input.state}`,
+    mode: 'core',
+    callback_url: callback,
+  }));
+  const started = await startServiceBrowserFlow(
+    server,
+    'example',
+    vi.fn().mockResolvedValue(undefined)
+  );
+  flows.push(['example', started.id]);
+  expect(started).toEqual({
+    id: vi.mocked(startServiceConnection).mock.calls[0]![2].state,
+    callbackUrl: callback,
+  });
+});
+
 it('cancels the server flow if the browser cannot open', async () => {
   vi.mocked(startServiceConnection).mockImplementation(async (_server, _service, input) => ({
     id: input.state,
     url: 'https://auth.example.test/authorize',
     mode: 'loopback',
+    callback_url: null,
   }));
   await expect(
     startServiceBrowserFlow(server, 'example', async () => {

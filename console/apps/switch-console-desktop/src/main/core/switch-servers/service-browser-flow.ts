@@ -3,6 +3,7 @@ import { log } from '@main/lib/logger';
 import {
   SERVICE_CALLBACK_PATH,
   type ServiceFlow,
+  type ServiceSignInStarted,
 } from '@shared/core/switch-servers/service-connection';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
@@ -34,7 +35,7 @@ export async function startServiceBrowserFlow(
   server: SwitchServer,
   service: string,
   open: (url: string) => Promise<void>
-): Promise<string> {
+): Promise<ServiceSignInStarted> {
   const state = randomBytes(32).toString('base64url');
   const secret = randomBytes(32).toString('base64url');
   const catalogEntry = (await getConnectionCatalog(server)).find(
@@ -86,7 +87,7 @@ export async function startServiceBrowserFlow(
     } catch (cause) {
       throw new Error('Could not open the sign-in page in your browser.', { cause });
     }
-    return state;
+    return { id: state, callbackUrl: flow.callback_url };
   } catch (error) {
     entry.close();
     active.delete(key(server, service, state));
