@@ -1,4 +1,4 @@
-import type { McpServerSpec } from '../adapter';
+import type { McpServerSpec, StdioMcpServerSpec } from '../adapter';
 
 /**
  * Refuse to start an ACP session whose HTTP MCP servers the agent cannot
@@ -23,6 +23,19 @@ export function requireHttpMcp(
   );
 }
 
+/** A stdio server's environment: its `envVars` from the session environment, under its explicit `env`. */
+export function stdioMcpServerEnv(
+  server: StdioMcpServerSpec,
+  env: Record<string, string>
+): Record<string, string> {
+  return {
+    ...Object.fromEntries(
+      (server.envVars ?? []).filter((key) => env[key] !== undefined).map((key) => [key, env[key]])
+    ),
+    ...server.env,
+  };
+}
+
 /**
  * The session's MCP servers in ACP's `session/new` shape. A stdio server's
  * `envVars` are filled from the session environment, under its explicit `env`.
@@ -37,14 +50,10 @@ export function acpMcpServers(
           name,
           command: server.command,
           args: server.args,
-          env: Object.entries({
-            ...Object.fromEntries(
-              (server.envVars ?? [])
-                .filter((key) => env[key] !== undefined)
-                .map((key) => [key, env[key]])
-            ),
-            ...server.env,
-          }).map(([name, value]) => ({ name, value })),
+          env: Object.entries(stdioMcpServerEnv(server, env)).map(([name, value]) => ({
+            name,
+            value,
+          })),
         }
       : {
           name,

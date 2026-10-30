@@ -324,6 +324,36 @@ it('lets vendor extensions ask questions and add items, and cancels them outside
   });
 });
 
+const switchHttp = {
+  transport: 'http' as const,
+  url: 'http://127.0.0.1:1/mcp',
+  headers: { Authorization: 'Bearer t' },
+};
+
+it('refuses HTTP MCP servers the agent does not declare it can reach', async () => {
+  await expect(start(dummy, { mcpServers: { switch: switchHttp } })).rejects.toThrow(
+    /does not declare MCP over HTTP/
+  );
+});
+
+it('sends no MCP servers to an agent whose launch configured them, and releases it on exit', async () => {
+  const given: unknown[] = [];
+  const release = vi.fn(async () => {});
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    launch: ({ binaryPath, env, mcpServers }) => {
+      given.push(mcpServers);
+      return { command: binaryPath, args: [], env, mcpServersInLaunch: true, release };
+    },
+  };
+  const { adapter, server } = await start(hooks, { mcpServers: { switch: switchHttp } });
+  expect(given).toEqual([{ switch: switchHttp }]);
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([]);
+  expect(release).not.toHaveBeenCalled();
+  await adapter.stopSession('s');
+  expect(release).toHaveBeenCalledTimes(1);
+});
+
 it('fills a stdio MCP server environment from the session for its envVars', async () => {
   const { server } = await start(dummy, {
     env: { TOKEN: 'secret', OTHER: 'unused' },

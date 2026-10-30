@@ -64,11 +64,19 @@ export async function checkAcpSignIn(
 ): Promise<ProviderReadiness> {
   let client: StdioJsonRpcClient | undefined;
   const handshake = async () => {
+    const {
+      mcpServersInLaunch: _,
+      release,
+      ...launch
+    } = await hooks.launch({
+      ...input,
+      mcpServers: {},
+    });
     client = new StdioJsonRpcClient({
-      ...(await hooks.launch(input)),
+      ...launch,
       cwd: input.cwd,
       logger: noopLogger,
-      onExit: () => {},
+      onExit: () => void release?.(),
     });
     return await acpInitialize(client);
   };
@@ -163,16 +171,20 @@ export class AcpAdapter implements ProviderAdapter {
         input.sessionId,
         prefix.legacyMessage
       );
-    const launch = await hooks.launch({
+    const { mcpServersInLaunch, release, ...launch } = await hooks.launch({
       binaryPath: this.options.binaryPath ?? hooks.defaultBinary,
       cwd,
       env: input.env,
+      mcpServers: input.mcpServers,
     });
     const client = new StdioJsonRpcClient({
       ...launch,
       cwd,
       logger: this.logger,
-      onExit: (reason) => this.exited(input.sessionId, reason),
+      onExit: (reason) => {
+        void release?.();
+        this.exited(input.sessionId, reason);
+      },
     });
     const state: State = {
       id: input.sessionId,
@@ -215,7 +227,8 @@ export class AcpAdapter implements ProviderAdapter {
     try {
       const initialized = await acpInitialize(client);
       const agent = initialized.agentCapabilities ?? {};
-      requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
+      if (!mcpServersInLaunch)
+        requireHttpMcp(hooks.label, input.mcpServers, agent.mcpCapabilities?.http);
       state.prompt = {
         image: Boolean(agent.promptCapabilities?.image || hooks.promptCapabilities?.image),
         audio: Boolean(agent.promptCapabilities?.audio || hooks.promptCapabilities?.audio),
@@ -228,7 +241,7 @@ export class AcpAdapter implements ProviderAdapter {
       // checks stop at the handshake above.
       const authMethodId = hooks.authMethodId?.(input.env);
       if (authMethodId) await client.request('authenticate', { methodId: authMethodId });
-      const mcpServers = acpMcpServers(input.mcpServers, input.env);
+      const mcpServers = mcpServersInLaunch ? [] : acpMcpServers(input.mcpServers, input.env);
       let method = 'session/new';
       if (input.resume) {
         method = agent.loadSession

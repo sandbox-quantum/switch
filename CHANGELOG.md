@@ -85,6 +85,9 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **Cline agents.** The provider table has Cline CLI (`cline`), so a managed
+  agent definition, the gateway's provider list and an agent's registration
+  accept it. It has no advanced settings.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2057,6 +2060,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Cline CLI is an agent provider.** An agent can run on
+  [Cline CLI](https://docs.cline.bot/usage/acp), on a Cline account or on a
+  model provider's API key, created in Console. Switch drives it over
+  `cline --acp` on the generic ACP adapter.
+  Cline ignores the MCP servers ACP hands it, so each session's servers are
+  written to a settings file of its own, removed when the session ends, and
+  Cline's own configuration is never written. Cline has no automatic review
+  over ACP, so auto mode asks as approval-required does. Install it with
+  `npm install -g cline` and sign in with `cline auth`, or set
+  `CLINE_PROVIDER` and `CLINE_API_KEY` on the machine for a provider's key.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
