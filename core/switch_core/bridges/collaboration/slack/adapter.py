@@ -41,6 +41,7 @@ from switch_core.bridges.collaboration.models import (
     AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
+    BridgeOperationError,
     ChannelType,
     DirectoryUser,
     FailureReason,
@@ -2217,6 +2218,27 @@ class SlackAdapter(PlatformAdapter):
 
     # ── Channel creation ──────────────────────────────────────────────────────
 
+    async def _create_channel(self, name: str, *, is_private: bool) -> str:
+        assert self._web_client is not None
+        try:
+            try:
+                result = await self._web_client.conversations_create(
+                    name=name, is_private=is_private
+                )
+            except SlackApiError as error:
+                if error.response.get("error") != "name_taken":
+                    raise
+                unique_name = f"{name[:71]}-{uuid.uuid4().hex[:8]}"
+                result = await self._web_client.conversations_create(
+                    name=unique_name, is_private=is_private
+                )
+        except SlackApiError as error:
+            raise BridgeOperationError(
+                f"Slack refused to create the channel: {error.response.get('error')}"
+            ) from error
+        channel_id: str = result["channel"]["id"]
+        return channel_id
+
     async def create_channel(
         self,
         name: str,
@@ -2235,17 +2257,7 @@ class SlackAdapter(PlatformAdapter):
         is_private = channel_type == "channel_private"
         channel_name = re.sub(r"[^a-z0-9_-]", "-", name.lower()).strip("-")[:80]
 
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=is_private
-            )
-            channel_id: str = result["channel"]["id"]
-        except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=unique_name, is_private=is_private
-            )
-            channel_id = result["channel"]["id"]
+        channel_id = await self._create_channel(channel_name, is_private=is_private)
 
         try:
             await self._web_client.conversations_setTopic(
@@ -2289,17 +2301,7 @@ class SlackAdapter(PlatformAdapter):
 
         raw_name = f"dm-{user_name}-{agent_name}"
         channel_name = re.sub(r"[^a-z0-9_-]", "-", raw_name.lower()).strip("-")[:80]
-        try:
-            result = await self._web_client.conversations_create(
-                name=channel_name, is_private=True
-            )
-            channel_id: str = result["channel"]["id"]
-        except SlackApiError:
-            unique_name = f"{channel_name[:71]}-{uuid.uuid4().hex[:8]}"
-            result = await self._web_client.conversations_create(
-                name=unique_name, is_private=True
-            )
-            channel_id = result["channel"]["id"]
+        channel_id = await self._create_channel(channel_name, is_private=True)
 
         try:
             await self._web_client.conversations_invite(

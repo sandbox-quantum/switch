@@ -12,13 +12,19 @@ needed.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
+)
+from switch_core.bridges.collaboration.slack.adapter import (
+    SlackAdapter,
+    SlackConnectionConfig,
 )
 from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
@@ -72,6 +78,28 @@ async def test_platform_refusal_is_502_carrying_the_platforms_words() -> None:
     # The actionable half — which permission is missing — survives to the caller.
     assert "Channel.Create" in exc.detail
     assert exc.detail == _GRAPH_REFUSAL
+
+
+@pytest.mark.parametrize(
+    "reason", ["missing_scope", "restricted_action", "ratelimited"]
+)
+async def test_slack_creation_refusal_reaches_the_operator(reason: str) -> None:
+    adapter = SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="test", app_token="test", workspace_id="workspace-test"
+        )
+    )
+    adapter._web_client = AsyncMock()
+    adapter._web_client.conversations_create.side_effect = SlackApiError(
+        "Slack refused the request", response={"error": reason}
+    )
+    with pytest.raises(BridgeOperationError) as refusal:
+        await adapter.create_channel("room", "topic")
+
+    exc = await _call(refusal.value)
+
+    assert exc.status_code == 502
+    assert exc.detail == f"Slack refused to create the channel: {reason}"
 
 
 async def test_switch_declining_is_still_a_400() -> None:
