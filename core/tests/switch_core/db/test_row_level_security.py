@@ -382,6 +382,8 @@ class TestCatalogueCoverage:
             "organizations": "id",
             "organization_members": "organization_id",
             "organization_audit_events": "organization_id",
+            "organization_app_credentials": "organization_id",
+            "organization_service_settings": "organization_id",
         }
         assert len(scoped) >= 30, scoped
         assert scoped["tenants"] == "id"
