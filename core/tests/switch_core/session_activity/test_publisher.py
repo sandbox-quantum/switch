@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
     RequestCard,
     RichContentFailed,
     RichContentThrottled,
@@ -796,6 +797,37 @@ async def test_a_card_opened_but_not_drawn_into_is_kept_for_the_next_change(
     [drawn] = _turns(platform)
     assert (drawn.call, drawn.ref) == ("update_rich", opened.ref)
     assert platform.of("post_rich") == []
+
+
+async def test_an_ended_turn_whose_card_could_not_be_drawn_backs_off_as_usual(
+    service, publisher, platform, bridged
+):
+    """Keeping the message is not the draw succeeding: the retry still widens."""
+    platform.open_unfilled.add("turn-1")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: len(platform.of("opened")) == 1)
+
+    assert publisher._retries.waits[_key("turn-1")] == 10.0
+
+
+async def test_the_asking_message_is_marked_once_on_a_turns_first_draw(
+    service, publisher, platform, bridged
+):
+    """A platform that refuses the mark is asked once per pass, not twice."""
+    asked = 0
+    refuse = platform.mark_activity
+
+    async def refused(*args, **kwargs):
+        nonlocal asked
+        asked += 1
+        await refuse(*args, **kwargs)
+        raise ActivityMarkRefused("No permission to react here.")
+
+    platform.mark_activity = refused  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+    assert asked == 1
 
 
 async def test_a_running_turn_is_not_redrawn_every_few_seconds_for_its_clock(

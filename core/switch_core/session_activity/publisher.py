@@ -1141,8 +1141,8 @@ class AgentSessionActivityPublisher:
                 self._unposted.pop(key, None)
         else:
             await self._redraw_turn(key, post, view, target, content, state, drawn)
-        if post is not None:
             await self._marks(key, post, view, target, waiting_behind=bool(unended))
+        if post is not None:
             await self._attention(post, view, target, error_summary, recipient, drawn)
         if post is not None and not view.ended:
             self._live_turns[key] = agent_id
@@ -1329,8 +1329,8 @@ class AgentSessionActivityPublisher:
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             await self._turn_posts.create(db, post)
             db.expunge(post)
-        self._retries.clear(key)
         if drew:
+            self._retries.clear(key)
             drawn.status_state = state
             drawn.final = view.ended
         return post
