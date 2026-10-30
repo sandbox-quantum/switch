@@ -26,6 +26,11 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+# How finely a running turn's clock is shown, and so how often the clock alone
+# is worth redrawing a message for. Seconds would sit still between those
+# redraws and read as a card that had stopped.
+RUNNING_CLOCK_SECONDS = 60
+
 # Where the turn itself has got to. One message per turn is edited in place, so
 # without this a turn that finished and a turn that stalled read identically:
 # the same tool log, the last line still marked in progress, and nothing to say
@@ -61,7 +66,9 @@ def turn_state(
 
     `elapsed_seconds` comes from outside: neither a turn nor an item carries
     a timestamp, so a caller that tracked one against the session's own event
-    log supplies it. A running turn shows the live duration. A completed turn shows it in
+    log supplies it. A running turn shows the whole minutes it has run, and
+    nothing until the first, because that is as often as anything redraws it
+    for the clock alone. A completed turn shows the exact duration in
     place of the plain "Turn complete." — that phrase said only that the turn
     was over, and this says what happened while it ran. An interrupted or
     errored turn keeps its own phrase, since that is still worth knowing on
@@ -76,8 +83,8 @@ def turn_state(
     """
     state = TURN_STATE[turn.status]
     if turn.status not in TURN_ENDED:
-        if elapsed_seconds is not None:
-            return f"{state} {_format_duration(elapsed_seconds)}"
+        if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
+            return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
         return state
     if elapsed_seconds is not None:
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)

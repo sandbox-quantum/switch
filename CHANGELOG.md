@@ -167,6 +167,15 @@ version of their own to them without also giving them a release of their own.
   `status` and `list` report `instance_type_allowed` for each machine. A
   database bound before this release is accepted and rebound on first start,
   as long as `allowed_instance_types` has not changed in the same deploy.
+- **The Helm chart runs switch-core as a ServiceAccount of its own.**
+  It is `<release>-switch-core` (`switchCore.serviceAccount`) where it used to be
+  the namespace's `default`, which every pod that names no account shares, so
+  anything trusting switch-core's identity, such as the distributed Teams app's
+  federated credential, trusts switch-core alone. `create: false` with a `name`
+  runs it as an account made elsewhere. A Teams app whose federated
+  credential trusts `default` stops getting tokens after this upgrade: add a
+  credential for `system:serviceaccount:<namespace>:<release>-switch-core`
+  first, and remove the old one once the new pod is up.
 - **Agents and controllers are pinged every 10 seconds instead of every 2.**
   A connection is now declared dead after 30 seconds without a beat, up from
   6, so a client that goes away holds its room slot and shows online for up to
@@ -200,6 +209,19 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **On Slack, the 👀 and the activity card no longer arrive after the agent's
+  reply.** Every running turn's card was redrawn every 5 seconds to tick its
+  clock. Slack closes a streamed card after 10 minutes, so on a longer turn
+  each tick was a full message edit, and Slack allows about 50 of those a
+  minute for the whole workspace. A few long turns used that up, Slack made the
+  bridge wait, and new turns' cards and 👀 waited behind the clock redraws. The
+  clock now moves once a minute, and a running card shows whole minutes
+  ("Working… 3m"). Clock redraws stop while Slack is making the bridge wait,
+  and new turns go ahead of them. The 👀 goes on as soon as a turn starts
+  rather than once its card has posted. A card is redrawn as soon as Slack
+  closes its stream, instead of showing still-running steps as failed until
+  the next change. A turn whose first draw into its stream fails keeps that
+  card rather than posting a second one under it.
 - **An agent is told why a machine's CLI cannot be used.** When
   `create_agent` or `update_agent_detail` was refused because a provider was
   not logged in, it said the owner needed to log in, even when the machine had
@@ -207,6 +229,13 @@ version of their own to them without also giving them a release of their own.
   (a Codex login in the OS keyring, say). The refusal now gives what the
   machine said instead, and `list_machines` shows it as each provider's
   `problem`.
+- **A Teams app on a federated credential can deploy from the Helm chart.**
+  switch-core's migrate init container and the pre-upgrade migration Job were
+  given the Teams app's settings but not its projected token, so
+  `TEAMS_APP_FEDERATED_TOKEN_FILE` named a missing file and both refused to
+  load their configuration: with `switchCore.teamsApp.credential: federated`,
+  no release could migrate or start. The two that migrate are no longer given
+  the Teams app at all.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
@@ -2110,6 +2139,18 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Console no longer opens to a blank window on a database a newer build
+  has changed.** Stable and Canary share one database, so after Canary added a
+  migration, an older build found tables it was not written for, applied
+  nothing, and failed its first query with nothing on screen. Console now
+  refuses a database carrying a migration it does not know, before changing
+  anything, and says why: open the build that last used it, download a newer
+  release (a build that cannot start cannot update itself), or move the data
+  folder aside to start empty. Migrations are tracked one by one, so a
+  migration applied out of order is applied rather than skipped. Any other
+  startup failure now shows the error and a Reload button instead of a blank
+  window. drizzle-kit now defaults to the dev data folder's database rather
+  than the installed app's.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to

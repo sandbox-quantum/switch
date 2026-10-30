@@ -40,7 +40,10 @@ export const APP_ID = isCanary ? 'com.switchdash.canary' : 'com.switchdash.stabl
 export const PRODUCT_NAME = isCanary ? 'Switch Console Canary' : 'Switch Console';
 export const OS_APP_NAME = 'Switchdash';
 export const APP_NAME_LOWER = isCanary ? 'switch-console-canary' : 'switch-console';
-export const USER_DATA_DIR_NAME = isDev ? 'switchdash-dev' : 'switchdash';
+// Named on its own for code outside the Vite build (drizzle-kit), where isDev is
+// always false and USER_DATA_DIR_NAME is `switchdash`, the installed app's.
+export const DEV_USER_DATA_DIR_NAME = 'switchdash-dev';
+export const USER_DATA_DIR_NAME = isDev ? DEV_USER_DATA_DIR_NAME : 'switchdash';
 export const UPDATE_CHANNEL = isCanary ? 'v1-canary' : 'v1-stable';
 export const ARTIFACT_PREFIX = isCanary ? 'switch-console-canary' : 'switch-console';
 export const IS_CANARY = isCanary;

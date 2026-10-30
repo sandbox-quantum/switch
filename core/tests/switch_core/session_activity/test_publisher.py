@@ -3,18 +3,25 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
+    RequestCard,
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
+)
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
     ApprovalRequestPost,
     BridgeMessageMap,
     Client,
@@ -699,6 +706,260 @@ async def test_a_restart_redraws_running_turns_but_not_ones_already_shown_ended(
         ]
     finally:
         await publisher.stop()
+
+
+# ── Under a rate limit ───────────────────────────────────────────────────────
+
+
+def _key(turn_id: str) -> tuple[str, ...]:
+    return ("turn", AGENT, SESSION, turn_id)
+
+
+async def test_the_asking_message_is_marked_before_its_card_can_be_posted(
+    service, publisher, platform, bridged, session_factory
+):
+    """The 👀 says the agent has the message, so it goes on as the turn starts
+    rather than once the platform has room for the card."""
+    platform.turn_post_errors["turn-1"] = RichContentThrottled(retry_after=0.2, text="")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+    assert _turns(platform) == []
+
+    del platform.turn_post_errors["turn-1"]
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    assert platform.marks == [(ASKED_POST, "working", True)]
+    assert (await _turn_post(session_factory)).mark == "working"
+
+
+async def test_a_turn_that_ends_before_its_card_posts_takes_its_mark_off(
+    service, publisher, platform, bridged
+):
+    platform.turn_post_errors["turn-1"] = RichContentFailed("refused", text="")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+
+    await _turn(service, bridged.room_id, "completed", 2)
+    await platform.wait_until(lambda: len(platform.marks) == 2)
+    assert platform.marks[-1] == (ASKED_POST, "working", False)
+
+
+async def test_a_mark_put_on_before_its_card_is_not_taken_off_by_another_turn(
+    service, publisher, platform, bridged
+):
+    """Every agent shares one 👀 here, and a turn whose card has not posted yet
+    still holds it."""
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    await platform.wait_until(lambda: len(platform.marks) == 1)
+    platform.turn_post_errors["turn-2"] = RichContentThrottled(retry_after=0.2, text="")
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-2")
+    await platform.wait_until(lambda: len(platform.marks) == 2)
+
+    await _turn(service, bridged.room_id, "completed", 2, turn_id="turn-1")
+    await asyncio.sleep(0.5)
+    assert all(on for _, _, on in platform.marks)
+
+
+async def test_a_card_opened_but_not_yet_drawn_is_drawn_into_rather_than_posted_again(
+    service, publisher, platform, bridged, session_factory
+):
+    platform.open_undrawn.add("turn-1")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+    [opened] = platform.of("opened")
+    [drawn] = _turns(platform)
+    assert (drawn.call, drawn.ref) == ("update_rich", opened.ref)
+    assert platform.of("post_rich") == []
+    assert (await _turn_post(session_factory)).external_post_id == opened.ref
+
+
+async def test_a_card_opened_but_not_drawn_into_is_kept_for_the_next_change(
+    service, publisher, platform, bridged, session_factory
+):
+    """Any failure once the message exists, not only a rate limit: posting
+    again would leave the empty one above the new one."""
+    platform.open_unfilled.add("turn-1")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(platform.of("opened")) == 1)
+    [opened] = platform.of("opened")
+    assert (await _turn_post(session_factory)).external_post_id == opened.ref
+
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="in-progress",
+        revision=1,
+        title="Ran `pytest`",
+    )
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    [drawn] = _turns(platform)
+    assert (drawn.call, drawn.ref) == ("update_rich", opened.ref)
+    assert platform.of("post_rich") == []
+
+
+async def test_an_ended_turn_whose_card_could_not_be_drawn_backs_off_as_usual(
+    service, publisher, platform, bridged
+):
+    """Keeping the message is not the draw succeeding: the retry still widens."""
+    platform.open_unfilled.add("turn-1")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: len(platform.of("opened")) == 1)
+
+    assert publisher._retries.waits[_key("turn-1")] == 10.0
+
+
+async def test_the_asking_message_is_marked_once_on_a_turns_first_draw(
+    service, publisher, platform, bridged
+):
+    """A platform that refuses the mark is asked once per pass, not twice."""
+    asked = 0
+    refuse = platform.mark_activity
+
+    async def refused(*args, **kwargs):
+        nonlocal asked
+        asked += 1
+        await refuse(*args, **kwargs)
+        raise ActivityMarkRefused("No permission to react here.")
+
+    platform.mark_activity = refused  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+    assert asked == 1
+
+
+async def test_a_running_turn_is_not_redrawn_every_few_seconds_for_its_clock(
+    service, session_factory, bridged, listener, online, monkeypatch
+):
+    """Slack takes about fifty edits a minute for a whole workspace. A clock
+    redrawn every five seconds spends that on cards where nothing happened, so
+    it moves once a minute and every real change still goes out at once."""
+    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.05)
+    platform = RecordingPlatform(redraws_for_elapsed_time=True)
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 1)
+        await asyncio.sleep(2.5)
+        assert len(_turns(platform)) == 1
+
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="tool-1",
+            kind="tool-activity",
+            status="in-progress",
+            revision=1,
+            title="Ran `pytest`",
+        )
+        await platform.wait_until(lambda: len(_turns(platform)) == 2)
+    finally:
+        await publisher.stop()
+
+
+async def test_a_message_the_platform_closes_on_its_own_is_redrawn_just_after(
+    service, session_factory, bridged, listener, online, monkeypatch
+):
+    """Slack closes a stream ten minutes after it opens and marks the steps
+    still running as failed. Left to the clock, that could show for a minute."""
+    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.05)
+    monkeypatch.setattr(
+        publisher_module, "_AFTER_PLATFORM_CLOSE", timedelta(seconds=0.1)
+    )
+    platform = RecordingPlatform(redraws_for_elapsed_time=True, closes_in=0.5)
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 2)
+        assert _turns(platform)[1].call == "update_rich"
+
+        await asyncio.sleep(1.0)
+        assert len(_turns(platform)) == 2, "once, and then the clock again"
+    finally:
+        await publisher.stop()
+
+
+async def test_the_clock_asks_for_a_redraw_when_its_minute_turns_and_edits_are_taken():
+    publisher = _bare_publisher()
+    platform = publisher._adapter
+    platform.redraws_for_elapsed_time = True  # type: ignore[misc]
+    now = datetime.now(UTC)
+    for turn_id in ("due", "later"):
+        publisher._live_turns[_key(turn_id)] = AGENT
+    publisher._online_seen[AGENT] = True
+    publisher._remembered(_key("due")).clock_due = now - timedelta(seconds=1)
+    publisher._remembered(_key("later")).clock_due = now + timedelta(seconds=30)
+
+    platform.held_for = 4.0  # type: ignore[attr-defined]
+    publisher._tick(now)
+    assert publisher._pending == {}
+
+    platform.held_for = 0.0  # type: ignore[attr-defined]
+    publisher._tick(now)
+    assert publisher._pending == {_key("due"): publisher_module._CLOCK}
+
+
+async def test_new_work_goes_ahead_of_retries_and_retries_ahead_of_the_clock():
+    """A new turn's card and 👀 must not wait behind every running card's clock,
+    nor behind every card a rate limit sent back at the same moment."""
+    publisher = _bare_publisher()
+    for turn_id in ("old-1", "old-2", "old-3"):
+        publisher._enqueue(_key(turn_id), publisher_module._CLOCK)
+    publisher._enqueue(_key("retry"), publisher_module._SOON)
+    publisher._enqueue(_key("new"), publisher_module._NOW)
+    # Something happened on a turn that was only waiting for its clock.
+    publisher._enqueue(_key("old-3"), publisher_module._NOW)
+
+    order = [(await publisher._next())[0][3] for _ in range(5)]
+
+    assert order == ["new", "old-3", "retry", "old-1", "old-2"]
+    assert publisher._pending == {}
+
+
+async def test_a_clock_redraw_the_platform_refuses_is_dropped_but_a_change_is_retried(
+    monkeypatch,
+):
+    """The next minute redraws the clock anyway; a real change is still owed."""
+    publisher = _bare_publisher()
+    handled: list[tuple[str, ...]] = []
+
+    async def handle(key: tuple[str, ...]) -> None:
+        handled.append(key)
+        raise RichContentThrottled(retry_after=0.05, text="")
+
+    monkeypatch.setattr(publisher, "_handle", handle)
+    publisher._enqueue(_key("clock"), publisher_module._CLOCK)
+    publisher._enqueue(_key("change"), publisher_module._NOW)
+    running = asyncio.create_task(publisher._run())
+    await asyncio.sleep(0.4)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert handled.count(_key("clock")) == 1
+    assert handled.count(_key("change")) > 1
+
+
+async def test_a_turn_whose_rows_were_pruned_is_no_longer_watched(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    assert _key("turn-1") in publisher._live_turns
+
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            delete(AgentSessionActivityItem).where(
+                AgentSessionActivityItem.turn_id == "turn-1"
+            )
+        )
+    publisher._enqueue(_key("turn-1"), publisher_module._NOW)
+    await platform.wait_until(lambda: _key("turn-1") not in publisher._live_turns)
 
 
 # ── Stopping ─────────────────────────────────────────────────────────────────
