@@ -58,13 +58,9 @@ async def _boot(service: CollaborationBridgeLifecycleService) -> None:
 
 def _service(
     session_factory: async_sessionmaker[AsyncSession],
-    *,
-    callback_port: int = 0,
 ) -> CollaborationBridgeLifecycleService:
     config = MagicMock()
     config.gateway_public_url = "https://gw.example"
-    config.collaboration_callback_host = "127.0.0.1"
-    config.collaboration_callback_port = callback_port
     config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     return CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
@@ -133,7 +129,7 @@ async def _make_bridge(session: AsyncSession, *, tenant_id: str) -> tuple[str, s
     await session.flush()
     bridge = CollaborationBridge(
         tenant_id=tenant_id,
-        type="mattermost",
+        type="slack",
         display_name="MM",
         client_id=client.id,
         status="active",
@@ -221,7 +217,7 @@ async def test_start_hands_the_task_the_bridges_tenant_not_the_callers(
         await session.commit()
 
     service = _service(session_factory)
-    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    service.register_adapter("slack", _StubAdapter, _StubConfig)
     handed: list[str] = []
 
     async def _fake_run(bridge_id: str, tenant_id: str, *_: object) -> None:

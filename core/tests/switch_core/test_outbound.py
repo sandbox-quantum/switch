@@ -23,15 +23,15 @@ _NOTHING_ALLOWED = OutboundPolicy.parse("")
 
 class TestParsing:
     def test_hostnames_and_networks(self) -> None:
-        policy = OutboundPolicy.parse(" Mattermost , 10.0.0.0/8,, fd00::/8 ")
-        assert policy.allowed_hostnames == frozenset({"mattermost"})
+        policy = OutboundPolicy.parse(" Chat , 10.0.0.0/8,, fd00::/8 ")
+        assert policy.allowed_hostnames == frozenset({"chat"})
         assert [str(n) for n in policy.allowed_networks] == ["10.0.0.0/8", "fd00::/8"]
 
     def test_a_compose_service_name_with_an_underscore(self) -> None:
-        policy = OutboundPolicy.parse("my_mattermost")
-        assert policy.allowed_hostnames == frozenset({"my_mattermost"})
+        policy = OutboundPolicy.parse("my_chat")
+        assert policy.allowed_hostnames == frozenset({"my_chat"})
 
-    @pytest.mark.parametrize("entry", ["http://mattermost", "bad host", "-x"])
+    @pytest.mark.parametrize("entry", ["http://chat", "bad host", "-x"])
     def test_anything_else_is_refused(self, entry: str) -> None:
         with pytest.raises(ValueError, match="OUTBOUND_ALLOWED_PRIVATE_HOSTS"):
             OutboundPolicy.parse(entry)
@@ -97,8 +97,8 @@ class TestWhatMayBeReached:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _resolving_to(monkeypatch, "10.9.9.9")
-        policy = OutboundPolicy.parse("mattermost")
-        assert await policy.resolve("Mattermost", 8065) == ["10.9.9.9"]
+        policy = OutboundPolicy.parse("chat")
+        assert await policy.resolve("Chat", 8065) == ["10.9.9.9"]
 
     async def test_a_public_name_pointing_at_a_private_address(
         self, monkeypatch: pytest.MonkeyPatch

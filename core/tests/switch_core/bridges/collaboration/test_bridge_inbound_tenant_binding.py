@@ -12,8 +12,8 @@ a room is created, adopted or moved onto a channel — so it, and not the boot
 load, is what has to carry the tenant. It does, which is why the inbound path
 reads no row at all.
 
-**The platform stops mattering.** Mattermost's websocket runs on an OS thread
-and hands its coroutine over with `asyncio.run_coroutine_threadsafe`, which
+**The platform stops mattering.** An adapter whose websocket runs on an OS
+thread hands its coroutine over with `asyncio.run_coroutine_threadsafe`, which
 starts it in an *empty* context; Slack's dispatches from a task that inherited
 whatever created it. Binding at the choke point rather than depending on what
 the handler inherits means both land in the same tenant, so which platform a
@@ -57,7 +57,7 @@ def _bridge() -> CollaborationCore:
     bridge = CollaborationCore.__new__(CollaborationCore)
     bridge._bridge_id = "bridge-1"
     bridge._bridge_tenant_id = BRIDGE_TENANT
-    bridge._bridge_type = "mattermost"
+    bridge._bridge_type = "discord"
     bridge._channel_to_room = {}
     bridge._room_to_channel = {}
     bridge._room_tenants = {}
@@ -130,12 +130,12 @@ async def test_removing_a_mapping_forgets_the_tenant_with_it() -> None:
 
 
 async def test_the_dispatch_style_cannot_change_the_tenant() -> None:
-    """Mattermost, in miniature, and the reason platform stopped mattering.
+    """A threaded adapter, in miniature, and the reason platform stopped mattering.
 
     The two arms differ in the context the handler is reached under, which is
     the whole variable:
 
-    - the *threaded* arm is what Mattermost does — its websocket runs on an OS
+    - the *threaded* arm is an adapter whose websocket runs on an OS
       thread and hands the coroutine over with `run_coroutine_threadsafe`,
       which copies the calling thread's context. That thread has never bound
       anything, so the handler starts empty;
@@ -188,7 +188,7 @@ class TestAHumanActorIsMintedInTheBridgesTenant:
         bridge = CollaborationCore.__new__(CollaborationCore)
         bridge._bridge_id = "bridge-1"
         bridge._bridge_tenant_id = BRIDGE_TENANT
-        bridge._bridge_type = "mattermost"
+        bridge._bridge_type = "discord"
         bridge._human_actor_locks = {}
         bridge._human_actors = {}
         bridge._human_user_ids = set()
@@ -259,7 +259,7 @@ class TestBridgeLevelWorkBindsTheBridgesTenant:
         bridge = CollaborationCore.__new__(CollaborationCore)
         bridge._bridge_id = "bridge-1"
         bridge._bridge_tenant_id = BRIDGE_TENANT
-        bridge._bridge_type = "mattermost"
+        bridge._bridge_type = "discord"
         bridge._agent_store = _AgentStore()  # type: ignore[assignment]
         bridge._session_factory = _Session  # type: ignore[assignment]
         return bridge

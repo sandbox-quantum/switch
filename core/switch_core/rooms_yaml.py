@@ -957,8 +957,8 @@ class RoomYamlService:
         resolution and channel invites understand. A bridged template that
         uses ``{$creator}`` is refused without such a link rather than guessed
         from the gateway account name, which is rarely a platform account.
-        Without a bridge there is nobody to invite, so the gateway name stands
-        in.
+        Without a bridge the room's people are Switch users, so the gateway
+        name is the one that resolves.
         """
         creator = name
         bridge_id = await self._peek_bridge_id(text, inputs)
@@ -1060,11 +1060,6 @@ class RoomYamlService:
         ``template_name`` is what the room's run is listed under.
         """
         bridge_id = await self._resolve_bridge_id(spec.bridge)
-        if spec.users and bridge_id is None:
-            raise ValueError(
-                "Cannot attach users to a room with no bridge "
-                "(users live on a collaboration bridge)"
-            )
 
         attached_ref_ids, inline_refs = await self._resolve_references(
             spec.references, user_id=user_id, is_admin=is_admin
@@ -1233,13 +1228,7 @@ class RoomYamlService:
             else [parsed.spec]
         )
         for spec in specs:
-            bridge_id = await self._resolve_bridge_id(spec.bridge)
-            if spec.users and bridge_id is None:
-                raise ValueError(
-                    f"Room {spec.name!r} names users ({', '.join(spec.users)}), and "
-                    "it is on no messaging app: this server has none set up. Leave "
-                    "users out, or make them depend on a bridge."
-                )
+            await self._resolve_bridge_id(spec.bridge)
 
     async def _resolve_bridge_id(self, bridge_name: str | None) -> str | None:
         if bridge_name is None:

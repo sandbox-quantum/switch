@@ -1,8 +1,7 @@
 # Switch Helm chart
 
 Deploys Switch into a Kubernetes cluster: switch-core (the API and all bridge
-adapters), the gateway dashboard, Postgres, and
-optionally Mattermost.
+adapters), the gateway dashboard, and Postgres.
 
 ```bash
 helm install switch oci://ghcr.io/<owner>/charts/switch --version <version> -f my-values.yaml
@@ -28,26 +27,10 @@ two of the three fail *silently* — the pods are healthy and the dashboard work
 | Gateway dashboard | 3000 | Your operators | You cannot administer Switch |
 | Agent API + MCP | 8000 | Agents, wherever they run | Remote agents cannot connect; local ones are fine |
 | Teams bridge listener | 3978 | **Microsoft, from the public internet** | The Teams bridge half-works, silently |
-| Collaboration callbacks | 8081 | Your Mattermost server | Cards still show buttons and every press fails |
 
 **Only the Teams listener requires public internet exposure**, and only if you
 run a Microsoft Teams bridge. Slack, Discord and Telegram connect *outbound*
 over a WebSocket and need no ingress at all.
-
-Mattermost is outbound for everything it receives, but not for what it sends
-back: a button press is delivered by the Mattermost server over HTTP, to an
-address Switch hands it when it draws the card. So it needs port 8081 reachable
-from Mattermost — usually a cluster-internal Service port and nothing public.
-Set `switchCore.collaborationCallback.enabled` and `helm install` prints the
-address to configure on the bridge; the bundled Mattermost is told to accept
-that address at the same time, which it will otherwise refuse as a private
-host. A Mattermost you run yourself needs the same entry adding by hand
-(`ServiceSettings.AllowedUntrustedInternalConnections`).
-
-A bridge with no `callback_base_url` draws no buttons and its requests are
-answered by typing, which is a reduced service and says so in the logs. A
-bridge with an address the Mattermost server cannot reach is the failure this
-port exists to prevent: the buttons are still drawn, and every press fails.
 
 If your agents all run inside the cluster or on operator machines that can reach
 it privately, nothing here needs to be on the public internet.
@@ -156,6 +139,37 @@ example), leave `tls.enabled` false and annotate.
 
 ---
 
+## Upgrading from a release that deployed Mattermost
+
+The chart no longer deploys Mattermost or its setup Job. Upgrading removes the
+Mattermost Deployment and Service but leaves its data in place:
+
+- The `mattermost` database stays in Postgres; nothing drops it.
+- The `<release>-mattermost-data` volume is kept: `helm upgrade` finds it and
+  re-renders it annotated `helm.sh/resource-policy: keep`, so no later upgrade
+  or uninstall deletes it. Tools that render without cluster access
+  (`helm template`, Argo CD, Flux) cannot find it: set
+  `retainMattermostData: true` (and `retainedMattermostDataSize` to the old
+  `mattermost.persistence.size`) so they keep it too.
+
+Back both up before upgrading (see [`BACKUP.md`](BACKUP.md)). Once you no
+longer want them:
+
+```bash
+kubectl delete pvc <release>-mattermost-data
+kubectl exec <release>-postgresql-0 -- psql -U postgres -c 'DROP DATABASE mattermost;'   # managed mode; on an external DB, drop it there
+```
+
+Console chat replaces Mattermost and is always on; `agent_chats` and
+`group_chats` no longer need to be listed in `featureFlags.enabled`, and may
+stay listed. With several switch-core replicas, finish rolling out every
+replica before people use group chats, because an older replica ignores the
+group-chat fields.
+
+`switchCore.collaborationCallback` and `secrets.mattermostAdminPassword` /
+`mattermostUserPassword` are gone; remove them from your values. A
+`secrets.existingSecret` may drop its `MATTERMOST_*` keys.
+
 ## Constraints you cannot configure away
 
 **switch-core can run more than one replica.** `switchCore.replicaCount` sets
@@ -201,8 +215,8 @@ An agent with no icon of its own is drawn by api.dicebear.com with its name as
 the seed, and a person relayed from another platform by ui-avatars.com with their
 name in the URL, so the services see the name. Slack and Discord fetch the image
 on their own servers and serve their copy, Teams draws it inside each card (some
-Teams clients may load it from the service directly), the Mattermost bridge
-fetches it from switch-core, and Switch Console loads it on each user's machine.
+Teams clients may load it from the service directly), and Switch Console loads it
+on each user's machine.
 To send no such URL:
 
 ```yaml
@@ -212,7 +226,7 @@ switchCore:
 ```
 
 Each platform then shows its own default icon (Slack the app's icon, Discord its
-default avatar, Teams no image; a Mattermost bot keeps the image it already has),
+default avatar, Teams no image),
 icons already stored on those services are withheld too, and new agents get no
 generated icon. Setting an icon on one of those services is refused with the
 reason. Switch Console asks the server and stops drawing them for its agents. An

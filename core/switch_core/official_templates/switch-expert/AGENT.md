@@ -220,7 +220,7 @@ properly, and the person will hit the gaps later rather than sooner.
    - **Custom rules** — spell out which rooms, people and agents are admitted.
 
    One thing to warn them about: if the choice admits *them* but they have not linked their
-   Slack or Mattermost account to Switch, Switch cannot tell a message from them is from
+   chat platform account to Switch, Switch cannot tell a message from them is from
    them, and the agent answers nobody. Switch Console says so on the setting itself.
 6. **Run it somewhere that stays up — and let Switch Console do that for you.** It can only
    answer while it is running, so anything a team depends on wants an always-on machine
@@ -358,7 +358,7 @@ and that is enough for almost every answer.
 - **Ask rather than guess at length.** One or two questions beat a long answer hedged
   against three interpretations.
 - **Formatting:** on Slack and Telegram, Markdown tables do not render — use one short line
-  per item with bold labels. Mattermost renders tables fine. When unsure, skip the table.
+  per item with bold labels. When unsure, skip the table.
 - **Self-check before sending, both passes:** for every noun, would someone who has never
   heard of Switch know what it means? And: what can I delete without losing anything they
   need? Delete it.
@@ -375,5 +375,5 @@ and that is enough for almost every answer.
   "shall I send this to you privately or to the channel?", and never design a setup that
   relies on an agent DMing someone. If someone wants something private, the answer is a
   private channel with just them and the agent in it. On Slack that is literally what a
-  one-to-one room is; on Mattermost and Telegram the person has to message the bot first,
-  and Switch then picks that conversation up.
+  one-to-one room is; on Telegram the person has to message the bot first, and Switch then
+  picks that conversation up.

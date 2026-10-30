@@ -1,6 +1,6 @@
 /**
- * Remove artefacts that interrupted runs left behind: Switch agents, Switch
- * rooms and Mattermost channels named the way the harness names things
+ * Remove artefacts that interrupted runs left behind: Switch agents and Switch
+ * rooms named the way the harness names things
  * (`e2e-<runId><scope>-<role>`, see `isHarnessArtifact`) and older than
  * `--older-than <minutes>`.
  *
@@ -23,7 +23,7 @@ export async function cleanup(
 ): Promise<void> {
   const lane = await resolveLane('fast');
   if (!lane.target) throw new Error(`Cannot clean up: ${lane.skip}`);
-  const { env, switchClient, mattermost } = lane.target;
+  const { switchClient } = lane.target;
   const cutoff = Date.now() - olderThanMinutes * 60_000;
   const stale = (name: string, createdMs: number): boolean =>
     isHarnessArtifact(name) && createdMs <= cutoff;
@@ -48,22 +48,6 @@ export async function cleanup(
     } catch (error) {
       failures += 1;
       log(`could not delete agent ${agent.name}: ${message(error)}`);
-    }
-  }
-
-  if (!mattermost || !env.mattermost) {
-    log('no Mattermost configured — channels not checked');
-  } else {
-    const team = await mattermost.findTeam(env.mattermost.team);
-    for (const channel of await mattermost.listTeamChannels(team.id)) {
-      if (!stale(channel.name, channel.create_at)) continue;
-      try {
-        await mattermost.archiveChannel(channel.id);
-        log(`archived channel ${channel.name} (${channel.id})`);
-      } catch (error) {
-        failures += 1;
-        log(`could not archive channel ${channel.name}: ${message(error)}`);
-      }
     }
   }
 

@@ -18,8 +18,9 @@ the rules below exist for the second one:
 
   - **Rendered** in the gateway and relayed to collaboration bridges, which
     hand the link to Slack / Discord / Teams for *them* to fetch. Harmless.
-  - **Fetched by Switch itself.** The Mattermost adapter downloads an agent's
-    avatar and re-uploads it as the bot's icon. A URL naming an internal
+  - **Fetched by Switch itself.** Anything server-side that downloads an
+    agent's avatar (to re-upload it as a bot's icon, say) would follow the
+    URL from inside Switch's network. A URL naming an internal
     address would make that a probe into the network Switch runs in, so the
     scheme and host are constrained here, at the point of storage.
 
@@ -136,14 +137,14 @@ def validate_icon_url(url: str) -> str:
 
 
 # Generated icons. The URL is all Switch stores; the picture is DiceBear's
-# "gaze", raster because Slack, Discord and Mattermost render no SVG, and pinned
+# "gaze", raster because Slack and Discord render no SVG, and pinned
 # to a major version because the drawing changes between majors.
 _GENERATED_ICON_SERVICE = "dicebear.com"
 GENERATED_ICON_HOST = f"api.{_GENERATED_ICON_SERVICE}"
 _GENERATED_ICON_BASE = f"https://{GENERATED_ICON_HOST}/10.x/gaze/png"
 _GENERATED_ICON_PIXELS = 256
 # A tenth larger than DiceBear draws it, which leaves the body small in its
-# frame at chat-avatar size. At that scale a round crop (Discord, Mattermost,
+# frame at chat-avatar size. At that scale a round crop (Discord,
 # Teams) trims a sliver off the arch silhouette's bottom corners. That was
 # chosen over listing the other shapes: the list made the URL too long for
 # Slack's 255-character `icon_url`, and the only shorter form, a comma list,

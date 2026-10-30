@@ -50,10 +50,7 @@ SERVICE_CONNECTIONS = "service_connections"
 # messages reach nobody, as before.
 FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 
-# Agent chats in Switch Console: an agent's page opens on its chats (its
-# direct chats and the rooms it is in) beside the conversation. Core puts an
-# agent's owner back in each chat they started that holds the agent; with it
-# off, owning an agent gives no room membership.
+# Agent chats in Switch Console: accepted for old configs; always on.
 AGENT_CHATS = "agent_chats"
 
 # switch-buddy: each person's own assistant, which Switch Console creates on
@@ -63,13 +60,7 @@ AGENT_CHATS = "agent_chats"
 # on, so a server without the template is never asked to make one.
 SWITCH_BUDDY = "switch_buddy"
 
-# Group chats in Switch Console: chats with people and with no or several
-# agents, adding and removing a chat's agents, naming people in a message, and
-# the agents a person may add. Turn it on only once every switch-core process
-# runs a release that has it: the guarantee is server-first rollout, then the
-# flag. An upgraded process refuses those requests while it is off, but a
-# process still on an older release ignores the fields it does not know, so
-# turning it on before the rollout finishes is not protected.
+# Group chats in Switch Console: accepted for old configs; always on.
 GROUP_CHATS = "group_chats"
 
 # Every flag the server recognises.

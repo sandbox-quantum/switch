@@ -23,7 +23,7 @@ import type { ServerHost } from './types';
 /** Ports mirrored into a desktop-side forward so a single `localhost:<port>`
  * URL reaches the stack from both the desktop and the remote host. Postgres is
  * intentionally not forwarded — nothing on the desktop talks to it directly. */
-const FORWARDED_SERVICES: (keyof LocalServerPorts)[] = ['gateway', 'api', 'mattermost'];
+const FORWARDED_SERVICES: (keyof LocalServerPorts)[] = ['gateway', 'api'];
 
 type RemoteHostDeps = {
   sshHost: string;

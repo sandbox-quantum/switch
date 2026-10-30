@@ -251,15 +251,11 @@ await download(
 );
 tar(['-xzf', tarball, '-C', source, '--strip-components=1']);
 const switchDir = path.join(stage, 'switch');
-await mkdir(path.join(switchDir, 'src', 'deploy', 'shared_resources'), { recursive: true });
+await mkdir(path.join(switchDir, 'src'), { recursive: true });
 await cp(path.join(source, 'core'), path.join(switchDir, 'src', 'core'), {
   recursive: true,
   filter: (p) => !p.includes(`${path.sep}tests${path.sep}`) && !p.endsWith(`${path.sep}tests`),
 });
-await cp(
-  path.join(source, 'deploy', 'shared_resources', 'setup.py'),
-  path.join(switchDir, 'src', 'deploy', 'shared_resources', 'setup.py')
-);
 const requirements = execFileSync(
   uv,
   ['export', '--frozen', '--no-dev', '--no-emit-project', '--format', 'requirements-txt', '-q'],

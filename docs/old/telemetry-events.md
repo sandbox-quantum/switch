@@ -310,7 +310,7 @@ be doing that week.
 **Session** — an agent session as the connection registry knows it: opened when
 an agent connects, closed when it disconnects or its heartbeat lapses.
 
-**Connector** — a collaboration platform bridge (Slack, Mattermost, Discord,
+**Connector** — a collaboration platform bridge (Slack, Discord,
 Teams, Telegram). A connector is *added* when a bridge for that platform first
 reaches a connected state; configuring one that never connects is not an add,
 which is deliberate — the metric is about reaching value, not about saving a
@@ -348,7 +348,7 @@ never invisible.
 | `user_active_7d` | number | same over 7 days |
 | `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
 | `user_internal_active_7d` | number | same over 7 days |
-| `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
+| `chat_identity_count` | number | chat identities — platform accounts (Slack, Discord, etc.) — that exist, claimed by an account or not |
 | `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d` |
 | `chat_identity_active_7d` | number | same over 7 days |
 | `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
@@ -488,15 +488,14 @@ telemetry is switched off does not emit it later as though it had just happened.
 | `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
 
-**Preconfigured connectors.** The standalone stack, the Helm chart and every
-Console-managed local server run a setup step that registers the bundled
-Mattermost seconds after install. That connector reports `is_preconfigured:
-true`, is never `is_first_connector`, and never claims `first_connector_added`
-— so that milestone is the first connector a person added, not the deployment
-booting. Filter `connector_added` on `is_preconfigured = false` to measure
-onboarding. A bundled connector registered before the flag existed is marked
-on the setup step's next run; if it first connects before that, its one
-`connector_added` reports `false`.
+**Preconfigured connectors.** Historically, some deployment modes ran a setup
+step that registered a collaboration bridge automatically. Such connectors report
+`is_preconfigured: true`, are never `is_first_connector`, and never claim
+`first_connector_added` — so that milestone is the first connector a person
+added, not the deployment booting. Filter `connector_added` on
+`is_preconfigured = false` to measure onboarding. A preconfigured connector
+registered before the flag existed is marked on the setup step's next run; if it
+first connects before that, its one `connector_added` reports `false`.
 
 **`connector_added` fires only for a first connect that was seen.** A
 connector's first connect is recorded whether telemetry is on or not, so one
@@ -1019,7 +1018,7 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `connector_added` — the *first* successful connect for that bridge, ever.
   Restarting a working bridge correctly emits nothing.
 - `first_connector_added` — the first connector a person added on the
-  deployment. The bundled Mattermost the setup step registers never claims it.
+  deployment. Preconfigured connectors from automatic setup never claim it.
 - `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
   one (`restart`), or a live bridge crashing.
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check

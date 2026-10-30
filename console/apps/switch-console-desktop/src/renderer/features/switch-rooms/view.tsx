@@ -20,7 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
-import { embeddedRoomTab, type RoomTab, roomTabStore } from './room-tab-store';
+import { type RoomTab, roomTabStore } from './room-tab-store';
 
 /**
  * Opens the room's channel in the messaging app it is bridged to. The embedded
@@ -158,11 +158,6 @@ const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   );
 });
 
-/** The side a room shown inside another page opens on, until one is picked. */
-export function embeddedRoomFallbackTab(roomId: string): RoomTab {
-  return embeddedRoomTab(switchRoomsStore.roomBridgeTypeById(roomId));
-}
-
 /**
  * A room shown inside another page, as an agent's page shows one beside its
  * column: the same conversation as the room view, which `RoomEmbedLayer` lays
@@ -181,7 +176,7 @@ export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId:
   }, [roomId]);
   return (
     <div ref={ref} data-testid="embedded-room" className="min-h-0 flex-1">
-      {roomTabStore.tabFor(roomId, embeddedRoomFallbackTab(roomId)) === 'configuration' ? (
+      {roomTabStore.tabFor(roomId, 'configuration') === 'configuration' ? (
         <RoomConfigurationPanel roomId={roomId} />
       ) : (
         <ConsoleChat roomId={roomId} />
@@ -193,9 +188,8 @@ export const EmbeddedRoom = observer(function EmbeddedRoom({ roomId }: { roomId:
 export const roomView = {
   WrapView: ({ children }: { children: React.ReactNode; roomId: string }) => <>{children}</>,
   TitlebarSlot: RoomTitlebar,
-  // The conversation itself is drawn by RoomEmbedLayer, which is mounted above
-  // the view switch so its <webview> survives navigating away and back. This
-  // panel only ever holds the room's other side.
+  // A bridged room's conversation notice is drawn by RoomEmbedLayer, mounted
+  // above the view switch; this panel holds the room's other side.
   MainPanel: RoomMainPanel,
   canActivate: (params: unknown): GuardResult => {
     const roomId =

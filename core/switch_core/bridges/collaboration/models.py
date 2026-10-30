@@ -7,8 +7,8 @@ from switch_core.sessions.attachments import normalise_mime_type
 MimeType = Annotated[str, AfterValidator(normalise_mime_type)]
 """A media type with its parameters stripped.
 
-Platforms report the type of a text file with a charset attached — Mattermost
-and Discord both return ``text/plain; charset=utf-8`` — and every consumer of
+Platforms report the type of a text file with a charset attached — Discord
+returns ``text/plain; charset=utf-8`` — and every consumer of
 an attachment compares against bare types, so the parameter comes off here,
 once, rather than in each adapter.
 """
@@ -117,7 +117,7 @@ class InboundMessage(BaseModel):
     sender_name: str
     content: str
     message_ref: str
-    # External platform's thread root id (Mattermost root_id), set when this
+    # External platform's thread root id (e.g. Slack thread_ts), set when this
     # message is a reply inside a thread. None for top-level messages.
     root_id: str | None = None
     agent_name: str | None = None
@@ -146,12 +146,12 @@ class InboundCommand(BaseModel):
     sender_name: str
     command: str
     args: str
-    # External platform's id for the command post (Mattermost post_id), so the
+    # External platform's id for the command post (e.g. Slack ts), so the
     # command's bridged room event can be mapped back to it and the result
     # can be threaded under the originating command message. None when the
     # platform gives us no post id.
     message_ref: str | None = None
-    # External platform's thread root id (Mattermost root_id), set when the
+    # External platform's thread root id (e.g. Slack thread_ts), set when the
     # command was typed as a reply inside an existing thread. None for a
     # top-level command. Used to thread the result under the thread's ROOT
     # post rather than the command post (a mid-thread reply cannot be a root).

@@ -6,7 +6,7 @@
   <img src="assets/agent-switch-wordmark.svg" alt="Agent Switch" width="200">
 </picture>
 
-**Open-source AI teammates, working alongside your team in Slack, Teams, Discord, Telegram and Mattermost. Self-host it, with any agent and any model.**
+**Open-source AI teammates, working alongside your team in Slack, Teams, Discord and Telegram. Self-host it, with any agent and any model.**
 
 <a href="https://www.producthunt.com/products/switch-11?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-switch-14" target="_blank" rel="noopener noreferrer"><img alt="Switch - #1 Product of the Day on Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1233670&theme=neutral&period=daily"></a>
 
@@ -27,7 +27,7 @@
 
 More than a single AI bot you ask questions to: Switch turns each channel into a room where your team and everyone's AI teammates work together, with shared context.
 
-- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord, Telegram and Mattermost, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere.
+- 💬 **Each channel becomes a room for people and agents**. Your agents join the conversation in Slack, Microsoft Teams, Discord and Telegram, and everyone works from the same conversation, decisions and documents. Nobody has to learn a new tool or move anywhere.
 - 🌍 **Any agent, any model, any provider**. Your Claude Code agent on your laptop, a teammate's Codex agent on theirs, a LangChain agent on your servers. If it speaks the protocol, it can join.
 - 🧩 **AI teammates, not just bots**. Give each agent a role, instructions and tools (Google Workspace, Jira, GitHub), and link rooms the way your team works. Context moves with the work, and an agent only sees the rooms it belongs to.
 - 🏠 **Self-hosted, and the context is yours**. Run Switch on your own servers. Your team's context stays with your company, so you can change agents, models or vendors at any time without losing it.
@@ -72,13 +72,6 @@ https://github.com/user-attachments/assets/d7db7859-c1e0-4d2c-9675-1cc3966a1bfd
 <summary><b>Discord</b></summary>
 
 https://github.com/user-attachments/assets/e114cf81-41b0-4cce-a06f-5e78830bf99d
-
-</details>
-
-<details>
-<summary><b>Mattermost</b></summary>
-
-https://github.com/user-attachments/assets/51918de4-4283-4717-bdfa-d63f9da8eae1
 
 </details>
 
@@ -128,7 +121,7 @@ Every person, team and department works alongside agents, and work crosses betwe
 
 Most tools in this space want to become the place your team works. Switch does not replace the stack you already have. It connects it.
 
-- ❌ **Not a messaging app**. Slack, Teams, Discord, Telegram and Mattermost stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
+- ❌ **Not a messaging app**. Slack, Teams, Discord and Telegram stay where they are. Switch brings your agents and the workflows you define into them, so nobody has to move.
 - ❌ **Not an agent provider**. Switch ships no agents and no models. You keep Claude Code, Codex, OpenCode or whatever you already run, and Switch is what lets them work with your team.
 - ❌ **Not a black box self-service platform**. Switch's code is here for everyone to see and contribute to. It is designed to be self-hostable and for your data to stay where it is.
 

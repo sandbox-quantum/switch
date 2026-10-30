@@ -16,7 +16,7 @@ Section 7 describes the relay, which lives in a separate repository.
 ## 1. What Switch is, in two lines
 
 Switch runs AI coding agents (Claude Code, Codex, …) and connects them to chat
-channels like Slack and Mattermost so people and agents work in shared rooms.
+channels like Slack and Discord so people and agents work in shared rooms.
 **Switch Console** is the desktop app used to drive it: create agents, start
 sessions, connect to a server, set up rooms and bridges.
 
@@ -93,7 +93,7 @@ id, no IP field, no Switch identity.
 | `agent_type` | the AI provider, from a fixed registry: `claude`, `codex`, `gemini`, `cursor`, `copilot`, `opencode`, `grok`, `devin`, `qwen`, `droid`, `amp`, `goose`, `cline`, `continue`, `mistral`, `kiro`, `junie`, … and `unknown`. **Never an agent's name.** |
 | `location` | `local`, `remote`, `unknown`. **Never a path, directory or project name.** |
 | `server_kind` | `local`, `remote_managed`, `external`. **Never a server name or URL.** |
-| `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `mattermost`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
+| `bridge_platform` | A platform key the server lists as one of its registered platforms (`slack`, `discord`, `teams`, `telegram`, and any platform added since), else `other`, or `unknown` when it cannot be read. Always a short lowercase key. **Never a workspace or channel name.** |
 | `entry_point` | `command_palette`, `sidebar`, `server_page`, `onboarding`, `agent_page`, `session_list`, `room_row`, `link`, `template`, `switch_buddy`, `unknown` |
 | `target` | `local`, `remote`, `unknown` |
 
@@ -170,7 +170,7 @@ sign-in records `invalid_credentials` — not the username tried, not the server
 | Event | Fields, with example values |
 |---|---|
 | `bridge_connected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome`: `failure` · `failure_reason`: `none` / `unauthenticated` / `forbidden` / `invalid` / `error` |
-| `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `mattermost` · `outcome` |
+| `bridge_disconnected` | `bridge`: `collaboration` · `bridge_platform`: `slack` · `outcome` |
 | `bridge_identity_claimed` | `bridge_platform` · `outcome` |
 | `room_created` | `server_kind`: `local` · `bridge_platform`: `slack` · `agent_count`: `3` · `has_instructions`: `true` · `outcome` · `failure_reason`: `none` / `unauthenticated` / `bridge_unavailable` / `invalid` / `unreachable` / `error` · `source`: `dialog` / `template` |
 | `room_deleted` | `server_kind` · `outcome` |

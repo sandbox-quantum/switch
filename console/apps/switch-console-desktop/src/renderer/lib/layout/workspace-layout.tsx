@@ -15,13 +15,8 @@ const isMac = detectPlatform() === 'mac';
 interface WorkspaceLayoutProps {
   leftSidebar: ReactNode;
   mainContent: ReactNode;
-  /**
-   * Content overlaid on the main panel that must survive view changes.
-   *
-   * Rendered here rather than inside a view because the per-view subtree is
-   * remounted on navigation, and the embedded room `<webview>` reloads its
-   * whole client whenever it is unmounted or re-parented.
-   */
+  /** Content overlaid on the main panel, outside the per-view subtree that is
+   * remounted on navigation. */
   persistentLayer?: ReactNode;
   /** Across the top of the main panel, above the view, when the workspace has
    * something to say about itself — such as its server not running. */

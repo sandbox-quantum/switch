@@ -15,7 +15,6 @@ const execFileAsync = promisify(execFile);
 export const OWNER_ROLE = 'postgres';
 export const RUNTIME_ROLE = 'switch_app';
 export const DATABASE = 'switch';
-export const MATTERMOST_DATABASE = 'mattermost';
 
 /** Settings file the cluster includes, rewritten on every start. */
 const CONSOLE_CONF = 'switch-console.conf';
@@ -136,9 +135,6 @@ export async function initCluster(
     [
       `CREATE ROLE "${RUNTIME_ROLE}" LOGIN PASSWORD ${literal(passwords.runtime)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;`,
       `CREATE DATABASE "${DATABASE}";`,
-      // For the optional Mattermost, which keeps its own schema here as the
-      // owner, as in the Docker stack. Harmless when Mattermost never runs.
-      `CREATE DATABASE "${MATTERMOST_DATABASE}";`,
     ],
     onLog
   );

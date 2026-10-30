@@ -42,7 +42,7 @@ describe('fast lane', () => {
   for (const scenario of FAST_SCENARIOS) {
     it(scenario.header.id, async (context) => {
       if (!lane.target) return context.skip(lane.skip);
-      const { env, switchClient, mattermost } = lane.target;
+      const { env, switchClient, chat } = lane.target;
 
       const admission = admit(scenario.header, env);
       if (!admission.run) {
@@ -55,14 +55,14 @@ describe('fast lane', () => {
       }
 
       const names = run.scope();
-      const fixtures = new Fixtures(env, names, switchClient, mattermost);
+      const fixtures = new Fixtures(env, names, switchClient, chat);
       const log = (message: string): void => console.log(`[${scenario.header.id}] ${message}`);
       const observer = watch.begin(switchClient, names.tag, scenario.header.id);
       let failure: unknown = null;
       let leftovers: string[];
       try {
         try {
-          await scenario.run({ env, names, switchClient, mattermost, fixtures, log });
+          await scenario.run({ env, names, switchClient, chat, fixtures, log });
         } catch (error) {
           failure = error;
         }
@@ -111,14 +111,14 @@ describe('fast lane, derived checks', () => {
   // developer's own and lives on.
   it("a workspace member is refused another workspace's rooms and agents", async (context) => {
     if (!lane.target) return context.skip(lane.skip);
-    const { env, switchClient, mattermost } = lane.target;
+    const { env, switchClient, chat } = lane.target;
     if (env.environment !== 'ephemeral') {
       return context.skip(
         `leaves a workspace and users behind, which cannot be deleted; only on ephemeral, not ${env.environment}`
       );
     }
     const names = run.scope();
-    const fixtures = new Fixtures(env, names, switchClient, mattermost);
+    const fixtures = new Fixtures(env, names, switchClient, chat);
     const log = (message: string): void => console.log(`[cross-tenant] ${message}`);
     const observer = watch.begin(switchClient, names.tag, 'cross-tenant');
     let failure: unknown = null;

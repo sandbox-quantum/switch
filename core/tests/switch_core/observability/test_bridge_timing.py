@@ -85,7 +85,7 @@ class TestAnOutboundRelayIsTimed:
         """A call that raised took however long its own failure took, which is
         a different distribution under the same name. `switch.bridge.errors` is
         where a failure shows."""
-        bridge = _Bridge("mattermost")
+        bridge = _Bridge("discord")
 
         with pytest.raises(RuntimeError):
             with bridge._counted_outbound("message"):
@@ -179,7 +179,7 @@ class TestTheRunningGaugeSaysWhichPlatform:
         }
         service._bridge_facts = {  # type: ignore[attr-defined]
             "a": ("slack", None),
-            "b": ("mattermost", None),
+            "b": ("discord", None),
             "c": ("teams", None),
         }
 

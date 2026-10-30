@@ -1,7 +1,7 @@
 name: switch release
 
-# Builds and publishes the Switch core stack — the switch-core, gateway, setup
-# and switch-hosted-controller container images, the switch and
+# Builds and publishes the Switch core stack — the switch-core, gateway and
+# switch-hosted-controller container images, the switch and
 # switch-hosted-controller Helm charts, and the standalone Docker Compose file
 # (as an OCI artifact) — so adopters can deploy without building from source.
 # See RELEASING.md for the full procedure.

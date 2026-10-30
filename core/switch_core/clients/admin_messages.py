@@ -18,7 +18,7 @@ AUTO_REPLY_FLAG = "com.switch.auto_reply"
 # mirroring AUTO_REPLY_FLAG:
 #   1. It tells the collaboration bridge to render the message through the
 #      adapter's native admin path (`admin_message`) — as the Switch app on
-#      Slack, a Switch Admin bot on Mattermost — instead of as a normal
+#      Slack — instead of as a normal
 #      agent/user message.
 #   2. Its mere presence marks the message as system-generated, so clients
 #      (including the admin client itself) never react to it with warnings or

@@ -34,7 +34,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core import messaging_platforms
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
-from switch_core.bridges.collaboration.ingress import CallbackEndpoint, CallbackIngress
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
@@ -355,18 +354,6 @@ class CollaborationBridgeLifecycleService:
         # The adapter class of each running bridge, so a bridge that crashes
         # after it started has its failure read by its own platform's rules.
         self._running_adapter_classes: dict[str, type[PlatformAdapter]] = {}
-        # The one listener every bridge that gets called back shares, and each
-        # running bridge's place on it. Owned here rather than by an adapter
-        # because the port is the process's, not a bridge's: two Mattermost
-        # bridges are ordinary, and a listener each would be a port and an
-        # ingress rule each. Constructed unconditionally and bound by nobody —
-        # it binds when a bridge first asks to be served.
-        self._callback_ingress = CallbackIngress(
-            host=config.collaboration_callback_host,
-            port=config.collaboration_callback_port,
-            keyring=config.keyring,
-        )
-        self._callback_endpoints: dict[str, CallbackEndpoint] = {}
         # Serialises registration. The exclusivity check reads the stored
         # bridges and the winner is not written until several awaits later,
         # so two concurrent registrations would both see a free resource and
@@ -1176,11 +1163,6 @@ class CollaborationBridgeLifecycleService:
             adapter.set_third_party_avatars(self._config.third_party_avatars_enabled)
             adapter.set_gateway_public_url(self._config.gateway_public_url)
 
-            callback_endpoint = self._callback_ingress.endpoint_for(
-                bridge.type, bridge_id
-            )
-            adapter.set_callback_endpoint(callback_endpoint)
-            self._callback_endpoints[bridge_id] = callback_endpoint
             if adapter_cls.receives_webhooks:
                 adapter.set_webhook_url(self.webhook_url(bridge_id, bridge.type))
 
@@ -1422,12 +1404,6 @@ class CollaborationBridgeLifecycleService:
                 self._tasks.pop(bridge_id, None)
                 self._held_resources.pop(bridge_id, None)
                 self._running_workspaces.pop(bridge_id, None)
-                # The adapter may already have asked to be served before the
-                # failure, so a crash that leaves the endpoint registered
-                # leaves presses being handled by a bridge that is not running.
-                endpoint = self._callback_endpoints.pop(bridge_id, None)
-                if endpoint is not None:
-                    await endpoint.withdraw()
                 # A failure before the adapter came up never connected at all.
                 self._connected.discard(bridge_id)
                 # Resolved here rather than inside the argument lists below,
@@ -1500,8 +1476,8 @@ class CollaborationBridgeLifecycleService:
         `bridge_connected` fires every time, so a flapping bridge shows up.
         `connector_added` fires only on the first ever connect.
         `first_connector_added` is the first connector a *person* added: a
-        preconfigured one never claims it, or the bundled Mattermost would
-        take it seconds after install on every deployment that ships one.
+        preconfigured one never claims it, or a bundled connector would take
+        it seconds after install on every deployment that ships one.
         """
         preconfigured = bridge_id in self._preconfigured
         emit_safely(
@@ -1612,11 +1588,6 @@ class CollaborationBridgeLifecycleService:
                     bridge_id,
                     exc_info=True,
                 )
-        # Before the adapter goes, so a press in flight is answered as gone
-        # rather than handled by a bridge that is halfway shut down.
-        endpoint = self._callback_endpoints.pop(bridge_id, None)
-        if endpoint is not None:
-            await endpoint.withdraw()
         collaboration_core = self._bridges.get(bridge_id)
         was_connected = bridge_id in self._connected
         self._connected.discard(bridge_id)
@@ -1690,7 +1661,6 @@ class CollaborationBridgeLifecycleService:
         logger.info("Stopping all %d collaboration bridges", len(self._bridges))
         for bridge_id in list(self._bridges):
             await self.stop(bridge_id)
-        await self._callback_ingress.stop()
 
     # ── Ownership ────────────────────────────────────────────────────────────
 

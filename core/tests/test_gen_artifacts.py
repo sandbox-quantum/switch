@@ -120,7 +120,7 @@ def test_every_contract_peer_is_an_artifact_the_registry_knows() -> None:
 def test_everything_published_under_the_switch_core_tag_shares_its_version() -> None:
     """One tag pins the whole stack, so these are stamped rather than declared."""
     core = ARTIFACT_VERSIONS["switch-core"]
-    for stamped in ("gateway", "setup", "helm-chart", "compose"):
+    for stamped in ("gateway", "helm-chart", "compose"):
         assert ARTIFACT_VERSIONS[stamped] == core
 
 

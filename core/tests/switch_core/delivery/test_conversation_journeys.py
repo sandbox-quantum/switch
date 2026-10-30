@@ -269,7 +269,7 @@ class TestJourneys:
         await room.say("alice", "@helper what port does the gateway use?", at=0)
         await room.post("helper", "5173", at=10)
 
-        told = await room.say("alice", "and the Mattermost port?", at=10 + 301)
+        told = await room.say("alice", "and the Teams port?", at=10 + 301)
 
         assert await room.reached(told) == set()
 

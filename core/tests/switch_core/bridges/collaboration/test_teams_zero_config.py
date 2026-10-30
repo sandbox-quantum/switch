@@ -387,7 +387,7 @@ async def test_exclusive_resource_is_the_listener_port() -> None:
 
 
 def test_outbound_only_adapters_claim_nothing() -> None:
-    """Slack, Discord and Mattermost dial out; any number can coexist."""
+    """Slack and Discord dial out; any number can coexist."""
     assert PlatformAdapter.exclusive_resource({}) is None
 
 

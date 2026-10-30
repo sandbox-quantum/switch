@@ -431,10 +431,10 @@ class CollaborationCore:
         session-opening call site of its own to remember it.
 
         This is what makes the platform irrelevant. An adapter is free to
-        deliver from anywhere: Mattermost's websocket runs on an OS thread and
-        hands the coroutine over with `asyncio.run_coroutine_threadsafe`,
-        which starts it in an *empty* context, while Slack's dispatches from a
-        task that inherited whatever created it. Binding here rather than
+        deliver from anywhere: a client running on an OS thread hands the
+        coroutine over with `asyncio.run_coroutine_threadsafe`, which starts it
+        in an *empty* context, while Slack's dispatches from a task that
+        inherited whatever created it. Binding here rather than
         relying on what the handler inherits means both arrive at the same
         tenant, so which platform a message came in on stops being able to
         decide where its room lands.
@@ -1307,7 +1307,7 @@ class CollaborationCore:
         # Where the command's result should thread. A command typed inside an
         # existing thread must thread under that thread's ROOT post (root_id) —
         # the command post itself is a mid-thread reply and a reply cannot be a
-        # Mattermost RootId. A top-level command starts its own thread, rooted
+        # thread root. A top-level command starts its own thread, rooted
         # at the command post (message_ref).
         thread_root_post = cmd.root_id or cmd.message_ref
         existing_root: str | None = None
@@ -1322,7 +1322,7 @@ class CollaborationCore:
         }
         # If the thread root is already bridged, relate the command event to it
         # so the result threads onto the existing room root (which resolves
-        # back to a valid Mattermost root post). Otherwise the command event
+        # back to a valid platform root post). Otherwise the command event
         # itself anchors the thread (mapping recorded below).
         if existing_root is not None:
             content["m.relates_to"] = {
@@ -1357,7 +1357,7 @@ class CollaborationCore:
 
         # No bridged room event for the thread root yet: map the command event
         # to it so a result threaded under the command resolves back to a valid
-        # Mattermost root post (the command post for a top-level command, or the
+        # platform root post (the command post for a top-level command, or the
         # thread root for an in-thread command whose root we hadn't recorded).
         if existing_root is None and thread_root_post is not None:
             # Anchor in memory before the DB write: the write awaits a query that
@@ -1943,8 +1943,8 @@ class CollaborationCore:
 
     async def _handle_user_joined_channel(self, join: InboundUserJoin) -> None:
         """Called by the adapter when an external user joins a bridged
-        channel (e.g. someone adds louisa to a Mattermost channel via the
-        Mattermost UI). Auto-creates the Switch room if the channel isn't
+        channel (e.g. someone adds louisa to a Slack channel via the
+        Slack UI). Auto-creates the Switch room if the channel isn't
         mapped yet (same as the lazy inbound-message path), then ensures
         the human actor exists and is joined to the room."""
         if await self._is_registered_agent(join.external_username):

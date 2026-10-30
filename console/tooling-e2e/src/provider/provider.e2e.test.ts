@@ -13,7 +13,7 @@ import { setupHarness, teardownHarness, waitForSession, type Harness } from './h
 import { formatResultsTable, SCENARIOS, type ScenarioResult } from './scenarios.ts';
 
 /**
- * The provider lane. One throwaway agent, one Mattermost channel, the scenarios
+ * The provider lane. One throwaway agent, one in-Console room, the scenarios
  * run in order against them, then teardown and a summary table. Runs when
  * `SWITCH_E2E_LANE=provider`.
  *
@@ -42,7 +42,7 @@ beforeAll(async () => {
 
   harness = await setupHarness(lane.target);
   scopes = new RunContext(harness.runId);
-  // The first scope named the setup's agent and channel; scenarios start after it.
+  // The first scope named the setup's agent and room; scenarios start after it.
   scopes.scope();
   console.log(
     [
@@ -51,8 +51,6 @@ beforeAll(async () => {
       `  ${describeEnv(lane.target.env)}`,
       `  ${describeServerLogCheck(lane.target.env.serverLog)}`,
       `  agent    ${harness.agent.name} (${harness.agent.id})`,
-      `  bot      @${harness.bot.username} (${harness.bot.id})`,
-      `  channel  ${harness.channel.name} (${harness.channel.id})`,
       `  room     ${harness.room.name} (${harness.room.id})`,
       '',
       lane.target.env.provider.controllerId !== null
@@ -83,6 +81,7 @@ afterAll(async () => {
 });
 
 describe('provider lane', () => {
+  let blockedBy: string | null = null;
   for (const scenario of SCENARIOS) {
     it(scenario.header.id, async (context) => {
       if (!lane.target) return context.skip(lane.skip);
@@ -95,6 +94,17 @@ describe('provider lane', () => {
         }
         return context.skip(admission.reason);
       }
+      if (blockedBy) {
+        // A late card from the stuck turn would look like this scenario's own.
+        results.push({
+          name: scenario.header.id,
+          ok: false,
+          details: `blocked: ${blockedBy} did not stop cleanly`,
+          transcript: [],
+          durationMs: 0,
+        });
+        return context.skip(`${blockedBy} did not stop cleanly`);
+      }
       const h = harness!;
       const log = (message: string): void => console.log(`[${scenario.header.id}] ${message}`);
       const names = scopes.scope();
@@ -106,12 +116,16 @@ describe('provider lane', () => {
         observer.stop();
       }
       results.push(result);
+      if (result.blocksNext) blockedBy = result.name;
       const serverErrors = observer.errors(result.ok ? null : result.details, log);
       if (!result.ok) {
         console.log(
           `${result.name} transcript:\n` +
             result.transcript
-              .map((post) => `    [${post.user_id === h.bot.id ? 'bot ' : 'user'}] ${post.message}`)
+              .map(
+                (post) =>
+                  `    [${post.sender.agentId === h.agent.id ? 'agent' : 'user '}] ${post.body}`
+              )
               .join('\n')
         );
       }

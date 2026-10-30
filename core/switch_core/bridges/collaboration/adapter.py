@@ -24,7 +24,6 @@ from switch_core.agent_icon import (
     initials_icon_url,
     is_third_party_avatar,
 )
-from switch_core.bridges.collaboration.ingress import CallbackEndpoint
 from switch_core.bridges.collaboration.install import InboundWebhook, WebhookRequest
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
@@ -107,9 +106,8 @@ class AgentPresentation:
     """The presentation columns of one agent, exactly as they are stored.
 
     Raw on purpose: ``None`` in either field means the agent was given no value
-    for it, and what stands in for a missing value is per-platform — Mattermost
-    wants a default icon in a format it can upload, Slack wants one drawn on its
-    own background. Deciding that here would take the choice away from the
+    for it, and what stands in for a missing value is per-platform — Slack
+    wants one drawn on its own background, others their own default. Deciding that here would take the choice away from the
     adapter that has to live with it.
     """
 
@@ -383,7 +381,7 @@ class SupportsSharedConnection(Protocol):
 
     Structural on purpose: the lifecycle, the gateway and boot narrow to this
     with `isinstance` and stay ignorant of the concrete adapter, and an adapter
-    with no shared connection (Slack, Mattermost, Teams, Telegram) never matches
+    with no shared connection (Slack, Teams, Telegram) never matches
     and is left alone. A bridge on the distributed Teams app shares the
     deployment's app too, but has nothing to wait for: it is handed the app
     before it starts, by its own bridge-starting listener, and never matches.
@@ -544,9 +542,8 @@ class PlatformAdapter(ABC):
     #: Whether a publication carries a marker `find_request_card` can match on
     #: regardless of what the message says.
     #:
-    #: Slack writes the token into a `block_id` and message metadata,
-    #: Mattermost into a post prop: both are exact, invisible, and present on
-    #: every publication, so anything this bridge posted can be recognised
+    #: Slack writes the token into a `block_id` and message metadata: exact,
+    #: invisible, and present on every publication, so anything this bridge posted can be recognised
     #: again. Discord has nowhere to put one on a webhook message, so it
     #: recognises a card by the handle the card itself prints — which works
     #: for a card and cannot work for a turn's activity, because activity
@@ -965,7 +962,7 @@ class PlatformAdapter(ABC):
         """Post a message to the external channel.
 
         thread_root_id, when set, is the external platform's identifier for the
-        thread root (e.g. Mattermost root_id) — the message should be posted as
+        thread root (e.g. a Slack thread_ts) — the message should be posted as
         a reply within that thread. Adapters whose platform does not support
         threads ignore it.
 
@@ -1061,9 +1058,8 @@ class PlatformAdapter(ABC):
 
         The `/` form is per-platform: Slack declares its commands in the app
         manifest, Discord registers them per guild, and Telegram and Teams
-        accept `/` as an ordinary message prefix, while Mattermost has nothing —
-        so the no-agents notice must not advertise a `/` form on a bridge that
-        has none to offer.
+        accept `/` as an ordinary message prefix — and a platform with no `/`
+        form returns None, so the no-agents notice does not advertise one.
         The invocation differs too, since Slack and Telegram take a free-text
         tail where Discord names each argument as its own field, so each adapter
         spells out its own.
@@ -1495,13 +1491,12 @@ class PlatformAdapter(ABC):
         has no such scheme or the link cannot be built.
 
         Each platform owns its link format here — Slack builds a ``slack://``
-        URL from the workspace id, Mattermost a ``mattermost://`` URL from the
-        server + team + channel name."""
+        URL from the workspace and channel ids."""
         return None
 
     async def home_deeplink(self) -> str | None:
         """Link that opens this bridge's *workspace* — the Slack workspace, the
-        Discord guild, the Mattermost team — rather than one channel within it.
+        Discord guild — rather than one channel within it.
         None when the platform has no such link or it cannot be built.
 
         The bridge-level counterpart to :meth:`channel_deeplink`, for offering
@@ -1710,7 +1705,7 @@ class PlatformAdapter(ABC):
 
         Safe by default: the words — `@everyone`, `@channel`, `@here`, `@all`
         — are defused everywhere, code and URLs included, which is what a
-        platform that pages from plain text (Mattermost) needs. A platform
+        platform that pages from plain text needs. A platform
         whose text cannot page on its own overrides this to leave code, URLs
         and addresses exact, and one with a syntax of its own for the same
         thing (Slack's `<!channel>`) escapes that too.
@@ -1748,7 +1743,7 @@ class PlatformAdapter(ABC):
         (Slack's ``<@U…>``) need the mapping to render an outbound ``@name`` as
         a real mention; without it the name goes out as plain text and the
         person is never notified. Default is a no-op, since platforms that
-        mention by handle (Mattermost) need no mapping at all."""
+        mention by handle need no mapping at all."""
         return None
 
     async def ensure_channel_subscriptions(
@@ -1825,20 +1820,6 @@ class PlatformAdapter(ABC):
         subscription is created against `teams/{team}/channels/{channel}`, and
         the team arrives only on an inbound activity. Losing it on restart
         silently kills capture in every channel outside the configured team."""
-        return None
-
-    def set_callback_endpoint(self, endpoint: CallbackEndpoint) -> None:
-        """Hand the adapter its own place on the shared callback listener.
-
-        Default is a no-op, and the right answer for every adapter that only
-        dials out: nothing has to reach Switch for it to work, so it never asks
-        to be served and the listener never binds. Mattermost overrides it,
-        because a button press there is delivered to a URL.
-
-        The endpoint arrives already bound to this bridge. An adapter is built
-        from its connection config alone and is never told which bridge it is,
-        which is what stops it addressing another bridge's callbacks even by
-        mistake."""
         return None
 
     def set_webhook_url(self, url: str | None) -> None:

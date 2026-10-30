@@ -42,10 +42,10 @@ describe('CreateRoomModal', () => {
     expect(html).toContain('placeholder="Name this room"');
     expect(html).toMatch(/<label[^>]*for="new-room-participants"[^>]*>Participants<\/label>/);
     expect(html).not.toContain('uppercase');
-    expect(html).not.toContain('does not offer Switch Console rooms');
+    expect(html).not.toContain('can’t create rooms yet');
   });
 
-  it('says there is nowhere to create a room without group chats or a messaging app', () => {
+  it('explains, instead of the form, that no room can be created without group chats or a messaging app', () => {
     flags.group_chats = false;
     try {
       const html = renderToStaticMarkup(
@@ -55,7 +55,11 @@ describe('CreateRoomModal', () => {
           createElement(CreateRoomModal, { onSuccess: () => {}, onClose: () => {} })
         )
       );
-      expect(html).toContain('does not offer Switch Console rooms');
+      expect(html).toContain('This server can’t create rooms yet.');
+      expect(html).toContain('start a 1-1 chat from an agent’s page');
+      expect(html).toContain('>Close</button>');
+      expect(html).not.toContain('new-room-name');
+      expect(html).not.toContain('Create room');
     } finally {
       flags.group_chats = true;
     }

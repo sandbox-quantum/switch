@@ -263,7 +263,7 @@ const embeddedRoom = () => container.querySelector<HTMLElement>('[data-testid="e
 
 it('opens a room in the right pane as the room view draws it, keeping its row selected', async () => {
   rooms.list = [room('room-1', 'design'), room('room-2', 'launch')];
-  rooms.bridges = { 'room-1': 'mattermost', 'room-2': 'mattermost' };
+  rooms.bridges = { 'room-1': 'slack', 'room-2': 'slack' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
   await act(async () => root.render(<AgentChats agent={AGENT} />));
 
@@ -277,8 +277,6 @@ it('opens a room in the right pane as the room view draws it, keeping its row se
   expect(box.height).toBe(700);
   expect(roomRow('design').hasAttribute('data-active')).toBe(true);
   expect(container.querySelector('[data-testid="agent-room-summary"]')).toBeNull();
-  // A Mattermost room opens on its conversation, which leaves the box to the layer.
-  expect(container.querySelector('[data-testid="room-configuration"]')).toBeNull();
 
   await act(async () => roomRow('launch').click());
   expect(navigation.params().room).toBe('room-2');
@@ -289,7 +287,7 @@ it('opens a room in the right pane as the room view draws it, keeping its row se
 
 it('lets the room go when a section is picked or the page is left', async () => {
   rooms.list = [room('room-1', 'design')];
-  rooms.bridges = { 'room-1': 'mattermost' };
+  rooms.bridges = { 'room-1': 'slack' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
   await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(roomEmbedSlotStore.slot?.roomId).toBe('room-1');

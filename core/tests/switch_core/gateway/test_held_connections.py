@@ -534,7 +534,7 @@ class TestBridgeRoutes:
                 display_name="Slack",
                 connection_config={"bot_token": "xoxb-old"},
                 client_id=client.id,
-                status="running",
+                status="active",
             )
             session.add(bridge)
             await session.commit()
@@ -590,6 +590,37 @@ class TestBridgeRoutes:
             "bridge remove",
         ]
         _assert_one_at_a_time(pool_checkouts, calls)
+
+    async def test_an_identity_cannot_be_claimed_on_a_retiring_bridge(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        user = await _admin(session_factory)
+        bridge = await self._bridge(session_factory)
+        async with session_factory() as session:
+            await CollaborationBridgeStore().update_status(
+                session, bridge.id, "retiring"
+            )
+            await session.commit()
+        calls = _Calls(pool_checkouts)
+        collab = _CollabLifecycle(calls)
+        app = _app(
+            session_factory,
+            pool_checkouts,
+            room_service=_room_service(session_factory, calls, collab, {}),
+            collab=collab,
+        )
+
+        async with _client(app, user) as client:
+            claimed = await client.post(
+                f"/bridges/{bridge.id}/identities",
+                json={"external_user_id": "U1", "username": "ada"},
+            )
+
+        assert claimed.status_code == 409, claimed.text
+        assert "retiring" in claimed.json()["detail"]
+        assert calls.held == []
 
     async def test_a_refused_credential_edit_writes_nothing(
         self,

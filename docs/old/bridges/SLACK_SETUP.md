@@ -405,4 +405,4 @@ manifest) so Switch's in-room commands work from Slack.
   [index](README.md#deployment-knobs)); otherwise the raw `switchdash://` link is
   posted.
 - **Local dev.** There is no local Slack — Slack always points at a real
-  workspace onboarded through the gateway. (Local dev seeds only Mattermost.)
+  workspace onboarded through the gateway.

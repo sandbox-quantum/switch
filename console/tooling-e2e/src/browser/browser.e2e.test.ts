@@ -52,7 +52,7 @@ describe('browser lane', () => {
   for (const scenario of BROWSER_SCENARIOS) {
     it(scenario.header.id, async (context) => {
       if (!lane.target) return context.skip(lane.skip);
-      const { env, switchClient, mattermost } = lane.target;
+      const { env, switchClient, chat } = lane.target;
 
       const admission = admit(scenario.header, env);
       if (!admission.run) {
@@ -68,7 +68,7 @@ describe('browser lane', () => {
       }
 
       const names = run.scope();
-      const fixtures = new Fixtures(env, names, switchClient, mattermost);
+      const fixtures = new Fixtures(env, names, switchClient, chat);
       const log = (message: string): void => console.log(`[${scenario.header.id}] ${message}`);
       // The page's own /gateway requests carry the scope's tag too, so an
       // error the server logs serving one is attributed to this scenario.

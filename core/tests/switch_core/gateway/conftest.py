@@ -299,10 +299,9 @@ def _chat_service(
         usage_store=UsageStore(),
         id_server_name="switch.test",
         media_max_bytes=1024,
-        agent_chats_enabled=True,
-        group_chats_enabled=True,
         connections=connections,
     )
+    room_service.use_chats(service)
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service
 

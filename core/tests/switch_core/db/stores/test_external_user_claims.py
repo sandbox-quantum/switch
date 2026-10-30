@@ -36,7 +36,7 @@ async def _make_client(session: AsyncSession, *, client_type: str) -> str:
 
 async def _make_bridge(session: AsyncSession) -> str:
     bridge = CollaborationBridge(
-        type="mattermost",
+        type="slack",
         display_name="MM",
         client_id=await _make_client(session, client_type="bridge"),
         status="active",

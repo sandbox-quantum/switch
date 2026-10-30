@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.aliases import validate_alias_format, validate_alias_map
@@ -31,7 +32,17 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
-from switch_core.db.models import Room, RoomGroup, RoomRole
+from switch_core.db.models import (
+    ClientRoom,
+    CollaborationBridge,
+    ExternalUser,
+    ExternalUserClaim,
+    Room,
+    RoomGroup,
+    RoomRole,
+    TenantMember,
+    User,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -58,6 +69,7 @@ if TYPE_CHECKING:
     from switch_core.bridges.collaboration.lifecycle_service import (
         CollaborationBridgeLifecycleService,
     )
+    from switch_core.chats.service import ChatService
     from switch_core.transport.room_cache import RoomDeliveryCache
 
 logger = logging.getLogger(__name__)
@@ -176,6 +188,7 @@ class RoomService:
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
     _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
+    _chats: ChatService | None = None
 
     def __init__(
         self,
@@ -217,6 +230,31 @@ class RoomService:
                 listener(tenant_id, room_id, [])
             except Exception:
                 logger.exception("Room listener failed for room %s", room_id)
+
+    def use_chats(self, chats: ChatService) -> None:
+        """How people reach a room with no messaging app: their Switch Console
+        membership. Set after construction, since `ChatService` is built on
+        this service."""
+        self._chats = chats
+
+    @property
+    def chats(self) -> ChatService:
+        if self._chats is None:
+            raise RuntimeError(
+                "RoomService has no ChatService (use_chats), so a room with no "
+                "messaging app cannot be reached through Switch Console"
+            )
+        return self._chats
+
+    async def _join_people(
+        self, tenant_id: str, room_id: str, user_names: list[str], user_ids: list[str]
+    ) -> list[str]:
+        """`ChatService.join_people`; the names that did not make it."""
+        if not user_names and not user_ids:
+            return []
+        return await self.chats.join_people(
+            tenant_id, room_id, user_names=user_names, user_ids=user_ids
+        )
 
     def on_room_agents_changed(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -406,10 +444,11 @@ class RoomService:
         """Pick the bridge for a new room: the one named, else the instance
         default, else none.
 
-        A standalone Switch always ships a bridge (the bundled Mattermost), so
-        defaulting to it means every room has somewhere humans can read it
-        without the caller having to know the deployment's topology. Callers
-        that genuinely want an agent-only room pass ``internal_only``.
+        Defaulting to the instance's bridge means a room lands where its humans
+        already read without the caller having to know the deployment's
+        topology. With no default the room is unbridged, and its humans read it
+        in Switch Console. Callers that genuinely want an agent-only room pass
+        ``internal_only``.
 
         A default that is configured but not currently running is reported
         rather than skipped — silently creating an unbridged room would look
@@ -787,6 +826,26 @@ class RoomService:
                 await collaboration_core.ensure_users_in_room(
                     room.id, transport_room_id, config.user_names
                 )
+
+        if bridge_id is None:
+            creator = (
+                config.owner_id or config.created_by
+                if not config.internal_only and config.created_by_kind != "system"
+                else None
+            )
+            unreachable_users = [
+                {
+                    "kind": "user",
+                    "id": name,
+                    "error": "no single Switch user in this workspace has this name",
+                }
+                for name in await self._join_people(
+                    room.tenant_id,
+                    room.id,
+                    config.user_names or [],
+                    [creator] if creator else [],
+                )
+            ]
 
         if collaboration_core and external_channel_id and is_dm and config.user_names:
             await collaboration_core.ensure_users_in_room(
@@ -1321,19 +1380,39 @@ class RoomService:
             return "unknown"
         return "true" if active else "false"
 
-    async def add_users_to_room(self, room_id: str, user_names: list[str]) -> list[str]:
+    async def add_users_to_room(
+        self, room_id: str, user_names: list[str], actor: User | None
+    ) -> list[str]:
         """Add users to a bridged room; returns the names that did not make it
         (added users are omitted from the result).
 
         Two ways to miss. The bridge may have no external user for the name —
         the person has not yet signed into that workspace — or the platform may
         refuse to add someone it does know. Both come back here, because to the
-        caller they are the same fact: that person is not in the room."""
+        caller they are the same fact: that person is not in the room.
+
+        A room with no messaging app takes people by their Switch name instead,
+        and they read it in Switch Console (`ChatService.join_people`). There
+        the room's history is the people's to read, so `actor` (the person
+        acting, or the acting agent's owner) must manage the room, as in
+        Console's own add-member."""
         async with self._session_factory() as session:
             room = await self._room_store.get(session, room_id)
             if room is None:
                 raise ValueError(f"Room not found: {room_id}")
-        if not room.bridge_id or not room.external_channel_id:
+        if not room.bridge_id:
+            async with tenant_session(self._session_factory, room.tenant_id) as session:
+                await self.chats.require_manager(session, room.tenant_id, actor, room)
+            unresolved = await self._join_people(
+                room.tenant_id, room.id, user_names, []
+            )
+            emit_safely(
+                self._telemetry,
+                "room_users_added",
+                {"user_count": len(user_names) - len(unresolved)},
+            )
+            return unresolved
+        if not room.external_channel_id:
             raise ValueError(f"Room {room_id} is not bridged")
         collaboration_core = self._collab_lifecycle.get(room.bridge_id)
         if collaboration_core is None:
@@ -1430,6 +1509,144 @@ class RoomService:
 
         logger.info("Unlinked bridge from room %s", room_id)
 
+    async def retire_mattermost_bridges(self) -> None:
+        """Turn each room on a retiring Mattermost connector into a plain
+        Switch Console room, then mark the connector inactive.
+
+        Switch no longer bridges Mattermost, so its rooms' people can only
+        read them in Switch Console. Only a person whose Mattermost account on
+        that connector is linked to their Switch user is put in a room: an
+        unlinked account says nothing about who may read it. A room that fails
+        is logged and leaves the connector retiring, so the next boot tries
+        again; a room already moved is no longer on the connector.
+        """
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                bridge_ids = list(
+                    (
+                        await session.execute(
+                            select(CollaborationBridge.id).where(
+                                CollaborationBridge.tenant_id == tenant_id,
+                                CollaborationBridge.type == "mattermost",
+                                CollaborationBridge.status == "retiring",
+                            )
+                        )
+                    ).scalars()
+                )
+            for bridge_id in bridge_ids:
+                await self._retire_bridge(tenant_id, bridge_id)
+
+    async def _retire_bridge(self, tenant_id: str, bridge_id: str) -> None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rooms = list(
+                (
+                    await session.execute(
+                        select(Room).where(Room.bridge_id == bridge_id)
+                    )
+                ).scalars()
+            )
+        failed = 0
+        for room in rooms:
+            try:
+                await self._retire_room(tenant_id, bridge_id, room)
+            except Exception:
+                failed += 1
+                logger.warning(
+                    "Could not move room %s off retired Mattermost connector %s; "
+                    "the next boot tries again",
+                    room.id,
+                    bridge_id,
+                    exc_info=True,
+                )
+        if failed:
+            logger.warning(
+                "Mattermost connector %s stays retiring: %d of %d room(s) could "
+                "not be moved",
+                bridge_id,
+                failed,
+                len(rooms),
+            )
+            return
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._collab_bridge_store.update_status(
+                session, bridge_id, "inactive"
+            )
+            await session.commit()
+        logger.info(
+            "Retired Mattermost connector %s: %d room(s) moved to Switch Console",
+            bridge_id,
+            len(rooms),
+        )
+
+    async def _retire_room(self, tenant_id: str, bridge_id: str, room: Room) -> None:
+        # Claims are self-service and record no admin approval, so an account
+        # claimed by several people links none of them. Removing a member
+        # keeps their claims, so only current members' claims count.
+        sole_claims = (
+            select(ExternalUserClaim.external_user_id)
+            .join(
+                TenantMember,
+                (TenantMember.user_id == ExternalUserClaim.user_id)
+                & (TenantMember.tenant_id == tenant_id),
+            )
+            .group_by(ExternalUserClaim.external_user_id)
+            .having(func.count() == 1)
+        )
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            linked = list(
+                (
+                    await session.execute(
+                        select(ExternalUserClaim.user_id, ExternalUser.external_user_id)
+                        .join(
+                            ExternalUser,
+                            ExternalUser.id == ExternalUserClaim.external_user_id,
+                        )
+                        .join(
+                            ClientRoom, ClientRoom.client_id == ExternalUser.client_id
+                        )
+                        .where(
+                            ExternalUser.tenant_id == tenant_id,
+                            ExternalUser.bridge_id == bridge_id,
+                            ClientRoom.room_id == room.id,
+                            ExternalUserClaim.external_user_id.in_(sole_claims),
+                        )
+                        .distinct()
+                    )
+                ).tuples()
+            )
+        owners = [i for i in dict.fromkeys((room.owner_id, room.created_by)) if i]
+        await self._join_people(
+            tenant_id, room.id, [], [*(user_id for user_id, _ in linked), *owners]
+        )
+        for user_id, external_user_id in linked:
+            logger.warning(
+                "Retired Mattermost room %s: joined user %s on their unreviewed "
+                "claim of external user %s",
+                room.id,
+                user_id,
+                external_user_id,
+            )
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            row = await session.get(Room, room.id)
+            assert row is not None
+            if not await self.chats.members(session, row):
+                logger.warning(
+                    "Retired Mattermost room %s (%s) has no Switch Console member",
+                    row.id,
+                    row.name,
+                )
+            row.metadata_ = {
+                **(row.metadata_ or {}),
+                "retired_bridge": {
+                    "type": "mattermost",
+                    "bridge_id": bridge_id,
+                    "external_channel_id": row.external_channel_id,
+                },
+            }
+            row.bridge_id = None
+            row.external_channel_id = None
+            await session.commit()
+
     async def unlink_bridge_channel(
         self, bridge_id: str, external_channel_id: str
     ) -> None:
@@ -1479,7 +1696,7 @@ class RoomService:
         (`require_bindable_channel`); agents are still (re-)added to it.
 
         Human users are **not** carried over. A user's identity is
-        bridge-specific (a Mattermost account is not the same as a Slack
+        bridge-specific (a Discord account is not the same as a Slack
         account), so there is no reliable cross-bridge mapping — they must be
         re-invited to the new channel manually. A warning is logged saying so.
 

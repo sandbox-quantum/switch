@@ -24,7 +24,7 @@ services:
     image: postgres:16-alpine
     environment:
       PGPASSWORD: ${DB_OWNER_PASSWORD}
-    # Runs as the owner: creating a database and a role both need privileges
+    # Runs as the owner: creating a role needs privileges
     # the runtime role is deliberately never given. Note the mixed quoting in
     # the CREATE ROLE / ALTER ROLE statements is not optional — DB_USER is an
     # identifier (double-quoted, and safe only because .env.example pins it to
@@ -40,8 +40,6 @@ services:
     entrypoint: >
       sh -c "
         until pg_isready -h postgres -U ${DB_OWNER_USER}; do sleep 1; done
-        psql -h postgres -U ${DB_OWNER_USER} -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
-          psql -h postgres -U ${DB_OWNER_USER} -c 'CREATE DATABASE mattermost;'
         psql -h postgres -U ${DB_OWNER_USER} -tc \"SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'\" | grep -q 1 ||
           psql -h postgres -U ${DB_OWNER_USER} -c 'CREATE ROLE \"${DB_USER}\" LOGIN PASSWORD '\\''${DB_PASSWORD}'\\'' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;'
         psql -h postgres -U ${DB_OWNER_USER} -c 'ALTER ROLE \"${DB_USER}\" PASSWORD '\\''${DB_PASSWORD}'\\'';'
@@ -49,80 +47,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-
-  mattermost:
-    image: mattermost/mattermost-team-edition:latest
-    platform: linux/amd64
-    # It calls back to switch-core on the host for button presses; see `setup`.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8065:8065"
-    volumes:
-      - mmdata:/mattermost/data
-    environment:
-      MM_SQLSETTINGS_DRIVERNAME: postgres
-      # The owner's credentials, not the runtime role's: init-db creates the
-      # `mattermost` database as the owner, and the runtime role (DB_USER)
-      # neither owns it nor was granted anything on it — only `switch`'s
-      # tables get the runtime role's grants, issued by switch-core itself at
-      # boot. Mattermost's own schema has no row-level security in it, so
-      # there is no isolation reason to run it as the restricted role too.
-      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_OWNER_USER}:${DB_OWNER_PASSWORD}@postgres:5432/mattermost?sslmode=disable
-      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
-      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
-      MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
-      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
-      # Mattermost refuses to call a private address from an integration unless
-      # the host is named here, and a button on a Switch card is delivered by
-      # exactly that path. switch-core runs on the host in this compose, not as
-      # a service, so what Mattermost has to be allowed to reach is the host.
-      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: host.docker.internal
-      MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
-      MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
-      # Both of these exist for Switch Console's embedded room view (CHOO-1674):
-      # the onboarding checklist opens a modal over a dimmed page inside the
-      # pane, and Mattermost only turns known schemes into links, so without
-      # the second the `switchdash://session?…` deeplinks agents post render as
-      # unclickable text. Kept in step with the standalone compose.
-      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
-      MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: switchdash
-      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
-      MM_LOGSETTINGS_ENABLESENTRY: "false"
-      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
-      MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false"
-      MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false"
-      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
-    depends_on:
-      init-db:
-        condition: service_completed_successfully
-
-  setup:
-    build:
-      context: .
-      dockerfile: deploy/shared_resources/images/Dockerfile.setup
-    restart: on-failure
-    # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
-    # (a CI runner) only does when asked.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      SWITCH_URL: http://host.docker.internal:8000
-      MATTERMOST_URL: http://mattermost:8065
-      MATTERMOST_URL_FOR_SWITCH: http://localhost:8065
-      # The route back: where the Mattermost container reaches switch-core's
-      # callback port, for the button presses Mattermost delivers by HTTP.
-      # switch-core runs on the host in this compose, not as a service.
-      MATTERMOST_CALLBACK_BASE_URL: http://host.docker.internal:8081
-      MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER}
-      MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
-      MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME}
-      MATTERMOST_USER: ${MATTERMOST_USER}
-      MATTERMOST_USER_PASSWORD: ${MATTERMOST_USER_PASSWORD}
-      GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
-      GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
-    depends_on:
-      - mattermost
 
   # A mail catcher for invitation e-mails, started by `just local-cloud` only
   # (the `mail` profile keeps it out of `just up`). It accepts anything on
@@ -136,4 +60,3 @@ services:
 
 volumes:
   pgdata:
-  mmdata:

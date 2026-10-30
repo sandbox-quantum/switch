@@ -1,7 +1,7 @@
 """A connector the deployment registered itself is not a person onboarding.
 
 The standalone stack, the Helm chart and every Console-managed local server run
-a setup step that registers the bundled Mattermost seconds after install. Left
+a setup step that registers a bundled connector seconds after install. Left
 alone, that connector claims `first_connector_added` on every such deployment,
 so "time to first connector" reads as boot time and the connector a person
 actually added later is never a milestone at all.
@@ -74,7 +74,7 @@ class TestTheBundledConnector:
         bundled = f"bundled-{uuid.uuid4().hex[:8]}"
         _running(service, bundled, preconfigured=True)
 
-        await service._report_connector_up(bundled, "mattermost", INSTALLED)
+        await service._report_connector_up(bundled, "discord", INSTALLED)
 
         [added] = await _events(service, sink, "connector_added")
         assert added["is_preconfigured"] is True
@@ -87,7 +87,7 @@ class TestTheBundledConnector:
         bundled = f"bundled-{uuid.uuid4().hex[:8]}"
         _running(service, bundled, preconfigured=True)
 
-        await service._report_connector_up(bundled, "mattermost", INSTALLED)
+        await service._report_connector_up(bundled, "discord", INSTALLED)
 
         assert await _events(service, sink, "first_connector_added") == []
 
@@ -100,8 +100,8 @@ class TestTheBundledConnector:
         bundled = f"bundled-{uuid.uuid4().hex[:8]}"
         _running(service, bundled, preconfigured=True)
 
-        await service._report_connector_up(bundled, "mattermost", INSTALLED)
-        await service._report_connector_up(bundled, "mattermost", INSTALLED)
+        await service._report_connector_up(bundled, "discord", INSTALLED)
+        await service._report_connector_up(bundled, "discord", INSTALLED)
 
         assert await _events(service, sink, "first_connector_added") == []
 
@@ -114,14 +114,14 @@ class TestTheConnectorAPersonAdds:
         bundled = f"bundled-{uuid.uuid4().hex[:8]}"
         slack = f"slack-{uuid.uuid4().hex[:8]}"
         _running(service, bundled, preconfigured=True)
-        await service._report_connector_up(bundled, "mattermost", INSTALLED)
+        await service._report_connector_up(bundled, "discord", INSTALLED)
         _running(service, slack, preconfigured=False)
 
         await service._report_connector_up(slack, "slack", INSTALLED)
 
         added = await _events(service, sink, "connector_added")
         assert [(a["bridge_platform"], a["is_first_connector"]) for a in added] == [
-            ("mattermost", False),
+            ("discord", False),
             ("slack", True),
         ]
         assert added[1]["is_preconfigured"] is False
@@ -133,7 +133,7 @@ class TestTheConnectorAPersonAdds:
         bundled = f"bundled-{uuid.uuid4().hex[:8]}"
         slack = f"slack-{uuid.uuid4().hex[:8]}"
         _running(service, bundled, preconfigured=True)
-        await service._report_connector_up(bundled, "mattermost", INSTALLED)
+        await service._report_connector_up(bundled, "discord", INSTALLED)
         _running(service, slack, preconfigured=False)
 
         await service._report_connector_up(slack, "slack", INSTALLED)
@@ -194,7 +194,7 @@ class TestTheFlagIsReadOffTheRow:
             await session.commit()
 
         service, _ = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
 
         await service.start(bridge_id)
@@ -211,7 +211,7 @@ class TestTheFlagIsReadOffTheRow:
             await session.commit()
 
         service, _ = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
         # Left over from an earlier start, before the row was changed back.
         service._preconfigured.add(bridge_id)
@@ -230,7 +230,7 @@ class TestMarkingARunningBridge:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         service, _ = _service_with_telemetry(session_factory)
-        service._bridge_facts["bundled"] = ("mattermost", INSTALLED)
+        service._bridge_facts["bundled"] = ("discord", INSTALLED)
 
         service.note_preconfigured("bundled", True)
         assert "bundled" in service._preconfigured

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run the harness against a fresh, throwaway Switch stack built from this
-# checkout: new Postgres and Mattermost volumes, migrations, switch-core on the
-# host, then the chosen lane, then teardown.
+# checkout: a new Postgres volume, migrations, switch-core on the host, then
+# the chosen lane, then teardown. The harness plays the human through the
+# in-Console chat.
 #
 #   just e2e-fast                 the fast lane (no provider, no Console)
 #   just e2e-provider             the provider lane, on a headless agent controller
@@ -24,7 +25,7 @@
 # `vite preview` on :4173, whose proxy sends its /gateway requests to :8000 as
 # nginx does in a deployment, and installs Playwright's Chromium.
 #
-# Ports 4173, 5432, 8000, 8065 and 8081 must be free: stop a local stack first.
+# Ports 4173, 5432 and 8000 must be free: stop a local stack first.
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
 # file, the controller's state and the agent's working directory go to a
 # temporary directory, so the output holds nothing secret by construction.
@@ -56,7 +57,7 @@ done
 for tool in docker uv openssl curl jq lsof; do
   command -v "$tool" >/dev/null || { echo "$tool is required but not on PATH." >&2; exit 1; }
 done
-for port in 4173 5432 8000 8065 8081; do
+for port in 4173 5432 8000; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port $port is in use. Stop your local stack first ('just down', and any 'just run')." >&2
     exit 1
@@ -89,7 +90,7 @@ cleanup() {
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null
     "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   else
-    echo "Left running: switch-core :8000 (pid $SERVER_PID), Mattermost :8065${CONTROLLER_PID:+, agent controller (pid $CONTROLLER_PID)}${UI_PID:+, gateway UI :4173 (pid $UI_PID)}."
+    echo "Left running: switch-core :8000 (pid $SERVER_PID)${CONTROLLER_PID:+, agent controller (pid $CONTROLLER_PID)}${UI_PID:+, gateway UI :4173 (pid $UI_PID)}."
     echo "Secrets and state for this stack: $WORK. Tear down with:"
     echo "  kill $SERVER_PID $CONTROLLER_PID $UI_PID; ${COMPOSE[*]} down -v; rm -rf $WORK"
   fi
@@ -144,7 +145,7 @@ if [ -n "${SWITCH_E2E_PROVIDER_ENV_FILE:-}" ] && [ -r "$SWITCH_E2E_PROVIDER_ENV_
 fi
 
 
-echo "Starting a fresh stack (Postgres, Mattermost)…"
+echo "Starting a fresh stack (Postgres)…"
 "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
 "${COMPOSE[@]}" up -d --build >"$OUT/compose-up.log" 2>&1 \
   || { echo "docker compose up failed; see $OUT/compose-up.log" >&2; exit 1; }
@@ -165,23 +166,6 @@ SERVER_PID=$!
 for _ in $(seq 120); do curl -sf localhost:8000/health >/dev/null && break; sleep 1; done
 curl -sf localhost:8000/health >/dev/null \
   || { echo "switch-core did not come up; see $OUT/switch-core.log" >&2; exit 1; }
-
-echo "Waiting for the Mattermost bridge to be registered…"
-for _ in $(seq 150); do
-  "${COMPOSE[@]}" logs setup 2>&1 | grep -q "Setup complete" && break; sleep 2
-done
-"${COMPOSE[@]}" logs setup 2>&1 | grep -q "Setup complete" \
-  || { "${COMPOSE[@]}" logs setup >"$OUT/setup.log" 2>&1
-       echo "Mattermost setup never completed; see $OUT/setup.log" >&2; exit 1; }
-
-# The harness posts as the Mattermost human the setup container created. A
-# session token from logging in authenticates exactly as a personal access
-# token does, and dies with the stack.
-MATTERMOST_TOKEN="$(curl -sf -D - -o /dev/null -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg u "$MATTERMOST_USER" --arg p "$MATTERMOST_USER_PASSWORD" '{login_id: $u, password: $p}')" \
-  http://localhost:8065/api/v4/users/login | tr -d '\r' | awk -F': ' 'tolower($1)=="token" {print $2}')"
-[ -n "$MATTERMOST_TOKEN" ] || { echo "could not log in to Mattermost as $MATTERMOST_USER" >&2; exit 1; }
-remember_secrets "$MATTERMOST_TOKEN"
 
 PROVIDER_ENV=()
 if [ "$NEEDS_CONTROLLER" = 1 ]; then
@@ -272,9 +256,6 @@ status=0
   SWITCH_GATEWAY_ADMIN_EMAIL="$GATEWAY_ADMIN_EMAIL" \
   SWITCH_GATEWAY_ADMIN_PASSWORD="$GATEWAY_ADMIN_PASSWORD" \
   SWITCH_AGENT_REGISTRATION_TOKEN="$AGENT_REGISTRATION_TOKEN" \
-  MATTERMOST_URL=http://localhost:8065 \
-  MATTERMOST_TOKEN="$MATTERMOST_TOKEN" \
-  MATTERMOST_TEAM="$MATTERMOST_TEAM_NAME" \
     pnpm exec vitest run --reporter=verbose --reporter=junit \
       --outputFile.junit="$OUT/junit.xml" ${VITEST_ARGS[@]+"${VITEST_ARGS[@]}"}
 ) || status=$?

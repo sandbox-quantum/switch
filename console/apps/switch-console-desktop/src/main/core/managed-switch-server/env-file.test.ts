@@ -2,10 +2,11 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
+import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   buildEnvFile,
   keysDisagreeing,
-  MANAGED_SERVER_FEATURE_FLAGS,
   managedServerFeatureFlags,
   readStackEnv,
   telemetryRequested,
@@ -20,8 +21,6 @@ const secrets: LocalServerSecrets = {
   secretKeys: 'console:secret-keys-value',
   controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'gw-admin',
-  mattermostAdminPassword: 'mm-admin',
-  mattermostUserPassword: 'mm-user',
 };
 
 /** The compose file Switch Console writes beside the `.env`, and whose `${VAR}`
@@ -31,18 +30,20 @@ const composeYaml = readFileSync(
   'utf8'
 );
 
+const envParams = {
+  version: '1.2.3',
+  registry: 'ghcr.io',
+  namespace: 'sandbox-quantum',
+  ports: { gateway: 51000, api: 51001, postgres: 51003 },
+  secrets,
+  telemetryEnabled: false,
+  telemetryEnvironment: 'prod',
+  telemetryInternal: false,
+  telemetryEndpoint: 'https://relay.example.test',
+} as const;
+
 describe('buildEnvFile', () => {
-  const env = buildEnvFile({
-    version: '1.2.3',
-    registry: 'ghcr.io',
-    namespace: 'sandbox-quantum',
-    ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
-    secrets,
-    telemetryEnabled: false,
-    telemetryEnvironment: 'prod',
-    telemetryInternal: false,
-    telemetryEndpoint: 'https://relay.example.test',
-  });
+  const env = buildEnvFile(envParams);
   const vars = Object.fromEntries(
     env
       .split('\n')
@@ -60,7 +61,6 @@ describe('buildEnvFile', () => {
   it('publishes every host port from the chosen (free) port set', () => {
     expect(vars.GATEWAY_HOST_PORT).toBe('51000');
     expect(vars.API_HOST_PORT).toBe('51001');
-    expect(vars.MATTERMOST_HOST_PORT).toBe('51002');
     expect(vars.POSTGRES_HOST_PORT).toBe('51003');
     expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
   });
@@ -79,23 +79,30 @@ describe('buildEnvFile', () => {
     expect(vars.SECRET_KEYS).toBe('console:secret-keys-value');
     expect(vars.CONTROLLER_TOKEN_SECRET).toBe('controller-token-secret-value');
     expect(vars.GATEWAY_ADMIN_PASSWORD).toBe('gw-admin');
-    expect(vars.MATTERMOST_ADMIN_PASSWORD).toBe('mm-admin');
-    expect(vars.MATTERMOST_USER_PASSWORD).toBe('mm-user');
   });
 
   it("starts a managed stack with this build's feature flags", () => {
-    expect(vars.FEATURE_FLAGS_ENABLED).toBe(MANAGED_SERVER_FEATURE_FLAGS.join(','));
+    expect(vars.FEATURE_FLAGS_ENABLED).toBe(
+      managedServerFeatureFlags(BUILD_FEATURE_FLAGS.onboarding, false).join(',')
+    );
+    expect(vars.FEATURE_FLAGS_ENABLED.split(',')).not.toContain('group_chats');
+  });
+
+  it('sends no chat flag to a stack built from a checkout, where chats are always on', () => {
+    const checkout = buildEnvFile({ ...envParams, version: CHECKOUT_IMAGE_TAG });
+    expect(checkout).not.toMatch(/^FEATURE_FLAGS_ENABLED=.*\b(agent|group)_chats\b/m);
+    expect(managedServerFeatureFlags(false, true)).toEqual([]);
   });
 
   it('turns on what switch-buddy needs only in a build with the new first run', () => {
-    expect(managedServerFeatureFlags(true)).toEqual([
+    expect(managedServerFeatureFlags(true, false)).toEqual([
       'agent_management',
       'agent_chats',
       'switch_buddy',
       'follow_the_conversation',
       'service_connections',
     ]);
-    expect(managedServerFeatureFlags(false)).toEqual([]);
+    expect(managedServerFeatureFlags(false, false)).toEqual(['agent_chats']);
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {
@@ -155,9 +162,8 @@ describe('buildEnvFile', () => {
       // The variable the agent_management feature flag replaced. switch-core
       // refuses to start with it on, so it is left to the compose default.
       'AGENT_MANAGEMENT_ENABLED',
-      // Private hosts Switch may reach at a tenant- or agent-supplied URL. The
-      // compose file always allows the bundled Mattermost; a managed stack
-      // allows nothing more until its operator says so.
+      // Private hosts Switch may reach at a tenant- or agent-supplied URL. A
+      // managed stack allows none until its operator says so.
       'OUTBOUND_ALLOWED_PRIVATE_HOSTS',
       // The distributed Teams app's credential, notification keypair and
       // package pages are deployment config too, and a loopback stack can
@@ -174,9 +180,6 @@ describe('buildEnvFile', () => {
       'TEAMS_APP_PRIVACY_URL',
       'TEAMS_APP_TERMS_URL',
       'TEAMS_APP_NAME',
-      // Written, and empty on purpose in a build without the new first run
-      // (MANAGED_SERVER_FEATURE_FLAGS).
-      'FEATURE_FLAGS_ENABLED',
     ]);
 
     const missing = [...interpolated]
@@ -201,7 +204,7 @@ describe('buildEnvFile', () => {
       version: '1.2.3',
       registry: 'ghcr.io',
       namespace: 'sandbox-quantum',
-      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      ports: { gateway: 51000, api: 51001, postgres: 51003 },
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
@@ -218,7 +221,7 @@ describe('buildEnvFile', () => {
       version: '1.2.3',
       registry: 'ghcr.io',
       namespace: 'sandbox-quantum',
-      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      ports: { gateway: 51000, api: 51001, postgres: 51003 },
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'local',
@@ -237,7 +240,7 @@ describe('buildEnvFile', () => {
       version: '1.2.3',
       registry: 'ghcr.io',
       namespace: 'sandbox-quantum',
-      ports: { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 },
+      ports: { gateway: 51000, api: 51001, postgres: 51003 },
       secrets,
       telemetryEnabled: true,
       telemetryEnvironment: 'prod',
@@ -272,7 +275,7 @@ describe('buildEnvFile', () => {
 });
 
 describe('readStackEnv', () => {
-  const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+  const ports = { gateway: 51000, api: 51001, postgres: 51003 };
   const written = buildEnvFile({
     version: '1.2.3',
     registry: 'ghcr.io',
@@ -342,11 +345,20 @@ describe('readStackEnv', () => {
     const partial = written
       .replace(/^JWT_SECRET_KEY=.*$/m, '')
       .replace(/^API_HOST_PORT=.*$/m, 'API_HOST_PORT=')
-      .replace(/^MATTERMOST_USER_PASSWORD=.*$/m, '');
+      .replace(/^GATEWAY_ADMIN_PASSWORD=.*$/m, '');
 
     expect(readStackEnv(partial)).toEqual({
       kind: 'incomplete',
-      missing: ['API_HOST_PORT', 'JWT_SECRET_KEY', 'MATTERMOST_USER_PASSWORD'],
+      missing: ['API_HOST_PORT', 'JWT_SECRET_KEY', 'GATEWAY_ADMIN_PASSWORD'],
+    });
+  });
+
+  it('reads a file written when the stack ran Mattermost, ignoring its keys', () => {
+    const legacy = `${written}MATTERMOST_HOST_PORT=51002\nMATTERMOST_ADMIN_PASSWORD=mm-admin\n`;
+
+    expect(readStackEnv(legacy)).toEqual({
+      kind: 'complete',
+      env: { ports, secrets, version: '1.2.3' },
     });
   });
 
@@ -382,12 +394,12 @@ describe('readStackEnv', () => {
     const reading = readStackEnv('');
 
     expect(reading.kind).toBe('incomplete');
-    expect(reading.kind === 'incomplete' && reading.missing).toHaveLength(10);
+    expect(reading.kind === 'incomplete' && reading.missing).toHaveLength(7);
   });
 });
 
 describe('keysDisagreeing', () => {
-  const ports = { gateway: 51000, api: 51001, mattermost: 51002, postgres: 51003 };
+  const ports = { gateway: 51000, api: 51001, postgres: 51003 };
   const written = buildEnvFile({
     version: '1.2.3',
     registry: 'ghcr.io',

@@ -339,7 +339,7 @@ naming nothing.
 
 **Kubernetes state.** Pod phase, restart counts, evictions, pending pods that
 never scheduled, node pressure, PersistentVolume usage. The last matters more
-than it sounds: Postgres and Mattermost hold this deployment's data on
+than it sounds: Postgres holds this deployment's data on
 volumes, and nothing currently reports how full they are.
 
 **The database from the database's side.** Switch reports its own connection

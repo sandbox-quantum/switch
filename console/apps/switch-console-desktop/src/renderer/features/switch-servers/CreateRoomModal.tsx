@@ -250,6 +250,35 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     }
   }
 
+  if (nowhere) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>New room</DialogTitle>
+        </DialogHeader>
+        <DialogContentArea className="pt-0">
+          <div className="flex w-full flex-col gap-2 text-sm">
+            <p>This server can’t create rooms yet.</p>
+            <p className="text-foreground-muted">
+              Group chats need a newer Switch server, or connect a messaging app that can create
+              channels. You can still start a 1-1 chat from an agent’s page.
+            </p>
+            {bridgesQuery.isError && (
+              <p className="text-xs text-destructive">
+                {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
+              </p>
+            )}
+          </div>
+        </DialogContentArea>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </>
+    );
+  }
+
   return (
     <>
       <DialogHeader>
@@ -346,12 +375,6 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             </>
           )}
 
-          {nowhere && (
-            <p className="text-xs text-destructive">
-              This server does not offer Switch Console rooms yet, and none of its messaging apps
-              can create a channel, so there is nowhere to create a room.
-            </p>
-          )}
           {startingAgentState === 'failed' && (
             <p className="text-xs text-destructive">
               {startingAgentName} can&apos;t be added to the new room:{' '}

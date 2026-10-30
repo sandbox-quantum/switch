@@ -385,7 +385,7 @@ jobs:
       - name: Test (vitest)
         run: npm test
 
-  # Real messages through a real server and Mattermost, on a stack the job
+  # Real messages through a real server and its in-Console chat, on a stack the job
   # builds from this checkout. Needs no secret, so a fork PR runs it the same.
   # The provider lane is e2e-scheduled.yml's.
   e2e-fast:

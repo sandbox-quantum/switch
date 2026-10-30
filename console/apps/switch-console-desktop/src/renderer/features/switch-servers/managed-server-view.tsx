@@ -161,8 +161,8 @@ const ManagedServerPage = observer(function ManagedServerPage({
     }
   }, [sshHost]);
 
-  // The Mattermost switch waits on Docker, which people often start only after
-  // opening this page to find the switch greyed out.
+  // A Docker server's Start waits on Docker, which people often start only
+  // after opening this page to find it greyed out.
   const localDockerDown = sshHost === null && localServerStore.docker?.available === false;
   useEffect(() => {
     if (!localDockerDown) return;
@@ -223,7 +223,6 @@ const ManagedServerPage = observer(function ManagedServerPage({
   const deployed = status.deployedVersion ?? status.version;
   const checkout = sshHost ? null : localServerStore.checkoutBuild;
   const native = sshHost === null && localServerStore.isNative;
-  const localDocker = sshHost ? null : localServerStore.docker;
   const runsCheckout = status.deployedVersion === CHECKOUT_IMAGE_TAG;
   const working = state.tone === 'working';
 
@@ -339,33 +338,6 @@ const ManagedServerPage = observer(function ManagedServerPage({
               ))}
             </div>
           </section>
-        )}
-
-        {native && (
-          <div className="flex items-start justify-between gap-3 rounded-[10px] border-[0.5px] border-[var(--hair-strong)] px-[14px] py-3">
-            <div className="min-w-0">
-              <p className="text-[13px] text-foreground">Mattermost</p>
-              <p className="mt-0.5 text-xs text-[var(--fg-dim)]">
-                {answering && localServerStore.mattermostState === 'starting'
-                  ? 'Setting up beside the server… the server is already usable.'
-                  : answering && localServerStore.mattermostState === 'running'
-                    ? 'Running. Team chat for your rooms, in Docker beside the server.'
-                    : localDocker === null
-                      ? 'Checking for Docker…'
-                      : localDocker.available
-                        ? 'Team chat for your rooms, run in Docker beside the server.'
-                        : `Team chat for your rooms needs Docker. ${localDocker.detail} The server works without it.`}
-              </p>
-            </div>
-            <Switch
-              checked={localServerStore.mattermost}
-              disabled={
-                working || (!localServerStore.mattermost && !(localDocker?.available ?? false))
-              }
-              onCheckedChange={(enabled) => void localServerStore.setMattermost(enabled)}
-              aria-label="Run Mattermost"
-            />
-          </div>
         )}
 
         {/* Dev builds launched from a Switch checkout only. */}

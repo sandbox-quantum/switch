@@ -732,15 +732,13 @@ async def test_the_guide_describes_the_language_and_the_example_in_it_is_valid(t
 
     assert "## Params" in result["guide"]
     assert result["schema"]
-    # The guide's own example is a document the server accepts. This test
-    # server has no messaging app, which `users:` needs, so that line goes.
+    # The guide's own example is a document the server accepts.
     example = (
         result["guide"]
         .split("## Example\n\n", 1)[1]
         .split("\n## ", 1)[0]
         .replace("[reviewer]", '["claude-code.alice"]')
         .replace("@reviewer", "@claude-code.alice")
-        .replace('    users: ["{$creator}"]\n', "")
     )
     created = await _as(
         tools["agent_id"],

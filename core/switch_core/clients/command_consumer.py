@@ -269,8 +269,8 @@ class CommandConsumer(Consumer[SystemActor]):
         """The @-handle to tag the message sender with.
 
         Prefers the bridge-provided `sender_name` (the external username, which
-        the collaboration bridge rewrites into a real @mention on Slack /
-        Mattermost); falls back to the participant id's localpart for a client with no
+        the collaboration bridge rewrites into a real @mention on Slack);
+        falls back to the participant id's localpart for a client with no
         bridge-provided name (paired with `mentions=[event.sender]` so the
         mention renders as a pill).
         """

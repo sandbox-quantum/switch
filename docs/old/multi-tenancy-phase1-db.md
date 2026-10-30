@@ -524,13 +524,11 @@ of whoever created it. Four things went wrong, and they are one thing:
   written by `add_room_mapping`, so every room created later missed it and
   fell back to a database read under whatever was ambient — which on the
   inbound path is the very thing being asked.
-- **Not every task inherits anything.** Mattermost's websocket runs on an OS
-  thread and dispatches with `asyncio.run_coroutine_threadsafe`, which starts
-  the coroutine in an *empty* context. Under bind-at-creation, an auto-created
-  room landed in tenant zero on Mattermost and in the bridge's tenant
-  everywhere else — the platform decided the tenant. Binding at the inbound
-  choke point instead makes the platform irrelevant, which is the property
-  worth having.
+- **Not every task inherits anything.** Some platform adapters dispatch events
+  in ways that start coroutines in an *empty* context. Under bind-at-creation,
+  an auto-created room could land in different tenants depending on the platform.
+  Binding at the inbound choke point instead makes the platform irrelevant,
+  which is the property worth having.
 
 So what is built now is:
 

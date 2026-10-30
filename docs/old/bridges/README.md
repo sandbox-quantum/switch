@@ -1,7 +1,7 @@
 # Collaboration bridge setup
 
 A **collaboration bridge** is a two-way relay between an external chat platform
-(Slack, Mattermost, Microsoft Teams, Discord, Telegram) and Switch's internal
+(Slack, Microsoft Teams, Discord, Telegram) and Switch's internal
 rooms. Humans talk in their normal chat client; Switch agents see those messages
 as room events and reply back into the same channel. Each external channel maps
 to a Switch room, and each Switch agent is presented in the channel under the
@@ -14,7 +14,6 @@ shared onboarding model, then the per-platform guide:
 | Platform | Guide | Identity model | Inbound transport | Public ingress |
 | --- | --- | --- | --- | --- |
 | Slack | [`SLACK_SETUP.md`](SLACK_SETUP.md) | single bot app | Socket Mode (outbound WS) | not required |
-| Mattermost | [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md) | one bot account per agent | WebSocket (outbound), plus HTTP push for button presses | not required, unless the Mattermost server is outside the network |
 | Microsoft Teams | [`TEAMS_SETUP.md`](TEAMS_SETUP.md) | single Azure bot app | HTTP push (Bot Framework + Graph) | **required** |
 | Discord | [`DISCORD_SETUP.md`](DISCORD_SETUP.md) | single bot app | Gateway WebSocket (outbound) | not required |
 | Telegram | [`TELEGRAM_SETUP.md`](TELEGRAM_SETUP.md) | single bot, agent named in the message body | long polling (outbound) | not required |
@@ -64,7 +63,7 @@ An agent has a **name** — a lowercase identifier such as `flint-tracker` — a
 optionally, a free-form **display name** such as "Flint Tracker". The identifier
 is the routing key and the only thing that addresses anything: mentions,
 in-room command arguments, and the per-agent handles a bridge mints (Slack user
-groups, Discord roles, Mattermost bot usernames) are all built from it. The
+groups, Discord roles) are all built from it. The
 agent's display name is presentation only — the name a bridged message is
 attributed to, wherever the platform gives Switch somewhere to put it. An agent
 with no display name is presented under its identifier, so the two coincide
@@ -72,13 +71,13 @@ until one is set. Each guide says where its platform renders the display name.
 
 ### Registered bridge types
 
-`slack`, `mattermost`, `teams`, `discord`, `telegram`. The dashboard's registration
+`slack`, `teams`, `discord`, `telegram`. The dashboard's registration
 form lists the live set and the fields each one requires.
 
 ## Once a bridge is live
 
 - **Rooms.** Depending on the platform, a Switch room is created for a channel
-  either when the bot is added to it (Slack, Mattermost, Teams, Telegram) or
+  either when the bot is added to it (Slack, Teams, Telegram) or
   lazily on the first bridged message (Discord — it has no "app added to channel"
   signal). Teams is a partial case: an app is installed into a *team* rather
   than a channel, so the signal fires for the channel it is added to and the
@@ -89,14 +88,13 @@ form lists the live set and the fields each one requires.
   the channel — which not every connection can or may do.
 - **Addressing agents.** Users `@mention` an agent by name in the channel to
   address it; unaddressed chatter is bridged as context. In-room commands (e.g.
-  `!invite-agent`) work on every platform. Every platform except Mattermost also
-  takes the `/invite-agent` form, routed into the same handler — though what
-  makes it work differs. Slack declares its commands in the app manifest and
-  Discord registers them per guild, so `/` is a real platform command there.
-  Telegram and Teams simply accept `/` alongside `!` as an ordinary message:
-  on Telegram because `/` is the platform's own convention, and on Teams
-  because a manifest command list only *types* the command into the compose box
-  for the bot to parse.
+  `!invite-agent`) work on every platform, and the `/invite-agent` form is also
+  supported, routed into the same handler — though what makes it work differs.
+  Slack declares its commands in the app manifest and Discord registers them per
+  guild, so `/` is a real platform command there. Telegram and Teams simply
+  accept `/` alongside `!` as an ordinary message: on Telegram because `/` is the
+  platform's own convention, and on Teams because a manifest command list only
+  *types* the command into the compose box for the bot to parse.
 - **"Open in Switch Console" links.** Agents surface a `switchdash://…` deeplink with
   their runtime status. Platforms that only render `http(s)` links (Discord,
   Telegram and Teams) need `GATEWAY_PUBLIC_URL` set so Switch can rewrite it to
@@ -149,17 +147,7 @@ are deployment-level environment config on switch-core:
   where people *read* the message, not from the Switch host — a loopback origin
   builds links that work only on the machine running Switch, so each bridge warns
   at startup when it finds one.
-- **`COLLABORATION_CALLBACK_HOST` / `COLLABORATION_CALLBACK_PORT`**
-  (`0.0.0.0:8081`) — where collaboration bridges take platform callbacks, on a
-  socket of its own rather than a route on the API port. Only **Mattermost**
-  uses it today, and only for button presses: the Mattermost server delivers
-  those by HTTP where every other platform Switch bridges to carries them down a
-  connection Switch already holds open. It is not public ingress — it has to be
-  reachable from the Mattermost server, which is usually an address on an
-  internal network. Nothing binds until a bridge asks, so a deployment with no
-  `callback_base_url` on any bridge opens no port. See
-  [`MATTERMOST_SETUP.md`](MATTERMOST_SETUP.md#3-optional-let-mattermost-deliver-button-presses).
-- **Teams** additionally needs public HTTPS ingress to the bridge's listener, on
+- **Teams** needs public HTTPS ingress to the bridge's listener, on
   its own port — it is the only bridge Switch does not reach outbound. See
   [`TEAMS_SETUP.md`](TEAMS_SETUP.md) for the bridge side, and the Helm chart's
   [README](../../deploy/remote/helm/switch/README.md) for which Switch surfaces

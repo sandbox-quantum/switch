@@ -79,6 +79,9 @@ export function composeUp(
       ...baseArgs(host, ['--progress', 'plain'], overrides),
       'up',
       '-d',
+      // Removes containers of services the compose file no longer has, such as
+      // the Mattermost an earlier stack ran; their volumes are kept.
+      '--remove-orphans',
       ...(fromCheckout ? ['--build'] : []),
     ],
     onLog,
@@ -135,7 +138,7 @@ export async function composeDown(host: ServerHost, removeVolumes: boolean): Pro
   log.info(`local-switch-server: docker compose down${removeVolumes ? ' -v' : ''} (${host.label})`);
   await runDocker(
     host,
-    [...baseArgs(host, []), 'down', ...(removeVolumes ? ['-v'] : [])],
+    [...baseArgs(host, []), 'down', '--remove-orphans', ...(removeVolumes ? ['-v'] : [])],
     5 * 60 * 1000
   );
 }

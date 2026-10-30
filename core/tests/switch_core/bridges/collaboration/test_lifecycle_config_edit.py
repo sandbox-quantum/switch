@@ -12,11 +12,11 @@ import pytest
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
-)
 from switch_core.bridges.collaboration.models import BridgeNotRunning
+from switch_core.bridges.collaboration.slack.adapter import (
+    SlackAdapter,
+    SlackConnectionConfig,
+)
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -47,9 +47,7 @@ def _service() -> CollaborationBridgeLifecycleService:
         cursor_writer=SoleOwner.cursor_writer(MagicMock()),
     )
     service.register_adapter("teams", TeamsAdapter, TeamsConnectionConfig)
-    service.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
+    service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
     return service
 
 
@@ -97,9 +95,9 @@ async def test_a_stopped_bridge_on_the_deployments_app_cannot_be_checked() -> No
 async def test_a_stopped_bridge_on_its_own_app_is_edited_on_validation_alone() -> None:
     await _service().check_config_edit(
         bridge_id="b-1",
-        bridge_type="mattermost",
-        current={"url": "https://mm.example"},
-        connection_config={"url": "https://mm2.example"},
+        bridge_type="slack",
+        current={"workspace_id": "T1"},
+        connection_config={"workspace_id": "T2"},
     )
 
 

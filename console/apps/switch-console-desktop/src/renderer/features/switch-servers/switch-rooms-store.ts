@@ -124,7 +124,7 @@ export class SwitchRoomsStore {
   }
 
   /** Id of the server hosting a room's workspace, for the things that are about
-   * the gateway rather than the room — its web app, its Mattermost session. */
+   * the gateway rather than the room, such as its web app. */
   roomServerId(roomId: string): string | null {
     const workspaceId = this.roomWorkspaceById.get(roomId);
     if (!workspaceId) return null;

@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url';
 /**
  * Which runner mode a run is in.
  *
- * `fast` needs nothing but a Switch server (and Mattermost, for the scenarios
- * that cross the bridge): no provider, no Console, no LLM key. It is the lane
+ * `fast` needs nothing but a Switch server: no provider, no Console, no LLM
+ * key; the harness plays the human through the in-Console chat routes. It is the lane
  * that can gate pull requests, because it carries no secrets a fork lacks.
  * `provider` needs a real agent session attending the room, driven by Switch
  * Console or its sidecar. `browser` drives the gateway UI in a headless
@@ -62,14 +62,6 @@ export interface SwitchEnv {
   gatewayAdminEmail: string;
   gatewayAdminPassword: string;
   agentRegistrationToken: string;
-}
-
-export interface MattermostEnv {
-  url: string;
-  /** Token of the **human** the harness posts as. */
-  token: string;
-  /** Team slug (e.g. `switch`), not its display name. */
-  team: string;
 }
 
 /** Settings only the provider lane reads. */
@@ -124,7 +116,7 @@ export interface HarnessEnv {
    * reporting a suite that ran nothing as green.
    */
   strict: boolean;
-  /** Leave created agents, rooms and channels behind after the run (for debugging). */
+  /** Leave created agents and rooms behind after the run (for debugging). */
   keepArtifacts: boolean;
   /** Where to record the credentials the server issues during the run; see `IssuedSecrets`. */
   secretsFile: string | null;
@@ -138,13 +130,6 @@ export interface HarnessEnv {
   /** Where the browser lane saves a screenshot of a page that failed, if anywhere. */
   outputDir: string | null;
   switch: SwitchEnv;
-  /** `null` when no Mattermost is configured; scenarios that need one then skip or fail. */
-  mattermost: MattermostEnv | null;
-  /**
-   * The environment deploys no Mattermost, by design (`SWITCH_E2E_NO_MATTERMOST=1`).
-   * Scenarios that need one skip even in strict mode, and say why.
-   */
-  noMattermost: boolean;
   provider: ProviderEnv;
   agentic: AgenticEnv;
 }
@@ -240,9 +225,6 @@ export function strictFrom(
  * Resolve the harness configuration from `process.env` layered over `.env`.
  * Throws {@link MissingConfigError} naming every absent variable at once rather
  * than failing on the first — a first run is usually missing several.
- *
- * Mattermost is all-or-nothing: none of its three variables means "no
- * Mattermost here", some of them is a mistake and is reported as one.
  */
 export function loadEnv(
   lane: Lane,
@@ -258,26 +240,10 @@ export function loadEnv(
     SWITCH_AGENT_REGISTRATION_TOKEN: get('SWITCH_AGENT_REGISTRATION_TOKEN'),
     SWITCH_E2E_ENVIRONMENT: get('SWITCH_E2E_ENVIRONMENT'),
   };
-  const mattermost = {
-    MATTERMOST_URL: get('MATTERMOST_URL'),
-    MATTERMOST_TOKEN: get('MATTERMOST_TOKEN'),
-    MATTERMOST_TEAM: get('MATTERMOST_TEAM'),
-  };
-  const mattermostGiven = Object.values(mattermost).some((value) => value !== undefined);
-
-  const missing = [
-    ...Object.entries(required),
-    ...(mattermostGiven ? Object.entries(mattermost) : []),
-  ]
+  const missing = Object.entries(required)
     .filter(([, value]) => value === undefined)
     .map(([key]) => key);
   if (missing.length > 0) throw new MissingConfigError(missing);
-  const noMattermost = get('SWITCH_E2E_NO_MATTERMOST') === '1';
-  if (noMattermost && mattermostGiven) {
-    throw new Error(
-      'SWITCH_E2E_NO_MATTERMOST=1 says this environment has no Mattermost, but MATTERMOST_* is set too. Unset one.'
-    );
-  }
 
   return {
     lane,
@@ -294,14 +260,6 @@ export function loadEnv(
       gatewayAdminPassword: required.SWITCH_GATEWAY_ADMIN_PASSWORD as string,
       agentRegistrationToken: required.SWITCH_AGENT_REGISTRATION_TOKEN as string,
     },
-    mattermost: mattermostGiven
-      ? {
-          url: stripTrailingSlash(mattermost.MATTERMOST_URL as string),
-          token: mattermost.MATTERMOST_TOKEN as string,
-          team: mattermost.MATTERMOST_TEAM as string,
-        }
-      : null,
-    noMattermost,
     provider: {
       agentRepoDir: get('SWITCH_E2E_AGENT_DIR') ?? null,
       manifestPath: get('SWITCH_E2E_MANIFEST') ?? null,
@@ -380,9 +338,6 @@ export function stripTrailingSlash(url: string): string {
  * pasted into a ticket.
  */
 export function describeEnv(env: HarnessEnv): string {
-  const mattermost = env.mattermost
-    ? `mattermost=${env.mattermost.url} team=${env.mattermost.team}`
-    : 'mattermost=none';
   const ui = env.lane === 'browser' ? ` gateway-ui=${env.gatewayUiUrl ?? 'none'}` : '';
-  return `lane=${env.lane} environment=${env.environment} switch=${env.switch.apiUrl} ${mattermost}${ui}`;
+  return `lane=${env.lane} environment=${env.environment} switch=${env.switch.apiUrl}${ui}`;
 }

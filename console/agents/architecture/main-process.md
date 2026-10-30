@@ -22,7 +22,7 @@ Two names in this list are easy to misread, because one of them changed meaning:
 - **execution-context** — Where a command runs: `local-execution-context.ts` vs `ssh-execution-context.ts`
 - **fs** — Filesystem operations with provider pattern (`impl/local-fs.ts`)
 - **locations** — An agent's working directory on a host. Replaces the upstream project/workspace split; provider pattern plus lifecycle scripts
-- **managed-switch-server** — A Switch Console-managed Switch server: on this computer natively (PostgreSQL and switch-core as background processes, `native/`; Mattermost optional, in Docker), or via Docker Compose on a remote host and for local servers set up before native mode
+- **managed-switch-server** — A Switch Console-managed Switch server: on this computer natively (PostgreSQL and switch-core as background processes, `native/`), or via Docker Compose on a remote host and for local servers set up before native mode
 - **prompt-library** — Prompt library service and controller
 - **providers** — CLI-provider plugin registry (`plugin-registry.ts`), agent payload builder, plugin filesystem, argv parity test
 - **remote-hosts** — SSH host records, reachability probing (`host-reachability-service.ts`), and host setup

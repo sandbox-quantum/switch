@@ -86,11 +86,6 @@ spec:
               name: teams
               protocol: TCP
             {{- end }}
-            {{- if .Values.switchCore.collaborationCallback.enabled }}
-            - containerPort: {{ .Values.switchCore.collaborationCallback.port }}
-              name: callbacks
-              protocol: TCP
-            {{- end }}
           env:
             {{- if .Values.switchCore.hostedControllerSecret }}
             - name: HOSTED_CONTROLLER_CONFIG_PATH

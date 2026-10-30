@@ -22,7 +22,7 @@ const REPORT = `<?xml version="1.0" encoding="UTF-8" ?>
         <testcase classname="src/fast/fast.e2e.test.ts" name="fast lane &gt; operations" time="0.5">
             <failure message="expected 200 to be 404 | &quot;x&quot;&#10;second line" type="AssertionError">stack</failure>
         </testcase>
-        <testcase classname="src/fast/fast.e2e.test.ts" name="fast lane &gt; mattermost-roundtrip" time="0">
+        <testcase classname="src/fast/fast.e2e.test.ts" name="fast lane &gt; console-chat-roundtrip" time="0">
             <skipped/>
         </testcase>
     </testsuite>
@@ -34,7 +34,7 @@ describe('CI run summary', () => {
     expect(cases.map((each) => [each.name, each.status])).toEqual([
       ['fast lane > addressed-delivery', 'pass'],
       ['fast lane > operations', 'fail'],
-      ['fast lane > mattermost-roundtrip', 'skip'],
+      ['fast lane > console-chat-roundtrip', 'skip'],
     ]);
     expect(cases[1]!.failure).toBe('expected 200 to be 404 | "x"');
   });

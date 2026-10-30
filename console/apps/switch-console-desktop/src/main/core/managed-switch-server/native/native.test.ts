@@ -9,7 +9,6 @@ import { readLocalRuntime, writeLocalRuntime } from '../runtime';
 import { generateSecrets } from '../secret-values';
 import { buildNativeCoreSettings } from './core-settings';
 import { downloadFile } from './download';
-import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } from './mattermost';
 import { nativeLayout } from './native-paths';
 import { parsePostgresMajor, resolvePostgres } from './postgres-binaries';
 import { bundlePthLine } from './switch-core-install';
@@ -30,18 +29,16 @@ describe('buildNativeCoreSettings', () => {
   const settings = buildNativeCoreSettings({
     apiPort: 51001,
     postgresPort: 51002,
-    callbackPort: 51003,
     secrets,
     telemetryEnabled: false,
     telemetryEnvironment: 'local',
     telemetryInternal: false,
     telemetryEndpoint: 'https://relay.example.test',
+    fromCheckout: false,
   });
 
   it('holds every listener to loopback', () => {
     expect(settings.SERVER_HOST).toBe('127.0.0.1');
-    expect(settings.COLLABORATION_CALLBACK_HOST).toBe('127.0.0.1');
-    expect(settings.COLLABORATION_CALLBACK_PORT).toBe('51003');
   });
 
   it('serves as the restricted role and migrates as the owner', () => {
@@ -71,39 +68,6 @@ describe('buildNativeCoreSettings', () => {
 
   it('names the relay the server reports to, as the Docker stack does', () => {
     expect(settings.TELEMETRY_ENDPOINT).toBe('https://relay.example.test');
-  });
-});
-
-describe('mattermost', () => {
-  it('runs the image the bundled compose pins', () => {
-    expect(mattermostImage()).toMatch(/^mattermost\/mattermost-team-edition:\d+\.\d+\.\d+$/);
-  });
-
-  it('shares the host network on Linux and listens on loopback only', () => {
-    const yaml = mattermostComposeYaml({
-      platform: 'linux',
-      mattermostPort: 8065,
-      postgresPort: 5432,
-      ownerPassword: 'pw',
-    });
-    expect(yaml).toContain('network_mode: host');
-    expect(yaml).toContain('MM_SERVICESETTINGS_LISTENADDRESS: "127.0.0.1:8065"');
-    expect(yaml).toContain('@127.0.0.1:5432/mattermost');
-    expect(yaml).not.toContain('ports:');
-  });
-
-  it('reaches the host through host.docker.internal on Docker Desktop', () => {
-    const yaml = mattermostComposeYaml({
-      platform: 'darwin',
-      mattermostPort: 8065,
-      postgresPort: 5432,
-      ownerPassword: 'pw',
-    });
-    expect(yaml).toContain('"127.0.0.1:8065:8065"');
-    expect(yaml).toContain('@host.docker.internal:5432/mattermost');
-    expect(yaml).not.toContain('network_mode');
-    expect(mattermostCallbackBaseUrl('darwin', 51003)).toBe('http://host.docker.internal:51003');
-    expect(mattermostCallbackBaseUrl('linux', 51003)).toBe('http://127.0.0.1:51003');
   });
 });
 
