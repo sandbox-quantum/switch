@@ -409,7 +409,7 @@ platforms do not let Switch open a DM with a person, so a private conversation w
 agent is **a private channel containing just that person and the agent** — which is exactly
 how a one-to-one room is provisioned on Slack.
 
-Where a real DM does work, the person has to start it: on Mattermost and Telegram they
+Where a real DM does work, the person has to start it: on Telegram they
 message the bot and Switch adopts the conversation. Nothing can be initiated from the Switch
 side. So "the agent will DM you the result" is not a design; "the agent posts it in a
 channel only you and it are in" is.

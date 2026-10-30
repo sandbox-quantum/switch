@@ -3,7 +3,7 @@
 The running bridges live in one process-wide registry, so a `bridge_id` taken
 from a caller has to be checked against the bound tenant's own bridges before
 anything happens on the platform behind it. Otherwise a channel (or a DM, or a
-directory lookup) runs on the other tenant's Slack or Mattermost, and only the
+directory lookup) runs on the other tenant's Slack or Teams, and only the
 database insert that follows fails on the composite foreign key — after the
 side effect.
 
@@ -146,7 +146,7 @@ async def _make_bridge(
         session.add(client)
         await session.flush()
         bridge = CollaborationBridge(
-            type="mattermost",
+            type="discord",
             display_name="MM",
             client_id=client.id,
             status="active",

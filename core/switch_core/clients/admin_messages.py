@@ -18,7 +18,7 @@ AUTO_REPLY_FLAG = "com.switch.auto_reply"
 # mirroring AUTO_REPLY_FLAG:
 #   1. It tells the collaboration bridge to render the message through the
 #      adapter's native admin path (`admin_message`) — as the Switch app on
-#      Slack, a Switch Admin bot on Mattermost — instead of as a normal
+#      Slack — instead of as a normal
 #      agent/user message.
 #   2. Its mere presence marks the message as system-generated, so clients
 #      (including the admin client itself) never react to it with warnings or
@@ -44,8 +44,8 @@ PLATFORM_MARKER = "com.switch.platform"
 
 # Set by the collaboration bridge on a message the platform reported as posted
 # by an app (a workflow, an integration, another Switch server's agent) rather
-# than a person. Only the bridge writes it; Slack, Discord and Mattermost report
-# it. Following the conversation (`delivery/conversation.py`) never delivers
+# than a person. Only the bridge writes it; Slack and Discord report it.
+# Following the conversation (`delivery/conversation.py`) never delivers
 # such a message, and usage telemetry counts its sender as a bot, not a person.
 SENDER_IS_APP_MARKER = "com.switch.sender_is_app"
 

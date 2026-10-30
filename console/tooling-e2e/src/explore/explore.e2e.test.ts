@@ -93,7 +93,7 @@ let explorer: ChildProcess | null = null;
 beforeAll(async () => {
   lane = await resolveLane('explore');
   if (!lane.target) return;
-  const { env, switchClient, mattermost } = lane.target;
+  const { env, switchClient, chat } = lane.target;
   if (env.environment !== 'ephemeral') {
     // The explorer deletes what it finds; on any other stack that is someone's data.
     const reason = `the explore lane runs only on an ephemeral stack, not '${env.environment}'`;
@@ -114,7 +114,7 @@ beforeAll(async () => {
   watch = new ServerLogWatch(env.serverLog);
   outputDir = path.join(env.outputDir, 'explore');
   names = run.scope();
-  fixtures = new Fixtures(env, names, switchClient, mattermost);
+  fixtures = new Fixtures(env, names, switchClient, chat);
   await seed(fixtures, switchClient, names);
 }, 120_000);
 

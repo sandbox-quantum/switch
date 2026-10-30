@@ -74,7 +74,7 @@ def _probes(**overrides) -> RuntimeProbes:
         agent_event_listener_connected=lambda: True,
         signal_bus_connected=lambda: True,
         bridges_running=lambda: 2,
-        bridges_running_by_platform=lambda: {"slack": 1, "mattermost": 1},
+        bridges_running_by_platform=lambda: {"slack": 1, "discord": 1},
         bridges_configured=lambda: 2,
         consumers_running=lambda: 5,
         agents_connected=lambda: {
@@ -193,7 +193,7 @@ async def test_an_endpoint_installs_the_registry_and_reports_state(monkeypatch):
             point.attributes["platform"]: point.value
             for point in payloads["switch.bridges.running"].numbers
         }
-        assert running == {"slack": 1.0, "mattermost": 1.0}
+        assert running == {"slack": 1.0, "discord": 1.0}
     finally:
         await observability.aclose()
 

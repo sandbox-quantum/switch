@@ -1,9 +1,13 @@
-"""End-to-end proof for "follow the conversation" on a local Switch + Mattermost.
+"""End-to-end proof for "follow the conversation" on a local Switch.
 
-  setup       register test agents, a second Mattermost person, and the rooms
+  setup       register test agents, a second person, and the rooms
   playground  add a fresh room with all three agents, for trying it by hand
   agents      run the scripted agents (they reply "I got ..." when addressed)
-  run         play every scenario as people in Mattermost and write a report
+  run         play every scenario as people in the in-Console chat and write a report
+
+The people post and read through the gateway's `/chats` routes, the ones
+Switch Console's chat view calls; the rooms are in-Console group chats, with
+no bridge.
 
 `run.sh` beside this file drives the whole thing against a fresh local stack;
 see README.md. Output goes to build/e2e/follow-the-conversation (or $E2E_OUT).
@@ -19,7 +23,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
 import sys
 import time
 import uuid
@@ -35,28 +38,13 @@ STATE = HERE / "state.json"
 RECEIVED = HERE / "received.jsonl"
 SERVER_LOG = HERE / "switch-core.log"
 SWITCH = "http://localhost:8000"
-MM = "http://localhost:8065"
+GATEWAY = f"{SWITCH}/gateway"
 AGENTS = {
     "helper": "Answers questions about the Switch repo and its local setup.",
     "reviewer": "Reviews code changes and pull requests.",
     "private-bot": "A personal assistant that only takes instructions from its owner.",
 }
-
-
-def find_chrome() -> str:
-    """Chrome or Chromium, for screenshots and the video: $CHROME, else the
-    usual install locations."""
-    candidates = [
-        os.environ.get("CHROME", ""),
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        shutil.which("google-chrome") or "",
-        shutil.which("chromium") or "",
-        shutil.which("chromium-browser") or "",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    raise SystemExit("Chrome or Chromium not found; set CHROME to its path.")
+BOB_EMAIL = "bob@example.test"
 
 
 def env() -> dict[str, str]:
@@ -72,48 +60,96 @@ def load_state() -> dict:
     return json.loads(STATE.read_text())
 
 
-# ── Mattermost ──────────────────────────────────────────────────────────────
+# ── In-Console chat ─────────────────────────────────────────────────────────
 
 
-async def mm_login(http: aiohttp.ClientSession, login: str, password: str) -> str:
-    async with http.post(
-        f"{MM}/api/v4/users/login", json={"login_id": login, "password": password}
-    ) as r:
-        r.raise_for_status()
-        return r.headers["Token"]
+async def sign_in(email: str, password: str) -> aiohttp.ClientSession:
+    """A session signed in to the gateway; its cookie jar carries the login."""
+    # A fresh connection per request: the steps pause 5 s, uvicorn's keep-alive
+    # timeout, so a pooled connection is reset as it is reused.
+    http = aiohttp.ClientSession(
+        cookie_jar=aiohttp.CookieJar(unsafe=True),
+        connector=aiohttp.TCPConnector(force_close=True),
+    )
+    await gw(http, "POST", "/auth/login", {"email": email, "password": password})
+    return http
 
 
-def mm_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+async def gw(
+    http: aiohttp.ClientSession, method: str, path: str, body: dict | None = None
+) -> dict:
+    async with http.request(method, f"{GATEWAY}{path}", json=body) as r:
+        if r.status >= 300:
+            raise RuntimeError(f"{method} {path}: {r.status} {await r.text()}")
+        return await r.json() if r.status != 204 else {}
 
 
-async def mm_post(
+async def chat_post(
     http: aiohttp.ClientSession,
-    token: str,
-    channel_id: str,
-    message: str,
-    root_id: str = "",
-) -> str:
-    async with http.post(
-        f"{MM}/api/v4/posts",
-        headers=mm_headers(token),
-        json={"channel_id": channel_id, "message": message, "root_id": root_id},
-    ) as r:
-        r.raise_for_status()
-        return (await r.json())["id"]
+    room_id: str,
+    body: str,
+    thread_root_id: str | None = None,
+) -> dict:
+    sent = await gw(
+        http,
+        "POST",
+        f"/chats/{room_id}/messages",
+        {
+            "requestId": str(uuid.uuid4()),
+            "body": body,
+            "threadRootId": thread_root_id,
+            "uploadIds": [],
+        },
+    )
+    return sent["messages"][0]
 
 
-async def mm_posts(
-    http: aiohttp.ClientSession, token: str, channel_id: str
-) -> list[dict]:
-    async with http.get(
-        f"{MM}/api/v4/channels/{channel_id}/posts?per_page=200",
-        headers=mm_headers(token),
-    ) as r:
-        r.raise_for_status()
-        data = await r.json()
-    posts = [data["posts"][pid] for pid in data["order"]]
-    return sorted(posts, key=lambda p: p["create_at"])
+async def chat_messages(http: aiohttp.ClientSession, room_id: str) -> list[dict]:
+    """The room's newest 200 messages, oldest first."""
+    return (await gw(http, "GET", f"/chats/{room_id}/messages?limit=200"))["messages"]
+
+
+# An agent may not change its own settings, and these agents have no owner to
+# act for, so the admin sets who may address them.
+OWNER_ONLY = {
+    "rules": [
+        {"rooms": "*", "room_groups": "*", "users": [], "agents": [], "owner": True}
+    ]
+}
+
+
+async def set_addressing(
+    admin: aiohttp.ClientSession, agent_id: str, policy: dict | None
+) -> None:
+    await gw(admin, "PUT", f"/agents/{agent_id}/addressing-policy", {"policy": policy})
+
+
+async def open_chats(
+    http: aiohttp.ClientSession,
+    helper: dict,
+    state: dict,
+    rooms: dict[str, list[str]],
+    member_user_ids: list[str],
+) -> None:
+    """Open a group chat per room. A chat can only be opened with agents the
+    opener may address, so private-bot is open to anyone while they are made."""
+    private_bot = state["agents"]["private-bot"]["id"]
+    await set_addressing(http, private_bot, None)
+    for key, members in rooms.items():
+        created = await gw(
+            http,
+            "POST",
+            "/chats",
+            {
+                "agentIds": [state["agents"][name]["id"] for name in members],
+                "memberUserIds": member_user_ids,
+                "name": f"ftc-{key}" if key != "playground" else key,
+                "kind": "group",
+                "requestId": str(uuid.uuid4()),
+            },
+        )
+        state["rooms"][key] = {"id": created["chat"]["roomId"]}
+    await set_addressing(http, private_bot, OWNER_ONLY)
 
 
 # ── Switch agent protocol ───────────────────────────────────────────────────
@@ -165,100 +201,43 @@ async def setup() -> None:
                     raise RuntimeError(f"register {name}: {r.status} {body}")
                 state["agents"][name] = {"id": body["id"], "api_key": body["api_key"]}
         helper = state["agents"]["helper"]
-        await op(
-            http,
-            helper,
-            "update_agent_detail",
-            {
-                "agent_id": state["agents"]["private-bot"]["id"],
-                "addressing": "owner_only",
-            },
-        )
-        for name in ("helper", "reviewer"):
-            await op(
-                http,
-                helper,
-                "update_agent_detail",
-                {"agent_id": state["agents"][name]["id"], "addressing": "anyone"},
-            )
 
-        admin_token = await mm_login(
-            http, e["MATTERMOST_ADMIN_USER"], e["MATTERMOST_ADMIN_PASSWORD"]
-        )
-        async with http.get(
-            f"{MM}/api/v4/teams/name/{e['MATTERMOST_TEAM_NAME']}",
-            headers=mm_headers(admin_token),
-        ) as r:
-            team_id = (await r.json())["id"]
+    admin = await sign_in(e["GATEWAY_ADMIN_EMAIL"], e["GATEWAY_ADMIN_PASSWORD"])
+    try:
+        for name in ("helper", "reviewer"):
+            await set_addressing(admin, state["agents"][name]["id"], None)
+        state["tenant_id"] = (await gw(admin, "GET", "/tenants/current"))["id"]
         previous = json.loads(STATE.read_text()) if STATE.exists() else {}
         bob_password = previous.get("bob_password") or "Bob-" + uuid.uuid4().hex[:12]
-        async with http.post(
-            f"{MM}/api/v4/users",
-            headers=mm_headers(admin_token),
-            json={
-                "username": "bob",
-                "email": "bob@example.test",
-                "password": bob_password,
-            },
-        ) as r:
-            if r.status not in (200, 201):
-                raise RuntimeError(f"create bob: {r.status} {await r.text()}")
-            bob_id = (await r.json())["id"]
-        async with http.post(
-            f"{MM}/api/v4/teams/{team_id}/members",
-            headers=mm_headers(admin_token),
-            json={"team_id": team_id, "user_id": bob_id},
-        ) as r:
-            r.raise_for_status()
-        state["bob_password"] = bob_password
-        async with http.get(
-            f"{MM}/api/v4/users/username/{e['MATTERMOST_USER']}",
-            headers=mm_headers(admin_token),
-        ) as r:
-            user_id = (await r.json())["id"]
-
-        bridges = await op(http, helper, "list_bridges", {})
-        bridge_list = (
-            bridges if isinstance(bridges, list) else bridges.get("bridges", [])
+        bob_id = (
+            await gw(
+                admin,
+                "POST",
+                "/users",
+                {"name": "bob", "email": BOB_EMAIL, "password": bob_password},
+            )
+        )["id"]
+        invitation = await gw(
+            admin,
+            "POST",
+            f"/tenants/{state['tenant_id']}/invitations",
+            {"role": "member"},
         )
-        bridge_id = next(b["id"] for b in bridge_list if b["type"] == "mattermost")
+        bob = await sign_in(BOB_EMAIL, bob_password)
+        try:
+            await gw(bob, "POST", "/invitations/accept", {"token": invitation["token"]})
+        finally:
+            await bob.close()
+        state["bob_password"] = bob_password
+        state["bob_id"] = bob_id
+
         rooms = {
             "follow-ups": ["helper", "reviewer", "private-bot"],
             "main-agent": ["helper", "reviewer", "private-bot"],
         }
-        for key, members in rooms.items():
-            created = await op(
-                http,
-                helper,
-                "create_room",
-                {
-                    "name": f"ftc-{key}",
-                    "description": f"Follow-the-conversation proof: {key}",
-                    "agent_names": members,
-                    "bridge_id": bridge_id,
-                    "channel_type": "channel_public",
-                },
-            )
-            channel = None
-            for _ in range(20):
-                async with http.get(
-                    f"{MM}/api/v4/teams/{team_id}/channels/name/ftc-{key}",
-                    headers=mm_headers(admin_token),
-                ) as r:
-                    if r.status == 200:
-                        channel = (await r.json())["id"]
-                        break
-                await asyncio.sleep(1)
-            if channel is None:
-                raise RuntimeError(f"no Mattermost channel for ftc-{key}")
-            for uid in (user_id, bob_id):
-                async with http.post(
-                    f"{MM}/api/v4/channels/{channel}/members",
-                    headers=mm_headers(admin_token),
-                    json={"user_id": uid},
-                ) as r:
-                    r.raise_for_status()
-            state["rooms"][key] = {"id": created["id"], "channel_id": channel}
+        await open_chats(admin, helper, state, rooms, [bob_id])
+    finally:
+        await admin.close()
     STATE.write_text(json.dumps(state, indent=2))
     print(json.dumps({k: v["id"] for k, v in state["rooms"].items()}, indent=2))
 
@@ -267,58 +246,19 @@ async def playground() -> None:
     """A fresh room with all three agents, for trying the rules by hand."""
     e = env()
     state = load_state()
-    async with aiohttp.ClientSession() as http:
-        helper = state["agents"]["helper"]
-        admin_token = await mm_login(
-            http, e["MATTERMOST_ADMIN_USER"], e["MATTERMOST_ADMIN_PASSWORD"]
+    admin = await sign_in(e["GATEWAY_ADMIN_EMAIL"], e["GATEWAY_ADMIN_PASSWORD"])
+    try:
+        await open_chats(
+            admin,
+            state["agents"]["helper"],
+            state,
+            {"playground": list(AGENTS)},
+            [state["bob_id"]],
         )
-        async with http.get(
-            f"{MM}/api/v4/teams/name/{e['MATTERMOST_TEAM_NAME']}",
-            headers=mm_headers(admin_token),
-        ) as r:
-            team_id = (await r.json())["id"]
-        bridges = await op(http, helper, "list_bridges", {})
-        bridge_list = (
-            bridges if isinstance(bridges, list) else bridges.get("bridges", [])
-        )
-        bridge_id = next(b["id"] for b in bridge_list if b["type"] == "mattermost")
-        created = await op(
-            http,
-            helper,
-            "create_room",
-            {
-                "name": "playground",
-                "description": "Try follow-the-conversation by hand",
-                "agent_names": list(AGENTS),
-                "bridge_id": bridge_id,
-                "channel_type": "channel_public",
-            },
-        )
-        channel = None
-        for _ in range(20):
-            async with http.get(
-                f"{MM}/api/v4/teams/{team_id}/channels/name/playground",
-                headers=mm_headers(admin_token),
-            ) as r:
-                if r.status == 200:
-                    channel = (await r.json())["id"]
-                    break
-            await asyncio.sleep(1)
-        for username in (e["MATTERMOST_USER"], "bob"):
-            async with http.get(
-                f"{MM}/api/v4/users/username/{username}",
-                headers=mm_headers(admin_token),
-            ) as r:
-                uid = (await r.json())["id"]
-            async with http.post(
-                f"{MM}/api/v4/channels/{channel}/members",
-                headers=mm_headers(admin_token),
-                json={"user_id": uid},
-            ) as r:
-                r.raise_for_status()
-        state["rooms"]["playground"] = {"id": created["id"], "channel_id": channel}
+    finally:
+        await admin.close()
     STATE.write_text(json.dumps(state, indent=2))
-    print(created["id"])
+    print(state["rooms"]["playground"]["id"])
 
 
 # ── Scripted agents ─────────────────────────────────────────────────────────
@@ -431,15 +371,26 @@ async def reply(
 
 async def agents() -> None:
     state = load_state()
-    await asyncio.gather(*(run_agent(n, a) for n, a in state["agents"].items()))
+
+    async def staggered(delay: int, name: str, agent: dict) -> None:
+        # shortcut: agents connecting at the same instant can get a 500 ("No
+        # incarnation drawn"), a server race; drop the stagger once it is fixed.
+        await asyncio.sleep(delay)
+        await run_agent(name, agent)
+
+    await asyncio.gather(
+        *(staggered(i, n, a) for i, (n, a) in enumerate(state["agents"].items()))
+    )
 
 
 # ── Scenarios ───────────────────────────────────────────────────────────────
 
 # Each step: (who, text, where, expected agents that receive it as addressed).
-# where: "top" for a channel message, or "thread:<label>" to reply under the
-# Mattermost post an earlier step labelled. A step may label its own post with
+# where: "top" for a room message, or "thread:<label>" to reply under the
+# message an earlier step labelled. A step may label its own message with
 # "label=<name>"; "answer:<agent>" labels the agent's reply to that step.
+# ("cmd", who, command, reply) types a `!command` and waits for Switch's reply
+# containing that text.
 SCENARIOS = [
     {
         "id": "S1",
@@ -548,7 +499,7 @@ SCENARIOS = [
                 "answer:helper",
             ),
             ("wait", 25),
-            ("user", "and the Mattermost port?", "top", set(), None),
+            ("user", "and the Postgres port?", "top", set(), None),
         ],
     },
     {
@@ -639,18 +590,27 @@ def received() -> list[dict]:
     ]
 
 
-async def wait_for_agent_reply(
-    http, token, channel_id, agent, after_ms, timeout=20
-) -> dict:
+async def wait_for_agent_reply(http, room_id, agent, after_seq, timeout=20) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        for post in await mm_posts(http, token, channel_id):
-            if post["create_at"] > after_ms and post["message"].startswith(
+        for message in await chat_messages(http, room_id):
+            if message["seq"] > after_seq and message["body"].startswith(
                 f"[{agent}] I got"
             ):
-                return post
+                return message
         await asyncio.sleep(0.5)
     raise RuntimeError(f"no reply from {agent}")
+
+
+async def wait_for_command_reply(http, room_id, expect, after_seq, timeout=20):
+    """The body of Switch's reply to a typed command, or None if none came."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for message in await chat_messages(http, room_id):
+            if message["seq"] > after_seq and expect in message["body"]:
+                return message["body"]
+        await asyncio.sleep(0.5)
+    return None
 
 
 async def run() -> None:
@@ -658,19 +618,22 @@ async def run() -> None:
     state = load_state()
     log_offset = SERVER_LOG.stat().st_size
     RECEIVED.write_text("")
-    start_ms = int(time.time() * 1000)
     results = []
-    async with aiohttp.ClientSession() as http:
-        tokens = {
-            "user": await mm_login(
-                http, e["MATTERMOST_USER"], e["MATTERMOST_USER_PASSWORD"]
-            ),
-            "bob": await mm_login(http, "bob", state["bob_password"]),
+    people = {
+        "user": await sign_in(e["GATEWAY_ADMIN_EMAIL"], e["GATEWAY_ADMIN_PASSWORD"]),
+        "bob": await sign_in(BOB_EMAIL, state["bob_password"]),
+    }
+    try:
+        start_seq = {
+            key: max(
+                (m["seq"] for m in await chat_messages(people["user"], room["id"])),
+                default=0,
+            )
+            for key, room in state["rooms"].items()
         }
         labels: dict[str, str] = {}
         for scenario in SCENARIOS:
-            room = state["rooms"][scenario["room"]]
-            channel = room["channel_id"]
+            room_id = state["rooms"][scenario["room"]]["id"]
             step_results = []
             for step in scenario["steps"]:
                 if step[0] == "wait":
@@ -679,19 +642,10 @@ async def run() -> None:
                     continue
                 if step[0] == "cmd":
                     _, who, command, expect_reply = step
-                    before_ms = int(time.time() * 1000)
-                    await mm_post(http, tokens[who], channel, command)
-                    reply_text = None
-                    for _ in range(40):
-                        for post in await mm_posts(http, tokens[who], channel):
-                            if (
-                                post["create_at"] > before_ms
-                                and expect_reply in post["message"]
-                            ):
-                                reply_text = post["message"]
-                        if reply_text:
-                            break
-                        await asyncio.sleep(0.5)
+                    sent = await chat_post(people[who], room_id, command)
+                    reply_text = await wait_for_command_reply(
+                        people[who], room_id, expect_reply, sent["seq"]
+                    )
                     step_results.append(
                         {
                             "cmd": command,
@@ -709,20 +663,19 @@ async def run() -> None:
                 root = (
                     labels[where.split(":", 1)[1]]
                     if where.startswith("thread:")
-                    else ""
+                    else None
                 )
-                before_ms = int(time.time() * 1000)
-                post_id = await mm_post(http, tokens[who], channel, tagged, root)
+                sent = await chat_post(people[who], room_id, tagged, root)
                 if label and label.startswith("label="):
-                    labels[label[6:]] = post_id
+                    labels[label[6:]] = sent["messageId"]
                 if label and label.startswith("answer:"):
                     agent_part = label[7:]
                     agent_name, _, answer_label = agent_part.partition("=")
                     answer = await wait_for_agent_reply(
-                        http, tokens["user"], channel, agent_name, before_ms
+                        people["user"], room_id, agent_name, sent["seq"]
                     )
                     if answer_label:
-                        labels[answer_label] = answer["id"]
+                        labels[answer_label] = answer["messageId"]
                 else:
                     await asyncio.sleep(5)
                 step_results.append(
@@ -740,22 +693,15 @@ async def run() -> None:
         await asyncio.sleep(3)
         transcripts = {
             key: [
-                p
-                for p in await mm_posts(http, tokens["user"], room["channel_id"])
-                if p["create_at"] >= start_ms
+                m
+                for m in await chat_messages(people["user"], room["id"])
+                if m["seq"] > start_seq[key]
             ]
             for key, room in state["rooms"].items()
         }
-        user_ids = sorted(
-            {p["user_id"] for posts in transcripts.values() for p in posts}
-        )
-        async with http.post(
-            f"{MM}/api/v4/users/ids", headers=mm_headers(tokens["user"]), json=user_ids
-        ) as r:
-            names = {u["id"]: u["username"] for u in await r.json()}
-        for posts in transcripts.values():
-            for p in posts:
-                p["_who"] = names.get(p["user_id"], p["user_id"][:6])
+    finally:
+        for http in people.values():
+            await http.close()
     log_text = SERVER_LOG.read_text()[log_offset:]
     failed = write_report(results, received(), log_text, transcripts, state)
     if failed:
@@ -769,7 +715,7 @@ def write_report(results, events, log_text, transcripts, state) -> int:
     ]
     out = ["# Follow the conversation: end-to-end proof", ""]
     out.append(
-        f"Run at {time.strftime('%Y-%m-%d %H:%M:%S')} against a local Switch built from the branch, with Mattermost."
+        f"Run at {time.strftime('%Y-%m-%d %H:%M:%S')} against a local Switch built from the branch, through the in-Console chat."
     )
     out.append("")
     passed = failed = 0
@@ -807,7 +753,7 @@ def write_report(results, events, log_text, transcripts, state) -> int:
             seen_by = sorted({ev["agent"] for ev in mine})
             ok = reached == st["expected"] and bool(seen_by)
             sc_ok &= ok
-            where = "thread reply" if st["where"].startswith("thread") else "channel"
+            where = "thread reply" if st["where"].startswith("thread") else "room"
             body.append(
                 f"| {i} | {st['who']} | {st['text']} ({where}) | {', '.join(st['expected']) or 'nobody'} | "
                 f"{', '.join(reached) or 'nobody'} | {'✅ pass' if ok else '❌ FAIL'} |"
@@ -837,18 +783,15 @@ def write_report(results, events, log_text, transcripts, state) -> int:
     out.extend(summary)
     out.append("")
     out.extend(body)
-    out.append("## Mattermost transcripts")
+    out.append("## Transcripts")
     out.append("")
-    for key, posts in transcripts.items():
+    for key, messages in transcripts.items():
         out.append(f"### ftc-{key}")
         out.append("")
         out.append("```")
-        for p in posts:
-            if p.get("type"):
-                continue
-            who = p["_who"]
-            indent = "    ↳ " if p.get("root_id") else ""
-            out.append(f"{indent}{who}: {p['message']}")
+        for m in messages:
+            indent = "    ↳ " if m.get("threadRootId") else ""
+            out.append(f"{indent}{m['sender']['name']}: {m['body']}")
         out.append("```")
         out.append("")
     report = HERE / "report.md"

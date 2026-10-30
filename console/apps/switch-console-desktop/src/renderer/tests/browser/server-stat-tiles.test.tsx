@@ -53,7 +53,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [], statusFor: () => null },
 }));
 
-const featureFlags = vi.hoisted(() => ({ agent_chats: false }));
+const featureFlags = vi.hoisted(() => ({ agent_chats: false, agent_management: false }));
 
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
   useFeatureFlags: () => featureFlags,
@@ -68,6 +68,7 @@ beforeEach(() => {
   managed.data = undefined;
   roomsData.rooms = [];
   featureFlags.agent_chats = false;
+  featureFlags.agent_management = false;
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
 
@@ -116,12 +117,13 @@ it('counts the agents the server runs too, once each, as the Your Agents page li
   expect(tile.querySelectorAll('p')[1].textContent).toBe('4');
 });
 
-it('hides 1-1 chats when agent_chats flag is on', async () => {
+it('hides 1-1 chats when agent management lists them on their agent page', async () => {
   roomsData.rooms = [
     { channelType: 'direct', bridgeType: null, agentCount: 1 },
     { channelType: 'group', bridgeType: null, agentCount: 2 },
   ];
   featureFlags.agent_chats = true;
+  featureFlags.agent_management = true;
   const tile = roomsTile(await render());
   expect(tile.querySelectorAll('p')[1].textContent).toBe('1');
 });

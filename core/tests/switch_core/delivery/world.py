@@ -226,7 +226,7 @@ async def make_world(session_factory: async_sessionmaker[AsyncSession]) -> World
         session.add(bridge_client)
         await session.flush()
         bridge = CollaborationBridge(
-            type="mattermost",
+            type="slack",
             display_name="MM",
             client_id=bridge_client.id,
             status="active",

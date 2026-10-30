@@ -1,7 +1,8 @@
+import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { TelemetryFlintEnv } from '../../telemetry/config';
 import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from '../constants';
 import {
-  MANAGED_SERVER_FEATURE_FLAGS,
+  managedServerFeatureFlags,
   TELEMETRY_ENABLED_KEY,
   TELEMETRY_ENDPOINT_KEY,
 } from '../env-file';
@@ -15,8 +16,6 @@ export type NativeCoreSettingsParams = {
    * native mode. */
   apiPort: number;
   postgresPort: number;
-  /** Where switch-core takes Mattermost's button presses, when it runs one. */
-  callbackPort: number;
   secrets: LocalServerSecrets;
   telemetryEnabled: boolean;
   telemetryEnvironment: TelemetryFlintEnv;
@@ -26,6 +25,8 @@ export type NativeCoreSettingsParams = {
   /** The gateway's built pages, for switch-core to serve on its own address;
    * null to run without them. */
   gatewayUiDir: string | null;
+  /** Whether switch-core runs from this repo's checkout rather than the pin. */
+  fromCheckout: boolean;
 };
 
 export function nativeApiUrl(apiPort: number): string {
@@ -39,15 +40,11 @@ export function nativeApiUrl(apiPort: number): string {
  * Pure, so the exact output is unit-testable.
  */
 export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Record<string, string> {
-  const { apiPort, postgresPort, secrets, telemetryEnabled } = params;
+  const { apiPort, postgresPort, secrets, telemetryEnabled, fromCheckout } = params;
   const apiUrl = nativeApiUrl(apiPort);
   return {
     SERVER_HOST: LOCAL_SERVER_BIND_ADDR,
     SERVER_PORT: String(apiPort),
-    // A Mattermost callback listener is only bound when a bridge asks for one;
-    // its default is every interface, which nothing here needs.
-    COLLABORATION_CALLBACK_HOST: LOCAL_SERVER_BIND_ADDR,
-    COLLABORATION_CALLBACK_PORT: String(params.callbackPort),
     DB_HOST: '127.0.0.1',
     DB_PORT: String(postgresPort),
     DB_USER: RUNTIME_ROLE,
@@ -59,14 +56,17 @@ export function buildNativeCoreSettings(params: NativeCoreSettingsParams): Recor
     AGENT_REGISTRATION_TOKEN: secrets.agentRegistrationToken,
     JWT_SECRET_KEY: secrets.jwtSecretKey,
     SECRET_KEYS: secrets.secretKeys,
-    FEATURE_FLAGS_ENABLED: MANAGED_SERVER_FEATURE_FLAGS.join(','),
+    FEATURE_FLAGS_ENABLED: managedServerFeatureFlags(
+      BUILD_FEATURE_FLAGS.onboarding,
+      fromCheckout
+    ).join(','),
     CONTROLLER_TOKEN_SECRET: secrets.controllerTokenSecret,
     GATEWAY_ADMIN_EMAIL: LOCAL_SERVER_ADMIN_EMAIL,
     GATEWAY_ADMIN_PASSWORD: secrets.gatewayAdminPassword,
     FRONTEND_BASE_URL: apiUrl,
     GATEWAY_COOKIE_SECURE: 'false',
     GATEWAY_PUBLIC_URL: apiUrl,
-    // The bundled Mattermost, when there is one, is published on loopback.
+    // A single-user server on this machine may call services on loopback.
     OUTBOUND_ALLOWED_PRIVATE_HOSTS: 'localhost,127.0.0.1',
     [TELEMETRY_ENABLED_KEY]: telemetryEnabled ? 'true' : 'false',
     TELEMETRY_ENVIRONMENT: params.telemetryEnvironment,

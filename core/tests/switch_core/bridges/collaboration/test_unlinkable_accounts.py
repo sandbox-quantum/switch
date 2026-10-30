@@ -10,17 +10,12 @@ from typing import Any
 import aiohttp
 import discord
 import pytest
-from mattermostdriver.exceptions import ResourceNotFound
 from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
-)
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -107,41 +102,6 @@ def test_slack_out_of_reach_is_a_runtime_error() -> None:
 def test_a_slack_bot_id_is_refused_without_asking() -> None:
     adapter = _slack({})
     assert _run(adapter.account_unlinkable_reason("B0123ABCD")) is not None
-
-
-class _MattermostUsers:
-    def __init__(self, users: dict[str, dict[str, object]]) -> None:
-        self._users = users
-
-    def get_user(self, user_id: str) -> dict[str, object]:
-        if user_id not in self._users:
-            raise ResourceNotFound("Unable to find the user.")
-        return self._users[user_id]
-
-
-def _mattermost(users: dict[str, dict[str, object]]) -> MattermostAdapter:
-    adapter = MattermostAdapter(
-        config=MattermostConnectionConfig(
-            url="http://mm", admin_user="admin", admin_password="pw", team_name="t"
-        )
-    )
-    adapter._admin_driver = type("_Driver", (), {"users": _MattermostUsers(users)})()  # type: ignore[assignment]
-    return adapter
-
-
-def test_a_mattermost_bot_is_refused() -> None:
-    adapter = _mattermost({"bot1": {"id": "bot1", "is_bot": True}})
-    assert _run(adapter.account_unlinkable_reason("bot1")) is not None
-
-
-def test_a_mattermost_account_the_server_does_not_know_is_not_found() -> None:
-    with pytest.raises(LookupError):
-        _run(_mattermost({}).account_unlinkable_reason("typo"))
-
-
-def test_a_mattermost_person_is_linkable_when_asked() -> None:
-    adapter = _mattermost({"ada1": {"id": "ada1", "is_bot": False}})
-    assert _run(adapter.account_unlinkable_reason("ada1")) is None
 
 
 class _DiscordClient:

@@ -224,8 +224,8 @@ class SwitchConfig(BaseSettings):
     # run and whatever it signed may stop working.
     jwt_secret_key: str | None = None
 
-    # Private hosts Switch may reach at a URL a tenant or agent supplied (a
-    # Mattermost server, an agent icon): comma-separated
+    # Private hosts Switch may reach at a URL a tenant or agent supplied (an
+    # agent icon): comma-separated
     # hostnames and CIDRs. Anything else that is not a public address is
     # refused. Link-local and metadata addresses are refused even when listed.
     # See `outbound.py`.
@@ -317,8 +317,6 @@ class SwitchConfig(BaseSettings):
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
-    # Cloud machines run the agent controller, so above 0 this needs the
-    # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     hosted_disk_retention_days: int = Field(default=7, ge=1, le=90)
@@ -560,30 +558,16 @@ class SwitchConfig(BaseSettings):
     # badge from ui-avatars.com with their name in the URL, so the services
     # see the name. Slack and Discord fetch the image on their own servers and
     # serve their copy, Teams draws it inside each card (some Teams clients may
-    # load it from the service directly), the Mattermost adapter fetches it
-    # from this server, and Switch Console loads it on each user's machine.
+    # load it from the service directly), and Switch Console loads it on each
+    # user's machine.
     # False sends no such URL anywhere, stored ones included: each platform
-    # shows its own default icon (a Mattermost bot keeps the image it already
-    # has), new agents get no generated icon, setting an icon on one of those
-    # services is refused, and Switch Console stops drawing them for this
-    # server's agents.
+    # shows its own default icon, new agents get no generated icon, setting an
+    # icon on one of those services is refused, and Switch Console stops
+    # drawing them for this server's agents.
     third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000
-
-    # Where collaboration bridges take platform callbacks. Only a Mattermost
-    # button press needs one today: the press is delivered by the Mattermost
-    # server to a URL, where every other platform Switch bridges to sends it
-    # down a connection Switch already holds open.
-    #
-    # A socket of its own, not a route on the port above, which carries the
-    # agent API, the MCP server and the operator dashboard. What an operator
-    # has to expose for a button to work should be callbacks and nothing else,
-    # so that one over-broad proxy rule cannot publish the other three. It
-    # stays unbound in a deployment where no bridge asks to be called back.
-    collaboration_callback_host: str = "0.0.0.0"
-    collaboration_callback_port: int = 8081
 
     frontend_base_url: str | None = None
 
@@ -829,15 +813,14 @@ class SwitchConfig(BaseSettings):
     # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
     room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
-    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
-    # Read only to refuse a deployment that still turns it on, which would
-    # otherwise lose agent management without a word.
+    # AGENT_MANAGEMENT_ENABLED, replaced: agent management is always on. Read
+    # only to refuse a deployment that still turns it on.
     legacy_agent_management_enabled: bool | None = Field(
         default=None, validation_alias="agent_management_enabled"
     )
-    # Signs controller access tokens. Required (at least 32 characters) when
-    # agent management is on, and deliberately separate from SECRET_KEYS so
-    # rotating one never invalidates the other.
+    # Signs controller access tokens. Required (at least 32 characters), and
+    # deliberately separate from SECRET_KEYS so rotating one never invalidates
+    # the other.
     controller_token_secret: str | None = None
     # How often a controller must report status. Sent to controllers as
     # `report_within_s`; a controller that has not reported for three of these
@@ -960,22 +943,14 @@ class SwitchConfig(BaseSettings):
             )
         if self.legacy_agent_management_enabled:
             raise ValueError(
-                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
-                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+                "AGENT_MANAGEMENT_ENABLED has been replaced: remove it. "
+                "Agent management is always on."
             )
-        if not self.agent_management_enabled:
-            if self.hosted_launch_capacity > 0:
-                raise ValueError(
-                    "HOSTED_LAUNCH_CAPACITY needs the "
-                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
-                    "agent controller."
-                )
-            return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when the "
-                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
-                "tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required: it signs the access "
+                "tokens agent controllers use. Set it to a random value of at "
+                "least 32 characters."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -1342,7 +1317,10 @@ class SwitchConfig(BaseSettings):
     def feature_flags(self) -> dict[str, bool]:
         """Every known flag and whether this deployment turned it on."""
         enabled = self._enabled_feature_flags()
-        return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
+        return {
+            key: key in enabled or key in (AGENT_CHATS, AGENT_MANAGEMENT, GROUP_CHATS)
+            for key in sorted(KNOWN_FEATURE_FLAGS)
+        }
 
     @property
     def deployment_kind(self) -> DeploymentKind:
@@ -1353,10 +1331,6 @@ class SwitchConfig(BaseSettings):
         if self.managed_by_console:
             return "managed_by_console"
         return "self_hosted"
-
-    @property
-    def agent_management_enabled(self) -> bool:
-        return self.feature_flags[AGENT_MANAGEMENT]
 
     @property
     def hosted_agents_enabled(self) -> bool:
@@ -1373,14 +1347,6 @@ class SwitchConfig(BaseSettings):
     @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
-
-    @property
-    def agent_chats_enabled(self) -> bool:
-        return self.feature_flags[AGENT_CHATS]
-
-    @property
-    def group_chats_enabled(self) -> bool:
-        return self.feature_flags[GROUP_CHATS]
 
     @property
     def buddy_slack_handoff_enabled(self) -> bool:

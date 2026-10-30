@@ -1,17 +1,16 @@
 # End-to-end proof: follow the conversation
 
-This plays every journey of the "follow the conversation" feature in a real
-local Mattermost, against switch-core built from this checkout, and checks
+This plays every journey of the "follow the conversation" feature through
+the in-Console chat, against switch-core built from this checkout, and checks
 each one. It complements the automated tests in
 `core/tests/switch_core/delivery/`, which run on every PR. This run needs
-Docker, Mattermost and Chrome, so it isn't part of the PR checks. Run it
-before a release, or after changing how messages reach agents.
+Docker, so it isn't part of the PR checks. Run it before a release, or after
+changing how messages reach agents.
 
 ```bash
 just init-env              # once, if you have no .env
 just down                  # stop your local stack: this run uses the same ports
 just e2e-follow-ups        # about 3 minutes
-just e2e-follow-ups --video  # also records a captioned demo (needs ffmpeg)
 just e2e-follow-ups --keep   # leave it running afterwards to try by hand
 ```
 
@@ -21,31 +20,33 @@ It exits non-zero if any journey fails. Output goes to
 | File | What it is |
 |---|---|
 | `report.md` | Every journey: who sent what, who it should reach, who it did, and the server's log line for each message |
-| `screens/` | Mattermost screenshots of each room and thread |
-| `follow-the-conversation-demo.mp4` | With `--video`: one captioned video of every journey |
 | `switch-core.log`, `agents.log` | The server's and the test agents' logs |
 
 ## How it works
 
-1. `run.sh` starts its own Postgres and Mattermost (Compose project
-   `switch-e2e`, removed afterwards), applies migrations, and starts
-   switch-core with the `follow_the_conversation` flag on. The follow-up window
+1. `run.sh` starts its own Postgres (Compose project `switch-e2e`, removed
+   afterwards), applies migrations, and starts switch-core with the
+   `follow_the_conversation` flag on. The follow-up window
    is set to 20 seconds so the "too late" journey doesn't take 5 minutes.
 2. `harness.py setup` registers three test agents:
    - `helper` and `reviewer`, which anyone may instruct
    - `private-bot`, which only its owner may instruct
 
-   It also adds a second Mattermost person, `bob`, and creates the rooms.
+   It also adds a second person, `bob`, to the workspace, and opens the rooms
+   as in-Console group chats (Switch rooms with no bridge), with the gateway
+   admin and `bob` as members.
 3. `harness.py agents` runs the agents. Each opens its event stream and
    receives every message with Switch's own answer to "is this for you?".
    When the answer is yes, the agent replies, and the reply says which rule
    delivered the message.
-4. `harness.py run` plays each journey as `user` and `bob`, then checks
-   Switch's answer for every agent against the expected one. It collects the
-   server's `Follow the conversation:` log line for each message, and writes
-   the report.
-5. `screenshots.py` and `video.py` drive headless Chrome over the DevTools
-   protocol, signed in as `user`.
+4. `harness.py run` plays each journey as the gateway admin (`user`) and
+   `bob`, posting through the gateway's `/chats` routes that Switch Console's
+   chat view calls, then checks Switch's answer for every agent against the
+   expected one. It collects the server's `Follow the conversation:` log line
+   for each message, and writes the report.
+
+`!assign-agent`, `!unassign-agent` and `!follow-ups` are typed into the chat
+like any message; the run waits for Switch's reply to each before going on.
 
 The journeys mirror `test_conversation_journeys.py`. When you add a rule or a
 command, add a journey to both.

@@ -99,7 +99,7 @@ const RUNTIME_LINES = [
   'If the sender attached files, the line is followed by a parenthetical naming the local paths they were downloaded to — Read them before responding. Files that could NOT be retrieved are listed there too; do not pretend you saw them — say so.',
   '',
   "To view a file that appears in read_context history but did NOT arrive with a path (e.g. an unaddressed file posted earlier), call the download_attachment tool with the attachment's mxc (from the read_context attachments field). It writes the file locally and returns the path — then Read that path.",
-  'To send files into the room, call the send_attachment tool with `path` (one file) or `paths` (several, delivered as ONE message) plus an optional caption/thread_id. Any file type works. They post as native room attachments and bridged platforms (Slack, Mattermost) receive them as real file uploads.',
+  'To send files into the room, call the send_attachment tool with `path` (one file) or `paths` (several, delivered as ONE message) plus an optional caption/thread_id. Any file type works. They post as native room attachments and bridged platforms (Slack, Discord, Telegram, Teams) receive them as real file uploads.',
   '',
   'read_context, post_message and send_targeted_message all act on the room you are connected to, so connect_to_room comes first — once. That connection then holds for the rest of the session: do not reconnect before each call. Call connect_to_room again only to switch rooms, to return after switching, or when a tool fails saying you are not connected.',
   "read_context also takes an optional room_id: pass one to read any room you are a member of without connecting to it, so you can catch up elsewhere while staying in the room you are attending. It does not move you, and it does not clear the other room's unread count. Reading a room you are not a member of is refused.",
@@ -190,14 +190,14 @@ export const DOWNLOAD_ATTACHMENT_TOOL: ToolDefinition = {
 // The outbound counterpart of download_attachment: the agent names a local
 // file (e.g. a screenshot it produced) and the bytes are uploaded to the agent
 // bridge, which posts them into the room as an m.image / m.file event — from
-// there the collaboration bridges relay it out to Slack / Mattermost like any
+// there the collaboration bridges relay it out to bridged platforms like any
 // other room message.
 export const SEND_ATTACHMENT_TOOL: ToolDefinition = {
   name: 'send_attachment',
   description:
     'Send one or more local files of ANY type (image, .md, .csv, .pdf, log, ' +
     'code) into the connected Switch room as attachments. They enter the room ' +
-    'as native image/file events and bridged platforms (Slack, Mattermost) ' +
+    'as native image/file events and bridged platforms (Slack, Discord, Telegram, Teams) ' +
     'receive them as real file uploads. Several files sent in one call arrive ' +
     'as ONE message carrying all of them. Pass `path` for a single file or ' +
     '`paths` for several. Oversize or unreadable files fail the whole call — ' +

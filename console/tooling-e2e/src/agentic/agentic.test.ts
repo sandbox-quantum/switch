@@ -44,7 +44,7 @@ describe('agentic scenario files', () => {
     const scenario = parseScenario('some-scenario.yaml', SCENARIO);
     expect(scenario.setupMessages).toEqual([]);
     expect(scenario.rubric).toEqual([{ id: 'replies', criterion: 'The agent replies.' }]);
-    expect(scenario.header.requires).toEqual(['mattermost', 'agentic-models']);
+    expect(scenario.header.requires).toEqual(['agentic-models']);
     expect(scenario.room).toBeNull();
     expect(scenario.facts).toEqual([
       { id: 'says-hello', turn: 'any', pattern: /hello/i, expect: 'matches' },
@@ -61,13 +61,14 @@ describe('agentic scenario files', () => {
     ).toThrow(/'room' may not set 'name'[\s\S]*'room' may not set 'agents'/);
   });
 
-  it("refuses a room text the server's templating would change", () => {
-    const templated = `${SCENARIO}room:\n  instructions: Report to {$creator} and {team}.\n  docs:\n    - name: '{x}'\n`;
-    expect(() => parseScenario('some-scenario.yaml', templated)).toThrow(
-      /placeholder '\{\$creator\}'[\s\S]*placeholder '\{team\}'[\s\S]*placeholder '\{x\}'/
+  it('keeps room text as written and refuses what POST /rooms cannot take', () => {
+    const templated = `${SCENARIO}room:\n  instructions: Report to {$creator} and {team}.\n`;
+    expect(parseScenario('some-scenario.yaml', templated).room).toEqual({
+      instructions: 'Report to {$creator} and {team}.',
+    });
+    expect(() => parseScenario('some-scenario.yaml', `${SCENARIO}room:\n  docs: []\n`)).toThrow(
+      /'room' may not set 'docs'/
     );
-    const braces = `${SCENARIO}room:\n  instructions: 'Reply in JSON, like {"ok": true}.'\n`;
-    expect(parseScenario('some-scenario.yaml', braces).room).not.toBeNull();
   });
 
   it('refuses a scenario with no facts, and facts that cannot be checked', () => {

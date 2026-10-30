@@ -5,8 +5,8 @@ export type RoomTab = 'chat' | 'resources' | 'configuration';
 
 /**
  * What a room shown inside another page opens on: its conversation whenever it
- * has one — a group chat here, or a channel on a messaging app, drawn inline or
- * offered as a way out to that app — and its settings only when it has none.
+ * has one — a group chat here, or a channel on a messaging app, offered as a way out
+ * to that app — and its settings only when it has none.
  */
 export function embeddedRoomTab(bridgeType: string | null, consoleChat: boolean): RoomTab {
   return bridgeType !== null || consoleChat ? 'chat' : 'configuration';

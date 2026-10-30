@@ -49,7 +49,6 @@ class _RoomService:
     ("bridge_type", "expected"),
     [
         ("slack", "archived"),
-        ("mattermost", "archived"),
         ("discord", "deleted"),
         ("telegram", "left"),
         ("teams", "kept"),

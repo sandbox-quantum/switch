@@ -20,10 +20,6 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
-)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -61,17 +57,6 @@ def _discord() -> DiscordAdapter:
     return DiscordAdapter(
         config=DiscordConnectionConfig(bot_token=BOT_TOKEN, guild_id="900")
     )
-
-
-def _mattermost(**overrides: Any) -> MattermostAdapter:
-    config = {
-        "url": "http://mattermost:8065",
-        "admin_user": "admin",
-        "admin_password": ADMIN_PASSWORD,
-        "team_name": "switch",
-        **overrides,
-    }
-    return MattermostAdapter(config=MattermostConnectionConfig(**config))
 
 
 def _teams() -> TeamsAdapter:
@@ -116,18 +101,6 @@ def test_telegram_home_opens_the_bot_chat() -> None:
     assert _run(_telegram().home_deeplink()) == "https://t.me/acme_bot"
 
 
-def test_mattermost_home_opens_the_team() -> None:
-    assert _run(_mattermost().home_deeplink()) == "mattermost://mattermost:8065/switch"
-
-
-def test_mattermost_home_prefers_the_public_url() -> None:
-    # `url` is the address Switch reaches Mattermost on, which may be private.
-    # The link is for the user's machine, so the public one wins when set.
-    adapter = _mattermost(public_url="https://chat.example.com/")
-
-    assert _run(adapter.home_deeplink()) == "mattermost://chat.example.com/switch"
-
-
 def test_base_adapter_offers_no_home_link() -> None:
     # A platform that has not implemented one must return None rather than
     # inherit something wrong — the caller hides the action instead.
@@ -135,7 +108,7 @@ def test_base_adapter_offers_no_home_link() -> None:
 
 
 def test_no_home_link_carries_a_credential() -> None:
-    for adapter in (_slack(), _discord(), _mattermost(), _teams(), _telegram()):
+    for adapter in (_slack(), _discord(), _teams(), _telegram()):
         link = _run(adapter.home_deeplink())
         assert link is not None
         assert BOT_TOKEN not in link
@@ -153,7 +126,7 @@ def test_no_install_link_carries_a_credential() -> None:
     # Same exposure as a home link: built from a config that also holds bot
     # tokens, and served by `GET /gateway/collaborations` — then handed to the
     # operator's browser and on to the platform.
-    for adapter in (_slack(), _discord(), _mattermost(), _teams(), _telegram()):
+    for adapter in (_slack(), _discord(), _teams(), _telegram()):
         for link in _run(adapter.install_links()):
             assert BOT_TOKEN not in link.url
             assert ADMIN_PASSWORD not in link.url

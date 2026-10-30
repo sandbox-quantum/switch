@@ -72,7 +72,7 @@ const config: Configuration = {
     desktopName: `${APP_NAME_LOWER}.desktop`,
   },
   // Claim the switchdash:// URL scheme so the OS routes deeplinks (from Slack /
-  // Mattermost messages) to this app. On macOS this writes CFBundleURLTypes
+  // Discord messages) to this app. On macOS this writes CFBundleURLTypes
   // into Info.plist — the canonical registration; the runtime
   // setAsDefaultProtocolClient call only suffices for the un-packaged dev app.
   protocols: [

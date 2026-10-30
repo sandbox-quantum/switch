@@ -154,11 +154,11 @@ LOOKED_UP_AGENT_TYPE = one_of(*KNOWN_AGENT_TYPE.values, "unknown")
 ACTOR_KIND = one_of("user", "agent", "system")
 
 # Who said a message. `user` is a person on a messaging platform; `bot` is an
-# integration posting there (a Slack app, a Discord bot or webhook, a
-# Mattermost bot account, another Switch server's agent), which until this
-# value existed was counted as `user`. `platform` is Switch itself speaking — a
-# template's kickoff, or a request it carries on a person's behalf — and
-# `unknown` a sender whose client could not be looked up.
+# integration posting there (a Slack app, a Discord bot or webhook, another
+# Switch server's agent), which until this value existed was counted as
+# `user`. `platform` is Switch itself speaking — a template's kickoff, or a
+# request it carries on a person's behalf — and `unknown` a sender whose
+# client could not be looked up.
 SENDER_KIND = one_of("user", "bot", "agent", "platform", "unknown")
 
 OUTCOME = one_of("success", "failure")
@@ -350,7 +350,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
     # The first connector a person added. One the setup step registered itself
-    # never claims it, or the bundled Mattermost would, seconds after install.
+    # never claims it, or a bundled connector would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -478,7 +478,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "seconds_since_install": NUMBER,
         "seconds_since_configured": NUMBER,
-        # Registered by the deployment's setup step (the bundled Mattermost)
+        # Registered by the deployment's setup step (a bundled connector)
         # rather than by a person. Filter these out to measure onboarding.
         "is_preconfigured": BOOLEAN,
         # The first connector a person added: never true for a preconfigured

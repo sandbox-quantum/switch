@@ -17,7 +17,7 @@ const PLACEHOLDER = `room:
   name: "Pilot – ACME"
   description: "Pilot room for ACME"
   instructions: "Be helpful."
-  bridge: "Mattermost"            # bridge display name; omit for internal-only
+  bridge: "Slack"                 # bridge display name; omit for internal-only
   channel_type: channel_public
   read_visibility: public
   write_visibility: public

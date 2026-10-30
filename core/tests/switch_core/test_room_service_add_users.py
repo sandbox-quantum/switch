@@ -1,7 +1,7 @@
 """CHOO-2067 — a person who cannot be added must not take the room with them.
 
 Adding a room to a Teams bridge answered `500` when any one member could not
-be added to the channel: the Teams adapter raised where Slack, Mattermost and
+be added to the channel: the Teams adapter raised where Slack and
 Discord log and continue, and it runs inside room creation, so the request died
 with a half-provisioned room behind it. The opposite failure is just as bad —
 dropping people quietly leaves a room that lacks the people it was asked for

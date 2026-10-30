@@ -20,6 +20,7 @@ spec:
   source:
     persistentVolumeClaimName: RELEASE-postgresql-data
 ---
+# Only on an install upgraded from a release that deployed Mattermost.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
 metadata:

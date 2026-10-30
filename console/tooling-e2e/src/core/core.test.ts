@@ -9,7 +9,7 @@ import { FAST_SCENARIOS } from '../fast/index.ts';
 import { SCENARIOS as PROVIDER_SCENARIOS } from '../provider/scenarios.ts';
 import { laneFrom, loadEnv, MissingConfigError, strictFrom, type HarnessEnv } from './env.ts';
 import { assertAllowed, ReadOnlyEnvironmentError } from './guard.ts';
-import { isHarnessArtifact, isValidMattermostUsername, RunContext } from './run.ts';
+import { isHarnessArtifact, isValidArtifactName, RunContext } from './run.ts';
 import { admit, assertValidHeaders, headerProblems, type ScenarioHeader } from './scenario.ts';
 import { IssuedSecrets } from './secrets.ts';
 
@@ -22,9 +22,8 @@ const BASE = {
 };
 
 describe('configuration', () => {
-  it('needs no Mattermost, and strips a trailing slash', () => {
+  it('needs only the Switch server, and strips a trailing slash', () => {
     const env = loadEnv('fast', BASE, {});
-    expect(env.mattermost).toBeNull();
     expect(env.switch.apiUrl).toBe('http://switch.invalid');
     expect(env.strict).toBe(false);
   });
@@ -36,29 +35,6 @@ describe('configuration', () => {
     } catch (error) {
       expect((error as MissingConfigError).missing).toEqual(Object.keys(BASE));
     }
-  });
-
-  it('treats a partial Mattermost configuration as a mistake', () => {
-    expect(() => loadEnv('fast', { ...BASE, MATTERMOST_URL: 'http://mm.invalid' }, {})).toThrow(
-      /MATTERMOST_TOKEN, MATTERMOST_TEAM/
-    );
-  });
-
-  it('refuses a Mattermost configuration beside a declaration that there is none', () => {
-    expect(loadEnv('fast', { ...BASE, SWITCH_E2E_NO_MATTERMOST: '1' }, {}).noMattermost).toBe(true);
-    expect(() =>
-      loadEnv(
-        'fast',
-        {
-          ...BASE,
-          SWITCH_E2E_NO_MATTERMOST: '1',
-          MATTERMOST_URL: 'http://mm.invalid',
-          MATTERMOST_TOKEN: 'mm-token-placeholder',
-          MATTERMOST_TEAM: 'team',
-        },
-        {}
-      )
-    ).toThrow(/SWITCH_E2E_NO_MATTERMOST/);
   });
 
   it('refuses an unknown environment or lane', () => {
@@ -92,7 +68,7 @@ describe('read-only guard', () => {
 });
 
 describe('run naming', () => {
-  it('gives each scope distinct, Mattermost-safe names', () => {
+  it('gives each scope distinct, handle-safe names', () => {
     const run = new RunContext('abc123');
     const first = run.scope();
     const second = run.scope();
@@ -102,7 +78,7 @@ describe('run naming', () => {
     expect(run.owns('e2e-zzz999a-snd')).toBe(false);
   });
 
-  it('refuses a name too long for a bot username, or one handed out twice', () => {
+  it('refuses a name too long for a handle, or one handed out twice', () => {
     const scope = new RunContext('abc123').scope();
     expect(() => scope.name('much-too-long')).toThrow(/Shorten/);
     scope.name('room');
@@ -111,7 +87,7 @@ describe('run naming', () => {
 
   it('fits every provider agent role', () => {
     for (const role of ['opencode', 'antigrav', 'cursor', 'claude', 'codex']) {
-      expect(isValidMattermostUsername(`e2e-abc123a-${role}`)).toBe(true);
+      expect(isValidArtifactName(`e2e-abc123a-${role}`)).toBe(true);
     }
   });
 });
@@ -178,26 +154,16 @@ describe('admission', () => {
   });
 
   it('skips on a missing prerequisite, and fails on one when strict', () => {
-    const needsMattermost = header({ requires: ['mattermost'] });
-    expect(admit(needsMattermost, env())).toMatchObject({ run: false, failure: false });
-    expect(admit(needsMattermost, env({ strict: true }))).toMatchObject({
-      run: false,
-      failure: true,
-      reason: expect.stringContaining('MATTERMOST_URL'),
-    });
-  });
-
-  it('skips without failing, even when strict, on a Mattermost the environment does not deploy', () => {
-    const needsMattermost = header({ requires: ['mattermost'] });
-    expect(admit(needsMattermost, env({ strict: true, noMattermost: true }))).toMatchObject({
+    const needsUi = header({ requires: ['gateway-ui'] });
+    expect(admit(needsUi, env({ gatewayUiUrl: null }))).toMatchObject({
       run: false,
       failure: false,
-      reason: expect.stringContaining('does not deploy'),
     });
-    const needsBoth = header({ requires: ['mattermost', 'gateway-ui'] });
-    expect(
-      admit(needsBoth, env({ strict: true, noMattermost: true, gatewayUiUrl: null }))
-    ).toMatchObject({ run: false, failure: true });
+    expect(admit(needsUi, env({ strict: true, gatewayUiUrl: null }))).toMatchObject({
+      run: false,
+      failure: true,
+      reason: expect.stringContaining('SWITCH_GATEWAY_UI_URL'),
+    });
   });
 });
 

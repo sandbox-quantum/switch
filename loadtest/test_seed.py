@@ -109,7 +109,7 @@ def test_refuses_a_name_two_workspaces_share() -> None:
 
 def test_refuses_a_workspace_with_an_active_bridge() -> None:
     slack = {"bridge_type": "slack", "display_name": "Team", "status": "active"}
-    paused = {"bridge_type": "mattermost", "display_name": "MM", "status": "inactive"}
+    paused = {"bridge_type": "discord", "display_name": "DC", "status": "inactive"}
 
     with pytest.raises(RuntimeError, match="slack 'Team'"):
         asyncio.run(_admin(Gateway([HOME], [slack, paused])).refuse_bridges())

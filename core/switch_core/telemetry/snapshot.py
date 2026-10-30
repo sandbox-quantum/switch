@@ -122,7 +122,7 @@ class UsageCounts:
     user_internal_active_7d: int = 0
     active_user_ids_1d: set[str] = field(default_factory=set)
     active_user_ids_7d: set[str] = field(default_factory=set)
-    # Chat identities — a Slack, Mattermost or other platform account — that
+    # Chat identities — a Slack or other platform account — that
     # used a room with an agent, whether or not anyone has claimed them. One
     # person on two platforms is two identities, and most identities belong to
     # no Switch account, which is why this runs above `user_active_*`.
@@ -132,8 +132,7 @@ class UsageCounts:
     chat_identity_active_7d: int = 0
     # The same chat identities split by who is behind them. An identity whose
     # posts the platform marked as an app's (a Slack app, a Discord bot or
-    # webhook, a Mattermost bot account: alerts, CI, another Switch server's
-    # agents) is a bot. Every other identity is a person, linked to a Switch
+    # webhook: alerts, CI, another Switch server's agents) is a bot. Every other identity is a person, linked to a Switch
     # account or not. `chat_identity_active_*` counted both, which is why these
     # are new names rather than a new meaning for the old ones.
     person_identity_active_1d: int = 0
