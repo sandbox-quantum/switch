@@ -94,6 +94,7 @@ async def test_placements_replace_what_the_connection_had(
         "placements": {"session-1": ROOM_B},
         "rooms": [ROOM_B],
         "released": [],
+        "refused": [],
     }
     assert protocol.connections.session_in_room(AGENT_ID, ROOM_A) is None
 
@@ -131,20 +132,43 @@ async def test_a_room_another_connection_holds_is_taken_over(
 
 
 @pytest.mark.asyncio
-async def test_a_room_the_agent_is_not_in_refuses_the_whole_request(
+async def test_a_room_the_agent_is_not_in_is_left_out_and_named_and_the_rest_placed(
     db_buffer: EventBuffer,
 ) -> None:
     protocol = _Protocol(db_buffer)
     conn = _open(protocol, "watcher")
     await _place(protocol, conn, {"session-1": ROOM_A})
 
-    with pytest.raises(HTTPException) as refused:
-        await _place(protocol, conn, {"session-1": ROOM_B, "session-2": FOREIGN_ROOM})
+    answer = await _place(
+        protocol, conn, {"session-1": ROOM_B, "session-2": FOREIGN_ROOM}
+    )
 
-    assert refused.value.status_code == 403
-    assert FOREIGN_ROOM in str(refused.value.detail)
-    assert protocol.connections.connection_placements(conn) == {"session-1": ROOM_A}
-    assert conn.rooms == {ROOM_A}
+    assert answer["placements"] == {"session-1": ROOM_B}
+    assert [(each["session_id"], each["room_id"]) for each in answer["refused"]] == [
+        ("session-2", FOREIGN_ROOM)
+    ]
+    assert protocol.connections.connection_placements(conn) == {"session-1": ROOM_B}
+    assert conn.rooms == {ROOM_B}
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_is_gone_is_left_out_every_time_it_is_stated(
+    db_buffer: EventBuffer,
+) -> None:
+    protocol = _Protocol(db_buffer)
+
+    async def gone(agent_id: str, room_id: str) -> None:
+        if room_id == "room-deleted":
+            raise ValueError(f"Room not found: {room_id}")
+
+    protocol.require_room_member = gone  # type: ignore[method-assign]
+    conn = _open(protocol, "watcher")
+    for _ in range(2):
+        answer = await _place(
+            protocol, conn, {"session-1": ROOM_A, "stale": "room-deleted"}
+        )
+        assert answer["placements"] == {"session-1": ROOM_A}
+        assert [each["room_id"] for each in answer["refused"]] == ["room-deleted"]
 
 
 @pytest.mark.asyncio

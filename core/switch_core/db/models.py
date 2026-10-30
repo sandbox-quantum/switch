@@ -934,6 +934,15 @@ class Room(TenantScoped, Base):
         # A run is listed, checked and stopped by its root on every agent
         # create and every look at Recently used.
         Index("ix_rooms_run_id", "run_id"),
+        # One room per Switch Console create request, whichever process or
+        # retry gets there first.
+        Index(
+            "uq_rooms_chat_operation_id",
+            "tenant_id",
+            text("(metadata ->> 'chat_operation_id')"),
+            unique=True,
+            postgresql_where=text("metadata ? 'chat_operation_id'"),
+        ),
         UniqueConstraint(
             "tenant_id", "matrix_room_id", name="uq_rooms_tenant_matrix_room_id"
         ),
@@ -3292,6 +3301,34 @@ class ChatHidden(TenantScoped, Base):
     room_id: Mapped[str] = mapped_column(Text, nullable=False)
     hidden_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ChatRead(TenantScoped, Base):
+    """How far one person has read a chat: the last room position they were
+    shown. Only moves forward; set to the room's head as they join, so what
+    was said before they arrived is not unread."""
+
+    __tablename__ = "chat_reads"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_chat_reads_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_chat_reads_user"),
+        nullable=False,
+    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    read_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 

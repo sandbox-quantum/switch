@@ -982,7 +982,8 @@ class AgentRecipient:
     async def greet(self) -> None:
         """Say hello in a room the agent has just arrived in: in the words the
         room was given for it when there are some (a Switch Console chat's
-        opening message), else its usual line.
+        opening message), else its usual line, except in a Switch Console
+        chat, which says nothing more.
 
         The per-agent greeting can be switched off per bridge: on Mattermost,
         for one, whose native "X joined the channel" notice makes it
@@ -1001,6 +1002,8 @@ class AgentRecipient:
         opening = opening_message_for(meta, self.agent.id)
         if opening is not None:
             greeting = opening
+        elif meta.console_chat:
+            return
         elif meta.channel_type == "direct":
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
@@ -1550,6 +1553,7 @@ class AgentRecipient:
             agent=self.agent,
             agent_user_id=self.transport_user_id,
             channel_type=meta.channel_type,
+            agent_count=meta.agent_count,
             message=self._as_incoming(event),
         )
 

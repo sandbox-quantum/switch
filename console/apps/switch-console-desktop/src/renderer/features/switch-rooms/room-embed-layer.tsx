@@ -1,6 +1,7 @@
 import { ExternalLink, Loader2, MessagesSquare, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -111,6 +112,8 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     (appState.navigation.viewParamsStore.room as { roomId?: string } | undefined)?.roomId ?? null;
   const slot = roomEmbedSlotStore.slot;
   const activeRoomId = slot?.roomId ?? navigatedRoomId;
+  // A Console chat has no channel to embed; the room view draws its conversation.
+  const consoleChat = activeRoomId !== null && opensAsConsoleChat(activeRoomId);
   const layerRef = useRef<HTMLDivElement>(null);
   const slotBox = useBoxWithin(slot?.element ?? null, layerRef);
 
@@ -165,7 +168,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   // Resolve a room the first time it is opened, and evict the oldest beyond the
   // cap. Rooms already resolved are left alone — that is the whole point.
   useEffect(() => {
-    if (!activeRoomId) return;
+    if (!activeRoomId || consoleChat) return;
 
     orderRef.current = [...orderRef.current.filter((id) => id !== activeRoomId), activeRoomId];
     const evicted = orderRef.current.slice(0, -MAX_LIVE_EMBEDS);
@@ -181,7 +184,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
     }
 
     if (!startedRef.current.has(activeRoomId)) void resolve(activeRoomId);
-  }, [activeRoomId, resolve]);
+  }, [activeRoomId, consoleChat, resolve]);
 
   // The room list is read again every little while; a room whose channel link
   // has come back since it was opened is opened again.
@@ -230,6 +233,7 @@ export const RoomEmbedLayer = observer(function RoomEmbedLayer() {
   const visible =
     (slot ? slotBox !== null : isRoomView) &&
     activeRoomId !== null &&
+    !consoleChat &&
     roomTabStore.tabFor(activeRoomId, slot ? embeddedRoomFallbackTab(activeRoomId) : 'chat') ===
       'chat';
   const active = activeState;

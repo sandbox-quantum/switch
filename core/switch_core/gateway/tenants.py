@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.clients.client_lifecycle_service import (
     ClientLifecycleService,
     TenantIsolationNotInForce,
@@ -193,6 +194,7 @@ def _member_detail(user: User, membership: TenantMember) -> MemberDetail:
         email=user.email,
         role=membership.role,
         created_at=str(membership.created_at),
+        service_account=is_bootstrap_owner(user),
     )
 
 

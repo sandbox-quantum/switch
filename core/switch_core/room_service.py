@@ -36,7 +36,11 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.room_role_store import validate_role_name
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import (
+    LINKED_CHANNEL_NAME_KEY,
+    NAME_SOURCE_KEY,
+    RoomStore,
+)
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
@@ -143,6 +147,9 @@ class RoomCreateConfig(BaseModel):
     # `{agent_id, body}`: what that agent says as it joins, in place of its
     # usual line. Stamped with the room, so it is there before the agent is.
     agent_greeting: dict[str, str] | None = None
+    # The linked channel's name when the room is named after it (a bridge's
+    # own room), so it follows the channel's renames (`NAME_SOURCE_KEY`).
+    named_after_channel: str | None = None
 
 
 class RoomCreateResult(BaseModel):
@@ -158,6 +165,9 @@ class RoomCreateResult(BaseModel):
     failed_attachments: list[dict[str, Any]] = []
 
 
+ROOM_NAME_MAX = 200
+
+
 class RoomService:
     # Class-level defaults so a caller that builds this without `__init__` —
     # several tests assemble a minimal instance directly — still has the
@@ -165,6 +175,7 @@ class RoomService:
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
     _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
+    _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
 
     def __init__(
         self,
@@ -193,6 +204,19 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+
+    def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
+        """Call `listener(tenant_id, room_id, [])` once a room is created,
+        archived or unarchived, or its agents change (`room_changes`). It must
+        not block."""
+        self._room_listeners = (*self._room_listeners, listener)
+
+    def room_changed(self, tenant_id: str, room_id: str) -> None:
+        for listener in self._room_listeners:
+            try:
+                listener(tenant_id, room_id, [])
+            except Exception:
+                logger.exception("Room listener failed for room %s", room_id)
 
     def on_room_agents_changed(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -642,6 +666,14 @@ class RoomService:
                         if config.agent_greeting is not None
                         else {}
                     ),
+                    **(
+                        {
+                            NAME_SOURCE_KEY: "channel",
+                            LINKED_CHANNEL_NAME_KEY: config.named_after_channel,
+                        }
+                        if config.named_after_channel is not None
+                        else {}
+                    ),
                 },
             )
 
@@ -794,6 +826,7 @@ class RoomService:
                 failed_attachments,
             )
 
+        self.room_changed(room.tenant_id, room.id)
         return RoomCreateResult(room=room, failed_attachments=failed_attachments)
 
     async def _seed_aliases(
@@ -957,7 +990,10 @@ class RoomService:
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
+        with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
     ) -> None:
+        """`with_agents` runs in the transaction that records the agents, so
+        what it writes commits with them or not at all."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1007,6 +1043,8 @@ class RoomService:
                         aid for aid in new_agent_ids if aid in listeners
                     },
                 )
+                if with_agents is not None:
+                    await with_agents(session)
                 await session.commit()
 
             await self._invite_clients(room.transport_room_id, agent_clients)
@@ -1026,6 +1064,7 @@ class RoomService:
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
         await self.room_agents_changed(room.tenant_id, room.id)
+        self.room_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -1068,6 +1107,7 @@ class RoomService:
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
         await self.room_agents_changed(room.tenant_id, room.id)
+        self.room_changed(room.tenant_id, room.id)
 
         emit_safely(
             self._telemetry,
@@ -1110,6 +1150,12 @@ class RoomService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> None:
+        if name is not None:
+            name = name.strip()
+            if not name or len(name) > ROOM_NAME_MAX:
+                raise ValueError(
+                    f"A room's name must be 1 to {ROOM_NAME_MAX} characters."
+                )
         tenant_id = await self._room_tenant(room_id)
         async with tenant_session(self._session_factory, tenant_id) as session:
             if read_visibility is not None or write_visibility is not None:
@@ -1135,6 +1181,44 @@ class RoomService:
                 write_visibility=write_visibility,
             )
             await session.commit()
+        self.room_changed(tenant_id, room_id)
+
+    async def take_platform_name(
+        self, room_id: str, name: str, channel_name: str
+    ) -> None:
+        """Name a bridged room after its channel, so it follows the channel's
+        renames from now on, and tell whoever sees it."""
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._room_store.set_platform_name(
+                session, room_id, name, channel_name
+            )
+            await session.commit()
+        self.room_changed(tenant_id, room_id)
+
+    async def follow_channel_name(
+        self, room_id: str, name: str, channel_name: str, legacy_name: str
+    ) -> bool:
+        """Rename a bridged room after its renamed channel when it still follows
+        the channel (`RoomStore.follow_channel_name`); False when it does not."""
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            followed = await self._room_store.follow_channel_name(
+                session, room_id, name, channel_name, legacy_name
+            )
+            await session.commit()
+        if followed:
+            self.room_changed(tenant_id, room_id)
+        return followed
+
+    async def record_channel_name(self, room_id: str, channel_name: str) -> None:
+        """Keep the linked channel's current name on a room that does not
+        follow it, so whoever sees the room can be offered it."""
+        tenant_id = await self._room_tenant(room_id)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._room_store.record_channel_name(session, room_id, channel_name)
+            await session.commit()
+        self.room_changed(tenant_id, room_id)
 
     async def set_join_event_listeners(
         self, room_id: str, settings: dict[str, bool]
@@ -1178,6 +1262,7 @@ class RoomService:
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
             await session.commit()
+        self.room_changed(room.tenant_id, room_id)
 
         if not archived or self._telemetry is None:
             return

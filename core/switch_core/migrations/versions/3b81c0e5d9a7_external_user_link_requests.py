@@ -27,7 +27,7 @@ column, and its claims are written straight into `external_user_claims` as
 they always were, where they read as unverified.
 
 Revision ID: 3b81c0e5d9a7
-Revises: e5a9c3d71f08
+Revises: b7e1d4c9a2f6
 Create Date: 2026-10-27 19:00:00.000000
 
 """
@@ -38,7 +38,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "3b81c0e5d9a7"
-down_revision: str | None = "e5a9c3d71f08"
+down_revision: str | None = "b7e1d4c9a2f6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

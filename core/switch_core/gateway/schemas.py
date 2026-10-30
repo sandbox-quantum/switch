@@ -85,6 +85,11 @@ class RoomSummary(BaseModel):
     created_at: str
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
+    # The caller owns the room, is in it (in Switch Console or through a
+    # platform account they claimed), or owns an agent in it.
+    viewer_is_member: bool = False
+    # A Switch Console chat (made through the chats API): only its members can open it.
+    is_console_chat: bool = False
 
 
 class RoomDetail(RoomSummary):
@@ -108,6 +113,10 @@ class RoomDetail(RoomSummary):
     # What deleting the room will do to its platform channel ("archived",
     # "deleted", "left", "kept"), or null when the room has no channel.
     channel_on_delete: ChannelRetirement | None = None
+    # The linked platform channel's name as the bridge last saw it, or null
+    # when it has not seen one. A room not named after its channel can take
+    # it with `POST /rooms/{id}/sync-name`.
+    linked_channel_name: str | None = None
 
 
 class RoomCreateRequest(BaseModel):
@@ -1150,6 +1159,9 @@ class MemberDetail(BaseModel):
     email: str
     role: str
     created_at: str
+    # The agent-registration bootstrap owner: kept in the roster, never a
+    # person to add to a chat.
+    service_account: bool
 
 
 class UsageTotalResponse(BaseModel):

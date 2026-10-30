@@ -75,6 +75,7 @@ const LOCAL_WHAT: Record<LocalActivityEntry['action'], (detail: string | null) =
   started: () => 'Started',
   stopped: () => 'Stopped',
   'start-failed': () => 'Start failed',
+  crashed: () => 'Stopped unexpectedly',
   updated: (detail) => (detail ? `Updated to ${detail}` : 'Updated'),
   reset: () => 'Reset',
 };
@@ -504,6 +505,16 @@ const Actions = observer(function Actions({
     case 'downgrade':
       // Nothing safe to press: its database has already moved past this app.
       return logButton ? <div className="flex flex-wrap gap-2">{logButton}</div> : null;
+    case 'stopped-unexpectedly':
+      return (
+        <div className="flex flex-wrap gap-2">
+          <PrimaryButton onClick={() => startManagedServer(server)}>
+            <Power />
+            Restart
+          </PrimaryButton>
+          {logButton}
+        </div>
+      );
     case 'stop-failed':
       return (
         <div className="flex flex-wrap gap-2">
@@ -679,6 +690,13 @@ const Messages = observer(function Messages({
             local={sshHost === null}
             now={now}
           />
+        );
+      case 'stopped-unexpectedly':
+        return (
+          <MessageBox tone="failed" title="The server stopped unexpectedly">
+            {managedServerError(server) && <Mono>{managedServerError(server)}</Mono>}
+            <p>Restart it to bring agents and rooms back. The server's data is kept.</p>
+          </MessageBox>
         );
       case 'stop-failed':
         return (

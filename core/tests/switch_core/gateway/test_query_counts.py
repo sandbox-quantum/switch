@@ -352,6 +352,40 @@ class TestRoomList:
         assert all(r["connected_user_count"] == 1 for r in bridged)
         assert all(not r["name"].startswith("Slack: ") for r in bridged)
 
+    async def test_marks_switch_console_chats_and_no_other_room(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+        adapter: _Adapter,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        async with session_factory() as session:
+            for name, metadata in (
+                ("chat", {"chat_operation_id": "op-1"}),
+                ("private-room", None),
+            ):
+                session.add(
+                    Room(
+                        transport_room_id=f"!{name}:test",
+                        name=name,
+                        description="d",
+                        channel_type="channel_private",
+                        metadata_=metadata,
+                    )
+                )
+            await session.commit()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, user) as client:
+            _, rooms = await _count(client, statement_counts, "/rooms")
+
+        assert {r["name"]: r["is_console_chat"] for r in rooms} == {
+            "chat": True,
+            "private-room": False,
+        }
+
     async def test_the_platform_is_asked_for_deeplinks_holding_no_connection(
         self,
         session_factory: async_sessionmaker[AsyncSession],

@@ -15,10 +15,17 @@ import {
 } from '@shared/core/chats/chats';
 import { foldTurnEndNotices, placeTurns, type TurnActivity } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
+import {
+  agentTargets,
+  type MentionPerson,
+  mentionSegments,
+  mentionTokens,
+  personTargets,
+  tokensFromSpans,
+} from '../mentions';
 import { hiddenStopRows } from '../stop-rows';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
-import { chatsStore } from '../stores/chats';
 import { ChatMarkdown } from '../ui/chat-markdown';
 import { FailedIcon, WorkLogRow } from '../ui/work-log';
 import {
@@ -29,6 +36,7 @@ import {
   turnShown,
 } from './chat-activity-block';
 import { ChatAttachments } from './chat-attachments';
+import { MentionMark } from './mention-mark';
 
 /** Messages more than this far apart start a new dated group. */
 const GROUP_GAP_MS = 30 * 60 * 1000;
@@ -54,12 +62,50 @@ function isBridged(message: ChatMessage): boolean {
   return message.source !== 'console' && message.source !== 'switch';
 }
 
-function sourceLabel(message: ChatMessage): string {
-  if (!isBridged(message)) return message.sender.name;
-  return `${message.sender.name} · from ${bridgePlatformLabel(message.source)}`;
+/** A person's initials disc: people have no picture in Switch. */
+/** `body` with each `@name` or `@alias` of a chat agent drawn as a badge. */
+function MentionText({
+  message,
+  agents,
+  people,
+  serverId,
+}: {
+  message: ChatMessage;
+  agents: ChatAgent[];
+  people: MentionPerson[];
+  serverId: string;
+}) {
+  const body = message.body;
+  // The server's stretches say whom each mention names; older messages are read from the text,
+  // the people the message names first, so one sharing an agent's name reads as the person.
+  const tokens = message.mentions.length
+    ? tokensFromSpans(body, message.mentions)
+    : mentionTokens(body, [
+        ...personTargets(people.filter((person) => message.namedUserIds.includes(person.userId))),
+        ...agentTargets(agents),
+      ]);
+  return mentionSegments(body, tokens).map((segment, index) =>
+    segment.token ? (
+      <MentionMark
+        key={index}
+        kind={segment.token.kind}
+        // People are never tinted: their badge stays grey.
+        agent={
+          segment.token.kind === 'agent'
+            ? (agents.find((agent) => agent.id === segment.token?.id) ?? null)
+            : null
+        }
+        serverId={serverId}
+        className="text-foreground"
+      >
+        {segment.text}
+      </MentionMark>
+    ) : (
+      <Fragment key={index}>{segment.text}</Fragment>
+    )
+  );
 }
 
-/** Another person's initials disc: people have no picture in Switch. */
 function PersonAvatar({ name }: { name: string }) {
   return (
     <span
@@ -109,6 +155,8 @@ type Props = {
   serverId: string;
   timeline: ChatTimeline;
   agents: ChatAgent[];
+  /** The chat's people, to name the ones a message mentions. */
+  people: MentionPerson[];
   activities: AgentActivity[];
   onReply: (message: ChatMessage) => void;
 };
@@ -122,6 +170,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   serverId,
   timeline,
   agents,
+  people,
   activities,
   onReply,
 }: Props) {
@@ -152,7 +201,6 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   );
   const agentOf = (agentId: string | null) => agents.find((agent) => agent.id === agentId) ?? null;
   const find = (messageId: string) => timeline.byId(messageId);
-  const myUserId = chatsStore.userId;
   const turnAgents = new Map(
     [...turnsByMessage].map(([messageId, list]) => [
       messageId,
@@ -186,7 +234,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   return (
     <div className="flex flex-col">
       {timeline.hasMore && (
-        <div className={cn('flex justify-center', spacing())}>
+        <div className={cn('flex justify-center [overflow-anchor:none]', spacing())}>
           <Button
             size="sm"
             variant="ghost"
@@ -216,7 +264,6 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const chip = threadChip(message, find);
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
-        const mine = message.sender.userId !== null && message.sender.userId === myUserId;
         const agentLabel = {
           name: agent ? chatAgentLabel(agent) : message.sender.name,
           iconUrl: agent?.iconUrl ?? null,
@@ -268,28 +315,6 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   tone={ended.outcome === 'completed' ? 'passive' : 'failed'}
                 />
               </AgentRow>
-            ) : message.sender.kind === 'human' && mine ? (
-              <div
-                id={messageAnchorId(message.messageId)}
-                className={cn('group/row flex flex-col items-end gap-1', spacing())}
-              >
-                {chip && <ThreadChipButton chip={chip} />}
-                <div className="flex max-w-[85%] items-start gap-1">
-                  <ReplyButton onReply={() => onReply(message)} />
-                  <div className="min-w-0 rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
-                    {message.body}
-                  </div>
-                </div>
-                <ChatAttachments
-                  serverId={serverId}
-                  roomId={timeline.roomId}
-                  attachments={message.attachments}
-                />
-                <span className="text-xs text-foreground-passive">
-                  {sourceLabel(message)}
-                  {turns.some(({ turn }) => turn.status === 'queued') && ' · queued'}
-                </span>
-              </div>
             ) : message.sender.kind === 'human' ? (
               <div
                 id={messageAnchorId(message.messageId)}
@@ -297,7 +322,6 @@ export const ChatTimelineView = observer(function ChatTimelineView({
               >
                 <PersonAvatar name={message.sender.name} />
                 <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
-                  {chip && <ThreadChipButton chip={chip} />}
                   <span className="flex items-center gap-1.5 text-xs">
                     <span className="font-medium text-foreground-muted">{message.sender.name}</span>
                     {isBridged(message) && (
@@ -306,8 +330,14 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                       </span>
                     )}
                   </span>
+                  {chip && <ThreadChipButton chip={chip} />}
                   <div className="min-w-0 rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
-                    {message.body}
+                    <MentionText
+                      message={message}
+                      agents={agents}
+                      people={people}
+                      serverId={serverId}
+                    />
                   </div>
                   <ChatAttachments
                     serverId={serverId}
@@ -422,7 +452,7 @@ const PendingBubble = observer(function PendingBubble({
     : null;
   return (
     <div
-      className={cn('flex flex-col items-end gap-1', className)}
+      className={cn('flex flex-col items-start gap-1 pl-10', className)}
       aria-busy={send.state === 'sending'}
     >
       {chip && <ThreadChipButton chip={chip} />}
@@ -430,7 +460,7 @@ const PendingBubble = observer(function PendingBubble({
         {send.body}
       </div>
       {send.files.length > 0 && (
-        <ul className="flex flex-col items-end gap-0.5 text-xs">
+        <ul className="flex flex-col items-start gap-0.5 text-xs">
           {send.files.map((file) => (
             <li
               key={file.id}
@@ -450,8 +480,8 @@ const PendingBubble = observer(function PendingBubble({
           <Loader2 className="size-3 animate-spin" /> Sending…
         </span>
       ) : (
-        <div role="alert" className="flex max-w-[85%] flex-col items-end gap-1 text-xs">
-          <span className="text-right text-foreground-destructive">
+        <div role="alert" className="flex max-w-[85%] flex-col items-start gap-1 text-xs">
+          <span className="text-foreground-destructive">
             {send.state === 'conflict'
               ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
               : send.uncertain

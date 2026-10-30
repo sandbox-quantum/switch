@@ -182,3 +182,139 @@ async def test_stop_follows_the_running_turn_not_one_queued_behind_it(
 
     running = await _control(chats, chats.alice, running_room, agent, "k2", "interrupt")
     assert running.status_code == 202, running.text
+
+
+async def _retry(
+    chats: _Harness,
+    user: User,
+    room_id: str,
+    agent: Agent,
+    request_id: str,
+    message_id: str | None,
+) -> httpx.Response:
+    return await chats.client.post(
+        f"/chats/{room_id}/controls",
+        json={
+            "requestId": request_id,
+            "agentId": agent.id,
+            "command": "retry",
+            **({"messageId": message_id} if message_id is not None else {}),
+        },
+        headers=chats.as_user(user),
+    )
+
+
+async def _turn_for(
+    chats: _Harness, agent: Agent, room_id: str, message_id: str
+) -> None:
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    async with chats.factory() as session:
+        await session.execute(
+            update(AgentSessionActivityItem)
+            .where(AgentSessionActivityItem.turn_id == "t1")
+            .values(message_id=message_id, status="error")
+        )
+        await session.commit()
+
+
+async def test_a_retry_names_a_message_the_agent_took_a_turn_for(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    sent = await chats.send(chats.alice, room_id, "m1", "@helper plan a picnic")
+    message_id = sent.json()["messages"][0]["messageId"]
+
+    unnamed = await _retry(chats, chats.alice, room_id, agent, "k0", None)
+    assert unnamed.status_code == 422
+    assert _code(unnamed) == "INVALID_CONTROL"
+    elsewhere = await _retry(chats, chats.alice, room_id, agent, "k1", "$nowhere")
+    assert elsewhere.status_code == 404
+    assert _code(elsewhere) == "MESSAGE_NOT_FOUND"
+    untried = await _retry(chats, chats.alice, room_id, agent, "k2", message_id)
+    assert untried.status_code == 409
+    assert _code(untried) == "NOTHING_TO_RETRY"
+    assert await _commands(chats, room_id) == []
+
+    await _turn_for(chats, agent, room_id, message_id)
+    accepted = await _retry(chats, chats.alice, room_id, agent, "k3", message_id)
+    assert accepted.status_code == 202, accepted.text
+    [row] = await _commands(chats, room_id)
+    assert row.content["command"] == "retry"
+    assert row.content["args"] == f"@helper {message_id}"
+    # Nothing the person wrote is posted again.
+    humans = [
+        m
+        for m in await chats.message_rows(room_id)
+        if m.body == "@helper plan a picnic"
+    ]
+    assert len(humans) == 1
+
+
+async def test_a_retry_is_for_the_sender_or_a_manager_and_posts_once(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    sent = await chats.send(chats.alice, room_id, "m1", "@helper plan a picnic")
+    message_id = sent.json()["messages"][0]["messageId"]
+    await _turn_for(chats, agent, room_id, message_id)
+
+    not_theirs = await _retry(chats, chats.bob, room_id, agent, "k1", message_id)
+    assert not_theirs.status_code in (403,)
+    assert _code(not_theirs) in ("NOT_YOUR_MESSAGE", "AGENT_NOT_ALLOWED")
+
+    # A double press, or a reconnect replaying the request: one command.
+    first = await _retry(chats, chats.alice, room_id, agent, "k2", message_id)
+    again = await _retry(chats, chats.alice, room_id, agent, "k2", message_id)
+    assert first.status_code == again.status_code == 202
+    assert first.json() == again.json()
+    assert len(await _commands(chats, room_id)) == 1
+    other = await _retry(chats, chats.alice, room_id, agent, "k2", "$other")
+    assert other.status_code == 409
+    assert _code(other) == "REQUEST_REUSED"
+
+
+async def test_only_a_failed_or_interrupted_turn_is_retried(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    sent = await chats.send(chats.alice, room_id, "m1", "@helper plan a picnic")
+    message_id = sent.json()["messages"][0]["messageId"]
+    await _turn_for(chats, agent, room_id, message_id)
+    for index, status in enumerate(("running", "completed")):
+        async with chats.factory() as session:
+            await session.execute(
+                update(AgentSessionActivityItem)
+                .where(AgentSessionActivityItem.turn_id == "t1")
+                .values(status=status)
+            )
+            await session.commit()
+        refused = await _retry(
+            chats, chats.alice, room_id, agent, f"k{index}", message_id
+        )
+        assert refused.status_code == 409
+        assert _code(refused) == "NOTHING_TO_RETRY"
+    assert await _commands(chats, room_id) == []
+
+
+async def test_a_member_is_offered_the_visible_commands_and_no_hidden_one(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    outsider = await chats.client.get(
+        f"/chats/{room_id}/commands", headers=chats.as_user(chats.bob)
+    )
+    assert outsider.status_code == 403
+
+    listed = await chats.client.get(
+        f"/chats/{room_id}/commands", headers=chats.as_user(chats.alice)
+    )
+    assert listed.status_code == 200, listed.text
+    commands = {each["name"]: each for each in listed.json()["commands"]}
+    assert "retry" not in commands
+    assert commands["reset"]["usage"] == "!reset <target>"
+    assert commands["help"]["usage"] == "!help"
+    assert all(each["description"] for each in commands.values())

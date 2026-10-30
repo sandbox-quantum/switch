@@ -626,6 +626,10 @@ class PlatformAdapter(ABC):
         # Set by set_channel_migration_handler. Called with (old_id, new_id)
         # when the platform reissues a channel's id.
         self._on_channel_migrated: Callable[[str, str], Awaitable[None]] | None = None
+        # Set by set_channel_rename_handler. Called with (channel_id, old_name,
+        # new_name) when the platform reports a change to a channel (the two
+        # names are the same when it was not a rename).
+        self._on_channel_named: Callable[[str, str, str], Awaitable[None]] | None = None
         # Set by set_channel_type_handler. Called with (channel_id, type) when
         # the adapter learns a channel's type from the platform.
         self._on_channel_type_learned: (
@@ -1898,6 +1902,14 @@ class PlatformAdapter(ABC):
         The symptom without it is one-way traffic — sends still arrive, because
         the platform forwards them, while nothing inbound matches a room again."""
         self._on_channel_migrated = handler
+
+    def set_channel_rename_handler(
+        self, handler: Callable[[str, str, str], Awaitable[None]]
+    ) -> None:
+        """Install the callback an adapter calls with a channel's name when the
+        platform reports a change to it, so the room linked to it can follow.
+        Used by the adapters whose platform reports it (Discord)."""
+        self._on_channel_named = handler
 
     def set_channel_type_handler(
         self, handler: Callable[[str, ChannelType], Awaitable[None]]

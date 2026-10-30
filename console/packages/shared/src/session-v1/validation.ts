@@ -25,6 +25,7 @@ const capabilities = z.object({
   compact: z.boolean(),
   modelChange: z.boolean(),
   attachmentMimeTypes: z.array(z.string()),
+  retry: z.boolean().optional(),
 });
 export const attachmentSchema = z.strictObject({
   attachmentId: id,
@@ -243,6 +244,7 @@ export const commandSchema: z.ZodType<Command> = z.strictObject({
     z.strictObject({ type: z.literal('session.stop') }),
     z.strictObject({ type: z.literal('session.reset') }),
     z.strictObject({ type: z.literal('session.compact') }),
+    z.strictObject({ type: z.literal('message.retry'), messageId: id }),
     z.strictObject({
       type: z.literal('session.model.set'),
       modelId: id,

@@ -19,7 +19,7 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
-from switch_core.authz import Principal, require_manage
+from switch_core.authz import Principal, administers_tenant, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -34,8 +34,10 @@ from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
+    Agent,
     CollaborationBridge,
     ExternalUser,
+    Message,
     Room,
     User,
     require_tenant_id,
@@ -43,6 +45,11 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.db.stores.external_user_store import NoSuchLink
+from switch_core.db.stores.session_activity_store import (
+    RETRYABLE_TURN_STATUSES,
+    AgentSessionActivityStore,
+)
+from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.transport import RoomRef
@@ -52,7 +59,6 @@ if TYPE_CHECKING:
 
     from switch_core.clients.command_consumer import CommandConsumer
     from switch_core.clients.room_meta import RoomMeta
-    from switch_core.db.models import Agent
     from switch_core.delivery.recipient import AgentRecipient
 
 logger = logging.getLogger(__name__)
@@ -268,6 +274,12 @@ _CONTROL_BODIES: dict[str, dict[str, str]] = {
 }
 
 
+def retry_target(args: str) -> str | None:
+    """The message a `!retry @agent <message id>` names: the token after the target."""
+    tokens = args.split()
+    return tokens[1] if len(tokens) > 1 and tokens[0].startswith("@") else None
+
+
 def room_control_frame(
     *,
     agent_id: str,
@@ -279,15 +291,25 @@ def room_control_frame(
     thread_id: str | None,
     surface: str,
     requester_name: str,
+    target_message_id: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
     Beside the contract command it names who asked, as the room knows them,
     so the session can answer that person once the control has applied.
     `session_id` is None for a controller-backed agent, whose controller
-    picks the session from the room.
+    picks the session from the room. `target_message_id` is the message a
+    `retry` runs again, and None for every other control.
     """
-    body = _CONTROL_BODIES.get(action)
+    if action == "retry":
+        if target_message_id is None:
+            raise ValueError("a retry names the message to run again")
+        body: dict[str, str] | None = {
+            "type": "message.retry",
+            "messageId": target_message_id,
+        }
+    else:
+        body = _CONTROL_BODIES.get(action)
     if body is None:
         raise ValueError(f"{action} is not a room control")
     frame = _control_frame(
@@ -446,6 +468,68 @@ class ControlDecision:
     answer: Callable[[], Awaitable[None]] | None
 
 
+async def _retry_refusal(
+    client: AgentRecipient,
+    room_id: str,
+    event: CommandEvent,
+    agent: Agent,
+    message_id: str,
+) -> str | None:
+    """Why a typed `!retry` may not run, or None: the rules Switch Console's
+    Retry is held to (`ChatService._require_retryable`), whichever way the
+    command arrives. The message must be in this room, sent by whoever asks
+    or asked by someone who manages the room, and the agent's turn for it
+    must have ended in an error or been interrupted."""
+    async with client.session_factory() as session:
+        message = (
+            await session.execute(
+                select(Message).where(
+                    Message.room_id == room_id, Message.transport_event_id == message_id
+                )
+            )
+        ).scalar_one_or_none()
+        if message is None:
+            return "Could not retry: that message is not in this room."
+        if message.sender_id != event.user_id and not await _manages_room(
+            client, session, room_id, event.user_id
+        ):
+            return (
+                "Could not retry: only whoever sent that message, or someone who "
+                "manages the room, can retry it."
+            )
+        turn = await AgentSessionActivityStore().turn_for_message(
+            session, agent.id, room_id, message_id
+        )
+    if turn is None or turn.status not in RETRYABLE_TURN_STATUSES:
+        return (
+            f"Could not retry: {agent.name} has no failed or interrupted turn for "
+            "that message."
+        )
+    return None
+
+
+async def _manages_room(
+    client: AgentRecipient, session: AsyncSession, room_id: str, sender: str
+) -> bool:
+    """Whether the Switch user behind `sender` owns the room or administers
+    the tenant."""
+    principal = await client._addressing.resolve_sender(session, sender)
+    if principal is None or principal.kind != "user":
+        return False
+    room = await session.get(Room, room_id)
+    users = UserStore()
+    for user_id in principal.user_ids:
+        if room is not None and room.owner_id == user_id:
+            return True
+        user = await session.get(User, user_id)
+        role = await users.tenant_role(session, client.tenant_id, user_id)
+        if user is not None and administers_tenant(
+            is_operator=user.role == "admin", tenant_role=role
+        ):
+            return True
+    return False
+
+
 async def _decide_control_command(
     client: AgentRecipient,
     room: RoomRef,
@@ -489,6 +573,15 @@ async def _decide_control_command(
             return say(
                 f"Could not send {command}: the room command has no stable message ID."
             )
+        target = retry_target(event.args) if command == "retry" else None
+        if command == "retry":
+            if target is None:
+                return say(
+                    "Could not retry: the command names no message to run again."
+                )
+            refusal = await _retry_refusal(client, meta.room_id, event, agent, target)
+            if refusal is not None:
+                return say(refusal)
         frame = room_control_frame(
             agent_id=agent.id,
             session_id=placed,
@@ -499,6 +592,7 @@ async def _decide_control_command(
             thread_id=event.thread_id,
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
+            target_message_id=target,
         )
 
         async def relay() -> None:
@@ -643,6 +737,31 @@ _INTERRUPT = ControlTexts(
         "Switch Console, so my operator needs to interrupt it manually."
     ),
 )
+
+
+_RETRY = ControlTexts(
+    ack="Trying that message again.",
+    unsupported="I can't try a message again — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to try again."
+    ),
+    no_session=(
+        "I can't try a message again from here — my session wasn't started "
+        "from Switch Console."
+    ),
+)
+
+
+async def _cmd_retry(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    await _dispatch_control_command(client, room, event, "retry", _RETRY)
+
+
+async def _decide_retry(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "retry", _RETRY)
 
 
 async def _cmd_reset(
@@ -2102,6 +2221,19 @@ COMMANDS: list[Command] = [
         ),
         addressed=_addressed_by_required_first_mention,
         admin_check=_check_control_target,
+    ),
+    Command(
+        "retry",
+        "Run again the turn a message started, which ended without an answer. "
+        "Sent by Switch Console's Retry: `!retry @agent-name <message id>`.",
+        _cmd_retry,
+        decide=_decide_retry,
+        args_spec=(
+            CommandArg("target", "Agent name, alias, or role to retry", required=True),
+            CommandArg("message", "The id of the message to run again", required=True),
+        ),
+        addressed=_addressed_by_required_first_mention,
+        hidden=True,
     ),
     Command(
         "interrupt-all-agents",

@@ -107,6 +107,8 @@ export class HostedSession {
   private readonly finished = new Set<string>();
   private readonly roomReplies = new Set<string>();
   private readonly postedTurns = new Set<string>();
+  /** Turns whose posts to the room were refused, with the last refusal. */
+  private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
@@ -138,6 +140,8 @@ export class HostedSession {
     private readonly events: Journal<ServerEvent>,
     private readonly inbox: Journal<RecordEntry>
   ) {
+    // Every host from this one on runs `message.retry`; one built before says nothing, meaning no.
+    config.session.capabilities.retry = true;
     const snapshot: Snapshot = {
       contractVersion: 1,
       throughSequence: 0,
@@ -578,6 +582,11 @@ export class HostedSession {
     if (this.activeTurn) this.postedTurns.add(this.activeTurn);
   }
 
+  /** A post to the room in the running turn was refused: why, the last one kept. */
+  agentPostFailed(reason: string): void {
+    if (this.activeTurn) this.failedPosts.set(this.activeTurn, reason);
+  }
+
   /** Where the command that started `turnId` came from, if a command started it. */
   originOf(turnId: string): Origin | null {
     return this.commands.get(turnId)?.origin ?? null;
@@ -693,10 +702,39 @@ export class HostedSession {
     return result;
   }
 
+  /**
+   * A retry as the room message it repeats: the message's turn run again, under
+   * the retry's own id and tied to the same message, so nothing is posted twice
+   * and the new turn shows where the failed one did. Only a turn that ended
+   * without an answer is run again.
+   */
+  private retried(command: Command): Command {
+    if (command.body.type !== 'message.retry') return command;
+    const { messageId } = command.body;
+    const original = [...this.commands.values()]
+      .filter(
+        (each) =>
+          each.body.type === 'message.send' &&
+          each.origin.messageId === messageId &&
+          each.commandId !== command.commandId
+      )
+      .at(-1);
+    if (!original || original.body.type !== 'message.send')
+      throw new Error('NOT_FOUND: this session has no turn for that message to run again.');
+    const turn = this.snapshot().turns.find((each) => each.turnId === original.commandId);
+    if (turn?.status !== 'error' && turn?.status !== 'interrupted')
+      throw new Error('SESSION_BUSY: only a turn that ended without an answer can run again.');
+    return { ...command, origin: original.origin, body: original.body };
+  }
+
   private async accept(command: Command): Promise<Snapshot['commandStatuses'][number]> {
     if (this.shuttingDown) throw new Error('HOST_STOPPING');
     const { session } = this.snapshot();
     if (command.sessionId !== session.sessionId) throw new Error('NOT_FOUND: session mismatch.');
+    // Asked again (a double press, a reconnect replaying it): the answer it already has.
+    if (command.body.type === 'message.retry' && this.commands.has(command.commandId))
+      return this.status(command.commandId);
+    command = this.retried(command);
     const previous = this.commands.get(command.commandId);
     if (previous) {
       if (!isDeepStrictEqual(previous, command)) throw new Error('IDEMPOTENCY_CONFLICT');
@@ -1058,13 +1096,18 @@ export class HostedSession {
     detail: string | null
   ): Promise<void> {
     const posted = this.postedTurns.delete(turnId);
+    const failedPost = this.failedPosts.get(turnId) ?? null;
+    this.failedPosts.delete(turnId);
     const reply = this.config.replyToRoom;
     if (!reply || posted || this.shuttingDown || this.stopped || this.resetting) return;
     if (this.roomReplies.has(turnId)) return;
     const origin = this.commands.get(turnId)?.origin;
     if (!origin?.roomId || !origin.messageId) return;
     const roomId = origin.roomId;
-    const body = unpostedReply(outcome, detail);
+    // A turn whose every post was refused ended in silence as far as the room
+    // could tell: it is told that, once, unless the turn failed and says so already.
+    const body =
+      unpostedReply(outcome, detail) ?? (failedPost !== null ? postFailedReply(failedPost) : null);
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
@@ -1352,6 +1395,11 @@ export function unpostedReply(outcome: TurnOutcome, detail: string | null): stri
   if (outcome !== 'error') return null;
   const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
   return `I finished without replying. The turn failed${reason}`;
+}
+
+/** What the host posts for a turn whose every post to the room was refused. */
+export function postFailedReply(reason: string): string {
+  return `I couldn't post my reply here: ${cap(reason.trim(), 1000)}`;
 }
 
 function cap(text: string, limit: number): string {

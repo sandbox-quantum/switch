@@ -1,7 +1,9 @@
 import { observer } from 'mobx-react-lite';
 import { useCallback, useState } from 'react';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useReadableRoomsInWorkspace } from '@renderer/features/switch-servers/use-listed-rooms';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
 import { ChosenRoomTile, RoomPickerRow } from '@renderer/lib/components/room-picker';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -16,6 +18,7 @@ import {
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
+import { addAgentToRoom, mayAddToRoom } from './add-agent-to-room';
 
 type Props = BaseModalProps<void> & {
   workspaceId: string;
@@ -59,8 +62,12 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
   // Every room the server let us see, not only the ones this user created: an
   // agent's usefulness is mostly in rooms someone else set up, and a picker that
   // omitted them made those rooms unreachable from here entirely.
+  // Only rooms the user may add to: a chat they manage, a room they own or administer.
   const candidates: Candidate[] = useReadableRoomsInWorkspace(workspaceId)
     .filter((room) => !alreadyIn.has(room.id) && !selected.some((s) => s.id === room.id))
+    .filter((room) =>
+      mayAddToRoom(chatsStore.chat(room.id), switchRoomsStore.canDeleteRoom(workspaceId, room))
+    )
     .map((room) => ({ id: room.id, name: room.name, bridgeType: room.bridgeType }));
   const nothingToAdd = candidates.length === 0 && selected.length === 0;
 
@@ -70,13 +77,18 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
     setCloseGuard(true);
     setError(null);
     try {
+      const serverId = workspacesStore.serverIdFor(workspaceId);
+      if (!serverId) throw new Error('This workspace’s server is not known yet.');
       for (const room of selected) {
-        await rpc.workspaces.addRoomAgents({
-          workspaceId,
-          roomId: room.id,
-          agentIds: [switchAgentId],
-          direction: 'room_to_agents',
-        });
+        await addAgentToRoom(
+          {
+            chat: (roomId) => chatsStore.chat(roomId),
+            addChatAgent: (input) => rpc.chats.addAgent(input),
+            addRoomAgents: (input) => rpc.workspaces.addRoomAgents(input),
+            chatChanged: (id, chat) => chatsStore.add(id, chat),
+          },
+          { serverId, workspaceId, roomId: room.id, agentId: switchAgentId }
+        );
       }
       await Promise.all([
         switchRoomsStore.fetchAgentRooms(workspaceId, switchAgentId, { force: true }),
@@ -140,7 +152,7 @@ export const AddAgentToRoomsModal = observer(function AddAgentToRoomsModal({
             )}
             {nothingToAdd && !membershipUnknown && (
               <p className="mt-1 text-xs text-foreground-muted">
-                {agentName} is already in every room you can see in this workspace.
+                {agentName} is already in every room you can add it to in this workspace.
               </p>
             )}
           </Field>

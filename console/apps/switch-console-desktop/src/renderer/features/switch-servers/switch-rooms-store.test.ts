@@ -51,6 +51,8 @@ function room(id: string, ownerId: string | null, overrides: Partial<RemoteRoomS
     bridgeType: null,
     externalChannelUrl: null,
     ownerId,
+    viewerIsMember: false,
+    isConsoleChat: false,
     archived: false,
     createdAt: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -109,6 +111,76 @@ describe('listed rooms', () => {
     await store.loadRoomNames();
 
     expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual(['mine']);
+  });
+
+  it('also lists the rooms the signed-in user is a member of, not every room', async () => {
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a'
+        ? [
+            room('mine', 'user-of-srv-a'),
+            room('invited', 'user-of-someone-else', { viewerIsMember: true }),
+            room('someone-elses', 'user-of-someone-else'),
+          ]
+        : []
+    );
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([
+      'invited',
+      'mine',
+    ]);
+  });
+
+  it('lists the rooms the user’s agents are in, and drops one when that membership ends', async () => {
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a'
+        ? [room('agents-room', 'user-of-someone-else'), room('unrelated', 'user-of-someone-else')]
+        : []
+    );
+    const membership = {
+      roomId: 'agents-room',
+      roomName: 'agents-room',
+      archived: false,
+      status: 'active',
+      roomRole: null,
+    };
+    listAgentRooms.mockResolvedValueOnce([membership]);
+
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    await store.ensureMembershipsFor([{ workspaceId: 'ws-a', switchAgentId: 'buddy' }]);
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([
+      'agents-room',
+    ]);
+
+    listAgentRooms.mockResolvedValueOnce([]);
+    await store.refreshRoomState();
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([]);
+  });
+
+  it('drops an agent’s rooms once it is no longer tracked, as after a delete or account switch', async () => {
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a' ? [room('agents-room', 'user-of-someone-else')] : []
+    );
+    listAgentRooms.mockResolvedValue([
+      {
+        roomId: 'agents-room',
+        roomName: 'agents-room',
+        archived: false,
+        status: 'active',
+        roomRole: null,
+      },
+    ]);
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    await store.ensureMembershipsFor([{ workspaceId: 'ws-a', switchAgentId: 'gone' }]);
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([
+      'agents-room',
+    ]);
+    await store.ensureMembershipsFor([]);
+    expect(store.listedRoomsInActiveScope.map((r: { id: string }) => r.id)).toEqual([]);
   });
 
   it('shows only the active workspace’s rooms, not every connected one’s', async () => {
