@@ -44,9 +44,15 @@ auth:
       label: user.email
     help_url: https://developer.zendesk.com/api-reference/introduction/security-and-auth/
 # Zendesk is retiring API tokens: accounts created on or after 2026-07-28
-# cannot use them, no account can create a new one from 2026-10-27, and every
-# remaining token is deactivated on 2027-04-30
+# cannot use them, no account can create a new one from 2026-10-27, a token
+# left unused for 30 days is deactivated, and every remaining token is
+# deactivated on 2027-04-30
 # (https://developer.zendesk.com/documentation/authentication/oauth-migration/).
-# A token does not expire before then, and only Zendesk can revoke it.
+# Until then a token does not expire, and only Zendesk can revoke it.
+#
+# There is no read-only level. A Zendesk API token has no scopes: it acts as
+# the user it belongs to, with that user's role, so a read-only connection
+# needs a user whose Zendesk role cannot change tickets. A key entry names no
+# `access` for the same reason.
 token: { kind: pass_through, max_lifetime: null }
 tools: { mode: pass_through }
