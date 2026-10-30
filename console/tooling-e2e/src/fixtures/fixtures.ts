@@ -79,6 +79,45 @@ export class Fixtures {
     return agent;
   }
 
+  /**
+   * An agent named for `role`, owned by a plain member of the harness admin's
+   * workspace rather than by the admin. Every agent and room `agent` and
+   * `internalRoom` make belong to the admin, who is an operator and owns every
+   * harness room, so a check that their agents are refused passes the
+   * operator's or the owner's bypass instead.
+   *
+   * Makes a user, and users cannot be deleted, so only on a stack that is
+   * thrown away after the run. The agent is removed.
+   */
+  async plainMemberAgent(role: string): Promise<RegisteredAgent> {
+    if (this.env.environment !== "ephemeral") {
+      throw new Error(
+        `plainMemberAgent leaves a user behind, which cannot be deleted; only on ephemeral, not ${this.env.environment}.`,
+      );
+    }
+    const email = `${this.names.name(`${role}-owner`)}@e2e.invalid`;
+    const password = `e2e-${this.names.runId}-${crypto.randomUUID()}`;
+    await this.switchClient.createUser({
+      name: "E2E plain member",
+      email,
+      password,
+      role: "user",
+    });
+    const owner = this.switchClient.as(email, password);
+    const name = this.names.name(role);
+    const agent = await owner.registerAgentAsUser({
+      name,
+      description: `Switch end-to-end harness agent, a plain member's (run ${this.names.runId}). Safe to delete.`,
+    });
+    const cleanup = {
+      label: `agent ${name} (${agent.id})`,
+      run: () => this.switchClient.deleteAgent(agent),
+    };
+    this.cleanups.push(cleanup);
+    this.agentCleanups.set(agent.id, cleanup);
+    return agent;
+  }
+
   /** A room with no platform channel: agents only, no bridge involved. */
   async internalRoom(
     role: string,
