@@ -5,7 +5,9 @@ platform operator's access, which every workspace it enters records."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -13,9 +15,15 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.audit import AuditAction, OrganizationAuditAction
 from switch_core.db.models import (
+    Agent,
+    ApiKey,
     AuditEvent,
+    Client,
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
@@ -24,9 +32,13 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.organizations import router as organizations_router
@@ -77,6 +89,24 @@ def _app(
     )
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
         _FakeClientLifecycle(session_factory)
+    )
+    app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
+    app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
+    app.dependency_overrides[gw_deps.get_protocol] = lambda: SimpleNamespace(
+        api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
+    )
+    app.state.sign_in_flows = SignInFlows(session_factory, _KEYRING)
+    app.state.service_broker = ServiceBroker(
+        session_factory=session_factory,
+        keyring=_KEYRING,
+        catalog=CATALOG,
+        adapters={},
+        disabled={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=False,
+        public_url=None,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
@@ -993,3 +1023,239 @@ class TestMarkingTheOperatorsOrganizationChanges:
         )
         assert event.details is not None
         assert "platform_access" not in event.details
+
+
+async def _second_workspace(
+    session_factory: async_sessionmaker[AsyncSession], beside: str
+) -> str:
+    """Another workspace in `beside`'s organization, with nobody in it."""
+    tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        first = await session.get(Tenant, beside)
+        assert first is not None
+        session.add(
+            Tenant(
+                id=tenant_id,
+                slug=tenant_id,
+                name="Acme Two",
+                organization_id=first.organization_id,
+            )
+        )
+        await session.commit()
+    return tenant_id
+
+
+async def _personal_key(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str, user_id: str
+) -> str:
+    key_hash = uuid.uuid4().hex
+    async with session_factory() as session:
+        session.add(
+            ApiKey(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                key_hash=key_hash,
+                encrypted_key="unused-in-tests",
+                label="test-key",
+                type="registration",
+            )
+        )
+        await session.commit()
+    return key_hash
+
+
+async def _agent(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str, owner_id: str
+) -> None:
+    async with session_factory() as session:
+        client = Client(
+            tenant_id=tenant_id,
+            transport_user_id=f"@bot-{uuid.uuid4().hex[:8]}:test",
+            display_name="bot",
+            type="agent",
+        )
+        session.add(client)
+        await session.flush()
+        key = ApiKey(
+            tenant_id=tenant_id,
+            user_id=owner_id,
+            key_hash=uuid.uuid4().hex,
+            encrypted_key="unused-in-tests",
+            label="agent-key",
+            type="agent",
+        )
+        session.add(key)
+        await session.flush()
+        session.add(
+            Agent(
+                tenant_id=tenant_id,
+                name=f"agent-{uuid.uuid4().hex[:6]}",
+                description="test agent",
+                agent_type="other",
+                connector_type="claude-code",
+                integration_profile={},
+                client_id=client.id,
+                api_key_id=key.id,
+                owner_id=owner_id,
+            )
+        )
+        await session.commit()
+
+
+async def _key_exists(
+    session_factory: async_sessionmaker[AsyncSession], key_hash: str
+) -> bool:
+    async with session_factory() as session:
+        return (
+            await session.scalar(select(ApiKey.id).where(ApiKey.key_hash == key_hash))
+        ) is not None
+
+
+class TestLosingOrgAdmin:
+    """An `org_admin` stands in every workspace of the organization, including
+    those they hold no membership row in. Demoting or removing them takes
+    away what they made there, as removing a workspace member does."""
+
+    async def test_demoting_removes_their_keys_where_they_had_no_membership(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        first = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+        )
+        second = await _second_workspace(session_factory, first)
+        kept = await _personal_key(session_factory, first, bob)
+        dropped = await _personal_key(session_factory, second, bob)
+
+        async with _client(_app(session_factory), ada, first) as client:
+            response = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "member"}
+            )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["role"] == "member"
+        assert await _key_exists(session_factory, kept)
+        assert not await _key_exists(session_factory, dropped)
+        ended = await _events(
+            session_factory, second, AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED
+        )
+        assert [
+            (event.target_id, (event.details or {}).get("api_keys_deleted"))
+            for event in ended
+        ] == [(bob, 1)]
+
+    async def test_demoting_is_refused_while_they_own_agents_there(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        first = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+        )
+        second = await _second_workspace(session_factory, first)
+        await _agent(session_factory, second, bob)
+        key = await _personal_key(session_factory, second, bob)
+
+        async with _client(_app(session_factory), ada, first) as client:
+            response = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "member"}
+            )
+
+        assert response.status_code == 409
+        assert "Acme Two" in response.json()["detail"]
+        assert await _key_exists(session_factory, key)
+        organization_id = await _organization_id(session_factory, first)
+        async with session_factory() as session:
+            member = await session.get(OrganizationMember, (organization_id, bob))
+            assert member is not None and member.role == "org_admin"
+
+    async def test_removing_removes_their_keys_where_they_had_no_membership(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        first = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        second = await _second_workspace(session_factory, first)
+        organization_id = await _organization_id(session_factory, first)
+        assert organization_id is not None
+        async with session_factory() as session:
+            session.add(
+                User(id=bob, name=bob, email=f"{bob}@example.invalid", role="user")
+            )
+            await session.flush()
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id, user_id=bob, role="org_admin"
+                )
+            )
+            await session.commit()
+        dropped = await _personal_key(session_factory, second, bob)
+
+        async with _client(_app(session_factory), ada, first) as client:
+            response = await client.delete(f"/organizations/current/members/{bob}")
+
+        assert response.status_code == 200, response.text
+        assert not await _key_exists(session_factory, dropped)
+
+    async def test_two_admins_demoting_each_other_at_once_leave_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("owner", "org_admin")}
+        )
+        app = _app(session_factory)
+
+        async with (
+            _client(app, ada, tenant_id) as as_ada,
+            _client(app, bob, tenant_id) as as_bob,
+        ):
+            responses = await asyncio.gather(
+                as_ada.patch(
+                    f"/organizations/current/members/{bob}", json={"role": "member"}
+                ),
+                as_bob.patch(
+                    f"/organizations/current/members/{ada}", json={"role": "member"}
+                ),
+            )
+
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        organization_id = await _organization_id(session_factory, tenant_id)
+        assert organization_id is not None
+        async with session_factory() as session:
+            admins = await OrganizationStore().count_admins(session, organization_id)
+        assert admins == 1
+
+    async def test_two_admins_removing_each_other_at_once_leave_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob, cy = _name("ada"), _name("bob"), _name("cy")
+        first = await _workspace(session_factory, {cy: ("owner", "member")})
+        organization_id = await _organization_id(session_factory, first)
+        assert organization_id is not None
+        async with session_factory() as session:
+            for name in (ada, bob):
+                session.add(
+                    User(
+                        id=name, name=name, email=f"{name}@example.invalid", role="user"
+                    )
+                )
+                await session.flush()
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=name, role="org_admin"
+                    )
+                )
+            await session.commit()
+        app = _app(session_factory)
+
+        async with (
+            _client(app, ada, first) as as_ada,
+            _client(app, bob, first) as as_bob,
+        ):
+            responses = await asyncio.gather(
+                as_ada.delete(f"/organizations/current/members/{bob}"),
+                as_bob.delete(f"/organizations/current/members/{ada}"),
+            )
+
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        async with session_factory() as session:
+            assert await OrganizationStore().count_admins(session, organization_id) == 1

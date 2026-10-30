@@ -48,6 +48,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.document_store import DocumentStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
@@ -130,6 +131,7 @@ def _deletion(
         rooms=rooms,  # type: ignore[arg-type]
         sign_in_flows=_SignInFlows(),  # type: ignore[arg-type]
         users=UserStore(),
+        organizations=OrganizationStore(),
         agents=AgentStore(),
         api_keys=ApiKeyStore(),
         templates=TemplateStore(),

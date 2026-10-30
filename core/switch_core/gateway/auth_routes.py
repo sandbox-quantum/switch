@@ -9,7 +9,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.accounts.deletion import AccountDeletion, Workspace
+from switch_core.accounts.deletion import (
+    AccountDeletion,
+    AccountDeletionRefused,
+    Workspace,
+)
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
@@ -25,6 +29,7 @@ from switch_core.db.stores.hosted_machine_store import (
     claim_conflict,
     owner_stopped,
 )
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import (
@@ -48,6 +53,7 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_external_user_store,
+    get_organization_store,
     get_protocol,
     get_resource_service,
     get_room_service,
@@ -415,6 +421,7 @@ async def delete_my_account(
     ],
     caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     template_store: Annotated[TemplateStore, Depends(get_template_store)],
@@ -454,6 +461,7 @@ async def delete_my_account(
         rooms=room_service,
         sign_in_flows=request.app.state.sign_in_flows,
         users=user_store,
+        organizations=organization_store,
         agents=agent_store,
         api_keys=api_key_store,
         templates=template_store,
@@ -462,7 +470,10 @@ async def delete_my_account(
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
-    await deletion.delete(session, user, workspaces)
+    try:
+        await deletion.delete(session, user, workspaces)
+    except AccountDeletionRefused as refused:
+        raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 

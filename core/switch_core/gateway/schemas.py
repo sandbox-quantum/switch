@@ -1210,6 +1210,9 @@ class OrganizationMemberDetail(BaseModel):
     email: str
     role: str
     created_at: str
+    # What could not be revoked at a vendor when a demotion took away what
+    # they held in workspaces they were in only as `org_admin`.
+    warning: str | None
 
 
 class OrganizationMemberUpdateRequest(BaseModel):

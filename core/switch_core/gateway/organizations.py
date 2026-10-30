@@ -20,16 +20,26 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, NamedTuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
+from switch_core.connections.broker import (
+    ServiceBroker,
+    ServiceError,
+    get_service_broker,
+)
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.audit import (
+    AuditAction,
     OrganizationAuditAction,
     list_organization_audit_events,
+    record_audit_event,
     record_organization_audit_event,
 )
 from switch_core.db.models import (
@@ -39,6 +49,9 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
@@ -49,11 +62,15 @@ from switch_core.gateway.auth import (
     organization_workspaces_bindable_by,
     organizations_bindable_by,
     workspaces_in_organization,
+    workspaces_reached_through_organization,
 )
 from switch_core.gateway.dependencies import (
+    get_agent_store,
+    get_api_key_store,
     get_client_lifecycle,
     get_config,
     get_organization_store,
+    get_protocol,
     get_session,
     get_session_factory,
     get_system_session,
@@ -70,6 +87,11 @@ from switch_core.gateway.schemas import (
     TenantMembershipResponse,
     WorkspaceCreateRequest,
 )
+from switch_core.gateway.service_connections import service_refusal
+from switch_core.gateway.workspace_access import (
+    finish_revocation,
+    revoke_workspace_access,
+)
 from switch_core.gateway.workspace_creation import (
     create_organization_for,
     create_workspace,
@@ -79,13 +101,16 @@ from switch_core.gateway.workspace_creation import (
 router = APIRouter()
 
 
-def _member_detail(user: User, member: OrganizationMember) -> OrganizationMemberDetail:
+def _member_detail(
+    user: User, member: OrganizationMember, warning: str | None
+) -> OrganizationMemberDetail:
     return OrganizationMemberDetail(
         user_id=user.id,
         name=user.name,
         email=user.email,
         role=member.role,
         created_at=str(member.created_at),
+        warning=warning,
     )
 
 
@@ -373,23 +398,107 @@ async def list_organization_members(
     )
     organization_id = access.organization_id
     members = await organization_store.list_members(session, organization_id)
-    return [_member_detail(member_user, member) for member_user, member in members]
+    return [
+        _member_detail(member_user, member, None) for member_user, member in members
+    ]
 
 
-@router.patch("/organizations/current/members/{user_id}")
+async def _end_access_through_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: str,
+    organization_id: str,
+    actor_id: str,
+    reason: str,
+    agent_store: AgentStore,
+    api_key_store: ApiKeyStore,
+    broker: ServiceBroker,
+    protocol: AgentCore,
+    sign_in_flows: SignInFlows,
+) -> str | None:
+    """Take away what `user_id` holds in the workspaces they stand in only as
+    the organization's `org_admin`, before they stop being one.
+
+    Refuses, 409 naming the workspaces, while they own agents in any of them,
+    as removing a workspace member does. Otherwise removes their keys,
+    service connections and sign-ins under way in each, one workspace at a
+    time, each recorded in that workspace's audit log. Raises `ServiceError`
+    when a connection is busy. Returns a warning naming what could not be
+    revoked at a vendor, or None.
+    """
+    reached = await workspaces_reached_through_organization(
+        session_factory, user_id, organization_id
+    )
+    with_agents = []
+    for tenant in reached:
+        async with tenant_session(session_factory, tenant.id) as session:
+            if await agent_store.get_by_owner(session, user_id):
+                with_agents.append(tenant.name)
+    if with_agents:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "They own agents in workspaces they're in only as an "
+                "organization admin. Delete those agents first: "
+                f"{', '.join(sorted(with_agents))}"
+            ),
+        )
+    warnings = []
+    for tenant in reached:
+        async with tenant_session(session_factory, tenant.id) as session:
+            revoked = await revoke_workspace_access(
+                session,
+                user_id,
+                api_key_store=api_key_store,
+                broker=broker,
+                sign_in_flows=sign_in_flows,
+            )
+            await record_audit_event(
+                session,
+                tenant_id=tenant.id,
+                actor_user_id=actor_id,
+                action=AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
+                target_type="user",
+                target_id=user_id,
+                details={
+                    "reason": reason,
+                    "api_keys_deleted": len(revoked.key_hashes),
+                    "service_connections_deleted": len(revoked.removed_services),
+                },
+            )
+            await session.commit()
+            warning = await finish_revocation(
+                session, user_id, revoked, protocol=protocol, broker=broker
+            )
+        if warning:
+            warnings.append(f"{tenant.name}: {warning}")
+    return " ".join(warnings) or None
+
+
+@router.patch("/organizations/current/members/{user_id}", response_model=None)
 async def update_organization_member_role(
+    request: Request,
     user_id: str,
     req: OrganizationMemberUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
-) -> OrganizationMemberDetail:
+) -> OrganizationMemberDetail | JSONResponse:
     """Make a member `org_admin`, or an `org_admin` a `member`. `org_admin` only,
     the one role that grants `org_admin`.
 
     Refuses to demote the last `org_admin`: nobody else could grant the role
-    again. Recorded in the organization's audit log.
+    again. Demoting someone first takes away what they hold in the workspaces
+    they were in only as `org_admin` (`_end_access_through_organization`).
+    Recorded in the organization's audit log.
     """
     access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -398,14 +507,47 @@ async def update_organization_member_role(
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
+    demoting = (
+        member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE
+    )
+    last_admin = HTTPException(
+        status_code=409, detail="Cannot demote the last organization admin"
+    )
     if (
-        member.role == ORGANIZATION_ADMIN_ROLE
-        and req.role != ORGANIZATION_ADMIN_ROLE
+        demoting
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
-        raise HTTPException(
-            status_code=409, detail="Cannot demote the last organization admin"
+        raise last_admin
+
+    warning = None
+    if demoting:
+        # Let go of the request's connection while each workspace is worked on
+        # on a session of its own.
+        await session.commit()
+        try:
+            warning = await _end_access_through_organization(
+                session_factory,
+                user_id=user_id,
+                organization_id=organization_id,
+                actor_id=user.id,
+                reason="demoted",
+                agent_store=agent_store,
+                api_key_store=api_key_store,
+                broker=broker,
+                protocol=protocol,
+                sign_in_flows=request.app.state.sign_in_flows,
+            )
+        except ServiceError as error:
+            return service_refusal(error)
+        if await organization_store.lock_admins(session, organization_id) <= 1:
+            raise last_admin
+        member = await session.get(
+            OrganizationMember, (organization_id, user_id), populate_existing=True
         )
+        if member is None:
+            raise HTTPException(
+                status_code=404, detail="Not a member of this organization"
+            )
 
     if member.role != req.role:
         await record_organization_audit_event(
@@ -426,11 +568,12 @@ async def update_organization_member_role(
 
     target = await user_store.get(session, user_id)
     assert target is not None
-    return _member_detail(target, member)
+    return _member_detail(target, member, warning)
 
 
-@router.delete("/organizations/current/members/{user_id}")
+@router.delete("/organizations/current/members/{user_id}", response_model=None)
 async def remove_organization_member(
+    request: Request,
     user_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
@@ -438,15 +581,21 @@ async def remove_organization_member(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
-) -> dict[str, bool]:
+) -> dict | JSONResponse:
     """Remove someone from the organization. `org_admin` only.
 
     Refuses while they still belong to any of its workspaces, naming them:
     leaving a workspace revokes their keys and connections there and refuses
     while they own agents, and that is the workspace member route's to do,
-    one workspace at a time. Refuses the last `org_admin` too. Recorded in
-    the organization's audit log.
+    one workspace at a time. An `org_admin` also stands in workspaces they
+    hold no membership row in, and what they hold there is taken away first
+    (`_end_access_through_organization`). Refuses the last `org_admin` too.
+    Recorded in the organization's audit log.
     """
     access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -455,14 +604,15 @@ async def remove_organization_member(
     member = await session.get(OrganizationMember, (organization_id, user_id))
     if member is None:
         raise HTTPException(status_code=404, detail="Not a member of this organization")
+    last_admin = HTTPException(
+        status_code=409, detail="Cannot remove the last organization admin"
+    )
+    was_admin = member.role == ORGANIZATION_ADMIN_ROLE
     if (
-        member.role == ORGANIZATION_ADMIN_ROLE
+        was_admin
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
-        raise HTTPException(
-            status_code=409, detail="Cannot remove the last organization admin"
-        )
-    role = member.role
+        raise last_admin
     # Let go of the request's connection while each workspace is read on a
     # session of its own.
     await session.commit()
@@ -477,6 +627,33 @@ async def remove_organization_member(
             detail=(f"Remove them from the organization's workspaces first: {names}"),
         )
 
+    warning = None
+    if was_admin:
+        try:
+            warning = await _end_access_through_organization(
+                session_factory,
+                user_id=user_id,
+                organization_id=organization_id,
+                actor_id=user.id,
+                reason="removed",
+                agent_store=agent_store,
+                api_key_store=api_key_store,
+                broker=broker,
+                protocol=protocol,
+                sign_in_flows=request.app.state.sign_in_flows,
+            )
+        except ServiceError as error:
+            return service_refusal(error)
+
+    admins = await organization_store.lock_admins(session, organization_id)
+    member = await session.get(
+        OrganizationMember, (organization_id, user_id), populate_existing=True
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="Not a member of this organization")
+    if member.role == ORGANIZATION_ADMIN_ROLE and admins <= 1:
+        raise last_admin
+    role = member.role
     await session.execute(
         delete(OrganizationMember).where(
             OrganizationMember.organization_id == organization_id,
@@ -493,4 +670,4 @@ async def remove_organization_member(
         details={"role": role, **_made_from(access)},
     )
     await session.commit()
-    return {"ok": True}
+    return {"ok": True, "warning": warning}

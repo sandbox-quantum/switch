@@ -1230,6 +1230,10 @@ export interface OrganizationMember {
   email: string;
   role: OrganizationRole;
   created_at: string;
+  /** After a demotion: sign-ins Switch could not revoke at a vendor while
+   * taking away what they held in workspaces they were in only as an
+   * organization admin. */
+  warning: string | null;
 }
 
 export interface OrganizationAuditEvent {
@@ -1290,8 +1294,14 @@ export async function updateOrganizationRole(
   );
 }
 
-export async function removeOrganizationMember(userId: string): Promise<void> {
-  await jsonRequest(`/organizations/current/members/${encodeURIComponent(userId)}`, "DELETE");
+/** The warning names sign-ins that could not be revoked at a vendor, if any. */
+export async function removeOrganizationMember(
+  userId: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest<{ warning: string | null }>(
+    `/organizations/current/members/${encodeURIComponent(userId)}`,
+    "DELETE",
+  );
 }
 
 export const ORGANIZATION_AUDIT_PAGE = 50;

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -115,6 +115,37 @@ describe("OrganizationPage", () => {
     expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
     expect(await screen.findByText("Organization role changed")).toBeTruthy();
     expect(screen.getByText("Olga (platform operator)")).toBeTruthy();
+  });
+
+  it("shows what a demotion could not revoke at a vendor", async () => {
+    signedInAs(session("org_admin", true));
+    const bob = {
+      user_id: "u2",
+      name: "Bob",
+      email: "bob@example.com",
+      role: "org_admin",
+      created_at: "2026-01-01",
+      warning: null,
+    };
+    answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [bob],
+      "GET /organizations/current/audit-events": [],
+      "PATCH /organizations/current/members/u2": {
+        ...bob,
+        role: "member",
+        warning: "Acme Two: GitHub could not be revoked.",
+      },
+    });
+
+    render(<OrganizationPage />);
+
+    const row = await screen.findByTestId("row-u2");
+    fireEvent.mouseDown(within(row).getByRole("combobox"));
+    fireEvent.click(await screen.findByRole("option", { name: "Member" }));
+
+    expect(await screen.findByText("Acme Two: GitHub could not be revoked.")).toBeTruthy();
   });
 
   it("shows a member only the workspaces, with nothing to add", async () => {

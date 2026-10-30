@@ -118,6 +118,10 @@ from switch_core.gateway.schemas import (
     UsageTotalResponse,
 )
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.gateway.workspace_access import (
+    finish_revocation,
+    revoke_workspace_access,
+)
 from switch_core.gateway.workspace_creation import create_organization_for
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -1384,14 +1388,15 @@ async def remove_member(
         )
 
     try:
-        removed_services = await broker.remove_connections(session, user_id)
+        revoked = await revoke_workspace_access(
+            session,
+            user_id,
+            api_key_store=api_key_store,
+            broker=broker,
+            sign_in_flows=request.app.state.sign_in_flows,
+        )
     except ServiceError as error:
         return service_refusal(error)
-
-    keys = await api_key_store.get_by_user(session, user_id)
-    revoked_key_hashes = [key.key_hash for key in keys]
-    for key in keys:
-        await api_key_store.delete(session, key.id)
 
     await record_audit_event(
         session,
@@ -1402,17 +1407,14 @@ async def remove_member(
         target_id=user_id,
         details={
             "role": membership.role,
-            "api_keys_deleted": len(keys),
-            "service_connections_deleted": len(removed_services),
+            "api_keys_deleted": len(revoked.key_hashes),
+            "service_connections_deleted": len(revoked.removed_services),
         },
     )
-    # Sign-ins the member had under way in this workspace go with them.
-    await request.app.state.sign_in_flows.discard_for_user(session, user_id, None)
     await session.delete(membership)
     await session.commit()
 
-    for key_hash in revoked_key_hashes:
-        protocol.api_key_cache.invalidate(key_hash)
-
-    warning = await broker.finish_disconnect(session, user_id, removed_services)
+    warning = await finish_revocation(
+        session, user_id, revoked, protocol=protocol, broker=broker
+    )
     return {"ok": True, "warning": warning}

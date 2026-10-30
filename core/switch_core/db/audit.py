@@ -34,6 +34,9 @@ class AuditAction(StrEnum):
     MEMBER_JOINED_BY_DOMAIN = "member.joined_by_domain"
     MEMBER_ROLE_CHANGED = "member.role_changed"
     MEMBER_REMOVED = "member.removed"
+    # Someone in the workspace only as their organization's `org_admin` stopped
+    # being one, and their keys and connections here were removed.
+    ORGANIZATION_ADMIN_ACCESS_ENDED = "organization_admin.access_ended"
     # The platform operator acting in a workspace on the operator flag alone:
     # entering it, and every write while there.
     PLATFORM_ACCESS = "platform.access"

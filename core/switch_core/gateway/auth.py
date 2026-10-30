@@ -389,6 +389,29 @@ async def workspaces_in_organization(
     return found
 
 
+async def workspaces_reached_through_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    organization_id: str,
+) -> list[Tenant]:
+    """The workspaces of `organization_id` that `user_id` stands in only as
+    its `org_admin`, holding no membership row there: what they lose on being
+    demoted or removed. Each read on its own short session, as
+    `workspaces_in_organization` does."""
+    members_of = set(await tenants_of_user(session_factory, user_id))
+    found: list[Tenant] = []
+    for tenant_id in await tenants_administered_through_organization(
+        session_factory, user_id
+    ):
+        if tenant_id in members_of:
+            continue
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None and tenant.organization_id == organization_id:
+            found.append(tenant)
+    return found
+
+
 async def organizations_bindable_by(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,

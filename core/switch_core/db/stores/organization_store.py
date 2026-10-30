@@ -89,3 +89,22 @@ class OrganizationStore:
                 )
             )
         ).scalar_one()
+
+    async def lock_admins(self, session: AsyncSession, organization_id: str) -> int:
+        """Lock `organization_id`'s `org_admin` rows to the end of the caller's
+        transaction, and count them.
+
+        Every write that could leave the organization without an `org_admin`
+        counts through this and writes in the same transaction. Two admins
+        demoting each other at once then queue on the same rows, and the
+        second counts after the first has committed.
+        """
+        rows = await session.execute(
+            select(OrganizationMember.user_id)
+            .where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.role == "org_admin",
+            )
+            .with_for_update()
+        )
+        return len(rows.all())

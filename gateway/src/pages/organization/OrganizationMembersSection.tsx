@@ -33,7 +33,9 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
 /** Everyone in the organization, across its workspaces, and their role in it.
  * The server refuses demoting or removing the last organization admin, and
  * removing someone still in one of its workspaces, naming them; its message
- * is shown as is. */
+ * is shown as is. Demoting or removing an admin also takes away their keys and
+ * connections in workspaces they were in only as an admin; what could not be
+ * revoked at a vendor comes back as a warning, shown too. */
 export default function OrganizationMembersSection({
   selfId,
   asOperator,
@@ -46,15 +48,18 @@ export default function OrganizationMembersSection({
   const load = useCallback(() => fetchOrganizationMembers(), []);
   const { data: members, error, errorStatus, loading, refetch } = useLoad(load);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionWarning, setActionWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const { refresh } = useAuth();
 
   const act = useCallback(
-    async (userId: string, action: () => Promise<unknown>) => {
+    async (userId: string, action: () => Promise<{ warning: string | null }>) => {
       setBusy(userId);
       setActionError(null);
+      setActionWarning(null);
       try {
-        await action();
+        const { warning } = await action();
+        setActionWarning(warning);
         await refetch();
         // Your own role decides what this page offers you.
         if (userId === selfId) await refresh();
@@ -160,6 +165,11 @@ export default function OrganizationMembersSection({
       {actionError && (
         <Alert severity="error" onClose={() => setActionError(null)}>
           {actionError}
+        </Alert>
+      )}
+      {actionWarning && (
+        <Alert severity="warning" onClose={() => setActionWarning(null)}>
+          {actionWarning}
         </Alert>
       )}
       {loading ? (
