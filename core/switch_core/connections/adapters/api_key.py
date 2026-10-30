@@ -195,6 +195,10 @@ class ApiKeyAdapter:
         """What the connection stores: the token a session host is handed."""
         return ConnectionSecret({"access_token": key_token(self._sign_in, values)})
 
+    def choices(self, values: dict[str, str]) -> dict[str, str]:
+        """The fields picked from a list (a site), which are not secret."""
+        return {f.name: values[f.name] for f in self._sign_in.fields if not f.secret}
+
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:

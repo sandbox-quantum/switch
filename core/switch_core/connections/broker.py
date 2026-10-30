@@ -62,9 +62,13 @@ from switch_core.connections.app_credentials import (
 from switch_core.connections.loader import (
     TOKEN_PLACEHOLDER,
     AccessLevel,
+    ChoicesError,
     Connection,
     ConnectionDefinition,
+    ConnectionMethod,
+    McpServer,
     TokenPolicy,
+    render,
 )
 from switch_core.connections.organization_apps import (
     OrganizationApp,
@@ -378,11 +382,13 @@ KEY_CONSENT: AccessLevel = "write"
 
 @dataclass(frozen=True)
 class CheckedKey:
-    """A pasted key its vendor accepted: whose it is, and what is stored."""
+    """A pasted key its vendor accepted: whose it is, what is stored, and
+    the fields picked from a list beside it (a site)."""
 
     account_id: str
     label: str
     secret: ConnectionSecret = field(repr=False)
+    choices: dict[str, str]
 
 
 def _passes_through(entry: Connection) -> bool:
@@ -402,6 +408,15 @@ def _issued_to_agents(entry: Connection) -> bool:
     """Whether `entry`'s credential expires, so it may be handed to an agent."""
     token = entry.definition.token
     return token is not None and token.issued_to_agents
+
+
+def _server_url(entry: Connection, server: McpServer, choices: dict[str, str]) -> str:
+    """Where the session calls `server`: an OAuth entry's URL rendered with
+    the connection's choices. An api_key entry's stays a template, which the
+    session host fills from the fields its token carries."""
+    if entry.definition.adapter != "oauth":
+        return server.url
+    return render(server.url, choices)
 
 
 def _never_expires(name: str) -> str:
@@ -1403,6 +1418,9 @@ class ServiceBroker:
             skill = entry.skill_files.get("SKILL.md")
             mcp = entry.definition.mcp
             cli = entry.definition.cli
+            choices = await self._connection_choices(session, grant)
+            if choices is None:
+                continue
             grants.append(
                 {
                     "service": grant.service,
@@ -1427,7 +1445,7 @@ class ServiceBroker:
                         else [
                             {
                                 "name": server.name,
-                                "url": server.url,
+                                "url": _server_url(entry, server, choices),
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }
@@ -1440,6 +1458,34 @@ class ServiceBroker:
                 }
             )
         return grants
+
+    async def _connection_choices(
+        self, session: AsyncSession, grant: ServiceGrant
+    ) -> dict[str, str] | None:
+        """What the grant's connection was made with, for an entry that asks
+        before its sign-in (a vendor's site); none for one that does not.
+        None leaves the grant out: its connection is gone, as the grant is
+        about to be, or was made for a choice this server no longer offers,
+        whose sign-in is refused at its next refresh."""
+        oauth = self._catalog[grant.service].definition.auth.oauth
+        if oauth is None or not oauth.choices:
+            return {}
+        connection = await self._store.get_connection(
+            session, grant.owner_id, grant.service
+        )
+        if connection is None:
+            return None
+        try:
+            return oauth.checked_choices(dict(connection.choices))
+        except ChoicesError as error:
+            logger.warning(
+                "%s grant left out of agent %s's grants: its connection was made "
+                "for a choice this server no longer offers (%s)",
+                grant.service,
+                grant.agent_id,
+                error,
+            )
+            return None
 
     async def standing(self, session: AsyncSession, service: str) -> ServiceStanding:
         """What `service` is in the bound workspace, read once, so every
@@ -1882,11 +1928,14 @@ class ServiceBroker:
         external_identity: str,
         secret: ConnectionSecret,
         oauth_client_id: str | None,
+        method: ConnectionMethod,
+        choices: dict[str, str],
     ) -> str | None:
         """Link the person's account, or re-link it in place.
 
         `oauth_client_id` is the vendor client the sign-in went through, None
-        for a key.
+        for a key. `method` is how the person connected, and `choices` what
+        they picked from the entry's lists to connect (a site).
 
         Re-linking keeps the grants (a different account then fails them with
         `grant_account_changed`) and revokes what was issued on the old
@@ -1953,6 +2002,8 @@ class ServiceBroker:
             external_identity=external_identity,
             encrypted_secret=self._keyring.encrypt(json.dumps(secret.values)),
             oauth_client_id=oauth_client_id,
+            method=method,
+            choices=choices,
         )
         await record_audit_event(
             session,
@@ -2086,6 +2137,7 @@ class ServiceBroker:
             account_id=identity.account_id,
             label=identity.label,
             secret=adapter.secret(values),
+            choices=adapter.choices(values),
         )
 
     async def connection_access_token(

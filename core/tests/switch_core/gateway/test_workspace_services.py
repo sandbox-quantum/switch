@@ -118,6 +118,8 @@ async def _granted(
             external_identity=owner.name,
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         grant = await STORE.save_grant(
             session,
