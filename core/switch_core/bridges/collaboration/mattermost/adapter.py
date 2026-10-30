@@ -2991,10 +2991,12 @@ class MattermostAdapter(PlatformAdapter):
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
         # Switch hears Mattermost through its agents' bots, so a channel with no
-        # agent in it is one where nothing reaches Switch.
+        # agent in it is one where nothing reaches Switch, and someone linking
+        # while they set up a server may have no agent anywhere yet.
         return (
             f"Post `!link-account {code}` from that account in a Mattermost "
-            "channel that has a Switch agent in it."
+            "channel that has a Switch agent in it. No agent yet? Add one first, "
+            "then get a new code here."
         )
 
     async def account_id_for_session(self, token: str) -> str:
