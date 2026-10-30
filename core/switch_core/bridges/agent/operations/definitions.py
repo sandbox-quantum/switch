@@ -54,7 +54,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.types import IntegrationProfile
+from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFeedback
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.stores.template_store import TemplateStore
@@ -770,7 +770,7 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, str]:
+async def post_message(body: str, thread_id: str | None = None) -> dict[str, Any]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
@@ -786,14 +786,26 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, str
             thread_id.
 
     Returns:
-        {"event_id": "<event id>"} for the posted message.
+        {"event_id": "<event id>"} for the posted message, plus `trust` when
+        Switch Trust changed or flagged it (see below). No `trust` means the
+        room received exactly what you sent.
+
+        `trust` is {"outcome": "redacted", "delivered": "<the text the room
+        received>"} when parts of your message were redacted before anyone
+        saw them; {"outcome": "alerted", "note": "<the notice>"} when it was
+        delivered as sent but flagged, with that notice posted under it; or
+        {"outcome": "errored", "note": "<the notice>"} when it was delivered
+        without being fully checked. `note` is there only when the notice was
+        posted in the room; when it could not be, `note` is absent and
+        `notice_error` says why, and the room was not warned. A blocked
+        message is not delivered at all, and the call fails instead.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
     protocol = get_protocol()
-    event_id = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
-    return {"event_id": event_id}
+    sent = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
+    return _with_trust({"event_id": sent.event_id}, sent.trust)
 
 
 @operation
@@ -856,6 +868,9 @@ async def send_targeted_message(
         (its bridge is down or has no channel for the room, so the message
         never reaches the platform). It says what Switch sent, not what the
         platform confirmed.
+
+        `trust` is present, as for post_message, when Switch Trust changed or
+        flagged the message.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -869,10 +884,21 @@ async def send_targeted_message(
         thread_id=thread_id,
         target_roles=target_roles or [],
     )
-    return {
-        "event_id": result.event_id,
-        "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
-    }
+    return _with_trust(
+        {
+            "event_id": result.event_id,
+            "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
+        },
+        result.trust,
+    )
+
+
+def _with_trust(result: dict[str, Any], trust: TrustFeedback | None) -> dict[str, Any]:
+    """A send's result, with `trust` only when Switch Trust did something:
+    a message it left alone reports nothing about it."""
+    if trust is not None:
+        result["trust"] = trust.to_result()
+    return result
 
 
 # ── Moderation ───────────────────────────────────────────────────────────────

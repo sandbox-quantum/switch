@@ -473,7 +473,7 @@ async def send_message(
 ) -> dict[str, object]:
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
-        event_id = await protocol.send_message(agent.id, req.room_id, req.content)
+        sent = await protocol.send_message(agent.id, req.room_id, req.content)
     except BudgetExceeded as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
     except GuardrailBlockedError as e:
@@ -483,7 +483,10 @@ async def send_message(
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
 
-    return {"ok": True, "event_id": event_id}
+    result: dict[str, object] = {"ok": True, "event_id": sent.event_id}
+    if sent.trust is not None:
+        result["trust"] = sent.trust.to_result()
+    return result
 
 
 @router.get("/{agent_id}/rooms/{room_id}/media", response_model=None)

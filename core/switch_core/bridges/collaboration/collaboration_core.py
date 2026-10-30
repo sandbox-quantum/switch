@@ -1316,10 +1316,53 @@ class CollaborationCore:
     async def _post_trust_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender's platform what Switch Trust did with their message
-        — blocked, redacted, alerted, or errored. Never lets a failed notice
-        take the inbound message down with it — mirrors
-        `AgentCore._post_trust_blocked_notice`."""
+        """Tell the sender, and only the sender, what Switch Trust did with
+        their message: blocked, redacted, flagged, or not fully checked.
+
+        Each of these is about what one person wrote, so it goes to them the
+        way the platform allows (`private_notice_delivery`). Where it has no
+        private route, or the private one fails, the notice is posted in the
+        channel and a warning says everyone there saw it: a sender left not
+        knowing their message was blocked is worse than a notice others can
+        read. In a direct conversation the channel is already private. Never
+        lets a failed notice take the inbound message down with it, which
+        mirrors `AgentCore._post_trust_blocked_notice`."""
+        delivery = self._adapter.private_notice_delivery
+        if msg.channel_type not in ("direct", "lobby"):
+            if delivery == "in_channel":
+                logger.warning(
+                    "%s has no way to reach one person privately: posting the "
+                    "Switch Trust %s notice for %s in channel %s, where "
+                    "everyone in it sees it",
+                    self._adapter.platform_name,
+                    message_type.value,
+                    msg.sender_name,
+                    msg.channel_id,
+                )
+            else:
+                try:
+                    await self._adapter.notify_privately(
+                        channel_id=msg.channel_id,
+                        channel_name=msg.channel_name,
+                        user_id=msg.sender_id,
+                        content=body,
+                        # Where the sender is looking: their thread, or the
+                        # channel itself for a top-level message, since a
+                        # private notice opens no thread anyone would see.
+                        thread_root_id=msg.root_id,
+                    )
+                    return
+                except Exception:
+                    logger.warning(
+                        "Could not send the Switch Trust %s notice to %s by %s: "
+                        "posting it in channel %s instead, where everyone in it "
+                        "sees it",
+                        message_type.value,
+                        msg.sender_name,
+                        delivery,
+                        msg.channel_id,
+                        exc_info=True,
+                    )
         try:
             await self._adapter.admin_message(
                 msg.channel_id,

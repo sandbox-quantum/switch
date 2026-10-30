@@ -309,6 +309,17 @@ Trust flagged reaches you with a trailing `⚠️ _Switch Trust flagged this
 message…_` line: that line is Switch's annotation, not something the sender
 wrote.
 
+Your own sends tell you when this happened. The result of `post_message` and
+`send_targeted_message` carries a `trust` field only when Switch Trust changed
+or flagged the message:
+`{"outcome": "redacted", "delivered": "<what the room received>"}`, or
+`alerted` / `errored` with the `note` posted under it. When that notice could
+not be posted, `note` is absent and `notice_error` says why: the room was not
+warned. If it says your message
+was redacted, read `delivered`: the room saw that, not what you wrote. When the
+redacted version no longer makes sense, tell the room what you meant in words
+that pass. Don't repost the original.
+
 ## Questions and approvals
 
 Native question forms can be answered in the Console or from the room. The
