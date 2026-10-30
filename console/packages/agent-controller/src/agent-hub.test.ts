@@ -298,6 +298,35 @@ describe('placements', () => {
     expect(hub.roomFor(AGENT, 'session-1')).toBe('room-a');
   });
 
+  it('takes a session out of a room the agent has left, and tells its agent host', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a', 'room-b']);
+    const released: { roomId: string; sessionId: string | null }[] = [];
+    const { stream } = watcher({ onRoomReleased: (info) => void released.push(info) });
+    stream.start();
+    await stream.replacePlacements({ 'session-1': 'room-a', 'session-2': 'room-b' });
+
+    hub.setRooms(AGENT, ['room-b']);
+
+    expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
+    expect(hub.roomFor(AGENT, 'session-2')).toBe('room-b');
+    expect(released).toEqual([{ roomId: 'room-a', sessionId: 'session-1' }]);
+  });
+
+  it('leaves a placement in a room Switch has not yet said the agent joined', async () => {
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const released: unknown[] = [];
+    const { stream } = watcher({ onRoomReleased: (info) => void released.push(info) });
+    stream.start();
+    await stream.replacePlacements({ 'session-1': 'room-just-joined' });
+
+    hub.setRooms(AGENT, ['room-a', 'room-other']);
+
+    expect(hub.roomFor(AGENT, 'session-1')).toBe('room-just-joined');
+    expect(released).toEqual([]);
+  });
+
   it('refuses placements from an agent host a newer one replaced, rather than dropping them', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);

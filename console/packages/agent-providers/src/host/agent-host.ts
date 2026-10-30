@@ -8,7 +8,7 @@ import {
   SwitchEventStream,
   type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
-import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
+import { callOperation, type SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -1233,6 +1233,50 @@ export async function runAgentHost(
       }
     }
     if (held.size) await resolveHeld();
+    /**
+     * Takes each session out of a room the agent is no longer in: one deleted,
+     * or that the agent was removed from, while nothing here heard of it.
+     * The placements are kept on disk and stated whole, and an agent
+     * controller refused the whole map for one such room, which left every
+     * session of the agent calling from no room. Compared with what was
+     * placed before asking, so a session placed since is not judged on an
+     * answer older than its placement.
+     */
+    const forgetLeftRooms = async (): Promise<void> => {
+      const placed = placements.snapshot();
+      if (Object.keys(placed).length === 0) return;
+      const listed = await callOperation(
+        {
+          identity,
+          connectionId,
+          selector: {},
+          room: null,
+          mediaDir: join(root, 'media'),
+          cwd: root,
+          deadConnection: (operation) =>
+            `Switch refused ${operation}: this agent's connection (${connectionId}) had lapsed.`,
+        },
+        'list_rooms',
+        { include_archived: true }
+      );
+      const rooms = listed.isError ? null : roomIdsOf(listed.content[0]?.text);
+      if (!rooms) {
+        console.warn(
+          `Could not read this agent's rooms to check its sessions' placements against them: ${listed.content[0]?.text ?? 'no answer'}. They are checked again when the stream reconnects.`
+        );
+        return;
+      }
+      let changed = false;
+      for (const [sessionId, roomId] of Object.entries(placed)) {
+        if (rooms.has(roomId) || placements.roomOf(sessionId) !== roomId) continue;
+        await placements.unplace(sessionId);
+        changed = true;
+        console.warn(
+          `Session ${sessionId} was placed in room ${roomId}, which this agent is no longer in; it no longer attends it.`
+        );
+      }
+      if (changed) publishQuietly();
+    };
     stream = openStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -1250,10 +1294,18 @@ export async function runAgentHost(
       onConnected: () => {
         control.report({ state: 'connected', detail: null });
         publishQuietly();
+        pending = pending.then(() =>
+          forgetLeftRooms().catch((error: unknown) =>
+            console.warn(
+              `Could not check this agent's session placements against its rooms: ${error instanceof Error ? error.message : String(error)}.`
+            )
+          )
+        );
       },
       onDisconnected: ({ error }) => control.report({ state: 'disconnected', detail: error }),
-      // Another connection of this agent took the room: whichever session
-      // attended it here no longer does.
+      // Another connection of this agent took the room, or (from an agent
+      // controller) the agent is no longer in it: whichever session attended
+      // it here no longer does.
       onRoomReleased: async ({ roomId, sessionId }) => {
         pending = pending.then(async () => {
           const lost = await placements.roomLost(roomId);
@@ -1629,4 +1681,17 @@ export async function runAgentHost(
     await releaseOwner(root, ownerPath, owner);
   }
   if (fault) throw fault;
+}
+
+/** The room ids in a `list_rooms` answer, or null when it is not one. */
+export function roomIdsOf(text: string | undefined): Set<string> | null {
+  if (text === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const answer = z.array(z.object({ room_id: z.string() })).safeParse(parsed);
+  return answer.success ? new Set(answer.data.map((room) => room.room_id)) : null;
 }

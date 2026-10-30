@@ -206,7 +206,7 @@ export class AgentHub {
   attach(agentId: string, fromSeq: number, rooms: string[]): void {
     const agent = this.agent(agentId);
     agent.attached = true;
-    agent.rooms = new Set(rooms);
+    this.roomsNow(agent, rooms);
     if (agent.attachedFrom === null) agent.attachedFrom = fromSeq;
     if (agent.head === null) agent.head = fromSeq;
     else if (fromSeq > agent.head) {
@@ -230,7 +230,43 @@ export class AgentHub {
   }
 
   setRooms(agentId: string, rooms: string[]): void {
-    this.agent(agentId).rooms = new Set(rooms);
+    this.roomsNow(this.agent(agentId), rooms);
+  }
+
+  /**
+   * The agent's rooms as Switch now has them. A session placed in a room the
+   * agent has just left (the room was deleted, or the agent removed from it)
+   * loses that placement, and its agent host is told so it forgets it too:
+   * otherwise it keeps stating it, on disk and across restarts. Only a room
+   * that was in the agent's rooms and is no longer is taken this way, so a
+   * placement for a room the agent joined a moment ago, before Switch said so
+   * here, is left alone.
+   */
+  private roomsNow(agent: AgentState, rooms: string[]): void {
+    const previous = agent.rooms;
+    agent.rooms = new Set(rooms);
+    if (!previous) return;
+    const host = agent.host;
+    for (const [sessionId, roomId] of [...agent.placements]) {
+      if (!previous.has(roomId) || agent.rooms.has(roomId)) continue;
+      agent.placements.delete(sessionId);
+      this.deps.onChange();
+      this.deps.log.info('A session’s room is no longer one of its agent’s', {
+        agentId: agent.agentId,
+        sessionId,
+        roomId,
+      });
+      const released = host?.deps.onRoomReleased;
+      if (!released || host.closed) continue;
+      void Promise.resolve(released({ roomId, sessionId })).catch((error: unknown) =>
+        this.deps.log.warn('The agent host did not take a room the agent left', {
+          agentId: agent.agentId,
+          sessionId,
+          roomId,
+          error: errorMessage(error),
+        })
+      );
+    }
   }
 
   /**

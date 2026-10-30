@@ -540,6 +540,19 @@ describe('forwarding to Switch', () => {
     expect(forwarded.headers['x-switch-room-id']).toBe('room-b');
   });
 
+  it('tells an agent host in its own process when the agent leaves a room a session is in', async () => {
+    const released: { roomId: string; sessionId: string | null }[] = [];
+    const agentHost = host({ onRoomReleased: (info) => void released.push(info) });
+    await connected(agentHost);
+    await agentHost.stream.replacePlacements({ 'session-1': 'room-a' });
+
+    hub.setRooms(AGENT, ['room-b']);
+
+    await waitFor(() => released.length === 1, 'the agent host to hear the room was left');
+    expect(released).toEqual([{ roomId: 'room-a', sessionId: 'session-1' }]);
+    expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
+  });
+
   it('refuses placements while the hub is not connected, rather than reporting them taken', async () => {
     const agentHost = host();
     await connected(agentHost);
