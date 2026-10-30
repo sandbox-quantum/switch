@@ -14,6 +14,8 @@ const ACTION_LABELS: Record<string, string> = {
   "organization.workspace_created": "Workspace added",
   "organization.role_changed": "Organization role changed",
   "organization.member_removed": "Member removed",
+  "organization.connector_app_saved": "Connector app saved",
+  "organization.connector_app_removed": "Connector app removed",
 };
 
 const COLUMNS: GridColDef<OrganizationAuditEvent>[] = [

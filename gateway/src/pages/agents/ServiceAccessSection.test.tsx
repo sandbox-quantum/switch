@@ -181,6 +181,7 @@ describe("ServiceAccessSection", () => {
     connectable: true,
     unavailable_reason: null,
     server_setup_needed: false,
+    app_source: "server",
     status,
     pass_through: true,
     token_lifetime: 3600,

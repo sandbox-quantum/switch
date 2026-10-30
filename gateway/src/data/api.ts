@@ -2313,6 +2313,8 @@ export interface ServiceConnection {
   unavailable_reason: string | null;
   /** Whether it waits on the server's operator setting up its app under Connectors. */
   server_setup_needed: boolean;
+  /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
+  app_source: "organization" | "server";
   status: "not_connected" | "active" | "needs_reauthorization" | "error";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
@@ -2446,6 +2448,9 @@ export interface ConnectorApp {
   workspaces: number;
   /** Connections made through an app this server no longer uses. */
   stale_connections: number;
+  /** An organization's page only: whether the server has an app its
+   * workspaces use while the organization saves none of its own. */
+  server_app?: boolean;
 }
 
 /** The server's connector apps; a service that needs no app of the operator's is not listed. */
@@ -2492,8 +2497,17 @@ export class ConnectorAppRefusal extends ApiError {
 export const CONNECTORS_NOT_ENABLED =
   "Connectors are not enabled on this server. An operator turns them on by adding service_connections to FEATURE_FLAGS_ENABLED.";
 
-export async function fetchConnectorApps(): Promise<ConnectorApps> {
-  return jsonRequest<ConnectorApps>("/connector-apps", "GET");
+/** Whose apps a page manages: the server's, its operator's alone, or the
+ * current workspace's organization's, its org admins'. */
+export type ConnectorAppScope = "server" | "organization";
+
+const CONNECTOR_APPS_PATH: Record<ConnectorAppScope, string> = {
+  server: "/connector-apps",
+  organization: "/organizations/current/connector-apps",
+};
+
+export async function fetchConnectorApps(scope: ConnectorAppScope): Promise<ConnectorApps> {
+  return jsonRequest<ConnectorApps>(CONNECTOR_APPS_PATH[scope], "GET");
 }
 
 /** A saved app, and what the vendor said when Switch checked it; none from an older server. */
@@ -2503,10 +2517,11 @@ export interface SavedConnectorApp {
 }
 
 export async function saveConnectorApp(
+  scope: ConnectorAppScope,
   service: string,
   input: SaveConnectorAppInput,
 ): Promise<SavedConnectorApp> {
-  const res = await fetch(`${BASE}/connector-apps/${service}`, {
+  const res = await fetch(`${BASE}${CONNECTOR_APPS_PATH[scope]}/${service}`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -2530,19 +2545,27 @@ export async function importConnectorApp(service: string): Promise<ConnectorApp>
 }
 
 export async function checkConnectorApp(
+  scope: ConnectorAppScope,
   service: string,
 ): Promise<{ ok: boolean; checks: ConnectorAppCheck[] }> {
-  return jsonRequest(`/connector-apps/${service}/check`, "POST");
+  return jsonRequest(`${CONNECTOR_APPS_PATH[scope]}/${service}/check`, "POST");
 }
 
 export async function fetchConnectorAppImpact(
+  scope: ConnectorAppScope,
   service: string,
   clientId: string,
 ): Promise<ConnectorAppImpact> {
   const params = new URLSearchParams({ client_id: clientId });
-  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}/impact?${params}`, "GET");
+  return jsonRequest<ConnectorAppImpact>(
+    `${CONNECTOR_APPS_PATH[scope]}/${service}/impact?${params}`,
+    "GET",
+  );
 }
 
-export async function removeConnectorApp(service: string): Promise<ConnectorAppImpact> {
-  return jsonRequest<ConnectorAppImpact>(`/connector-apps/${service}`, "DELETE");
+export async function removeConnectorApp(
+  scope: ConnectorAppScope,
+  service: string,
+): Promise<ConnectorAppImpact> {
+  return jsonRequest<ConnectorAppImpact>(`${CONNECTOR_APPS_PATH[scope]}/${service}`, "DELETE");
 }

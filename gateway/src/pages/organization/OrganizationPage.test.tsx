@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { app } from "../connector-apps/testFixtures";
 import OrganizationPage from "./OrganizationPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -115,6 +116,74 @@ describe("OrganizationPage", () => {
     expect(screen.getByRole("heading", { name: "Members" })).toBeTruthy();
     expect(await screen.findByText("Organization role changed")).toBeTruthy();
     expect(screen.getByText("Olga (platform operator)")).toBeTruthy();
+  });
+
+  it("shows an organization admin its connector apps, and changes them as its own", async () => {
+    signedInAs(session("org_admin", true));
+    const fetchMock = answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/connector-apps": {
+        public_url: "https://switch.example.test",
+        apps: [
+          app({ server_app: true }),
+          app({
+            slug: "airtable",
+            name: "Airtable",
+            source: "none",
+            client_id: null,
+            saved_client_id: null,
+            secrets: { client_secret: { set: false, last4: null } },
+            connected_members: 0,
+            workspaces: 0,
+            server_app: true,
+          }),
+        ],
+      },
+      "POST /organizations/current/connector-apps/google-workspace/check": { ok: true, checks: [] },
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Your workspaces use the server's Airtable client. Add your organization's own to use that instead.",
+      ),
+    ).toBeTruthy();
+    const google = screen.getByTestId("connector-app-google-workspace");
+    fireEvent.click(within(google).getByRole("button", { name: "Check it works" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/gateway/organizations/current/connector-apps/google-workspace/check",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+
+  it("shows no connectors where the server keeps them to itself", async () => {
+    signedInAs(session("org_admin", true));
+    const fetchMock = answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/gateway/organizations/current/connector-apps",
+        expect.anything(),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("progressbar")).toBeNull());
+    expect(screen.queryByRole("heading", { name: "Connectors" })).toBeNull();
+    expect(screen.queryByText(/unmocked/)).toBeNull();
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {
