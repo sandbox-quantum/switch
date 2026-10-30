@@ -212,9 +212,7 @@ version of their own to them without also giving them a release of their own.
   rather than once its card has posted. A card is redrawn as soon as Slack
   closes its stream, instead of showing still-running steps as failed until
   the next change. A turn whose first draw Slack throttles keeps its card
-  rather than posting a second one. A turn that has reported nothing for an
-  hour (usually one whose agent session died without ending it) is left as it
-  was last drawn, rather than redrawn for its clock and again on every restart.
+  rather than posting a second one.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room

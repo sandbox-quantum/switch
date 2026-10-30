@@ -34,10 +34,6 @@ of room for the message does not hold it back — and a platform that says a
 turn is stuck in a message of its own gets one, cleared again once it no
 longer applies. All of it sits in `turn_status_posts`.
 
-A turn that reports nothing for an hour is left as it was last drawn: its host
-has almost certainly gone without saying it ended, and nothing here can end it
-for the host.
-
 Failures of a key are retried on a widening interval; a platform that asks for
 a wait gets exactly that wait.
 """
@@ -133,10 +129,6 @@ _RESYNC_WINDOW = timedelta(minutes=15)
 # or coming back, and, where the platform redraws for it, for a clock that has
 # moved on a minute.
 _TICK_SECONDS = 5.0
-# How long a running turn may report nothing before it is taken for one whose
-# host went without saying it ended. A tool call can run this long without a
-# step, but then all it costs is a clock that stops until the next one.
-_ABANDONED_AFTER = timedelta(hours=1)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
 # How many turns' drawn state one bridge remembers. Forgetting one costs a
@@ -439,9 +431,7 @@ class AgentSessionActivityPublisher:
             raise ValueError(f"Unknown publication key {key!r}")
 
     async def _resync(self) -> None:
-        now = datetime.now(UTC)
-        since = now - _RESYNC_WINDOW
-        quiet_since = now - _ABANDONED_AFTER
+        since = datetime.now(UTC) - _RESYNC_WINDOW
         async with tenant_session(self._sessions, self._tenant_id) as db:
             posted = exists().where(
                 ApprovalRequestPost.bridge_id == self._bridge_id,
@@ -494,9 +484,7 @@ class AgentSessionActivityPublisher:
                     )
                     .where(
                         Room.bridge_id == self._bridge_id,
-                        or_(
-                            AgentSessionActivityItem.updated_at >= quiet_since, unended
-                        ),
+                        or_(AgentSessionActivityItem.updated_at >= since, unended),
                     )
                     .group_by(
                         AgentSessionActivityItem.agent_id,
@@ -510,14 +498,9 @@ class AgentSessionActivityPublisher:
         for agent_id, session_id, request_id in requests:
             self._enqueue(("approval", agent_id, session_id, request_id), _SOON)
         for agent_id, session_id, turn_id, changed, running, drawn_at in turns:
-            # A running turn that has reported nothing for an hour is left as
-            # it was drawn (see `_abandon`). An ended turn whose message was
-            # last drawn after its last change already shows how it ended.
-            if (running and changed >= quiet_since) or (
-                not running
-                and changed >= since
-                and (drawn_at is None or drawn_at < changed)
-            ):
+            # An ended turn whose message was last drawn after its last change
+            # already shows how it ended.
+            if running or drawn_at is None or drawn_at < changed:
                 self._enqueue(("turn", agent_id, session_id, turn_id), _SOON)
         for post in marked:
             self._enqueue(("turn", post.agent_id, post.session_id, post.turn_id), _SOON)
@@ -1079,15 +1062,11 @@ class AgentSessionActivityPublisher:
         self, key: _Key, agent_id: str, session_id: str, turn_id: str
     ) -> None:
         async with tenant_session(self._sessions, self._tenant_id) as db:
-            rows = await self._activity.turn(db, agent_id, session_id, turn_id)
-            view = turn_view(rows)
+            view = turn_view(
+                await self._activity.turn(db, agent_id, session_id, turn_id)
+            )
             if view is None or view.row.room_id is None:
                 self._forget_turn(key)
-                return
-            now: datetime = (await db.execute(select(func.now()))).scalar_one()
-            quiet = now - max(row.updated_at for row in rows)
-            if not view.ended and quiet > _ABANDONED_AFTER:
-                self._abandon(key, view, quiet)
                 return
             room_id = view.row.room_id
             target = await self._target(db, key, agent_id, room_id, view.row.thread_id)
@@ -1101,6 +1080,7 @@ class AgentSessionActivityPublisher:
             post = await self._turn_posts.get(
                 db, self._bridge_id, agent_id, session_id, turn_id, for_update=False
             )
+            now: datetime = (await db.execute(select(func.now()))).scalar_one()
             unended = [
                 row.turn_id
                 for row in await self._activity.turns_of_session(
@@ -1181,7 +1161,7 @@ class AgentSessionActivityPublisher:
         """Forget a turn's unposted row, saying so if it leaves a marker behind.
 
         Nothing is asked of the platform: a turn that stops being published
-        keeps its marker whether or not its message was posted.
+        here keeps its marker whether or not its message was posted.
         """
         unposted = self._unposted.pop(key, None)
         if unposted is not None and unposted.mark is not None:
@@ -1193,29 +1173,6 @@ class AgentSessionActivityPublisher:
                 unposted.mark,
                 unposted.reaction_message_ref,
                 unposted.external_channel_id,
-            )
-
-    def _abandon(self, key: _Key, view: TurnView, quiet: timedelta) -> None:
-        """Leave a running turn that has reported nothing for an hour as it was
-        last drawn.
-
-        Its host has almost certainly gone without saying the turn ended — it
-        died, was reset, or never came back — and only the host can end it.
-        Redrawn, it would tick its clock and come back on every restart for as
-        long as its rows are kept, spending the platform's rate budget on a
-        message nobody is waiting on. Its marker stays too: a turn this quiet
-        cannot be told from a lost one. Anything it reports brings it back.
-        """
-        self._drop_unposted(key)
-        if self._live_turns.pop(key, None) is not None:
-            logger.warning(
-                "Turn %s of session %s has reported nothing for %.0f minutes; "
-                "its activity on bridge %s is left as it was last drawn until "
-                "it does.",
-                view.turn.turn_id,
-                view.row.session_id,
-                quiet.total_seconds() / 60,
-                self._bridge_id,
             )
 
     async def _stamp_drawn(self, post: TurnStatusPost) -> None:

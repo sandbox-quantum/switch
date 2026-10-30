@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -714,16 +714,6 @@ def _key(turn_id: str) -> tuple[str, ...]:
     return ("turn", AGENT, SESSION, turn_id)
 
 
-async def _age(session_factory, turn_id: str, by: timedelta) -> None:
-    """Make every row of a turn look as if it last changed `by` ago."""
-    async with session_factory() as db, db.begin():
-        await db.execute(
-            update(AgentSessionActivityItem)
-            .where(AgentSessionActivityItem.turn_id == turn_id)
-            .values(updated_at=func.now() - by)
-        )
-
-
 async def test_the_asking_message_is_marked_before_its_card_can_be_posted(
     service, publisher, platform, bridged, session_factory
 ):
@@ -871,49 +861,6 @@ async def test_a_clock_redraw_the_platform_refuses_is_dropped_but_a_change_is_re
 
     assert handled.count(_key("clock")) == 1
     assert handled.count(_key("change")) > 1
-
-
-async def test_a_turn_with_no_news_for_an_hour_is_left_as_it_was_last_drawn(
-    service, session_factory, bridged, listener, online
-):
-    """A host that died mid-turn never reports the end. Its turn is not
-    redrawn for the clock, nor on every restart, until something happens."""
-    platform = RecordingPlatform(redraws_for_elapsed_time=True)
-    publisher = _publisher(session_factory, bridged, listener, platform, online)
-    publisher.start()
-    try:
-        await _turn(service, bridged.room_id, "running", 1, turn_id="stale")
-        await platform.wait_until(lambda: len(_turns(platform)) == 1)
-    finally:
-        await publisher.stop()
-    await _age(session_factory, "stale", timedelta(hours=2))
-    await _turn(service, bridged.room_id, "running", 1, turn_id="fresh")
-
-    restarted = RecordingPlatform(redraws_for_elapsed_time=True)
-    publisher = _publisher(session_factory, bridged, listener, restarted, online)
-    publisher.start()
-    try:
-        await restarted.wait_until(lambda: len(_turns(restarted)) >= 1)
-        await asyncio.sleep(0.3)
-        assert {d.content.turn.turn_id for d in _turns(restarted)} == {"fresh"}
-        assert _key("stale") not in publisher._live_turns
-
-        await _step(
-            service,
-            bridged.room_id,
-            item_id="tool-1",
-            kind="tool-activity",
-            status="in-progress",
-            revision=1,
-            turn_id="stale",
-            title="Ran `pytest`",
-        )
-        await restarted.wait_until(
-            lambda: any(d.content.turn.turn_id == "stale" for d in _turns(restarted))
-        )
-        assert _key("stale") in publisher._live_turns
-    finally:
-        await publisher.stop()
 
 
 async def test_a_turn_whose_rows_were_pruned_is_no_longer_watched(
