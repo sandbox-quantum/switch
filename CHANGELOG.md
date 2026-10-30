@@ -501,6 +501,23 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **A server chooses where each connector's sign-ins come back, and
+  Atlassian's can come back to the server.** `SERVICE_SIGN_IN_REDIRECT` maps
+  a service to `loopback` (Switch Console, on the person's computer) or `core`
+  (the server's own callback,
+  `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`),
+  as JSON such as `{"atlassian":"core"}`. A service it does not name comes
+  back as before. A service, or a way back, that the catalog does not list
+  stops the server; `core` without `GATEWAY_PUBLIC_URL` is a warning at
+  startup, and that service keeps signing in through Switch Console.
+  Atlassian now offers both, through Switch Console unless the server names
+  `core`; before naming it, each Atlassian site's admin must allow-list the
+  callback. Switch registers its own callback with a vendor only where
+  sign-ins use it, so a server that names `core` for Atlassian, or stops
+  naming it, registers a new client there, and everyone reconnects Atlassian
+  once. A server that does not name Atlassian registers what it did before.
+  Starting a sign-in also answers `callback_url`: the server's callback when
+  the browser comes back through it, null otherwise.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
@@ -3006,6 +3023,12 @@ version of their own to them without also giving them a release of their own.
 - **Connectors says why Airtable or Google Workspace can't be connected on a
   server without a public address**: the operator is told to set
   `GATEWAY_PUBLIC_URL`, and everyone else whom to ask.
+- **The Connect dialog names the server's callback when a sign-in comes back
+  through it.** While you sign in to a service whose sign-ins return through
+  your Switch server, the dialog shows the server's callback URL under the
+  spinner and says that if the service shows an error, an admin must
+  allow-list that URL there. A server that does not send `callback_url` is
+  read as one whose sign-ins come back to Console.
 - **Codex sessions can use an API key kept in the OS keyring.** With
   `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
   Codex keeps its login in the keyring, where a session's own Codex home cannot

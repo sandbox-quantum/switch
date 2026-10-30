@@ -4385,14 +4385,32 @@ export async function startServiceConnection(
           (own) => own !== null && new URL(own).origin === url.origin
         ) &&
         url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
-        url.searchParams.get('state') === value.id
+        url.searchParams.get('state') === value.id &&
+        (value.callback_url === null || isOwnCallback(value.callback_url, url, service))
       : url.protocol === 'https:' &&
         url.searchParams.get('state') === value.id &&
         url.searchParams.get('redirect_uri') ===
-          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}` &&
+        value.callback_url === null);
   if (!valid) throw new Error('The server returned an invalid sign-in URL.');
   return value;
 }
+
+/**
+ * Whether `callback` is the callback beside Core's authorize step at
+ * `authorize`, as an admin would allow-list it at the vendor: same origin, the
+ * service's own path, nothing else.
+ */
+function isOwnCallback(callback: string, authorize: URL, service: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(callback);
+  } catch {
+    return false;
+  }
+  return url.href === `${authorize.origin}/gateway${serviceFlows(service)}/callback`;
+}
+
 export async function getServiceFlow(server: SwitchServer, service: string, id: string) {
   return serviceFlowSchema.parse(
     await (

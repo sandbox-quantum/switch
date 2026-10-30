@@ -6,13 +6,26 @@ import { z } from 'zod';
  */
 export const SERVICE_CALLBACK_PATH = '/switch-services/callback';
 
-/** `POST /service-connections/{service}/flows`: where the browser goes, and how it returns. */
+/**
+ * `POST /service-connections/{service}/flows`: where the browser goes, how it
+ * returns, and, in `core` mode, the server's callback the vendor sends it back
+ * to (null from a server that predates saying so).
+ */
 export const serviceFlowStartSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   url: z.string(),
   mode: z.enum(['loopback', 'core']),
+  callback_url: z.string().nullable().default(null),
 });
 export type ServiceFlowStart = z.infer<typeof serviceFlowStartSchema>;
+
+/**
+ * A sign-in this Console started: its flow, and the server's callback the
+ * vendor sends the browser back to where it returns through the server, which
+ * the vendor may refuse until its admin allow-lists it; null where it returns
+ * straight to this Console.
+ */
+export type ServiceSignInStarted = { id: string; callbackUrl: string | null };
 
 /**
  * `GET /service-connections/{service}/flows/{id}`: `connected` once the server

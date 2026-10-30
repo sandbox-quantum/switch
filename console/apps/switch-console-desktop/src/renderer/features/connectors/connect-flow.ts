@@ -3,12 +3,14 @@ import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 /**
  * A service sign-in as the dialog holds it: the flow Switch is running for
- * it, if any, and what the person is shown.
+ * it, if any, the server's callback where the browser returns through it, and
+ * what the person is shown.
  */
 export type ConnectFlowState = {
   connected: boolean;
   flowId: string | null;
   flow: ServiceFlow | null;
+  callbackUrl: string | null;
   busy: boolean;
   warning: string | null;
   error: string | null;
@@ -17,7 +19,7 @@ export type ConnectFlowState = {
 export type ConnectFlowEvent =
   /** An action begins: start, cancel or disconnect. */
   | { type: 'act' }
-  | { type: 'started'; flowId: string }
+  | { type: 'started'; flowId: string; callbackUrl: string | null }
   /** The flow is still under way, or failed; `failure` is what to say if it failed without saying why. */
   | { type: 'polled'; flow: ServiceFlow; failure: string }
   | { type: 'poll_failed'; error: string }
@@ -30,10 +32,18 @@ export type ConnectFlowEvent =
   | { type: 'failed'; error: string };
 
 export function initialConnectFlow(connected: boolean): ConnectFlowState {
-  return { connected, flowId: null, flow: null, busy: false, warning: null, error: null };
+  return {
+    connected,
+    flowId: null,
+    flow: null,
+    callbackUrl: null,
+    busy: false,
+    warning: null,
+    error: null,
+  };
 }
 
-const NO_FLOW = { flowId: null, flow: null } as const;
+const NO_FLOW = { flowId: null, flow: null, callbackUrl: null } as const;
 
 /**
  * The sign-in's state after `event`. A flow that failed keeps its id, so the
@@ -49,7 +59,14 @@ export function connectFlowReducer(
     case 'act':
       return { ...state, busy: true, error: null };
     case 'started':
-      return { ...state, busy: false, flowId: event.flowId, flow: null, warning: null };
+      return {
+        ...state,
+        busy: false,
+        flowId: event.flowId,
+        flow: null,
+        callbackUrl: event.callbackUrl,
+        warning: null,
+      };
     case 'polled':
       return {
         ...state,
@@ -71,6 +88,25 @@ export function connectFlowReducer(
     case 'failed':
       return { ...state, busy: false, error: event.error };
   }
+}
+
+/**
+ * What the dialog says under its spinner while a sign-in that returns through
+ * the server waits on the browser: a vendor may refuse the server's callback
+ * until its admin allow-lists it, and then shows its own error page, which
+ * never reaches Switch. Null where the sign-in returns straight to this
+ * Console, and once the browser is back or the sign-in failed.
+ */
+export function allowListHint(
+  state: Pick<ConnectFlowState, 'callbackUrl' | 'flow'>,
+  name: string
+): { text: string; url: string } | null {
+  if (state.callbackUrl === null) return null;
+  if (state.flow?.status === 'checking' || state.flow?.status === 'failed') return null;
+  return {
+    text: `If ${name} shows an error, an admin must allow-list this URL at ${name}.`,
+    url: state.callbackUrl,
+  };
 }
 
 /**

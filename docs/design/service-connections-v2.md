@@ -35,7 +35,8 @@ auth:
     registration: dynamic     # dynamic: Core registers its own client
                               # static: the operator's, saved in the dashboard or named
                               # by <PREFIX>_CLIENT_CONFIG_PATH (client_settings)
-    redirect: [loopback]      # loopback (Switch Console) and/or core (Core's callback)
+    redirect: [loopback, core]   # loopback (Switch Console) and/or core (Core's
+                                 # callback); a server picks with SERVICE_SIGN_IN_REDIRECT
     loopback_ports: [39231, 39232, 39233, 39234, 39235]
     prompt: consent           # sent with every authorization
     # authorization_params: { access_type: offline }   # also sent with every
@@ -207,8 +208,9 @@ Routes under `/gateway/service-connections/{service}/flows`: start, authorize,
 callback, complete, status and drop.
 Switch Console starts a flow with a one-time state, its listener's port and a
 completion secret. Core keeps the PKCE verifier and exchanges the code, so
-neither Console nor the browser holds a token. The browser comes back the first
-way the catalog allows that this server can offer:
+neither Console nor the browser holds a token. The browser comes back the way
+the server names for the service where it can offer it, else the first way the
+catalog allows that it can:
 
 - **loopback**: straight to Console's listener on 127.0.0.1. With
   `loopback_ports`, only on one of them; Console listens on the first free one.
@@ -217,6 +219,24 @@ way the catalog allows that this server can offer:
   browser left through Core ties it to that browser, and the callback takes a
   flow's code once; a page is shown only when the return cannot be verified
   or the consent was cancelled.
+
+A deployment names the way back per service in `SERVICE_SIGN_IN_REDIRECT`, JSON
+such as `{"atlassian":"core"}`; a service it does not name comes back the first
+way its entry lists, which for an entry listing both is loopback. A slug not in
+the catalog, or a way its entry does not list, stops the server, and `core` on a
+server without `GATEWAY_PUBLIC_URL` is a warning at startup while the service
+keeps signing in through loopback. Some vendors take Core's callback,
+`<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
+only once their admin has allow-listed it (for Atlassian, an admin of each
+site people sign in to), so that comes first; until then the vendor shows its
+own error page, which never reaches Switch, and the start answers the callback
+(`callback_url`) for Console's Connect dialog to show under its spinner with
+the line "If <Service> shows an error, an admin must allow-list this URL at
+<Service>." Core's callback is registered only where sign-ins use it, so naming
+`core` for a service whose client Core registers, or no longer naming it,
+registers a new client at the next connect, and every connection to that
+service on the server reads as needing to reconnect, once. For a client the
+operator registers, Connector apps lists the same addresses.
 
 Console's listener brings Console to the front as the code arrives, and
 posts it back with the completion secret; in that one step Core exchanges
@@ -238,9 +258,10 @@ take any step: ten minutes each, at most 256 per workspace, one per person.
 A dynamically registered client is the deployment's own, kept in
 `service_oauth_clients` (one row per service and choice, encrypted with the
 keyring, re-encrypted at key rotation, no tenant). Registration asks for a
-public client with the entry's redirects and scopes, under a lock held in the
-database, and is repeated when the registration endpoint, redirects or scopes
-change. A secret a
+public client with the entry's scopes, Console's listener where the entry lists
+loopback, and Core's callback only where sign-ins come back through it, under a
+lock held in the database, and is repeated when the registration endpoint,
+redirects or scopes change. A secret a
 vendor issues to such a client anyway is not used.
 
 ## Sessions
@@ -535,8 +556,10 @@ settings:
 - Atlassian offers only dynamic registration, so Core registers its client.
   Refresh works with the client id alone.
 - A sign-in returns to Core's own address only where an organization admin has
-  added it, so Atlassian connects through Switch Console, in loopback mode.
-  Atlassian matches the loopback port exactly, hence the five fixed ports.
+  added it, so Atlassian connects through Switch Console, in loopback mode,
+  unless the server names `core` for it in `SERVICE_SIGN_IN_REDIRECT` once
+  Core's callback has been added. Atlassian matches the loopback port exactly,
+  hence the five fixed ports.
 - Consenting to Jira's scopes alone fails after Accept unless the request also
   carries the identity scopes, `offline_access` and `prompt=consent`. Atlassian
   reflects the result: a read-only sign-in still lists `executeWrite` and
@@ -698,8 +721,7 @@ it as unavailable, with its reason, and the next token request fails.
   connection.
 - Tool-list prefetch and per-user call limits; each call now opens its own MCP
   session at the vendor.
-- Connecting Atlassian from the web dashboard, and a server setting that moves
-  a vendor to Core's callback (today the catalog's order decides).
+- Connecting Atlassian from the web dashboard.
 - Connecting any service from the web dashboard: Switch Console starts every
   sign-in, Google Workspace's included, though Google's comes back through
   Core.

@@ -117,6 +117,12 @@ class ServiceFlow:
         return "core" if self.stored.mode == "core" else "loopback"
 
     @property
+    def callback_url(self) -> str | None:
+        """Core's callback the vendor sends the browser back to, in core
+        mode, which the vendor may refuse until its admin allow-lists it."""
+        return self.stored.redirect_uri if self.mode == "core" else None
+
+    @property
     def status(self) -> str:
         return self.stored.status
 
