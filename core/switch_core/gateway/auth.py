@@ -387,6 +387,23 @@ async def workspaces_in_organization(
     return found
 
 
+async def organization_workspace_ids(
+    session_factory: async_sessionmaker[AsyncSession],
+    admin_id: str,
+    organization_id: str,
+) -> list[str]:
+    """Every workspace of `organization_id`, as its `org_admin` `admin_id`
+    reaches them: an `org_admin` may bind each one. Each read on its own
+    short session, as `workspaces_in_organization` does."""
+    found: list[str] = []
+    for tenant_id in await tenants_bindable_by_user(session_factory, admin_id):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None and tenant.organization_id == organization_id:
+            found.append(tenant_id)
+    return found
+
+
 async def workspaces_reached_through_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
