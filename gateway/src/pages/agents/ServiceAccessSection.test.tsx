@@ -126,6 +126,10 @@ describe("ServiceAccessSection", () => {
       method: "PUT",
       body: { policy: OWNER_ONLY_POLICY },
     });
+    // The owner alone, as Switch Console asks for it.
+    expect(OWNER_ONLY_POLICY.rules).toEqual([
+      expect.objectContaining({ owner: true, owner_agents: false, users: [], agents: [] }),
+    ]);
   });
 
   it("says what removing a grant does, and does not, on the agent's own machine", async () => {
@@ -228,7 +232,12 @@ describe("ServiceAccessSection", () => {
     );
     render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText("helper reads and writes Example as you.")).toBeTruthy();
-    expect(screen.getByText(/stays valid at Example until it expires/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /may keep working at Example until it expires, up to 24 hours after it was handed out\./,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/you disconnect/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
     fireEvent.click(screen.getByLabelText("Example for helper"));
     await waitFor(() =>

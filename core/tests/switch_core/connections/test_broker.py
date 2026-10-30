@@ -355,7 +355,7 @@ class TestIssue:
         )
         again = await _refused(broker, session_factory, world.agent.id)
         assert again.code == "connector_revoked"
-        assert "Settings, Connections" in again.message
+        assert "under Connectors" in again.message
         assert vendor.refreshes == 1
         assert vendor.issued == []
 
@@ -902,6 +902,14 @@ class TestSwitchedOff:
             _switched_off(session_factory, vendor, {"nowhere": ""})
 
 
+# `example`, revoked at the vendor on disconnect, which ends its tokens too.
+REVOKES_TOKENS = OAUTH_ENTRY.replace(
+    "    remove_access: Remove Switch under Connected apps in Example.\n",
+    "    revocation_url: https://auth.example.test/revoke\n"
+    "    revocation_ends_tokens: true\n",
+)
+
+
 def pass_through_catalog(
     root: Path, *, max_lifetime: int = 3600, entry: str = OAUTH_ENTRY
 ) -> dict:
@@ -1308,6 +1316,53 @@ class TestPassThrough:
         assert warning is not None
         assert "unset is not set up on this server" in warning
         assert "Example access" not in warning
+
+    async def test_a_disconnect_revoked_where_that_ends_its_tokens_names_none(
+        self, session_factory, tmp_path
+    ) -> None:
+        """Revoking the sign-in at a vendor whose revocation ends its tokens
+        takes back what agents were given, so nothing is said to keep working."""
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is None
+
+    async def test_a_disconnect_whose_revocation_leaves_its_tokens_says_until_when(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=50 * 60,
+            entry=REVOKES_TOKENS.replace("    revocation_ends_tokens: true\n", ""),
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert len(pt.vendor.connections_revoked) == 1
+        assert warning is not None and warning.startswith("Example access already")
+
+    async def test_a_disconnect_whose_revocation_failed_says_until_when(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        pt = await _pass_through(
+            session_factory, tmp_path / "c", expires_in=50 * 60, entry=REVOKES_TOKENS
+        )
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+
+        async def refuses(secret: ConnectionSecret) -> None:
+            raise ServiceAdapterError("Example refused to revoke the sign-in.")
+
+        monkeypatch.setattr(pt.vendor, "revoke_connection", refuses)
+        async with session_factory() as session:
+            warning = await pt.broker.disconnect(session, pt.world.owner.id, "example")
+        assert warning is not None
+        assert "Example could not revoke the sign-in." in warning
+        assert "Example access already given to agents cannot be taken back" in warning
 
 
 def _workspace_refusal(name: str) -> str:

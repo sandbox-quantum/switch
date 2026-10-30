@@ -19,6 +19,7 @@ a private key its fingerprint.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, cast
 
@@ -42,14 +43,12 @@ from switch_core.connections.app_credentials import (
     github_needs_https,
 )
 from switch_core.connections.broker import ServiceBroker, get_service_broker
-from switch_core.connections.loader import CATALOG
 from switch_core.connections.oauth_clients import redirect_uris
 from switch_core.connections.registry import every_scope
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     ServiceAppCredential,
     ServiceConnection,
-    ServiceOAuthClient,
     User,
 )
 from switch_core.db.session_scope import tenant_session
@@ -91,28 +90,26 @@ class SaveApp(BaseModel):
 class Usage:
     """The connections a service has across every workspace."""
 
-    # (tenant, status, recorded client) for each connection.
-    rows: list[tuple[str, str, str | None]]
+    # (tenant, person, status, recorded client) for each connection.
+    rows: list[tuple[str, str, str, str | None]]
 
     def through(self, client_id: str | None) -> tuple[int, int]:
         """People and workspaces whose live connection goes through
         `client_id`; one recorded before clients were is taken to."""
-        affected = [
-            tenant
-            for tenant, status, recorded in self.rows
+        return _people_and_workspaces(
+            (tenant, person)
+            for tenant, person, status, recorded in self.rows
             if status == "active" and (recorded is None or recorded == client_id)
-        ]
-        return len(affected), len(set(affected))
+        )
 
     def not_through(self, proposed: str, current: str | None) -> tuple[int, int]:
         """People and workspaces who must reconnect if `proposed` replaces
         `current`."""
-        affected = [
-            tenant
-            for tenant, status, recorded in self.rows
+        return _people_and_workspaces(
+            (tenant, person)
+            for tenant, person, status, recorded in self.rows
             if status == "active" and (recorded or current) != proposed
-        ]
-        return len(affected), len(set(affected))
+        )
 
     def stale(self, current: str | None) -> int:
         """Connections made through an app this server no longer uses."""
@@ -120,27 +117,38 @@ class Usage:
             return 0
         return sum(
             1
-            for _, _, recorded in self.rows
+            for _, _, _, recorded in self.rows
             if recorded is not None and recorded != current
         )
+
+
+def _people_and_workspaces(affected: Iterable[tuple[str, str]]) -> tuple[int, int]:
+    """How many people, and in how many workspaces: a person connected in two
+    workspaces is one person."""
+    pairs = list(affected)
+    return len({person for _, person in pairs}), len({tenant for tenant, _ in pairs})
 
 
 async def _usage(
     session_factory: async_sessionmaker[AsyncSession], service: str
 ) -> Usage:
     """Read one workspace at a time, each bound before it is touched."""
-    rows: list[tuple[str, str, str | None]] = []
+    rows: list[tuple[str, str, str, str | None]] = []
     for tenant_id in await all_tenant_ids(session_factory):
         async with tenant_session(session_factory, tenant_id) as session:
             result = await session.execute(
                 select(
-                    ServiceConnection.status, ServiceConnection.oauth_client_id
+                    ServiceConnection.user_id,
+                    ServiceConnection.status,
+                    ServiceConnection.oauth_client_id,
                 ).where(
                     ServiceConnection.tenant_id == tenant_id,
                     ServiceConnection.service == service,
                 )
             )
-            rows.extend((tenant_id, status, client) for status, client in result)
+            rows.extend(
+                (tenant_id, person, status, client) for person, status, client in result
+            )
     return Usage(rows)
 
 
@@ -299,34 +307,6 @@ async def _entry(
     }
 
 
-async def _registered(session: AsyncSession) -> list[dict[str, Any]]:
-    """Services whose client Core registers for itself: nothing to set up."""
-    rows = {
-        row.service: row for row in await session.scalars(select(ServiceOAuthClient))
-    }
-    entries = []
-    for slug, entry in CATALOG.items():
-        oauth = entry.definition.auth.oauth
-        if (
-            not entry.definition.enabled
-            or entry.definition.adapter != "oauth"
-            or oauth is None
-            or oauth.registration != "dynamic"
-        ):
-            continue
-        row = rows.get(slug)
-        entries.append(
-            {
-                "slug": slug,
-                "name": entry.definition.name,
-                "kind": "registered",
-                "client_id": None if row is None else row.oauth_client_id,
-                "registered_at": None if row is None else row.created_at.isoformat(),
-            }
-        )
-    return entries
-
-
 def _refuse_while_configured(effective: EffectiveCredentials) -> None:
     if effective.source == "configuration":
         variables = " and ".join(effective.configuration_variables)
@@ -401,11 +381,7 @@ async def list_connector_apps(
         await _entry(session, session_factory, apps, spec)
         for spec in apps.specs.values()
     ]
-    return {
-        "public_url": apps.public_url,
-        "apps": entries,
-        "registered": await _registered(session),
-    }
+    return {"public_url": apps.public_url, "apps": entries}
 
 
 @router.put("/{service}", response_model=None)

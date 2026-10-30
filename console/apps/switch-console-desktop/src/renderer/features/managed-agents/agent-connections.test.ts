@@ -161,7 +161,7 @@ describe("an agent's connection cards", () => {
       [
         service('atlassian'),
         service('datadog', { unavailable_reason: 'Maintenance' }),
-        service('google', { status: 'error' }),
+        service('google', { status: 'needs_reauthorization' }),
         service('box'),
       ],
       [grant('atlassian')]

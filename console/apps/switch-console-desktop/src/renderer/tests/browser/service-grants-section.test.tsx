@@ -356,7 +356,9 @@ it('turns an on/off grant off, and says a longer-lived token outlasts it', async
   await vi.waitFor(() =>
     expect(el.textContent).toContain('helper reads and writes Example as you.')
   );
-  expect(el.textContent).toContain('stays valid at Example until it expires or you disconnect');
+  expect(el.textContent).toContain(
+    'may keep working at Example until it expires, up to 24 hours after it was handed out'
+  );
   // Its grant is the switch, not a card with Change and Remove.
   expect(button(el, 'Remove')).toBeUndefined();
   await act(async () => exampleSwitch(el)!.click());

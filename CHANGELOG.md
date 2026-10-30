@@ -77,7 +77,11 @@ version of their own to them without also giving them a release of their own.
   token is the owner's own. The change now marks those tokens withdrawn and
   its warning names the service and the time until which they may keep
   working: up to an hour for Google Workspace, and up to eight hours for
-  Atlassian, whose tokens cannot be asked for shorter.
+  Atlassian, whose tokens cannot be asked for shorter. Disconnecting or
+  reconnecting Google Workspace is the exception: Switch revokes the sign-in
+  at Google, which ends every token on it, so once that succeeds the warning
+  leaves Google Workspace out. A catalog entry says so with
+  `revocation_ends_tokens`.
 - **A template's room params name only rooms its runner can see.** A room
   param checked its value against every room on the server, and `$first` or
   a list of candidates could settle on someone else's private room. That told
@@ -198,6 +202,16 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Small connector answers line up.** `GET /connector-apps`, the impact of
+  replacing an app and removing one count a person connected in two
+  workspaces once in `connected_members`, rather than once per workspace.
+  `GET /connector-apps` no longer returns `registered`, which no client read.
+  Starting a GitHub sign-in with a state already used answers 409, as every
+  other service's sign-in does, rather than 503.
+- **The dashboard's "Make owner-only" sets the owner alone,** as Switch
+  Console does, rather than the owner and the owner's agents, and its warning
+  reads as Console's. Its note on a token that lives longer than an hour no
+  longer says disconnecting ends it, which Atlassian's does not.
 
 #### Fixed
 - **A sign-in the vendor refuses fails with the vendor's reason.** When a
@@ -219,6 +233,16 @@ version of their own to them without also giving them a release of their own.
   for up to ten minutes. The sign-in now fails with the reason, which the page
   shows too. The same goes for a service switched off or removed while Switch
   Console hands the code back.
+- **Connector messages send people to Connectors.** A refusal telling an
+  owner to connect or reconnect a service, which agents pass on, sent them to
+  "Settings, Connections", which Switch Console does not have; it now names
+  Connectors, the page in Switch Console's sidebar and in the dashboard.
+  switch-buddy calls an agent's tab by its name, Connectors. The setup guides
+  for GitHub, Google Workspace and Airtable quote the not-set-up message as
+  it reads now, drop the confirm step removed in 0.31.0, and say that turning
+  a service off for an agent stops its sessions using it within a minute (not
+  an hour), and that disconnecting Airtable does not end a token already
+  handed out.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
@@ -2175,6 +2199,18 @@ version of their own to them without also giving them a release of their own.
   what happened, but Console said only that the sign-in was interrupted. It
   now shows the reason the server gave until you cancel, as other services'
   sign-ins already did.
+- **Connectors and Admin say when the server's settings can't be read.**
+  When Console had never read a server's feature flags, it took connectors to
+  be off and sent you from Connectors to Your Agents without a word, or left
+  Admin loading. Both pages now say the settings could not be read, with the
+  reason and Retry.
+- **Connector wording says what is so.** The note beside a service an agent
+  uses as you said an Atlassian token already handed out stays valid "until
+  it expires or you disconnect", but disconnecting Atlassian does not end it.
+  It now says the token may keep working until it expires, up to eight hours
+  after it was handed out; the disconnect's own warning says what it could
+  not take back. The Switch skill tells agents to link an agent's Connectors
+  tab, as it is named, rather than its Connections tab.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to

@@ -101,10 +101,6 @@ describe('the state a connector card shows', () => {
       detail: 'Switch can no longer use your Example connection. Connect again.',
       tone: 'problem',
     });
-    expect(connectorCardState(entry({ status: 'error' }), MEMBER)).toMatchObject({
-      kind: 'reconnect',
-      label: 'Connection failed',
-    });
     expect(connectorCardState(entry({ status: 'connected' }), MEMBER).kind).toBe('connected');
     expect(connectorCardState(entry(), MEMBER).kind).toBe('connect');
   });
@@ -276,7 +272,7 @@ describe('what each person is told about a connector that cannot be used', () =>
   it('takes Connect off the profile where nothing could be connected', () => {
     expect(profileConnectAction(notSetUp)).toBeNull();
     expect(profileConnectAction(github)).toBeNull();
-    expect(profileConnectAction({ ...github, status: 'error' })).toBeNull();
+    expect(profileConnectAction({ ...github, status: 'needs_reauthorization' })).toBeNull();
     // Connectable where it cannot be granted: still offered.
     expect(
       profileConnectAction(
@@ -306,7 +302,12 @@ describe('the Yours and Discover tabs', () => {
       description: 'Monitors, logs and incidents.',
       status: 'connected',
     }),
-    entry({ slug: 'github', name: 'GitHub', category: 'Source control', status: 'error' }),
+    entry({
+      slug: 'github',
+      name: 'GitHub',
+      category: 'Source control',
+      status: 'needs_reauthorization',
+    }),
     entry({
       slug: 'jira-ish',
       name: 'Linear',
@@ -381,7 +382,6 @@ describe("a card's own control", () => {
     expect(quick({ workspace_enabled: false })).toBeNull();
     expect(quick({ status: 'coming_soon' })).toBeNull();
     expect(quick({ status: 'needs_reauthorization' })).toBeNull();
-    expect(quick({ status: 'error' })).toBeNull();
   });
 });
 
@@ -440,7 +440,6 @@ describe('the profile', () => {
   it('offers connecting, signing in again, or replacing a key', () => {
     expect(profileConnectAction(entry())).toBe('connect');
     expect(profileConnectAction(entry({ status: 'needs_reauthorization' }))).toBe('reconnect');
-    expect(profileConnectAction(entry({ status: 'error' }))).toBe('reconnect');
     expect(profileConnectAction(entry({ status: 'connected' }))).toBeNull();
     expect(profileConnectAction(entry({ slug: 'github', status: 'connected' }))).toBeNull();
     expect(profileConnectAction(entry({ status: 'connected', auth_type: 'api_key' }))).toBe(
@@ -812,9 +811,12 @@ describe('with the service_connections flag off', () => {
 
   it('has no page to show, rather than an empty one', () => {
     expect(connectorsPageAccess(flags(false))).toBe('absent');
+    // Flags that could never be read are said to be, not taken as off.
     expect(connectorsPageAccess({ ...flags(false), fetchedAt: null, error: 'down' })).toBe(
-      'absent'
+      'unreadable'
     );
+    // Once read, the last values read stand while a later read fails.
+    expect(connectorsPageAccess({ ...flags(true), error: 'down' })).toBe('shown');
     expect(connectorsPageAccess(null)).toBe('loading');
     expect(
       connectorsPageAccess({ ...flags(false), fetchedAt: null, error: FLAGS_NOT_READ_YET })

@@ -56,10 +56,12 @@ async def list_workspace_services(
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, Any]:
-    """Every catalog service that can be connected, whether the workspace has
-    it on, and who it reaches: what an admin weighs before switching it off.
-    A member counts as connected while their connection works, by the status
-    their own Connectors page shows, not one that needs reconnecting."""
+    """Every service the catalog enables, whether the workspace has it on,
+    and who it reaches: what an admin weighs before switching it off. One this
+    server cannot connect (its app not set up, or switched off here) is
+    listed too. A member counts as connected while their connection works, by
+    the status their own Connectors page shows, not one that needs
+    reconnecting."""
     settings = await STORE.list_settings(session)
     on_by_default = await STORE.on_by_default(session)
     names = {

@@ -34,13 +34,16 @@ HOSTED_AGENTS = "hosted_agents"
 AGENT_MANAGEMENT = "agent_management"
 
 # Service connections: people connect outside services (GitHub's grants,
-# Atlassian, Google Workspace, Datadog and the rest of the catalog) and grant
+# Atlassian, Google Workspace, Airtable and the rest of the catalog) and grant
 # them to their agents. With it off, the routes for connections, sign-ins,
 # keys and grants (`/gateway/service-connections`, `/gateway/agents/{id}/
-# service-grants`, `/agents/{id}/service-grants` and `service-tokens`) are not
-# mounted: agent hosts read that as no grants, and Console and the dashboard
-# show no services but GitHub's link, as before connections. GitHub's own
-# connect routes stay.
+# service-grants`, `/agents/{id}/service-grants` and `service-tokens`), the
+# workspace's switches and the connector apps are not mounted: agent hosts
+# read that as no grants, and neither Console nor the dashboard offers any
+# service to connect or grant. GitHub's own connect routes and the older
+# catalog (`/gateway/provider-connections`) stay, for a Console from before
+# connections; a GitHub connection made through them cannot be granted until
+# the flag is on.
 SERVICE_CONNECTIONS = "service_connections"
 
 # Follow the conversation: a person's message that mentions nobody reaches an

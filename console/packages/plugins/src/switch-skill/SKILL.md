@@ -893,7 +893,7 @@ ui-avatars.com is not accepted.
   like), or take it away. They need "can manage agents", reach only your
   owner's own agents, and hand over your owner's access, so propose first and
   wait for a yes. A service that needs a person's choice, such as which GitHub
-  repositories, refuses with what is missing. Link the agent's Connections tab
+  repositories, refuses with what is missing. Link the agent's Connectors tab
   for it instead.
 
 ## Your template's new revisions

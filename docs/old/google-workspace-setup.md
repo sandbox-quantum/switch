@@ -9,8 +9,8 @@ offered. How it works is in
 under Google Workspace.
 
 Without the app, Google Workspace is listed on the server as "Google
-Workspace is not set up on this server. Ask whoever runs your Switch server to
-add it under Connectors in the Switch dashboard."
+Workspace is not set up on this server. Whoever runs your Switch server can
+set it up in Switch Console, under Admin → Connector apps."
 
 ## What you need
 
@@ -128,9 +128,10 @@ same client, so nobody reconnects.
 
 ## What people do
 
-1. In Switch Console: Settings, Connections, Google Workspace, Connect. The
-   browser opens Google's consent page, then comes back through the server to
-   Switch Console, which asks the person to confirm the account.
+1. In Switch Console: Connectors, Google Workspace, Connect. The browser opens
+   Google's consent page, then comes back through the server to Switch
+   Console, which shows the account connected. There is nothing to confirm:
+   the account is the one chosen at Google, and Disconnect undoes a wrong one.
 2. Google lists what Switch asks for: reading and changing Drive files, Docs,
    Sheets, Slides and calendar events, and the account's address. Unticking the
    change permissions connects read-only, and Google then refuses every change
@@ -141,7 +142,8 @@ same client, so nobody reconnects.
 
 To connect read-only after connecting for read and write, disconnect first:
 while Switch holds access, Google's consent page has nothing to untick.
-Disconnecting revokes Switch's access at Google.
+Disconnecting revokes Switch's access at Google, which ends every token of the
+sign-in, those already handed to agents included.
 
 Sessions run Google's `gws` command-line tool, which Switch downloads on first
 use to `~/.local/state/switch/tools/` on the machine running the session (from
@@ -167,7 +169,11 @@ its app has passed Google's review.
 
 - Google keeps at most 100 refresh tokens per account per client, dropping the
   oldest silently, and an admin's session-length policy can end them sooner.
-  A lapsed connection shows as needing reconnection under Connections.
+  A lapsed connection shows as needing reconnection under Connectors.
 - A granted agent's token is its owner's own, shared by every agent they
-  grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
-  its sessions within an hour; disconnecting stops every agent at once.
+  grant; it cannot be narrowed or revoked per agent. Turning Google Workspace
+  off for an agent stops its sessions using it within a minute: the machine
+  running them reads the agent's grants again about every 30 seconds. A token
+  already handed to it stays valid at Google until it expires, at most an
+  hour. Disconnecting revokes the sign-in at Google, which ends every agent's
+  at once; when Google can't be reached, the disconnect's warning says so.

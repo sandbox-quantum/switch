@@ -95,7 +95,7 @@ export function connectionCardDetail(card: AgentConnectionCard): string {
   if (blocked !== null) return blocked;
   if (grant) return grant.summary;
   if (service === null) return '';
-  if (service.status === 'needs_reauthorization' || service.status === 'error')
+  if (service.status === 'needs_reauthorization')
     return `Your ${service.name} connection needs reconnecting. Reconnect it from Connectors.`;
   return service.description;
 }
