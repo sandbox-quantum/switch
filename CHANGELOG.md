@@ -85,6 +85,9 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **Pi agents.** The provider table has Pi (`pi`), so a managed agent
+  definition, the gateway's provider list and an agent's registration accept
+  it. It has no advanced settings.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
@@ -2062,6 +2065,16 @@ version of their own to them without also giving them a release of their own.
   connection's menu on the server page. The connection restarts with it and
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
+- **Pi is an agent provider.** An agent can run on
+  [Pi](https://pi.dev), on whichever model provider Pi is signed in to,
+  created in Console or run on a headless agent controller. Switch drives it
+  over `pi --mode rpc` and loads a Switch extension into each session that
+  registers the session's MCP servers for that session only and asks for
+  approval in the chat before commands, edits and connector tools, by the
+  agent's mode. Nothing is written to Pi's own configuration. Pi has no
+  automatic review, so auto mode asks as approval-required does, and says so.
+  Install it with `npm install -g @earendil-works/pi-coding-agent` and sign
+  in with `/login` in `pi`.
 - **Airtable's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks

@@ -9,6 +9,8 @@ import { checkCodexSignIn, CODEX_LOGIN } from '../codex/sign-in';
 import { cursorAcp } from '../cursor/cursor-adapter';
 import { createOpencodeAdapter } from '../opencode/opencode-adapter';
 import { checkOpencodeSignIn, OPENCODE_LOGIN } from '../opencode/sign-in';
+import { createPiAdapter, PI_LOGIN } from '../pi/pi-adapter';
+import { checkPiSignIn } from '../pi/sign-in';
 import type { ProviderReadiness, SignInCheckInput } from '../readiness';
 import type { ProviderLogger } from '../transport/stdio-json-rpc';
 
@@ -100,6 +102,33 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
   },
   acpProviderRuntime(antigravityAcp),
   acpProviderRuntime(cursorAcp),
+  {
+    id: 'pi',
+    loginCommand: PI_LOGIN,
+    // Pi's own directories, and the provider keys it reads that the host does
+    // not already pass through.
+    inheritEnv: [
+      'PI_CODING_AGENT_DIR',
+      'PI_CODING_AGENT_SESSION_DIR',
+      'AI_GATEWAY_API_KEY',
+      'CEREBRAS_API_KEY',
+      'COPILOT_GITHUB_TOKEN',
+      'DEEPSEEK_API_KEY',
+      'FIREWORKS_API_KEY',
+      'GOOGLE_CLOUD_API_KEY',
+      'GROQ_API_KEY',
+      'HF_TOKEN',
+      'MINIMAX_API_KEY',
+      'NVIDIA_API_KEY',
+      'OPENCODE_API_KEY',
+      'TOGETHER_API_KEY',
+      'ZAI_API_KEY',
+    ],
+    unsupportedPlatforms: {},
+    createAdapter: ({ binaryPath, logger }) =>
+      createPiAdapter({ binaryPath, ...(logger ? { logger } : {}) }),
+    checkSignIn: checkPiSignIn,
+  },
 ];
 
 const RUNTIMES = new Map(PROVIDER_RUNTIMES.map((runtime) => [runtime.id, runtime]));
