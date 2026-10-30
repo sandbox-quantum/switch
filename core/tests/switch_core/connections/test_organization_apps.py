@@ -22,16 +22,22 @@ from sqlalchemy.pool import NullPool
 from starlette.datastructures import State
 
 from switch_core.connections import organization_apps as organization_apps_module
-from switch_core.connections.app_credentials import SECRET_NAMES, ConnectorApps
+from switch_core.connections.adapters import ServiceUnavailableError
+from switch_core.connections.app_credentials import (
+    SECRET_NAMES,
+    ConnectorApps,
+    cannot_work_here,
+)
 from switch_core.connections.app_signals import (
     CONNECTOR_APP_CHANGED_SIGNAL,
     ConnectorAppSignals,
 )
 from switch_core.connections.broker import ServiceBroker, ServiceError
 from switch_core.connections.loader import CATALOG
-from switch_core.connections.organization_apps import OrganizationApps
+from switch_core.connections.organization_apps import OrganizationApp, OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db.models import Organization, OrganizationAppCredential, Tenant, User
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
 )
@@ -42,7 +48,6 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.keys import Keyring
 from switch_core.signals import SignalBus
-from switch_core.tenant_context import tenant_scope
 from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.connections.adapters.test_github import _config
 
@@ -104,11 +109,22 @@ async def _save(
         await session.commit()
 
 
+class _Unread:
+    """A session nothing may read through: what a lookup answered from
+    memory, or for a service it does not cover, is handed."""
+
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"read through the session: {name}")
+
+
 class _Server:
     """One process: the server's apps, organizations' apps and the broker."""
 
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        tmp_path: Path,
+        public_url: str = PUBLIC_URL,
     ) -> None:
         client_file = tmp_path / f"google-{uuid.uuid4().hex[:6]}.json"
         client_file.write_text(
@@ -116,12 +132,12 @@ class _Server:
                 {"client_id": SERVER_CLIENT, "client_secret": "example-secret-0000"}
             )
         )
-        settings = _config(gateway_public_url=PUBLIC_URL)
+        settings = _config(gateway_public_url=public_url)
         self.http = httpx.AsyncClient()
         self.registration = ClientRegistration(
             session_factory=session_factory,
             keyring=TEST_KEYRING,
-            public_url=PUBLIC_URL,
+            public_url=public_url,
             server_name="switch.local",
         )
         self.apps = ConnectorApps(
@@ -136,9 +152,14 @@ class _Server:
         self.organization_apps = OrganizationApps(
             apps=self.apps,
             store=OrganizationAppCredentialStore(TEST_KEYRING),
-            session_factory=session_factory,
         )
         self._session_factory = session_factory
+
+    async def lookup(self, tenant_id: str, service: str) -> OrganizationApp | None:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            return await self.organization_apps.for_workspace(
+                session, tenant_id, service
+            )
 
     async def start(self) -> ServiceBroker:
         await self.apps.load()
@@ -165,8 +186,8 @@ class _Server:
 
 async def _client_in(broker: ServiceBroker, tenant_id: str) -> str | None:
     """The OAuth client `tenant_id` signs in to Google Workspace through."""
-    with tenant_scope(tenant_id):
-        _, adapter = await broker.sign_in(GOOGLE)
+    async with tenant_session(broker._session_factory, tenant_id) as session:
+        _, adapter = await broker.sign_in(session, GOOGLE)
     return adapter.current_client_id()
 
 
@@ -202,29 +223,103 @@ class TestWhichApp:
         await _save(rls_harness.owner, organization_id, "lost-client", keyring=retired)
         broker = await _Server(rls_harness.restricted, tmp_path).start()
 
-        with tenant_scope(tenant_id):
-            unavailable = await broker.unavailable(GOOGLE)
+        async with tenant_session(rls_harness.restricted, tenant_id) as session:
+            standing = await broker.standing(session, GOOGLE)
+            unavailable = standing.unavailable
             assert unavailable is not None
             assert unavailable.code == "organization_app_unusable"
             assert "Your organization's Google Workspace app" in unavailable.reason
-            assert await broker.connectable(GOOGLE) is False
+            assert "An organization admin can fix it" in unavailable.reason
+            assert standing.connectable is False
             with pytest.raises(ServiceError) as refused:
-                await broker.sign_in(GOOGLE)
+                await broker.sign_in(session, GOOGLE)
         assert refused.value.message == unavailable.reason
 
-    async def test_a_service_without_an_app_never_reads_the_organization(
+    async def test_services_it_does_not_cover_never_read_the_organization(
         self, rls_harness: RLSHarness, tmp_path: Path
     ) -> None:
         server = _Server(rls_harness.restricted, tmp_path)
         await server.start()
 
-        # No such workspace: a read would have nothing to bind.
-        assert (
-            await server.organization_apps.for_workspace("no-such", "atlassian") is None
+        for service in ("atlassian", "github"):
+            assert (
+                await server.organization_apps.for_workspace(
+                    _Unread(), "no-such", service
+                )
+                is None
+            )
+
+    async def test_what_only_the_operator_can_fix_does_not_send_members_to_their_admin(
+        self, rls_harness: RLSHarness, tmp_path: Path
+    ) -> None:
+        organization_id, _ = await _workspace(rls_harness.owner, in_organization=True)
+        assert organization_id is not None
+        async with rls_harness.owner() as session:
+            user = User(name="admin", email=f"{_id('a')}@example.invalid", role="user")
+            session.add(user)
+            await session.flush()
+            row = await OrganizationAppCredentialStore(TEST_KEYRING).save(
+                session,
+                organization_id=organization_id,
+                service="github",
+                client_id="example-client-id",
+                settings={"slug": "example-app"},
+                secrets={"client_secret": "s", "private_key": "k"},
+                secret_names=SECRET_NAMES["github_app"],
+                updated_by=user.id,
+            )
+            await session.commit()
+        server = _Server(
+            rls_harness.restricted, tmp_path, public_url="http://switch.example.test"
         )
+
+        app = server.organization_apps._build(row)
+
+        assert app.adapter is None
+        assert app.problem == cannot_work_here("GitHub")
+
+
+class TestRevoking:
+    async def test_a_sign_in_is_revoked_through_the_client_it_was_made_through(
+        self, rls_harness: RLSHarness, tmp_path: Path
+    ) -> None:
+        organization_id, tenant_id = await _workspace(
+            rls_harness.owner, in_organization=True
+        )
+        assert organization_id is not None
+        await _save(rls_harness.owner, organization_id, "organization-client-id")
+        broker = await _Server(rls_harness.restricted, tmp_path).start()
+
+        async with tenant_session(rls_harness.restricted, tenant_id) as session:
+            # Made through the server's app, before the organization saved its own.
+            before = await broker._revoker(session, GOOGLE, SERVER_CLIENT)
+            since = await broker._revoker(session, GOOGLE, "organization-client-id")
+            with pytest.raises(ServiceUnavailableError) as gone:
+                await broker._revoker(session, GOOGLE, "replaced-client-id")
+        assert before.current_client_id() == SERVER_CLIENT
+        assert since.current_client_id() == "organization-client-id"
+        assert "no longer uses the Google Workspace app" in str(gone.value)
 
 
 class TestKept:
+    async def test_what_a_workspace_belongs_to_is_read_once(
+        self, rls_harness: RLSHarness, tmp_path: Path
+    ) -> None:
+        organization_id, in_one = await _workspace(
+            rls_harness.owner, in_organization=True
+        )
+        _, in_none = await _workspace(rls_harness.owner, in_organization=False)
+        assert organization_id is not None
+        await _save(rls_harness.owner, organization_id, "organization-client-id")
+        server = _Server(rls_harness.restricted, tmp_path)
+        await server.start()
+        first = await server.lookup(in_one, GOOGLE)
+        assert await server.lookup(in_none, GOOGLE) is None
+
+        apps = server.organization_apps
+        assert await apps.for_workspace(_Unread(), in_one, GOOGLE) is first
+        assert await apps.for_workspace(_Unread(), in_none, GOOGLE) is None
+
     async def test_the_adapter_is_kept_until_the_app_changes(
         self, rls_harness: RLSHarness, tmp_path: Path
     ) -> None:
@@ -258,13 +353,13 @@ class TestKept:
         await server.start()
         monkeypatch.setattr(organization_apps_module, "TRUSTED_SECONDS", 0.0)
 
-        first = await server.organization_apps.for_workspace(tenant_id, GOOGLE)
-        unchanged = await server.organization_apps.for_workspace(tenant_id, GOOGLE)
+        first = await server.lookup(tenant_id, GOOGLE)
+        unchanged = await server.lookup(tenant_id, GOOGLE)
         assert first is not None and unchanged is first
 
         # Saved by a process whose announcement never arrived.
         await _save(rls_harness.owner, organization_id, "second-client")
-        changed = await server.organization_apps.for_workspace(tenant_id, GOOGLE)
+        changed = await server.lookup(tenant_id, GOOGLE)
         assert changed is not None and changed.adapter is not None
         assert changed.adapter.current_client_id() == "second-client"
 
@@ -295,8 +390,39 @@ class TestKept:
             return row
 
         monkeypatch.setattr(server.organization_apps._store, "get", read_then_change)
-        await server.organization_apps.for_workspace(tenant_id, GOOGLE)
-        await server.organization_apps.for_workspace(tenant_id, GOOGLE)
+        await server.lookup(tenant_id, GOOGLE)
+        await server.lookup(tenant_id, GOOGLE)
+        assert reads == 2
+
+    async def test_forgetting_everything_during_a_first_read_is_not_overwritten(
+        self,
+        rls_harness: RLSHarness,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        organization_id, tenant_id = await _workspace(
+            rls_harness.owner, in_organization=True
+        )
+        assert organization_id is not None
+        await _save(rls_harness.owner, organization_id, "first-client")
+        server = _Server(rls_harness.restricted, tmp_path)
+        await server.start()
+        store = OrganizationAppCredentialStore(TEST_KEYRING)
+        reads = 0
+
+        async def read_then_reconnect(
+            session: AsyncSession, organization: str, service: str
+        ) -> OrganizationAppCredential | None:
+            nonlocal reads
+            reads += 1
+            row = await store.get(session, organization, service)
+            if reads == 1:
+                server.organization_apps.forget_all()
+            return row
+
+        monkeypatch.setattr(server.organization_apps._store, "get", read_then_reconnect)
+        await server.lookup(tenant_id, GOOGLE)
+        await server.lookup(tenant_id, GOOGLE)
         assert reads == 2
 
 

@@ -35,6 +35,7 @@ from switch_core.connections.broker import (
     Principal,
     ServiceBroker,
     ServiceError,
+    SignIn,
 )
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.maintenance import maintain_once
@@ -55,6 +56,7 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
+from tests.switch_core.connections.standing import availability, connectable, standing
 from tests.switch_core.connections.test_loader import (
     CLI_ENTRY,
     OAUTH_ENTRY,
@@ -471,7 +473,7 @@ class TestChecks:
             False,
         )
         assert "not available on this server" in refused.message
-        assert await broker.connectable("github") is False
+        assert await connectable(broker, "github") is False
 
     async def test_an_owner_no_longer_in_the_workspace_is_forbidden(
         self, broker, session_factory
@@ -756,13 +758,13 @@ class TestConnectOnly:
         )
         world = await _world(session_factory, expires_in=60)
 
-        reason = await broker.availability("github")
+        reason = await availability(broker, "github")
         assert reason is not None and "not granted to agents" in reason
-        unavailable = await broker.unavailable("github")
+        unavailable = (await standing(broker, "github")).unavailable
         assert unavailable is not None and unavailable.code == "not_fully_set_up"
-        assert await broker.server_setup_needed("github") is False
-        assert await broker.connectable("github") is True
-        assert await broker.connectable("asana") is False
+        assert (await standing(broker, "github")).server_setup_needed is False
+        assert await connectable(broker, "github") is True
+        assert await connectable(broker, "asana") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             503,
@@ -842,10 +844,10 @@ class TestSwitchedOff:
         broker = _switched_off(session_factory, vendor, {"github": reason})
         world = await _world(session_factory)
 
-        assert await broker.availability("github") == reason
-        unavailable = await broker.unavailable("github")
+        assert await availability(broker, "github") == reason
+        unavailable = (await standing(broker, "github")).unavailable
         assert unavailable is not None and unavailable.code == "switched_off"
-        assert await broker.connectable("github") is False
+        assert await connectable(broker, "github") is False
         refused = await _refused(broker, session_factory, world.agent.id)
         assert (refused.status_code, refused.code, refused.retryable) == (
             403,
@@ -897,7 +899,7 @@ class TestSwitchedOff:
         self, session_factory, vendor
     ) -> None:
         broker = _switched_off(session_factory, vendor, {"github": ""})
-        assert await broker.availability("github") == "Switched off on this server."
+        assert await availability(broker, "github") == "Switched off on this server."
 
     async def test_a_service_outside_the_catalog_stops_the_server(
         self, session_factory, vendor
@@ -1308,7 +1310,7 @@ class TestPassThrough:
             warning = await pt.broker.finish_disconnect(
                 session,
                 pt.world.owner.id,
-                [("unset", None)],  # type: ignore[list-item]
+                [("unset", SignIn(ConnectionSecret({}), None))],
             )
         assert warning is not None
         assert "unset is not set up on this server" in warning
@@ -1771,4 +1773,6 @@ class TestReplacedClient:
         assert token.resources == RESOURCES
         connection = await _connection(session_factory, world.owner.id)
         assert connection is not None
-        assert await broker.client_replaced(connection) is False
+        assert (await standing(broker, connection.service)).client_replaced(
+            connection
+        ) is False

@@ -104,7 +104,9 @@ async def set_agent_service(
             "agent": agent.name,
             "service": grant.service,
             "access": grant.access,
-            "summary": await broker.summary(agent.display_name or agent.name, grant),
+            "summary": await broker.summary(
+                session, agent.display_name or agent.name, grant
+            ),
             "warning": warning,
         }
 
