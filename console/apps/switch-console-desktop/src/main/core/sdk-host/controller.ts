@@ -16,7 +16,7 @@ import {
 } from './session-commands';
 import { manageAgentSidecar } from './sidecar-management';
 import { stopSharedSession } from './stop-shared-session';
-import { closeTranscript, openTranscript } from './transcripts';
+import { closeTranscript, openTranscript, sessionRetrySupport } from './transcripts';
 export const sdkHostController = createRPCController({
   stop: (agentId: string, sessionId: string) => stopSharedSession(agentId, sessionId),
   startupStatus: (sessionId: string) => sessionStartupStatus(sessionId),
@@ -46,4 +46,6 @@ export const sdkHostController = createRPCController({
     sessionCommandStatus(agentId, sessionId, commandId),
   reasoningList: (agentId: string, sessionId: string, turnIds: string[] | null) =>
     listReasoning(agentId, sessionId, turnIds),
+  sessionRetrySupport: (agentId: string, sessionId: string) =>
+    sessionRetrySupport(agentId, sessionId),
 });

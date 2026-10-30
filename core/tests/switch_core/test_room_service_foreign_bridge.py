@@ -16,6 +16,7 @@ records every platform call so a test can assert none was made.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -40,6 +41,11 @@ class _FakeProvisioning:
     async def create_room(self, name: str, topic: str) -> str:
         self._n += 1
         return f"!room-{self._n}:switch.local"
+
+    async def record_join(
+        self, session: object, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        raise NotImplementedError
 
     async def invite_to_room(self, room_id: str, user_id: str) -> None:
         return None

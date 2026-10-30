@@ -3,7 +3,7 @@ import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Command, Session } from '@switch-console/shared/session-v1';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
@@ -1653,4 +1653,122 @@ it("tells its owner when the provider asks to run a connector's tool, and only t
         : []
   );
   expect(order).toEqual(['bash', 'notice', 'search', 'add_comment']);
+});
+
+describe('retrying a room message', () => {
+  const roomMessage = (commandId: string): Command => ({
+    ...message(commandId),
+    origin: {
+      actorId: 'user',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: null,
+      messageId: 'm1',
+    },
+  });
+  const retry = (commandId: string): Command => ({
+    ...message(commandId),
+    origin: {
+      actorId: 'user',
+      surface: 'switch-web',
+      roomId: 'room',
+      threadId: null,
+      messageId: null,
+    },
+    body: { type: 'message.retry', messageId: 'm1' },
+  });
+
+  it('says it can retry', async () => {
+    const { host } = await start('codex');
+    expect(host.snapshot().session.capabilities.retry).toBe(true);
+  });
+
+  it('runs a failed turn again under the same message, once however often it is asked', async () => {
+    const { host, emit, adapter } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    emit({
+      type: 'turn.completed',
+      turnId: 'first',
+      outcome: 'error',
+      message: 'model',
+      usage: [],
+    });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+
+    expect((await host.command(retry('again'))).status).toBe('applied');
+    // A double press or a reconnect replaying it.
+    expect((await host.command(retry('again'))).status).toBe('applied');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+    const turns = host.snapshot().turns;
+    expect(turns.map((turn) => turn.turnId)).toEqual(['first', 'again']);
+    expect(adapter.sendTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({ turnId: 'again', text: 'Hello' })
+    );
+    // The retry repeats nothing in the transcript the person wrote: its turn carries the same text.
+    const userItems = host.snapshot().items.filter((item) => item.kind === 'user-message');
+    expect(userItems.map((item) => item.origin?.messageId)).toEqual(['m1', 'm1']);
+  });
+
+  it('runs it again in the host started after a failure took the last one down', async () => {
+    const { host, emit, root } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    emit({
+      type: 'turn.completed',
+      turnId: 'first',
+      outcome: 'error',
+      message: 'model',
+      usage: [],
+    });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+    await host.shutdown();
+
+    const next = setup('codex');
+    const recovered = await startHost(root, next.config, next.adapter);
+    hosts.push(recovered);
+    await until(() => expect(recovered.snapshot().session.status).toBe('ready'));
+    // Relayed as the current generation, which the shared host fills in.
+    const command = { ...retry('again'), epoch: recovered.snapshot().session.epoch };
+    expect((await recovered.command(command)).status).toBe('applied');
+    await until(() => expect(next.adapter.sendTurn).toHaveBeenCalledTimes(1));
+  });
+
+  it('runs a message again after its retry failed too, going by its latest turn', async () => {
+    const { host, emit, adapter } = await start('codex');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    emit({
+      type: 'turn.completed',
+      turnId: 'first',
+      outcome: 'error',
+      message: 'model',
+      usage: [],
+    });
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('error'));
+    expect((await host.command(retry('again'))).status).toBe('applied');
+    await until(() => expect(host.snapshot().turns[1]?.status).toBe('running'));
+    // While the retry runs, another is refused: its latest turn has not ended.
+    await expect(host.command(retry('too-soon'))).rejects.toThrow('SESSION_BUSY');
+    emit({
+      type: 'turn.completed',
+      turnId: 'again',
+      outcome: 'error',
+      message: 'model',
+      usage: [],
+    });
+    await until(() => expect(host.snapshot().turns[1]?.status).toBe('error'));
+
+    expect((await host.command(retry('third'))).status).toBe('applied');
+    await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(3));
+    expect(host.snapshot().turns.map((turn) => turn.turnId)).toEqual(['first', 'again', 'third']);
+  });
+
+  it('refuses to run again a turn still going, or a message it never worked on', async () => {
+    const { host } = await start('codex');
+    await expect(host.command(retry('nothing'))).rejects.toThrow('NOT_FOUND');
+    await host.command(roomMessage('first'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
+  });
 });

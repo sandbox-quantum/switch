@@ -105,11 +105,28 @@ class DiscordConnection:
         self._guild_join_handler: Callable[[discord.Guild], Awaitable[None]] | None = (
             None
         )
+        # A guild channel's settings changed (its name, say). One handler for
+        # the whole socket, as for presses; unset means the change is dropped.
+        self._channel_update_handler: (
+            Callable[
+                [discord.abc.GuildChannel, discord.abc.GuildChannel], Awaitable[None]
+            ]
+            | None
+        ) = None
 
     def set_interaction_handler(
         self, handler: Callable[[discord.Interaction], Awaitable[None]] | None
     ) -> None:
         self._interaction_handler = handler
+
+    def set_channel_update_handler(
+        self,
+        handler: Callable[
+            [discord.abc.GuildChannel, discord.abc.GuildChannel], Awaitable[None]
+        ]
+        | None,
+    ) -> None:
+        self._channel_update_handler = handler
 
     def register_message_handler(
         self, guild_id: int, handler: Callable[[discord.Message], Awaitable[None]]
@@ -222,6 +239,7 @@ class DiscordConnection:
         # through the handler set via `set_interaction_handler`, or dropped when
         # none is set.
         client.event(self._make_on_interaction())
+        client.event(self._make_on_guild_channel_update())
         if self._guild_remove_handler is not None:
             client.event(self._make_on_guild_remove())
         if self._guild_join_handler is not None:
@@ -365,6 +383,25 @@ class DiscordConnection:
                 logger.exception("Failed to handle Discord guild removal")
 
         return on_guild_remove
+
+    def _make_on_guild_channel_update(
+        self,
+    ) -> Callable[
+        [discord.abc.GuildChannel, discord.abc.GuildChannel],
+        Coroutine[Any, Any, None],
+    ]:
+        async def on_guild_channel_update(
+            before: discord.abc.GuildChannel, after: discord.abc.GuildChannel
+        ) -> None:
+            handler = self._channel_update_handler
+            if handler is None:
+                return
+            try:
+                await handler(before, after)
+            except Exception:
+                logger.exception("Failed to handle a Discord channel update")
+
+        return on_guild_channel_update
 
     def _make_on_guild_join(
         self,

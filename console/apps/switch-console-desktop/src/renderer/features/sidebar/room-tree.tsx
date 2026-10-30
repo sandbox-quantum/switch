@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { Fragment } from 'react';
+import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
@@ -156,6 +157,7 @@ export const RoomTree = observer(function RoomTree() {
                 expanded={expanded}
                 depth={0}
                 bridgeType={switchRoomsStore.roomBridgeTypeById(roomKey)}
+                badge={<UnreadBadge roomId={roomKey} />}
                 onToggle={() => sidebarStore.toggleGroupExpanded(roomViewKey)}
                 onSelect={() => openRoomView(roomKey)}
                 isActive={isRoomViewActive(roomKey)}

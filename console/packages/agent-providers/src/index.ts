@@ -87,6 +87,7 @@ export {
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
+  type AgentStreamDeps,
   type OpenAgentStream,
   openSwitchStream,
   runAgentHost,

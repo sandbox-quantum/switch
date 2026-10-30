@@ -32,6 +32,8 @@ class StatementScope:
 
     label: str
     statements: list[str] = field(default_factory=list)
+    # Rows each statement returned, as the driver fetched them.
+    rows: int = 0
 
     @property
     def count(self) -> int:
@@ -48,9 +50,27 @@ class StatementCounts:
         self._engine = engine.sync_engine
         self.scopes: list[StatementScope] = []
         event.listen(self._engine, "before_cursor_execute", self._on_execute)
+        event.listen(self._engine, "after_cursor_execute", self._on_executed)
 
     def close(self) -> None:
         event.remove(self._engine, "before_cursor_execute", self._on_execute)
+        event.remove(self._engine, "after_cursor_execute", self._on_executed)
+
+    def _on_executed(
+        self,
+        _conn: Any,
+        cursor: Any,
+        _statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        scope = _current.get()
+        if scope is None:
+            return
+        # The asyncpg adapter holds a statement's result rows in `_rows`.
+        fetched = getattr(cursor, "_rows", None)
+        scope.rows += len(fetched) if fetched is not None else max(cursor.rowcount, 0)
 
     def _on_execute(
         self,

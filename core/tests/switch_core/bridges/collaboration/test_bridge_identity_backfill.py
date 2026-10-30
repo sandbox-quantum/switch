@@ -26,6 +26,9 @@ class _FakeAdapter:
     def set_channel_type_handler(self, handler: Any) -> None:
         pass
 
+    def set_channel_rename_handler(self, handler: Any) -> None:
+        pass
+
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
         pass
 

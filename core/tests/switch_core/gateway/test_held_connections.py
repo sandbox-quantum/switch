@@ -87,6 +87,11 @@ class _Provisioning:
     def __init__(self, calls: _Calls) -> None:
         self._calls = calls
 
+    async def record_join(
+        self, session: object, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        raise NotImplementedError
+
     async def invite_to_room(self, transport_room_id: str, user_id: str) -> None:
         self._calls.record("matrix invite")
 

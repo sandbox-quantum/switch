@@ -106,6 +106,15 @@ export function providerDisplayName(id: string | null | undefined): string | nul
   return getProvider(id)?.name ?? id;
 }
 
+/** What a provider is called, from the agent type the server records (`claude-code`). */
+export function knownAgentTypeDisplayName(type: string | null | undefined): string | null {
+  if (!type) return null;
+  return (
+    agentProviders().find((provider) => provider.knownAgentType === type)?.name ??
+    providerDisplayName(type)
+  );
+}
+
 export function getDescriptionForProvider(id: AgentProviderId): string | null {
   return getProvider(id)?.description ?? null;
 }

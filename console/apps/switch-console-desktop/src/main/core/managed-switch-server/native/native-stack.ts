@@ -577,6 +577,12 @@ export async function nativeStackRunning(layout: NativeLayout): Promise<boolean>
   return (await runningCore(layout)) !== null;
 }
 
+/** The line of switch-core's log that says why it stopped, or null. For a
+ * server that stopped on its own, after it had started. */
+export function nativeCoreFailureLine(layout: NativeLayout): Promise<string | null> {
+  return coreFailureLine(layout);
+}
+
 export async function nativeStartedAt(layout: NativeLayout): Promise<string | null> {
   return (await runningCore(layout))?.startedAt ?? null;
 }

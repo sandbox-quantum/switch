@@ -129,6 +129,8 @@ interface CodexSessionState {
   client: StdioJsonRpcClient;
   model?: string;
   effort?: string;
+  /** A warning about the session's setup to say again once its first turn is running. */
+  firstTurnNotice?: string;
   compaction?: { resolve: () => void; reject: (error: Error) => void };
   activeNativeTurnId?: string;
   /** Caller turn ids handed to `turn/start` but not yet bound to a native id. */
@@ -228,6 +230,47 @@ async function configuredSandbox(codexHome: string | undefined): Promise<CodexSa
   return typeof mode === 'string' && SANDBOX_MODES.has(mode as CodexSandboxMode)
     ? (mode as CodexSandboxMode)
     : null;
+}
+
+/** The model the configuration in `codexHome` names, which a thread left on its default inherits. */
+async function configuredModel(codexHome: string | undefined): Promise<string | null> {
+  if (!codexHome) return null;
+  let text: string;
+  try {
+    text = await readFile(join(codexHome, 'config.toml'), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  const model = parse(text).model;
+  return typeof model === 'string' && model.trim() ? model.trim() : null;
+}
+
+/**
+ * The model a thread left on its default should run: the configuration's when
+ * the signed-in account can use it, otherwise the account's own default, with
+ * why. A configuration written for another account (or an API key) names a
+ * model this sign-in is refused, and every turn would fail on it.
+ */
+async function defaultModelFor(
+  client: StdioJsonRpcClient,
+  configured: string | null
+): Promise<{ model: string; warning: string } | null> {
+  if (configured === null) return null;
+  const offered: { model: string; isDefault?: boolean }[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: { data: { model: string; isDefault?: boolean }[]; nextCursor: string | null } =
+      await client.request('model/list', { cursor, limit: 100 });
+    offered.push(...page.data);
+    cursor = page.nextCursor;
+  } while (cursor);
+  if (offered.length === 0 || offered.some((each) => each.model === configured)) return null;
+  const fallback = offered.find((each) => each.isDefault) ?? offered[0]!;
+  return {
+    model: fallback.model,
+    warning: `This Codex sign-in cannot use ${configured}, the model its configuration names, so this session runs ${fallback.model}. Pick a model in the agent's settings to choose another.`,
+  };
 }
 
 /**
@@ -429,6 +472,7 @@ export class CodexAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'starting' });
 
     let sandboxWarning: string | undefined;
+    let modelWarning: string | undefined;
     try {
       const initializeParams: CodexInitializeParams = {
         clientInfo: { name: CLIENT_NAME, title: 'Switch Console', version: CLIENT_VERSION },
@@ -446,6 +490,23 @@ export class CodexAdapter implements ProviderAdapter {
 
       const configured = await configuredSandbox(input.env.CODEX_HOME);
       const sandbox = sandboxFor(input.runtimeMode, configured);
+      const fallback = input.model?.id
+        ? null
+        : await defaultModelFor(client, await configuredModel(input.env.CODEX_HOME)).catch(
+            (error: unknown) => {
+              // The session still starts on whatever the configuration names, as it always did.
+              this.logger.warn('Could not check the configured model against this sign-in', {
+                sessionId: input.sessionId,
+                error: String(error),
+              });
+              return null;
+            }
+          );
+      if (fallback) {
+        state.model = fallback.model;
+        modelWarning = fallback.warning;
+        state.firstTurnNotice = fallback.warning;
+      }
       if (sandbox !== configured)
         sandboxWarning = `Auto mode runs Codex in the ${sandbox} sandbox instead of the configured ${configured}: unsandboxed, nothing would reach its automatic review.`;
       const config = {
@@ -453,7 +514,11 @@ export class CodexAdapter implements ProviderAdapter {
         ...(mode.approvalPolicy ? { approvalPolicy: mode.approvalPolicy } : {}),
         ...(sandbox ? { sandbox } : {}),
         approvalsReviewer: mode.approvalsReviewer,
-        ...(input.model?.id ? { model: input.model.id } : {}),
+        ...(input.model?.id
+          ? { model: input.model.id }
+          : fallback
+            ? { model: fallback.model }
+            : {}),
         ...(input.systemContext ? { developerInstructions: input.systemContext } : {}),
       };
       const opened = await this.openThread(client, config, input.resume?.nativeSessionId);
@@ -486,9 +551,10 @@ export class CodexAdapter implements ProviderAdapter {
     }
 
     this.emit(state, { type: 'session.started', nativeSessionId: state.threadId });
-    if (sandboxWarning) {
-      this.logger.warn(sandboxWarning, { sessionId: input.sessionId });
-      this.emit(state, { type: 'runtime.warning', message: sandboxWarning });
+    for (const warning of [sandboxWarning, modelWarning]) {
+      if (!warning) continue;
+      this.logger.warn(warning, { sessionId: input.sessionId });
+      this.emit(state, { type: 'runtime.warning', message: warning });
     }
     this.emit(state, { type: 'session.state.changed', status: 'ready' });
     return { sessionId: input.sessionId, nativeSessionId: state.threadId, provider: PROVIDER };
@@ -863,6 +929,12 @@ export class CodexAdapter implements ProviderAdapter {
         turnId,
         raw: { source: CODEX_SERVER_NOTIFICATIONS.turnStarted, payload },
       });
+      // Said again inside the first turn, where the chat shows it: a warning
+      // from before any turn reaches only the host's own log.
+      if (state.firstTurnNotice) {
+        this.emit(state, { type: 'runtime.warning', message: state.firstTurnNotice });
+        state.firstTurnNotice = undefined;
+      }
     });
 
     client.onNotification(CODEX_SERVER_NOTIFICATIONS.turnCompleted, (params) => {

@@ -6,7 +6,7 @@ import {
   type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
-import type { AgentEventStream, OpenAgentStream } from './agent-host';
+import type { AgentEventStream, AgentStreamDeps, OpenAgentStream } from './agent-host';
 
 /**
  * The agent controller's hub, over a WebSocket on the controller's loopback
@@ -56,7 +56,8 @@ export type HubServerMessage =
   | { type: 'gap'; id: number; gap: HubGap }
   | { type: 'session_command'; id: number; command: SessionCommand }
   | { type: 'approval_outcome'; id: number; outcome: ApprovalOutcome }
-  | { type: 'result'; id: number; error?: string };
+  | { type: 'room_gone'; id: number; roomId: string; sessionId: string }
+  | { type: 'result'; id: number; error?: string; refusedRooms?: string[] };
 
 /** Node's WebSocket, which, unlike a browser's, takes request headers. */
 type HeaderedWebSocket = new (url: string, init: { headers: Record<string, string> }) => WebSocket;
@@ -82,14 +83,17 @@ class HubEventStream implements AgentEventStream {
   private cursor: number | null;
   private placements: Record<string, string> = {};
   private nextId = 0;
-  private readonly calls = new Map<number, (error: string | undefined) => void>();
+  private readonly placementCalls = new Map<
+    number,
+    (answer: { error?: string; refusedRooms?: string[] }) => void
+  >();
   /** Requests are handled one at a time, in the order they came. */
   private handling: Promise<void> = Promise.resolve();
   private standingDown = false;
 
   constructor(
     private readonly url: string,
-    private readonly deps: SwitchEventStreamDeps
+    private readonly deps: AgentStreamDeps
   ) {
     this.cursor = deps.startCursor ?? null;
   }
@@ -103,17 +107,18 @@ class HubEventStream implements AgentEventStream {
   // Switch decides who may start a session from the agent's binding.
   setSpawnCapable(): void {}
 
-  async replacePlacements(placements: Record<string, string>): Promise<void> {
+  async replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }> {
     this.placements = { ...placements };
     const socket = this.socket;
     // Not connected: the next hello carries them.
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return { refusedRooms: [] };
     const id = ++this.nextId;
-    const error = await new Promise<string | undefined>((resolve) => {
-      this.calls.set(id, resolve);
+    const answer = await new Promise<{ error?: string; refusedRooms?: string[] }>((resolve) => {
+      this.placementCalls.set(id, resolve);
       socket.send(JSON.stringify({ type: 'placements', id, placements }));
     });
-    if (error !== undefined) throw new Error(error);
+    if (answer.error !== undefined) throw new Error(answer.error);
+    return { refusedRooms: answer.refusedRooms ?? [] };
   }
 
   private async run(): Promise<void> {
@@ -180,9 +185,9 @@ class HubEventStream implements AgentEventStream {
           return;
         }
         if (parsed.type === 'result') {
-          const call = this.calls.get(parsed.id);
-          this.calls.delete(parsed.id);
-          call?.(parsed.error);
+          const call = this.placementCalls.get(parsed.id);
+          this.placementCalls.delete(parsed.id);
+          call?.({ error: parsed.error, refusedRooms: parsed.refusedRooms });
           return;
         }
         this.handling = this.handling.then(() => this.handle(socket, parsed));
@@ -191,8 +196,8 @@ class HubEventStream implements AgentEventStream {
         this.deps.signal.removeEventListener('abort', abort);
         if (this.socket === socket) this.socket = null;
         // The placements a call was sending go again with the next hello.
-        for (const call of this.calls.values()) call(undefined);
-        this.calls.clear();
+        for (const call of this.placementCalls.values()) call({});
+        this.placementCalls.clear();
         resolve({ code: event.code, reason: event.reason, helloed });
       });
       // A failed handshake also closes; the close says what happened.
@@ -222,6 +227,9 @@ class HubEventStream implements AgentEventStream {
           break;
         case 'approval_outcome':
           await deps.onApprovalOutcome?.(message.outcome);
+          break;
+        case 'room_gone':
+          await deps.onRoomGone?.({ roomId: message.roomId, sessionId: message.sessionId });
           break;
       }
     } catch (failure) {

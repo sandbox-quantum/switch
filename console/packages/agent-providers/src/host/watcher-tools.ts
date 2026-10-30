@@ -154,6 +154,16 @@ export function sessionToolAnswerer(deps: {
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
       );
+    // Stated again first: a reply is posted as the session, in the room Switch
+    // holds it in, and the placement it was refused on may be the reason the
+    // turn could not post itself.
+    await deps
+      .publish()
+      .catch((error: unknown) =>
+        console.warn(
+          `Could not state the session placements before posting a reply for session ${caller.sessionId}: ${error instanceof Error ? error.message : String(error)}`
+        )
+      );
     const posted = await catalog.call(await context(caller), 'post_message', {
       body: deps.redactions.text(ask.body),
       ...(ask.threadId ? { thread_id: ask.threadId } : {}),

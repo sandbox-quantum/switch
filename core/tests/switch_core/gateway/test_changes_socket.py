@@ -21,7 +21,7 @@ from starlette.websockets import WebSocketDisconnect
 from switch_core.gateway import changes
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import SocketCaller
-from switch_core.user_changes import MACHINE, MANAGED_AGENT, LocalUserChanges
+from switch_core.user_changes import MACHINE, MANAGED_AGENT, ROOM, LocalUserChanges
 
 
 def _app(feed: LocalUserChanges) -> FastAPI:
@@ -69,7 +69,7 @@ def test_opens_with_hello_naming_the_kinds_it_sends(
     with client.websocket_connect("/changes/ws") as ws:
         hello = ws.receive_json()
     assert hello["event"] == "hello"
-    assert set(hello["data"]["kinds"]) == {MANAGED_AGENT, MACHINE}
+    assert set(hello["data"]["kinds"]) == {MANAGED_AGENT, MACHINE, ROOM}
     assert hello["data"]["ping_interval_s"] == changes.PING_INTERVAL_SECONDS
 
 

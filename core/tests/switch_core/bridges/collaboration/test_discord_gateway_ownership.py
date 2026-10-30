@@ -70,6 +70,9 @@ class _Connection:
     def set_interaction_handler(self, handler: Any) -> None:
         pass
 
+    def set_channel_update_handler(self, handler: Any) -> None:
+        pass
+
     def set_guild_lifecycle_handlers(self, **handlers: Any) -> None:
         pass
 

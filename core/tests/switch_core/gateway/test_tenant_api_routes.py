@@ -30,6 +30,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+)
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.broker import ServiceBroker
@@ -1412,6 +1415,30 @@ class TestMemberRoutes:
         assert response.status_code == 200, response.text
         roles = {row["name"]: row["role"] for row in response.json()}
         assert roles == {"list-owner": "owner", "list-member": "member"}
+
+    async def test_listing_flags_the_bootstrap_owner_as_a_service_account(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        await _make_tenant(session_factory, TENANT_A)
+        owner_id = await _make_member(
+            session_factory, name="Agent Bootstrap", tenant_id=TENANT_A, role="owner"
+        )
+        bootstrap_id = await _make_member(
+            session_factory, name="robot", tenant_id=TENANT_A, role="member"
+        )
+        async with session_factory() as session:
+            bootstrap = await session.get(User, bootstrap_id)
+            assert bootstrap is not None
+            bootstrap.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+            await session.commit()
+        token = _token(owner_id, "Agent Bootstrap@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get(f"/tenants/{TENANT_A}/members")
+
+        assert response.status_code == 200, response.text
+        flags = {row["name"]: row["service_account"] for row in response.json()}
+        assert flags == {"Agent Bootstrap": False, "robot": True}
 
     async def test_the_last_owner_cannot_be_demoted(
         self, session_factory: async_sessionmaker[AsyncSession]

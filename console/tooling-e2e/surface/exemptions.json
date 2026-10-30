@@ -1,8 +1,13 @@
 {
   "_about": "Read by src/gate/gate.ts; see the README, \"Coverage gate\". exempt and unauthenticated need a reason per entry. backlog is what no scenario covered when the gate landed: it only shrinks, and the gate fails on an entry a scenario now covers.",
   "exempt": {
+    "DELETE /gateway/chats/{room_id}/agents/{agent_id}": "Switch Console group chats. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog), and the stacks the harness builds do not turn on the group_chats flag these routes need.",
     "GET /gateway/auth/oidc/callback": "Needs a live OIDC identity provider; the harness signs in with a password.",
     "GET /gateway/auth/oidc/login": "Needs a live OIDC identity provider; the harness signs in with a password.",
+    "GET /gateway/chats/archived": "Switch Console archived chats. Covered by core's test_chats_routes.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog).",
+    "GET /gateway/chats/agent-candidates": "Switch Console group chats. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog), and the stacks the harness builds do not turn on the group_chats flag these routes need.",
+    "GET /gateway/chats/{room_id}/commands": "The commands the chat composer offers on `!`. Covered by core's test_chats_controls.py against real Postgres; no scenario drives Console chats yet, and the stacks the harness builds do not turn on the group_chats flag.",
+    "GET /gateway/chats/{room_id}/threads/{root_id}/messages": "Switch Console group chats. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog), and the stacks the harness builds do not turn on the group_chats flag these routes need.",
     "GET /gateway/docs": "FastAPI's generated API documentation; no behaviour of Switch's own to cover.",
     "GET /gateway/docs/oauth2-redirect": "FastAPI's generated API documentation; no behaviour of Switch's own to cover.",
     "GET /gateway/hosted-controller/machines": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has.",
@@ -13,8 +18,12 @@
     "GET /gateway/service-connections/{service}/flows/authorize": "Needs the third-party service's own sign-in page in a browser.",
     "GET /gateway/service-connections/{service}/flows/callback": "Needs the third-party service's own sign-in page in a browser.",
     "POST /gateway/auth/oidc/exchange": "Needs a code from a live OIDC sign-in; the harness signs in with a password.",
+    "POST /gateway/chats/{room_id}/agents": "Switch Console group chats. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog), and the stacks the harness builds do not turn on the group_chats flag these routes need.",
+    "POST /gateway/chats/{room_id}/unarchive": "Switch Console archived chats. Covered by core's test_chats_routes.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog).",
     "POST /gateway/hosted-controller/machines/{machine_id}/observation": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has.",
     "POST /gateway/hosted-controller/machines/{machine_id}/prepare": "Needs a hosted controller configured (HOSTED_CONTROLLER_CONFIG_PATH), which no stack the harness builds has.",
+    "POST /gateway/rooms/{room_id}/sync-name": "Needs a bridged room whose linked channel was renamed on the platform, which the fast lane's stacks cannot stage. Covered by core's test_room_sync_name.py against real Postgres.",
+    "PUT /gateway/chats/{room_id}/read": "Switch Console read positions. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog).",
     "WS /gateway/changes/ws": "Console's change-notice socket. What it sends is covered by core's test_changes_socket.py, and the session probe checks it refuses a handshake without a session; no scenario drives Console's lists yet.",
     "get_template_status": "Needs an agent created from an official template on a managed machine and then a newer revision of that template; no stack the harness builds has managed agents yet (create_agent is in the backlog). Covered by core's test_template_updates.py."
   },

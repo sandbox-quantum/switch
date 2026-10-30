@@ -34,3 +34,12 @@ export function roomControlRefusal(action: 'reset' | 'compact', reason: string |
     return `I can't ${action} my session while I'm working on a turn. Ask again once I've finished, or stop the turn first.`;
   return `I couldn't ${action} my session: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
+
+/** What the room is told when the session could not run a message's turn again. */
+export function retryRefusal(reason: string | null): string {
+  if (reason?.includes('SESSION_BUSY'))
+    return "I can only try again once that turn has ended without an answer, and it hasn't.";
+  if (reason?.includes('NOT_FOUND'))
+    return "I couldn't try that again: my current session never worked on that message.";
+  return `I couldn't try that again: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
+}

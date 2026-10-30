@@ -608,6 +608,46 @@ class TestCost:
         assert small.get("SELECT") == large.get("SELECT"), (small, large)
         assert small == large
 
+    @pytest.mark.parametrize("agents", [1, 2])
+    async def test_a_direct_room_reads_no_agent_count_per_message(
+        self,
+        agents: int,
+        session_factory: SessionFactory,
+        statement_counts: StatementCounts,
+    ) -> None:
+        """Whether a direct room holds one agent rides on the room's own read,
+        so every message there costs no query for the room's agents: one
+        agent hears an unnamed message, two do not."""
+        process = process_on(session_factory)
+        room = await make_room(session_factory, channel_type="direct")
+        alice = await make_person(session_factory, "alice")
+        await add_member(session_factory, room, alice)
+        ids = []
+        for n in range(agents):
+            agent, client = await make_agent(
+                session_factory, f"d{n}-{uuid.uuid4().hex[:4]}"
+            )
+            await add_member(session_factory, room, client, agent=agent)
+            _go_live(process, agent.id)
+            ids.append(agent.id)
+        await process.say(room, "hello", sender=alice)
+        await process.idle()
+        before = [len(await own_events(session_factory, i)) for i in ids]
+
+        with statement_counts.scope("direct") as scope:
+            await process.say(room, "just chatting", sender=alice)
+        await process.idle()
+
+        agent_reads = [
+            s
+            for s in (" ".join(st.split()) for st in scope.statements)
+            if s.startswith("SELECT room_agents.agent_id FROM room_agents")
+        ]
+        assert agent_reads == []
+        after = [len(await own_events(session_factory, i)) for i in ids]
+        heard = 1 if agents == 1 else 0
+        assert after == [b + heard for b in before]
+
     async def test_writes_grow_with_the_agents_a_message_is_for(
         self, session_factory: SessionFactory, statement_counts: StatementCounts
     ) -> None:

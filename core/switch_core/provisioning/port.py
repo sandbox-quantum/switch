@@ -17,7 +17,11 @@ failure raises.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 @runtime_checkable
@@ -30,6 +34,14 @@ class Provisioning(Protocol):
 
     async def invite_to_room(self, room_id: str, user_id: str) -> None:
         """Put a user in a room. Already a member is success."""
+        ...
+
+    async def record_join(
+        self, session: AsyncSession, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        """Put a client that is never live in a room within the caller's
+        transaction; what to run once the caller has committed. Already a
+        member is success."""
         ...
 
     async def kick_user(self, room_id: str, user_id: str) -> None:

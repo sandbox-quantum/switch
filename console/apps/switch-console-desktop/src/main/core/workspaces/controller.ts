@@ -75,6 +75,7 @@ import {
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
+  syncRoomName,
   updateRoom,
   updateTemplate,
 } from '@main/core/switch-servers/gateway-client';
@@ -145,6 +146,7 @@ import type {
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
+  SyncRoomNameParams,
   UpdateRoomParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
@@ -888,9 +890,16 @@ export const workspacesController = createRPCController({
    * write access to the room needs the gateway's refusal, not a saved-looking
    * field holding a value the server never took.
    */
+  /** Name a room after its linked channel. Refusals propagate in the gateway's own words. */
+  syncRoomName: (params: SyncRoomNameParams): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      syncRoomName(server, params.roomId)
+    ),
+
   updateRoom: (params: UpdateRoomParams): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateRoom(server, params.roomId, {
+        name: params.name,
         description: params.description,
         instructions: params.instructions,
       })
