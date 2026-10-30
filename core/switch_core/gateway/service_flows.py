@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
     ServiceAdapterError,
@@ -36,8 +36,9 @@ from switch_core.connections.flows import (
     ServiceFlows,
 )
 from switch_core.db.models import ServiceConnection, Tenant, User, require_tenant_id
+from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_session
+from switch_core.gateway.dependencies import get_session, get_session_factory
 from switch_core.gateway.service_connections import service_refusal
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ async def start(
     """Begin signing in: where to send the browser, and which way it returns."""
     try:
         await broker.require_workspace_enabled(session, service)
-        definition, adapter = broker.sign_in(service)
+        definition, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
         return service_refusal(error)
     tenant = await session.get(Tenant, require_tenant_id())
@@ -171,16 +172,26 @@ async def authorize(
     request: Request,
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     flows: Annotated[ServiceFlows, Depends(get_service_flows)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
 ) -> Response:
-    """The browser leaves for the vendor through Core, which marks it."""
-    try:
-        definition, adapter = broker.sign_in(service)
-    except ServiceError:
-        return _page("Connections", INTERRUPTED, 400)
+    """The browser leaves for the vendor through Core, which marks it.
+
+    Nobody is signed in here, so the workspace is the flow's: its app is
+    the one the browser is sent to."""
     try:
         flow = await flows.flow(state)
         if flow.service != service or flow.mode != "core":
             raise FlowError(INTERRUPTED)
+    except FlowError:
+        return _page("Connections", INTERRUPTED, 400)
+    async with tenant_session(session_factory, flow.tenant_id) as session:
+        try:
+            definition, adapter = await broker.sign_in(session, service)
+        except ServiceError:
+            return _page("Connections", INTERRUPTED, 400)
+    try:
         url, nonce = await flows.vendor_url(flow, adapter)
     except (FlowError, ServiceAdapterError):
         return _page(definition.name, INTERRUPTED, 400)
@@ -247,7 +258,7 @@ async def complete(
     Core exchanges it, reads the account and writes the connection."""
     flow = await _owned(flows, service, flow_id, user)
     try:
-        _, adapter = broker.sign_in(service)
+        _, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
         return service_refusal(error)
     try:

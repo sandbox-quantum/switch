@@ -73,6 +73,7 @@ def _world(
     public_url: str | None = None,
     disabled: dict[str, str] | None = None,
     workspace_gate: bool = False,
+    organization_apps: object = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
@@ -108,6 +109,7 @@ def _world(
                 catalog["example"].definition, client, vendor.client()
             )
         },
+        organization_apps=organization_apps,  # type: ignore[arg-type]
         disabled=disabled or {},
         store=STORE,
         token_retention=timedelta(days=30),
@@ -480,7 +482,40 @@ class TestLoopbackPorts:
         assert await _flow_ids(session_factory) == set()
 
 
+class _AskedOrganizationApps:
+    """Organizations' apps on, none saved: which workspace each lookup is for."""
+
+    def __init__(self) -> None:
+        self.tenants: list[str] = []
+
+    async def for_workspace(
+        self, session: AsyncSession, tenant_id: str, service: str
+    ) -> None:
+        self.tenants.append(tenant_id)
+
+
 class TestCoreCallback:
+    async def test_with_organizations_apps_the_browser_leaves_through_the_flows_workspace(
+        self, session_factory, tmp_path
+    ) -> None:
+        asked = _AskedOrganizationApps()
+        world = _world(
+            session_factory,
+            tmp_path / "catalog",
+            redirect="[core]",
+            public_url=PUBLIC,
+            organization_apps=asked,
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            started = await Console(client, ada).start()
+            assert started.status_code == 200, started.text
+            # The browser, signed in to nothing: the flow names the workspace.
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+        assert left.status_code == 307, left.text
+        flow_tenant = (await _flow_row(session_factory, started.json()["id"])).tenant_id
+        assert asked.tenants == [flow_tenant, flow_tenant]
+
     async def test_returns_through_core_straight_to_console(
         self, session_factory, tmp_path
     ) -> None:

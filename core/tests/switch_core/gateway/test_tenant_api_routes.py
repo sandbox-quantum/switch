@@ -178,6 +178,7 @@ def _app(
         keyring=_KEYRING,
         catalog=CATALOG,
         adapters={},
+        organization_apps=None,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
@@ -1613,6 +1614,7 @@ class TestMemberRoutes:
             keyring=_KEYRING,
             catalog=CATALOG,
             adapters={"github": GitHubAdapter(github, AsyncMock())},  # type: ignore[arg-type]
+            organization_apps=None,
             disabled={},
             store=ServiceConnectionStore(),
             token_retention=timedelta(days=30),
