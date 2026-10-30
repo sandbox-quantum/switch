@@ -15,7 +15,6 @@ PLACEHOLDERS = {
     "gitlab",
     "bitbucket",
     "microsoft-365",
-    "new-relic",
     "notion",
     "linear",
     "salesforce",
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "new-relic",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +39,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "new-relic",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["new-relic"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -944,6 +946,44 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     # A key never expires, so it is never handed to an agent.
     assert definition.token is not None
     assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_new_relic_entry_takes_one_key_and_one_region_for_both_calls():
+    definition = CATALOG["new-relic"].definition
+    assert definition.adapter == "api_key"
+    assert definition.auth.refresh == "none"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [
+        ("user_key", True),
+        ("region", False),
+    ]
+    assert sign_in.fields[1].choices == [
+        "newrelic.com",
+        "eu.newrelic.com",
+        "jp.newrelic.com",
+    ]
+    assert definition.access is None
+    assert definition.mcp is not None
+    [server] = definition.mcp.servers
+    assert server.url == "https://mcp.{region}/mcp/"
+    # New Relic's MCP server reads the header as `api-key`, while NerdGraph
+    # reads `API-Key`: the same key, spelled two ways.
+    assert server.headers == {"api-key": "{user_key}"}
+    identity = sign_in.identity
+    assert (identity.method, identity.url) == (
+        "POST",
+        "https://api.{region}/graphql",
+    )
+    assert identity.headers["API-Key"] == "{user_key}"
+    assert identity.account_id == "data.actor.user.id"
+    # A key never expires, so it is never handed to an agent.
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        None,
+    )
     assert definition.token.issued_to_agents is False
 
 
