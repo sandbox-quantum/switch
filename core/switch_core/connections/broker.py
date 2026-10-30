@@ -172,12 +172,18 @@ UnavailableCode = Literal[
 ]
 
 
+# Whose app a service goes through in a workspace: its organization's, or
+# the server's (which includes services with no app at all).
+AppSource = Literal["organization", "server"]
+
+
 @dataclass(frozen=True)
 class _Choice:
     adapter: ServiceAdapter | None
     # Why the workspace's organization's app can't be used, where that app
     # is the one that applies.
     problem: str | None
+    source: AppSource
 
 
 def _client_replaced(
@@ -203,6 +209,7 @@ class ServiceStanding:
     unavailable: Unavailable | None
     connectable: bool
     adapter: ServiceAdapter | None
+    source: AppSource
 
     @property
     def server_setup_needed(self) -> bool:
@@ -548,8 +555,8 @@ class ServiceBroker:
         is bound to the workspace."""
         app = await self.organization_app(session, service)
         if app is not None:
-            return _Choice(app.adapter, app.problem)
-        return _Choice(self._adapters.get(service), None)
+            return _Choice(app.adapter, app.problem, "organization")
+        return _Choice(self._adapters.get(service), None, "server")
 
     async def organization_app(
         self, session: AsyncSession, service: str
@@ -1314,6 +1321,7 @@ class ServiceBroker:
                 and choice.adapter is not None
             ),
             adapter=choice.adapter,
+            source=choice.source,
         )
 
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
@@ -1831,7 +1839,7 @@ class ServiceBroker:
             raise ServiceError(
                 503,
                 INTERNAL,
-                self._reason(service, _Choice(adapter, None)),
+                self._reason(service, _Choice(adapter, None, "server")),
                 retryable=False,
             )
         try:

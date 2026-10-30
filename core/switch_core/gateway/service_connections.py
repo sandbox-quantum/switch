@@ -140,6 +140,9 @@ async def list_service_connections(
                 # Whether it waits on the server's operator setting up its app
                 # under Connectors, so a client can offer them that.
                 "server_setup_needed": standing.server_setup_needed,
+                # Whose app it signs in through here: "organization" where the
+                # workspace's organization saved its own, else "server".
+                "app_source": standing.source,
                 # Whether a workspace admin left it on for this workspace.
                 "workspace_enabled": definition.slug not in switched_off,
                 # A grant hands the agent the owner's own token: it is on or

@@ -125,12 +125,15 @@ class Usage:
         )
 
 
-async def _usage(
-    session_factory: async_sessionmaker[AsyncSession], service: str
+async def usage_in(
+    session_factory: async_sessionmaker[AsyncSession],
+    service: str,
+    tenant_ids: list[str],
 ) -> Usage:
-    """Read one workspace at a time, each bound before it is touched."""
+    """`service`'s connections in `tenant_ids`, read one workspace at a time,
+    each bound before it is touched."""
     rows: list[tuple[str, str, str | None]] = []
-    for tenant_id in await all_tenant_ids(session_factory):
+    for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             result = await session.execute(
                 select(
@@ -144,14 +147,23 @@ async def _usage(
     return Usage(rows)
 
 
-def _spec(apps: ConnectorApps, service: str) -> AppSpec:
+async def _usage(
+    session_factory: async_sessionmaker[AsyncSession], service: str
+) -> Usage:
+    """`service`'s connections in every workspace on the server."""
+    return await usage_in(
+        session_factory, service, await all_tenant_ids(session_factory)
+    )
+
+
+def app_spec(apps: ConnectorApps, service: str) -> AppSpec:
     spec = apps.specs.get(service)
     if spec is None:
         raise HTTPException(404, f"{service} has no app to set up on this server.")
     return spec
 
 
-def _setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
+def setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
     """Why the operator can't set this app up here, known before any vendor
     is asked. An unset GATEWAY_PUBLIC_URL is the page's own banner; Google
     accepts an http redirect for local development, GitHub does not."""
@@ -160,8 +172,8 @@ def _setup_blocked(spec: AppSpec, public_url: str | None) -> str | None:
     return None
 
 
-def _refuse_while_blocked(spec: AppSpec, public_url: str | None) -> None:
-    blocked = _setup_blocked(spec, public_url)
+def refuse_while_blocked(spec: AppSpec, public_url: str | None) -> None:
+    blocked = setup_blocked(spec, public_url)
     if blocked is not None:
         raise HTTPException(409, blocked)
 
@@ -172,13 +184,20 @@ def _redirects(
     """Every address the vendor sends people back to Switch at, for the
     operator to register: Core's own callback, which needs the public URL,
     or Switch Console's listener on loopback, which does not."""
+    if spec.kind == "github_app" and effective.github_app is not None:
+        return [effective.github_app.connections.callback]
+    return saved_app_redirects(apps, spec)
+
+
+def saved_app_redirects(apps: ConnectorApps, spec: AppSpec) -> list[str]:
+    """Where the vendor sends people back to an app saved here, the server's
+    or an organization's: a saved GitHub App is called back at
+    GATEWAY_PUBLIC_URL."""
     public_url = apps.public_url
     if spec.kind == "github_app":
-        if effective.github_app is not None:
-            return [effective.github_app.connections.callback]
         return (
             []
-            if public_url is None or _setup_blocked(spec, public_url) is not None
+            if public_url is None or setup_blocked(spec, public_url) is not None
             else [public_url.rstrip("/") + GITHUB_CALLBACK_PATH]
         )
     oauth = apps.definition(spec.service).auth.oauth
@@ -186,7 +205,7 @@ def _redirects(
     return redirect_uris(spec.service, oauth.redirect, public_url, oauth.loopback_ports)
 
 
-def _needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:
+def needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:
     if spec.kind == "github_app":
         return True
     oauth = apps.definition(spec.service).auth.oauth
@@ -194,14 +213,14 @@ def _needs_public_url(apps: ConnectorApps, spec: AppSpec) -> bool:
     return "core" in oauth.redirect
 
 
-def _scopes(apps: ConnectorApps, spec: AppSpec) -> list[str]:
+def app_scopes(apps: ConnectorApps, spec: AppSpec) -> list[str]:
     """What a sign-in asks for, for a vendor whose app lists its scopes."""
     if spec.kind == "github_app":
         return []
     return every_scope(apps.definition(spec.service))
 
 
-def _secret_views(
+def secret_views(
     spec: AppSpec, secrets: dict[str, str] | None, stored: bool
 ) -> dict[str, dict[str, Any]]:
     """Whether each secret is set, and how the operator recognises it: never
@@ -274,7 +293,7 @@ async def _entry(
         ),
         "saved_client_id": None if row is None else row.client_id,
         "fields": {"slug": slug} if spec.kind == "github_app" else {},
-        "secrets": _secret_views(
+        "secrets": secret_views(
             spec, None if shown is None else shown.secrets, row is not None
         ),
         "saved_ignored": effective.saved_ignored,
@@ -283,9 +302,9 @@ async def _entry(
         # The first of `redirect_uris`, for Consoles that read only one.
         "redirect_uri": next(iter(redirects), None),
         "redirect_uris": redirects,
-        "needs_public_url": _needs_public_url(apps, spec),
-        "scopes": _scopes(apps, spec),
-        "setup_blocked": _setup_blocked(spec, apps.public_url),
+        "needs_public_url": needs_public_url(apps, spec),
+        "scopes": app_scopes(apps, spec),
+        "setup_blocked": setup_blocked(spec, apps.public_url),
         "install_url": (
             f"https://github.com/apps/{slug}/installations/new"
             if spec.kind == "github_app" and slug
@@ -338,7 +357,7 @@ def _refuse_while_configured(effective: EffectiveCredentials) -> None:
         )
 
 
-def _checks_body(result: CheckResult) -> list[dict[str, Any]]:
+def checks_body(result: CheckResult) -> list[dict[str, Any]]:
     return [
         {
             "name": check.name,
@@ -351,8 +370,11 @@ def _checks_body(result: CheckResult) -> list[dict[str, Any]]:
     ]
 
 
-async def _check(apps: ConnectorApps, spec: AppSpec, values: AppValues) -> CheckResult:
-    redirects = _redirects(apps, spec, apps.effective(spec.service))
+async def check_values(
+    apps: ConnectorApps, spec: AppSpec, values: AppValues, redirects: list[str]
+) -> CheckResult:
+    """Ask the vendor whether `values` work as an app sending people back to
+    `redirects`; nothing is stored."""
     if not redirects:
         raise HTTPException(
             409,
@@ -371,7 +393,7 @@ async def _check(apps: ConnectorApps, spec: AppSpec, values: AppValues) -> Check
         raise HTTPException(503, str(error)) from None
 
 
-def _fields_changed(
+def fields_changed(
     previous: AppValues | None,
     client_id: str,
     settings: dict[str, str],
@@ -419,9 +441,9 @@ async def save_connector_app(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any] | JSONResponse:
-    spec = _spec(apps, service)
+    spec = app_spec(apps, service)
     _refuse_while_configured(apps.effective(service))
-    _refuse_while_blocked(spec, apps.public_url)
+    refuse_while_blocked(spec, apps.public_url)
     given = {
         name: value
         for name, value in (
@@ -464,7 +486,7 @@ async def save_connector_app(
     if missing:
         names = " and ".join(name.replace("_", " ") for name in sorted(missing))
         raise HTTPException(422, f"Enter the {names}.")
-    result = await _check(
+    result = await check_values(
         apps,
         spec,
         AppValues(
@@ -472,6 +494,7 @@ async def save_connector_app(
             {} if previous is None else previous.settings,
             candidate_secrets,
         ),
+        _redirects(apps, spec, apps.effective(service)),
     )
     if not result.ok:
         failure = result.first_failure()
@@ -481,7 +504,7 @@ async def save_connector_app(
             content={
                 "detail": failure.message,
                 "field": failure.field,
-                "checks": _checks_body(result),
+                "checks": checks_body(result),
             },
         )
     previous_client_id = None if row is None else row.client_id
@@ -499,7 +522,7 @@ async def save_connector_app(
         raise HTTPException(422, str(error)) from None
     details: dict[str, Any] = {
         "service": service,
-        "fields_changed": _fields_changed(
+        "fields_changed": fields_changed(
             previous, body.client_id, result.settings, given
         ),
         "client_id": body.client_id,
@@ -526,7 +549,7 @@ async def save_connector_app(
     # What the vendor said, notes included, for the page to show as a check's.
     return {
         **await _entry(session, session_factory, apps, spec),
-        "checks": _checks_body(result),
+        "checks": checks_body(result),
     }
 
 
@@ -540,11 +563,11 @@ async def import_connector_app(
 ) -> dict[str, Any]:
     """Copy the app configuration names into a saved one, so the
     configuration can be removed with nothing retyped."""
-    spec = _spec(apps, service)
+    spec = app_spec(apps, service)
     effective = apps.effective(service)
     if effective.source != "configuration" or effective.values is None:
         raise HTTPException(409, f"{spec.name} is not set from configuration.")
-    _refuse_while_blocked(spec, apps.public_url)
+    refuse_while_blocked(spec, apps.public_url)
     if effective.deprecated:
         raise HTTPException(
             409,
@@ -600,19 +623,21 @@ async def check_connector_app(
     _admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, Any]:
     """Ask the vendor about the app in use; nothing is stored."""
-    spec = _spec(apps, service)
+    spec = app_spec(apps, service)
     effective = apps.effective(service)
     # A configured GitHub App is called back at its own origin, not this URL.
     if effective.source != "configuration":
-        _refuse_while_blocked(spec, apps.public_url)
+        refuse_while_blocked(spec, apps.public_url)
     if effective.values is None:
         raise HTTPException(409, f"{spec.name} has no app to check.")
     if effective.deprecated:
         raise HTTPException(
             409, "HOSTED_GITHUB_CONFIG_PATH names no private key to check."
         )
-    result = await _check(apps, spec, effective.values)
-    return {"ok": result.ok, "checks": _checks_body(result)}
+    result = await check_values(
+        apps, spec, effective.values, _redirects(apps, spec, effective)
+    )
+    return {"ok": result.ok, "checks": checks_body(result)}
 
 
 @router.get("/{service}/impact")
@@ -624,7 +649,7 @@ async def connector_app_impact(
     _admin: Annotated[User, Depends(require_admin)],
 ) -> dict[str, int]:
     """Who would have to reconnect if `client_id` replaced the app in use."""
-    _spec(apps, service)
+    app_spec(apps, service)
     values = apps.effective(service).values
     usage = await _usage(session_factory, service)
     people, workspaces = usage.not_through(
@@ -645,7 +670,7 @@ async def remove_connector_app(
 ) -> dict[str, int]:
     """Remove the saved app. The connections made through it are kept, and
     unusable until an app is set up again; they can still be disconnected."""
-    spec = _spec(apps, service)
+    spec = app_spec(apps, service)
     _refuse_while_configured(apps.effective(service))
     removed: ServiceAppCredential | None = await apps.store.remove(session, service)
     if removed is None:

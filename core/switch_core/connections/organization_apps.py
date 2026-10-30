@@ -109,6 +109,10 @@ class OrganizationApps:
         self._epoch = 0
         self._signals: ConnectorAppSignals | None = None
 
+    @property
+    def store(self) -> OrganizationAppCredentialStore:
+        return self._store
+
     def use_signals(self, signals: ConnectorAppSignals) -> None:
         """Announce each change made here, so every other process forgets
         the adapter too (`app_signals.py`)."""
