@@ -1,0 +1,3 @@
+# The model server for Strands Decider. Pinned; regenerate requirements.txt with
+# the command at the top of it after changing this.
+strands-decider==0.2.0

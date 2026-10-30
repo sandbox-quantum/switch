@@ -47,22 +47,31 @@ describe('the Admin page’s sections', () => {
     operator: false,
     serviceConnections: true,
     managed: false,
+    frozen: false,
   };
 
-  it('shows the workspace switches to its admins, and the apps under Server to the operator alone', () => {
+  it('shows the workspace switches and decision routing to its admins, and the apps under Server to the operator alone', () => {
     expect(adminGroups({ ...person, administers: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
+      { scope: 'workspace', items: ['connectors', 'decision'] },
     ]);
     expect(adminGroups({ ...person, administers: true, operator: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
+      { scope: 'workspace', items: ['connectors', 'decision'] },
       { scope: 'server', items: ['apps'] },
     ]);
     expect(adminGroups(person)).toEqual([]);
   });
 
+  it('hides decision routing from a member who is not the workspace’s admin', () => {
+    const member = adminGroups({ ...person, serviceConnections: false });
+    expect(member.flatMap((group) => group.items)).not.toContain('decision');
+    expect(adminGroups({ ...person, managed: true }).flatMap((group) => group.items)).not.toContain(
+      'decision'
+    );
+  });
+
   it('puts the status of a server this Console runs first under Server, for whoever runs it', () => {
     expect(adminGroups({ ...person, administers: true, operator: true, managed: true })).toEqual([
-      { scope: 'workspace', items: ['connectors'] },
+      { scope: 'workspace', items: ['connectors', 'decision'] },
       { scope: 'server', items: ['status', 'apps'] },
     ]);
     expect(adminGroups({ ...person, managed: true })).toEqual([
@@ -70,12 +79,19 @@ describe('the Admin page’s sections', () => {
     ]);
   });
 
-  it('keeps the connector sections behind service connections, but not the status', () => {
+  it('keeps the connector sections behind service connections, but not decision routing or the status', () => {
     const off = { ...person, serviceConnections: false, administers: true, operator: true };
-    expect(adminGroups(off)).toEqual([]);
+    expect(adminGroups(off)).toEqual([{ scope: 'workspace', items: ['decision'] }]);
     expect(adminGroups({ ...off, managed: true })).toEqual([
+      { scope: 'workspace', items: ['decision'] },
       { scope: 'server', items: ['status'] },
     ]);
+  });
+
+  it('leaves only the status while a server this Console runs cannot answer', () => {
+    expect(
+      adminGroups({ ...person, administers: true, operator: true, managed: true, frozen: true })
+    ).toEqual([{ scope: 'server', items: ['status'] }]);
   });
 
   it('opens the section asked for when the person may use it, otherwise the first', () => {
@@ -84,7 +100,10 @@ describe('the Admin page’s sections', () => {
     expect(shownAdminSection(operator, 'apps')).toBe('apps');
     expect(shownAdminSection(admin, 'apps')).toBe('connectors');
     expect(shownAdminSection(admin, undefined)).toBe('connectors');
+    expect(shownAdminSection(admin, 'decision')).toBe('decision');
     expect(shownAdminSection([], 'connectors')).toBeNull();
+    const off = adminGroups({ ...person, administers: true, serviceConnections: false });
+    expect(shownAdminSection(off, 'connectors')).toBe('decision');
   });
 
   it('never opens the status as one of the page’s own sections', () => {

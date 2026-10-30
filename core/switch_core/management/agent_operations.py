@@ -27,6 +27,11 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.db.models import Agent, AgentController
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.db.session_scope import tenant_session
+from switch_core.decision.machine import (
+    decision_status,
+    offered_models,
+    supports_decisions,
+)
 from switch_core.management import reason_codes
 from switch_core.management.advanced_config import provider_fields
 from switch_core.management.errors import ManagementError
@@ -121,6 +126,30 @@ def _providers(controller: AgentController) -> list[dict[str, Any]]:
     ]
 
 
+def _decision(controller: AgentController) -> dict[str, Any]:
+    """Whether the machine can serve auto-route's decision model, and the
+    state of the one it serves (`decision/machine.py`)."""
+    if not supports_decisions(controller):
+        return {"supported": False}
+    status = decision_status(controller)
+    summary: dict[str, Any] = {
+        "supported": True,
+        "offered": [
+            {
+                "model": entry.get("model"),
+                "label": entry.get("label"),
+                "speed": entry.get("speed"),
+            }
+            for entry in offered_models(controller)
+        ],
+    }
+    if isinstance(status.get("state"), str):
+        summary["state"] = status["state"]
+    if isinstance(status.get("model"), str):
+        summary["model"] = status["model"]
+    return summary
+
+
 class ManagementAgentOperations:
     """`AgentManagementPort`, served by the management service."""
 
@@ -156,6 +185,7 @@ class ManagementAgentOperations:
                     "last_seen_at": wire_time_or_none(controller.last_seen_at),
                     "providers": _providers(controller),
                     "agents_running": _agents_running(controller),
+                    "decision": _decision(controller),
                 }
             )
         return machines

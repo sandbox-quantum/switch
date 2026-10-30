@@ -1,0 +1,826 @@
+{
+ "room": {
+  "name": "eng-platform",
+  "instructions": "Platform team room. Deploys and CI go to deploy-bot; cloud infrastructure, databases and cloud costs go to infra-bot; customer invoices and plans go to billing-bot; customer tickets and escalations go to support-bot, who is on call; docs and release notes go to docs-bot. People here also talk among themselves; agents should not jump into those."
+ },
+ "agents": [
+  {
+   "name": "deploy-bot",
+   "description": "Runs and watches CI pipelines and deployments; investigates failed builds and deploys, reruns and rolls back.",
+   "role": "release"
+  },
+  {
+   "name": "infra-bot",
+   "description": "Cloud infrastructure: databases, queues, Kubernetes clusters, networking, capacity and the cloud bill."
+  },
+  {
+   "name": "billing-bot",
+   "description": "Customer billing: pricing, plans, invoices, refunds, payment failures."
+  },
+  {
+   "name": "support-bot",
+   "description": "Customer support tickets, escalations and account questions from customers.",
+   "role": "on-call"
+  },
+  {
+   "name": "docs-bot",
+   "description": "Product documentation, guides, API reference and release notes."
+  }
+ ],
+ "scenarios": [
+  {
+   "id": "deploy-vs-infra-pipeline",
+   "expect": [
+    "deploy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "the CI pipeline has been queued for 40 minutes, can someone look?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "infra-db-disk",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "we're running out of disk on the analytics database, what are our options?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "infra-cloud-cost",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "why did our cloud bill jump 30% last month?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "billing-customer-invoice",
+   "expect": [
+    "billing-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "acme says their October invoice charged them for 50 seats instead of 40",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "support-escalation",
+   "expect": [
+    "support-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "a customer is threatening to churn because login has been broken for them since yesterday, who can pick this up?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "docs-release-notes",
+   "expect": [
+    "docs-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "we need release notes for 4.2 before the deploy goes out",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "cloud-bill-not-customer-bill",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "can we get a breakdown of what we spend on Kubernetes versus RDS?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "customer-refund-not-cloud",
+   "expect": [
+    "billing-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "can we refund the duplicate payment from globex?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "rollback-request",
+   "expect": [
+    "deploy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "4.2 is throwing 500s on checkout, should we roll back?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "queue-backlog",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "the email queue has 200k messages backed up",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "thread-continue-rerun",
+   "expect": [
+    "deploy-bot"
+   ],
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the database migration: the new index timed out. I can rerun it with a longer timeout or roll back.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "rerun it with the longer timeout please",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "thread-shift-to-docs",
+   "expect": [
+    "docs-bot"
+   ],
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the database migration: the new index timed out. I can rerun it with a longer timeout or roll back.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "while that runs, can the changelog mention the new index?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "thread-continue-index",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "the orders database is at 92% CPU",
+     "addressed": []
+    },
+    {
+     "sender": "infra-bot",
+     "sender_kind": "agent",
+     "text": "It's the nightly report query doing a full table scan. I can add the index or move the report to the replica.",
+     "addressed": [
+      "lee"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "add the index, and do it tonight",
+    "thread_id": "t2"
+   }
+  },
+  {
+   "id": "thread-shift-to-billing",
+   "expect": [
+    "billing-bot"
+   ],
+   "thread": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "the orders database is at 92% CPU",
+     "addressed": []
+    },
+    {
+     "sender": "infra-bot",
+     "sender_kind": "agent",
+     "text": "It's the nightly report query doing a full table scan. I can add the index or move the report to the replica.",
+     "addressed": [
+      "lee"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "unrelated, but did the refund for globex go through?",
+    "thread_id": "t2"
+   }
+  },
+  {
+   "id": "thread-ack",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the database migration: the new index timed out. I can rerun it with a longer timeout or roll back.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "ok cool, thanks",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "thread-person-to-person",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the database migration: the new index timed out. I can rerun it with a longer timeout or roll back.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "sara are you around to watch it after lunch?",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "thread-pronoun-it",
+   "expect": [
+    "deploy-bot"
+   ],
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the database migration: the new index timed out. I can rerun it with a longer timeout or roll back.",
+     "addressed": [
+      "sara"
+     ]
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "roll back for now",
+     "addressed": []
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "and let me know when it's done",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "people-debating-rollback",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "I think we should roll back 4.2",
+     "addressed": []
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "I'd rather fix forward, the bug is small",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "fair, let's give it an hour",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "people-planning-db",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "we should move reporting to a replica this quarter",
+     "addressed": []
+    },
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "agreed, I'll put it on the roadmap",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "lee",
+    "text": "I'll write the design doc next week",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "named-person-deploy",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "sara can you check why the deploy failed when you get a minute?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "named-person-invoice",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "priya, did you ever hear back from acme about the invoice?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "opinion-not-question",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "honestly our CI has been flaky all week",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "rhetorical",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "who decided friday deploys were a good idea lol",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "social",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "morning!",
+     "addressed": []
+    },
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "morning, coffee first",
+     "addressed": []
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "ok thanks",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "priya",
+    "text": "anyone want to grab lunch at 12?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "praise",
+   "expect": [
+    null
+   ],
+   "thread": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "prod deploy for 4.2 failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "It failed at the database migration: the new index timed out. I can rerun it with a longer timeout or roll back.",
+     "addressed": [
+      "sara"
+     ]
+    }
+   ],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "nice work everyone on the release",
+    "thread_id": "t1"
+   }
+  },
+  {
+   "id": "announcement",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "reminder: the office is closed on monday",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ambiguous-db-migration-deploy",
+   "expect": [
+    "deploy-bot",
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "the migration is locking the users table, what do we do?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ambiguous-customer-billing-support",
+   "expect": [
+    "billing-bot",
+    "support-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "a customer says they were charged after cancelling and they're angry",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ambiguous-docs-support",
+   "expect": [
+    "docs-bot",
+    "support-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "customers keep asking how to rotate their API keys",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "ambiguous-cost-or-billing",
+   "expect": [
+    "infra-bot",
+    "billing-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "lee",
+    "text": "why is the bill so high this month?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "on-call-escalation",
+   "expect": [
+    "support-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "we have a sev2 from a customer, who's on call?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "release-role",
+   "expect": [
+    "deploy-bot"
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "who's handling the release today?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "out-of-scope-hiring",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "priya",
+    "text": "how many interviews do we have this week?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "out-of-scope-design",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "sara",
+    "text": "does anyone have the figma file for the new onboarding?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "vague",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [],
+   "message": {
+    "sender": "tom",
+    "text": "hmm",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "context-moved-on",
+   "expect": [
+    "billing-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "deploy failed again",
+     "addressed": []
+    },
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "Rerunning with the cache cleared.",
+     "addressed": [
+      "sara"
+     ]
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "thanks, it's green now",
+     "addressed": []
+    },
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "switching topics: globex disputed their card payment",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "priya",
+    "text": "what do we need from them to resolve it?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "context-agent-already-helping",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "lee",
+     "sender_kind": "person",
+     "text": "orders db CPU is high again",
+     "addressed": []
+    },
+    {
+     "sender": "infra-bot",
+     "sender_kind": "agent",
+     "text": "Same report query. Moving it to the replica now.",
+     "addressed": [
+      "lee"
+     ]
+    }
+   ],
+   "message": {
+    "sender": "lee",
+    "text": "how long will that take?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "context-two-agents-recent",
+   "expect": [
+    "docs-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "deploy-bot",
+     "sender_kind": "agent",
+     "text": "4.2 is deployed to production.",
+     "addressed": []
+    },
+    {
+     "sender": "docs-bot",
+     "sender_kind": "agent",
+     "text": "Release notes for 4.2 are drafted and waiting for review.",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "sara",
+    "text": "can you add the migration change to them?",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "context-person-reply-to-person",
+   "expect": [
+    null
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "can someone review my PR for the retry logic?",
+     "addressed": []
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "I'll take it after lunch",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "tom",
+    "text": "thanks sara!",
+    "thread_id": null
+   }
+  },
+  {
+   "id": "question-to-room-after-chatter",
+   "expect": [
+    "infra-bot"
+   ],
+   "thread": [],
+   "recent": [
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "morning!",
+     "addressed": []
+    },
+    {
+     "sender": "priya",
+     "sender_kind": "person",
+     "text": "morning, coffee first",
+     "addressed": []
+    },
+    {
+     "sender": "tom",
+     "sender_kind": "person",
+     "text": "standup moved to 10:30 today",
+     "addressed": []
+    },
+    {
+     "sender": "sara",
+     "sender_kind": "person",
+     "text": "ok thanks",
+     "addressed": []
+    }
+   ],
+   "message": {
+    "sender": "lee",
+    "text": "is anyone else seeing timeouts from the redis cluster?",
+    "thread_id": null
+   }
+  }
+ ]
+}

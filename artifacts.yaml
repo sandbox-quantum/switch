@@ -91,7 +91,7 @@ artifacts:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.8.0
+    version: 0.8.2
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -114,6 +114,21 @@ artifacts:
     description: The collaboration-bridge seeder image.
     version_from: switch-core
     published_as: setup
+
+  switch-decision:
+    description: >-
+      The decision service image auto-route asks which agent should answer an
+      untagged message. CPU only; its model server runs beside it.
+    version_from: switch-core
+    published_as: switch-decision
+
+  switch-decision-strands:
+    description: >-
+      The model server for Strands Decider, the decision service's default
+      model in the Helm chart. NVIDIA GPU, amd64 only; its weights download on
+      first start, never baked in.
+    version_from: switch-core
+    published_as: switch-decision-strands
 
   helm-chart:
     description: >-

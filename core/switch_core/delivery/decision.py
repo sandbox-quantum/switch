@@ -1,0 +1,285 @@
+"""Decision routing: the decision service picks who answers a message that no
+rule delivered to anyone.
+
+In a room with automatic routing on (`!auto-route on`, on a server with the
+`decision_routing` feature, in a workspace with a decision backend:
+`decision/settings.py`), a person's text message that names nobody and that
+no follow-up or assigned agent took is marked undecided as it is written
+(`MessageRouter._follow_the_conversation`). It passed the same filters as a
+follow-up (`may_follow`): a person sent it, it has no `@` in it, it is not
+Switch's own or another app's, it is not in a direct room, and it is not
+thanks or praise (`is_small_talk`). In a workspace with no backend nothing is
+marked, and rooms behave as they do without auto-route.
+
+Marking it writes a `pending_decisions` row in the transaction that writes
+the message, so a decision survives a restart. Once the message has
+committed, the process that wrote it is woken to decide it, and every process
+sweeps for waiting rows (`MessageRouter.decide_pending`), so a slow or failed
+decision never holds up the write, and a room's messages are decided in
+order:
+
+1. The candidates are the room's agents other than the sender whose
+   addressing policy and budget let the sender through, as for a mention,
+   but without a refusal. With none, the service is not asked.
+2. The service is sent the room's context (`decision_request`), read in a
+   session closed before the call.
+3. When it names a candidate, the agent is checked once more, after the
+   call: still in the room, its policy and budget still letting the sender
+   through. Then, in one transaction, the pending row is deleted and the
+   person's own message is stored as the agent's own event, addressed and
+   marked routed (`routed_reason: "decided"`), under the message's key and
+   place in the room, so it is never delivered twice. It doesn't count as the
+   person addressing the agent, so the person's next untagged message is
+   decided again rather than followed up.
+
+Nobody receives the message when the service names nobody. When the service
+fails (a timeout, a connection error, an error response, a malformed one, or
+one naming an agent that was not a candidate; for a model on a machine, also
+the machine offline, busy or its model not running), the room is told
+auto-route is unavailable (`decision_notice`, naming the machine), at most
+once an hour, and the message goes
+to the room's triage agent if it has one (`!auto-route fallback @agent`),
+through the same checks, marked `routed_reason: "fallback"`; otherwise to
+nobody. A message still waiting after `DECISION_PENDING_MAX_AGE_SECONDS` is
+dropped and logged rather than answered late. Every decision is logged at
+INFO.
+
+A workspace whose model runs on one of its admin's machines is asked over
+that machine's controller connection, which lives in the process holding its
+socket (`decision/machine.py`). Only that process claims the workspace's
+waiting messages; a process that wrote one wakes the holder
+(`decision.wake`, `decision/signals.py`), and when no process holds the
+socket the messages fail at once as the machine being offline. Room content
+never crosses processes.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal
+
+from sqlalchemy import select
+
+from switch_core.clients.admin_messages import PLATFORM_MARKER, platform_on_behalf_of
+from switch_core.db.models import Client, ClientRoom, ExternalUser
+from switch_core.decision.client import (
+    ContextMessage,
+    DecisionAgent,
+    DecisionMessage,
+    DecisionRequest,
+    DecisionRoom,
+    Failed,
+)
+from switch_core.delivery.conversation import (
+    CHANNEL_LOOKBACK,
+    is_automatic,
+    mentioned_names,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from switch_core.db.models import Message, Room
+    from switch_core.delivery.conversation import RoomConversation
+    from switch_core.delivery.recipient import AgentRecipient, RoomMember
+    from switch_core.transport.types import InboundMessage
+
+# What the room is told when its decision backend fails, at most once every
+# `DECISION_NOTICE_EVERY_SECONDS` (room metadata `decision_notice_at`), and
+# never for a decision of nobody. A machine is named (`decision_notice`).
+DECISION_NOTICE = "Auto-route is unavailable right now; tag an agent to reach it."
+DECISION_NOTICE_EVERY_SECONDS = 3600
+
+
+def decision_notice(failed: Failed) -> str:
+    """The notice for a failed decision: the plain one, or for a decision
+    model on a machine, one naming the machine and what went wrong."""
+    name = failed.machine
+    if name is None:
+        return DECISION_NOTICE
+    why = {
+        "machine_offline": f"{name} is offline",
+        "machine_busy": f"{name} is busy",
+        "machine_not_ready": f"the decision model on {name} isn't running",
+        "timeout": f"{name} did not answer in time",
+    }.get(failed.reason, f"the decision model on {name} failed")
+    return f"Auto-route is unavailable right now ({why}); tag an agent to reach it."
+
+
+# The most of a thread's latest messages, and of the room's latest top-level
+# messages, sent as context: enough to see who is talking to whom, and short
+# enough to keep the decision quick.
+THREAD_CONTEXT = 30
+RECENT_CONTEXT = CHANNEL_LOOKBACK
+
+
+async def decision_request(
+    session: AsyncSession,
+    *,
+    room: Room,
+    members: list[RoomMember],
+    roles: Mapping[str, str],
+    conversation: RoomConversation,
+    message: InboundMessage,
+    candidates: list[AgentRecipient],
+) -> DecisionRequest:
+    """What the decision service is sent about `message`.
+
+    `members` are the room's agents and `roles` the role each live-holds
+    here, by agent id. The thread and the recent messages are the ones the
+    follow-up rules read (`conversation`), as they stood when the message was
+    written: anything written after it is left out.
+    """
+    names = _Names(members, roles, await _people(session, room.id))
+    thread = await _context(
+        session, conversation, names, await conversation.thread(session), message
+    )
+    recent = await _context(
+        session, conversation, names, await conversation.channel(session), message
+    )
+    return DecisionRequest(
+        room=DecisionRoom(name=room.name, instructions=room.instructions),
+        message=DecisionMessage(
+            sender=_person_name(message.content, message.sender_name, message.sender),
+            text=message.body,
+            thread_id=message.thread_root_id,
+        ),
+        agents=[
+            DecisionAgent(
+                name=candidate.agent.name,
+                description=candidate.agent.description,
+                role=roles.get(candidate.agent.id),
+            )
+            for candidate in candidates
+        ],
+        thread=thread[-THREAD_CONTEXT:],
+        recent=recent[-RECENT_CONTEXT:],
+    )
+
+
+class _Names:
+    """Who the room's messages come from and whom they address, by name."""
+
+    def __init__(
+        self,
+        members: list[RoomMember],
+        roles: Mapping[str, str],
+        people: set[str],
+    ) -> None:
+        self._agents = {
+            member.transport_user_id: member.agent.name for member in members
+        }
+        # Every handle that reaches an agent here, lowercased, to the agent's
+        # name: its name, its alias and the role it holds.
+        self._handles: dict[str, str] = {}
+        for member in members:
+            name = member.agent.name
+            self._handles[name.lower()] = name
+            if member.alias:
+                self._handles[member.alias.lower()] = name
+            role = roles.get(member.agent.id)
+            if role:
+                self._handles[role.lower()] = name
+        self._people = {person.lower(): person for person in people}
+
+    def agent(self, transport_user_id: str) -> str | None:
+        return self._agents.get(transport_user_id)
+
+    def addressed(self, body: str) -> list[str]:
+        """The room members `body` @-mentions, by name, in a stable order."""
+        found: set[str] = set()
+        for handle in mentioned_names(body):
+            if handle in self._handles:
+                found.add(self._handles[handle])
+            elif handle in self._people:
+                found.add(self._people[handle])
+        return sorted(found)
+
+
+async def _people(session: AsyncSession, room_id: str) -> set[str]:
+    """The names the room's other members go by and are tagged with: their
+    display names, and a platform user's username there."""
+    rows = (
+        await session.execute(
+            select(Client.display_name, ExternalUser.external_username)
+            .select_from(ClientRoom)
+            .join(Client, Client.id == ClientRoom.client_id)
+            .outerjoin(ExternalUser, ExternalUser.client_id == Client.id)
+            .where(ClientRoom.room_id == room_id, Client.type != "agent")
+        )
+    ).all()
+    return {name for row in rows for name in row if name}
+
+
+async def _context(
+    session: AsyncSession,
+    conversation: RoomConversation,
+    names: _Names,
+    rows: list[Message],
+    message: InboundMessage,
+) -> list[ContextMessage]:
+    """`rows` (newest first) as context for the decision, oldest first: the
+    messages people and agents wrote before `message`. Switch's own notices,
+    automatic replies and anything that is not a text message are left out."""
+    context: list[ContextMessage] = []
+    for row in rows:
+        if (
+            row.seq >= message.seq
+            or row.event_type != "m.room.message"
+            or not (row.body or "").strip()
+            or is_automatic(row)
+        ):
+            continue
+        said = await _said_by(session, conversation, names, row)
+        if said is None:
+            continue
+        sender, kind = said
+        context.append(
+            ContextMessage(
+                sender=sender,
+                sender_kind=kind,
+                text=row.body or "",
+                addressed=names.addressed(row.body or ""),
+            )
+        )
+    context.reverse()
+    return context
+
+
+async def _said_by(
+    session: AsyncSession,
+    conversation: RoomConversation,
+    names: _Names,
+    row: Message,
+) -> tuple[str, Literal["person", "agent"]] | None:
+    """Who wrote `row` and whether a person or an agent; None for Switch's
+    own messages, and for a sender that is neither."""
+    content = row.content or {}
+    if PLATFORM_MARKER in content:
+        # Switch's app speaking for someone, whom the marker names.
+        speaker = platform_on_behalf_of(content)
+        if speaker is None:
+            return None
+        return speaker.name, "agent" if speaker.agent_id is not None else "person"
+    kind = await conversation.sender_kind(session, row)
+    if kind == "agent":
+        return names.agent(row.sender_id) or row.sender_name or row.sender_id, "agent"
+    if kind == "user":
+        return _person_name(content, row.sender_name, row.sender_id), "person"
+    return None
+
+
+def _person_name(
+    content: Mapping[str, object], sender_name: str | None, sender: str
+) -> str:
+    """The name a person goes by in the room: the person a platform message
+    speaks for, else the name their message carries, else their id's
+    localpart."""
+    speaker = platform_on_behalf_of(content)
+    if speaker is not None:
+        return speaker.name
+    named = content.get("sender_name") or sender_name
+    if named:
+        return str(named)
+    return sender.split(":")[0].lstrip("@")

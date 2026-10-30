@@ -102,6 +102,8 @@ export class FakeCore {
   readonly results = new Map<string, OperationResult>();
   readonly opens: Record<string, AgentCursor>[] = [];
   readonly beats: Record<string, number>[] = [];
+  /** What the controller answered `decision.request` frames with, in order. */
+  readonly decisionResults: Record<string, unknown>[] = [];
   /** The machine's name and description, as `PATCH .../controllers/{id}` changes them. */
   info: { name: string; description: string | null } = { name: 'laptop', description: null };
   /** The key the controller registered for sealed logins. */
@@ -242,6 +244,10 @@ export class FakeCore {
     this.pings.add(ping);
     socket.onSend = (data) => {
       const message = JSON.parse(data) as { type?: string; cursors?: Record<string, number> };
+      if (message.type === 'decision.result') {
+        this.decisionResults.push(message as unknown as Record<string, unknown>);
+        return;
+      }
       if (message.type !== 'pong') return;
       if (connection.superseded || !this.connections.has(connection.id)) {
         socket.deliver('evicted', {

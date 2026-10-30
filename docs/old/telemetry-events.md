@@ -736,6 +736,31 @@ separates an agent answering people from agents talking among themselves.
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 
+### Decision routing — one per decision
+
+One per message auto-route asked a decision service about
+(`decision/client.py`). Neither says which room, agent or message: only
+whether an agent was picked, how sure the service was, how long it took, and
+which kind of backend answered, so the share of decisions that chose nobody,
+failures by reason and latency percentiles can be read per backend.
+
+**`decision_made`** — the service answered, with an agent or with nobody.
+
+| Property | Type |
+|---|---|
+| `backend` | `server_default` \| `endpoint` \| `haiku_anthropic` \| `haiku_bedrock` \| `machine` — the server's own decision service as a workspace's default, a workspace's own endpoint, Haiku, or a model on one of the workspace admin's own machines (never which machine) |
+| `outcome` | `agent` \| `none` |
+| `confidence` | `none` \| `lt_0.5` \| `0.5_0.6` \| `0.6_0.7` \| `0.7_0.8` \| `0.8_0.9` \| `0.9_1.0` — the service's confidence in its choice, in tenths above one half; `none` when it gave none |
+| `latency_ms` | number — measured by Switch around the whole request |
+
+**`decision_failed`** — the service gave no usable answer, so the message went
+to nobody or to the room's triage agent.
+
+| Property | Type |
+|---|---|
+| `backend` | as above |
+| `reason` | `timeout` \| `unreachable` \| `error_status` \| `bad_answer` (not a decision, or an agent that was not a candidate) \| `key_unreadable` (a workspace key the server can no longer decrypt) \| `endpoint_refused` (a workspace endpoint the server's outbound policy does not allow: link-local, or private and not in `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) \| `machine_offline` (the machine is not connected) \| `machine_not_ready` (its model is not running) \| `machine_busy` (it has as many decisions in flight as it takes) \| `machine_error` (its model server failed) |
+
 ### Resources, keys, groups and the rest
 
 What each one is for, and how to make it fire, is under
@@ -1011,6 +1036,16 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `agent_message_received` — tag an agent, or write in a direct room with one.
   Tag two agents and there are two. Tag an agent whose policy refuses you and
   there are none.
+
+**Decision routing** — `decision/client.py`
+
+- `decision_made` — with `decision_routing` on and a decision service set up,
+  `!auto-route on` in a room and post an untagged question. "thanks!" is not
+  asked about, so it emits nothing.
+- `decision_failed` — the same with the decision service stopped
+  (`unreachable`), or slower than `DECISION_TIMEOUT_SECONDS` (`timeout`).
+  With the workspace's decisions on a machine that has been ready, quit Switch
+  Console there (`machine_offline`).
 
 **Connectors** — `bridges/collaboration/lifecycle_service.py`
 

@@ -4,9 +4,20 @@
 mattermost:
   enabled: true
 switchCore:
+  featureFlags:
+    enabled:
+      - follow_the_conversation
+      - decision_routing
   migrations:
     preUpgradeJob: true
   teamsBridge:
     enabled: true
     ingress:
       mode: external
+decision:
+  enabled: true
+  bedrock:
+    enabled: true
+  modelServer:
+    hfTokenSecret:
+      name: render-check-hf-token

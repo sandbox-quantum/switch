@@ -35,6 +35,7 @@ from switch_core.room_wide_mention import is_reserved_mention_name
 from switch_core.transport import InboundMessage, RoomRef
 
 if TYPE_CHECKING:
+    from switch_core.decision.settings import DecisionAvailability
     from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ class CommandConsumer(Consumer[SystemActor]):
         deletion_requests: AgentDeletionRequests,
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
+        decision_availability: DecisionAvailability,
     ) -> None:
         super().__init__(actor=actor)
         self._agent_store = agent_store
@@ -96,6 +98,9 @@ class CommandConsumer(Consumer[SystemActor]):
         # Whether `!follow-ups` and `!assign-agent` mean anything here: with
         # the feature flag off they say so rather than claim a change.
         self._follow_the_conversation_enabled = follow_the_conversation_enabled
+        # Whether `!auto-route` means anything in a room: the feature flag,
+        # and a decision backend for the room's workspace.
+        self._decision_availability = decision_availability
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )

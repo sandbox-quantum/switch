@@ -1,0 +1,20 @@
+{{- if .Values.decision.enabled }}
+# Only the decision port; the model server is reached on localhost inside the
+# pod and is not exposed.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "switch.decisionHost" . }}
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.decisionSelectorLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.decision.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "switch.decisionSelectorLabels" . | nindent 4 }}
+{{- end }}

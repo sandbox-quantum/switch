@@ -663,7 +663,7 @@ async def open_stream(
 ) -> AsyncIterator[dict[str, Any]]:
     """The frames the controller's socket would send, from the route's own
     stream: the socket adds only pings around them."""
-    return await controller_routes.attach_stream(
+    attached = await controller_routes.attach_stream(
         principal=_principal(controller),
         management=harness.management.service,
         protocol=harness.protocol,
@@ -671,6 +671,7 @@ async def open_stream(
         connection_id=opened["connection_id"],
         generation=opened["generation"],
     )
+    return attached.frames
 
 
 async def attach(

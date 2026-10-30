@@ -203,6 +203,29 @@ export interface RoomDetail extends RoomSummary {
   // Agent ids configured to receive room_join events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
+  /** Absent on servers that predate decision routing. */
+  auto_route?: RoomAutoRoute;
+}
+
+/**
+ * Whether untagged messages in the room are routed by the workspace's decision
+ * service (`!auto-route`), and whether they can be: `available` is false when
+ * the server has the feature off or the workspace has no decision backend, and
+ * `reason` then says what is missing and who can fix it.
+ */
+export interface RoomAutoRoute {
+  on: boolean;
+  available: boolean;
+  reason: string | null;
+  /** The id of the agent that gets undecided messages while the decision service is failing. */
+  fallback_agent: string | null;
+  /** That agent's name, for display. Absent on servers that predate it. */
+  fallback_agent_name?: string | null;
+}
+
+export interface SetRoomAutoRouteInput {
+  on?: boolean;
+  fallback_agent?: string | null;
 }
 
 export interface CreateRoomInput {
@@ -489,6 +512,13 @@ export async function setRoomAgentJoinEvents(
   return jsonRequest<RoomDetail>(`/rooms/${roomId}/agents/${agentId}`, "PATCH", {
     receives_join_events: receivesJoinEvents,
   });
+}
+
+export async function setRoomAutoRoute(
+  roomId: string,
+  input: SetRoomAutoRouteInput,
+): Promise<RoomAutoRoute> {
+  return jsonRequest<RoomAutoRoute>(`/rooms/${roomId}/auto-route`, "PUT", input);
 }
 
 export async function addRoomUsers(

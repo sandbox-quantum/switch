@@ -7,6 +7,7 @@ import {
   type ManagedAgentView,
   type OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
+import { MachineDecisionModel } from './machine-decision-model';
 import { machineProblem, machineTone, managedAgentState } from './managed-agent-state';
 
 const DOT: Record<ReturnType<typeof machineTone>, string> = {
@@ -59,7 +60,7 @@ export function ManagedMachinePill({
   );
 }
 
-function MachineCard({
+export function MachineCard({
   agent,
   machine,
   machinesLoading,
@@ -124,6 +125,14 @@ function MachineCard({
                   : `${readyProviders} of ${machine.providers.length} providers ready`}
         </dd>
       </dl>
+      {agent.machine && (
+        <MachineDecisionModel
+          workspaceId={agent.workspaceId}
+          serverId={agent.serverId}
+          machineId={agent.machine.id}
+          thisComputer={machine?.local?.kind === 'this-computer'}
+        />
+      )}
     </>
   );
 }

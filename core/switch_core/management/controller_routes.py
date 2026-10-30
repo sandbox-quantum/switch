@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from typing import Annotated, Any
 
 from fastapi import (
@@ -42,10 +43,12 @@ from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
+    ControllerConnection,
     ControllerConnectionError,
     ControllerRevokedError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import (
+    DECISION_RESULT,
     IDLE,
     IDLE_INTERVAL_SECONDS,
     ControllerFrame,
@@ -402,6 +405,16 @@ async def open_connection(
     }
 
 
+@dataclass(frozen=True)
+class AttachedStream:
+    """A stream attached to a connection held here: the connection, whose
+    urgent frames and decision requests the socket serves, and the frames the
+    stream yields."""
+
+    conn: ControllerConnection
+    frames: AsyncGenerator[ControllerFrame]
+
+
 async def attach_stream(
     *,
     principal: ControllerPrincipal,
@@ -410,7 +423,7 @@ async def attach_stream(
     session_factory: async_sessionmaker[AsyncSession],
     connection_id: str,
     generation: int,
-) -> AsyncGenerator[ControllerFrame]:
+) -> AttachedStream:
     """Attach the stream to an open connection: its agents' events and the
     management nudges, starting with `connection_state`.
 
@@ -445,16 +458,19 @@ async def attach_stream(
         "generation": conn.generation,
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
     }
-    return controller_event_stream(
+    return AttachedStream(
         conn=conn,
-        stream_token=token,
-        presence=presence,
-        buffer=protocol.event_buffer,
-        approvals=protocol.approval_outcomes,
-        nudges=nudges,
-        opening=opening,
-        rooms_of=_rooms_reader(protocol),
-        idle_seconds=IDLE_INTERVAL_SECONDS,
+        frames=controller_event_stream(
+            conn=conn,
+            stream_token=token,
+            presence=presence,
+            buffer=protocol.event_buffer,
+            approvals=protocol.approval_outcomes,
+            nudges=nudges,
+            opening=opening,
+            rooms_of=_rooms_reader(protocol),
+            idle_seconds=IDLE_INTERVAL_SECONDS,
+        ),
     )
 
 
@@ -534,19 +550,22 @@ async def connection_socket(
     generation: int,
 ) -> None:
     """The controller's one connection: its agents' events and the management
-    nudges down, its heartbeat up, on one WebSocket.
+    nudges down, its heartbeat and decision results up, on one WebSocket.
 
     Attaches to a connection opened with `POST .../connection`. Frames are
     JSON `{"event", "data"}`, the events the stream carries. The server sends
     `{"event": "ping"}` every heartbeat interval and the controller answers
-    `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A refused
-    attach is a `refused` frame, then a close with 4000 plus the status; a
-    refused beat is an `evicted` frame naming why, then a close.
+    `{"type": "pong", "cursors": {agent_id: n}}`, which is its beat. A
+    `decision.request` frame goes out ahead of anything the stream has
+    queued, and the controller answers it with a `{"type": "decision.result",
+    "request_id", ...}` message. A refused attach is a `refused` frame, then
+    a close with 4000 plus the status; a refused beat is an `evicted` frame
+    naming why, then a close.
     """
     await websocket.accept()
     try:
         principal = _socket_principal(websocket, controller_id)
-        frames = await attach_stream(
+        attached = await attach_stream(
             principal=principal,
             management=management,
             protocol=protocol,
@@ -559,18 +578,24 @@ async def connection_socket(
         await websocket.close(code=4000 + error.status_code)
         return
 
+    conn = attached.conn
     outbox: asyncio.Queue[ControllerFrame] = asyncio.Queue(maxsize=_SOCKET_OUTBOX)
-    pump = asyncio.create_task(_pump(frames, outbox))
-    pongs = asyncio.create_task(
-        _receive_pongs(websocket, principal, protocol, connection_id, generation)
+    pump = asyncio.create_task(_pump(attached.frames, outbox))
+    received = asyncio.create_task(
+        _receive(websocket, principal, protocol, conn, connection_id, generation)
     )
     loop = asyncio.get_running_loop()
     next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+    # The next frame from the stream, kept across turns of the loop so a
+    # frame taken off the outbox is never dropped by a wake for something
+    # else.
+    next_frame: asyncio.Future[ControllerFrame] | None = None
     try:
-        # One writer: frames and pings both go out from this loop.
-        while not pump.done() or not outbox.empty():
-            if pongs.done():
-                refusal = pongs.result()
+        # One writer: urgent frames, the stream's frames and pings all go out
+        # from this loop, urgent ones first.
+        while True:
+            if received.done():
+                refusal = received.result()
                 if refusal is not None:
                     await websocket.send_json(
                         {
@@ -579,14 +604,36 @@ async def connection_socket(
                         }
                     )
                 return
+            for urgent in conn.take_urgent():
+                await websocket.send_json(urgent)
+            if next_frame is None:
+                if pump.done() and outbox.empty():
+                    return
+                next_frame = asyncio.ensure_future(outbox.get())
+            urgent_ready = asyncio.ensure_future(conn.urgent_ready.wait())
             try:
-                frame = await asyncio.wait_for(
-                    outbox.get(), timeout=max(0.0, next_ping - loop.time())
+                waiting: set[asyncio.Future[Any]] = {
+                    next_frame,
+                    urgent_ready,
+                    received,
+                    pump,
+                }
+                await asyncio.wait(
+                    waiting,
+                    timeout=max(0.0, next_ping - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            except TimeoutError:
-                frame = None
-            if frame is not None and frame is not IDLE:
-                await websocket.send_json(frame)
+            finally:
+                urgent_ready.cancel()
+            if conn.urgent:
+                continue
+            if next_frame.done():
+                frame = next_frame.result()
+                next_frame = None
+                if frame is not IDLE:
+                    await websocket.send_json(frame)
+            elif pump.done() and outbox.empty():
+                return
             if loop.time() >= next_ping:
                 await websocket.send_json({"event": "ping", "data": {}})
                 next_ping = loop.time() + HEARTBEAT_INTERVAL_SECONDS
@@ -596,8 +643,10 @@ async def connection_socket(
         # The server closed the socket under us (uvicorn does on shutdown).
         return
     finally:
+        if next_frame is not None:
+            next_frame.cancel()
         pump.cancel()
-        pongs.cancel()
+        received.cancel()
         failure = pump.exception() if pump.done() and not pump.cancelled() else None
         if failure is not None:
             logger.error(
@@ -642,22 +691,37 @@ async def _pump(
         await frames.aclose()
 
 
-async def _receive_pongs(
+async def _receive(
     websocket: WebSocket,
     principal: ControllerPrincipal,
     protocol: AgentCore,
+    conn: ControllerConnection,
     connection_id: str,
     generation: int,
 ) -> ControllerConnectionError | None:
-    """Turn each pong into a beat, until the controller goes or a beat is
-    refused. Returns the refusal, so the socket can say which before it
-    closes; None when the controller simply went away."""
+    """Read what the controller sends: each pong becomes a beat, and each
+    `decision.result` answers the request it names. Until the controller goes
+    or a beat is refused; returns the refusal, so the socket can say which
+    before it closes, or None when the controller simply went away."""
     while True:
         try:
             message = await websocket.receive_json()
         except (WebSocketDisconnect, ValueError, RuntimeError):
             return None
-        if not isinstance(message, dict) or message.get("type") != "pong":
+        if not isinstance(message, dict):
+            continue
+        kind = message.get("type")
+        if kind == DECISION_RESULT:
+            if not conn.settle_decision(message):
+                logger.warning(
+                    "Controller %s answered decision request %r, which is not "
+                    "waiting on this connection (unknown, or past its deadline); "
+                    "ignored",
+                    principal.controller_id,
+                    str(message.get("request_id"))[:80],
+                )
+            continue
+        if kind != "pong":
             continue
         try:
             await record_beat(

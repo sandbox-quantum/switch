@@ -59,6 +59,7 @@ import {
   titleCase,
 } from "../../theme/hootFormat";
 import { effectiveColor, buildGroupIndex, flattenTree } from "./groupTree";
+import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
@@ -132,6 +133,13 @@ export default function RoomDetailPage() {
         <Divider />
         <RolesSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
+        {room.auto_route && (
+          <>
+            {/* Auto-route is the room owner's and the workspace admins' to change, like delete. */}
+            <RoomAutoRouteSection room={room} autoRoute={room.auto_route} canManage={canDelete} />
+            <Divider />
+          </>
+        )}
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}

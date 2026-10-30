@@ -50,6 +50,14 @@ SERVICE_CONNECTIONS = "service_connections"
 # messages reach nobody, as before.
 FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 
+# Decision routing: in a room that turned it on (`!auto-route on`), a person's
+# message that no rule delivered to any agent is sent, once it is saved, to
+# the decision service its workspace uses (`decision/settings.py`: the
+# workspace's choice, else `DECISION_ENDPOINT_URL`), which picks the one agent
+# that should answer it, or nobody (`delivery/decision.py`). It builds on the
+# follow-the-conversation filters, so the server refuses it without that flag.
+DECISION_ROUTING = "decision_routing"
+
 # Agent chats in Switch Console: an agent's page opens on its chats (its
 # direct chats and the rooms it is in) beside the conversation. Core puts an
 # agent's owner back in each chat they started that holds the agent; with it
@@ -72,6 +80,27 @@ SWITCH_BUDDY = "switch_buddy"
 # turning it on before the rollout finishes is not protected.
 GROUP_CHATS = "group_chats"
 
+# Flags that need another flag on: the server refuses a configuration with
+# the key on and any of its values off, and tools that turn flags off one at a
+# time (scripts/e2e_surface.py) turn the dependants off with it.
+FLAG_REQUIRES: dict[str, frozenset[str]] = {
+    DECISION_ROUTING: frozenset({FOLLOW_THE_CONVERSATION}),
+}
+
+
+def without_flag(flags: frozenset[str], flag: str) -> frozenset[str]:
+    """`flags` with `flag` off, and every flag that needs it off too."""
+    off = {flag}
+    changed = True
+    while changed:
+        changed = False
+        for dependant, needs in FLAG_REQUIRES.items():
+            if dependant not in off and needs & off:
+                off.add(dependant)
+                changed = True
+    return flags - off
+
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -81,6 +110,7 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_MANAGEMENT,
         SERVICE_CONNECTIONS,
         FOLLOW_THE_CONVERSATION,
+        DECISION_ROUTING,
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,

@@ -4,6 +4,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     ColumnElement,
+    DateTime,
+    Text,
+    cast,
     delete,
     exists,
     literal,
@@ -44,6 +47,15 @@ LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
+# `!auto-route on`: messages no rule delivers are sent to the decision
+# service. Absent by default, so automatic routing is off.
+AUTO_ROUTE_ON_KEY = "auto_route_on"
+# `!auto-route fallback @name`: the agent id that gets the messages auto-route
+# could not decide because the decision service failed. Absent by default.
+AUTO_ROUTE_FALLBACK_KEY = "auto_route_fallback_agent"
+# When Switch last told the room auto-route is unavailable, so it says so at
+# most once an hour however many processes and restarts there are.
+DECISION_NOTICE_AT_KEY = "decision_notice_at"
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
@@ -54,6 +66,17 @@ def follow_ups_enabled_in(metadata: dict | None) -> bool:
 def main_agent_in(metadata: dict | None) -> str | None:
     """The main agent a room's metadata names, if any."""
     value = (metadata or {}).get(MAIN_AGENT_KEY)
+    return value if isinstance(value, str) else None
+
+
+def auto_route_on_in(metadata: dict | None) -> bool:
+    """Whether a room's metadata turns automatic routing on."""
+    return (metadata or {}).get(AUTO_ROUTE_ON_KEY) is True
+
+
+def auto_route_fallback_in(metadata: dict | None) -> str | None:
+    """The agent id a room's metadata names as its triage agent, if any."""
+    value = (metadata or {}).get(AUTO_ROUTE_FALLBACK_KEY)
     return value if isinstance(value, str) else None
 
 
@@ -105,6 +128,75 @@ class RoomStore:
         """Set (or clear, with None) the room's main agent. Raises ValueError
         for a room that does not exist."""
         await self._set_metadata_key(session, room_id, MAIN_AGENT_KEY, agent_id)
+
+    async def auto_route_on(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether automatic routing is on in this room (`!auto-route`), off
+        unless someone turned it on."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return False
+        return auto_route_on_in(room.metadata_)
+
+    async def set_auto_route_on(
+        self, session: AsyncSession, room_id: str, on: bool
+    ) -> None:
+        """Turn automatic routing on or off for a room. Raises ValueError for
+        a room that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, AUTO_ROUTE_ON_KEY, True if on else None
+        )
+
+    async def auto_route_fallback(
+        self, session: AsyncSession, room_id: str
+    ) -> str | None:
+        """The agent id of the room's triage agent for auto-route, if any."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return None
+        return auto_route_fallback_in(room.metadata_)
+
+    async def set_auto_route_fallback(
+        self, session: AsyncSession, room_id: str, agent_id: str | None
+    ) -> None:
+        """Name the room's triage agent, or none with None. Raises ValueError
+        for a room that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, AUTO_ROUTE_FALLBACK_KEY, agent_id
+        )
+
+    async def claim_decision_notice(
+        self, session: AsyncSession, room_id: str, *, every_seconds: int
+    ) -> bool:
+        """Record that the room is being told auto-route is unavailable, and
+        say whether to tell it: False when it was told less than
+        `every_seconds` ago. One statement on the database's clock, so two
+        processes failing at once tell the room once."""
+        stamped = await session.scalar(
+            update(Room)
+            .where(
+                Room.id == room_id,
+                or_(
+                    Room.metadata_[DECISION_NOTICE_AT_KEY].astext.is_(None),
+                    Room.metadata_[DECISION_NOTICE_AT_KEY].astext.cast(
+                        DateTime(timezone=True)
+                    )
+                    < sa_func.now()
+                    - sa_func.make_interval(0, 0, 0, 0, 0, 0, every_seconds),
+                ),
+            )
+            .values(
+                metadata_=sa_func.coalesce(
+                    Room.metadata_, sa_func.jsonb_build_object()
+                ).op("||")(
+                    sa_func.jsonb_build_object(
+                        DECISION_NOTICE_AT_KEY, cast(sa_func.now(), Text)
+                    )
+                )
+            )
+            .returning(Room.id)
+            .execution_options(synchronize_session=False)
+        )
+        return stamped is not None
 
     async def _set_metadata_key(
         self, session: AsyncSession, room_id: str, key: str, value: object

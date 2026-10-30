@@ -16,6 +16,8 @@ import {
   type AgentAssignment,
   type AgentStatus,
   type Assignment,
+  CAPABILITIES,
+  type DecisionStatus,
   type Platform,
   type ProcessState,
   isProvider,
@@ -645,6 +647,8 @@ export class StatusCollector {
       workspacesDir: string;
       version: string;
       updatedBy: UpdatedBy;
+      /** The decision model on this machine, as it stands now. */
+      decision: () => DecisionStatus;
       now: () => number;
     }
   ) {}
@@ -696,6 +700,7 @@ export class StatusCollector {
         protocol: PROTOCOL_VERSION,
         assignment_revision: assignment?.revision ?? 0,
         updated_by: this.deps.updatedBy,
+        capabilities: [...CAPABILITIES],
       },
       machine: {
         platform: contractPlatform(),
@@ -711,6 +716,7 @@ export class StatusCollector {
       providers: this.deps.providers.snapshot(),
       tools: await this.deps.tools(),
       agents,
+      decision: this.deps.decision(),
     };
   }
 }
@@ -744,6 +750,22 @@ export function statusFingerprint(report: Omit<StatusReport, 'seq'>): string {
     update: report.update
       ? [report.update.target, report.update.state, report.update.problem]
       : null,
+    decision: [
+      report.decision.state,
+      report.decision.model,
+      report.decision.applied_revision,
+      report.decision.reason,
+      report.decision.detail,
+      report.decision.offered.map((offer) => [offer.model, offer.runtime, offer.speed]),
+      // Every 5% of a download, not every byte.
+      report.decision.progress
+        ? Math.floor(
+            (report.decision.progress.done_bytes /
+              Math.max(report.decision.progress.total_bytes, 1)) *
+              20
+          )
+        : null,
+    ],
   });
 }
 

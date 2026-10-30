@@ -653,6 +653,8 @@ async def harness(
                 agent_store=session_env.agent_store,
                 room_role_store=session_env.room_role_store,
             ),
+            decisions=None,
+            decision_max_age_seconds=120,
         )
 
         provisioning: Provisioning = PostgresProvisioning(

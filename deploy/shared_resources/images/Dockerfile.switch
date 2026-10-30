@@ -28,6 +28,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 # The Python project lives in core/; flatten it to /app in the image so
 # the package installs as `switch_core` and alembic.ini resolves against /app.
 COPY core/pyproject.toml core/uv.lock ./
+# The decision service's base package (pydantic only), a path dependency at
+# `../decision` from core's pyproject, which is /decision from /app.
+COPY decision/pyproject.toml /decision/
+COPY decision/switch_decision/ /decision/switch_decision/
 
 # Install locked dependencies first (cached across source changes), without the
 # project itself so this layer only busts when the lockfile changes.

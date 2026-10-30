@@ -10,6 +10,11 @@ import {
   type ControllerLogLevel,
   ControllerSupervisor,
 } from './controller-supervisor';
+import {
+  DECISION_MODEL_REMOVE_KIND,
+  DECISION_MODEL_REMOVED_KIND,
+  DECISION_MODEL_UNSUPPORTED,
+} from './decision-model';
 import { fakeSpawn, STOP_REQUEST, waitFor } from './test-helpers/fake-controller-child';
 
 const NOW = Date.parse('2026-01-01T00:00:00Z');
@@ -70,6 +75,41 @@ describe('ControllerSupervisor', () => {
     await expect(failed).rejects.toThrow('offline');
 
     await expect(supervisor.recheckProviders(20)).rejects.toThrow(/did not answer/);
+    await supervisor.stop(1_000);
+  });
+
+  it('asks the running controller to remove the decision model, and says when it cannot', async () => {
+    const { supervisor, calls } = harness();
+    await expect(supervisor.removeDecisionModel(1_000)).rejects.toThrow(/not running/);
+    supervisor.start();
+    await waitFor(() => calls.length === 1, 'the spawn');
+    const child = calls[0]!.child;
+    const requests = () =>
+      child.sent.filter(
+        (message): message is { kind: string; id: string } =>
+          (message as { kind?: string }).kind === DECISION_MODEL_REMOVE_KIND
+      );
+
+    const ok = supervisor.removeDecisionModel(1_000);
+    child.emit('message', { kind: DECISION_MODEL_REMOVED_KIND, id: 'someone-else', error: null });
+    child.emit('message', {
+      kind: DECISION_MODEL_REMOVED_KIND,
+      id: requests()[0]!.id,
+      error: null,
+    });
+    await expect(ok).resolves.toBeUndefined();
+
+    const refused = supervisor.removeDecisionModel(1_000);
+    child.emit('message', {
+      kind: DECISION_MODEL_REMOVED_KIND,
+      id: requests().at(-1)!.id,
+      error: 'The model is in use.',
+    });
+    await expect(refused).rejects.toThrow('The model is in use.');
+
+    // A controller that predates the request ignores it.
+    await expect(supervisor.removeDecisionModel(20)).rejects.toThrow(DECISION_MODEL_UNSUPPORTED);
+    expect(DECISION_MODEL_UNSUPPORTED).toContain('not supported by this controller version');
     await supervisor.stop(1_000);
   });
 

@@ -3,6 +3,7 @@
   setup       register test agents, a second Mattermost person, and the rooms
   playground  add a fresh room with all three agents, for trying it by hand
   agents      run the scripted agents (they reply "I got ..." when addressed)
+  decider     run a stub decision service that picks an agent by keyword
   run         play every scenario as people in Mattermost and write a report
 
 `run.sh` beside this file drives the whole thing against a fresh local stack;
@@ -26,6 +27,7 @@ import uuid
 from pathlib import Path
 
 import aiohttp
+from aiohttp import web
 
 REPO = Path(__file__).resolve().parents[4]
 HERE = Path(
@@ -36,6 +38,7 @@ RECEIVED = HERE / "received.jsonl"
 SERVER_LOG = HERE / "switch-core.log"
 SWITCH = "http://localhost:8000"
 MM = "http://localhost:8065"
+DECIDER_PORT = int(os.environ.get("E2E_DECIDER_PORT", "8091"))
 AGENTS = {
     "helper": "Answers questions about the Switch repo and its local setup.",
     "reviewer": "Reviews code changes and pull requests.",
@@ -174,10 +177,11 @@ async def setup() -> None:
                 "addressing": "owner_only",
             },
         )
-        for name in ("helper", "reviewer"):
+        # An agent can't change its own settings, so each is changed by the other.
+        for name, by in (("helper", "reviewer"), ("reviewer", "helper")):
             await op(
                 http,
-                helper,
+                state["agents"][by],
                 "update_agent_detail",
                 {"agent_id": state["agents"][name]["id"], "addressing": "anyone"},
             )
@@ -225,6 +229,7 @@ async def setup() -> None:
         rooms = {
             "follow-ups": ["helper", "reviewer", "private-bot"],
             "main-agent": ["helper", "reviewer", "private-bot"],
+            "auto-route": ["helper", "reviewer", "private-bot"],
         }
         for key, members in rooms.items():
             created = await op(
@@ -389,6 +394,8 @@ def why(message_id: str, name: str) -> str:
     """The server's own reason this agent got the message, read from its log."""
     pattern = f"message={message_id} agent={name} "
     for line in reversed(SERVER_LOG.read_text().splitlines()[-4000:]):
+        if "Decision routing:" in line and f"{pattern}outcome=delivered" in line:
+            return "via the decision service (nobody was tagged)"
         if "Follow the conversation:" in line and pattern in line:
             route = re.search(r"route=(\S+)", line).group(1)
             reason = line.split("reason=", 1)[1]
@@ -432,6 +439,58 @@ async def reply(
 async def agents() -> None:
     state = load_state()
     await asyncio.gather(*(run_agent(n, a) for n, a in state["agents"].items()))
+
+
+# ── Stub decision service ───────────────────────────────────────────────────
+
+# Keywords to the agent the stub picks, first match wins. A real decision
+# service reads the room's context; the stub only needs to be predictable.
+DECIDER_RULES = [
+    (("review", "pull request", " pr "), "reviewer"),
+    (("setup", "set up", "run ", "tests", "just "), "helper"),
+]
+
+
+def stub_pick(text: str, candidates: list[str]) -> str | None:
+    lowered = f" {text.lower()} "
+    for words, agent in DECIDER_RULES:
+        if agent in candidates and any(word in lowered for word in words):
+            return agent
+    return None
+
+
+async def decider() -> None:
+    """Answer Switch's decision requests the way the real service does, by
+    keyword, and log each request so the report can show what Switch sent."""
+    log = HERE / "decider.jsonl"
+
+    async def decide(request: web.Request) -> web.Response:
+        body = await request.json()
+        candidates = [a["name"] for a in body["agents"]]
+        pick = stub_pick(body["message"]["text"], candidates)
+        with log.open("a") as f:
+            f.write(json.dumps({"request": body, "pick": pick}) + "\n")
+        return web.json_response(
+            {
+                "agent": pick,
+                "model_choice": pick or "none",
+                "confidence": 0.99 if pick else 0.9,
+                "threshold": 0.6,
+                "reason": "stub: keyword match" if pick else "stub: no keyword",
+                "model": "stub",
+                "latency_ms": 1.0,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/decide", decide)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", DECIDER_PORT).start()
+    print(
+        f"stub decision service on http://127.0.0.1:{DECIDER_PORT}/decide", flush=True
+    )
+    await asyncio.Event().wait()
 
 
 # ── Scenarios ───────────────────────────────────────────────────────────────
@@ -625,6 +684,60 @@ SCENARIOS = [
             ("user", "and which tests are slow?", "thread:f1", {"helper"}, None),
         ],
     },
+    {
+        "id": "S15",
+        "room": "follow-ups",
+        "title": "Without !auto-route, an untagged question still reaches nobody",
+        "steps": [("bob", "how do I run the local setup?", "top", set(), None)],
+    },
+    {
+        "id": "S16",
+        "room": "auto-route",
+        "title": "!auto-route on, then an untagged question reaches the agent the decision service picks",
+        "steps": [
+            ("cmd", "user", "!auto-route on", "Automatic routing is **on**"),
+            (
+                "user",
+                "how do I run the local setup?",
+                "top",
+                {"helper"},
+                "answer:helper=r1",
+            ),
+        ],
+    },
+    {
+        "id": "S17",
+        "room": "auto-route",
+        "title": '"thanks" and people talking to each other reach nobody',
+        "steps": [
+            ("user", "thanks!", "top", set(), None),
+            ("bob", "lunch at 1 anyone?", "top", set(), None),
+        ],
+    },
+    {
+        "id": "S18",
+        "room": "auto-route",
+        "title": "In an auto-route room, the decision service decides thread replies, not the last agent to speak",
+        "steps": [
+            (
+                "user",
+                "can you review my change to the readme?",
+                "thread:r1",
+                {"reviewer"},
+                "answer:reviewer",
+            ),
+            ("user", "and how do I run the tests?", "thread:r1", {"helper"}, None),
+        ],
+    },
+    {
+        "id": "S19",
+        "room": "auto-route",
+        "title": "!auto-route off: untagged questions reach nobody again",
+        "steps": [
+            ("cmd", "user", "!auto-route off", "Automatic routing is **off**"),
+            ("bob", "how do I set up the database?", "top", set(), None),
+        ],
+    },
 ]
 
 
@@ -765,7 +878,9 @@ async def run() -> None:
 def write_report(results, events, log_text, transcripts, state) -> int:
     """Write report.md and return how many scenarios failed."""
     ftc_lines = [
-        line for line in log_text.splitlines() if "Follow the conversation:" in line
+        line
+        for line in log_text.splitlines()
+        if "Follow the conversation:" in line or "Decision routing:" in line
     ]
     out = ["# Follow the conversation: end-to-end proof", ""]
     out.append(
@@ -816,7 +931,12 @@ def write_report(results, events, log_text, transcripts, state) -> int:
             for line in ftc_lines:
                 if any(f"message={mid} " in line for mid in ids):
                     logs_for_sc.append(
-                        f"step {i}: " + line.split("Follow the conversation: ", 1)[1]
+                        f"step {i}: "
+                        + re.split(
+                            r"(?:Follow the conversation|Decision routing): ",
+                            line,
+                            maxsplit=1,
+                        )[1]
                     )
         body.append("")
         body.append("Server log lines for these messages:")
@@ -860,7 +980,11 @@ def write_report(results, events, log_text, transcripts, state) -> int:
 
 if __name__ == "__main__":
     asyncio.run(
-        {"setup": setup, "agents": agents, "run": run, "playground": playground}[
-            sys.argv[1]
-        ]()
+        {
+            "setup": setup,
+            "agents": agents,
+            "decider": decider,
+            "run": run,
+            "playground": playground,
+        }[sys.argv[1]]()
     )

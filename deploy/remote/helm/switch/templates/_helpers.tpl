@@ -377,6 +377,47 @@ Other service hostnames (used in env vars and init containers).
 {{- include "switch.fullname" . }}-mattermost
 {{- end }}
 
+{{- define "switch.decisionHost" -}}
+{{- include "switch.fullname" . }}-decision
+{{- end }}
+
+{{/*
+DECISION_ENDPOINT_URL for switch-core: the chart's own decision service when
+decision.enabled, else switchCore.decision.endpointUrl (empty: none, and
+auto-route is unavailable until a workspace admin sets a backend up).
+*/}}
+{{- define "switch.decisionEndpointUrl" -}}
+{{- if .Values.decision.enabled -}}
+{{- if .Values.switchCore.decision.endpointUrl -}}
+{{- fail (printf "decision.enabled runs the decision service in this release and points switch-core at it, but switchCore.decision.endpointUrl is also set (%q). Clear one of them." .Values.switchCore.decision.endpointUrl) -}}
+{{- end -}}
+{{- printf "http://%s:%v" (include "switch.decisionHost" .) .Values.decision.port -}}
+{{- else -}}
+{{- .Values.switchCore.decision.endpointUrl -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Whether workspaces may choose Haiku on Bedrock (DECISION_BEDROCK_ENABLED).
+Non-empty for yes, nothing for no.
+*/}}
+{{- define "switch.decisionBedrockEnabled" -}}
+{{- if or .Values.switchCore.decision.bedrockEnabled (and .Values.decision.enabled .Values.decision.bedrock.enabled) -}}
+{{- if not (include "switch.decisionEndpointUrl" .) -}}
+{{- fail "switchCore.decision.bedrockEnabled needs a decision service to run Haiku on Bedrock in: set decision.enabled or switchCore.decision.endpointUrl." -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Decision pod selector labels, shared by its Deployment, Service and
+NetworkPolicy.
+*/}}
+{{- define "switch.decisionSelectorLabels" -}}
+{{- include "switch.selectorLabels" (dict "Release" .Release "component" "decision") }}
+{{- end }}
+
 {{/*
 Public origin of the Teams bridge listener: the value the bridge's
 public_base_url must be set to.
@@ -841,6 +882,21 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: FOLLOW_THE_CONVERSATION_WINDOW_SECONDS
   value: {{ .Values.switchCore.followTheConversation.windowSeconds | quote }}
 {{- end }}
+{{- if and (has "decision_routing" .Values.switchCore.featureFlags.enabled) (not (has "follow_the_conversation" .Values.switchCore.featureFlags.enabled)) }}
+{{- fail "The decision_routing feature flag needs follow_the_conversation in switchCore.featureFlags.enabled as well; switch-core refuses to start without it." }}
+{{- end }}
+{{- with include "switch.decisionEndpointUrl" . }}
+- name: DECISION_ENDPOINT_URL
+  value: {{ . | quote }}
+{{- end }}
+{{- if include "switch.decisionBedrockEnabled" . }}
+- name: DECISION_BEDROCK_ENABLED
+  value: "true"
+{{- end }}
+{{- with .Values.switchCore.decision.timeoutSeconds }}
+- name: DECISION_TIMEOUT_SECONDS
+  value: {{ . | quote }}
+{{- end }}
 {{- if not (or .Values.gateway.enabled .Values.switchCore.serveDashboard) }}
 {{- fail "gateway.enabled and switchCore.serveDashboard are both off, so nothing serves the operator dashboard. Turn one of them on." }}
 {{- end }}
@@ -1108,4 +1164,69 @@ Usage: {{ include "switch.waitForHttp" (dict "name" "gateway" "url" "http://host
 - name: wait-for-{{ .name }}
   image: busybox:1.36
   command: ["sh", "-c", "until wget -q --spider {{ .url }}; do echo 'waiting for {{ .name }}...'; sleep 2; done"]
+{{- end }}
+
+{{/*
+The weights file name inside /models: decision.modelServer.llamacpp.model.file.
+*/}}
+{{- define "switch.decisionModelFile" -}}
+{{- $file := required "decision.modelServer.llamacpp.model.file is required" .Values.decision.modelServer.llamacpp.model.file -}}
+{{- if contains "/" $file -}}
+{{- fail (printf "decision.modelServer.llamacpp.model.file must be a file name, not a path: %q" $file) -}}
+{{- end -}}
+{{- $file -}}
+{{- end }}
+
+{{/*
+Which model server runs beside the decision service: decision.modelServer.kind,
+strands or llamacpp.
+*/}}
+{{- define "switch.decisionModelServerKind" -}}
+{{- $kind := .Values.decision.modelServer.kind -}}
+{{- if not (has $kind (list "strands" "llamacpp")) -}}
+{{- fail (printf "decision.modelServer.kind must be strands or llamacpp, not %q" $kind) -}}
+{{- end -}}
+{{- $kind -}}
+{{- end }}
+
+{{/*
+DECISION_BACKEND: decision.backend, or else the API the model server speaks
+(systemone for strands, llamacpp for llamacpp). Without a model server there is
+nothing to derive it from, so it must be set (anthropic or bedrock).
+*/}}
+{{- define "switch.decisionBackend" -}}
+{{- $d := .Values.decision -}}
+{{- if $d.backend -}}
+{{- $d.backend -}}
+{{- else if $d.modelServer.enabled -}}
+{{- ternary "systemone" "llamacpp" (eq (include "switch.decisionModelServerKind" .) "strands") -}}
+{{- else -}}
+{{- fail "decision.backend is required when decision.modelServer.enabled is false: anthropic or bedrock, say." -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+DECISION_MODEL: decision.model, or else the model server's modelName. Empty
+(without a model server) keeps the service's default for its backend.
+*/}}
+{{- define "switch.decisionModel" -}}
+{{- $d := .Values.decision -}}
+{{- if $d.model -}}
+{{- $d.model -}}
+{{- else if $d.modelServer.enabled -}}
+{{- (get $d.modelServer (include "switch.decisionModelServerKind" .)).modelName -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+HF_TOKEN env entry from decision.modelServer.hfTokenSecret, or nothing.
+*/}}
+{{- define "switch.decisionHfToken" -}}
+{{- with .Values.decision.modelServer.hfTokenSecret.name }}
+- name: HF_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ . }}
+      key: {{ $.Values.decision.modelServer.hfTokenSecret.key }}
+{{- end }}
 {{- end }}

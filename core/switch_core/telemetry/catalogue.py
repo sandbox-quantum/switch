@@ -186,6 +186,42 @@ BRIDGE_FAILURE_REASON = one_of(
 TRISTATE = one_of("true", "false", "unknown")
 
 
+# Which decision backend a workspace's auto-route used: the server's own
+# decision service as its default, the workspace's own endpoint, or Haiku.
+# Which kind of backend answered: the server's own decision service as a
+# workspace's default, a workspace's own endpoint, Haiku, or a model served on
+# one of the workspace admin's own machines. Never which machine.
+DECISION_BACKEND = one_of(
+    "server_default", "endpoint", "haiku_anthropic", "haiku_bedrock", "machine"
+)
+
+# The confidence the decision service gave its choice, in tenths above one
+# half, where a threshold sits; `none` when it gave none.
+DECISION_CONFIDENCE = one_of(
+    "none", "lt_0.5", "0.5_0.6", "0.6_0.7", "0.7_0.8", "0.8_0.9", "0.9_1.0"
+)
+
+# Why a decision service gave no usable answer: no answer in time, no
+# connection, an answer other than 200, an answer that was not a decision (or
+# named an agent that was not a candidate), a workspace key the server can no
+# longer decrypt, or a workspace endpoint the server's outbound policy refuses.
+# For a model on a machine: the machine is not connected, its model is not
+# running, it has as many decisions in flight as it takes, or its model server
+# failed.
+DECISION_FAILURE_REASON = one_of(
+    "timeout",
+    "unreachable",
+    "error_status",
+    "bad_answer",
+    "key_unreadable",
+    "endpoint_refused",
+    "machine_offline",
+    "machine_not_ready",
+    "machine_busy",
+    "machine_error",
+)
+
+
 # ── The catalogue ────────────────────────────────────────────────────────────
 
 _SNAPSHOT_COUNTS = (
@@ -463,6 +499,23 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "room_user_count": NUMBER,
         "has_attachment": BOOLEAN,
         "in_thread": BOOLEAN,
+    },
+    # ── Decision routing ─────────────────────────────────────────────────────
+    # One per message auto-route asked a decision service about. Which agent,
+    # room or message is never said: only whether an agent was picked, how
+    # sure the service was, how long it took and which kind of backend
+    # answered. `latency_ms` is measured by Switch, around the whole request.
+    "decision_made": {
+        "backend": DECISION_BACKEND,
+        "outcome": one_of("agent", "none"),
+        "confidence": DECISION_CONFIDENCE,
+        "latency_ms": NUMBER,
+    },
+    # A decision service that gave no usable answer, so the message went to
+    # nobody, or to the room's triage agent.
+    "decision_failed": {
+        "backend": DECISION_BACKEND,
+        "reason": DECISION_FAILURE_REASON,
     },
     # ── Resources, keys and groups ───────────────────────────────────────────
     # Creating is intent, attaching is use, and the gap between them is the

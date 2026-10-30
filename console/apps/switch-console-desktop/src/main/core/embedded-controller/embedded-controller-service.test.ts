@@ -23,6 +23,11 @@ import {
   wipeControllerIdentity,
 } from './controller-files';
 import {
+  DECISION_MODEL_REMOVE_KIND,
+  DECISION_MODEL_REMOVED_KIND,
+  DecisionModelPreferenceFile,
+} from './decision-model';
+import {
   type EmbeddedControllerDeps,
   EmbeddedControllerService,
   type ManagementPort,
@@ -91,6 +96,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     stopTimeoutMs: 200,
     movedAgents: async () => moved,
     providerSeed: () => null,
+    decisionModel: new DecisionModelPreferenceFile(() => join(base, 'decision-model.json')),
     ...overrides,
   });
   services.push(created);
@@ -210,6 +216,7 @@ describe('EmbeddedControllerService', () => {
       HOME: '/home/someone',
       ELECTRON_RUN_AS_NODE: '1',
       SWITCH_CONTROLLER_LOG_LEVEL: 'info',
+      SWITCH_CONTROLLER_DECISION_MODEL: 'on',
     });
     await waitFor(() => call.child.stdin.writableEnded, 'stdin closed');
     expect(call.child.received).toBe(CREDENTIAL);
@@ -605,5 +612,63 @@ describe('EmbeddedControllerService', () => {
       message: 'Console no longer knows this Switch server, so it cannot say where to connect.',
     });
     expect(calls).toHaveLength(0);
+  });
+
+  describe('the decision model on this computer', () => {
+    it('is on until turned off, and restarts the running controller with it off', async () => {
+      const running = await enabled();
+      expect(await running.decisionModelEnabled()).toBe(true);
+      expect(calls[0]!.env.SWITCH_CONTROLLER_DECISION_MODEL).toBe('on');
+
+      await running.setDecisionModelEnabled(false);
+      expect(calls[0]!.child.signals).toEqual([STOP_REQUEST]);
+      await waitFor(() => calls.length === 2, 'the restart with it off');
+      expect(calls[1]!.env.SWITCH_CONTROLLER_DECISION_MODEL).toBe('off');
+      await waitFor(() => calls[1]!.child.received === CREDENTIAL, 'the credential again');
+      expect(JSON.parse(readFileSync(join(base, 'decision-model.json'), 'utf8'))).toEqual({
+        version: 1,
+        enabled: false,
+      });
+    });
+
+    it('keeps the choice for the next launch, and does not restart for no change', async () => {
+      const first = await enabled();
+      await first.setDecisionModelEnabled(false);
+      await waitFor(() => calls.length === 2, 'the restart with it off');
+      await first.setDecisionModelEnabled(false);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(calls).toHaveLength(2);
+      await first.dispose();
+
+      const relaunched = service();
+      await relaunched.initialize();
+      await waitFor(() => calls.length === 1, 'the controller started at launch');
+      expect(calls[0]!.env.SWITCH_CONTROLLER_DECISION_MODEL).toBe('off');
+      expect(await relaunched.decisionModelEnabled()).toBe(false);
+    });
+
+    it('asks the running controller to remove the downloaded model', async () => {
+      const running = await enabled();
+      const child = calls[0]!.child;
+      const removed = running.removeDecisionModel(SERVER);
+      await waitFor(
+        () =>
+          child.sent.some(
+            (message) => (message as { kind?: string }).kind === DECISION_MODEL_REMOVE_KIND
+          ),
+        'the request'
+      );
+      const request = child.sent.find(
+        (message) => (message as { kind?: string }).kind === DECISION_MODEL_REMOVE_KIND
+      ) as { id: string };
+      child.emit('message', { kind: DECISION_MODEL_REMOVED_KIND, id: request.id, error: null });
+      await expect(removed).resolves.toBeUndefined();
+    });
+
+    it('refuses to remove the model for a server this computer runs no controller for', async () => {
+      await expect(service().removeDecisionModel(SERVER)).rejects.toThrow(
+        'This computer does not run managed agents for this server.'
+      );
+    });
   });
 });

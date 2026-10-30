@@ -32,17 +32,27 @@ const APPROVE = 'switch-bench-approve';
 const CONNECT = /switch-bench-connect:(\S+)/;
 
 /**
- * Where the room prompt names the message it carries. Only the reply's own
- * body uses it, so the driver can correlate the reply it sees arrive with the
- * message it answers; the room the reply lands in is Switch's choice.
+ * Where the room prompt names the message it carries, whether it was
+ * addressed to the agent, routed to it by Switch's decision service, or
+ * delivered to it as the room's triage agent while auto-route was unavailable. Only
+ * the reply's own body uses it, so the driver can correlate the reply it sees
+ * arrive with the message it answers; the room the reply lands in is Switch's
+ * choice.
  */
-const ORIGIN = /addressed you in room (\S+) \(message_id ([^,\s)]+)/;
+const ORIGIN =
+  /(?:addressed you|posted) in room (\S+) (?:without tagging anyone, and (?:Switch picked you to answer|auto-route was unavailable, so it came to you as the room's triage agent) )?\(message_id ([^,\s)]+)/;
 
 /** How long a refused `post_message` is tried again before the turn gives up. */
 const REPLY_RETRY_MS = 90_000;
 
 export function benchMarker(text: string): string | null {
   return MARKER.exec(text)?.[1] ?? null;
+}
+
+/** The room and message id a room prompt names, or null for a turn that carries none. */
+export function benchOrigin(text: string): { roomId: string; messageId: string } | null {
+  const origin = ORIGIN.exec(text);
+  return origin ? { roomId: origin[1]!, messageId: origin[2]! } : null;
 }
 
 type ToolResult = {
@@ -231,14 +241,11 @@ export function createBenchAdapter(): ProviderAdapter {
 
   const turn = async (input: ProviderSendTurnInput, marker: string) => {
     const { sessionId, turnId } = input;
-    const origin = ORIGIN.exec(input.text);
+    const origin = benchOrigin(input.text);
     if (!origin) throw new Error(`Turn ${turnId} carries no room message to answer.`);
     if (input.text.includes(APPROVE) && (await approve(sessionId, turnId, marker)) !== 'accept')
       return 'interrupted' as const;
-    const posted = await reply(sessionId, turnId, marker, {
-      roomId: origin[1]!,
-      messageId: origin[2]!,
-    });
+    const posted = await reply(sessionId, turnId, marker, origin);
     const moveTo = CONNECT.exec(input.text)?.[1];
     if (posted && moveTo) await connect(sessionId, turnId, marker, moveTo);
     return posted ? ('completed' as const) : ('error' as const);

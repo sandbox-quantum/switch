@@ -366,8 +366,21 @@ class TestListMachines:
                 },
             ],
             "agents_running": 2,
+            "decision": {
+                "supported": True,
+                "offered": [
+                    {
+                        "model": "qwen3.5-4b-q4_k_m",
+                        "label": "Qwen3.5-4B",
+                        "speed": "fast",
+                    }
+                ],
+                "state": "downloading",
+                "model": "qwen3.5-4b-q4_k_m",
+            },
         }
         assert machines["laptop"]["last_seen_at"] is not None
+        assert machines["desktop"]["decision"] == {"supported": False}
         assert machines["desktop"]["state"] == "unknown"
         assert machines["desktop"]["providers"] == []
         assert machines["desktop"]["agents_running"] is None

@@ -336,7 +336,7 @@ class TestAssignment:
             )
 
         assert first.status_code == 200
-        assert first.json() == {"revision": 0, "agents": []}
+        assert first.json() == {"revision": 0, "agents": [], "decision": None}
         assert etag == f'"{ASSIGNMENT_FORMAT}-0"'
         assert unchanged.status_code == 304
         assert unchanged.headers["ETag"] == etag
@@ -831,7 +831,11 @@ class TestPlacementBindsTheAgentInCore:
         assert (
             after_move is not None and after_move.controller_id == second.controller_id
         )
-        assert first_assignment.json() == {"revision": 2, "agents": []}
+        assert first_assignment.json() == {
+            "revision": 2,
+            "agents": [],
+            "decision": None,
+        }
         assert [a["agent_id"] for a in second_assignment.json()["agents"]] == [agent_id]
         assert removed.status_code == 200, removed.text
         assert presence.binding(agent_id) is None

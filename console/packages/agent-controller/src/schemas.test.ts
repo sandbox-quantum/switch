@@ -20,8 +20,12 @@ import {
   statusResponseSchema,
   tokenRequestSchema,
   tokenResponseSchema,
+  decisionRequestFrameSchema,
+  decisionResultSchema,
+  decisionStatusSchema,
 } from './schemas';
 import { STREAM_FRAME_SCHEMAS } from './stream';
+import { OFF_DECISION_STATUS } from './testing/fake-decision';
 
 /**
  * Core's contract fixtures: one JSON file per wire message. Core checks its
@@ -200,7 +204,13 @@ describe('status report', () => {
   const report = {
     seq: 1,
     observed_at: '2026-01-01T00:00:00Z',
-    controller: { version: '0.1.0', protocol: 2, assignment_revision: 0, updated_by: 'self' },
+    controller: {
+      version: '0.1.0',
+      protocol: 2,
+      assignment_revision: 0,
+      updated_by: 'self',
+      capabilities: ['decision.v1'],
+    },
     machine: {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
       disk_free_bytes: 1,
@@ -227,6 +237,7 @@ describe('status report', () => {
         reason: 'internal',
       },
     ],
+    decision: OFF_DECISION_STATUS,
   };
 
   it('accepts a full snapshot', () => {
@@ -256,6 +267,83 @@ describe('status report', () => {
       statusReportSchema.safeParse({ ...report, update: { target: '0.31.0', state: 'done' } })
         .success
     ).toBe(false);
+  });
+});
+
+describe('decisions on this machine', () => {
+  it('reads the assignment’s decision, and its absence as none', () => {
+    expect(assignmentSchema.parse({ revision: 1, agents: [] }).decision ?? null).toBeNull();
+    expect(
+      assignmentSchema.parse({ revision: 2, agents: [], decision: null }).decision ?? null
+    ).toBeNull();
+    expect(
+      assignmentSchema.parse({
+        revision: 3,
+        agents: [],
+        decision: { revision: 3, model: 'qwen3.5-4b-q4_k_m' },
+      }).decision
+    ).toEqual({ revision: 3, model: 'qwen3.5-4b-q4_k_m' });
+  });
+
+  it('reads a decision request, keeping its payload as it came', () => {
+    const payload = { messages: [{ role: 'user', content: 'x' }], max_tokens: 1, extra: [1] };
+    const frame = decisionRequestFrameSchema.parse({
+      request_id: 'r1',
+      kind: 'llamacpp',
+      model: 'qwen3.5-4b-q4_k_m',
+      payload,
+      deadline_ms: 2000,
+      unknown_field: true,
+    });
+    expect(frame.payload).toEqual(payload);
+    expect(decisionRequestFrameSchema.parse({ ...frame, kind: 'something-new' }).kind).toBe(
+      'unknown'
+    );
+    expect(decisionRequestFrameSchema.safeParse({ ...frame, request_id: '' }).success).toBe(false);
+  });
+
+  it('writes results as the contract says', () => {
+    expect(
+      decisionResultSchema.safeParse({
+        type: 'decision.result',
+        request_id: 'r1',
+        ok: true,
+        body: { choices: [] },
+        model_ms: 420,
+      }).success
+    ).toBe(true);
+    expect(
+      decisionResultSchema.safeParse({
+        type: 'decision.result',
+        request_id: 'r1',
+        ok: false,
+        error: { code: 'busy', message: 'busy' },
+      }).success
+    ).toBe(true);
+    expect(
+      decisionResultSchema.safeParse({
+        type: 'decision.result',
+        request_id: 'r1',
+        ok: false,
+        error: { code: 'machine_offline', message: 'not a controller code' },
+      }).success
+    ).toBe(false);
+  });
+
+  it('needs a reason for a failed decision model', () => {
+    expect(decisionStatusSchema.safeParse(OFF_DECISION_STATUS).success).toBe(true);
+    expect(
+      decisionStatusSchema.safeParse({ ...OFF_DECISION_STATUS, state: 'failed', model: 'm' })
+        .success
+    ).toBe(false);
+    expect(
+      decisionStatusSchema.safeParse({
+        ...OFF_DECISION_STATUS,
+        state: 'failed',
+        model: 'm',
+        reason: 'checksum_mismatch',
+      }).success
+    ).toBe(true);
   });
 });
 

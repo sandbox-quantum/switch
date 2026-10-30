@@ -27,6 +27,7 @@ import {
 import { ConnectorAppProfile } from './connector-app-profile';
 import { useConnectorApps } from './connector-apps-queries';
 import { ConnectorAppsTab } from './connector-apps-tab';
+import { DecisionRoutingSection } from './decision-routing-section';
 import { WorkspaceSwitchesTab } from './workspace-switches-tab';
 
 type AdminParams = {
@@ -45,12 +46,12 @@ const AdminTitlebar = observer(function AdminTitlebar() {
 /**
  * What the workspace's admins, and the server's operator, manage for other
  * people. Laid out like Settings: its sections down the side, grouped by
- * what they reach, each shown only to the role that may use it. Its own
- * sections are about connectors, so like the Connectors page they are behind
- * the server's `service_connections` flag. A server this Console runs also
- * has its status in the menu, drawn by the `managedServer` view: whoever has
- * no section of their own here is sent there, and, where there is no status
- * either and the flag is off, to Your Agents.
+ * what they reach, each shown only to the role that may use it. The sections
+ * about connectors are, like the Connectors page, behind the server's
+ * `service_connections` flag; the workspace's decision routing is not. A
+ * server this Console runs also has its status in the menu, drawn by the
+ * `managedServer` view: whoever has no section of their own here is sent
+ * there, and, where there is no status either, to Your Agents.
  */
 const AdminPanel = observer(function AdminPanel() {
   const { params } = useParams('admin');
@@ -73,7 +74,7 @@ const AdminPanel = observer(function AdminPanel() {
     if (redirect !== null) navigate(redirect, { serverId });
   }, [redirect, navigate, serverId]);
 
-  if (access !== 'shown' || workspace === null || redirect !== null)
+  if (access === 'loading' || workspace === null || redirect !== null)
     return (
       <ServerPage width={880} title="Admin" description="">
         <Spinner />
@@ -85,6 +86,22 @@ const AdminPanel = observer(function AdminPanel() {
       <ServerPage width={880} title="Admin" description="Ask a workspace admin to change these.">
         {null}
       </ServerPage>
+    );
+  if (section === 'decision')
+    return (
+      <AdminFrame serverId={serverId} groups={groups} active="decision">
+        <PageContent className="px-0">
+          <div className="space-y-6 pb-10">
+            <PageHeader
+              sticky
+              title={ADMIN_MENU_LABELS.decision}
+              description={`In an auto-route room, Switch asks a decision service which agent should answer a message that tags nobody. Choose the one ${workspace.name}’s rooms use.`}
+            />
+            {/* Keyed so a workspace switch reads that workspace's own setting. */}
+            <DecisionRoutingSection key={workspace.id} workspaceId={workspace.id} />
+          </div>
+        </PageContent>
+      </AdminFrame>
     );
   // Keyed so a workspace switch starts the search afresh.
   return (
@@ -118,7 +135,7 @@ function Admin({
   serverId: string;
   operator: boolean;
   groups: AdminGroup[];
-  section: AdminSection;
+  section: Exclude<AdminSection, 'decision'>;
   openApp: string | null;
   workspace: { id: string; name: string };
   serverName: string;

@@ -117,6 +117,7 @@ class AdminMessageType(StrEnum):
     TRUST_ALERTED = "trust_alerted"
     TRUST_ERRORED = "trust_errored"
     AGENT_LIFECYCLE = "agent_lifecycle"
+    AUTO_ROUTE_UNAVAILABLE = "auto_route_unavailable"
 
 
 def admin_extra_content(message_type: AdminMessageType | None) -> dict[str, object]:

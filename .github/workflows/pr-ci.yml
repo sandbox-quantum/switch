@@ -92,6 +92,10 @@ jobs:
             backend:
               - *shared
               - 'core/**'
+              # switch-core depends on the decision service's base package
+              # (its prompt and readers) by path.
+              - 'decision/pyproject.toml'
+              - 'decision/switch_decision/**'
               # switch-core serves the dashboard's pages from a list that
               # core/tests holds equal to this file's routes, so a new page
               # here has to run them too.
@@ -137,6 +141,8 @@ jobs:
               - 'deploy/hosted/chart/**'
               - 'deploy/hosted/render-check-values.yaml'
               - 'scripts/pin_chart_images.py'
+              - 'scripts/release_charts.sh'
+              - 'scripts/check_chart_decision.py'
               - '.github/workflows/switch-release.yml'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
@@ -355,6 +361,11 @@ jobs:
         # feature flag is checked too.
         run: |
           scripts/release_charts.sh build ghcr.io/render-check 0.0.0-check "$RUNNER_TEMP/chart" --placeholder-digests
+
+      - name: The decision service renders as configured
+        # Off renders nothing; on runs it, points switch-core at it and admits
+        # only switch-core; an endpoint elsewhere is wired without it.
+        run: python3 scripts/check_chart_decision.py
 
   gateway:
     name: Gateway UI

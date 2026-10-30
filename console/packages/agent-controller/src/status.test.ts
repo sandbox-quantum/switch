@@ -26,6 +26,7 @@ import {
   toolStatuses,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
+import { OFF_DECISION_STATUS } from './testing/fake-decision';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
 
 const NOW = Date.parse('2026-01-01T12:00:00Z');
@@ -745,6 +746,7 @@ describe('StatusCollector', () => {
       workspacesDir: join(dir, 'workspaces'),
       version: '0.1.0',
       updatedBy: 'self',
+      decision: () => OFF_DECISION_STATUS,
       now: () => clock,
     });
     store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
@@ -758,6 +760,7 @@ describe('StatusCollector', () => {
       protocol: 2,
       assignment_revision: 7,
       updated_by: 'self',
+      capabilities: ['decision.v1'],
     });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
     expect(first.tools).toEqual([
@@ -824,10 +827,34 @@ describe('statusFingerprint', () => {
         ],
         tools: [],
         agents: [],
+        decision: OFF_DECISION_STATUS,
       }) as unknown as Parameters<typeof statusFingerprint>[0];
     expect(statusFingerprint(report('Invalid API key'))).not.toBe(
       statusFingerprint(report('Not logged in'))
     );
     expect(statusFingerprint(report())).not.toBe(statusFingerprint(report('Invalid API key')));
+  });
+
+  it('changes with the decision model’s state and every 5% of its download, not every byte', () => {
+    const report = (decision: Partial<typeof OFF_DECISION_STATUS>) =>
+      ({
+        controller: { assignment_revision: 1 },
+        providers: [],
+        tools: [],
+        agents: [],
+        decision: { ...OFF_DECISION_STATUS, ...decision },
+      }) as unknown as Parameters<typeof statusFingerprint>[0];
+    const downloading = (done: number) =>
+      report({
+        state: 'downloading',
+        model: 'qwen3.5-4b-q4_k_m',
+        progress: { done_bytes: done, total_bytes: 1000 },
+      });
+    expect(statusFingerprint(report({}))).not.toBe(statusFingerprint(downloading(0)));
+    expect(statusFingerprint(downloading(10))).toBe(statusFingerprint(downloading(40)));
+    expect(statusFingerprint(downloading(40))).not.toBe(statusFingerprint(downloading(60)));
+    expect(statusFingerprint(report({ last_decision_ms: 400 }))).toBe(
+      statusFingerprint(report({ last_decision_ms: 500 }))
+    );
   });
 });

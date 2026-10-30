@@ -10,18 +10,18 @@ export type WorkspaceNavView =
  * The active server's destinations, in order. Connectors follows Your Rooms
  * only where the server has service connections on: with them off its routes
  * are not mounted, so there is nothing to show. Admin is for whoever
- * administers the workspace (the server's operator among them) where service
- * connections are on, its connector settings needing them, and for whoever
- * runs the server from this Console, whose status is under Admin's Server
- * heading: the others are run by someone else, and there is nothing here to
- * start, stop or update.
+ * administers the workspace (the server's operator among them), whose
+ * decision routing is there whatever the flags, and for whoever runs the
+ * server from this Console, whose status is under Admin's Server heading:
+ * the others are run by someone else, and there is nothing here to start,
+ * stop or update.
  */
 export function workspaceNavViews(server: {
   managed: boolean;
   serviceConnections: boolean;
   administers: boolean;
 }): WorkspaceNavView[] {
-  const admin = (server.serviceConnections && server.administers) || server.managed;
+  const admin = server.administers || server.managed;
   return [
     'server',
     'serverAgents',
@@ -39,11 +39,8 @@ export function workspaceNavViews(server: {
  * the status, the one entry that works without it.
  */
 export function adminNavTarget(server: {
-  serviceConnections: boolean;
   administers: boolean;
   frozen: boolean;
 }): 'admin' | 'managedServer' {
-  return server.serviceConnections && server.administers && !server.frozen
-    ? 'admin'
-    : 'managedServer';
+  return server.administers && !server.frozen ? 'admin' : 'managedServer';
 }
