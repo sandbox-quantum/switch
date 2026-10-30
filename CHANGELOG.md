@@ -2113,8 +2113,8 @@ version of their own to them without also giving them a release of their own.
   folder aside to start empty. Migrations are tracked one by one, so a
   migration applied out of order is applied rather than skipped. Any other
   startup failure now shows the error and a Reload button instead of a blank
-  window. drizzle-kit now defaults to the `switchdash-dev` database rather than
-  the installed app's.
+  window. drizzle-kit now defaults to the dev data folder's database rather
+  than the installed app's.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to

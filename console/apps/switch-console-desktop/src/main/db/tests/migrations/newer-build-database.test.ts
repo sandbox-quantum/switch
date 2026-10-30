@@ -2,9 +2,9 @@
  * A build must refuse a database migrated by a build it does not match
  * (CHOO-3384), and must never skip a migration it has not applied.
  *
- * Every build on a machine writes the same data directory: stable, Canary, any
- * build packaged from source, and drizzle-kit (only `pnpm dev` keeps to
- * `switchdash-dev`). 0051_workspaces (Canary 0.39, and main) rebuilds
+ * Every build on a machine writes the same data directory: stable, Canary and
+ * any build packaged from source (only `pnpm dev` and drizzle-kit keep to the
+ * dev data folder). 0051_workspaces (Canary 0.39, and main) rebuilds
  * `agents` without `server_id`. Stable 0.38.2 skipped every migration at or
  * below the newest applied timestamp, so on such a database it applied
  * nothing, reported success and booted on the newer schema; `getAgents`
