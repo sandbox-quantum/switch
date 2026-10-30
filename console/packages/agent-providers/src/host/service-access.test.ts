@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   grantedSkills,
   issueServiceToken,
+  NO_GRANTS_ROUTE_MS,
   readServiceGrants,
   type ServiceGrant,
   skillContext,
@@ -115,8 +116,22 @@ describe('readServiceGrants', () => {
     expect(init?.headers).toEqual({ Authorization: 'Bearer agent-key' });
   });
 
-  it('takes a Switch without the route as granting nothing', async () => {
-    expect(await readServiceGrants(SWITCH, answering(404, { detail: 'Not Found' }))).toEqual([]);
+  it('takes a Switch without the route as granting nothing, and does not ask it again for a while', async () => {
+    vi.useFakeTimers();
+    try {
+      const without = { ...SWITCH, agentId: 'agent-without-route' };
+      const notFound = answering(404, { detail: 'Not Found' });
+      expect(await readServiceGrants(without, notFound)).toEqual([]);
+      // Every check, each session start: asking each time would trip Switch's refusal breaker.
+      expect(await readServiceGrants(without, notFound)).toEqual([]);
+      expect(notFound).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(NO_GRANTS_ROUTE_MS + 1);
+      const granted = answering(200, { grants: [GITHUB] });
+      expect(await readServiceGrants(without, granted)).toEqual([GITHUB]);
+      expect(granted).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says when Switch refuses or cannot be reached', async () => {

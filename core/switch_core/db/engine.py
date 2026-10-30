@@ -3,6 +3,7 @@ import socket
 from typing import Any
 
 from sqlalchemy import event
+from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -159,9 +160,24 @@ def create_engine_from_config(
         "connect_args": connect_args,
     }
     defaults.update(engine_kwargs)
-    return _with_dead_peer_detection(
-        create_async_engine(config.database_url, **defaults), config
-    )
+    engine = create_async_engine(config.database_url, **defaults)
+    event.listen(engine.sync_engine, "checkout", _refuse_closed_connection)
+    return _with_dead_peer_detection(engine, config)
+
+
+def _refuse_closed_connection(dbapi_connection: Any, _record: Any, _proxy: Any) -> None:
+    """Swap a pooled connection that is already closed for a fresh one.
+
+    An anyio cancel scope re-delivers its cancellation at every await, so a
+    request cancelled mid-query (its client went away) is cancelled again
+    inside SQLAlchemy's invalidation of the connection. That unwinds before the
+    pool record lets go of the connection, and the record is returned to the
+    pool still holding it, closed. Raising `DisconnectionError` here makes the
+    pool discard it and connect afresh rather than fail the next borrower.
+    Free: `is_closed` reads local state, unlike the pre-ping's round trip.
+    """
+    if dbapi_connection.driver_connection.is_closed():
+        raise DisconnectionError("pooled connection was already closed")
 
 
 def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:

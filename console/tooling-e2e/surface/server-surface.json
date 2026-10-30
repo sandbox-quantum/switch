@@ -89,6 +89,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/chats/{room_id}/agents/{agent_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/chats/{room_id}/hidden",
       "auth": "session",
       "flags": []
@@ -358,12 +363,27 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/chats/agent-candidates",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/archived",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/chats/events",
       "auth": "session",
       "flags": []
     },
     {
       "route": "GET /gateway/chats/{room_id}/activity",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/{room_id}/commands",
       "auth": "session",
       "flags": []
     },
@@ -379,6 +399,11 @@
     },
     {
       "route": "GET /gateway/chats/{room_id}/messages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/chats/{room_id}/threads/{root_id}/messages",
       "auth": "session",
       "flags": []
     },
@@ -943,6 +968,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/chats/{room_id}/agents",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/chats/{room_id}/archive",
       "auth": "session",
       "flags": []
@@ -964,6 +994,11 @@
     },
     {
       "route": "POST /gateway/chats/{room_id}/messages",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/chats/{room_id}/unarchive",
       "auth": "session",
       "flags": []
     },
@@ -1195,6 +1230,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/rooms/{room_id}/sync-name",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/rooms/{room_id}/unarchive",
       "auth": "session",
       "flags": []
@@ -1312,6 +1352,11 @@
     },
     {
       "route": "PUT /gateway/chats/{room_id}/hidden",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/chats/{room_id}/read",
       "auth": "session",
       "flags": []
     },

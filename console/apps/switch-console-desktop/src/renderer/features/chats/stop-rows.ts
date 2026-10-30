@@ -16,21 +16,40 @@ export function isInterruptAck(message: Pick<ChatMessage, 'body' | 'sender'>): b
   return message.sender.kind !== 'human' && message.body.startsWith(INTERRUPT_ACK_MESSAGE);
 }
 
-function isInterruptCommand(message: Row): boolean {
-  return message.sender.kind === 'human' && /^!interrupt(\s|$)/.test(message.body.trim());
-}
+/**
+ * The agent's in-room answer to a Retry it passed on (core's `_RETRY.ack`). A
+ * Retry is posted as `!retry @agent <message id>`; the turn it runs again shows
+ * under the message, so the command and this answer are left out too.
+ */
+export const RETRY_ACK_MESSAGE = 'Trying that message again.';
 
-/** Ids of the Stop commands and their acknowledgements to leave out of the transcript. */
+/** Each command left out with its acknowledgement, and that acknowledgement. */
+const HIDDEN_COMMANDS: [RegExp, string][] = [
+  [/^!interrupt(\s|$)/, INTERRUPT_ACK_MESSAGE],
+  [/^!retry(\s|$)/, RETRY_ACK_MESSAGE],
+];
+
+/** Ids of the Stop and Retry commands and their acknowledgements to leave out of the transcript. */
 export function hiddenStopRows(messages: readonly Row[]): Set<string> {
   const hidden = new Set<string>();
   for (const command of messages) {
-    if (!isInterruptCommand(command)) continue;
+    if (command.sender.kind !== 'human') continue;
+    const ack = HIDDEN_COMMANDS.find(([pattern]) => pattern.test(command.body.trim()))?.[1];
+    if (ack === undefined) continue;
     const answers = messages.filter(
       (each) => each.threadRootId === command.messageId && each.sender.kind !== 'human'
     );
-    if (!answers.every(isInterruptAck)) continue;
+    if (!answers.every((answer) => answer.body.startsWith(ack))) continue;
     hidden.add(command.messageId);
     for (const answer of answers) hidden.add(answer.messageId);
   }
   return hidden;
+}
+
+/** An agent's acknowledgement of a Stop or Retry, which the chat leaves out: never where a turn shows. */
+export function isControlAck(message: Pick<ChatMessage, 'body' | 'sender'>): boolean {
+  return (
+    message.sender.kind !== 'human' &&
+    HIDDEN_COMMANDS.some(([, ack]) => message.body.startsWith(ack))
+  );
 }

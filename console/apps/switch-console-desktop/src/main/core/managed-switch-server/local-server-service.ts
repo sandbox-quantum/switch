@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { deleteAgentsForServer } from '@main/core/switch-servers/delete-server-agents';
 import { getManagedServer } from '@main/core/switch-servers/servers-store';
 import {
@@ -38,6 +39,7 @@ import {
 } from './constants';
 import { readVersionStatus, versionStatusOf } from './deployed-version';
 import { findFreePort, type LocalServerPorts } from './free-port';
+import { probeHealth } from './health';
 import { LocalServerHost } from './host/local-host';
 import type { ServerHost } from './host/types';
 import { readLocalActivity, recordLocalActivity } from './local-activity';
@@ -57,6 +59,7 @@ import {
 import { type NativeLayout, nativeLayout } from './native/native-paths';
 import {
   discardNativeData,
+  nativeCoreFailureLine,
   type NativeStartOptions,
   type NativeStartResult,
   nativeMattermostLauncher,
@@ -89,6 +92,12 @@ import { readDeployedTelemetry } from './telemetry-consent';
  * (or at its next start, if it is stopped), and {@link ensureReady} holds
  * sessions for its agents until that has finished.
  */
+/** How often a running server is looked at, to notice it stopping on its own. */
+const WATCH_INTERVAL_MS = 5_000;
+/** Missed probes in a row before something that is still running counts as not
+ * answering: one miss is a busy moment, not a verdict. */
+const MISSES_ALLOWED = 3;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -137,6 +146,18 @@ export class LocalServerService {
   /** Whether {@link ensureReady} has turned anything away since the last
    * upgrade finished, so that it can be told when the server is ready. */
   private refused = false;
+
+  /** Watches the running server for it stopping on its own; see {@link watch}. */
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  private watching = false;
+  /** Counts phase changes, so a watch that a start, stop or reset overtook
+   * while it looked does not report on the server that replaced the one it saw. */
+  private phaseChanges = 0;
+  /** Probes missed in a row, counted since {@link missesSince} phase changes. */
+  private coreMisses = 0;
+  /** When the first of those missed probes was sent, for saying how long. */
+  private firstMissAt = 0;
+  private missesSince = -1;
 
   getStatus(): LocalServerStatus {
     return this.status;
@@ -223,6 +244,7 @@ export class LocalServerService {
   private setStatus(patch: Partial<LocalServerStatus>): void {
     // Any change of phase settles what failed, unless the patch says.
     const failedTo = patch.phase !== undefined ? (patch.failedTo ?? null) : this.status.failedTo;
+    if (patch.phase !== undefined) this.phaseChanges++;
     this.status = { ...this.status, ...patch, failedTo };
     events.emit(localServerStatusChannel, this.status);
   }
@@ -297,7 +319,9 @@ export class LocalServerService {
    * Memoised: {@link ensureReady} awaits the same reconcile, then the upgrade
    * it started. */
   initialize(): Promise<void> {
-    this.initialization ??= this.reconcile();
+    // Watching starts whatever the boot check found: a first install has no
+    // server to find, and the one it is about to start needs watching too.
+    this.initialization ??= this.reconcile().finally(() => this.startWatching());
     return this.initialization;
   }
 
@@ -367,6 +391,123 @@ export class LocalServerService {
     if (upgradeNow || moveNow) void this.beginStart(false);
   }
 
+  private startWatching(): void {
+    if (this.watchTimer !== null) return;
+    this.watchTimer = setInterval(() => void this.watch(), WATCH_INTERVAL_MS);
+    this.watchTimer.unref?.();
+  }
+
+  /**
+   * Look at the server once, to notice it stopping without being asked.
+   *
+   * The phase is otherwise only ever set by this Console's own start, stop and
+   * reset, so a switch-core that crashed, was killed or stopped answering would
+   * go on showing as running everywhere while nothing it serves can be
+   * reached. A server whose process is gone is marked so at once; one whose
+   * process is there but whose gateway misses {@link MISSES_ALLOWED} probes in
+   * a row is marked as not answering, and back to running if it answers again.
+   *
+   * Runs on a timer from boot; public so a test can drive it.
+   */
+  async watch(): Promise<void> {
+    if (this.watching || this.busy || this.starting) return;
+    const { phase, failedTo } = this.status;
+    const lost = phase === 'error' && failedTo === 'run';
+    if (phase !== 'running' && !lost) return;
+    this.watching = true;
+    const seen = this.phaseChanges;
+    if (seen !== this.missesSince) {
+      this.missesSince = seen;
+      this.coreMisses = 0;
+    }
+    // A start, stop or reset that began while this looked: what it saw is of
+    // a server that is being replaced.
+    const overtaken = () => seen !== this.phaseChanges || this.busy || this.starting !== null;
+    const host: ServerHost = new LocalServerHost();
+    try {
+      const server = await getManagedServer();
+      if (!server) return;
+      const native = (await this.runtime()) === 'native';
+      const layout = nativeLayout(localServerDir());
+      const probedAt = Date.now();
+      const answers = await probeHealth(server.url);
+      // Null when it could not be told: Docker did not answer.
+      let alive: boolean | null;
+      if (native) alive = await nativeStackRunning(layout);
+      else if (answers) alive = true;
+      else {
+        alive = await runningImages(host).then(
+          (images) => images.has(CORE_SERVICE),
+          () => null
+        );
+      }
+      if (overtaken()) return;
+
+      if (lost) {
+        if (alive === true && answers) {
+          log.info('local-switch-server: the server is answering again');
+          this.coreMisses = 0;
+          this.setStatus({
+            phase: 'running',
+            serverId: server.id,
+            message: null,
+            error: null,
+            deployedTelemetry: native
+              ? await readNativeTelemetry(layout)
+              : await readDeployedTelemetry(host),
+          });
+        }
+        return;
+      }
+
+      if (alive === false) {
+        // Only a line that says what went wrong: a process that was killed
+        // leaves none, and its last ordinary log line would read as a reason.
+        const line = native ? await nativeCoreFailureLine(layout) : null;
+        const reason = line !== null && /(Error|Exception|FATAL)\b/.test(line) ? line : null;
+        if (overtaken()) return;
+        const where = native ? ` (full log: ${path.join(layout.logs, 'switch-core.log')})` : '';
+        await this.markLost(
+          `switch-core stopped unexpectedly${reason ? `: ${reason}` : ''}${where}`
+        );
+        return;
+      }
+      if (answers) {
+        this.coreMisses = 0;
+      } else {
+        if (this.coreMisses++ === 0) this.firstMissAt = probedAt;
+        if (this.coreMisses < MISSES_ALLOWED) return;
+        const seconds = Math.round((Date.now() - this.firstMissAt) / 1000);
+        await this.markLost(
+          `switch-core stopped answering: its process is still running but has not answered ` +
+            `for ${seconds} seconds.`
+        );
+        return;
+      }
+    } catch (error) {
+      log.warn('local-switch-server: could not check on the server', { error: String(error) });
+    } finally {
+      host.dispose();
+      this.watching = false;
+    }
+  }
+
+  /** Say the running server has stopped, or stopped answering, on its own. */
+  private async markLost(error: string): Promise<void> {
+    log.warn(`local-switch-server: ${error}`);
+    this.coreMisses = 0;
+    this.setStatus({
+      phase: 'error',
+      failedTo: 'run',
+      error,
+      message: null,
+      notice: null,
+      mattermostState: null,
+      deployedTelemetry: null,
+    });
+    await recordLocalActivity('crashed', error);
+  }
+
   /**
    * Resolves once sessions may run against this server, waiting out the boot
    * check and any upgrade in flight. Throws when the server still owes an
@@ -430,6 +571,9 @@ export class LocalServerService {
     this.startAbort = new AbortController();
     const host: ServerHost = new LocalServerHost();
     const checkoutRoot = this.checkoutRootForStart();
+    // Read before the phase moves on: whether this start is the way back from
+    // a server that stopped, or stopped answering, on its own.
+    const recovering = this.status.phase === 'error' && this.status.failedTo === 'run';
     try {
       const runtime = await this.runtime();
       // A server still on Docker moves itself to the native runtime, data and
@@ -488,6 +632,13 @@ export class LocalServerService {
         result = started.result;
         bringUpMattermost = started.bringUpMattermost;
       } else {
+        // `compose up` leaves a container that is running alone, however hung
+        // it is, so a server that stopped answering is stopped first. The
+        // native start and the move off Docker stop everything themselves.
+        if (recovering) {
+          common.onMessage('Stopping the server that stopped answering…');
+          await stopStack(host, null);
+        }
         // Nobody else shares the local stack, so there is nothing to lock.
         result = await startStack({ ...common, lease: null });
       }
@@ -802,6 +953,8 @@ export class LocalServerService {
   dispose(): void {
     this.startAbort?.abort();
     this.startAbort = null;
+    if (this.watchTimer !== null) clearInterval(this.watchTimer);
+    this.watchTimer = null;
   }
 }
 

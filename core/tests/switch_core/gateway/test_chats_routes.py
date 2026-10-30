@@ -346,7 +346,6 @@ async def test_a_create_names_its_agents_one_way(chats: _Harness) -> None:
     helper = await chats.agent("helper", owner=chats.alice)
     for body in (
         {"requestId": "c1"},
-        {"requestId": "c2", "agentIds": []},
         {"requestId": "c3", "agentId": helper.id, "agentIds": [helper.id]},
     ):
         response = await chats.client.post(
@@ -734,6 +733,99 @@ async def test_only_a_manager_archives_a_chat(chats: _Harness) -> None:
     assert listed.json()["chats"] == []
 
 
+async def _archived(chats: _Harness, user: User) -> dict[str, dict[str, Any]]:
+    response = await chats.client.get("/chats/archived", headers=chats.as_user(user))
+    assert response.status_code == 200, response.text
+    return {chat["roomId"]: chat for chat in response.json()["chats"]}
+
+
+async def _archive(chats: _Harness, user: User, room_id: str) -> None:
+    response = await chats.client.post(
+        f"/chats/{room_id}/archive", headers=chats.as_user(user)
+    )
+    assert response.status_code == 204, response.text
+
+
+async def test_archived_chats_are_listed_only_to_their_members(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    shared = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, shared, chats.bob)).status_code == 200
+    assert (await chats.send(chats.alice, shared, "s1", "kept")).status_code == 200
+    bobs_agent = await chats.agent("bobs", owner=chats.bob)
+    private = await chats.new_chat(chats.bob, bobs_agent, "c2")
+    others = await _room(chats, [agent], owner=chats.alice, archived=True)
+    await _archive(chats, chats.alice, shared)
+    await _archive(chats, chats.bob, private)
+
+    assert shared not in await _listed(chats, chats.alice)
+    assert set(await _archived(chats, chats.alice)) == {shared}
+    assert set(await _archived(chats, chats.bob)) == {shared, private}
+    assert others not in await _archived(chats, chats.admin)
+    assert await _archived(chats, chats.carol) == {}
+
+    page = await chats.client.get(
+        f"/chats/{shared}/messages", headers=chats.as_user(chats.bob)
+    )
+    assert page.status_code == 200
+    assert [m["body"] for m in page.json()["messages"]][-1] == "kept"
+    assert await _reads(chats, chats.alice, private) == 403
+
+
+async def test_only_a_manager_unarchives_a_chat(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    await _archive(chats, chats.alice, room_id)
+
+    refused = await chats.client.post(
+        f"/chats/{room_id}/unarchive", headers=chats.as_user(chats.bob)
+    )
+    assert refused.status_code == 403
+    assert _code(refused) == "NOT_A_MANAGER"
+
+    restored = await chats.client.post(
+        f"/chats/{room_id}/unarchive", headers=chats.as_user(chats.alice)
+    )
+    assert restored.status_code == 204
+    assert room_id in await _listed(chats, chats.bob)
+    assert await _archived(chats, chats.bob) == {}
+
+
+async def test_a_managers_message_unarchives_the_chat_once(chats: _Harness) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    await _archive(chats, chats.alice, room_id)
+
+    sent = await chats.send(chats.alice, room_id, "s1", "back again")
+    assert sent.status_code == 200, sent.text
+    retried = await chats.send(chats.alice, room_id, "s1", "back again")
+    assert retried.status_code == 200
+    assert retried.json() == sent.json()
+
+    assert room_id in await _listed(chats, chats.alice)
+    assert await _archived(chats, chats.alice) == {}
+    assert [m.content["body"] for m in await chats.message_rows(room_id)] == [
+        "back again"
+    ]
+
+
+async def test_a_member_who_cannot_unarchive_cannot_send_to_an_archived_chat(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    await _archive(chats, chats.alice, room_id)
+
+    refused = await chats.send(chats.bob, room_id, "s1", "hello?")
+    assert refused.status_code == 403
+    assert _code(refused) == "NOT_A_MANAGER"
+    assert await chats.message_rows(room_id) == []
+    assert room_id in await _archived(chats, chats.bob)
+
+
 # ── Live updates ─────────────────────────────────────────────────────────────
 
 
@@ -885,7 +977,8 @@ async def test_unlisted_room_still_delivers_messages_to_invited_member(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
+    assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -911,7 +1004,8 @@ async def test_unlisted_then_revoked_room_emits_access_removal(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
+    assert (await chats.invite(chats.alice, room_id, chats.alice)).status_code == 200
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -944,7 +1038,7 @@ async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -968,7 +1062,7 @@ async def test_the_periodic_recheck_announces_a_chat_that_regains_an_agent(
     chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    room_id = await _room(chats, [agent], owner=chats.alice)
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
     async with chats.factory() as session:
         await session.execute(
@@ -1016,7 +1110,9 @@ async def test_an_owner_only_member_loses_access_with_the_last_agent(
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
-async def test_archiving_a_chat_removes_it_for_access(chats: _Harness) -> None:
+async def test_archiving_a_chat_unlists_it_until_a_message_restores_it(
+    chats: _Harness,
+) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await chats.new_chat(chats.alice, agent, "c1")
     assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
@@ -1031,8 +1127,12 @@ async def test_archiving_a_chat_removes_it_for_access(chats: _Harness) -> None:
     assert archived.status_code == 204
     assert await events.next() == (
         "chat.removed",
-        {"roomId": room_id, "reason": "access"},
+        {"roomId": room_id, "reason": "unlisted"},
     )
+
+    assert (await chats.send(chats.alice, room_id, "s1", "back")).status_code == 200
+    seen = {(await events.next())[0], (await events.next())[0]}
+    assert seen == {"chat", "message"}
     await events.stream.aclose()  # type: ignore[attr-defined]
 
 
@@ -1160,13 +1260,32 @@ async def test_a_change_concerning_more_people_than_one_signal_holds_reaches_the
     woken: list[str] = []
     for user_id in user_ids:
         there.service.watch_memberships(
-            TENANT, user_id, lambda user_id=user_id: woken.append(user_id)
+            TENANT, user_id, lambda _rooms, user_id=user_id: woken.append(user_id)
         )
 
-    here.signals.memberships_changed(TENANT, user_ids)
+    here.signals.memberships_changed(TENANT, user_ids, [])
 
     await _eventually(lambda: len(woken) == len(user_ids))
     assert sorted(woken) == sorted(user_ids)
+
+
+async def test_a_change_naming_more_rooms_than_one_signal_holds_reaches_them_all(
+    two_processes: tuple[_Process, _Process],
+) -> None:
+    """An agent in hundreds of rooms changes every one of them at once: the
+    room ids are split over signals too, and every room reaches the stream."""
+    here, there = two_processes
+    user_id = str(uuid.uuid4())
+    room_ids = [str(uuid.uuid4()) for _ in range(500)]
+    woken: list[str] = []
+    there.service.watch_memberships(
+        TENANT, user_id, lambda rooms: woken.extend(rooms or [])
+    )
+
+    here.signals.memberships_changed(TENANT, [user_id], room_ids)
+
+    await _eventually(lambda: len(woken) == len(room_ids))
+    assert sorted(woken) == sorted(room_ids)
 
 
 # ── Agent owners ─────────────────────────────────────────────────────────────
@@ -1608,19 +1727,24 @@ async def _request(
         await session.commit()
 
 
-def _turn_change(agent: Agent, turn_id: str) -> Change:
+def _turn_change(agent: Agent, room_id: str, turn_id: str) -> Change:
     return Change(
         kind="activity",
         tenant_id="00000000-0000-0000-0000-000000000000",
         agent_id=agent.id,
         session_id="s1",
         key=turn_id,
+        room_id=room_id,
         row=None,
     )
 
 
 def _activity_stream(
-    chats: _Harness, user: User, queue_max: int = 64, ping_seconds: float = 60.0
+    chats: _Harness,
+    user: User,
+    queue_max: int = 64,
+    ping_seconds: float = 60.0,
+    recheck_seconds: float = 60.0,
 ) -> _Events:
     return _Events(
         chat_activity_events(
@@ -1628,9 +1752,23 @@ def _activity_stream(
             "00000000-0000-0000-0000-000000000000",
             user,
             ping_seconds=ping_seconds,
+            recheck_seconds=recheck_seconds,
             queue_max=queue_max,
         )
     )
+
+
+async def _silently_leave(chats: _Harness, user: User, room_id: str) -> None:
+    """Take the user out of the room without telling any stream."""
+    async with chats.factory() as session:
+        client = await chats.service.member_client(session, user.id)
+        assert client is not None
+        await session.execute(
+            delete(ClientRoom).where(
+                ClientRoom.client_id == client.id, ClientRoom.room_id == room_id
+            )
+        )
+        await session.commit()
 
 
 async def test_room_activity_is_the_rooms_steps_and_requests_in_every_state(
@@ -1702,19 +1840,19 @@ async def test_the_activity_stream_sends_only_readable_rooms_and_moved_steps(
     assert (await events.next())[0] == "ready"
 
     await _step(chats, agent, room_id, "t1", "turn", 1)
-    await chats.activity.change(_turn_change(agent, "t1"))
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
     name, item = await events.next()
     assert name == "activity" and item["roomId"] == room_id and item["revision"] == 1
 
     # A reread of the turn resends only the step that moved.
     await _step(chats, agent, room_id, "t1", "tool-1", 1)
-    await chats.activity.change(_turn_change(agent, "t1"))
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
     name, item = await events.next()
     assert (name, item["itemId"]) == ("activity", "tool-1")
 
     # A room the reader is not in is never sent: the next frame is the request.
     await _step(chats, other_agent, hidden, "t2", "turn", 1)
-    await chats.activity.change(_turn_change(other_agent, "t2"))
+    await chats.activity.change(_turn_change(other_agent, hidden, "t2"))
     await _request(chats, agent, room_id, "r1", "answered")
     await chats.activity.change(
         Change(
@@ -1723,6 +1861,7 @@ async def test_the_activity_stream_sends_only_readable_rooms_and_moved_steps(
             agent_id=agent.id,
             session_id="s1",
             key="r1",
+            room_id=room_id,
             row=None,
         )
     )
@@ -1733,16 +1872,18 @@ async def test_the_activity_stream_sends_only_readable_rooms_and_moved_steps(
         "answered",
     )
 
+    [subscription] = chats.activity.room_subscriptions
     removed = await chats.client.delete(
         f"/chats/{room_id}/members/{chats.bob.id}", headers=chats.as_user(chats.alice)
     )
     assert removed.status_code == 204
     await _step(chats, agent, room_id, "t1", "turn", 2)
-    await chats.activity.change(_turn_change(agent, "t1"))
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
     with pytest.raises(TimeoutError):
         await events.next(timeout=0.3)
+    assert room_id not in subscription.rooms
     await events.stream.aclose()  # type: ignore[attr-defined]
-    assert chats.activity.subscribers == []
+    assert chats.activity.room_subscriptions == []
 
 
 async def test_the_activity_stream_says_resync_when_changes_may_be_lost(
@@ -1760,11 +1901,162 @@ async def test_the_activity_stream_says_resync_when_changes_may_be_lost(
 
     # Falling behind drops what was queued and asks for a reload instead.
     for _ in range(3):
-        await chats.activity.change(_turn_change(agent, "t1"))
+        await chats.activity.change(_turn_change(agent, room_id, "t1"))
     assert await events.next() == ("resync", {})
     with pytest.raises(TimeoutError):
         await events.next(timeout=0.3)
     await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_the_activity_stream_rereads_its_rooms_on_a_resync(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    events = _activity_stream(chats, chats.bob)
+    assert (await events.next())[0] == "ready"
+    [subscription] = chats.activity.room_subscriptions
+    assert subscription.rooms == {room_id}
+
+    await _silently_leave(chats, chats.bob, room_id)
+    await chats.activity.resync()
+    assert await events.next() == ("resync", {})
+    assert subscription.rooms == set()
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_the_activity_stream_wakes_only_for_the_readers_rooms(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    other_agent = await chats.agent("other", owner=chats.bob)
+    unrelated = await chats.new_chat(chats.bob, other_agent, "c2")
+    events = _activity_stream(chats, chats.alice)
+    assert (await events.next())[0] == "ready"
+    [subscription] = chats.activity.room_subscriptions
+
+    wakes: list[str] = []
+    turn_reads: list[str] = []
+    frames_of = chats_module._activity_frames
+    turn_items = chats.service.turn_items
+
+    async def counted_frames(*args: Any) -> Any:
+        wakes.append(args[3].key)
+        return await frames_of(*args)
+
+    async def counted_turn_items(*args: Any) -> Any:
+        turn_reads.append(args[3])
+        return await turn_items(*args)
+
+    monkeypatch.setattr(chats_module, "_activity_frames", counted_frames)
+    monkeypatch.setattr(chats.service, "turn_items", counted_turn_items)
+
+    await _step(chats, other_agent, unrelated, "t9", "turn", 1)
+    await chats.activity.change(_turn_change(other_agent, unrelated, "t9"))
+    assert subscription.delivered == 0
+
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
+    name, item = await events.next()
+    assert (name, item["turnId"]) == ("activity", "t1")
+    assert subscription.delivered == 1
+    assert wakes == ["t1"]
+    assert turn_reads == ["t1"]
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_the_activity_stream_follows_a_room_the_reader_joins(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    events = _activity_stream(chats, chats.bob)
+    assert (await events.next())[0] == "ready"
+
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    assert await events.next() == ("resync", {})
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
+    name, item = await events.next()
+    assert (name, item["roomId"]) == ("activity", room_id)
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_a_room_joined_while_the_stream_reads_its_rooms_is_not_missed(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    readable_rooms = chats.service.readable_rooms
+    joined: list[bool] = []
+
+    async def join_after_reading(*args: Any) -> Any:
+        rooms = await readable_rooms(*args)
+        if not joined:
+            joined.append(True)
+            invited = await chats.invite(chats.alice, room_id, chats.bob)
+            assert invited.status_code == 200
+        return rooms
+
+    monkeypatch.setattr(chats.service, "readable_rooms", join_after_reading)
+    events = _activity_stream(chats, chats.bob)
+    assert (await events.next())[0] == "ready"
+    assert room_id not in chats.activity.room_subscriptions[0].rooms
+
+    assert await events.next() == ("resync", {})
+    await _step(chats, agent, room_id, "t1", "turn", 1)
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
+    name, item = await events.next()
+    assert (name, item["roomId"]) == ("activity", room_id)
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_a_stale_room_index_sends_nothing_from_a_room_left(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    left = await chats.new_chat(chats.alice, agent, "c1")
+    kept = await chats.new_chat(chats.alice, agent, "c2")
+    for room_id in (left, kept):
+        assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    events = _activity_stream(chats, chats.bob)
+    assert (await events.next())[0] == "ready"
+    [subscription] = chats.activity.room_subscriptions
+
+    await _silently_leave(chats, chats.bob, left)
+    await _step(chats, agent, left, "t1", "turn", 1)
+    await chats.activity.change(_turn_change(agent, left, "t1"))
+    await _step(chats, agent, kept, "t2", "turn", 1)
+    await chats.activity.change(_turn_change(agent, kept, "t2"))
+    name, item = await events.next()
+    assert (name, item["roomId"]) == ("activity", kept)
+    assert subscription.delivered == 2
+    await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_the_activity_stream_rechecks_its_rooms_under_steady_traffic(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+    events = _activity_stream(chats, chats.bob, recheck_seconds=0.2)
+    assert (await events.next())[0] == "ready"
+    [subscription] = chats.activity.room_subscriptions
+
+    await _silently_leave(chats, chats.bob, room_id)
+    reading = asyncio.create_task(events.next(timeout=10))
+    deadline = asyncio.get_running_loop().time() + 5
+    while room_id in subscription.rooms:
+        assert asyncio.get_running_loop().time() < deadline
+        await chats.activity.change(_turn_change(agent, room_id, "t1"))
+        await asyncio.sleep(0.01)
+    assert subscription.delivered > 5
+    reading.cancel()
+    await asyncio.gather(reading, return_exceptions=True)
+    assert chats.activity.room_subscriptions == []
 
 
 async def _drop_tenant_role(chats: _Harness, user: User) -> None:
@@ -1784,17 +2076,17 @@ async def test_the_activity_stream_ends_when_the_tenant_role_is_gone(
 
     on_change = _activity_stream(chats, chats.bob)
     assert (await on_change.next())[0] == "ready"
-    on_ping = _activity_stream(chats, chats.bob, ping_seconds=0.05)
-    assert (await on_ping.next())[0] == "ready"
+    on_recheck = _activity_stream(chats, chats.bob, recheck_seconds=0.05)
+    assert (await on_recheck.next())[0] == "ready"
 
     await _drop_tenant_role(chats, chats.bob)
     await _step(chats, agent, room_id, "t1", "turn", 1)
-    await chats.activity.change(_turn_change(agent, "t1"))
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
     with pytest.raises(StopAsyncIteration):
         await on_change.next()
     with pytest.raises(StopAsyncIteration):
-        await on_ping.next()
-    assert chats.activity.subscribers == []
+        await on_recheck.next()
+    assert chats.activity.room_subscriptions == []
 
 
 async def test_the_activity_stream_forgets_revisions_past_its_cap(
@@ -1808,11 +2100,11 @@ async def test_the_activity_stream_forgets_revisions_past_its_cap(
 
     await _step(chats, agent, room_id, "t1", "turn", 1)
     await _step(chats, agent, room_id, "t1", "tool-1", 1)
-    await chats.activity.change(_turn_change(agent, "t1"))
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
     assert [(await events.next())[1]["itemId"] for _ in range(2)] == ["turn", "tool-1"]
 
     # Over the cap, the next reread starts from nothing and resends the turn.
-    await chats.activity.change(_turn_change(agent, "t1"))
+    await chats.activity.change(_turn_change(agent, room_id, "t1"))
     assert [(await events.next())[1]["itemId"] for _ in range(2)] == ["turn", "tool-1"]
     await events.stream.aclose()  # type: ignore[attr-defined]
 
@@ -1838,6 +2130,7 @@ def _activity_stream_on(process: _Process, user: User) -> _Events:
             TENANT,
             user,
             ping_seconds=60.0,
+            recheck_seconds=3600.0,
             queue_max=64,
         )
     )

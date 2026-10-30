@@ -1,20 +1,24 @@
 import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useState } from 'react';
+import { useState } from 'react';
+import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { openRoomView } from '@renderer/features/sidebar/sidebar-room-grouping';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { addableAgents, addablePeople } from '@renderer/features/switch-rooms/room-labels';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { agentProviderLabel } from '@renderer/lib/components/agent-mark';
+import { agentProviderLabelFor } from '@renderer/lib/components/agent-picker';
+import { ParticipantPicker } from '@renderer/lib/components/participant-picker';
 import {
-  AgentPickerRow,
-  ChosenAgentTile,
-  agentProviderLabelFor,
-} from '@renderer/lib/components/agent-picker';
-import { BridgeTile, bridgeUnusableReason } from '@renderer/lib/components/bridge-tile';
-import { PickerCombobox } from '@renderer/lib/components/picker-combobox';
+  agentParticipant,
+  type Participant,
+  personParticipant,
+} from '@renderer/lib/components/participant-search';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { type BaseModalProps, useModalContext } from '@renderer/lib/modal/modal-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
@@ -26,23 +30,39 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
+import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import type { RemoteAgentSummary } from '@shared/core/switch-servers/switch-servers';
+import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
+import {
+  CreateRequestIds,
+  canCreate,
+  dropsStartingAgent,
+  roomCreateRequest,
+  startingAgentResolution,
+} from './room-create-request';
+import { RoomNameInput } from './room-name-input';
 import { switchServersStore } from './switch-servers-store';
-import { useMyIdentities } from './use-my-identities';
 
 type CreateRoomModalArgs = {
   /** Create on this server instead of the active one — for callers that are not
    * driven by the sidebar's server scope, such as onboarding. */
   serverId?: string;
+  /** An agent to start the room with, already picked: the room is made from its page. */
+  agentId?: string;
 };
 
 type Props = BaseModalProps<{ roomId: string }> & CreateRoomModalArgs;
 
+/**
+ * A new room: its name, then who is in it — agents and people found in one
+ * field — and, when the server has a messaging app that can make channels,
+ * where it lives. Switch Console is the default and needs no app.
+ */
 export const CreateRoomModal = observer(function CreateRoomModal({
   serverId: overrideServerId,
+  agentId: startingAgentId,
   onSuccess,
   onClose,
 }: Props) {
@@ -53,16 +73,18 @@ export const CreateRoomModal = observer(function CreateRoomModal({
   // looking, and then wonder where it went.
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
   const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
+  const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
   const server = switchServersStore.servers.find((s) => s.id === serverId) ?? null;
+  const myUserId = switchServersStore.statusFor(serverId)?.user?.id ?? null;
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
-  const [instructionsOpen, setInstructionsOpen] = useState(false);
-  const [bridgeId, setBridgeId] = useState<string | null>(null);
-  const [agents, setAgents] = useState<RemoteAgentSummary[]>([]);
+  const [where, setWhere] = useState(SWITCH_CONSOLE);
+  const [picked, setPicked] = useState<Participant[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requestIds] = useState(() => new CreateRequestIds(() => crypto.randomUUID()));
 
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],
@@ -74,82 +96,125 @@ export const CreateRoomModal = observer(function CreateRoomModal({
     queryFn: () => rpc.workspaces.listAgents(workspaceId as string),
     enabled: workspaceId !== null,
   });
-  // Which account on each app is the person creating the room. A room on an app
-  // they have not claimed an account on works, but their own messages in it are
-  // from a stranger as far as the agents are concerned — so it is said here,
-  // while the app is being chosen, rather than discovered later.
-  const { identities } = useMyIdentities(workspaceId);
+  const tenantId = workspace?.tenantId ?? null;
+  const rosterQuery = useQuery({
+    queryKey: ['workspace-members', serverId, tenantId],
+    queryFn: () => rpc.chats.workspaceMembers({ serverId, tenantId: tenantId as string }),
+    enabled: tenantId !== null,
+  });
+  const allowedQuery = useQuery({
+    queryKey: ['chat-agent-candidates', serverId, workspaceId, null],
+    queryFn: () => rpc.chats.agentCandidates({ serverId, roomId: null }),
+    enabled: serverId !== '',
+  });
   const managedQuery = useManagedAgents(serverId || null);
 
-  /**
-   * Only agents this install registered on the server, and the user's managed
-   * agents, which Console drives through the server wherever they run.
-   *
-   * The server answers with everyone registered on it, including agents
-   * belonging to somebody else's Switch Console. Those cannot be shown under a
-   * room here or driven from here, so offering them in the picker promises
-   * something this app cannot deliver — the same rule the room views already
-   * follow.
-   */
+  // Only a running bridge allowed to create channels can back a new room.
+  const bridges = (bridgesQuery.data ?? []).filter(
+    (b) => b.status === 'active' && b.canCreateChannels
+  );
+  // Without the server's group_chats flag there are no Switch Console rooms: a room is a bridged one.
+  const consoleOffered = useFeatureFlags(serverId || null).group_chats;
+  const selectedBridge =
+    bridges.find((b) => b.id === where) ?? (consoleOffered ? null : (bridges[0] ?? null));
+  const nowhere = !consoleOffered && selectedBridge === null && !bridgesQuery.isLoading;
+
   const managedProviders = new Map(
     (managedQuery.data ?? []).map((managed) => [managed.agentId, managed.definition.provider])
   );
-  const providerLabel = (agentId: string) =>
+  const providerLabel = (agentId: string, knownType: string | null) =>
     managedProviders.has(agentId)
       ? agentProviderLabel(managedProviders.get(agentId))
-      : agentProviderLabelFor(agentId, workspaceId);
-  const invitableAgents = (agentsQuery.data ?? []).filter((remote) =>
-    workspaceId === null
-      ? false
-      : managedProviders.has(remote.id) ||
-        agentsStore
-          .agentsInWorkspace(workspaceId)
-          .some((local) => local.switchAgentId === remote.id)
-  );
-
-  // Only a running bridge can back a new room, and creating a room here means
-  // creating a channel on it — a bridge withheld from that (an operator's
-  // switch, or a platform like Telegram that has no such call at all) is just
-  // as unusable for this form. Every connected app is shown, but an unusable
-  // one is not selectable and says which of these it is: an app that is simply
-  // absent from the grid explains nothing, and the user goes looking for it.
-  const allBridges = bridgesQuery.data ?? [];
-  const activeBridges = allBridges.filter((b) => b.status === 'active');
-  const bridges = activeBridges.filter((b) => b.canCreateChannels);
-  const selectedBridge =
-    bridges.find((b) => b.id === bridgeId) ??
-    bridges.find((b) => b.isDefault) ??
-    bridges[0] ??
-    null;
-  const loaded = !bridgesQuery.isLoading;
-  const noBridgesAtAll = loaded && allBridges.length === 0;
-  const noneRunning = loaded && allBridges.length > 0 && activeBridges.length === 0;
-  const noneCanCreateChannels = loaded && activeBridges.length > 0 && bridges.length === 0;
+      : (knownAgentTypeDisplayName(knownType) ?? agentProviderLabelFor(agentId, workspaceId));
+  // A bridged room is driven from this install, so it takes only the agents
+  // this install registered or manages, and no people at creation. A Switch
+  // Console room is driven through the server: the agents the server says the
+  // person may use, and its people.
+  const agentCandidates = selectedBridge
+    ? (agentsQuery.data ?? []).filter(
+        (remote) =>
+          workspaceId !== null &&
+          (managedProviders.has(remote.id) ||
+            agentsStore
+              .agentsInWorkspace(workspaceId)
+              .some((local) => local.switchAgentId === remote.id))
+      )
+    : addableAgents(agentsQuery.data ?? [], allowedQuery.data ?? []);
+  const candidates: Participant[] = [
+    ...agentCandidates.map((agent) =>
+      agentParticipant(agent, providerLabel(agent.id, agent.knownAgentType))
+    ),
+    ...addablePeople(selectedBridge ? [] : (rosterQuery.data ?? []), new Set([myUserId ?? ''])).map(
+      personParticipant
+    ),
+  ];
+  // The agent the room is made from shows picked once the agents are read, whatever
+  // else is edited meanwhile, until its chip is removed.
+  const [startDropped, setStartDropped] = useState(false);
+  const startChip =
+    startingAgentId === undefined || startDropped
+      ? null
+      : (candidates.find((each) => each.kind === 'agent' && each.id === startingAgentId) ?? null);
+  const shownPicked = startChip
+    ? [startChip, ...picked.filter((each) => each.id !== startChip.id)]
+    : picked;
+  const changePicks = (next: Participant[]) => {
+    if (dropsStartingAgent(startChip, next)) setStartDropped(true);
+    setPicked(next);
+  };
+  const agentIds = shownPicked.filter((each) => each.kind === 'agent').map((each) => each.id);
+  const memberUserIds = shownPicked.filter((each) => each.kind === 'person').map((each) => each.id);
 
   const trimmedName = name.trim();
-  const trimmedDescription = description.trim();
+  // The agent the room is made from must be applied, or known not to be, before creating:
+  // a quick Create would otherwise make the room without it.
+  const startingAgentState = startingAgentResolution({
+    startingAgentId,
+    applied: startDropped || startChip !== null,
+    failed: agentsQuery.isError || (!selectedBridge && allowedQuery.isError),
+    loaded:
+      agentsQuery.isSuccess &&
+      !agentsQuery.isFetching &&
+      (selectedBridge !== null || (allowedQuery.isSuccess && !allowedQuery.isFetching)),
+  });
+  const startingAgentName =
+    (agentsQuery.data ?? []).find((agent) => agent.id === startingAgentId)?.name ?? 'This agent';
   const canSubmit =
     workspaceId !== null &&
-    !!trimmedName &&
-    !!trimmedDescription &&
-    !!selectedBridge &&
+    startingAgentState !== 'pending' &&
+    !nowhere &&
+    canCreate({ name }) &&
     !isSubmitting;
 
-  const handleSubmit = useCallback(async () => {
-    if (!canSubmit || !selectedBridge) return;
+  async function handleSubmit() {
+    if (!canSubmit) return;
     setIsSubmitting(true);
     setCloseGuard(true);
     setError(null);
 
     try {
-      const result = await rpc.workspaces.createRoom({
+      const bridgeId = selectedBridge?.id ?? null;
+      const request = roomCreateRequest({
+        serverId,
         workspaceId: workspaceId as string,
-        name: trimmedName,
-        description: trimmedDescription,
-        instructions: instructions.trim() || undefined,
-        bridgeId: selectedBridge.id,
-        agentIds: agents.map((a) => a.id),
+        bridgeId,
+        name,
+        description,
+        instructions,
+        agentIds,
+        memberUserIds,
+        requestId: requestIds.for({ bridgeId, name, agentIds, memberUserIds }),
       });
+      if (request.kind === 'chat') {
+        const chat = await rpc.chats.create(request.params);
+        requestIds.succeeded();
+        chatsStore.add(serverId, chat);
+        sidebarStore.setGrouping('room');
+        openRoomView(chat.roomId);
+        onSuccess({ roomId: chat.roomId });
+        return;
+      }
+      const result = await rpc.workspaces.createRoom(request.params);
 
       if (result.kind !== 'created') {
         setError(messageFor(result));
@@ -174,26 +239,16 @@ export const CreateRoomModal = observer(function CreateRoomModal({
 
       onSuccess({ roomId: result.room.id });
     } catch (cause) {
-      setError(failureText(cause, 'Could not create the room.'));
+      setError(
+        selectedBridge
+          ? failureText(cause, 'Could not create the room.')
+          : chatFailure(cause).message
+      );
     } finally {
       setIsSubmitting(false);
       setCloseGuard(false);
     }
-  }, [
-    canSubmit,
-    selectedBridge,
-    workspaceId,
-    trimmedName,
-    trimmedDescription,
-    instructions,
-    agents,
-    onSuccess,
-    setCloseGuard,
-  ]);
-
-  const submitOnEnter = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && canSubmit) void handleSubmit();
-  };
+  }
 
   return (
     <>
@@ -201,7 +256,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
         <DialogTitle>New room</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
-        <div className="flex w-full flex-col gap-6">
+        <div className="flex w-full flex-col gap-5">
           {!server && (
             <p className="text-xs text-destructive">
               No Switch server is selected, so there is nowhere to create a room. Choose a server in
@@ -209,177 +264,141 @@ export const CreateRoomModal = observer(function CreateRoomModal({
             </p>
           )}
 
-          {/* The app comes first because it decides the rest: the room's name
-              becomes a channel name there, and who can reach the room is
-              whoever is in that workspace. */}
-          <section className="flex flex-col gap-3">
-            <div className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-foreground">Messaging app</span>
-              <span className="text-sm text-foreground-muted">
-                Where the collaboration happens — people and agents talk in this room.
+          <Field>
+            <FieldLabel htmlFor="new-room-name">Name</FieldLabel>
+            <RoomNameInput
+              id="new-room-name"
+              value={name}
+              onChange={(next) => {
+                setName(next);
+                setError(null);
+              }}
+              onSubmit={() => {
+                if (canSubmit) void handleSubmit();
+              }}
+            />
+            {/* What the name becomes, where it becomes it: a bridged room is a
+                channel of the same name in its app. */}
+            {trimmedName !== '' && selectedBridge && (
+              <span className="text-xs text-foreground-muted">
+                Created as #{trimmedName} in {selectedBridge.displayName}.
               </span>
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              {allBridges.map((bridge) => (
-                <BridgeTile
-                  key={bridge.id}
-                  bridge={bridge}
-                  identity={identities?.find((i) => i.bridgeId === bridge.id) ?? null}
-                  identitiesKnown={identities !== null}
-                  unusable={bridgeUnusableReason(bridge, { needsChannelCreation: true })}
-                  selected={selectedBridge?.id === bridge.id}
-                  onSelect={() => setBridgeId(bridge.id)}
-                />
-              ))}
-            </div>
-            {noBridgesAtAll && (
-              <p className="text-xs text-destructive">
-                This server has no messaging app connected, so a room created here would be
-                unreachable. Connect one first.
-              </p>
             )}
-            {noneRunning && (
-              <p className="text-xs text-destructive">
-                This server&apos;s messaging apps are not running, so a room created here would be
-                unreachable. Start one, or connect another.
-              </p>
-            )}
-            {noneCanCreateChannels && (
-              <p className="text-xs text-destructive">
-                None of the running messaging apps can create a channel from Switch. Make the chat
-                directly in the messaging app instead and add the app&apos;s bot to it — it becomes
-                a room here once it exists.
-              </p>
-            )}
-            {bridgesQuery.isError && (
-              <p className="text-xs text-destructive">
-                {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
-              </p>
-            )}
-          </section>
+          </Field>
 
-          <div className="flex flex-col gap-4">
-            <FormRow label="Name">
-              <Input
-                autoFocus
-                placeholder="e.g. design-review"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setError(null);
-                }}
-                onKeyDown={submitOnEnter}
-              />
-              {/* What the name becomes, where it becomes it. A room is a channel
-                  in the app it is bridged to, and the two names are the same
-                  one — saying so here is what makes that predictable. */}
-              {trimmedName !== '' && selectedBridge && (
-                <span className="text-xs text-foreground-muted">
-                  Created as #{trimmedName} in {selectedBridge.displayName}.
-                </span>
-              )}
-            </FormRow>
-
-            <FormRow label="Description">
-              <Input
-                placeholder="What this room is for"
-                value={description}
-                onChange={(e) => {
-                  setDescription(e.target.value);
-                  setError(null);
-                }}
-                onKeyDown={submitOnEnter}
-              />
-            </FormRow>
-          </div>
-
-          <section className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-sm font-medium text-foreground">Agents</span>
-              {agents.length > 0 && (
-                <span className="text-sm text-foreground-muted">{agents.length} added</span>
-              )}
-            </div>
-
-            {agents.length > 0 && (
-              <div className="grid grid-cols-3 gap-2.5">
-                {agents.map((agent) => (
-                  <ChosenAgentTile
-                    key={agent.id}
-                    agent={agent}
-                    serverId={serverId || null}
-                    subtitle={providerLabel(agent.id)}
-                    onRemove={() =>
-                      setAgents((current) => current.filter((a) => a.id !== agent.id))
-                    }
-                  />
-                ))}
-              </div>
-            )}
-
-            <PickerCombobox
-              items={invitableAgents.filter((a) => !agents.some((s) => s.id === a.id))}
-              onPick={(next) => setAgents((current) => [...current, next])}
-              searchText={(item) => item.name}
-              renderItem={(item) => (
-                <AgentPickerRow
-                  agent={item}
-                  serverId={serverId || null}
-                  subtitle={providerLabel(item.id)}
-                />
-              )}
-              disabled={agentsQuery.isLoading}
-              placeholder={agentsQuery.isLoading ? 'Loading agents…' : 'Search agents to add...'}
-              emptyText="No agents found"
+          <Field>
+            <FieldLabel htmlFor="new-room-participants">Participants</FieldLabel>
+            <ParticipantPicker
+              inputId="new-room-participants"
+              autoFocus={false}
+              busy={isSubmitting}
+              overlay={false}
+              candidates={candidates}
+              picked={shownPicked}
+              onChange={changePicks}
+              serverId={serverId || null}
+              loading={
+                agentsQuery.isLoading ||
+                rosterQuery.isLoading ||
+                (!selectedBridge && allowedQuery.isLoading)
+              }
             />
-
             <span className="text-xs text-foreground-muted">
-              Optional — agents can be added to the room later.
+              Agents answer only when someone @-mentions them.
             </span>
-          </section>
-
-          <div>
-            <DisclosureRow
-              open={instructionsOpen}
-              title="Instructions"
-              meta="shown to agents when they enter"
-              onToggle={() => setInstructionsOpen((v) => !v)}
-            />
-            {instructionsOpen && (
-              <Textarea
-                className="mt-3"
-                placeholder="Optional guidance shown to agents when they enter a room"
-                value={instructions}
-                onChange={(e) => setInstructions(e.target.value)}
-                rows={3}
-              />
+            {(agentsQuery.isError || (!selectedBridge && allowedQuery.isError)) && (
+              <p className="text-xs text-destructive">
+                {failureText(agentsQuery.error ?? allowedQuery.error, 'Could not load the agents.')}
+              </p>
             )}
-          </div>
+            {rosterQuery.isError && (
+              <p className="text-xs text-destructive">
+                {failureText(rosterQuery.error, 'Could not load the people.')}
+              </p>
+            )}
+          </Field>
 
+          {/* A bridged room's own settings; a Switch Console room has none to start with. */}
+          {selectedBridge && (
+            <>
+              <Field>
+                <FieldLabel htmlFor="new-room-description">Description (optional)</FieldLabel>
+                <Input
+                  id="new-room-description"
+                  placeholder="What this room is for"
+                  value={description}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    setError(null);
+                  }}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="new-room-instructions">Instructions (optional)</FieldLabel>
+                <Textarea
+                  id="new-room-instructions"
+                  placeholder="Guidance shown to agents when they enter the room"
+                  value={instructions}
+                  onChange={(e) => setInstructions(e.target.value)}
+                  rows={3}
+                />
+              </Field>
+            </>
+          )}
+
+          {nowhere && (
+            <p className="text-xs text-destructive">
+              This server does not offer Switch Console rooms yet, and none of its messaging apps
+              can create a channel, so there is nowhere to create a room.
+            </p>
+          )}
+          {startingAgentState === 'failed' && (
+            <p className="text-xs text-destructive">
+              {startingAgentName} can&apos;t be added to the new room:{' '}
+              {failureText(
+                agentsQuery.error ?? allowedQuery.error,
+                'the agents could not be loaded.'
+              )}
+            </p>
+          )}
+          {startingAgentState === 'unavailable' && (
+            <p className="text-xs text-destructive">
+              {startingAgentName} can&apos;t be added to this room: it is not one you can add here.
+            </p>
+          )}
+          {bridgesQuery.isError && (
+            <p className="text-xs text-destructive">
+              {failureText(bridgesQuery.error, 'Could not load messaging apps.')}
+            </p>
+          )}
           {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
       </DialogContentArea>
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
-          Cancel
-        </Button>
-        <ConfirmButton onClick={() => void handleSubmit()} disabled={!canSubmit}>
-          {isSubmitting ? 'Creating…' : 'Create room'}
-        </ConfirmButton>
+      <DialogFooter className="sm:justify-between">
+        <MessagingAppSelector
+          bridges={bridges}
+          consoleOffered={consoleOffered}
+          value={where}
+          onChange={(next) => {
+            setWhere(next);
+            setError(null);
+            // A bridged room starts with agents only.
+            if (next !== SWITCH_CONSOLE)
+              changePicks(shownPicked.filter((each) => each.kind === 'agent'));
+          }}
+        />
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" onClick={onClose} disabled={isSubmitting}>
+            Cancel
+          </Button>
+          <ConfirmButton onClick={() => void handleSubmit()} disabled={!canSubmit}>
+            {isSubmitting ? 'Creating…' : 'Create room'}
+          </ConfirmButton>
+        </div>
       </DialogFooter>
     </>
   );
 });
-
-/** A labelled row: the setting's name on the left, the control on the right. */
-function FormRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-start gap-4">
-      <span className="w-24 shrink-0 pt-2 text-sm text-foreground">{label}</span>
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">{children}</div>
-    </div>
-  );
-}
 
 /** Turn a failed create into something the user can act on. */
 function messageFor(result: { kind: string; message?: string }): string {

@@ -24,7 +24,7 @@ from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
@@ -112,7 +112,11 @@ async def _require_room(
             room,
         )
     except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
+        # Whoever takes part in a room may read it, as its listing shows them.
+        if action != "read" or not await room_store.involved_room_ids(
+            session, user.id, [room.id]
+        ):
+            raise HTTPException(status_code=403, detail=str(e)) from e
     return room
 
 
@@ -247,6 +251,11 @@ async def _build_room_detail(
         join_event_listeners=join_event_listeners,
         archived_at=str(room.archived_at) if room.archived_at else None,
         channel_on_delete=_channel_on_delete(room, bridge_type),
+        linked_channel_name=(
+            (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
+            if room.external_channel_id
+            else None
+        ),
     )
 
 
@@ -348,6 +357,7 @@ async def list_rooms(
     room_ids = [room.id for room in rooms]
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
+    involved = await room_store.involved_room_ids(session, user.id, room_ids)
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
@@ -385,6 +395,8 @@ async def list_rooms(
                 write_visibility=room.write_visibility,
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
+                viewer_is_member=room.id in involved,
+                is_console_chat="chat_operation_id" in (room.metadata_ or {}),
             )
         )
 
@@ -926,6 +938,9 @@ async def patch_room(
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    # The update was written on another session; this one still holds the row
+    # as it was read for the access check.
+    await session.refresh(room)
     return await _build_room_detail(
         session, room, room_store, bridge_store, external_user_store, protocol
     )
@@ -1233,6 +1248,40 @@ async def _set_archived(
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    return await _build_room_detail(
+        session, room, room_store, bridge_store, external_user_store, protocol
+    )
+
+
+@router.post("/{room_id}/sync-name")
+async def sync_room_name(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomDetail:
+    """Name the room after its linked channel (`linked_channel_name`), as the
+    bridge names its own rooms, so it follows the channel's renames from now
+    on. The room's owner or an admin only."""
+    room = await _require_room(session, room_store, room_id, user, "delete", is_admin)
+    channel_name = (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
+    bridge = await bridge_store.get(session, room.bridge_id) if room.bridge_id else None
+    if not room.external_channel_id or bridge is None or not channel_name:
+        raise HTTPException(
+            status_code=409,
+            detail="Switch has not seen the name of a channel linked to this room.",
+        )
+    # `take_platform_name` opens a session of its own (`_require_room_released`).
+    await session.commit()
+    await room_service.take_platform_name(
+        room.id, f"{bridge.display_name}: {channel_name}", channel_name
+    )
+    await session.refresh(room)
     return await _build_room_detail(
         session, room, room_store, bridge_store, external_user_store, protocol
     )

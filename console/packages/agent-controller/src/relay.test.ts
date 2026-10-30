@@ -16,7 +16,11 @@ import {
   fetchMediaToFile,
   SESSION_SELECTOR_HEADERS,
 } from '@sandboxaq/switch-agent-runtime/hosted';
-import { type AgentEventStream, openHubStream } from '@switch-console/agent-providers';
+import {
+  type AgentEventStream,
+  type AgentStreamDeps,
+  openHubStream,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { AgentHub } from './agent-hub';
@@ -144,7 +148,7 @@ afterEach(async () => {
 type Host = ReturnType<typeof host>;
 
 /** An agent host in a process of its own, as the shared daemon opens its stream: on the hub. */
-function host(overrides: Partial<SwitchEventStreamDeps> = {}, as = token) {
+function host(overrides: Partial<AgentStreamDeps> = {}, as = token) {
   const seen = {
     events: [] as AgentBridgeEvent[],
     gaps: [] as Parameters<SwitchEventStreamDeps['onGap']>[0][],
@@ -314,9 +318,33 @@ describe('the hub, over the relay’s WebSocket, read by openHubStream', () => {
       body: { type: 'session.reset' },
     });
 
+    // Across the hub's socket, a room the agent is not in is named back, not refused whole.
     await expect(
-      agentHost.stream.replacePlacements({ 'session-1': 'room-a', 'session-2': 'room-a' })
-    ).rejects.toThrow(/more than one session/);
+      agentHost.stream.replacePlacements({ 'session-1': 'room-elsewhere', 'session-2': 'room-a' })
+    ).resolves.toEqual({ refusedRooms: ['room-elsewhere'] });
+    expect(hub.roomFor(AGENT, 'session-2')).toBe('room-a');
+  });
+
+  it('lets a session post after its agent left a chat another session was placed in, repeatedly', async () => {
+    const gone: { roomId: string; sessionId: string }[] = [];
+    const agentHost = host({ onRoomGone: (info) => void gone.push(info) });
+    await connected(agentHost);
+    // The agent's earlier chat, room-b, is deleted while a session is still placed there.
+    hub.setRooms(AGENT, ['room-a']);
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        agentHost.stream.replacePlacements({ 'session-old': 'room-b', 'session-1': 'room-a' })
+      ).resolves.toEqual({ refusedRooms: ['room-b'] });
+      const posted = await callOperation(caller(), 'post_message', { body: 'QA-DIRECT-OK' });
+      expect(posted.isError).toBeFalsy();
+      expect(posted.structuredContent).toMatchObject({ room_id: 'room-a' });
+    }
+
+    // A room the agent leaves while a session is placed in it is said to that agent host.
+    await agentHost.stream.replacePlacements({ 'session-1': 'room-a' });
+    hub.setRooms(AGENT, []);
+    await waitFor(() => gone.length === 1, 'the room gone');
+    expect(gone).toEqual([{ roomId: 'room-a', sessionId: 'session-1' }]);
   });
 
   it('passes approval outcomes to the agent host', async () => {
@@ -507,50 +535,6 @@ describe('forwarding to Switch', () => {
     expect(forwarded.headers['x-switch-room-id']).toBeUndefined();
     expect(forwarded.headers['switch-controller-protocol']).toBe('2');
     expect(forwarded.body).toEqual({ row: 1 });
-  });
-
-  it('names a room the agent joined after its rooms were sent, once a session connects there', async () => {
-    // Switch answered connect_to_room for a room the controller's copy of the
-    // agent's rooms had not heard of yet. Refusing the placement left every
-    // later call from that session going out with no room.
-    const agentHost = host();
-    await connected(agentHost);
-    await agentHost.stream.replacePlacements({ 'session-1': 'room-just-joined' });
-
-    const posted = await callOperation(caller(), 'post_message', { body: 'hi' });
-    expect(posted.isError).toBeFalsy();
-    const forwarded = core.requests.findLast((r) => r.path.endsWith('/ops/post_message'))!;
-    expect(forwarded.headers['x-switch-room-id']).toBe('room-just-joined');
-  });
-
-  it('names a session’s room while another session is still placed in a room the agent left', async () => {
-    // As in a Console log: one placement kept for a deleted room got every
-    // statement of the map refused, and each session's calls then named no
-    // room, so Switch told it "not connected" right after it connected.
-    const agentHost = host();
-    await connected(agentHost);
-    await agentHost.stream.replacePlacements({
-      'session-old': 'room-deleted',
-      'session-1': 'room-b',
-    });
-
-    const read = await callOperation(caller(), 'read_context', {});
-    expect(read.isError).toBeFalsy();
-    const forwarded = core.requests.findLast((r) => r.path.endsWith('/ops/read_context'))!;
-    expect(forwarded.headers['x-switch-room-id']).toBe('room-b');
-  });
-
-  it('tells an agent host in its own process when the agent leaves a room a session is in', async () => {
-    const released: { roomId: string; sessionId: string | null }[] = [];
-    const agentHost = host({ onRoomReleased: (info) => void released.push(info) });
-    await connected(agentHost);
-    await agentHost.stream.replacePlacements({ 'session-1': 'room-a' });
-
-    hub.setRooms(AGENT, ['room-b']);
-
-    await waitFor(() => released.length === 1, 'the agent host to hear the room was left');
-    expect(released).toEqual([{ roomId: 'room-a', sessionId: 'session-1' }]);
-    expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
   });
 
   it('refuses placements while the hub is not connected, rather than reporting them taken', async () => {

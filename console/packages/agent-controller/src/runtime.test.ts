@@ -79,7 +79,7 @@ function openStream(agentId: string): OpenAgentStream {
       placementsNameCallRooms: true,
       start: () => {},
       setSpawnCapable: () => {},
-      replacePlacements: async () => {},
+      replacePlacements: async () => ({ refusedRooms: [] }),
     };
   };
 }

@@ -1337,6 +1337,28 @@ describe('placements', () => {
     }
   });
 
+  it('names back the rooms Switch left out of the placements, and none from a server that does not say', async () => {
+    serve((socket) => {
+      socket.open();
+      socket.announce(4);
+    });
+    let body =
+      '{"ok":true,"refused":[{"session_id":"old","room_id":"room-deleted","reason":"gone"}]}';
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes('connection/placements') ? answer(200, body) : answer()
+    );
+    const { stream, abort } = makeStream({ rooms: [], scope: 'all' }, fetchMock);
+    try {
+      await expect(stream.replacePlacements({ old: 'room-deleted', s: 'room' })).resolves.toEqual({
+        refusedRooms: ['room-deleted'],
+      });
+      body = '{"ok":true}';
+      await expect(stream.replacePlacements({ s: 'room' })).resolves.toEqual({ refusedRooms: [] });
+    } finally {
+      abort.abort();
+    }
+  });
+
   it('does not give its connection up to itself over a request answered across its own reopen', async () => {
     // Seen on a real host: placements stated under incarnation 4, the stream
     // reopened (to 5) before the answer came, and the answer, "taken over:

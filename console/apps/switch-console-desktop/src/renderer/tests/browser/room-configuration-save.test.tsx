@@ -15,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const updateRoom = vi.hoisted(() => vi.fn());
 const getRoomDetail = vi.hoisted(() => vi.fn());
+const syncRoomName = vi.hoisted(() => vi.fn());
+const manages = vi.hoisted(() => ({ value: false }));
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -30,6 +32,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     workspaces: {
       updateRoom,
       getRoomDetail,
+      syncRoomName,
       listAgents: vi.fn(() => Promise.resolve([])),
     },
     agents: { getAgents: vi.fn(() => Promise.resolve([])) },
@@ -40,10 +43,17 @@ vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
     roomWorkspaceId: () => 'ws-1',
     roomServerId: () => 'server-1',
-    canDeleteRoom: () => false,
+    canDeleteRoom: () => manages.value,
   },
 }));
 
+const refreshSidebarRoomState = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('@renderer/features/sidebar/sidebar-tree-data', () => ({
+  refreshSidebarRoomState,
+  refreshSidebarRoomStateAfterOnboarding: vi.fn(),
+}));
+
+import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 
 const ROOM = {
@@ -68,6 +78,8 @@ beforeEach(() => {
   );
   getRoomDetail.mockReset();
   getRoomDetail.mockResolvedValue(ROOM);
+  syncRoomName.mockReset();
+  manages.value = false;
 });
 
 afterEach(async () => {
@@ -186,5 +198,87 @@ describe('a room’s description and instructions', () => {
     expect(el.textContent).toContain('room is archived');
     // Still offered, because the edit is still there and still unwritten.
     expect(saveButton(el).disabled).toBe(false);
+  });
+  it('renames the room, and reads its name again wherever it shows', async () => {
+    const refreshSummaries = vi.spyOn(chatsStore, 'refreshSummaries').mockResolvedValue();
+    const el = await renderPanel();
+    await type(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!, ' Ship review ');
+
+    await act(async () => saveButton(el).click());
+    for (let i = 0; i < 5; i++) await act(async () => await Promise.resolve());
+
+    expect(updateRoom).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      name: 'Ship review',
+      description: 'The original description',
+      instructions: 'The original instructions',
+    });
+    expect(refreshSidebarRoomState).toHaveBeenCalledWith(true);
+    expect(refreshSummaries).toHaveBeenCalled();
+    expect(el.textContent).toContain('Saved.');
+  });
+
+  it('does not save an empty name', async () => {
+    const el = await renderPanel();
+    await type(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!, '  ');
+    expect(saveButton(el).disabled).toBe(true);
+  });
+  describe('a bridged room named apart from its channel', () => {
+    const BRIDGED = {
+      ...ROOM,
+      name: 'qa-overnight-adopted',
+      bridgeType: 'discord',
+      bridgeDisplayName: 'Discord',
+      linkedChannelName: 'qa-adopted-renamed',
+    };
+    const useButton = (el: HTMLElement) =>
+      [...el.querySelectorAll('button')].find((b) => b.textContent === 'Use channel name');
+
+    it('offers someone who manages it the channel’s name, and reads the new name everywhere', async () => {
+      manages.value = true;
+      getRoomDetail.mockResolvedValue(BRIDGED);
+      syncRoomName.mockResolvedValue({ ...BRIDGED, name: 'qa-adopted-renamed' });
+      const refreshSummaries = vi.spyOn(chatsStore, 'refreshSummaries').mockResolvedValue();
+      const el = await renderPanel();
+      expect(el.textContent).toContain('Linked channel: #qa-adopted-renamed');
+
+      await act(async () => useButton(el)!.click());
+      for (let i = 0; i < 5; i++) await act(async () => await Promise.resolve());
+
+      expect(syncRoomName).toHaveBeenCalledWith({ workspaceId: 'ws-1', roomId: 'room-1' });
+      expect(el.querySelector<HTMLInputElement>('input[aria-label="Name"]')!.value).toBe(
+        'qa-adopted-renamed'
+      );
+      expect(refreshSidebarRoomState).toHaveBeenCalledWith(true);
+      expect(refreshSummaries).toHaveBeenCalled();
+      expect(el.textContent).not.toContain('Linked channel');
+    });
+
+    it('says the server’s refusal where the action is', async () => {
+      manages.value = true;
+      getRoomDetail.mockResolvedValue(BRIDGED);
+      syncRoomName.mockRejectedValue(
+        new Error('Switch has not seen the name of a channel linked to this room.')
+      );
+      const el = await renderPanel();
+      await act(async () => useButton(el)!.click());
+      for (let i = 0; i < 5; i++) await act(async () => await Promise.resolve());
+      expect(el.querySelector('[role="alert"]')?.textContent).toContain('has not seen the name');
+    });
+
+    it('shows the channel’s name, without the action, to someone who does not manage it', async () => {
+      getRoomDetail.mockResolvedValue(BRIDGED);
+      const el = await renderPanel();
+      expect(el.textContent).toContain('Linked channel: #qa-adopted-renamed');
+      expect(useButton(el)).toBeUndefined();
+    });
+
+    it('says nothing when the room is already called what its channel is', async () => {
+      manages.value = true;
+      getRoomDetail.mockResolvedValue({ ...BRIDGED, name: 'qa-adopted-renamed' });
+      const el = await renderPanel();
+      expect(el.textContent).not.toContain('Linked channel');
+    });
   });
 });

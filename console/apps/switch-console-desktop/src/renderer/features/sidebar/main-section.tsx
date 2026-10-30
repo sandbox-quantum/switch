@@ -1,6 +1,7 @@
 import { DoorOpen, MessageCircle, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
@@ -12,10 +13,12 @@ import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/u
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
+import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
+import { NewRoomRow } from './new-room-row';
 import { SidebarMenuRow } from './sidebar-primitives';
 import { isRoomViewActive, openRoomView } from './sidebar-room-grouping';
 
@@ -105,16 +108,19 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
   );
 });
 
-/** One row per room: its messaging app and its name. Nothing is nested under it. */
+/** New Room, then one row per room: its messaging app and its name. Nothing is nested under it. */
 const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummary[] }) {
-  if (rooms.length === 0) {
-    return <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>;
-  }
+  const showCreateRoomModal = useShowModal('createRoomModal');
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
+      <NewRoomRow onCreate={() => showCreateRoomModal({})} />
+      {rooms.length === 0 && (
+        <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>
+      )}
       {rooms.map((room) => (
         <RoomListRow
           key={room.id}
+          roomId={room.id}
           room={room}
           isActive={isRoomViewActive(room.id)}
           onOpen={() => openRoomView(room.id)}
@@ -125,10 +131,12 @@ const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummar
 });
 
 export function RoomListRow({
+  roomId,
   room,
   isActive,
   onOpen,
 }: {
+  roomId: string;
   room: Pick<RemoteRoomSummary, 'name' | 'bridgeType' | 'bridgeDisplayName'>;
   isActive: boolean;
   onOpen: () => void;
@@ -147,6 +155,7 @@ export function RoomListRow({
         <DoorOpen className="size-[17px] shrink-0 text-[var(--fg-icon)]" />
       )}
       <span className="min-w-0 flex-1 truncate">{room.name}</span>
+      <UnreadBadge roomId={roomId} />
     </SidebarMenuRow>
   );
 }

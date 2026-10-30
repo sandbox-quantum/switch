@@ -95,24 +95,66 @@ class _FakeListener:
             await waker(room_id)
 
 
+class _FakeRoomSubscription:
+    def __init__(
+        self,
+        listener: _FakeActivityListener,
+        tenant_id: str,
+        rooms: Any,
+        on_change: Any,
+        on_resync: Any,
+    ) -> None:
+        self.listener = listener
+        self.tenant_id = tenant_id
+        self.rooms = set(rooms)
+        self.on_change = on_change
+        self.on_resync = on_resync
+        self.delivered = 0
+
+    def set_rooms(self, rooms: Any) -> None:
+        self.rooms = set(rooms)
+
+    def close(self) -> None:
+        self.listener.room_subscriptions.remove(self)
+
+
 class _FakeActivityListener:
     """The session-activity listener; a test delivers changes by hand."""
 
     def __init__(self) -> None:
         self.subscribers: list[tuple[Any, Any]] = []
+        self.room_subscriptions: list[_FakeRoomSubscription] = []
 
     def subscribe(self, tenant_id: str, on_change: Any, on_resync: Any) -> Any:
         entry = (on_change, on_resync)
         self.subscribers.append(entry)
         return lambda: self.subscribers.remove(entry)
 
+    def subscribe_rooms(
+        self, tenant_id: str, rooms: Any, on_change: Any, on_resync: Any
+    ) -> _FakeRoomSubscription:
+        subscription = _FakeRoomSubscription(
+            self, tenant_id, rooms, on_change, on_resync
+        )
+        self.room_subscriptions.append(subscription)
+        return subscription
+
     async def change(self, change: Change) -> None:
         for on_change, _ in list(self.subscribers):
             await on_change(change)
+        for subscription in list(self.room_subscriptions):
+            if (
+                subscription.tenant_id == change.tenant_id
+                and change.room_id in subscription.rooms
+            ):
+                subscription.delivered += 1
+                await subscription.on_change(change)
 
     async def resync(self) -> None:
         for _, on_resync in list(self.subscribers):
             await on_resync()
+        for subscription in list(self.room_subscriptions):
+            await subscription.on_resync()
 
 
 class _Harness(SimpleNamespace):
@@ -258,6 +300,7 @@ def _chat_service(
         id_server_name="switch.test",
         media_max_bytes=1024,
         agent_chats_enabled=True,
+        group_chats_enabled=True,
         connections=connections,
     )
     room_service.on_room_agents_changed(service.sync_room)

@@ -117,35 +117,42 @@ export function sessionToolAnswerer(deps: {
       await deps.placements.restore(before);
       return result;
     }
+    let notTaken: string | null = null;
     try {
       await deps.publish();
+      // A room the controller left out and named back (it does not count the
+      // agent as in it yet) is taken off the session by the publish itself.
+      if (deps.placementsNameCallRooms() && deps.placements.roomOf(caller.sessionId) !== roomId)
+        notTaken = `the agent controller does not count room ${roomId} among this agent's rooms yet`;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      if (deps.placementsNameCallRooms()) {
-        await deps.placements.restore(before);
-        // So what the stream states on its next change or reconnect is the
-        // map put back, not the move it did not take.
-        await deps.publish().catch(() => {});
+      if (deps.placementsNameCallRooms()) notTaken = reason;
+      else
         console.warn(
-          `The agent controller did not take session ${caller.sessionId}'s move to room ${roomId}: ${reason}. The move was put back and connect_to_room refused.`
+          `Switch did not take this agent's session placements after session ${caller.sessionId} connected to room ${roomId}: ${reason}. They are stated again on the next change or reconnect.`
         );
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text:
-                `connect_to_room did not take effect: Switch accepted it, but the agent controller ` +
-                `running this agent did not record the move to room ${roomId} (${reason}), so your ` +
-                'calls would not be made from that room. Call connect_to_room again; if it keeps ' +
-                "failing, the agent controller's log says why.",
-            },
-          ],
-        };
-      }
+    }
+    if (notTaken !== null) {
+      await deps.placements.restore(before);
+      // So what the stream states on its next change or reconnect is the map
+      // put back, not the move it did not take.
+      await deps.publish().catch(() => {});
       console.warn(
-        `Switch did not take this agent's session placements after session ${caller.sessionId} connected to room ${roomId}: ${reason}. They are stated again on the next change or reconnect.`
+        `The agent controller did not take session ${caller.sessionId}'s move to room ${roomId}: ${notTaken}. The move was put back and connect_to_room refused.`
       );
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text:
+              `connect_to_room did not take effect: Switch accepted it, but the agent controller ` +
+              `running this agent did not record the move to room ${roomId} (${notTaken}), so your ` +
+              'calls would not be made from that room. Call connect_to_room again; if it keeps ' +
+              "failing, the agent controller's log says why.",
+          },
+        ],
+      };
     }
     if (!displaced) return result;
     const warning =
@@ -184,6 +191,16 @@ export function sessionToolAnswerer(deps: {
     if (attended !== ask.roomId)
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
+      );
+    // Stated again first: a reply is posted as the session, in the room Switch
+    // holds it in, and the placement it was refused on may be the reason the
+    // turn could not post itself.
+    await deps
+      .publish()
+      .catch((error: unknown) =>
+        console.warn(
+          `Could not state the session placements before posting a reply for session ${caller.sessionId}: ${error instanceof Error ? error.message : String(error)}`
+        )
       );
     const posted = await catalog.call(await context(caller), 'post_message', {
       body: deps.redactions.text(ask.body),

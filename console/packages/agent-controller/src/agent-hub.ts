@@ -2,9 +2,8 @@ import type {
   AgentBridgeEvent,
   ApprovalOutcome,
   SessionCommand,
-  SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
-import type { AgentEventStream } from '@switch-console/agent-providers';
+import type { AgentEventStream, AgentStreamDeps } from '@switch-console/agent-providers';
 import { errorMessage, type Logger } from './log';
 import type {
   AgentApprovalOutcomeFrame,
@@ -50,7 +49,7 @@ type GapData = {
 
 /** The agent host, as the stream it opened. */
 type AgentHostLink = {
-  deps: SwitchEventStreamDeps;
+  deps: AgentStreamDeps;
   started: boolean;
   /** The last sequence handed to the agent host (or skipped); null until the agent's head is known. */
   cursor: number | null;
@@ -85,6 +84,8 @@ type AgentState = {
   reset: { reason: string; rooms: string[] } | null;
   /** Each of its sessions' room, as its agent host last stated. */
   placements: Map<string, string>;
+  /** Rooms its agent host placed a session in that it is not in, each said once. */
+  refusedRooms: Set<string>;
   host: AgentHostLink | null;
   overflowing: boolean;
 };
@@ -206,7 +207,7 @@ export class AgentHub {
   attach(agentId: string, fromSeq: number, rooms: string[]): void {
     const agent = this.agent(agentId);
     agent.attached = true;
-    this.roomsNow(agent, rooms);
+    agent.rooms = new Set(rooms);
     if (agent.attachedFrom === null) agent.attachedFrom = fromSeq;
     if (agent.head === null) agent.head = fromSeq;
     else if (fromSeq > agent.head) {
@@ -230,38 +231,20 @@ export class AgentHub {
   }
 
   setRooms(agentId: string, rooms: string[]): void {
-    this.roomsNow(this.agent(agentId), rooms);
-  }
-
-  /**
-   * The agent's rooms as Switch now has them. A session placed in a room the
-   * agent has just left (the room was deleted, or the agent removed from it)
-   * loses that placement, and its agent host is told so it forgets it too:
-   * otherwise it keeps stating it, on disk and across restarts. Only a room
-   * that was in the agent's rooms and is no longer is taken this way, so a
-   * placement for a room the agent joined a moment ago, before Switch said so
-   * here, is left alone.
-   */
-  private roomsNow(agent: AgentState, rooms: string[]): void {
-    const previous = agent.rooms;
+    const agent = this.agent(agentId);
     agent.rooms = new Set(rooms);
-    if (!previous) return;
-    const host = agent.host;
+    // A room the agent is out of (deleted, or the agent taken out), as Switch
+    // says: a session placed there no longer attends it, and its agent host
+    // forgets the placement rather than state it again and again.
     for (const [sessionId, roomId] of [...agent.placements]) {
-      if (!previous.has(roomId) || agent.rooms.has(roomId)) continue;
+      if (agent.rooms.has(roomId)) continue;
       agent.placements.delete(sessionId);
       this.deps.onChange();
-      this.deps.log.info('A session’s room is no longer one of its agent’s', {
-        agentId: agent.agentId,
-        sessionId,
-        roomId,
-      });
-      const released = host?.deps.onRoomReleased;
-      if (!released || host.closed) continue;
-      void Promise.resolve(released({ roomId, sessionId })).catch((error: unknown) =>
-        this.deps.log.warn('The agent host did not take a room the agent left', {
-          agentId: agent.agentId,
-          sessionId,
+      const host = agent.host;
+      if (!host || host.closed) continue;
+      void Promise.resolve(host.deps.onRoomGone?.({ roomId, sessionId })).catch((error: unknown) =>
+        this.deps.log.warn('The agent host could not drop a session placement in a room it left', {
+          agentId,
           roomId,
           error: errorMessage(error),
         })
@@ -402,7 +385,7 @@ export class AgentHub {
    * The stream the agent's host hears its events on. One agent host per agent:
    * a newer one replaces an older still open, which hears nothing more.
    */
-  open(agentId: string, deps: SwitchEventStreamDeps): AgentEventStream {
+  open(agentId: string, deps: AgentStreamDeps): AgentEventStream {
     const agent = this.agent(agentId);
     if (agent.host) agent.host.closed = true;
     const host: AgentHostLink = {
@@ -460,23 +443,39 @@ export class AgentHub {
       // Switch decides who may start a session from the agent's binding, not
       // from what an agent host on this machine declares.
       setSpawnCapable: () => {},
-      // Membership is not checked here: Switch checks it on every call the
-      // relay names a room for, against the agent's memberships as they are
-      // now, where `agent.rooms` may not yet have heard of a room the agent
-      // was just added to.
+      // A session placed in a room the agent is not in (any more: the room was
+      // deleted, or the agent taken out) is left out and named back; the rest
+      // are placed. Refusing the whole set for one gone room left every other
+      // session of the agent unplaced, and its room tools answered "not
+      // connected" though the session had just connected.
       replacePlacements: async (placements) => {
         if (host.closed || agent.host !== host)
           throw new Error(
             `this agent host no longer holds agent ${agentId}'s stream on the agent controller; a newer one does`
           );
-        const rooms = Object.values(placements);
+        const refusedRooms = [...new Set(Object.values(placements))]
+          .filter((roomId) => agent.rooms !== null && !agent.rooms.has(roomId))
+          .sort();
+        const kept = Object.entries(placements).filter(
+          ([, roomId]) => !refusedRooms.includes(roomId)
+        );
+        const rooms = kept.map(([, roomId]) => roomId);
         const twice = [...new Set(rooms.filter((room, index) => rooms.indexOf(room) !== index))];
         if (twice.length)
           throw new Error(
             `placements name room(s) ${twice.sort().join(', ')} for more than one session; one session of an agent acts in a room`
           );
-        agent.placements = new Map(Object.entries(placements));
+        for (const roomId of refusedRooms) {
+          if (agent.refusedRooms.has(roomId)) continue;
+          agent.refusedRooms.add(roomId);
+          this.deps.log.warn('Left out a session placement in a room the agent is not in', {
+            agentId,
+            roomId,
+          });
+        }
+        agent.placements = new Map(kept);
         this.deps.onChange();
+        return { refusedRooms };
       },
     };
   }
@@ -498,6 +497,7 @@ export class AgentHub {
         buffer: [],
         reset: null,
         placements: new Map(),
+        refusedRooms: new Set(),
         host: null,
         overflowing: false,
       };

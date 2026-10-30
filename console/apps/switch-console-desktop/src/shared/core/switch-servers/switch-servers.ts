@@ -331,6 +331,10 @@ export type RemoteRoomSummary = {
    * Rooms the signed-in user owns stay listed in the sidebar even with no live
    * session, so a room you just made never vanishes on you. */
   ownerId: string | null;
+  /** The signed-in user is a member of the room. False from a server that does not say. */
+  viewerIsMember: boolean;
+  /** A Switch Console chat: only its members can open it. False from a server that does not say. */
+  isConsoleChat: boolean;
   archived: boolean;
   createdAt: string;
 };
@@ -356,6 +360,8 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
    * Undefined from a server that predates the field, which says nothing about
    * the channel either way. */
   channelOnDelete?: ChannelRetirement | null;
+  /** The name of the platform channel the room is linked to, as Switch last saw it; null when it has not. */
+  linkedChannelName: string | null;
 };
 
 /** What deleting a room does to its platform channel when asked to retire it
@@ -374,9 +380,13 @@ export type RetireOutcome = {
 
 /** The room fields Switch Console can change. Anything omitted is left alone;
  * an empty string clears the field rather than leaving it. */
+/** Name a room after the channel it is linked to. */
+export type SyncRoomNameParams = { workspaceId: string; roomId: string };
+
 export type UpdateRoomParams = {
   workspaceId: string;
   roomId: string;
+  name?: string;
   description?: string;
   instructions?: string;
 };

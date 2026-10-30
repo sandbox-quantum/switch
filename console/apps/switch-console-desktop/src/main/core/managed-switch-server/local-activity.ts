@@ -16,6 +16,7 @@ const ACTIONS: ReadonlySet<string> = new Set<LocalActivityAction>([
   'start-failed',
   'updated',
   'reset',
+  'crashed',
 ]);
 
 function activityFile(): string {

@@ -240,6 +240,29 @@ describe('runControllerStream', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(190);
   });
 
+  it('waits three of the server’s beats before calling a quiet socket dead', async () => {
+    const scripted = new ScriptedClient();
+    // Switch beats every 0.2 s here, as slowly as the 200 ms idle timeout: three beats it is.
+    scripted.sockets = () =>
+      scriptedSocket(
+        [
+          {
+            event: 'connection_state',
+            data: { connection_id: 'connection-1', heartbeat_interval_s: 0.2 },
+          },
+        ],
+        'open'
+      );
+    const stop = new AbortController();
+    const { ending } = run(scripted, stop.signal);
+    await waitFor(() => scripted.attaches.length === 1, 'an attach');
+    await delay(450);
+    expect(scripted.attaches).toHaveLength(1);
+    await waitFor(() => scripted.attaches.length >= 2, 'a second attach once three beats passed');
+    stop.abort();
+    await ending;
+  });
+
   it('opens a new connection, from the cursors as they stand, when Switch no longer knows it', async () => {
     const scripted = new ScriptedClient();
     scripted.sockets = () =>

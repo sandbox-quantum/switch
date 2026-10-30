@@ -5,7 +5,8 @@ import type {
   SessionCommand,
   SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
-import { beforeEach, describe, expect, it } from 'vitest';
+import type { AgentStreamDeps } from '@switch-console/agent-providers';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentHub } from './agent-hub';
 import { silentLogger } from './log';
 import type { AgentEventFrame } from './schemas';
@@ -48,7 +49,7 @@ beforeEach(() => {
 });
 
 /** A watcher as `runAgentHost` opens its stream, recording what it hears. */
-function watcher(overrides: Partial<SwitchEventStreamDeps> = {}) {
+function watcher(overrides: Partial<AgentStreamDeps> = {}) {
   const seen = {
     events: [] as AgentBridgeEvent[],
     gaps: [] as Parameters<SwitchEventStreamDeps['onGap']>[0][],
@@ -274,57 +275,40 @@ describe('placements', () => {
     expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
   });
 
-  it('takes a room the agent was added to after its rooms were last sent', async () => {
-    // Switch checks membership on each call the relay names the room for. A
-    // refusal here, on a copy that has not heard of the room yet, left a
-    // session whose connect_to_room had succeeded calling from no room.
+  it('places the sessions in rooms the agent is in, leaving out and naming one that is gone, every time', async () => {
+    const warn = vi.spyOn(silentLogger, 'warn');
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);
     const { stream } = watcher();
     stream.start();
-    await stream.replacePlacements({ 'session-1': 'room-new' });
-    expect(hub.roomFor(AGENT, 'session-1')).toBe('room-new');
+    for (let i = 0; i < 3; i++) {
+      // A session left placed in a room since deleted, beside one in a live room.
+      await expect(
+        stream.replacePlacements({ 'session-old': 'room-deleted', 'session-1': 'room-a' })
+      ).resolves.toEqual({ refusedRooms: ['room-deleted'] });
+      // The live session's room tools carry its room.
+      expect(hub.roomFor(AGENT, 'session-1')).toBe('room-a');
+      expect(hub.roomFor(AGENT, 'session-old')).toBeNull();
+    }
+    // Said once for the room, not on every statement.
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('not in'))).toHaveLength(
+      1
+    );
+    warn.mockRestore();
   });
 
-  it('takes the whole map when one session is still placed in a room the agent is no longer in', async () => {
-    // What a Console log showed: a placement kept on disk for a room since
-    // deleted made every statement of the map refused, so no session of the
-    // agent had a room on its calls, in any room, until it was cleared.
-    hub.streamAttached();
-    hub.attach(AGENT, 0, ['room-a']);
-    const { stream } = watcher();
-    stream.start();
-    await stream.replacePlacements({ 'session-old': 'room-deleted', 'session-1': 'room-a' });
-    expect(hub.roomFor(AGENT, 'session-1')).toBe('room-a');
-  });
-
-  it('takes a session out of a room the agent has left, and tells its agent host', async () => {
+  it('tells the agent host when a room a session is placed in stops being the agent’s', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a', 'room-b']);
-    const released: { roomId: string; sessionId: string | null }[] = [];
-    const { stream } = watcher({ onRoomReleased: (info) => void released.push(info) });
+    const gone: { roomId: string; sessionId: string }[] = [];
+    const { stream } = watcher({ onRoomGone: (info) => void gone.push(info) });
     stream.start();
     await stream.replacePlacements({ 'session-1': 'room-a', 'session-2': 'room-b' });
-
-    hub.setRooms(AGENT, ['room-b']);
-
-    expect(hub.roomFor(AGENT, 'session-1')).toBeNull();
-    expect(hub.roomFor(AGENT, 'session-2')).toBe('room-b');
-    expect(released).toEqual([{ roomId: 'room-a', sessionId: 'session-1' }]);
-  });
-
-  it('leaves a placement in a room Switch has not yet said the agent joined', async () => {
-    hub.streamAttached();
-    hub.attach(AGENT, 0, ['room-a']);
-    const released: unknown[] = [];
-    const { stream } = watcher({ onRoomReleased: (info) => void released.push(info) });
-    stream.start();
-    await stream.replacePlacements({ 'session-1': 'room-just-joined' });
-
-    hub.setRooms(AGENT, ['room-a', 'room-other']);
-
-    expect(hub.roomFor(AGENT, 'session-1')).toBe('room-just-joined');
-    expect(released).toEqual([]);
+    // The chat in room-b was deleted: Switch's rooms for the agent no longer have it.
+    hub.setRooms(AGENT, ['room-a']);
+    expect(gone).toEqual([{ roomId: 'room-b', sessionId: 'session-2' }]);
+    expect(hub.roomFor(AGENT, 'session-2')).toBeNull();
+    expect(hub.roomFor(AGENT, 'session-1')).toBe('room-a');
   });
 
   it('refuses placements from an agent host a newer one replaced, rather than dropping them', async () => {

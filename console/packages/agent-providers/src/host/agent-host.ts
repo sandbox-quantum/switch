@@ -8,7 +8,7 @@ import {
   SwitchEventStream,
   type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
-import { callOperation, type SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
+import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -134,6 +134,10 @@ function isReleased(record: WatchRecord): record is z.infer<typeof releasedSchem
 /** Whether a relayed room control is a reset (`!reset`). */
 function isReset(command: Record<string, unknown>): boolean {
   return z.object({ type: z.literal('session.reset') }).safeParse(command.body).success;
+}
+
+function isRetry(command: Record<string, unknown>): boolean {
+  return z.object({ type: z.literal('message.retry') }).safeParse(command.body).success;
 }
 
 function isAssignment(record: WatchRecord): record is Assignment {
@@ -655,10 +659,25 @@ export type AgentEventStream = {
   readonly placementsNameCallRooms: boolean;
   start(): void;
   setSpawnCapable(capable: boolean): void;
-  replacePlacements(placements: Record<string, string>): Promise<void>;
+  /**
+   * State every session's room. The rooms named back in `refusedRooms` are
+   * ones the agent is not in (deleted, or the agent taken out): their sessions
+   * were left out, and the rest placed.
+   */
+  replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }>;
 };
 
-export type OpenAgentStream = (deps: SwitchEventStreamDeps) => AgentEventStream;
+/**
+ * What the agent host is told on its stream. Beside the runtime's own, an
+ * agent controller's hub says when a room a session is placed in is no longer
+ * the agent's (deleted, or the agent taken out): Switch said so, so the
+ * placement goes.
+ */
+export type AgentStreamDeps = SwitchEventStreamDeps & {
+  onRoomGone?: (info: { roomId: string; sessionId: string }) => Promise<void> | void;
+};
+
+export type OpenAgentStream = (deps: AgentStreamDeps) => AgentEventStream;
 
 /** The watcher's own connection to Switch, with the agent's credentials. */
 export const openSwitchStream: OpenAgentStream = (deps) => new SwitchEventStream(deps);
@@ -785,7 +804,17 @@ export async function runAgentHost(
      */
     const publish = (): Promise<void> => {
       const run = async () => {
-        await stream?.replacePlacements(placements.snapshot());
+        const answer = await stream?.replacePlacements(placements.snapshot());
+        // Switch or the controller said the agent is not in the room (it is gone,
+        // or the agent was taken out): a refusal naming the room, never a failure
+        // to answer. The session no longer attends it, so it is not stated again.
+        for (const roomId of answer?.refusedRooms ?? []) {
+          const lost = await placements.roomLost(roomId);
+          if (lost)
+            console.warn(
+              `Session ${lost} was placed in room ${roomId}, which this agent is no longer in; it no longer attends it.`
+            );
+        }
       };
       publishing = publishing.then(run, run);
       return publishing;
@@ -1233,50 +1262,6 @@ export async function runAgentHost(
       }
     }
     if (held.size) await resolveHeld();
-    /**
-     * Takes each session out of a room the agent is no longer in: one deleted,
-     * or that the agent was removed from, while nothing here heard of it.
-     * The placements are kept on disk and stated whole, and an agent
-     * controller refused the whole map for one such room, which left every
-     * session of the agent calling from no room. Compared with what was
-     * placed before asking, so a session placed since is not judged on an
-     * answer older than its placement.
-     */
-    const forgetLeftRooms = async (): Promise<void> => {
-      const placed = placements.snapshot();
-      if (Object.keys(placed).length === 0) return;
-      const listed = await callOperation(
-        {
-          identity,
-          connectionId,
-          selector: {},
-          room: null,
-          mediaDir: join(root, 'media'),
-          cwd: root,
-          deadConnection: (operation) =>
-            `Switch refused ${operation}: this agent's connection (${connectionId}) had lapsed.`,
-        },
-        'list_rooms',
-        { include_archived: true }
-      );
-      const rooms = listed.isError ? null : roomIdsOf(listed.content[0]?.text);
-      if (!rooms) {
-        console.warn(
-          `Could not read this agent's rooms to check its sessions' placements against them: ${listed.content[0]?.text ?? 'no answer'}. They are checked again when the stream reconnects.`
-        );
-        return;
-      }
-      let changed = false;
-      for (const [sessionId, roomId] of Object.entries(placed)) {
-        if (rooms.has(roomId) || placements.roomOf(sessionId) !== roomId) continue;
-        await placements.unplace(sessionId);
-        changed = true;
-        console.warn(
-          `Session ${sessionId} was placed in room ${roomId}, which this agent is no longer in; it no longer attends it.`
-        );
-      }
-      if (changed) publishQuietly();
-    };
     stream = openStream({
       creds: {
         agentId: credentials.SWITCH_AGENT_ID,
@@ -1294,24 +1279,30 @@ export async function runAgentHost(
       onConnected: () => {
         control.report({ state: 'connected', detail: null });
         publishQuietly();
-        pending = pending.then(() =>
-          forgetLeftRooms().catch((error: unknown) =>
-            console.warn(
-              `Could not check this agent's session placements against its rooms: ${error instanceof Error ? error.message : String(error)}.`
-            )
-          )
-        );
       },
       onDisconnected: ({ error }) => control.report({ state: 'disconnected', detail: error }),
-      // Another connection of this agent took the room, or (from an agent
-      // controller) the agent is no longer in it: whichever session attended
-      // it here no longer does.
+      // Another connection of this agent took the room, or Switch took it off
+      // the connection: whichever session attended it here no longer does.
       onRoomReleased: async ({ roomId, sessionId }) => {
         pending = pending.then(async () => {
           const lost = await placements.roomLost(roomId);
           if (lost === null) return;
           console.warn(
             `Room ${roomId} was released from this agent's session here: another connection of this agent took it, or the agent is no longer in it${sessionId && sessionId !== lost ? ` (Switch named session ${sessionId})` : ''}. Session ${lost} no longer attends it.`
+          );
+          publishQuietly();
+        });
+        return pending.catch((error: Error) => {
+          fail(error);
+          throw error;
+        });
+      },
+      onRoomGone: async ({ roomId, sessionId }) => {
+        pending = pending.then(async () => {
+          if (placements.roomOf(sessionId) !== roomId) return;
+          await placements.roomLost(roomId);
+          console.warn(
+            `Room ${roomId} is no longer this agent's (deleted, or the agent taken out); session ${sessionId} no longer attends it.`
           );
           publishQuietly();
         });
@@ -1346,6 +1337,17 @@ export async function runAgentHost(
             );
             return false;
           }));
+        // A retry is for a turn that failed, and a failure can take the session's
+        // host down with it (a provider error faults it): started again, as a
+        // room message would start it, rather than dropped for not running.
+        const relaunched =
+          isRetry(command) && !links.ready(sharedSessionRoot(sessionId))
+            ? await sessionConfig(sessionId).then(async (config) => {
+                if (!config) return false;
+                await launch(config);
+                return true;
+              })
+            : false;
         const taken = await askSession(
           sessionId,
           {
@@ -1354,7 +1356,7 @@ export async function runAgentHost(
             requesterName: typeof requesterName === 'string' ? requesterName : null,
           },
           `command ${command.commandId}`,
-          restarted ? HOST_START_MS : 0
+          restarted || relaunched ? HOST_START_MS : 0
         );
         if (!taken)
           console.warn(
@@ -1681,17 +1683,4 @@ export async function runAgentHost(
     await releaseOwner(root, ownerPath, owner);
   }
   if (fault) throw fault;
-}
-
-/** The room ids in a `list_rooms` answer, or null when it is not one. */
-export function roomIdsOf(text: string | undefined): Set<string> | null {
-  if (text === undefined) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const answer = z.array(z.object({ room_id: z.string() })).safeParse(parsed);
-  return answer.success ? new Set(answer.data.map((room) => room.room_id)) : null;
 }

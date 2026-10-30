@@ -13,6 +13,9 @@ export const chatAgentSchema = z.object({
   displayName: z.string().nullable(),
   iconUrl: z.string().nullable(),
   provider: z.string().nullable(),
+  alias: z.string().nullable(),
+  ownerName: z.string().nullable(),
+  ownedByViewer: z.boolean(),
 });
 export type ChatAgent = z.infer<typeof chatAgentSchema>;
 
@@ -26,6 +29,11 @@ export const chatSummarySchema = z.object({
   canManage: z.boolean(),
   /** The viewer owns one of the agents, which keeps them in the room: they cannot leave it. */
   ownsAgent: z.boolean().default(false),
+  /** The people in the chat, by user id, sorted. */
+  memberUserIds: z.array(z.string()),
+  memberCount: z.number().int(),
+  /** Messages since the viewer last read the chat; 0 from a server older than read positions. */
+  unreadCount: z.number().int().default(0),
   lastMessage: z
     .object({
       seq: z.number().int(),
@@ -55,6 +63,15 @@ export const chatAttachmentSchema = z.object({
 });
 export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
 
+/** Who one stretch of a message's text names: offset and length in UTF-16 code units, as JS strings index. */
+export const chatMentionSpanSchema = z.object({
+  kind: z.enum(['agent', 'user']),
+  id: z.string(),
+  offset: z.number().int(),
+  length: z.number().int(),
+});
+export type ChatMentionSpan = z.infer<typeof chatMentionSpanSchema>;
+
 export const chatMessageSchema = z.object({
   messageId: z.string(),
   seq: z.number().int(),
@@ -67,6 +84,13 @@ export const chatMessageSchema = z.object({
   threadRootId: z.string().nullable(),
   attachments: z.array(chatAttachmentSchema),
   clientTxn: z.string().nullable(),
+  namedAgentIds: z.array(z.string()),
+  /** The people the message mentions; empty from a server older than people mentions. */
+  namedUserIds: z.array(z.string()).default([]),
+  /** Each mention's stretch of the body and whom it names; empty for older messages and servers. */
+  mentions: z.array(chatMentionSpanSchema).default([]),
+  threadReplyCount: z.number().int(),
+  threadLastReplySeq: z.number().int().nullable(),
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 
@@ -78,7 +102,49 @@ export const chatMessagesPageSchema = z.object({
   hasMore: z.boolean(),
 });
 export type ChatMessagesPage = z.infer<typeof chatMessagesPageSchema>;
+export const chatThreadMessagesPageSchema = z.object({
+  messages: z.array(chatMessageSchema),
+  headSeq: z.number().int(),
+  hasMore: z.boolean(),
+});
+export type ChatThreadMessagesPage = z.infer<typeof chatThreadMessagesPageSchema>;
 export const chatSentSchema = z.object({ messages: z.array(chatMessageSchema) });
+export const chatAgentAddedSchema = z.object({ chat: chatSummarySchema });
+export const chatMemberSchema = z.object({
+  userId: z.string(),
+  name: z.string(),
+  isOwner: z.boolean(),
+});
+export type ChatMember = z.infer<typeof chatMemberSchema>;
+export const chatMemberListSchema = z.object({ members: z.array(chatMemberSchema) });
+
+/** A room command a member can type (`!name`), as the server's command list has it. */
+export const chatCommandSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  /** How it is typed, with its arguments: `!reset <target>`. */
+  usage: z.string(),
+});
+export type ChatCommand = z.infer<typeof chatCommandSchema>;
+export const chatCommandListSchema = z.object({ commands: z.array(chatCommandSchema) });
+/** A person in the workspace, from its roster, who could be added to a chat. */
+export const workspaceMemberSchema = z
+  .object({
+    user_id: z.string(),
+    name: z.string(),
+    email: z.string().nullish(),
+    // Older servers do not report it; they have no way to mark one.
+    service_account: z.boolean().optional(),
+  })
+  .transform(({ user_id, name, email, service_account }) => ({
+    userId: user_id,
+    name,
+    email: email || null,
+    serviceAccount: service_account ?? false,
+  }));
+export type WorkspaceMember = z.infer<typeof workspaceMemberSchema>;
+/** The agents the viewer may add to a new chat, or to one they manage. */
+export const agentCandidatesSchema = z.object({ agentIds: z.array(z.string()) });
 export const chatUploadSchema = z.object({
   uploadId: z.string(),
   uri: z.string(),
@@ -116,6 +182,9 @@ export type ChatSendInput = {
   body: string;
   threadRootId: string | null;
   uploadIds: string[];
+  mentionAgentIds?: string[];
+  mentionUserIds?: string[];
+  mentionSpans?: ChatMentionSpan[];
 };
 
 export type ChatUploadInput = {

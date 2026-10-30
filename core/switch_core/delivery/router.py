@@ -220,7 +220,13 @@ class RoomReads:
         """
         found = (
             await session.execute(
-                select(Room, CollaborationBridge.agent_greetings_enabled)
+                select(
+                    Room,
+                    CollaborationBridge.agent_greetings_enabled,
+                    select(func.count())
+                    .where(room_agents.c.room_id == Room.id)
+                    .scalar_subquery(),
+                )
                 .outerjoin(
                     CollaborationBridge,
                     and_(
@@ -233,7 +239,7 @@ class RoomReads:
         ).first()
         if found is None:
             return None
-        room, greetings = found
+        room, greetings, agent_count = found
         rows = (
             await session.execute(
                 select(
@@ -291,9 +297,11 @@ class RoomReads:
                 bridge_id=room.bridge_id,
                 agent_greetings_enabled=True if greetings is None else greetings,
                 channel_type=room.channel_type,
+                agent_count=agent_count,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
+                console_chat="chat_operation_id" in (room.metadata_ or {}),
             ),
             group_id=room.group_id,
             members=sorted(members, key=lambda member: member.agent.id),
@@ -435,6 +443,16 @@ class _RoomAddressing(AddressingResolver):
         if room_id != self._reads.room_id:
             return await super().role_of(session, room_id, agent_id)
         return (await self._reads.role_names(session)).get(agent_id)
+
+    async def auto_addressed_room(
+        self, session: AsyncSession, *, room_id: str, channel_type: str | None
+    ) -> bool:
+        count = self._reads.meta.agent_count
+        if room_id != self._reads.room_id or count is None:
+            return await super().auto_addressed_room(
+                session, room_id=room_id, channel_type=channel_type
+            )
+        return channel_type == "direct" and count == 1
 
     async def group_of(self, session: AsyncSession, room_id: str) -> str | None:
         if room_id != self._reads.room_id:

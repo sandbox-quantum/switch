@@ -12,6 +12,14 @@ describe('chatRemovalNavigation', () => {
     expect(chatRemovalNavigation('!b', { currentViewId: 'chat', chatRoomId: '!a' })).toEqual(stay);
   });
 
+  it('leaves the room view only when it shows the removed chat', () => {
+    expect(chatRemovalNavigation('!a', { currentViewId: 'room', roomRoomId: '!a' })).toEqual({
+      leaveChatView: true,
+      clearAgentChat: false,
+    });
+    expect(chatRemovalNavigation('!b', { currentViewId: 'room', roomRoomId: '!a' })).toEqual(stay);
+  });
+
   it('drops the agent page chat only when it is the removed one', () => {
     expect(
       chatRemovalNavigation('!a', { currentViewId: 'managedAgent', agentRoomId: '!a' })

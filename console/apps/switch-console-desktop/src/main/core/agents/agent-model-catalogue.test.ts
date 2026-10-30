@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -113,4 +114,19 @@ it('asks the sign-in check first for a provider whose session start may sign in'
 
   expect(catalogue).toEqual({ kind: 'unavailable', reason: 'Sign in first.' });
   expect(hostModes()).toEqual(['--probe']);
+});
+
+it('checks this computer from home when the directory asked about does not exist yet', async () => {
+  mocks.locate.mockResolvedValue({
+    ctx: { exec: mocks.exec, dispose: mocks.dispose },
+    entrypoint: '/home/me/.local/state/switch/sdk-host/shared-host-a.mjs',
+  });
+
+  const readiness = await getProviderReadiness(
+    { providerId: 'claude', sshHost: null, dir: '/nowhere/agents/not-made-yet' },
+    false
+  );
+
+  expect(readiness).toMatchObject({ installed: true, status: 'authenticated' });
+  expect(mocks.locate.mock.calls[0]?.[1]).toBe(homedir());
 });

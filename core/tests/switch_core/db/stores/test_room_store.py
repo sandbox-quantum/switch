@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -220,3 +221,30 @@ class TestDelete:
             assert await session.get(Agent, agent_id) is not None
             tasks = await session.execute(select(Task).where(Task.room_id == room_id))
             assert tasks.scalars().all() == []
+
+
+class TestAddAgents:
+    async def test_two_concurrent_adds_of_one_agent_both_succeed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = RoomStore()
+        async with session_factory() as session:
+            owner = User(name="owner", email="owner@example.com", role="admin")
+            session.add(owner)
+            await session.flush()
+            room = await _make_room(session, "!double-add:switch.local")
+            agent = await _make_agent(session, owner.id)
+            await session.commit()
+
+        async with session_factory() as first, session_factory() as second:
+            await store.add_agents(first, room.id, [agent.id])
+            # Waits on the first's uncommitted row, then finds it there.
+            racing = asyncio.create_task(store.add_agents(second, room.id, [agent.id]))
+            await asyncio.sleep(0.2)
+            assert not racing.done()
+            await first.commit()
+            await racing
+            await second.commit()
+
+        async with session_factory() as session:
+            assert await store.get_agent_ids(session, room.id) == [agent.id]

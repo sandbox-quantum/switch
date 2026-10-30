@@ -23,6 +23,7 @@ import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon'
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast as showToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -102,6 +103,9 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectChat = useShowModal('connectChatModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const isAdmin = administersWorkspaceInScope(serverId);
+  const flags = useFeatureFlags(serverId);
+  // With chats on, Switch Console's own chats and rooms need no messaging app.
+  const chatsWithoutApp = flags.agent_chats || flags.group_chats;
   // Only a stack Switch Console runs has a chat whose credentials it generated and
   // can therefore show; anyone else's Mattermost is their own to hand out.
   const isManaged = !!switchServersStore.servers.find((s) => s.id === serverId)?.managed;
@@ -308,9 +312,11 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
         </p>
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
-          {isAdmin
-            ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-            : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
+          {chatsWithoutApp
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : 'An owner or admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            : isAdmin
+              ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
+              : 'No messaging app is connected. An owner or admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">

@@ -2899,6 +2899,8 @@ type RoomSummaryJson = {
   bridge_type?: string | null;
   external_channel_url?: string | null;
   owner_id?: string | null;
+  viewer_is_member?: boolean;
+  is_console_chat?: boolean;
   archived: boolean;
   created_at: string;
 };
@@ -2914,6 +2916,8 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     bridgeType: r.bridge_type ?? null,
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
+    viewerIsMember: r.viewer_is_member ?? false,
+    isConsoleChat: r.is_console_chat ?? false,
     archived: r.archived,
     createdAt: r.created_at,
   };
@@ -2934,6 +2938,7 @@ type RoomDetailJson = RoomSummaryJson & {
   /** Absent from a server that predates it; kept absent rather than read as
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
+  linked_channel_name?: string | null;
 };
 
 function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
@@ -2943,7 +2948,24 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
     channelOnDelete: r.channel_on_delete,
+    linkedChannelName: r.linked_channel_name ?? null,
   };
+}
+
+/**
+ * Name a room after the channel it is linked to (`POST /rooms/{id}/sync-name`),
+ * so it follows the channel's renames from then on. The room's owner or an
+ * admin only; refused while Switch has not seen the channel's name.
+ */
+export async function syncRoomName(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/sync-name`, {
+    authenticated: true,
+    method: 'POST',
+  });
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
 }
 
 /** One room in full (`GET /rooms/{id}`) — what its configuration page reads. */
@@ -2978,7 +3000,7 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 export async function updateRoom(
   server: SwitchServer,
   roomId: string,
-  changes: { description?: string; instructions?: string }
+  changes: { name?: string; description?: string; instructions?: string }
 ): Promise<RemoteRoomDetail> {
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,

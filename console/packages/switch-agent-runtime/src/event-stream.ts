@@ -725,7 +725,7 @@ export class SwitchEventStream {
    * up to `PLACEMENTS_WAIT_MS` for the stream to be attached, then refuses.
    * Raises on any answer but success; a takeover also stands the stream down.
    */
-  async replacePlacements(placements: Record<string, string>): Promise<void> {
+  async replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }> {
     if (!(await this.attached()))
       throw new Error('the connection to Switch is not open, so it cannot take placements');
     const generation = this.generation;
@@ -734,7 +734,9 @@ export class SwitchEventStream {
       placements,
       generation,
     });
-    if (resp.ok) return;
+    // Switch leaves out a session in a room the agent is no longer in, and
+    // names it; one from before that answers no `refused` at all.
+    if (resp.ok) return { refusedRooms: refusedRoomsOf(await resp.text()) };
     const body = await resp.text();
     if (
       resp.status === 409 &&
@@ -1492,5 +1494,21 @@ export class SwitchEventStream {
       }
       await pause(backoff);
     }
+  }
+}
+
+/** The rooms a placements answer says the agent is not in. */
+function refusedRoomsOf(body: string): string[] {
+  try {
+    const parsed = JSON.parse(body) as { refused?: { room_id?: unknown }[] };
+    return [
+      ...new Set(
+        (parsed.refused ?? [])
+          .map((each) => each.room_id)
+          .filter((room): room is string => typeof room === 'string')
+      ),
+    ];
+  } catch {
+    return [];
   }
 }

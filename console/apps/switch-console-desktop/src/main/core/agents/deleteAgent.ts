@@ -107,7 +107,21 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
     );
   }
 
-  await withWorkspaceSession(workspaceId, (server) => gatewayDeleteAgent(server, switchAgentId));
+  await withWorkspaceSession(workspaceId, async (server) => {
+    try {
+      await gatewayDeleteAgent(server, switchAgentId);
+    } catch (error) {
+      // Already gone on the server (an old identity, or a server since reset): the
+      // local delete still has to happen, or the agent can never be removed.
+      if (!(error instanceof GatewayError && error.kind === 'http' && error.status === 404)) {
+        throw error;
+      }
+      log.warn('deleteAgent: the Switch identity was already gone', {
+        agentId: agent.id,
+        switchAgentId,
+      });
+    }
+  });
 }
 
 /**
@@ -227,15 +241,15 @@ async function removeAgent(
   const terminate = removeFiles || options.deleteInSwitch;
   const stopController = () =>
     location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
+  // Gateway cascade first: fail loud before touching local state (the controller
+  // included) so a failure leaves the agent exactly as it was.
+  if (options.deleteInSwitch && agent) {
+    await deleteAgentInSwitch(agent);
+  }
   const stoppedUpFront = terminate && agent !== undefined;
   if (stoppedUpFront) {
     await stopController();
     await stopSharedAgentSessions(agent);
-  }
-  // Gateway cascade first: fail loud before touching local state so a failure
-  // never leaves the row deleted but the Switch identity orphaned.
-  if (options.deleteInSwitch && agent) {
-    await deleteAgentInSwitch(agent);
   }
 
   const sessionRows = await db

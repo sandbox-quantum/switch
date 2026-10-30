@@ -333,6 +333,43 @@ describe('a move behind an agent controller, whose relay names each call’s roo
   });
 });
 
+it('refuses a move behind a controller that left the room out of the placements', async () => {
+  // The controller places only rooms it counts the agent as in, and names
+  // the rest back; the publish then takes the session out of that room. Told
+  // it had connected, the session would call from no room.
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  await placements.place('session', 'room-before');
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  let leaveOut = true;
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements,
+    publish: async () => {
+      if (leaveOut) {
+        leaveOut = false;
+        await placements.roomLost('room-new');
+      }
+    },
+    placementsNameCallRooms: () => true,
+    redactions: new Redactions(),
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'connected' }] });
+  const result = (await answer(await caller(base, 'session'), {
+    type: 'tool',
+    name: 'connect_to_room',
+    arguments: { room_id: 'room-new' },
+  })) as { isError?: boolean; content: { text: string }[] };
+
+  expect(result.isError).toBe(true);
+  expect(result.content[0]!.text).toMatch(
+    /does not count room room-new among this agent's rooms yet/
+  );
+  expect(placements.roomOf('session')).toBe('room-before');
+});
+
 it('keeps a move Switch recorded itself when the stream does not take the placements', async () => {
   // Over the agent's own connection Switch placed the session on connect, so
   // the placements going astray costs nothing a later statement will not fix.
