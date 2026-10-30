@@ -25,7 +25,7 @@ from switch_core.connections.broker import (
     ServiceBroker,
     ServiceError,
 )
-from switch_core.connections.loader import ConnectionDefinition
+from switch_core.connections.loader import ConnectionDefinition, RedirectMode
 from switch_core.connections.oauth_clients import (
     LOOPBACK_REDIRECT_URI,
     RegisteredClient,
@@ -33,6 +33,7 @@ from switch_core.connections.oauth_clients import (
     core_callback,
     loopback_redirect,
     redirect_uris,
+    sign_in_mode,
 )
 from switch_core.db.models import ServiceOAuthClient
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -51,6 +52,7 @@ from tests.switch_core.connections.test_loader import CHOICES_ENTRY, OAUTH_ENTRY
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STORE = ServiceConnectionStore()
+PUBLIC = "https://switch.example.com"
 PORTS = [43123, 43124]
 REDIRECT = loopback_redirect(43123)
 SCOPES = ["read:items", "write:items"]
@@ -424,6 +426,30 @@ def test_registers_the_redirects_this_server_can_use() -> None:
     ]
     assert redirect_uris("example", ["core"], None, None) == []
     assert core_callback(public + "/", "example") == core
+
+
+@pytest.mark.parametrize(
+    ("modes", "named", "public_url", "mode"),
+    [
+        (["loopback", "core"], None, PUBLIC, "loopback"),
+        (["loopback", "core"], "loopback", PUBLIC, "loopback"),
+        (["loopback", "core"], "core", PUBLIC, "core"),
+        (["loopback", "core"], "core", None, "loopback"),
+        (["core", "loopback"], None, PUBLIC, "core"),
+        (["core", "loopback"], None, None, "loopback"),
+        (["core", "loopback"], "loopback", PUBLIC, "loopback"),
+        (["core"], None, PUBLIC, "core"),
+        (["core"], "core", None, None),
+        (["loopback"], None, None, "loopback"),
+    ],
+)
+def test_signs_in_the_way_the_server_names_where_it_can_else_the_entrys_first(
+    modes: list[RedirectMode],
+    named: RedirectMode | None,
+    public_url: str | None,
+    mode: RedirectMode | None,
+) -> None:
+    assert sign_in_mode(modes, named, public_url) == mode
 
 
 def test_names_switch_and_its_host_on_the_consent_screen() -> None:

@@ -25,7 +25,7 @@ from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.app_credentials import UNREADABLE
 from switch_core.connections.broker import Principal, ServiceBroker
 from switch_core.connections.flows import ServiceFlows
-from switch_core.connections.loader import CATALOG_ROOT, load_catalog
+from switch_core.connections.loader import CATALOG_ROOT, RedirectMode, load_catalog
 from switch_core.connections.oauth_clients import (
     LOOPBACK_CALLBACK_PATH,
     RegisteredClient,
@@ -95,6 +95,7 @@ def _world(
     workspace_gate: bool = False,
     organization_apps: object = None,
     markers: str = "",
+    named: RedirectMode | None = None,
 ) -> World:
     shutil.copytree(CATALOG_ROOT, root)
     # The vendor matches a loopback redirect's port, as Atlassian does.
@@ -140,7 +141,11 @@ def _world(
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
-    flows = ServiceFlows(public_url, SignInFlows(session_factory, TEST_KEYRING))
+    flows = ServiceFlows(
+        public_url,
+        {} if named is None else {"example": named},
+        SignInFlows(session_factory, TEST_KEYRING),
+    )
     harness.gateway_app.state.service_flows = flows
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
@@ -844,6 +849,57 @@ class TestCoreCallback:
         assert "GATEWAY_PUBLIC_URL" in refused.json()["detail"]
 
 
+class TestTheWayBackTheServerNames:
+    """An entry that lists both ways back signs in the way the server names
+    (`SERVICE_SIGN_IN_REDIRECT`) where it can offer it."""
+
+    LOOPBACK = [
+        f"http://127.0.0.1:{port}{LOOPBACK_CALLBACK_PATH}" for port in (43123, 43124)
+    ]
+
+    async def test_named_core_returns_through_the_callback_registered_for_it(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(
+            session_factory, tmp_path / "catalog", public_url=PUBLIC, named="core"
+        )
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "core"
+            left = await client.get(started.json()["url"].removeprefix(PUBLIC))
+            cookie = f"switch_service_{console.state}"
+            # The fake vendor refuses a redirect the client was not registered with.
+            back = urlsplit(world.vendor.authorize(left.headers["location"]))
+            returned = await client.get(
+                f"{back.path}?{back.query}", cookies={cookie: left.cookies[cookie]}
+            )
+            code = _listener_code(returned.headers["location"], console.state)
+            assert (await console.complete(code)).status_code == 200
+        [registration] = world.vendor.registrations
+        assert registration["redirect_uris"] == [
+            *self.LOOPBACK,
+            f"{PUBLIC}{FLOWS}/callback",
+        ]
+
+    async def test_named_core_without_a_public_url_returns_to_console(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", named="core")
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            console = Console(client, ada)
+            started = await console.start()
+            assert started.status_code == 200, started.text
+            assert started.json()["mode"] == "loopback"
+            code = _listener_code(
+                world.vendor.authorize(started.json()["url"]), console.state
+            )
+            assert (await console.complete(code)).status_code == 200
+
+
 class TestRefusals:
     async def test_a_switched_off_service_cannot_be_connected(
         self, session_factory, tmp_path
@@ -1100,7 +1156,7 @@ def _sites_world(
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
     harness.gateway_app.state.service_flows = ServiceFlows(
-        None, SignInFlows(session_factory, TEST_KEYRING)
+        None, {}, SignInFlows(session_factory, TEST_KEYRING)
     )
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import timedelta
 from pathlib import Path
@@ -19,6 +20,7 @@ from switch_core.connections.adapters.oauth import (
     StaticClient,
 )
 from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
 from switch_core.connections.oauth_clients import RegisteredClient
 from switch_core.connections.registry import (
@@ -27,6 +29,7 @@ from switch_core.connections.registry import (
     build_adapters,
     load_client_settings,
 )
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
@@ -435,3 +438,61 @@ class TestDisabledServices:
     def test_refuses_a_bad_entry(self, disabled: dict[str, str]) -> None:
         with pytest.raises(ValueError, match="DISABLED_SERVICES"):
             _config(disabled_services=disabled)
+
+
+class TestServiceSignInRedirect:
+    def test_read_as_a_map_of_service_to_the_way_back(self) -> None:
+        config = _config(
+            service_sign_in_redirect={"google-workspace": "core"},
+            gateway_public_url="https://switch.example.com",
+        )
+        assert config.service_sign_in_redirect == {"google-workspace": "core"}
+        assert config.sign_in_redirect_warnings() == []
+
+    def test_empty_by_default(self) -> None:
+        assert _config().service_sign_in_redirect == {}
+
+    def test_read_from_the_environment_as_json(self, monkeypatch) -> None:
+        monkeypatch.setenv("SERVICE_SIGN_IN_REDIRECT", '{"atlassian": "loopback"}')
+        assert _config().service_sign_in_redirect == {"atlassian": "loopback"}
+
+    @pytest.mark.parametrize(
+        ("named", "message"),
+        [
+            ({"nowhere": "core"}, "names 'nowhere', which is not in the catalog."),
+            (
+                {"airtable": "loopback"},
+                "names 'loopback' for airtable, which allows only 'core'.",
+            ),
+            (
+                {"atlassian": "core"},
+                "names 'core' for atlassian, which allows only 'loopback'.",
+            ),
+            (
+                {"github": "core"},
+                "names 'core' for github, which allows none: it has no OAuth sign-in.",
+            ),
+            ({"atlassian": "web"}, "Input should be 'loopback' or 'core'"),
+        ],
+    )
+    def test_a_service_or_way_its_entry_does_not_list_stops_the_server(
+        self, named: dict, message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=re.escape(message)):
+            _config(service_sign_in_redirect=named)
+
+    def test_a_service_that_signs_in_only_through_core_cannot_fall_back(
+        self,
+    ) -> None:
+        config = _config(service_sign_in_redirect={"google-workspace": "core"})
+        assert config.sign_in_redirect_warnings() == [
+            "SERVICE_SIGN_IN_REDIRECT names 'core' for google-workspace, but "
+            "GATEWAY_PUBLIC_URL is unset, so google-workspace cannot be "
+            "connected until it is set."
+        ]
+        flows = ServiceFlows(
+            config.gateway_public_url,
+            config.service_sign_in_redirect,
+            SignInFlows(async_sessionmaker(), TEST_KEYRING),
+        )
+        assert flows.mode(CATALOG["google-workspace"].definition) is None

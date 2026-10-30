@@ -3,8 +3,8 @@
 Switch Console starts a flow with a one-time state, the port of its listener
 on 127.0.0.1 and a completion secret. Core keeps the PKCE verifier and
 exchanges the code itself, so neither Console nor the browser ever holds a
-token. The browser comes back one of two ways, as the catalog allows and this
-server can offer:
+token. The browser comes back one of two ways, as the catalog allows, the
+server names (`SERVICE_SIGN_IN_REDIRECT`) and this server can offer:
 
 - **loopback**: the vendor redirects straight to Console's listener.
 - **core**: the vendor redirects to Core's callback, which sends the browser
@@ -32,6 +32,7 @@ at most 256 per workspace, one per person.
 from __future__ import annotations
 
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -50,7 +51,11 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     RedirectMode,
 )
-from switch_core.connections.oauth_clients import core_callback, loopback_redirect
+from switch_core.connections.oauth_clients import (
+    core_callback,
+    loopback_redirect,
+    sign_in_mode,
+)
 from switch_core.connections.sign_in_flows import (
     FlowGoneError,
     FlowsBusyError,
@@ -150,17 +155,27 @@ class Exchange:
 
 
 class ServiceFlows:
-    def __init__(self, public_url: str | None, flows: SignInFlows) -> None:
+    def __init__(
+        self,
+        public_url: str | None,
+        redirects: Mapping[str, RedirectMode],
+        flows: SignInFlows,
+    ) -> None:
         self._public_url = public_url
+        # The way back each service's sign-ins take where the server names
+        # one (`SERVICE_SIGN_IN_REDIRECT`).
+        self._redirects = redirects
         self._flows = flows
 
     def mode(self, definition: ConnectionDefinition) -> RedirectMode | None:
-        """The first way back the catalog allows that this server can offer."""
+        """The way back the server names for the service where it can offer
+        it, else the first the catalog allows that it can."""
         assert definition.auth.oauth is not None
-        for mode in definition.auth.oauth.redirect:
-            if mode == "loopback" or self._public_url is not None:
-                return mode
-        return None
+        return sign_in_mode(
+            definition.auth.oauth.redirect,
+            self._redirects.get(definition.slug),
+            self._public_url,
+        )
 
     def authorize_url(self, service: str, state: str) -> str:
         """Core's own step in front of the vendor's, in core mode."""
