@@ -36,6 +36,7 @@ from switch_core.db.models import (
     CollaborationBridge,
     MachineWorkspace,
     MessagingInstall,
+    OrganizationAppCredential,
     ProviderConnection,
     ServerConnector,
     ServiceAppCredential,
@@ -43,6 +44,7 @@ from switch_core.db.models import (
     ServiceOAuthClient,
     ServiceTokenIssuance,
     SignInFlow,
+    Tenant,
     TrustSettings,
 )
 from switch_core.db.session_scope import tenant_session
@@ -67,6 +69,14 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (ServiceTokenIssuance, "encrypted_token"),
     (SignInFlow, "encrypted_verifier"),
     (SignInFlow, "encrypted_result"),
+)
+# In organization-scoped tables: rewritten through each workspace's session,
+# which sees its own organization's rows (`db/rls_ddl.py`). That reaches every
+# organization, since each has at least one workspace and none can be
+# deleted; one with several is visited once per workspace, and a value already
+# under the current key is left alone.
+_ORGANIZATION_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
+    (OrganizationAppCredential, "encrypted_secrets"),
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
 # the whole deployment (`trust_settings`, `service_oauth_clients`,
@@ -181,6 +191,11 @@ async def reencrypt_stored_secrets(
                 total += await reencrypt_stale_values(session, model, column)
             for model, column in _ENCRYPTED_TEXT_COLUMNS:
                 total += await reencrypt_stale_text(session, keyring, model, column)
+            if await session.scalar(
+                select(Tenant.organization_id).where(Tenant.id == tenant_id)
+            ):
+                for model, column in _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS:
+                    total += await reencrypt_stale_text(session, keyring, model, column)
             await session.commit()
     async with session_factory() as session:
         for model, column in _GLOBAL_ENCRYPTED_TEXT_COLUMNS:

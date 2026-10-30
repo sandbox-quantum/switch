@@ -4418,6 +4418,83 @@ class ServiceAppCredential(Base):
     )
 
 
+class OrganizationAppCredential(OrganizationScoped, Base):
+    """The app an organization registered at a service's vendor, for every
+    workspace in it.
+
+    The organization's counterpart of `ServiceAppCredential`, in the same
+    shape: a GitHub App or a static OAuth client, `client_id` and `settings`
+    in the clear, every secret the kind has in `encrypted_secrets`. Where a
+    workspace's organization has one, the workspace signs in through it rather
+    than through the server's app.
+
+    `updated_by` is cleared when that account is deleted rather than handed
+    on: the person may have left every workspace of the organization by then,
+    and the organization's audit log keeps who made each change.
+    """
+
+    __tablename__ = "organization_app_credentials"
+    __table_args__ = (PrimaryKeyConstraint("organization_id", "service"),)
+
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    client_id: Mapped[str] = mapped_column(Text, nullable=False)
+    settings: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    encrypted_secrets: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_organization_app_credentials_updated_by",
+        ),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OrganizationServiceSetting(OrganizationScoped, Base):
+    """An organization's admin switched a catalog service on or off for every
+    workspace in it.
+
+    Unlocked, it is what a workspace gets until its own admin touches the
+    switch. Locked, it overrides every workspace's setting, and an
+    organization's setting of off, locked, is how it keeps a service out of
+    all its workspaces. No row means the organization has no say. `updated_by`
+    is cleared when that account is deleted, for the reason
+    `OrganizationAppCredential` gives.
+    """
+
+    __tablename__ = "organization_service_settings"
+    __table_args__ = (PrimaryKeyConstraint("organization_id", "service"),)
+
+    service: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_organization_service_settings_updated_by",
+        ),
+        nullable=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class ServerAuditEvent(Base):
     """One change to the server as a whole: who did what, to what, when.
 
