@@ -1188,7 +1188,7 @@ def _basic_entry(identity: dict[str, object]) -> dict[str, object]:
             "name": "email",
             "label": "Email",
             "secret": False,
-            "pattern": "^[^@\s]+@[^@\s]+$",
+            "pattern": r"^[^@\s]+@[^@\s]+$",
         }
     )
     sign_in["identity"] = {  # type: ignore[index]

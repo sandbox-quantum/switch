@@ -246,7 +246,7 @@ def _basic_adapter(handler) -> ApiKeyAdapter:
                         "name": "email",
                         "label": "Email",
                         "secret": False,
-                        "pattern": "^[^@\s]+@[^@\s]+$",
+                        "pattern": r"^[^@\s]+@[^@\s]+$",
                     },
                 ],
                 "identity": {
