@@ -362,7 +362,61 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
   channelOnDelete?: ChannelRetirement | null;
   /** The name of the platform channel the room is linked to, as Switch last saw it; null when it has not. */
   linkedChannelName: string | null;
+  /** Who may read the room and who may write to it (see `roomAccessOf`). */
+  readVisibility: RoomVisibility;
+  writeVisibility: RoomVisibility;
+  /** The group the room is filed under, or null for a standalone room. */
+  groupId: string | null;
+  groupName: string | null;
+  /** The owner's display name, or null when the room has no owner. */
+  ownerName: string | null;
+  /** The bridge the room is linked through; null for a room with no messaging app. */
+  bridgeId: string | null;
+  /** Each member agent's presence in this room, by agent id: `live`,
+   * `awaiting_manual_poll`, `disconnected` or `no_session`. An agent the server
+   * says nothing about is missing rather than guessed at. */
+  agentStatuses: Record<string, string>;
+  /** The room's assumable roles, with who holds each. */
+  roles: RemoteRoomRole[];
+  /** Ids of the member agents told when someone joins the room. */
+  joinEventListeners: string[];
+  /** The platform's own id for the linked channel; null when unbridged. */
+  externalChannelId: string | null;
+  /** The room's id on Switch's internal message bus. */
+  transportRoomId: string | null;
+  /** When the room was archived, or null while it is in use. */
+  archivedAt: string | null;
 };
+
+/** `public` lets every member of the workspace in; `private` only the owner and admins. */
+export type RoomVisibility = 'public' | 'private';
+
+/**
+ * A room's access, as the two visibility settings it is made of combine. The
+ * gateway offers the same three: anyone may post, anyone may read but only the
+ * owner posts, or the room is the owner's alone. A private room that is
+ * publicly writable is refused by the server, so it has no name here.
+ */
+export type RoomAccess = 'public' | 'read_only' | 'private';
+
+export function roomAccessOf(read: RoomVisibility, write: RoomVisibility): RoomAccess {
+  if (read === 'private') return 'private';
+  return write === 'public' ? 'public' : 'read_only';
+}
+
+export function visibilityForAccess(access: RoomAccess): {
+  readVisibility: RoomVisibility;
+  writeVisibility: RoomVisibility;
+} {
+  switch (access) {
+    case 'public':
+      return { readVisibility: 'public', writeVisibility: 'public' };
+    case 'read_only':
+      return { readVisibility: 'public', writeVisibility: 'private' };
+    case 'private':
+      return { readVisibility: 'private', writeVisibility: 'private' };
+  }
+}
 
 /** What deleting a room does to its platform channel when asked to retire it
  * and all goes to plan (mirrors the gateway's `ChannelRetirement`): archived on Slack and
@@ -389,7 +443,13 @@ export type UpdateRoomParams = {
   name?: string;
   description?: string;
   instructions?: string;
+  /** Changing either is for the room's owner or an admin; the server refuses anyone else. */
+  readVisibility?: RoomVisibility;
+  writeVisibility?: RoomVisibility;
 };
+
+/** A role's own fields, as a room defines it. The name is fixed once made. */
+export type RoomRoleInput = { name: string; instructions: string; exclusive: boolean };
 
 /**
  * A room a specific agent belongs to, with that agent's presence there (mirrors
