@@ -53,6 +53,7 @@ class TestOutbound:
         adapter = WhatsAppAdapter(
             config=WhatsAppConnectionConfig(
                 access_token="t",
+                app_id="2",
                 phone_number_id="1",
                 app_secret="s",
                 verify_token="v",

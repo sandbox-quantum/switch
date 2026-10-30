@@ -49,15 +49,20 @@ from switch_core.bridges.collaboration.whatsapp.client import (
 )
 from switch_core.sessions.contract import TurnUpsert
 
+APP_ID = "1234567890123456"
 PHONE_NUMBER_ID = "106540352242922"
 BUSINESS_NUMBER = "15550783881"
 PERSON = "16505551234"
 CONFIG = {
     "access_token": "EAAtest-token",
+    "app_id": APP_ID,
     "phone_number_id": PHONE_NUMBER_ID,
     "app_secret": "app-secret-value",
     "verify_token": "chosen-verify-token",
 }
+PROOF = hmac.new(
+    CONFIG["app_secret"].encode(), CONFIG["access_token"].encode(), hashlib.sha256
+).hexdigest()
 API = f"/{GRAPH_API_VERSION}"
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -261,10 +266,13 @@ class TestTheAdapterDeclaresItself:
         assert WhatsAppAdapter.renders_custom_url_schemes is False
         assert WhatsAppAdapter.keeps_quiet_unless_listening is False
 
-    def test_one_number_is_claimed_once(self) -> None:
+    def test_one_meta_app_is_claimed_once_whatever_its_number(self) -> None:
         assert WhatsAppAdapter.claimed_workspace(dict(CONFIG)) == (
-            f"WhatsApp phone number {PHONE_NUMBER_ID}"
+            f"WhatsApp Meta app {APP_ID}"
         )
+        assert WhatsAppAdapter.claimed_workspace(
+            {**CONFIG, "phone_number_id": "999"}
+        ) == WhatsAppAdapter.claimed_workspace(dict(CONFIG))
 
 
 # ── Connection config ─────────────────────────────────────────────────────────
@@ -298,6 +306,11 @@ class TestTheConnectForm:
             )
         assert "not the phone number itself" in str(caught.value)
 
+    def test_an_app_name_in_place_of_its_id_is_refused(self) -> None:
+        with pytest.raises(ValidationError) as caught:
+            WhatsAppConnectionConfig.model_validate({**CONFIG, "app_id": "Acme Bot"})
+        assert "numeric App ID" in str(caught.value)
+
     def test_a_refused_value_is_not_echoed_back(self) -> None:
         with pytest.raises(ValidationError) as caught:
             WhatsAppConnectionConfig.model_validate(
@@ -316,58 +329,102 @@ class TestTheConnectForm:
 # ── Credentials and failures ──────────────────────────────────────────────────
 
 
+def token_described(app_id: str = APP_ID, *, is_valid: bool = True) -> Handler:
+    data: dict[str, Any] = {
+        "app_id": app_id,
+        "type": "SYSTEM_USER",
+        "is_valid": is_valid,
+    }
+    if not is_valid:
+        data["error"] = {"code": 190, "message": "Session has expired"}
+    return lambda r: httpx.Response(200, json={"data": data})
+
+
+def phone_number_read(r: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "display_phone_number": "+1 555-078-3881",
+            "verified_name": "Acme",
+            "id": PHONE_NUMBER_ID,
+        },
+    )
+
+
 class TestCredentialsAreCheckedBeforeSaving:
     async def test_good_credentials_pass_with_the_app_secret_proved(
         self, graph: FakeGraph
     ) -> None:
-        graph.on(
-            "GET",
-            f"{API}/{PHONE_NUMBER_ID}",
-            lambda r: httpx.Response(
-                200,
-                json={
-                    "display_phone_number": "+1 555-078-3881",
-                    "verified_name": "Acme",
-                    "id": PHONE_NUMBER_ID,
-                },
-            ),
-        )
+        graph.on("GET", f"{API}/debug_token", token_described())
+        graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", phone_number_read)
 
         await WhatsAppAdapter.verify_credentials(dict(CONFIG))
 
-        (request,) = graph.requests
-        assert request.headers["authorization"] == f"Bearer {CONFIG['access_token']}"
-        assert (
-            request.url.params["appsecret_proof"]
-            == hmac.new(
-                CONFIG["app_secret"].encode(),
-                CONFIG["access_token"].encode(),
-                hashlib.sha256,
-            ).hexdigest()
+        described, read = graph.requests
+        assert described.url.params["input_token"] == CONFIG["access_token"]
+        assert described.headers["authorization"] == (
+            f"Bearer {APP_ID}|{CONFIG['app_secret']}"
         )
+        assert read.headers["authorization"] == f"Bearer {CONFIG['access_token']}"
+        assert read.url.params["appsecret_proof"] == PROOF
 
-    async def test_a_bad_token_fails_with_metas_explanation(
+    async def test_a_token_from_another_app_is_refused(self, graph: FakeGraph) -> None:
+        graph.on("GET", f"{API}/debug_token", token_described("999"))
+        graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", phone_number_read)
+
+        with pytest.raises(BridgeCredentialError) as caught:
+            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+
+        assert f"issued for Meta app 999, not app {APP_ID}" in str(caught.value)
+
+    async def test_an_expired_token_fails_with_metas_explanation(
+        self, graph: FakeGraph
+    ) -> None:
+        graph.on("GET", f"{API}/debug_token", token_described(is_valid=False))
+
+        with pytest.raises(BridgeCredentialError) as caught:
+            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+
+        assert "Session has expired" in str(caught.value)
+
+    async def test_a_wrong_app_secret_fails_with_metas_explanation(
         self, graph: FakeGraph
     ) -> None:
         graph.on(
             "GET",
+            f"{API}/debug_token",
+            lambda r: graph_refusal(400, 101, "Error validating client secret."),
+        )
+
+        with pytest.raises(BridgeCredentialError) as caught:
+            await WhatsAppAdapter.verify_credentials(dict(CONFIG))
+
+        assert "Error validating client secret" in str(caught.value)
+        assert "code 101" in str(caught.value)
+
+    async def test_a_number_the_token_cannot_reach_fails_with_metas_explanation(
+        self, graph: FakeGraph
+    ) -> None:
+        graph.on("GET", f"{API}/debug_token", token_described())
+        graph.on(
+            "GET",
             f"{API}/{PHONE_NUMBER_ID}",
             lambda r: graph_refusal(
-                401, 190, "Error validating access token: Session has expired"
+                400, 100, "Unsupported get request. Object does not exist"
             ),
         )
 
         with pytest.raises(BridgeCredentialError) as caught:
             await WhatsAppAdapter.verify_credentials(dict(CONFIG))
 
-        assert "Session has expired" in str(caught.value)
-        assert "code 190" in str(caught.value)
+        assert "Object does not exist" in str(caught.value)
+        assert "code 100" in str(caught.value)
 
     async def test_an_unreachable_graph_fails_saying_so(self, graph: FakeGraph) -> None:
         def down(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("no route", request=request)
 
-        graph.on("GET", f"{API}/{PHONE_NUMBER_ID}", down)
+        graph.on("GET", f"{API}/debug_token", down)
 
         with pytest.raises(BridgeCredentialError, match="Could not reach"):
             await WhatsAppAdapter.verify_credentials(dict(CONFIG))
@@ -663,6 +720,10 @@ class TestInboundMessages:
             r for r in graph.requests if r.url.host == "lookaside.fbsbx.com"
         )
         assert download.headers["authorization"] == f"Bearer {CONFIG['access_token']}"
+        assert "appsecret_proof" not in download.url.params
+        graph_calls = [r for r in graph.requests if r.url.host == "graph.facebook.com"]
+        assert graph_calls
+        assert all(r.url.params["appsecret_proof"] == PROOF for r in graph_calls)
 
     async def test_an_oversized_file_is_disclosed_and_not_downloaded(
         self, adapter: WhatsAppAdapter, heard: Heard, graph: FakeGraph
@@ -1001,6 +1062,8 @@ class TestOutboundFiles:
 
         upload, send = graph.requests
         assert upload.url.path == f"{API}/{PHONE_NUMBER_ID}/media"
+        assert upload.url.params["appsecret_proof"] == PROOF
+        assert send.url.params["appsecret_proof"] == PROOF
         assert b'name="messaging_product"' in upload.content
         assert b'filename="chart.png"' in upload.content
         assert b"\x89PNG" in upload.content
