@@ -1,6 +1,6 @@
 # Persistent local SDK host
 
-The host runs Claude, Codex, OpenCode, Antigravity and Cursor outside Electron.
+The host runs Claude, Codex, OpenCode, Antigravity, Cursor and Kimi Code outside Electron.
 It owns provider processes, a durable command inbox and a replayable chat journal.
 Closing a client leaves execution running. Restarting the host resumes the native
 provider conversation and retains the transcript. Interrupted work is reported;
@@ -40,7 +40,7 @@ semantics. Journals and attachments currently have no automatic retention policy
 ## Verification
 
 The normal package suite covers durable command identity, stopped-session recovery,
-interrupted queues and request settlement. The opt-in live test exercises all five
+interrupted queues and request settlement. The opt-in live test exercises all six
 installed, authenticated CLIs with file tools, duplicate commands, reconnection,
 host restart and conversational resume:
 
