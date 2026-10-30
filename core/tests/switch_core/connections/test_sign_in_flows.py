@@ -23,6 +23,7 @@ from switch_core.connections.sign_in_flows import (
     SignInFlows,
     StoredFlow,
     digest,
+    vendor_refusal,
 )
 from switch_core.db.models import SignInFlow, Tenant, User
 from tests.conftest import TEST_KEYRING, RLSHarness
@@ -242,3 +243,41 @@ async def test_secrets_are_stored_encrypted_or_hashed(
     assert row.completion_secret_hash == digest("completion-secret")
     assert "SYNTHETIC" not in (row.encrypted_result or "")
     assert (await flows.find("state-4")).result == {"refresh_token": "SYNTHETIC"}
+
+
+@pytest.mark.parametrize(
+    ("error", "description", "said"),
+    [
+        ("access_denied", None, "Example sign-in was cancelled."),
+        ("access_denied", "   ", "Example sign-in was cancelled."),
+        ("", None, "Example sign-in was cancelled."),
+        (
+            "access_denied",
+            "The user has denied your application access.",
+            "Example refused the sign-in: The user has denied your application access.",
+        ),
+        (
+            "server_error",
+            "Your identity provider did not allow this app",
+            "Example refused the sign-in: Your identity provider did not allow this app.",
+        ),
+        ("invalid_scope", None, "Example refused the sign-in (invalid_scope)."),
+        (
+            "server_error",
+            "<b>Blocked</b> by\n<a href='https://phish.example.test'>policy</a>\u202e!",
+            "Example refused the sign-in: Blocked by policy !",
+        ),
+        ("<script>x</script>", None, "Example refused the sign-in (x)."),
+    ],
+)
+def test_a_vendor_refusal_is_worded_in_the_vendors_words_without_markup(
+    error: str, description: str | None, said: str
+) -> None:
+    assert vendor_refusal("Example", error, description) == said
+
+
+def test_a_long_vendor_refusal_is_cut_short() -> None:
+    said = vendor_refusal("Example", "server_error", "word " * 200)
+    assert said.startswith("Example refused the sign-in: word word")
+    assert said.endswith("…")
+    assert len(said) == len("Example refused the sign-in: ") + 300

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { log } from '@main/lib/logger';
+import type { GitHubFlow } from '@shared/core/switch-servers/github-connection';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   cancelGitHubConnection,
@@ -9,7 +10,7 @@ import {
 } from './gateway-client';
 import { listenForSignIn } from './sign-in-listener';
 
-const active = new Map<string, { secret: string; close: () => void }>();
+const active = new Map<string, { secret: string; close: () => void; refused: string | null }>();
 const key = (server: SwitchServer, id: string) => JSON.stringify([server.id, id]);
 
 export async function startGitHubBrowserFlow(
@@ -25,12 +26,13 @@ export async function startGitHubBrowserFlow(
     maxCodeLength: 512,
     ports: null,
     complete: async (code) => {
-      try {
-        await completeGitHubConnection(server, state, code, secret);
-      } catch (error) {
-        active.delete(key(server, state));
-        throw error;
-      }
+      await completeGitHubConnection(server, state, code, secret);
+    },
+    // Core's callback takes GitHub's refusals itself and fails the flow with
+    // them, so one reaching the listener has no server step left to tell.
+    refuse: async ({ message }) => {
+      const entry = active.get(key(server, state));
+      if (entry) entry.refused = message;
     },
   });
   const timeout = setTimeout(() => {
@@ -40,6 +42,7 @@ export async function startGitHubBrowserFlow(
   timeout.unref();
   const entry = {
     secret,
+    refused: null,
     close: () => {
       clearTimeout(timeout);
       listener.close();
@@ -80,7 +83,7 @@ export async function startGitHubBrowserFlow(
  * listener and secret go, and the server is told it can drop the flow. A
  * failed flow stays until the person cancels it, so the reason stays readable.
  */
-export async function getGitHubBrowserFlow(server: SwitchServer, id: string) {
+export async function getGitHubBrowserFlow(server: SwitchServer, id: string): Promise<GitHubFlow> {
   const entry = active.get(key(server, id));
   if (!entry) throw new Error('Sign-in was interrupted. Start it again from Switch Console.');
   const flow = await getGitHubFlow(server, id);
@@ -91,6 +94,8 @@ export async function getGitHubBrowserFlow(server: SwitchServer, id: string) {
       log.warn('Could not drop a finished GitHub sign-in', cause)
     );
   }
+  if (flow.status === 'pending' && entry.refused !== null)
+    return { ...flow, status: 'failed', error: entry.refused };
   return flow;
 }
 

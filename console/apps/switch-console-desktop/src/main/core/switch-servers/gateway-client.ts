@@ -3594,6 +3594,24 @@ export async function completeServiceConnection(
     })
     .parse(await response.json());
 }
+/**
+ * Hand on what the vendor sent the listener in place of a code: the server
+ * fails the flow with it, so it reads failed with the vendor's reason at once.
+ */
+export async function failServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  error: string,
+  description: string | null,
+  completionSecret: string
+) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/fail`, {
+    authenticated: true,
+    method: 'POST',
+    body: { error, error_description: description, completion_secret: completionSecret },
+  });
+}
 export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
   await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
     authenticated: true,

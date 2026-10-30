@@ -200,6 +200,25 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **A sign-in the vendor refuses fails with the vendor's reason.** When a
+  vendor sent the browser back with an error instead of a code, every one was
+  recorded as "sign-in was cancelled" and what the vendor said was dropped, so
+  a GitHub App whose callback URL does not match, or an identity provider
+  refusing the app, read as the person cancelling. The sign-in now fails with
+  the vendor's own description ("Atlassian refused the sign-in: …"), with any
+  markup taken out and long text cut short, and the browser's page says the
+  same. A bare `access_denied` still reads as cancelled. Switch Console hands
+  on a refusal that reached its own listener through the new
+  `POST /gateway/service-connections/{service}/flows/{id}/fail`, so that
+  sign-in fails at once too.
+- **A sign-in refused on its way to the vendor fails at once, with the
+  reason.** When the browser reached Switch's step in front of the vendor
+  after the service was switched off or its app removed, or when the vendor
+  would not register Switch, the page said the sign-in was interrupted but the
+  sign-in itself was left waiting, so Switch Console's Connect dialog waited
+  for up to ten minutes. The sign-in now fails with the reason, which the page
+  shows too. The same goes for a service switched off or removed while Switch
+  Console hands the code back.
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
   a 500.** Inviting an agent to a room the caller may not change answered 500
   instead of 403, and so did looking up a room the agent is not in. A room
@@ -2103,6 +2122,21 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A sign-in the vendor refuses ends at once, with the vendor's reason.**
+  When a service refused a sign-in, for instance after a permission was
+  unticked on Atlassian's consent page, the browser came back to Console with
+  an error Console did not recognise: the page said the connection was not
+  started by this Switch Console, and the Connect dialog kept waiting for up to
+  ten minutes. Console now ends the sign-in, shows what the vendor said in the
+  browser and in the dialog, and tells the server. Against a server too old to
+  be told, the dialog still shows the reason. The dialog also stops asking you
+  to finish signing in in your browser once the sign-in has failed.
+- **A GitHub sign-in Switch could not finish says why.** When the server
+  refused to keep a GitHub sign-in, for instance because that GitHub account
+  is linked to another Switch user, the browser said Switch Console would say
+  what happened, but Console said only that the sign-in was interrupted. It
+  now shows the reason the server gave until you cancel, as other services'
+  sign-ins already did.
 - **Giving a machine a Vertex AI login no longer pre-fills a project.** The
   Google Cloud project field started out filled with one organisation's own
   project, so anyone else who kept it got a sign-in failure with nothing to

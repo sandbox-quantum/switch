@@ -82,10 +82,43 @@ it('refuses unknown local flows and displays a failed completion', async () => {
   vi.mocked(completeGitHubConnection).mockRejectedValue(new Error('Private server detail'));
   const response = await fetch(url + `?state=${id}&code=SYNTHETIC`);
   expect(response.status).toBe(400);
-  expect(await response.text()).not.toContain('Private server detail');
-  await expect(getGitHubBrowserFlow(server, id)).rejects.toThrow(
-    'Sign-in was interrupted. Start it again from Switch Console.'
+  const text = await response.text();
+  expect(text).not.toContain('Private server detail');
+  expect(text).toContain('Switch Console says what happened');
+  // The reason the server kept is what the dialog shows, until the person cancels.
+  const failed = {
+    status: 'failed' as const,
+    login: '',
+    error:
+      'This GitHub account is already linked to another Switch user in this workspace. Remove that link first.',
+    warning: null,
+  };
+  vi.mocked(getGitHubFlow).mockResolvedValue(failed);
+  expect(await getGitHubBrowserFlow(server, id)).toEqual(failed);
+  expect(await getGitHubBrowserFlow(server, id)).toEqual(failed);
+  expect(cancelGitHubConnection).not.toHaveBeenCalled();
+});
+
+it('ends the sign-in when the listener is sent a refusal, and shows it', async () => {
+  const { id, url } = await start();
+  const response = await fetch(url + `?state=${id}&error=access_denied`);
+  expect(response.status).toBe(400);
+  expect(await response.text()).toContain(
+    'GitHub sign-in was cancelled. Return to Switch Console.'
   );
+  expect(completeGitHubConnection).not.toHaveBeenCalled();
+  vi.mocked(getGitHubFlow).mockResolvedValue({
+    status: 'pending',
+    login: '',
+    error: null,
+    warning: null,
+  });
+  expect(await getGitHubBrowserFlow(server, id)).toEqual({
+    status: 'failed',
+    login: '',
+    error: 'GitHub sign-in was cancelled.',
+    warning: null,
+  });
 });
 
 it('closes the listener when the user cancels', async () => {

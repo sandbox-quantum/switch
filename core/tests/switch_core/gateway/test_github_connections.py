@@ -444,7 +444,42 @@ async def test_callback_is_taken_once_and_a_cancelled_consent_fails(github_app):
         BASE + "/callback", params={"state": flow_id, "error": "access_denied"}
     )
     assert response.status_code == 400
-    assert (await client.get(BASE + f"/flows/{flow_id}")).json()["status"] == "failed"
+    assert "GitHub sign-in was cancelled." in response.text
+    flow = (await client.get(BASE + f"/flows/{flow_id}")).json()
+    assert (flow["status"], flow["error"]) == (
+        "failed",
+        "GitHub sign-in was cancelled.",
+    )
+    github.exchange.assert_not_called()
+
+
+async def test_a_callback_url_github_refuses_fails_with_what_github_said(github_app):
+    """GitHub reports an App whose callback URL does not match by sending the
+    browser back with an error, not by refusing the authorize page."""
+    client, github, _, _ = github_app
+    flow_id = await authorize(client)
+    cookies = dict(client.cookies)
+    client.cookies.clear()
+    refusal = {
+        "state": flow_id,
+        "error": "redirect_uri_mismatch",
+        "error_description": (
+            "The <code>redirect_uri</code> MUST match the registered callback URL "
+            "for this application."
+        ),
+    }
+    stranger = await client.get(BASE + "/callback", params=refusal)
+    assert "Sign-in was interrupted" in stranger.text
+    assert (await client.get(BASE + f"/flows/{flow_id}")).json()["status"] == "pending"
+    client.cookies.update(cookies)
+    response = await client.get(BASE + "/callback", params=refusal)
+    said = (
+        "GitHub refused the sign-in: The redirect_uri MUST match the registered "
+        "callback URL for this application."
+    )
+    assert response.status_code == 400
+    assert f"<p>{said} Return to Switch Console.</p>" in response.text
+    assert (await client.get(BASE + f"/flows/{flow_id}")).json()["error"] == said
     github.exchange.assert_not_called()
 
 
