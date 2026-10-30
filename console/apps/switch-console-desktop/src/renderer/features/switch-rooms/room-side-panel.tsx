@@ -15,7 +15,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import { chatAgentLabel } from '@shared/core/chats/chats';
 import { roomAgentPresence } from './room-agent-presence';
-import { AgentMark, agentNameFor, PersonMark, roomDetailKey } from './room-configuration-panel';
+import { AgentMark, agentNameFor, PersonMark, roomDetailKey } from './room-participants';
 import { roomTabStore } from './room-tab-store';
 
 const TONE_CLASS = {

@@ -17,7 +17,6 @@ import { confirmLeaveChat } from '@renderer/features/chats/components/chat-actio
 import { opensAsConsoleChat } from '@renderer/features/chats/console-chat-redirect';
 import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
-import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
 import type { RoomPermissions } from '@renderer/features/switch-servers/room-permissions';
@@ -50,34 +49,29 @@ import {
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
 import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
-import {
-  knownAgentTypeDisplayName,
-  providerDisplayName,
-} from '@shared/core/providers/agent-provider-registry';
+import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
-import type {
-  RemoteAgentSummary,
-  RemoteRoomDetail,
-} from '@shared/core/switch-servers/switch-servers';
+import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
 import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { roomAgentPresence } from './room-agent-presence';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
 import {
+  AgentMark,
+  agentKindFor,
+  agentNameFor,
+  localAgentFor,
+  PersonMark,
+  roomDetailKey,
+} from './room-participants';
+import {
   AccessAndGroupFields,
   ArchiveRoomSection,
   RolesSection,
   RoomInfoSection,
 } from './room-settings-sections';
-
-/** Query key for one room's own settings — shared so a save can write the
- * server's answer straight back into what the page is reading. */
-export function roomDetailKey(workspaceId: string, roomId: string) {
-  return ['remote-room-detail', workspaceId, roomId] as const;
-}
 
 /** One room read from its server; `workspaceId` is null until the room list has loaded. */
 function useRoomDetail(roomId: string) {
@@ -1232,20 +1226,6 @@ const ParticipantList = observer(function ParticipantList({
   );
 });
 
-/** A person's initials disc: people have no picture in Switch. */
-export function PersonMark({ name, size }: { name: string; size: 'sm' | 'md' }) {
-  return (
-    <span
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] font-medium text-foreground',
-        size === 'md' ? 'size-7 text-xs' : 'size-[22px] text-[10px]'
-      )}
-    >
-      {agentInitials(name)}
-    </span>
-  );
-}
-
 function ParticipantCard({
   mark,
   name,
@@ -1474,61 +1454,4 @@ function PanelNotice({
       {action}
     </div>
   );
-}
-
-/** An agent's own picture, beside the human participants' initials discs. */
-export function AgentMark({
-  agentId,
-  workspaceId,
-  remoteById,
-}: {
-  agentId: string;
-  workspaceId: string | null;
-  remoteById: Map<string, RemoteAgentSummary>;
-}) {
-  const remote = remoteById.get(agentId) ?? null;
-  return (
-    <span className="flex size-7 shrink-0 items-center justify-center">
-      <AgentAvatar
-        name={agentNameFor(agentId, workspaceId, remoteById)}
-        iconUrl={remote?.iconUrl ?? null}
-        serverId={workspaceId && workspacesStore.serverIdFor(workspaceId)}
-        size={26}
-      />
-    </span>
-  );
-}
-
-/** This install's record of a Switch agent, which is where its provider is
- * known — the server says what type an agent is, not what runs it here. */
-function localAgentFor(switchAgentId: string, workspaceId: string | null) {
-  if (workspaceId === null) return null;
-  return (
-    agentsStore.agentsInWorkspace(workspaceId).find((a) => a.switchAgentId === switchAgentId) ??
-    null
-  );
-}
-
-export function agentNameFor(
-  switchAgentId: string,
-  workspaceId: string | null,
-  remoteById: Map<string, RemoteAgentSummary>
-): string {
-  return (
-    localAgentFor(switchAgentId, workspaceId)?.name ??
-    remoteById.get(switchAgentId)?.name ??
-    'Agent'
-  );
-}
-
-/** What an agent runs, in words: this install's provider when it has one,
- * otherwise the type the server knows it by. */
-function agentKindFor(
-  switchAgentId: string,
-  workspaceId: string | null,
-  remoteById: Map<string, RemoteAgentSummary>
-): string {
-  const providerId = localAgentFor(switchAgentId, workspaceId)?.providerId ?? null;
-  const knownType = remoteById.get(switchAgentId)?.knownAgentType ?? null;
-  return providerDisplayName(providerId) ?? knownAgentTypeDisplayName(knownType) ?? 'agent';
 }
