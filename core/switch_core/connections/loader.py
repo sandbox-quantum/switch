@@ -55,6 +55,9 @@ class CatalogError(RuntimeError):
 
 
 AccessLevel = Literal["read", "write"]
+# How a person connected a service: signed in (`oauth`), or pasted a token
+# (`token`) or keys (`keys`).
+ConnectionMethod = Literal["oauth", "token", "keys"]
 
 
 AdapterName = Literal["github", "oauth", "api_key"]
@@ -284,6 +287,10 @@ class OAuthClient(BaseModel):
                 raise ChoicesError(f"{field.label} must be one of {', '.join(listed)}.")
             values[name] = value
         return values
+
+    def first_choices(self) -> dict[str, str]:
+        """The first of each choice's list."""
+        return {field.name: (field.choices or [])[0] for field in self.choices}
 
 
 class ConnectionIdentity(BaseModel):

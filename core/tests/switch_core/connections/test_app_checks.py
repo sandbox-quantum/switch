@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -14,7 +15,8 @@ from switch_core.connections.app_checks import (
     github_permissions_needed,
 )
 from switch_core.connections.app_credentials import AppValues
-from switch_core.connections.loader import CATALOG
+from switch_core.connections.loader import CATALOG, ConnectionDefinition
+from tests.switch_core.connections.test_loader import CHOICES_ENTRY
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
 GOOGLE = CATALOG["google-workspace"].definition
@@ -52,6 +54,38 @@ class TestOAuthClient:
         [check] = result.checks
         assert (check.ok, check.field) == (ok, field)
         assert says in check.message
+
+    async def test_a_client_at_several_sites_is_asked_at_the_first(self) -> None:
+        seen: list[str] = []
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            return httpx.Response(400, json={"error": "invalid_grant"})
+
+        definition = ConnectionDefinition.model_validate(
+            yaml.safe_load(
+                CHOICES_ENTRY.replace(
+                    "    registration: dynamic\n",
+                    "    registration: static\n"
+                    "    client_settings: EXAMPLE\n"
+                    "    authorization_url: https://auth.{site}/authorize\n"
+                    "    token_url: https://auth.{site}/token\n",
+                )
+            )
+        )
+        result = await check_oauth_client(
+            httpx.AsyncClient(transport=httpx.MockTransport(handle)),
+            definition,
+            _google(),
+            REDIRECT,
+        )
+        [check] = result.checks
+        assert check.ok
+        assert seen == ["https://auth.example.test/token"]
+        assert check.note == (
+            "Checked at Example site example.test only: confirm the client works "
+            "at the others."
+        )
 
     async def test_unreachable_is_its_own_answer(self) -> None:
         def handle(request: httpx.Request) -> httpx.Response:

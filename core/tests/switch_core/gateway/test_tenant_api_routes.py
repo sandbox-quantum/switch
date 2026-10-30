@@ -1568,6 +1568,8 @@ class TestMemberRoutes:
                     json.dumps({"access_token": "SYNTHETIC-USER-TOKEN"})
                 ),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             session.add(
                 ServiceTokenIssuance(

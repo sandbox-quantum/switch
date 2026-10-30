@@ -5,6 +5,8 @@ refresh, check a grant, issue, revoke, all counted. `FakeOAuthServer` plays
 the HTTP side of an OAuth vendor with MCP servers, for the generic OAuth/MCP
 adapter to talk to: its metadata, authorization, token, registration,
 revocation and account endpoints, and an MCP server that takes its tokens.
+`FakeSites` plays one vendor at several sites, each a `FakeOAuthServer` of
+its own, as a vendor with regional deployments is.
 """
 
 from __future__ import annotations
@@ -130,9 +132,10 @@ class FakeVendor:
         return f"{agent_name} can {verb} {count} repositories, as the GitHub App."
 
 
-MCP_URL = "https://mcp.example.test/v1/mcp"
-ISSUER = "https://auth.example.test"
-IDENTITY_URL = "https://api.example.test/me"
+SITE = "example.test"
+MCP_URL = f"https://mcp.{SITE}/v1/mcp"
+ISSUER = f"https://auth.{SITE}"
+IDENTITY_URL = f"https://api.{SITE}/me"
 STATIC_CLIENT_ID = "example-client"
 STATIC_CLIENT_SECRET = "SYNTHETIC-CLIENT-SECRET"
 MCP_TOOLS = [
@@ -306,9 +309,16 @@ class FakeOAuthServer:
     method out unless `answer_names_method`.
     """
 
-    def __init__(self, *, rotating: bool = True, lifetime: int = 3600) -> None:
+    def __init__(
+        self, *, rotating: bool = True, lifetime: int = 3600, site: str = SITE
+    ) -> None:
         self.rotating = rotating
         self.lifetime = lifetime
+        # Where it answers: `mcp.<site>`, `auth.<site>` and `api.<site>`.
+        self.site = site
+        self.mcp_url = f"https://mcp.{site}/v1/mcp"
+        self.issuer = f"https://auth.{site}"
+        self.identity_url = f"https://api.{site}/me"
         self.resource_metadata_path = "/.well-known/oauth-protected-resource/v1/mcp"
         self.advertise = True
         # Some vendors issue long codes: Atlassian's run past 2,000 characters.
@@ -336,11 +346,11 @@ class FakeOAuthServer:
         self.paths: list[str] = []
         self.fail: dict[str, tuple[int, Any]] = {}
         self.metadata: dict[str, Any] = {
-            "issuer": ISSUER,
-            "authorization_endpoint": f"{ISSUER}/authorize",
-            "token_endpoint": f"{ISSUER}/token",
-            "registration_endpoint": f"{ISSUER}/register",
-            "revocation_endpoint": f"{ISSUER}/revoke",
+            "issuer": self.issuer,
+            "authorization_endpoint": f"{self.issuer}/authorize",
+            "token_endpoint": f"{self.issuer}/token",
+            "registration_endpoint": f"{self.issuer}/register",
+            "revocation_endpoint": f"{self.issuer}/revoke",
             "response_types_supported": ["code"],
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": [
@@ -358,7 +368,9 @@ class FakeOAuthServer:
     def authorize(self, url: str) -> str:
         """Consent at `url`; the redirect the browser is sent back to."""
         parts = urlsplit(url)
-        assert f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{ISSUER}/authorize"
+        assert (
+            f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{self.issuer}/authorize"
+        )
         query = {key: values[0] for key, values in parse_qs(parts.query).items()}
         assert query["response_type"] == "code"
         assert query["code_challenge_method"] == "S256"
@@ -401,33 +413,36 @@ class FakeOAuthServer:
         if where in self.fail:
             status, body = self.fail[where]
             return _json(status, body)
-        if where == f"https://mcp.example.test{self.resource_metadata_path}":
-            return _json(200, {"resource": MCP_URL, "authorization_servers": [ISSUER]})
-        if where == "https://mcp.example.test/.well-known/oauth-protected-resource":
+        mcp_origin = f"https://mcp.{self.site}"
+        if where == f"{mcp_origin}{self.resource_metadata_path}":
+            return _json(
+                200, {"resource": self.mcp_url, "authorization_servers": [self.issuer]}
+            )
+        if where == f"{mcp_origin}/.well-known/oauth-protected-resource":
             # Another, older server's on the same host.
             return _json(
                 200,
                 {
-                    "resource": "https://mcp.example.test/v0",
-                    "authorization_servers": ["https://legacy.example.test"],
+                    "resource": f"{mcp_origin}/v0",
+                    "authorization_servers": [f"https://legacy.{self.site}"],
                 },
             )
-        if where == f"{ISSUER}/.well-known/oauth-authorization-server":
+        if where == f"{self.issuer}/.well-known/oauth-authorization-server":
             return _json(200, self.metadata)
-        if where == f"{ISSUER}/token" and request.method == "POST":
+        if where == f"{self.issuer}/token" and request.method == "POST":
             return self._token(request)
-        if where == f"{ISSUER}/register" and request.method == "POST":
+        if where == f"{self.issuer}/register" and request.method == "POST":
             return self._register(request)
-        if where == f"{ISSUER}/revoke" and request.method == "POST":
+        if where == f"{self.issuer}/revoke" and request.method == "POST":
             form = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == self.identity_url and request.method == "GET":
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
             return _json(200, {"account": self.account})
-        if where == MCP_URL:
+        if where == self.mcp_url:
             return self._mcp(request)
         return _json(404, {"error": "not_found"})
 
@@ -525,7 +540,7 @@ class FakeOAuthServer:
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
         if self._bearer(request) is None:
-            named = f"https://mcp.example.test{self.resource_metadata_path}"
+            named = f"https://mcp.{self.site}{self.resource_metadata_path}"
             return _json(
                 401,
                 {"error": "invalid_token"},
@@ -560,3 +575,32 @@ class FakeOAuthServer:
                 },
             )
         return _json(200, {"jsonrpc": "2.0", "id": message["id"], "result": result})
+
+
+class FakeSites:
+    """One vendor at several sites: a `FakeOAuthServer` for each, each with
+    its own MCP server, accounts and authorization server, and none knowing
+    another's clients or tokens. A request goes to the site whose host it
+    names."""
+
+    def __init__(self, *sites: str) -> None:
+        self.sites = {site: FakeOAuthServer(site=site) for site in sites}
+
+    def __getitem__(self, site: str) -> FakeOAuthServer:
+        return self.sites[site]
+
+    def client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
+
+    def _at(self, host: str) -> FakeOAuthServer:
+        # The longest site a host names: `api.eu.example.test` is at
+        # `eu.example.test`, not `example.test`.
+        named = [site for site in self.sites if host.endswith(f".{site}")]
+        assert named, f"no site serves {host}"
+        return self.sites[max(named, key=len)]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        return self._at(request.url.host).handle(request)
+
+    def authorize(self, url: str) -> str:
+        return self._at(urlsplit(url).hostname or "").authorize(url)

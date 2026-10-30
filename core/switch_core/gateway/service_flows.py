@@ -36,6 +36,7 @@ from switch_core.connections.flows import (
     ServiceFlows,
     SignInRefusedError,
 )
+from switch_core.connections.loader import ChoicesError
 from switch_core.db.models import ServiceConnection, Tenant, User, require_tenant_id
 from switch_core.db.session_scope import tenant_session
 from switch_core.gateway.auth import get_current_user
@@ -100,6 +101,9 @@ class StartFlow(BaseModel):
     port: int = Field(strict=True, ge=1024, le=65535)
     state: str = Field(pattern=TOKEN_PATTERN)
     completion_secret: str = Field(pattern=TOKEN_PATTERN)
+    # What the person picked before signing in, for an entry that asks
+    # (`auth.oauth.choices`); a Console from before them sends none.
+    choices: dict[str, str] | None = None
 
 
 class FlowSecret(BaseModel):
@@ -134,6 +138,12 @@ async def start(
         definition, adapter = await broker.sign_in(session, service)
     except ServiceError as error:
         return service_refusal(error)
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    try:
+        choices = oauth.checked_choices(body.choices or {})
+    except ChoicesError as error:
+        raise HTTPException(422, str(error)) from None
     tenant = await session.get(Tenant, require_tenant_id())
     if tenant is None:
         raise HTTPException(404, "Workspace not found.")
@@ -146,6 +156,7 @@ async def start(
             port=body.port,
             completion_secret=body.completion_secret,
             owner_label=f"{user.name} ({user.email}) in {tenant.name}",
+            choices=choices,
         )
     except FlowError as error:
         raise HTTPException(409, str(error)) from None
@@ -330,6 +341,8 @@ async def complete(
             external_identity=account.label,
             secret=signed_in.secret,
             oauth_client_id=signed_in.client_id,
+            method="oauth",
+            choices=exchange.choices,
         )
     except ServiceError as error:
         await flows.failed(exchange.flow, error.message)
