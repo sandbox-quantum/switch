@@ -4,6 +4,9 @@ from switch_decision.models import DecideRequest, Message
 
 NONE = "none"
 
+# How many of the thread's and the room's latest messages a prompt carries.
+DEFAULT_HISTORY_LIMIT = 8
+
 SYSTEM = """You decide which single agent in a team chat room, if any, should answer the latest message.
 
 People and AI agents share the room. Nobody tagged an agent in the latest message, so you decide.
@@ -185,3 +188,22 @@ def letter_messages(
         {"role": "system", "content": LETTER_SYSTEM},
         {"role": "user", "content": user},
     ], options
+
+
+def llamacpp_request(
+    req: DecideRequest, history_limit: int
+) -> tuple[dict, dict[str, str]]:
+    """The llama.cpp `POST /v1/chat/completions` body for a decision, and the
+    letter each option goes by: one token, read back with its logprobs
+    (`readers.read_letter_logprobs`). The service sends it to its llama.cpp
+    server; switch-core sends the same body to a model served on a user's own
+    machine."""
+    messages, letters = letter_messages(req, history_limit)
+    return {
+        "messages": messages,
+        "max_tokens": 1,
+        "temperature": 0,
+        "logprobs": True,
+        "top_logprobs": 20,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }, letters

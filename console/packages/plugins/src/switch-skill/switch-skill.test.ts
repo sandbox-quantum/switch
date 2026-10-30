@@ -43,4 +43,14 @@ describe('switch skill', () => {
       "The room's owner or a workspace admin can name a triage agent for those messages"
     );
   });
+
+  it('describes running the decision model on a machine, and the tools that set it up', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain("a decision model running on one of that admin's own machines");
+    expect(text).toContain('says it is getting ready');
+    expect(text).toContain('the notice names it');
+    expect(text).toContain('- `get_decision_routing` —');
+    expect(text).toContain('- `set_decision_routing` —');
+    expect(text).toContain('All six tools need "can manage agents"');
+  });
 });
