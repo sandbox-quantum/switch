@@ -35,10 +35,10 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import (
-    TEMPLATE_FIELD_RE,
     AccessLevel,
     ApiKeySignIn,
     ConnectionDefinition,
+    render,
 )
 
 # A key may carry any printable character but a space, which keeps it a
@@ -55,11 +55,6 @@ class InvalidKeyError(ServiceAdapterError):
 class KeyIdentity:
     account_id: str
     label: str
-
-
-def render(template: str, values: dict[str, str]) -> str:
-    """`template` with each `{field}` replaced by its value."""
-    return TEMPLATE_FIELD_RE.sub(lambda match: values[match.group(1)], template)
 
 
 def key_token(sign_in: ApiKeySignIn, values: dict[str, str]) -> str:
