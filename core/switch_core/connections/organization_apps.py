@@ -3,14 +3,11 @@
 A workspace whose organization saved an app for a service
 (`organization_app_credentials`) signs in, is issued and is refreshed through
 that app; one whose organization saved none goes through the server's, as
-`connections/app_credentials.py` resolves it. All of this is behind the
+`connections/app_credentials.py` resolves it. That covers GitHub's App,
+whose sign-in routes ask here too (`gateway/github_connections.py`), and
+every static OAuth client. All of this is behind the
 `organization_connector_apps` flag: with it off the broker holds no
 `OrganizationApps`, and no workspace looks past the server's apps.
-
-Only the static OAuth clients are looked up here so far. GitHub's App is
-not: its sign-in still goes through the App on the gateway's state, which is
-the server's, so a connection made there would never match an
-organization's App and would be sent back to reconnect forever.
 
 An organization's adapter is built the first time one of its workspaces
 needs it, and kept. The process that changes an organization's app forgets
@@ -42,6 +39,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.connections.adapters import ServiceAdapter
+from switch_core.connections.adapters.github import GitHubApp
 from switch_core.connections.app_credentials import (
     AppLoadError,
     ConnectorApps,
@@ -79,10 +77,12 @@ class OrganizationApp:
     """The app an organization saved for a service, as built here.
 
     `adapter` is None when the app cannot be used, and `problem` then says
-    why, for members to read."""
+    why, for members to read. `github_app` is the App itself, for GitHub's
+    sign-in routes."""
 
     organization_id: str
     adapter: ServiceAdapter | None
+    github_app: GitHubApp | None
     problem: str | None
     changed_at: datetime
 
@@ -120,8 +120,7 @@ class OrganizationApps:
         """The app `tenant_id`'s organization saved for `service`, or None
         when it saved none and the server's applies. `session` is bound to
         `tenant_id`; it is read through only when nothing kept answers."""
-        spec = self._apps.specs.get(service)
-        if spec is None or spec.kind != "oauth_client":
+        if service not in self._apps.specs:
             return None
         if tenant_id in self._organization_of:
             organization_id = self._organization_of[tenant_id]
@@ -205,6 +204,7 @@ class OrganizationApps:
             return OrganizationApp(
                 organization_id=row.organization_id,
                 adapter=None,
+                github_app=None,
                 problem=problem,
                 changed_at=row.updated_at,
             )
@@ -215,6 +215,7 @@ class OrganizationApps:
                 github_app=loaded.github_app,
                 oauth_client=loaded.oauth_client,
             ),
+            github_app=loaded.github_app,
             problem=None,
             changed_at=row.updated_at,
         )
