@@ -68,6 +68,9 @@ list above is a route and a screen on top, listed under Later.
 - **Switches.** A Workspace Admin can still switch a service off for their
   workspace. An Org Admin can switch a service on or off for the whole
   organization, and lock it so workspaces cannot change it.
+- **The dashboard is where organizations are administered.** Every
+  organization, workspace and admin control is in the gateway dashboard.
+  Switch Console gets one only where it cannot do without it.
 
 ## Naming
 
@@ -306,10 +309,15 @@ and no response carries a secret. A save, replacement or removal is recorded
 in `organization_audit_events`.
 
 **Routes and UI.** `/gateway/organizations/current/connector-apps`, behind
-`require_org_admin`, mirrors `/gateway/connector-apps`. Switch Console and the
-dashboard get an organization Connectors page, reusing the operator's
-dialogs. A workspace's Connectors page names which app it signs in through:
+`require_org_admin`, mirrors `/gateway/connector-apps`. The dashboard gets an
+organization Connectors page, reusing the operator's dialogs; Switch Console
+gets none. A workspace's Connectors page names which app it signs in through:
 "your organization's" or "this server's".
+
+**Rollout.** `ORGANIZATION_CONNECTOR_APPS` is off by default until the whole
+phase has landed, so a deployment never runs half of it. Off, the
+organization routes are not mounted and no workspace looks past the server's
+apps.
 
 ## Switching services on and off
 
