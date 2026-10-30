@@ -94,7 +94,7 @@ on `TrustCheckResult.outcome`:
     of the real content, post a notice into the room via `SystemActor.send_admin`
     with a new `AdminMessageType.TRUST_BLOCKED`
     (`core/switch_core/clients/admin_messages.py`). Every collaboration adapter
-    (Slack, Mattermost, Discord, Teams, Telegram) already renders
+    (Slack, Discord, Teams, Telegram) already renders
     `admin_message()` as a platform-native system notice, distinct from an
     ordinary chat bubble — this is "visually stands out" for free. The notice
     names the agent (`@<agent-name> was blocked...`) so a room with several
@@ -135,8 +135,7 @@ on `TrustCheckResult.outcome`:
 The original sketch for a lightweight, non-disruptive indicator was to reuse
 `mark_activity()` — the reaction-emoji badge (👀 working / ⏳ queued) every
 adapter already implements for "agent is working" status. That turned out not
-to fit: `mark_activity`'s `agent_name` parameter is required because some
-platforms (Mattermost) give each agent's bot its own reaction, so the method
+to fit: `mark_activity`'s `agent_name` parameter is required, so the method
 has no way to add a reaction that belongs to no agent. A Switch Trust
 alert/error is a Switch-level concern, not any agent's — retrofitting it would
 mean a genuinely new cross-adapter primitive (touching every adapter), not a

@@ -3,7 +3,6 @@ import { embeddedRoomTab, RoomTabStore } from './room-tab-store';
 
 describe('the room tab', () => {
   it('opens a room shown inside a page on its conversation whenever it has one', () => {
-    expect(embeddedRoomTab('mattermost', false)).toBe('chat');
     expect(embeddedRoomTab('slack', false)).toBe('chat');
     expect(embeddedRoomTab(null, true)).toBe('chat');
     expect(embeddedRoomTab(null, false)).toBe('configuration');

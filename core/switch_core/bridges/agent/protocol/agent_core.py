@@ -1716,7 +1716,7 @@ class AgentCore:
         identity. Used to announce resource-manager-driven side effects (e.g.
         room-document mutations) in a way that flows through collaboration
         bridges — the resource manager isn't a bridge participant, so its own
-        notices wouldn't reach Slack/Mattermost."""
+        notices wouldn't reach Slack."""
         try:
             await client.send_message(transport_room_id, body, metered=False)
         except Exception:
@@ -1872,7 +1872,7 @@ class AgentCore:
         self, agent_id: str, transport_room_id: str, action: str
     ) -> None:
         """Announce a role assume/release from the acting agent's own client
-        identity, so the notice reaches collaboration bridges (Slack/Mattermost)."""
+        identity, so the notice reaches collaboration bridges (Slack, Discord)."""
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             return
@@ -2513,7 +2513,7 @@ class AgentCore:
         Switch Console" link is clickable there. It takes both a configured
         `GATEWAY_PUBLIC_URL` and a room whose bridge needs the hop: the redirect
         lands in the same place the deeplink already points, so handing it to a
-        platform that renders the scheme — Mattermost, Slack — sends the reader
+        platform that renders the scheme — Slack — sends the reader
         through the browser for nothing. A room on no bridge keeps the raw link
         for the same reason. When `GATEWAY_PUBLIC_URL` is unset the raw deeplink
         is left untouched whatever the platform.
@@ -3322,8 +3322,12 @@ class AgentCore:
             require_membership_changeable_from_outside(
                 await self._require_room_roster_change(session, agent_id, room_id)
             )
+            _agent, owner_id, _ = await self._resolve_acting_identity(session, agent_id)
+            owner = await session.get(User, owner_id) if owner_id else None
         try:
-            return await self.room_service.add_users_to_room(room_id, user_names)
+            return await self.room_service.add_users_to_room(room_id, user_names, owner)
+        except ChatError as e:
+            raise PermissionError(f"Failed to add users: {e.message}") from e
         except ValueError as e:
             raise ValueError(f"Failed to add users: {str(e)}") from e
 

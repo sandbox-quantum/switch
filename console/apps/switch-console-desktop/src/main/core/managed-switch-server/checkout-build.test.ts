@@ -15,7 +15,6 @@ async function fakeCheckout(): Promise<string> {
     'core/pyproject.toml',
     'deploy/shared_resources/images/Dockerfile.switch',
     'deploy/shared_resources/images/Dockerfile.gateway',
-    'deploy/shared_resources/images/Dockerfile.setup',
   ]) {
     const path = join(root, marker);
     await mkdir(dirname(path), { recursive: true });
@@ -50,7 +49,7 @@ describe('checkoutBuildOverrideYaml', () => {
   it('gives every built service an absolute context in the checkout', () => {
     const yaml = checkoutBuildOverrideYaml('/src/switch');
 
-    for (const service of ['switch', 'gateway', 'setup']) {
+    for (const service of ['switch', 'gateway']) {
       expect(yaml).toContain(`  ${service}:`);
     }
     expect(yaml).toContain('context: "/src/switch"');

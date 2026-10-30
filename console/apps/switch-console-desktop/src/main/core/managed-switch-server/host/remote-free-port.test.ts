@@ -26,7 +26,7 @@ describe('pickRemoteFreePorts', () => {
 
     const ports = await pickRemoteFreePorts(ctx as never);
 
-    expect(ports).toEqual({ gateway: 50000, api: 50001, mattermost: 50002, postgres: 50003 });
+    expect(ports).toEqual({ gateway: 50000, api: 50001, postgres: 50002 });
     expect(seen[0]).toEqual(new Set([41001, 41000, 42001, 5432]));
   });
 });

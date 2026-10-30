@@ -20,10 +20,6 @@ const NEW_CHANNEL: Record<string, { public: string; private: string | null }> = 
     public: 'Anyone in the Slack workspace can find and join it.',
     private: 'Only people invited to it can see it.',
   },
-  mattermost: {
-    public: 'Anyone in the team can find and join it.',
-    private: 'Only people added to it can see it.',
-  },
   discord: {
     public: 'Everyone in the server can see and read it.',
     private: 'Hidden from everyone but the people given access and the server’s admins.',
@@ -106,13 +102,12 @@ export function channelIdProblem(bridgeType: string, id: string): string | null 
 
 /**
  * `id` as its app writes it: trimmed, and in the one case its app uses where
- * that is known (Slack ids are upper case, Mattermost's lower), so a pasted
+ * that is known (Slack ids are upper case), so a pasted
  * id differing only in case or surrounding space is taken as meant.
  */
 export function normalizedChannelId(bridgeType: string, id: string): string {
   const value = id.trim();
   if (bridgeType === 'slack') return value.toUpperCase();
-  if (bridgeType === 'mattermost') return value.toLowerCase();
   return value;
 }
 
@@ -121,11 +116,6 @@ const CHANNEL_ID_SHAPE: Record<string, { pattern: RegExp; problem: string }> = {
     pattern: /^[CG][A-Z0-9]{6,}$/,
     problem:
       'A Slack channel id starts with C or G, like C0123ABCD. It is at the bottom of the channel’s details.',
-  },
-  mattermost: {
-    pattern: /^[a-z0-9]{26}$/,
-    problem:
-      'A Mattermost channel id is 26 lowercase letters and digits. It is under the channel’s View Info.',
   },
   discord: {
     pattern: /^\d{15,22}$/,

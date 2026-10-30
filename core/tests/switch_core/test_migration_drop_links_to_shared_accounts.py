@@ -62,7 +62,7 @@ _ACCOUNTS = [
     ("slack", "B0123ABCD", False),
     ("slack", "USLACKBOT", False),
     ("slack", "U0123ABCD", True),
-    ("mattermost", "1087968824", True),
+    ("discord", "1087968824", True),
 ]
 
 

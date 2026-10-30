@@ -17,7 +17,6 @@ the purpose, so a key that leaks from one use does not open another.
 | Gateway session (`switch_auth` cookie) | signed JWT, `kid` header | 24 hours | verified with the key its `kid` names |
 | OIDC login cookie | signed cookie | one login round trip (10 minutes) | current key only; a login in progress at the moment of rotation starts again |
 | Messaging install state | signed token | one install round trip | verified with any key in `SECRET_KEYS` |
-| Mattermost card buttons | signed context in posted messages | as long as the post | verified with any key in `SECRET_KEYS` |
 | Stored credentials: API keys, hosted-install bot tokens, bridge and connector configs, connector app credentials | encrypted, value names its key | until changed | re-encrypted under the current key at boot |
 
 The first key is used for everything new. Older keys only verify and decrypt.
@@ -39,8 +38,7 @@ before the upgrade, exactly as they were made.
    environment gets its own.
 2. Deploy. On boot, switch-core re-encrypts every stored credential under the
    new key and logs how many it rewrote. Sessions signed before the upgrade
-   stay valid until they expire, and buttons on existing Mattermost cards keep
-   working. At one replica the Helm chart replaces switch-core rather than
+   stay valid until they expire. At one replica the Helm chart replaces switch-core rather than
    rolling it, so two versions never serve at once. Where they do (with
    `switchCore.replicaCount` above 1 the chart updates replicas one by one), a
    replica still on the previous version cannot verify a session the new
@@ -54,8 +52,7 @@ before the upgrade, exactly as they were made.
    taken before the upgrade, losing anything written since. Take that backup
    before deploying.
 3. When you are ready, remove `JWT_SECRET_KEY` and deploy again. Sessions from
-   before step 2 end (people sign in again) and buttons on Mattermost cards
-   posted before step 2 stop working; stored credentials are unaffected,
+   before step 2 end (people sign in again); stored credentials are unaffected,
    because step 2 re-encrypted them.
 
 A boot that finds a stored value no configured key opens fails rather than
@@ -79,8 +76,7 @@ keeps the old key available for decrypting and verifying.
    old key after the new replicas' boots have run, so restart switch-core
    once the roll has finished: that boot re-encrypts what they wrote.
 3. Wait at least 24 hours, so sessions signed with the old key have expired.
-4. Remove the old key and deploy. Buttons on Mattermost cards posted before
-   step 2 stop working; nothing else is affected.
+4. Remove the old key and deploy.
 
 Step 1 is enforced. Each switch-core process records the ids of its keys on
 its lease, and a process whose first key a running process lacks refuses to
@@ -97,8 +93,7 @@ single replica replaced in one step. While an old process is still running,
 the new one refuses to start, and the roll stalls until you deploy step 1.
 Stored credentials need the old key once to be re-encrypted; until the last
 deploy, sessions signed with the old key still verify, so keep that window
-short. Removing the old key ends every session and stops every Mattermost
-button posted before, which is the point.
+short. Removing the old key ends every session.
 
 ## Ids
 

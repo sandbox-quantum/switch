@@ -1163,7 +1163,7 @@ class TestTheDerivedProperties:
         """The catalogue requires every key every time, so a deployment with no
         Discord bridge reports zero rather than omitting the property."""
         properties = UsageCounts().as_event_properties(session_live_count=0)
-        for platform in ("slack", "mattermost", "discord", "teams", "telegram"):
+        for platform in ("slack", "discord", "teams", "telegram"):
             assert properties[f"connector_{platform}_count"] == 0
 
     def test_the_properties_match_the_catalogue_exactly(self) -> None:

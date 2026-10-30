@@ -282,7 +282,7 @@ class TestGetRoomDetail:
             agents={
                 "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
             },
-            bridges={"bridge-1": SimpleNamespace(display_name="Mattermost")},
+            bridges={"bridge-1": SimpleNamespace(display_name="Slack")},
             ext_users={
                 "bridge-1": [
                     SimpleNamespace(client_id="client-b", external_username="zara"),
@@ -294,7 +294,7 @@ class TestGetRoomDetail:
         detail = await svc.get_room_detail("agent-1", "room-1")
 
         assert detail.bridge_id == "bridge-1"
-        assert detail.bridge_display_name == "Mattermost"
+        assert detail.bridge_display_name == "Slack"
         assert detail.external_channel_id == "C123"
         # Sorted by name; the client with no matching external user is dropped.
         assert detail.connected_user_names == ["louisa", "zara"]

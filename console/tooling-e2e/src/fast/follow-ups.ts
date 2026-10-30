@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import type { MattermostClient, MattermostPost } from '../clients/mattermost-client.ts';
+import type { ChatMessage, ConsoleChatClient } from '../clients/console-chat-client.ts';
 import {
   eventText,
   sleep,
@@ -7,7 +7,7 @@ import {
   type RegisteredAgent,
   type SwitchClient,
 } from '../clients/switch-client.ts';
-import type { BridgedRoom } from '../fixtures/fixtures.ts';
+import type { ConsoleRoom } from '../fixtures/fixtures.ts';
 import type { FastScenario } from './scenario.ts';
 
 const FLAG = 'follow_the_conversation';
@@ -46,9 +46,9 @@ export const followUps: FastScenario = {
     lane: 'fast',
     environments: ['ephemeral'],
     owner: 'platform',
-    requires: ['mattermost'],
+    requires: [],
   },
-  async run({ fixtures, names, switchClient, mattermost, log }) {
+  async run({ fixtures, names, switchClient, chat, log }) {
     const flags = await switchClient.enabledFeatureFlags();
     if (!flags.has(FLAG)) {
       throw new Error(
@@ -58,8 +58,8 @@ export const followUps: FastScenario = {
     const windowMs = followWindowMs();
     const a = await fixtures.agent('fa');
     const b = await fixtures.agent('fb');
-    const bridged = await fixtures.mattermostRoom('ftc', [a, b]);
-    const talk = new Exchange(switchClient, mattermost!, bridged);
+    const room = await fixtures.consoleRoom('ftc', [a, b]);
+    const talk = new Exchange(switchClient, chat, room);
 
     // A channel follow-up: the person goes on, untagged, after the agent answered.
     const q1 = names.marker('q1');
@@ -74,7 +74,7 @@ export const followUps: FastScenario = {
 
     // A thread follow-up: a reply under the agent's answer, in a thread it spoke in last.
     const q3 = names.marker('q3');
-    await talk.human(`why so ${q3}`, answer.post.id);
+    await talk.human(`why so ${q3}`, answer.message.messageId);
     const threaded = await talk.notified(a, q3, 'an untagged reply in its thread', []);
     expect(threaded.payload?.thread_id).toBe(answer.eventId);
 
@@ -86,7 +86,7 @@ export const followUps: FastScenario = {
     const q5 = names.marker('q5');
     await talk.human(`@${a.name} back to you ${q5}`, null);
     await talk.notified(a, q5, 'a mention', [fyi, q4]);
-    const history = await switchClient.roomHistory(a, bridged.room.id, 20);
+    const history = await switchClient.roomHistory(a, room.room.id, 20);
     expect(history.map((event) => event.body).some((body) => body.includes(fyi))).toBe(true);
 
     // The exchange goes quiet for longer than the window.
@@ -107,49 +107,43 @@ export const followUps: FastScenario = {
   },
 };
 
-/** One person and two agents talking in a bridged room. */
+/** One person and two agents talking in an in-Console chat. */
 class Exchange {
   private readonly switchClient: SwitchClient;
-  private readonly mattermost: MattermostClient;
-  private readonly bridged: BridgedRoom;
+  private readonly chat: ConsoleChatClient;
+  private readonly room: ConsoleRoom;
 
-  constructor(switchClient: SwitchClient, mattermost: MattermostClient, bridged: BridgedRoom) {
+  constructor(switchClient: SwitchClient, chat: ConsoleChatClient, room: ConsoleRoom) {
     this.switchClient = switchClient;
-    this.mattermost = mattermost;
-    this.bridged = bridged;
+    this.chat = chat;
+    this.room = room;
   }
 
   /** Post as the person: top-level, or under `rootId` in a thread. */
   async human(message: string, rootId: string | null): Promise<void> {
-    await this.mattermost.post({
-      channelId: this.bridged.channel.id,
-      message,
-      ...(rootId === null ? {} : { rootId }),
-    });
+    await this.chat.send(this.room.room.id, message, rootId);
   }
 
-  /** Post top-level as the agent, and wait for the post to reach the channel. */
+  /** Post top-level as the agent, and wait for the message to read back in the chat. */
   async answer(
     agent: RegisteredAgent,
     text: string
-  ): Promise<{ eventId: string; post: MattermostPost }> {
-    const since = Date.now() - 1;
-    const eventId = await this.switchClient.sendMessage(agent, this.bridged.room.id, text);
-    const { match, transcript } = await this.mattermost.waitForPost({
-      channelId: this.bridged.channel.id,
-      fromUserId: this.bridged.bots.get(agent.id)!.id,
-      predicate: (post) => post.message.includes(text),
-      sinceMs: since,
+  ): Promise<{ eventId: string; message: ChatMessage }> {
+    const eventId = await this.switchClient.sendMessage(agent, this.room.room.id, text);
+    const { match, transcript } = await this.chat.waitForMessage({
+      roomId: this.room.room.id,
+      fromAgentId: agent.id,
+      predicate: (message) => message.body.includes(text),
+      afterSeq: 0,
       deadlineMs: DEADLINE_MS,
-      pollIntervalMs: 500,
     });
     if (match === null) {
       throw new Error(
-        `${agent.name}'s '${text}' never reached the channel; it said: ` +
-          transcript.map((post) => post.message).join(' | ')
+        `${agent.name}'s '${text}' never reached the chat; it said: ` +
+          transcript.map((message) => message.body).join(' | ')
       );
     }
-    return { eventId, post: match };
+    return { eventId, message: match };
   }
 
   /**

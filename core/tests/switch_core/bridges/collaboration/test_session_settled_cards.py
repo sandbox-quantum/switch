@@ -62,7 +62,7 @@ def _settled(
                 ),
             },
             "decidedBy": (
-                {"actorId": actor, "surface": "mattermost", "commandId": "cmd-1"}
+                {"actorId": actor, "surface": "telegram", "commandId": "cmd-1"}
                 if actor is not None
                 else None
             ),
@@ -94,7 +94,7 @@ def test_the_answer_is_the_first_thing_the_settled_card_says() -> None:
         "**Allow once** · request `R42`",
         "Run project tests",
         "`pnpm test`",
-        "Chosen by actor-demo from Mattermost.",
+        "Chosen by actor-demo from Telegram.",
     ]
 
 
@@ -132,7 +132,7 @@ def test_an_option_that_lasts_the_session_says_so_in_the_footer() -> None:
 
     assert lines[0] == "**Allow** · request `R42`"
     assert lines[-1] == (
-        "Chosen by actor-demo from Mattermost (applies for the rest of this session)."
+        "Chosen by actor-demo from Telegram (applies for the rest of this session)."
     )
 
 
@@ -143,7 +143,7 @@ def test_a_recognised_label_does_not_repeat_its_scope_in_the_footer() -> None:
     lines = _lines(_settled(option_id="opt-said-so"))
 
     assert lines[0] == "**Allow for this session** · request `R42`"
-    assert lines[-1] == "Chosen by actor-demo from Mattermost."
+    assert lines[-1] == "Chosen by actor-demo from Telegram."
 
 
 def test_a_settled_label_whose_subject_is_the_session_keeps_its_scope() -> None:
@@ -154,7 +154,7 @@ def test_a_settled_label_whose_subject_is_the_session_keeps_its_scope() -> None:
 
     assert lines[0] == "**Inspect this session** · request `R42`"
     assert lines[-1] == (
-        "Chosen by actor-demo from Mattermost (applies for the rest of this session)."
+        "Chosen by actor-demo from Telegram (applies for the rest of this session)."
     )
 
 
@@ -179,7 +179,7 @@ def test_an_answer_with_no_option_at_all_keeps_the_generic_heading() -> None:
 
     assert lines[0] == "**Permission answered** · request `R42`"
     assert lines[-1] == (
-        "Answered by actor-demo from Mattermost, "
+        "Answered by actor-demo from Telegram, "
         "but the host did not say which option was chosen."
     )
 
@@ -189,7 +189,7 @@ def test_a_card_closed_without_an_answer_says_closed_and_why() -> None:
 
     assert lines[0] == "**Closed** · request `R42`"
     assert lines[-1] == (
-        "Cancelled before it was answered. Decided by actor-demo from Mattermost."
+        "Cancelled before it was answered. Decided by actor-demo from Telegram."
     )
 
 

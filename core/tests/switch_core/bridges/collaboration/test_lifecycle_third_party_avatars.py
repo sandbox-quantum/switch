@@ -53,7 +53,7 @@ async def test_a_started_bridge_follows_the_setting(
             super().__init__(config=config)
             built.append(self)
 
-    service.register_adapter("mattermost", _Recording, _StubConfig)
+    service.register_adapter("slack", _Recording, _StubConfig)
 
     async def _run(bridge_id: str, tenant_id: str, *_: object) -> None:
         return None

@@ -526,9 +526,8 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/rooms/{room_id}/users": post(
         f"{G}/rooms/{{room}}/users",
-        owner_or_admins(ok=400),
+        owner_or_admins(),
         json={"user_names": []},
-        why="Let through, then refused: people join through the room's platform channel, and it has none.",
     ),
     "PUT /gateway/rooms/{room_id}/group": put(
         f"{G}/rooms/{{room}}/group",
@@ -771,7 +770,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/collaborations",
         admins(),
         json={
-            "bridge_type": "mattermost",
+            "bridge_type": "slack",
             "display_name": "{tag}-new-bridge",
             "connection_config": {},
         },
@@ -832,12 +831,6 @@ ROUTES: dict[str, Case] = {
         f"{G}/collaborations/{{bridge}}/identities/{{identity}}/code",
         anyone(ok=409),
         why="For the caller's own link; the bridge isn't running to check the account.",
-    ),
-    "POST /gateway/collaborations/{bridge_id}/identities/{external_user_row_id}/verify-session": post(
-        f"{G}/collaborations/{{bridge}}/identities/{{identity}}/verify-session",
-        anyone(ok=404),
-        json={"token": "session-token"},
-        why="For the caller's own link waiting to be confirmed; nobody has one.",
     ),
     "GET /gateway/collaborations/{bridge_id}/identities/unconfirmed": get(
         f"{G}/collaborations/{{bridge}}/identities/unconfirmed", admins()

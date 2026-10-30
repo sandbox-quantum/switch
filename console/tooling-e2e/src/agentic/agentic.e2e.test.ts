@@ -1,8 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sleep } from '../clients/mattermost-client.ts';
-import type { UsageTotal } from '../clients/switch-client.ts';
+import { sleep, type UsageTotal } from '../clients/switch-client.ts';
 import { describeEnv } from '../core/env.ts';
 import { RunContext } from '../core/run.ts';
 import { admit, assertValidHeaders } from '../core/scenario.ts';
@@ -37,7 +36,7 @@ import { describeUsage, Ledger, usageCostUsd } from './spend.ts';
 /**
  * The agentic lane: scenario files played against a real agent session.
  * Runs when `SWITCH_E2E_LANE=agentic`, on the same setup as the provider lane
- * (one agent on a headless controller, one Mattermost channel).
+ * (one agent on a headless controller, one in-Console room).
  *
  * For each scenario, in its own room when it declares one, a driver model
  * plays the human, from the scenario's persona and goal, until the goal is met
@@ -100,7 +99,7 @@ beforeAll(async () => {
 
   harness = await setupHarness(lane.target);
   scopes = new RunContext(harness.runId);
-  // The first scope named the setup's agent and channel; scenarios start after it.
+  // The first scope named the setup's agent and room; scenarios start after it.
   scopes.scope();
   console.log(
     [
@@ -112,7 +111,7 @@ beforeAll(async () => {
       `  driver prompt v${DRIVER_VERSION}, judge prompt v${JUDGE_VERSION}`,
       `  judge    ${env.agentic.judgeModel} (runs once the facts hold; reported, does not fail a scenario)`,
       `  limit    $${ledger.budgetUsd.toFixed(2)}`,
-      `  agent    ${harness.agent.name} in ${harness.channel.name}`,
+      `  agent    ${harness.agent.name} in ${harness.room.name}`,
       '',
     ].join('\n')
   );

@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.connection_rows import SharedConnections
 from switch_core.chats.service import ChatError, ChatService
@@ -310,12 +311,12 @@ def _chat_service(
         usage_store=UsageStore(),
         id_server_name="switch.test",
         media_max_bytes=1024,
-        agent_chats_enabled=True,
-        group_chats_enabled=True,
         buddy_slack_handoff_enabled=True,
         connections=connections,
         trust_client=NullTrustClient(),
+        command_names=frozenset(COMMANDS_BY_NAME),
     )
+    room_service.use_chats(service)
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service
 

@@ -22,7 +22,7 @@ export class ReadOnlyEnvironmentError extends Error {
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** Paths that are writes by method but not by effect. */
-const LOGIN_PATHS = new Set(['/gateway/auth/login', '/api/v4/users/login']);
+const LOGIN_PATHS = new Set(['/gateway/auth/login']);
 
 export function isReadOnly(environment: Environment): boolean {
   return environment === 'prod';

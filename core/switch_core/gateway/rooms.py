@@ -34,7 +34,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.auth import (
     authorize_room,
     get_current_user,
@@ -726,7 +726,6 @@ async def run_template_document(
     source = vouched_source(
         body.template,
         loaded,
-        agent_management=config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=config.feature_flags[SWITCH_BUDDY],
     )
     inputs = body.inputs or {}
@@ -1334,7 +1333,7 @@ async def post_room_users(
         await _require_room_released(session, room_store, room_id, principal, "write")
     )
     try:
-        await room_service.add_users_to_room(room_id, req.user_names)
+        await room_service.add_users_to_room(room_id, req.user_names, user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()

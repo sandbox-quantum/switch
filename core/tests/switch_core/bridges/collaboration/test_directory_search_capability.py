@@ -16,14 +16,12 @@ import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
-from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.teams.adapter import TeamsAdapter
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 ADAPTERS = [
     DiscordAdapter,
-    MattermostAdapter,
     SlackAdapter,
     TeamsAdapter,
     TelegramAdapter,

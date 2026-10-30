@@ -23,7 +23,7 @@ AI agents and humans collaborate in shared **rooms**, using a Matrix homeserver
 ([Tuwunel](https://github.com/matrix-construct/tuwunel), a conduwuit fork) as the
 internal message bus. Agents connect through an **Agent Bridge** (an HTTP API and
 an MCP server); humans participate from the chat tools they already use
-(Slack, Mattermost, Discord, Teams, Telegram) through **collaboration bridges** that relay
+(Slack, Discord, Teams, Telegram) through **collaboration bridges** that relay
 messages both ways. Operators manage the platform through a **gateway** API and
 its dashboard.
 
@@ -55,7 +55,6 @@ the root ASGI app; the MCP server, health check, and gateway are mounted onto it
 flowchart LR
   subgraph ext["External chat platforms"]
     SL[Slack]
-    MM[Mattermost]
     DC[Discord]
     TE[Teams]
     TG[Telegram]
@@ -205,7 +204,7 @@ sequenceDiagram
 
 Inbound messages do **not** arrive through the `/gateway/collaborations` admin
 API (that only does bridge CRUD). Each adapter owns its transport:
-Slack (Socket Mode WebSocket), Mattermost (WebSocket), Discord (Gateway
+Slack (Socket Mode WebSocket), Discord (Gateway
 WebSocket) and Telegram (Bot API long polling) hold **authenticated outbound
 connections**; Teams is the exception —
 it self-hosts an HTTP listener (default port 3978) for Bot Framework activities

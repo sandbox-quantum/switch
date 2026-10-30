@@ -15,21 +15,19 @@ import type { ServerHost } from '../host/types';
 import { crossesMatrixBoundary } from '../matrix-migration';
 import { managedSwitchVersion } from '../server-version';
 import type { NativeLayout } from './native-paths';
-import { DATABASE, MATTERMOST_DATABASE, OWNER_ROLE } from './postgres-cluster';
+import { DATABASE, OWNER_ROLE } from './postgres-cluster';
 import { runCommand } from './run-command';
 
 /**
  * Moving a local server from its Docker stack to the native runtime, data and
  * all.
  *
- * The stack's two databases — switch-core's and Mattermost's — are exported
- * with `pg_dump` inside its own Postgres container, then imported into the new
- * native cluster with `pg_restore` from a throwaway container of the same
- * image: the portable PostgreSQL ships no client tools, and Docker is there by
+ * switch-core's database is exported with `pg_dump` inside the stack's own
+ * Postgres container, then imported into the new native cluster with
+ * `pg_restore` from a throwaway container of the same image: the portable PostgreSQL ships no client tools, and Docker is there by
  * definition while a Docker stack is being moved. Everything else carries over
- * by staying where it is: the credentials (the same secrets bundle), the ports
- * (so agents keep their API URL), and Mattermost's uploaded files, whose volume
- * the native Mattermost mounts by the same name.
+ * by staying where it is: the credentials (the same secrets bundle) and the
+ * ports (so agents keep their API URL).
  *
  * Nothing of the Docker stack is deleted. Its containers are removed but its
  * volumes stay, so a move that fails leaves a stack that simply starts again.
@@ -117,12 +115,12 @@ export async function exportDockerStack(
   const container = await serviceContainerId(host, DATABASE_SERVICE);
 
   const dumps: DockerExport['dumps'] = [];
-  for (const database of [DATABASE, MATTERMOST_DATABASE]) {
+  for (const database of [DATABASE]) {
     if (!(await databaseExists(host, container, database))) {
       log.info(`local-switch-server: the Docker server has no ${database} database to move`);
       continue;
     }
-    onMessage(`Exporting the ${database === DATABASE ? 'Switch' : 'Mattermost'} database…`);
+    onMessage('Exporting the Switch database…');
     const inContainer = `/tmp/switch-move-${database}.dump`;
     const file = path.join(dir, `${database}.dump`);
     await runDocker(
@@ -176,7 +174,7 @@ export async function importIntoCluster(
     : ['--add-host', 'host.docker.internal:host-gateway'];
   const pgHost = linux ? '127.0.0.1' : 'host.docker.internal';
   for (const { database, file } of exported.dumps) {
-    onMessage(`Importing the ${database === DATABASE ? 'Switch' : 'Mattermost'} database…`);
+    onMessage('Importing the Switch database…');
     await runCommand(
       dockerExecutable(),
       [

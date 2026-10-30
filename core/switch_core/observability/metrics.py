@@ -13,8 +13,8 @@ Aggregation is **delta**: each collection returns what happened since the last
 and resets, so a restart loses one interval rather than reading downstream as a
 counter rollback.
 
-Recording takes a lock because not every caller is on the event loop — the
-Mattermost adapter dispatches from an OS thread.
+Recording takes a lock because not every caller is on the event
+loop.
 """
 
 from __future__ import annotations

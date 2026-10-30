@@ -6,7 +6,6 @@ fails, or there is no one person to reach
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -17,7 +16,6 @@ from telegram.error import Forbidden
 from switch_core.bridges.collaboration.adapter import PrivateNoticeRefused
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
-from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
@@ -369,33 +367,3 @@ async def test_in_a_direct_conversation_the_notice_stays_where_it_is(
 
     assert len(adapter.admin_messages) == 1
     assert "privately" not in caplog.text
-
-
-async def test_mattermost_notice_is_an_ephemeral_post_for_the_sender() -> None:
-    created: list[dict[str, Any]] = []
-    driver = SimpleNamespace(
-        posts=SimpleNamespace(create_ephemeral_post=created.append)
-    )
-    adapter = MattermostAdapter.__new__(MattermostAdapter)
-    adapter._main_loop = asyncio.get_running_loop()
-    adapter._admin_driver = driver  # type: ignore[assignment]
-    adapter._gateway_public_url = None
-
-    await adapter.notify_privately(
-        channel_id="chan-1",
-        channel_name="town-square",
-        user_id="mm-alice",
-        content="🚫 Your message was blocked by Switch Trust",
-        thread_root_id="post-root",
-    )
-
-    assert created == [
-        {
-            "user_id": "mm-alice",
-            "post": {
-                "channel_id": "chan-1",
-                "message": "🚫 Your message was blocked by Switch Trust",
-                "root_id": "post-root",
-            },
-        }
-    ]

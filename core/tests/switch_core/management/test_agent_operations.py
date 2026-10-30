@@ -1571,7 +1571,7 @@ async def _installs(harness: Harness, template_id: str) -> list[Any]:
 
 
 def _buddy_document() -> str:
-    buddy = official_template("official:switch-buddy", True, switch_buddy=True)
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     return buddy.content
 

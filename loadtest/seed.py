@@ -134,7 +134,7 @@ class Admin:
     async def refuse_bridges(self) -> None:
         """Refuse a workspace with an active bridge: each bridge gives every
         agent of its workspace an identity on its platform (a role on
-        Discord, a user group on Slack, a bot on Mattermost), so a run there
+        Discord, a user group on Slack), so a run there
         would make thousands of them."""
         r = await self.call("GET", "/collaborations")
         if r.status_code != 200:

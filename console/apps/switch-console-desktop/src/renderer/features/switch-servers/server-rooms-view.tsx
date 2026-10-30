@@ -117,7 +117,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const activeCards = all.map(toCard);
   const archivedCards = [
     ...(archivedRoomsQuery.data ?? []).map(toCard),
-    ...withConsoleGroupChats([], archivedChats).map((room) => ({
+    ...withConsoleGroupChats([], archivedChats, false).map((room) => ({
       ...toCard(room),
       archived: true,
     })),

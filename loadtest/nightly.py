@@ -461,8 +461,7 @@ def post_webhook(url: str, text: str) -> None:
     if not url:
         print("no webhook set; report not sent", flush=True)
         return
-    # Discord takes `content`; its Slack-compatible endpoint, Slack and
-    # Mattermost take `text`.
+    # Discord takes `content`; its Slack-compatible endpoint and Slack take `text`.
     body = (
         {"content": text}
         if "discord" in url and not url.rstrip("/").endswith("/slack")

@@ -36,7 +36,7 @@ from switch_core.db.stores.template_store import (
     TemplateStore,
 )
 from switch_core.db.stores.user_store import UserStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     current_telemetry,
@@ -135,7 +135,6 @@ def _official_or_none(
         return None
     template = official_template(
         template_id,
-        config.feature_flags[AGENT_MANAGEMENT],
         config.feature_flags[SWITCH_BUDDY],
     )
     if template is None:
@@ -312,7 +311,6 @@ async def list_templates(
         else [
             TemplateSummary(**_official_detail(t).model_dump(exclude={"content"}))
             for t in official_templates(
-                config.feature_flags[AGENT_MANAGEMENT],
                 config.feature_flags[SWITCH_BUDDY],
             )
             if matches(t, q, kind)

@@ -1,18 +1,21 @@
-import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { stringify } from 'yaml';
 import {
-  MattermostClient,
+  ConsoleChatClient,
+  type ChatMessage,
+  type ChatRequest,
+} from '../clients/console-chat-client.ts';
+import {
+  OWNER_ONLY,
   sleep,
-  type MattermostPost,
-  type MattermostUser,
-} from '../clients/mattermost-client.ts';
-import { OWNER_ONLY, TemplateRefusal, type TemplateRun } from '../clients/switch-client.ts';
+  SwitchHttpError,
+  TemplateRefusal,
+  type TemplateRun,
+} from '../clients/switch-client.ts';
 import type { NameScope } from '../core/run.ts';
 import type { ScenarioHeader } from '../core/scenario.ts';
 import { IssuedSecrets } from '../core/secrets.ts';
-import { waitForBridgeReady } from '../fixtures/fixtures.ts';
 import {
   AGENT_INSTRUCTIONS,
   CLAUDE_MODEL,
@@ -25,9 +28,10 @@ import {
 /**
  * The scenarios. Each one drives the full path
  *
- *     Mattermost channel -> Switch room -> Switch Console session -> agent -> room
+ *     in-Console chat -> Switch room -> Switch Console session -> agent -> room
  *
- * by posting as a human and waiting on what the agent's bot posts back. Nothing
+ * by posting as a human through the Console's own chat routes and waiting on
+ * what the agent posts back. Nothing
  * here talks to Switch Console directly: if a scenario passes, a real operator
  * doing the same thing by hand would have seen the same result.
  *
@@ -40,24 +44,26 @@ export interface ScenarioResult {
   name: string;
   ok: boolean;
   details: string;
-  transcript: MattermostPost[];
+  transcript: ChatMessage[];
   durationMs: number;
+  /** Stop or settling failed after this scenario, so the agent may still be busy. */
+  blocksNext?: boolean;
 }
 
-/** `names` names whatever a scenario makes beyond the shared agent and channel. */
+/** `names` names whatever a scenario makes beyond the shared agent and room. */
 export type Scenario = (harness: Harness, names: NameScope) => Promise<ScenarioResult>;
 
 /** How long a scenario waits for the agent to say something. */
 const REPLY_DEADLINE_MS = Number(process.env.SWITCH_E2E_REPLY_TIMEOUT_MS ?? 5 * 60_000);
 
 /**
- * Phrases Switch itself posts **as the agent's own bot** when there is no live
+ * Phrases Switch itself posts **as the agent** when there is no live
  * session — the onboarding notice, and the command handlers' refusals.
  *
  * They have to be recognised rather than treated as agent output, because they
  * are indistinguishable from it by author: verified against a live server, the
- * "I'm not online in this room" notice arrives from the agent's bot account, not
- * from the Switch Admin bot. A scenario that accepts any bot post therefore
+ * "I'm not online in this room" notice arrives from the agent's own account, not
+ * from the Switch Admin. A scenario that accepts any agent message therefore
  * passes with no session running at all — which is exactly the silent-green
  * failure this harness exists to rule out.
  */
@@ -73,13 +79,13 @@ const NO_SESSION_MARKERS = [
 ];
 
 /** Whether a post is one of Switch's own no-session notices rather than agent output. */
-export function isNoSessionNotice(post: MattermostPost): boolean {
-  const text = post.message.toLowerCase();
+export function isNoSessionNotice(post: ChatMessage): boolean {
+  const text = post.body.toLowerCase();
   return NO_SESSION_MARKERS.some((marker) => text.includes(marker));
 }
 
 /**
- * Switch's own running commentary, posted **as the agent's bot** while a session
+ * Switch's own running commentary, posted **as the agent** while a session
  * works: the activity ticker, the "needs your input" ping, the acknowledgement
  * of a control command.
  *
@@ -95,33 +101,9 @@ const RUNTIME_STATUS_MARKERS = [
   'interrupted my current turn',
 ];
 
-/**
- * Where a turn has got to, as the session renderer heads its status card with
- * it: one post per turn, edited in place from `Working…` to how the turn ended
- * (`TURN_STATE` in core/switch_core/bridges/collaboration/session/renderers).
- */
-export type TurnState = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
-
-const TURN_STATE_HEADINGS: readonly [TurnState, string][] = [
-  ['queued', 'Queued.'],
-  ['running', 'Working…'],
-  ['completed', 'Turn complete.'],
-  // A completed turn whose duration is known says how long it ran instead.
-  ['completed', 'Worked for '],
-  ['interrupted', 'Turn interrupted.'],
-  ['error', 'Turn ended with an error.'],
-];
-
-/** The state a turn status card reports, or null when the post is not one. */
-export function turnStateOf(post: MattermostPost): TurnState | null {
-  const heading = /^\*\*([^*]+)\*\*/.exec(post.message.trimStart())?.[1] ?? '';
-  return TURN_STATE_HEADINGS.find(([, text]) => heading.startsWith(text))?.[0] ?? null;
-}
-
 /** Whether a post is Switch narrating the session rather than the agent speaking. */
-export function isRuntimeStatusPost(post: MattermostPost): boolean {
-  if (turnStateOf(post) !== null) return true;
-  const text = post.message.toLowerCase();
+export function isRuntimeStatusPost(post: ChatMessage): boolean {
+  const text = post.body.toLowerCase();
   return RUNTIME_STATUS_MARKERS.some((marker) => text.includes(marker));
 }
 
@@ -130,17 +112,17 @@ export function isRuntimeStatusPost(post: MattermostPost): boolean {
  * "the agent said nothing useful" path through here so the report names the
  * cause — no session — instead of a bare timeout.
  */
-function assertNotNoSession(posts: MattermostPost[]): void {
+function assertNotNoSession(posts: ChatMessage[]): void {
   const notice = posts.find(isNoSessionNotice);
   if (notice) {
     throw new Error(
       `No live Switch Console session for this agent — Switch answered on its behalf: ` +
-        `«${notice.message.replace(/\s+/g, ' ').slice(0, 200)}»`
+        `«${notice.body.replace(/\s+/g, ' ').slice(0, 200)}»`
     );
   }
 }
 
-/** The marker the agent is asked to echo — distinctive enough to grep a channel for. */
+/** The marker the agent is asked to echo — distinctive enough to grep a room for. */
 export const OK_MARKER = 'SWITCH_E2E_OK';
 
 /**
@@ -149,146 +131,193 @@ export const OK_MARKER = 'SWITCH_E2E_OK';
  * whatever the body managed to record.
  */
 async function scenario(
+  harness: Harness,
   name: string,
-  body: (record: (posts: MattermostPost[]) => void) => Promise<string>
+  body: (record: (posts: ChatMessage[]) => void, known: Set<string>) => Promise<string>
 ): Promise<ScenarioResult> {
   const started = Date.now();
-  let transcript: MattermostPost[] = [];
-  const record = (posts: MattermostPost[]): void => {
-    const seen = new Set(transcript.map((post) => post.id));
-    transcript = [...transcript, ...posts.filter((post) => !seen.has(post.id))].sort(
-      (a, b) => a.create_at - b.create_at
+  // Request ids already in the room, so this scenario only ever answers its own cards.
+  let known = new Set<string>();
+  let transcript: ChatMessage[] = [];
+  const record = (posts: ChatMessage[]): void => {
+    const seen = new Set(transcript.map((post) => post.messageId));
+    transcript = [...transcript, ...posts.filter((post) => !seen.has(post.messageId))].sort(
+      (a, b) => a.seq - b.seq
     );
   };
 
   try {
-    const details = await body(record);
+    known = new Set((await harness.chat.requests(harness.room.id)).map((r) => r.requestId));
+    const details = await body(record, known);
     return { name, ok: true, details, transcript, durationMs: Date.now() - started };
   } catch (error) {
+    let details = error instanceof Error ? error.message : String(error);
+    let blocksNext = false;
+    // Stop the turn so an unanswered card or a stuck command cannot block the next scenario.
+    await harness.chat
+      .control(harness.room.id, harness.agent.id, 'interrupt')
+      .then(() => settle(harness, known))
+      .catch((stopError: unknown) => {
+        blocksNext = true;
+        details += ` (and Stop failed: ${stopError instanceof Error ? stopError.message : String(stopError)})`;
+      });
     return {
       name,
       ok: false,
-      details: error instanceof Error ? error.message : String(error),
+      details,
       transcript,
       durationMs: Date.now() - started,
+      blocksNext,
     };
   }
 }
 
-/**
- * The handle a request card answers to: `A1` in "request `A1`". Switch renders
- * every relayed question and permission prompt as such a card, and an answer
- * is the handle followed by the option's number, typed as a plain message.
- */
-export function requestHandle(text: string): string | null {
-  return /request `([A-Za-z]+\d+)`/.exec(text)?.[1] ?? null;
-}
-
-/** Answer a request card, and return the moment just before the answer was posted. */
-async function answerCard(harness: Harness, card: MattermostPost, option: number): Promise<number> {
-  const handle = requestHandle(card.message);
-  if (handle === null) throw new Error(`Post ${card.id} is not a request card: «${card.message}»`);
-  const sinceMs = Date.now() - 1;
-  await harness.mattermost.post({ channelId: harness.channel.id, message: `${handle} ${option}` });
-  return sinceMs;
-}
+const SETTLE_DEADLINE_MS = 60_000;
 
 /**
- * The number a request card gives the option labelled `label`. The card numbers
- * options in the order the agent supplied them, which need not be the order it
- * was asked to list them in.
+ * Stop only confirms the command was accepted. Wait until the agent has no
+ * queued/running turn and none of this scenario's requests is still open.
  */
-export function optionNumber(card: string, label: string): number | null {
-  const match = new RegExp(`(?:^|\\s)(\\d+)\\.\\s+${label}\\b`, 'i').exec(card);
-  return match ? Number(match[1]) : null;
-}
-
-function chosenOption(card: MattermostPost): number {
-  const option = optionNumber(card.message, CHOSEN);
-  if (option === null) {
-    throw new Error(`Request card ${card.id} offers no option '${CHOSEN}': «${card.message}»`);
+async function settle(harness: Harness, known: Set<string>): Promise<void> {
+  const deadline = Date.now() + SETTLE_DEADLINE_MS;
+  for (;;) {
+    const { items, approvals } = await harness.chat.activity(harness.room.id);
+    const running = items.filter(
+      (item) =>
+        item.agentId === harness.agent.id &&
+        item.kind === 'turn' &&
+        (item.status === 'queued' || item.status === 'running')
+    );
+    const open = approvals.filter(
+      (request) =>
+        request.agentId === harness.agent.id &&
+        request.state === 'open' &&
+        !known.has(request.requestId)
+    );
+    if (running.length === 0 && open.length === 0) return;
+    if (Date.now() >= deadline)
+      throw new Error(
+        `agent did not settle ${SETTLE_DEADLINE_MS / 1000}s after Stop: ` +
+          `running turns [${running.map((item) => item.turnId).join(', ')}], ` +
+          `open requests [${open.map((request) => request.requestId).join(', ')}]`
+      );
+    await sleep(2_000);
   }
-  return option;
 }
 
-/** Post `@agent <text>` and return the moment just before it was posted. */
+/** Post `@agent <text>` and return its position in the room. */
 async function ask(harness: Harness, text: string): Promise<number> {
-  const sinceMs = Date.now() - 1;
-  await harness.mattermost.post({
-    channelId: harness.channel.id,
-    message: `@${harness.agent.name} ${text}`,
-  });
-  return sinceMs;
+  const sent = await harness.chat.send(harness.room.id, `@${harness.agent.name} ${text}`);
+  return sent.seq;
 }
 
-/** Wait for a bot post matching `predicate`, or throw with the transcript. */
+/** Wait for an agent message matching `predicate`, or throw with the transcript. */
 async function expectBotPost(
-  mattermost: MattermostClient,
+  harness: Harness,
   params: {
-    /** The channel to watch, and the bot whose posts count. */
-    where: { channelId: string; botId: string };
+    /** The room and agent to watch, when not the shared ones. */
+    where?: { roomId: string; agentId: string };
     since: number;
-    predicate: (post: MattermostPost) => boolean;
+    predicate: (post: ChatMessage) => boolean;
     describe: string;
     deadlineMs?: number;
-    record: (posts: MattermostPost[]) => void;
+    record: (posts: ChatMessage[]) => void;
   }
-): Promise<MattermostPost> {
-  const { match, transcript } = await mattermost.waitForPost({
-    channelId: params.where.channelId,
-    fromUserId: params.where.botId,
+): Promise<ChatMessage> {
+  const { match, transcript } = await harness.chat.waitForMessage({
+    roomId: params.where?.roomId ?? harness.room.id,
+    fromAgentId: params.where?.agentId ?? harness.agent.id,
     // Neither a no-session notice nor Switch's activity commentary is ever a
     // match, however permissive the caller's predicate — both are Switch
-    // talking on the bot's account, not the agent.
+    // talking on the agent's account, not the agent.
     predicate: (post) =>
       !isNoSessionNotice(post) && !isRuntimeStatusPost(post) && params.predicate(post),
-    sinceMs: params.since,
+    afterSeq: params.since,
     deadlineMs: params.deadlineMs ?? REPLY_DEADLINE_MS,
   });
   params.record(transcript);
   if (!match) {
     assertNotNoSession(transcript);
     throw new Error(
-      `Timed out waiting for ${params.describe}. Channel said: ${summarise(transcript)}`
+      `Timed out waiting for ${params.describe}. Room said: ${summarise(transcript)}`
     );
   }
   return match;
 }
 
-/** The shared channel, and the shared agent's bot. */
-function sharedRoom(harness: Harness): { channelId: string; botId: string } {
-  return { channelId: harness.channel.id, botId: harness.bot.id };
+/**
+ * Wait for the agent's open question or permission request in the room — the
+ * card Console draws in place of room text — or throw with the transcript.
+ */
+async function expectRequest(
+  harness: Harness,
+  params: {
+    since: number;
+    kind: ChatRequest['kind'];
+    known: Set<string>;
+    describe: string;
+    record: (posts: ChatMessage[]) => void;
+  }
+): Promise<ChatRequest> {
+  const request = await harness.chat.waitForOpenRequest({
+    roomId: harness.room.id,
+    agentId: harness.agent.id,
+    kind: params.kind,
+    known: params.known,
+    deadlineMs: REPLY_DEADLINE_MS,
+  });
+  if (request) return request;
+  const transcript = await harness.chat.messagesAfter(harness.room.id, params.since);
+  params.record(transcript);
+  assertNotNoSession(transcript);
+  throw new Error(`Timed out waiting for ${params.describe}. Room said: ${summarise(transcript)}`);
 }
 
-function summarise(posts: MattermostPost[]): string {
+/** Answer a permission card with its plain allow, after checking it is for `mention`. */
+async function allowRequest(
+  harness: Harness,
+  request: ChatRequest,
+  mention: string
+): Promise<void> {
+  const shown = `${request.title}\n${request.detail ?? ''}`;
+  if (!shown.includes(mention))
+    throw new Error(`The permission request does not name ${mention}: «${shown}»`);
+  const allow = request.options.find((option) => option.decision === 'accept');
+  if (!allow)
+    throw new Error(
+      `The permission request offers no allow option: ${JSON.stringify(request.options)}`
+    );
+  await harness.chat.answer(request, { answer: allow.id });
+}
+
+function summarise(posts: ChatMessage[]): string {
   if (posts.length === 0) return '(nothing at all — no session ever replied)';
-  return posts.map((post) => `«${post.message.replace(/\s+/g, ' ').slice(0, 160)}»`).join(' | ');
+  return posts.map((post) => `«${post.body.replace(/\s+/g, ' ').slice(0, 160)}»`).join(' | ');
 }
 
-function lower(post: MattermostPost): string {
-  return post.message.toLowerCase();
+function lower(post: ChatMessage): string {
+  return post.body.toLowerCase();
 }
 
 // ── greet ────────────────────────────────────────────────────────────────────
 
 /**
  * The smoke test: does an addressed message reach a session at all, and does its
- * answer come back into the channel as the agent's bot?
+ * answer come back into the room as the agent?
  *
  * Everything else assumes this passes. A failure here means either no session is
  * running for the agent, or nothing is relaying the room's events into it.
  */
 export const greet: Scenario = (harness) =>
-  scenario('greet', async (record) => {
+  scenario(harness, 'greet', async (record) => {
     const since = await ask(harness, `reply with exactly ${OK_MARKER} and nothing else`);
-    const match = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
+    const match = await expectBotPost(harness, {
       since,
       record,
-      predicate: (post) => post.message.includes(OK_MARKER),
+      predicate: (post) => post.body.includes(OK_MARKER),
       describe: `a reply containing ${OK_MARKER}`,
     });
-    return `bot replied in post ${match.id}`;
+    return `agent replied in message ${match.messageId}`;
   });
 
 // ── question ─────────────────────────────────────────────────────────────────
@@ -298,14 +327,14 @@ const CHOSEN = 'green';
 
 /**
  * A two-turn exchange: the agent asks a clarifying question, the human answers
- * in the channel, and the agent uses the answer.
+ * it (the card, or in the room for a prose question), and the agent uses the answer.
  *
  * This is the round trip a one-shot reply cannot fake — it only passes if the
  * session is still alive and still connected to the room when the second message
  * arrives, which is the thing an injected-prompt runtime most easily gets wrong.
  */
 export const question: Scenario = (harness) =>
-  scenario('question', async (record) => {
+  scenario(harness, 'question', async (record, known) => {
     const prose = harness.env.provider.questionMode === 'prose';
     const since = await ask(
       harness,
@@ -318,50 +347,61 @@ export const question: Scenario = (harness) =>
             `exactly the options ${CHOICES.join(', ')}. Then reply with the single word I chose.`
     );
 
-    const asked = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
-      since,
-      record,
-      // A native question is relayed as a request card numbering the options;
-      // a plain-prose question also lists the three options, so the card is
-      // what proves the relay path was taken — and is exactly what cannot be
-      // required of a provider that offers SDK sessions no such tool.
-      predicate: (post) =>
-        CHOICES.every((choice) => lower(post).includes(choice)) &&
-        (prose || (requestHandle(post.message) !== null && /\b2\.\s/.test(post.message))),
-      describe: prose
-        ? `a question listing the options ${CHOICES.join('/')}`
-        : `a relayed question numbering the options ${CHOICES.join('/')}`,
-    });
+    let asked: string;
+    let answeredAt = since;
+    if (prose) {
+      asked = (
+        await expectBotPost(harness, {
+          since,
+          record,
+          predicate: (post) => CHOICES.every((choice) => lower(post).includes(choice)),
+          describe: `a question listing the options ${CHOICES.join('/')}`,
+        })
+      ).messageId;
+      answeredAt = await ask(harness, CHOSEN);
+    } else {
+      // A native question is not posted into the room: Console draws it as a
+      // card and answers it through Switch, as the harness does here.
+      const request = await expectRequest(harness, {
+        since,
+        kind: 'questions',
+        known,
+        describe: `a question card offering ${CHOICES.join('/')}`,
+        record,
+      });
+      const color = request.questions.find(
+        (q) =>
+          `${q.title} ${q.prompt}`.toLowerCase().includes('color') &&
+          CHOICES.every((choice) => q.options.some((o) => o.label.toLowerCase() === choice))
+      );
+      if (!color)
+        throw new Error(
+          `The question card is not "Which color?" with ${CHOICES.join('/')}: ${JSON.stringify(request.questions)}`
+        );
+      const chosen = color.options.find((o) => o.label.toLowerCase() === CHOSEN)!;
+      await harness.chat.answer(request, {
+        answers: [{ questionId: color.id, selectedOptionIds: [chosen.id], customText: null }],
+      });
+      asked = `card ${request.requestId}`;
+    }
 
-    // On the card where the relay is what reads the answer; by word where the
-    // agent itself is. The card and the relay's acknowledgement name the choice
-    // too, so the agent's own reply must be told apart from them either way.
-    const answeredAt = prose
-      ? await ask(harness, CHOSEN)
-      : await answerCard(harness, asked, chosenOption(asked));
-    const answer = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
+    // The agent's own reply, told apart from any acknowledgement naming the choice.
+    const answer = await expectBotPost(harness, {
       since: answeredAt,
       record,
-      predicate: (post) =>
-        lower(post).includes(CHOSEN) &&
-        requestHandle(post.message) === null &&
-        !post.message.trimStart().startsWith('✅'),
+      predicate: (post) => lower(post).includes(CHOSEN) && !post.body.trimStart().startsWith('✅'),
       describe: `a reply naming my choice '${CHOSEN}'`,
     });
 
-    return `asked in ${asked.id}, answered in ${answer.id}`;
+    return `asked in ${asked}, answered in ${answer.messageId}`;
   });
 
 // ── approval ─────────────────────────────────────────────────────────────────
 
-const APPROVAL_HINTS = ['approve', 'approval', 'permission', 'allow', 'permit', 'proceed'];
-
 /**
  * A tool call the agent is not pre-authorised to make: the session must surface
- * the permission request into the room, take `1` (allow) from the channel, and
- * then actually run the command.
+ * the permission request as a card in the room, take its allow from the
+ * person, and then actually run the command.
  *
  * Requires the agent's session to be running WITHOUT auto-approve. Note that an
  * OpenCode agent's registered profile declares no `pre_invocation_mediation`, so
@@ -370,33 +410,39 @@ const APPROVAL_HINTS = ['approve', 'approval', 'permission', 'allow', 'permit', 
  * is the scenario most tightly coupled to that runtime.
  */
 export const approval: Scenario = (harness) =>
-  scenario('approval', async (record) => {
+  scenario(harness, 'approval', async (record, known) => {
     const file = `approved-${harness.runId}.txt`;
     const since = await ask(
       harness,
       `run the shell command \`echo ${OK_MARKER} > ${file}\` and then reply with the single word done`
     );
 
-    const prompt = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
+    const prompt = await expectRequest(harness, {
       since,
+      kind: 'approval',
+      known,
+      describe: 'a permission card for the shell command',
       record,
-      predicate: (post) =>
-        requestHandle(post.message) !== null &&
-        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
-      describe: 'an approval card for the shell command',
     });
+    await allowRequest(harness, prompt, file);
 
-    const approvedAt = await answerCard(harness, prompt, 1);
-    const done = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
-      since: approvedAt,
+    const done = await expectBotPost(harness, {
+      since,
       record,
       predicate: (post) => lower(post).includes('done'),
       describe: "a 'done' reply after the command was approved",
     });
 
-    return `prompted in ${prompt.id}, completed in ${done.id}`;
+    // Without SWITCH_E2E_AGENT_DIR the agent's working directory is unknown here, so the file cannot be checked.
+    const dir = harness.env.provider.agentRepoDir;
+    if (!dir)
+      return `prompted in card ${prompt.requestId}, completed in ${done.messageId} (file not checked: no SWITCH_E2E_AGENT_DIR)`;
+    const written = await markerContents(path.join(dir, file));
+    if (written?.trim() !== OK_MARKER)
+      throw new Error(
+        `The approved command did not write ${OK_MARKER} to ${file}: ${JSON.stringify(written)}`
+      );
+    return `prompted in card ${prompt.requestId}, completed in ${done.messageId}, ${file} written`;
   });
 
 // ── interrupt ────────────────────────────────────────────────────────────────
@@ -417,7 +463,7 @@ async function markerContents(file: string): Promise<string | null> {
 
 /** A real local command must start and then be cancelled before its final write. */
 export const interrupt: Scenario = (harness) =>
-  scenario('interrupt', async (record) => {
+  scenario(harness, 'interrupt', async (record, known) => {
     const dir = harness.env.provider.agentRepoDir;
     if (!dir)
       throw new Error('The interrupt scenario requires SWITCH_E2E_AGENT_DIR on this machine.');
@@ -429,16 +475,14 @@ export const interrupt: Scenario = (harness) =>
       harness,
       `Run this exact shell command for a bounded cancellation test: \`${command}\`. Wait for completion before replying. Do not create these files with another tool.`
     );
-    const permission = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
+    const prompt = await expectRequest(harness, {
       since,
+      kind: 'approval',
+      known,
+      describe: 'permission to run the cancellation command',
       record,
-      predicate: (post) =>
-        requestHandle(post.message) !== null &&
-        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
-      describe: 'an approval card for the cancellation command',
     });
-    await answerCard(harness, permission, 1);
+    await allowRequest(harness, prompt, stem);
     const deadline = Date.now() + 60_000;
     while (!isStartMarker((await markerContents(startedFile)) ?? '')) {
       if (Date.now() > deadline)
@@ -446,21 +490,20 @@ export const interrupt: Scenario = (harness) =>
       await sleep(500);
     }
     const startedAt = Date.now();
-    await harness.mattermost.post({
-      channelId: harness.channel.id,
-      message: `!interrupt @${harness.agent.name}`,
-    });
+    // The Console's Stop: `!interrupt @agent`, posted into the room.
+    await harness.chat.control(harness.room.id, harness.agent.id, 'interrupt');
     // Wait beyond the command's complete lifetime; an un-cancelled sleep must finish.
     while (Date.now() - startedAt < 95_000) {
       if ((await markerContents(finishedFile)) !== null)
         throw new Error('The interrupted command wrote its completion marker.');
       await sleep(1_000);
     }
-    const posts = await harness.mattermost.postsSince(harness.channel.id, since);
+    const posts = await harness.chat.messagesAfter(harness.room.id, since);
     record(posts);
     assertNotNoSession(posts);
     if ((await markerContents(finishedFile)) !== null)
       throw new Error('The interrupted command completed.');
+    await settle(harness, known);
     return 'command start confirmed; completion marker absent after 95s';
   });
 
@@ -468,121 +511,96 @@ export const interrupt: Scenario = (harness) =>
 
 /**
  * Answering a request card takes the same permission as addressing the agent.
- * With the agent open only to its owner, a person who is not the owner answers
- * the card and is told the answer did not land, and the command does not run;
- * the owner answers it and the command runs.
+ * With the agent open only to its owner, a person in the room who is not the
+ * owner answers the card and is refused, and the command does not run; the
+ * owner answers it and the command runs.
  *
- * The second person signs up on the spot, so this runs only where Mattermost
- * lets anyone sign up: the throwaway stack and a local one. On both, the person
- * the harness posts as is the identity the admin who owns the agent claimed.
+ * The second person is a new user of the workspace, which cannot be deleted,
+ * so this runs only on the throwaway stack and a local one.
  */
 /** How long a refused answer is given to run the command anyway, before the owner answers. */
 const REFUSED_QUIET_MS = 20_000;
 
 export const cardAnswerRefused: Scenario = (harness, names) =>
-  scenario('card-answer-refused', async (record) => {
-    const mattermostEnv = harness.env.mattermost;
-    if (mattermostEnv === null) throw new Error('This scenario needs Mattermost.');
-    const secrets = new IssuedSecrets(harness.env.secretsFile);
-    const username = names.name('other');
-    const password = `E2e-${randomBytes(18).toString('base64url')}`;
-    secrets.record(password);
-    const other = await MattermostClient.signUp(mattermostEnv, harness.env.environment, {
-      username,
-      email: `${username}@example.com`,
+  scenario(harness, 'card-answer-refused', async (record, known) => {
+    const email = `${names.name('other')}@e2e.invalid`;
+    const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
+    new IssuedSecrets(harness.env.secretsFile).record(password);
+    const created = await harness.switch.createUser({
+      name: 'E2E other person',
+      email,
       password,
+      role: 'user',
     });
-    secrets.record(other.token);
+    const other = new ConsoleChatClient(harness.switch.as(email, password));
+    await harness.chat.addMember(harness.room.id, created.id);
+
+    await harness.switch.setAddressingPolicy(harness.agent.id, OWNER_ONLY);
     try {
-      return await refuseThenApprove(harness, record, other);
+      const file = `refused-${harness.runId}.txt`;
+      const since = await ask(
+        harness,
+        `run the shell command \`echo ${OK_MARKER} > ${file}\` and then reply with the single word done`
+      );
+      const request = await expectRequest(harness, {
+        since,
+        kind: 'approval',
+        known,
+        describe: 'a permission card for the shell command',
+        record,
+      });
+      const allow = request.options.find((option) => option.decision === 'accept');
+      if (!allow)
+        throw new Error(
+          `The permission request offers no allow option: ${JSON.stringify(request.options)}`
+        );
+
+      const refused = await other.answer(request, { answer: allow.id }).then(
+        () => null,
+        (error: unknown) => error
+      );
+      if (
+        !(refused instanceof SwitchHttpError) ||
+        refused.status !== 403 ||
+        !refused.body.includes('may not address this agent')
+      ) {
+        throw new Error(
+          `The answer of someone who may not address the agent was not refused: ${
+            refused === null ? 'it was accepted' : String(refused)
+          }`
+        );
+      }
+      // A refused answer must not run the command: give it time to, if it would.
+      const quietUntil = Date.now() + REFUSED_QUIET_MS;
+      while (Date.now() < quietUntil) {
+        const ranEarly = (await harness.chat.messagesAfter(harness.room.id, since)).filter(
+          (post) =>
+            post.sender.agentId === harness.agent.id &&
+            !isRuntimeStatusPost(post) &&
+            !isNoSessionNotice(post) &&
+            lower(post).includes('done')
+        );
+        if (ranEarly.length > 0) {
+          record(ranEarly);
+          throw new Error(
+            'The command ran on the answer of someone who may not address the agent.'
+          );
+        }
+        await sleep(2_000);
+      }
+
+      await harness.chat.answer(request, { answer: allow.id });
+      const done = await expectBotPost(harness, {
+        since,
+        record,
+        predicate: (post) => lower(post).includes('done'),
+        describe: "a 'done' reply after the owner approved the command",
+      });
+      return `refused with 403, approved by the owner, completed in ${done.messageId}`;
     } finally {
-      await other.client.leave(other.user.id);
+      await harness.switch.openAddressing(harness.agent.id);
     }
   });
-
-async function refuseThenApprove(
-  harness: Harness,
-  record: (posts: MattermostPost[]) => void,
-  other: { client: MattermostClient; user: MattermostUser }
-): Promise<string> {
-  const mattermostEnv = harness.env.mattermost!;
-  const username = other.user.username;
-  const team = await harness.mattermost.findTeam(mattermostEnv.team);
-  await other.client.joinTeam(team.id, other.user.id);
-  await harness.mattermost.addUserToChannel(harness.channel.id, other.user.id);
-
-  await harness.switch.setAddressingPolicy(harness.agent.id, OWNER_ONLY);
-  try {
-    const file = `refused-${harness.runId}.txt`;
-    const since = await ask(
-      harness,
-      `run the shell command \`echo ${OK_MARKER} > ${file}\` and then reply with the single word done`
-    );
-    const card = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
-      since,
-      record,
-      predicate: (post) =>
-        requestHandle(post.message) !== null &&
-        APPROVAL_HINTS.some((hint) => lower(post).includes(hint)),
-      describe: 'an approval card for the shell command',
-    });
-    const handle = requestHandle(card.message)!;
-    const thread = card.root_id === '' ? card.id : card.root_id;
-
-    const refusedAt = Date.now() - 1;
-    await other.client.post({ channelId: harness.channel.id, message: `${handle} 1` });
-    // Said by the bridge's own admin account, whatever it is called here.
-    const isNotice = (post: MattermostPost): boolean =>
-      post.root_id === thread &&
-      post.message.includes(`answer to ${handle} did not land`) &&
-      post.message.includes('may not address this agent');
-    let notice: MattermostPost | undefined;
-    const until = Date.now() + 60_000;
-    while (notice === undefined && Date.now() < until) {
-      const posts = await harness.mattermost.postsSince(harness.channel.id, refusedAt);
-      record(posts);
-      notice = posts.find(isNotice);
-      if (notice === undefined) await sleep(2_000);
-    }
-    if (notice === undefined) {
-      const seen = await harness.mattermost.postsSince(harness.channel.id, refusedAt);
-      throw new Error(
-        `${username}'s answer to ${handle} was not refused in the card's thread. Channel said: ${summarise(seen)}`
-      );
-    }
-    if (notice.user_id === other.user.id || notice.user_id === harness.human.id) {
-      throw new Error(`The refusal notice was posted by a person, not by Switch: ${notice.id}`);
-    }
-    // A refused answer must not run the command: give it time to, if it would.
-    const quietUntil = Date.now() + REFUSED_QUIET_MS;
-    while (Date.now() < quietUntil) {
-      const ranEarly = (
-        await harness.mattermost.postsFrom(harness.channel.id, harness.bot.id, refusedAt)
-      ).filter(
-        (post) =>
-          !isRuntimeStatusPost(post) && !isNoSessionNotice(post) && lower(post).includes('done')
-      );
-      if (ranEarly.length > 0) {
-        record(ranEarly);
-        throw new Error('The command ran on the answer of someone who may not address the agent.');
-      }
-      await sleep(2_000);
-    }
-
-    const approvedAt = await answerCard(harness, card, 1);
-    const done = await expectBotPost(harness.mattermost, {
-      where: sharedRoom(harness),
-      since: approvedAt,
-      record,
-      predicate: (post) => lower(post).includes('done'),
-      describe: "a 'done' reply after the owner approved the command",
-    });
-    return `refused in ${notice.id}, approved by the owner, completed in ${done.id}`;
-  } finally {
-    await harness.switch.openAddressing(harness.agent.id);
-  }
-}
 
 // ── template ─────────────────────────────────────────────────────────────────
 
@@ -607,18 +625,17 @@ async function runTemplate(harness: Harness, template: string): Promise<Template
 }
 
 /**
- * A template creates a managed agent on the controller and a room on the
- * Mattermost bridge with it in it, and the agent answers there: what a person
- * using a template from Switch Console gets.
+ * A template creates a managed agent on the controller and a room with it and
+ * the person in it, and the agent answers there: what a person using a
+ * template from Switch Console gets.
  */
 export const templateAgent: Scenario = (harness, names) =>
-  scenario('template-agent', async (record) => {
+  scenario(harness, 'template-agent', async (record) => {
     const controllerId = harness.env.provider.controllerId;
     if (controllerId === null) throw new Error('This scenario needs an agent controller.');
     const provider = PROVIDER_BY_AGENT_TYPE[harness.env.provider.agentType];
     const about = `Switch end-to-end harness (run ${harness.runId}). Safe to delete.`;
     const agentName = names.name('tpl');
-    const bridge = await harness.switch.defaultBridge('mattermost');
     const template = stringify({
       version: 1,
       agent: {
@@ -637,10 +654,8 @@ export const templateAgent: Scenario = (harness, names) =>
       room: {
         name: names.name('troom'),
         description: about,
-        bridge: bridge.displayName,
-        // The witness reads the room for the bridge probe, as in the shared room.
-        agents: ['{agent}', harness.witness.name],
-        users: [harness.human.username],
+        agents: ['{agent}'],
+        users: [harness.env.switch.gatewayAdminEmail],
       },
     });
 
@@ -655,19 +670,11 @@ export const templateAgent: Scenario = (harness, names) =>
     const roomId = run.room.room_id;
     undo.push({
       label: `room ${run.room.room_name} (${roomId})`,
-      run: async () => {
-        const { externalChannelId } = await harness.switch.getRoom(roomId);
-        await harness.switch.deleteRoom(roomId);
-        if (externalChannelId === null) return;
-        const left = await harness.mattermost.getChannel(externalChannelId);
-        if (!left.delete_at) await harness.mattermost.archiveChannel(externalChannelId);
-      },
+      run: () => harness.switch.deleteRoom(roomId),
     });
 
     let failed = false;
     try {
-      const room = await harness.switch.getRoom(roomId);
-      const channelId = room.externalChannelId;
       if (run.created_agents.length !== 1) {
         throw new Error(`The template made ${run.created_agents.length} agents, not one.`);
       }
@@ -675,33 +682,19 @@ export const templateAgent: Scenario = (harness, names) =>
       if (made.name !== agentName || made.machine.id !== controllerId || !made.listening) {
         throw new Error(`The template's agent is not the one asked for: ${JSON.stringify(made)}`);
       }
-      if (channelId === null)
-        throw new Error(`The template's room ${room.id} has no Mattermost channel.`);
-      const bot = await harness.mattermost.waitForBotUser(agentName, 60_000);
-      const channel = await harness.mattermost.getChannel(channelId);
-      // A post made before the new bot's socket is up is dropped.
-      await waitForBridgeReady({
-        switchClient: harness.switch,
-        mattermost: harness.mattermost,
-        agent: harness.witness,
-        room,
-        channel,
-        runId: harness.runId,
-      });
       const marker = `${OK_MARKER}_TPL`;
-      const since = Date.now() - 1;
-      await harness.mattermost.post({
-        channelId,
-        message: `@${agentName} reply with exactly ${marker} and nothing else`,
-      });
-      const reply = await expectBotPost(harness.mattermost, {
-        where: { channelId, botId: bot.id },
-        since,
+      const sent = await harness.chat.send(
+        roomId,
+        `@${agentName} reply with exactly ${marker} and nothing else`
+      );
+      const reply = await expectBotPost(harness, {
+        where: { roomId, agentId: made.agent_id },
+        since: sent.seq,
         record,
-        predicate: (post) => post.message.includes(marker),
+        predicate: (post) => post.body.includes(marker),
         describe: `a reply containing ${marker} from the template's agent`,
       });
-      return `${agentName} on ${made.machine.name} replied in post ${reply.id}`;
+      return `${agentName} on ${made.machine.name} replied in message ${reply.messageId}`;
     } catch (error) {
       failed = true;
       throw error;
@@ -724,7 +717,7 @@ export const templateAgent: Scenario = (harness, names) =>
 
 /**
  * A provider-lane scenario: its header, and the function that drives it. All of
- * them share one agent and one channel, set up once per run.
+ * them share one agent and one room, set up once per run.
  */
 export interface ProviderScenario {
   header: ScenarioHeader;
@@ -750,24 +743,44 @@ function providerHeader(
     lane: 'provider',
     environments: PROVIDER_ENVIRONMENTS,
     owner: 'console',
-    requires: ['mattermost', ...requires],
+    requires,
   };
 }
 
 export const SCENARIOS: readonly ProviderScenario[] = [
   { header: providerHeader('greet', ['connect_to_room', 'post_message'], []), run: greet },
   { header: providerHeader('question', ['connect_to_room', 'post_message'], []), run: question },
-  { header: providerHeader('approval', ['connect_to_room', 'post_message'], []), run: approval },
   {
-    header: providerHeader('interrupt', ['connect_to_room', 'post_message'], ['agent-dir']),
+    header: providerHeader(
+      'approval',
+      [
+        'connect_to_room',
+        'post_message',
+        'POST /gateway/agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer',
+        'GET /gateway/chats/{room_id}/activity',
+      ],
+      []
+    ),
+    run: approval,
+  },
+  {
+    header: providerHeader(
+      'interrupt',
+      ['connect_to_room', 'post_message', 'POST /gateway/chats/{room_id}/controls'],
+      ['agent-dir']
+    ),
     run: interrupt,
   },
   {
-    // A second person signs up, which only a throwaway or local Mattermost lets anyone do.
+    // Makes a user, which cannot be deleted: only on a throwaway or local stack.
     header: {
       ...providerHeader(
         'card-answer-refused',
-        ['PUT /gateway/agents/{agent_id}/addressing-policy'],
+        [
+          'PUT /gateway/agents/{agent_id}/addressing-policy',
+          'POST /gateway/users',
+          'POST /gateway/chats/{room_id}/members',
+        ],
         []
       ),
       environments: ['ephemeral', 'local'],

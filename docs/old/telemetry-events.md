@@ -325,7 +325,7 @@ be doing that week.
 **Session** — an agent session as the connection registry knows it: opened when
 an agent connects, closed when it disconnects or its heartbeat lapses.
 
-**Connector** — a collaboration platform bridge (Slack, Mattermost, Discord,
+**Connector** — a collaboration platform bridge (Slack, Discord,
 Teams, Telegram). A connector is *added* when a bridge for that platform first
 reaches a connected state; configuring one that never connects is not an add,
 which is deliberate — the metric is about reaching value, not about saving a
@@ -363,7 +363,7 @@ never invisible.
 | `user_active_7d` | number | same over 7 days. Superseded by `account_active_7d` |
 | `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
 | `user_internal_active_7d` | number | same over 7 days |
-| `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
+| `chat_identity_count` | number | chat identities — platform accounts (Slack, Discord, etc.) — that exist, claimed by an account or not |
 | `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d`. Counts integrations as well as people; superseded by `person_identity_active_1d` plus `bot_identity_active_1d`, and sent for one more stable release |
 | `chat_identity_active_7d` | number | same over 7 days. Superseded likewise |
 | `person_identity_active_1d` | number | **the headline count of people** — distinct chat identities that used a room with an agent in 24h and never posted as an app in that window, linked to a Switch account or not. One person on two platforms is two identities. See "People, bots and accounts" |
@@ -421,7 +421,7 @@ server's agents sharing the channel all post there. Switch relays them into
 the room like any post, through the same kind of chat identity a person gets,
 so `chat_identity_active_*` counted them as people. Where the platform says a
 post came from an app (a Slack app, a Discord bot or a webhook that is not
-Switch's own, a Mattermost bot account or incoming webhook), the bridge marks
+Switch's own), the bridge marks
 it, and that identity counts in `bot_identity_active_*` rather than
 `person_identity_active_*` for the whole window. Telegram never delivers
 another bot's posts and Teams does not mark them, so nothing there is counted
@@ -596,15 +596,14 @@ telemetry is switched off does not emit it later as though it had just happened.
 | `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
 
-**Preconfigured connectors.** The standalone stack, the Helm chart and every
-Console-managed local server run a setup step that registers the bundled
-Mattermost seconds after install. That connector reports `is_preconfigured:
-true`, is never `is_first_connector`, and never claims `first_connector_added`
-— so that milestone is the first connector a person added, not the deployment
-booting. Filter `connector_added` on `is_preconfigured = false` to measure
-onboarding. A bundled connector registered before the flag existed is marked
-on the setup step's next run; if it first connects before that, its one
-`connector_added` reports `false`.
+**Preconfigured connectors.** Historically, some deployment modes ran a setup
+step that registered a collaboration bridge automatically. Such connectors report
+`is_preconfigured: true`, are never `is_first_connector`, and never claim
+`first_connector_added` — so that milestone is the first connector a person
+added, not the deployment booting. Filter `connector_added` on
+`is_preconfigured = false` to measure onboarding. A preconfigured connector
+registered before the flag existed is marked on the setup step's next run; if it
+first connects before that, its one `connector_added` reports `false`.
 
 **`connector_added` fires only for a first connect that was seen.** A
 connector's first connect is recorded whether telemetry is on or not, so one
@@ -1141,7 +1140,7 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `connector_added` — the *first* successful connect for that bridge, ever.
   Restarting a working bridge correctly emits nothing.
 - `first_connector_added` — the first connector a person added on the
-  deployment. The bundled Mattermost the setup step registers never claims it.
+  deployment. Preconfigured connectors from automatic setup never claim it.
 - `bridge_disconnected` — stopping a bridge (`reason: shutdown`), restarting
   one (`restart`), or a live bridge crashing.
 - `connector_removed` — `DELETE /gateway/collaborations/{id}`. Check

@@ -59,7 +59,7 @@ from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -843,8 +843,8 @@ async def send_targeted_message(
         target_names: Agent or user names (the `name` field from
             list_participants, not ids) to address. Prepended as `@name`.
             The reserved name `everyone` is a room-wide mention: it notifies
-            every person in the room on its chat platform (`@channel` on Slack
-            and Mattermost, `@everyone` on Discord) and wakes no agent. Use it
+            every person in the room on its chat platform (`@channel` on Slack,
+            `@everyone` on Discord) and wakes no agent. Use it
             only when every person there genuinely needs to see the message.
             It cannot go in a thread: the platforms only page the whole room
             from a top-level message.
@@ -879,7 +879,10 @@ async def send_targeted_message(
         pages the room, or — on Telegram — already notifies every member of
         every message), `unsupported` (the platform has no channel-wide
         mention a bot can send, as on Teams; the message still posts),
-        `no_bridge` (the room has no chat platform) or `bridge_unavailable`
+        `no_bridge` (the room has no chat platform, such as an in-Console room;
+        messages including ones naming a person appear in the room with unread
+        counts in Console, and nothing there raises an OS/desktop alert —
+        address a person by name when you need them to act), or `bridge_unavailable`
         (its bridge is down or has no channel for the room, so the message
         never reaches the platform). It says what Switch sent, not what the
         platform confirmed.
@@ -945,15 +948,12 @@ async def create_room(
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
-    Rooms are bridged by default: omitting `bridge_id` uses the instance's
-    default bridge (on a standalone deployment, the bundled Mattermost), so the
-    room is readable by humans without the caller knowing the deployment's
-    topology. Pass `bridge_id` to choose a specific bridge — call
-    `list_bridges` to discover ids and present the choice to the user. Pass
-    `internal_only=True` for an agent-only room with no external channel.
-
-    If the instance has no default bridge configured and you omit `bridge_id`,
-    the room is created internal-only.
+    Omitting `bridge_id` uses the instance's default bridge if one is set; with
+    none, the room is created internal-only (an in-Console room). Pass
+    `bridge_id` to choose a specific bridge — call `list_bridges` to discover
+    ids and present the choice to the user. Pass `internal_only=True` to skip
+    the default bridge: the room is an in-Console room with no external
+    channel.
 
     Args:
         name: Display name for the room.
@@ -1492,7 +1492,7 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
     Unlike `invite_agent_to_room` (which adds agents), this adds humans. The
     room must already be bridged: each user is added to the room's external
-    channel (Slack/Mattermost) and joined to the Switch room. Each name must
+    channel and joined to the Switch room. Each name must
     be a user already known to that bridge — e.g. someone who has signed into
     the workspace — otherwise the bridge cannot resolve them. Use this after a
     bridge change to re-invite the humans who were dropped, since their
@@ -1900,7 +1900,6 @@ def _agent_templates() -> AgentTemplates:
     return AgentTemplates(
         TemplateStore(),
         max_bytes=protocol.config.template_max_bytes,
-        agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
     )
 

@@ -4,8 +4,8 @@ import { roomInviteability } from './room-membership';
 const BRIDGED = { bridgeId: 'b-1', channelType: 'channel_public' };
 
 describe('roomInviteability', () => {
-  it('invites to a channel on Slack, Mattermost, Discord and Teams', () => {
-    for (const bridgeType of ['slack', 'mattermost', 'discord', 'teams']) {
+  it('invites to a channel on Slack, Discord and Teams', () => {
+    for (const bridgeType of ['slack', 'discord', 'teams']) {
       expect(roomInviteability({ ...BRIDGED, bridgeType }, 'X')).toEqual({ canInvite: true });
     }
   });

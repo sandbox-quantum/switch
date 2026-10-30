@@ -58,7 +58,7 @@
     "name": "[Switch] a collaboration bridge has crashed",
     "type": "metric alert",
     "query": "min(last_10m):min:switch.health.check{service:switch-core,check:bridges} < 1",
-    "message": "A configured collaboration bridge is no longer running.\n\nThe platform it serves is cut off \u2014 messages from that Slack, Mattermost, Discord, Teams or Telegram channel reach nobody, and nothing Switch sends reaches it. The rest of Switch is unaffected, deliberately: a dead adapter must not take the whole server off the air.\n\nA bridge that crashes removes itself and does not retry, so this needs a restart of that bridge rather than waiting.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "A configured collaboration bridge is no longer running.\n\nThe platform it serves is cut off \u2014 messages from that Slack, Discord, Teams or Telegram channel reach nobody, and nothing Switch sends reaches it. The rest of Switch is unaffected, deliberately: a dead adapter must not take the whole server off the air.\n\nA bridge that crashes removes itself and does not retry, so this needs a restart of that bridge rather than waiting.\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:switch-core",
       "team:switch"

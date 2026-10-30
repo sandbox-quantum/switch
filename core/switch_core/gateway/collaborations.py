@@ -83,7 +83,6 @@ from switch_core.gateway.schemas import (
     SlackTokensCheck,
     SlackTokensChecked,
     UnconfirmedLink,
-    VerifyIdentitySessionRequest,
 )
 from switch_core.request_validation import describe_errors
 from switch_core.room_service import RoomService
@@ -873,7 +872,7 @@ async def claim_bridge_identity(
     """Start linking a platform identity to a Switch user (CHOO-2137).
 
     This is what makes owner-only addressing enforceable: until the person
-    behind a Slack or Mattermost account is known to be a particular Switch
+    behind a Slack or Discord account is known to be a particular Switch
     user, an owner-scoped rule can never recognise them.
 
     The link waits until the account confirms it by posting a one-time code
@@ -897,6 +896,11 @@ async def claim_bridge_identity(
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
+    if bridge.status != "active":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bridge is {bridge.status}; identities can only be claimed on an active bridge",
+        )
 
     target_user_id = _require_self_or_admin(
         user, is_admin, payload.user_id, "claim a messaging identity"
@@ -1293,108 +1297,6 @@ async def _drop_older_link(
     )
     await session.commit()
     return True
-
-
-@router.post("/{bridge_id}/identities/{external_user_row_id}/verify-session")
-async def verify_identity_with_session(
-    bridge_id: str,
-    external_user_row_id: str,
-    payload: VerifyIdentitySessionRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
-    user_store: Annotated[UserStore, Depends(get_user_store)],
-    collab_lifecycle: Annotated[
-        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
-    ],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> ExternalUserSummary:
-    """Confirm the caller's pending link with the account's own session token.
-
-    The alternative to posting a code, for the bundled deployment's setup: it
-    holds the login of the Mattermost account it creates, but no channel has
-    an agent in it yet to hear a code. A session token is as good a proof as a
-    post, since the platform says whose it is. Mattermost only.
-    """
-    caller_id = user.id
-    external_user = await _identity_on_bridge(
-        session, external_user_store, bridge_id, external_user_row_id
-    )
-    request = await external_user_store.get_link_request(
-        session, external_user.id, caller_id
-    )
-    if request is None:
-        raise HTTPException(
-            status_code=404,
-            detail="You have no link to this account waiting to be confirmed",
-        )
-    adapter = collab_lifecycle.get_adapter(bridge_id)
-    if adapter is None:
-        raise HTTPException(
-            status_code=409,
-            detail="Bridge is not running — cannot check this session token",
-        )
-    # Not held across the platform call.
-    await session.commit()
-    try:
-        account_id = await adapter.account_id_for_session(payload.token)
-    except NotImplementedError as e:
-        raise HTTPException(status_code=501, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    if account_id != external_user.external_user_id:
-        raise HTTPException(
-            status_code=403,
-            detail="That session token belongs to a different account",
-        )
-    # A session proves who holds the account, not that one person does: a
-    # bot's token is as good a proof as a person's, and its account is one
-    # whoever runs it posts as. Such a link can never count, so it goes.
-    unlinkable = await _unlinkable_reason(
-        collab_lifecycle, bridge_id, external_user.external_user_id
-    )
-    if unlinkable is not None:
-        try:
-            await external_user_store.cancel_link_request(
-                session, external_user, caller_id
-            )
-        except NoSuchLink:
-            pass
-        else:
-            await session.commit()
-        raise HTTPException(
-            status_code=409,
-            detail=f"This account cannot be linked to anyone. {unlinkable}",
-        )
-
-    request = await external_user_store.lock_link_request(
-        session, external_user.id, caller_id
-    )
-    if request is None:
-        raise HTTPException(
-            status_code=409, detail="The link was cancelled while it was being checked"
-        )
-    await external_user_store.confirm_link_request(session, request)
-    await record_audit_event(
-        session,
-        tenant_id=external_user.tenant_id,
-        actor_user_id=caller_id,
-        action=AuditAction.BRIDGE_IDENTITY_CLAIMED,
-        target_type="external_user",
-        target_id=external_user.id,
-        details={"bridge_id": bridge_id, "user_id": caller_id, "by": "session"},
-    )
-    await session.commit()
-    return await _identity_summary(
-        session,
-        external_user_store,
-        user_store,
-        external_user,
-        None,
-        Principal(caller_id, is_admin),
-    )
 
 
 @router.get("/{bridge_id}/identities/unconfirmed")

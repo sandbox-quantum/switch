@@ -12,8 +12,6 @@ export type LocalServerPorts = {
   gateway: number;
   /** switch-core agent bridge API — a connector's `SWITCH_API_ENDPOINT`. */
   api: number;
-  /** Mattermost web UI. */
-  mattermost: number;
   /** Postgres (host-side, for debugging; the stack talks to it over the network). */
   postgres: number;
 };
@@ -49,7 +47,6 @@ export async function pickFreePorts(): Promise<LocalServerPorts> {
   return {
     gateway: await findFreePort(taken),
     api: await findFreePort(taken),
-    mattermost: await findFreePort(taken),
     postgres: await findFreePort(taken),
   };
 }
@@ -58,10 +55,7 @@ export function isPorts(value: unknown): value is LocalServerPorts {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   return (
-    typeof v.gateway === 'number' &&
-    typeof v.api === 'number' &&
-    typeof v.mattermost === 'number' &&
-    typeof v.postgres === 'number'
+    typeof v.gateway === 'number' && typeof v.api === 'number' && typeof v.postgres === 'number'
   );
 }
 

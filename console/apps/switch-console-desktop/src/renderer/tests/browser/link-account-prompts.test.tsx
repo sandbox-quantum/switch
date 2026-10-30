@@ -239,9 +239,9 @@ describe('the link-your-account reminder', () => {
     // link it reports reads as confirmed.
     listMyIdentities.mockResolvedValue([SLACK_IDENTITY]);
     listMyPendingIdentities.mockResolvedValue([]);
-    const el = await render([bridge('b-slack', 'slack'), bridge('b-mm', 'mattermost')]);
+    const el = await render([bridge('b-slack', 'slack'), bridge('b-dc', 'discord')]);
 
-    expect(el.textContent).toContain('Link your Mattermost account');
+    expect(el.textContent).toContain('Link your Discord account');
     expect(el.textContent).not.toContain('Slack');
   });
 });
