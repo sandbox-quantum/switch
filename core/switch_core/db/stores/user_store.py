@@ -514,12 +514,13 @@ class UserStore:
         `tenants.organization_id` `NOT NULL`; nobody holds a role in it, and
         the policy would refuse the read, so it is not made.
         """
-        role: str | None = await session.scalar(
-            select(OrganizationMember.role)
-            .join(Tenant, Tenant.organization_id == OrganizationMember.organization_id)
-            .where(Tenant.id == tenant_id, OrganizationMember.user_id == user_id)
+        tenant = await session.get(Tenant, tenant_id)
+        if tenant is None or tenant.organization_id is None:
+            return None
+        member = await session.get(
+            OrganizationMember, (tenant.organization_id, user_id)
         )
-        return role
+        return member.role if member is not None else None
 
     async def administers_by_role(
         self, session: AsyncSession, tenant_id: str, user_id: str
