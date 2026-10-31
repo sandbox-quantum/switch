@@ -667,7 +667,7 @@ class EventBuffer:
                 )
                 break
             except Exception as exc:
-                if delay is None or not _transient(exc):
+                if delay is None or not transient_failure(exc):
                     raise
                 logger.warning(
                     "[EVENT-BUF] storing an own event for agent %s in room %s "
@@ -2210,7 +2210,7 @@ class EventBuffer:
         return max(dropped_through or 0, (oldest or 0) - 1, 0)
 
 
-def _transient(exc: BaseException) -> bool:
+def transient_failure(exc: BaseException) -> bool:
     """Whether a failed database call is worth retrying: the connection or the
     connection pool failed, not the statement itself."""
     if isinstance(exc, OperationalError | InterfaceError | PoolTimeoutError):

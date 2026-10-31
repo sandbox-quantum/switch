@@ -160,6 +160,13 @@ version of their own to them without also giving them a release of their own.
   all its agents to find the work, again after delivering, and again before
   waiting. It now reads them once a pass, and an event that arrives after
   that read wakes the stream for the next pass.
+- **A controller keeps its socket when a delivery pass cannot get a
+  database connection.** When a pod was too busy to hand its streams a
+  connection within the pool timeout, the controller's stream ended and its
+  socket closed, and every agent on it reconnected, which needs more of
+  what was short. The pass is now tried again after a short wait, doubling
+  to 5 seconds, and the socket closes only if it is still failing after a
+  minute.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six

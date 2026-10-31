@@ -41,8 +41,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -54,6 +55,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
+    transient_failure,
 )
 from switch_core.bridges.agent.protocol.liveness import TAKEN_OVER, Closure
 from switch_core.tenant_context import current_tenant_id
@@ -65,6 +67,15 @@ logger = logging.getLogger(__name__)
 
 IDLE_INTERVAL_SECONDS = 15.0
 CATCH_UP_BATCH = 200
+
+# A pass whose database work fails because the connection or the pool did is
+# tried again after a wait that doubles from the first to the most, jittered,
+# rather than ending the stream: ending it closes the controller's socket, and
+# every agent on it reconnects, which costs more of what was short. A pass
+# still failing after the last is given up on, and the socket closes.
+PASS_RETRY_FIRST_SECONDS = 0.5
+PASS_RETRY_MOST_SECONDS = 5.0
+PASS_RETRY_GIVE_UP_SECONDS = 60.0
 
 ControllerFrame = dict[str, Any]
 # Yielded when nothing happened for the idle interval; never sent.
@@ -105,6 +116,16 @@ class _Attached:
     # `agent_room_reads`. Each delivery pass calls it only for rooms not in
     # this set, so it does not write to the database for every room each time.
     counted: set[str] = field(default_factory=set)
+
+
+def _retry_wait(failures: int) -> float:
+    """Seconds to wait before trying a pass again after its `failures`-th
+    failure in a row. Jittered, so the streams that failed together do not
+    all try again together."""
+    most = min(
+        PASS_RETRY_FIRST_SECONDS * 2.0 ** (failures - 1), PASS_RETRY_MOST_SECONDS
+    )
+    return most * (0.5 + random.random() / 2)
 
 
 def _eviction(closure: Closure) -> dict[str, Any]:
@@ -170,6 +191,9 @@ class _ControllerStream:
         conn = self._conn
         try:
             yield frame("connection_state", opening)
+            # Since when, and how many times in a row, the pass has failed.
+            failing_since: float | None = None
+            failures = 0
             while True:
                 for event, data in self._nudges.drain():
                     yield frame(event, data)
@@ -189,49 +213,69 @@ class _ControllerStream:
 
                 for raw in self._detach_departed():
                     yield raw
-                for raw in await self._attach_arrivals():
-                    yield raw
+                try:
+                    async for raw in self._attach_arrivals():
+                        yield raw
 
-                for agent_id in sorted(self._presence.take_rooms_changed(conn)):
-                    if agent_id in self._attached:
+                    for agent_id in sorted(self._presence.take_rooms_changed(conn)):
+                        if agent_id in self._attached:
+                            yield frame(
+                                "agent.rooms",
+                                {
+                                    "agent_id": agent_id,
+                                    "rooms": sorted(self._presence.rooms(agent_id)),
+                                },
+                            )
+
+                    for agent_id, command in self._presence.take_session_commands(conn):
+                        origin = command.get("origin")
+                        room_id = (
+                            origin.get("roomId") if isinstance(origin, dict) else None
+                        )
                         yield frame(
-                            "agent.rooms",
+                            "agent.session_command",
                             {
                                 "agent_id": agent_id,
-                                "rooms": sorted(self._presence.rooms(agent_id)),
+                                "room_id": room_id,
+                                "command": command,
                             },
                         )
 
-                for agent_id, command in self._presence.take_session_commands(conn):
-                    origin = command.get("origin")
-                    room_id = origin.get("roomId") if isinstance(origin, dict) else None
-                    yield frame(
-                        "agent.session_command",
-                        {"agent_id": agent_id, "room_id": room_id, "command": command},
-                    )
+                    for agent_id, room_id in self._presence.take_warms(conn):
+                        yield frame(
+                            "agent.warm", {"agent_id": agent_id, "room_id": room_id}
+                        )
 
-                for agent_id, room_id in self._presence.take_warms(conn):
-                    yield frame(
-                        "agent.warm", {"agent_id": agent_id, "room_id": room_id}
-                    )
-
-                for raw in await self._owed_outcomes():
-                    yield raw
-
-                # Cleared before the pass reads the heads, so an event added
-                # after that read rings its agent's doorbell again and the
-                # wait below returns at once. The pass is then the only read
-                # of the heads, rather than the heads being read again after
-                # delivering and again before waiting.
-                for agent_id in self._attached:
-                    self._buffer.doorbell(agent_id).clear()
-                behind = False
-                for attached, head in await self._due():
-                    for raw in await self._deliver(attached, head):
+                    for raw in await self._owed_outcomes():
                         yield raw
-                    # A delivery stops at `CATCH_UP_BATCH` events or at a gap,
-                    # and no doorbell rings for events already there.
-                    behind = behind or attached.cursor < head
+
+                    # Cleared before the pass reads the heads, so an event
+                    # added after that read rings its agent's doorbell again
+                    # and the wait below returns at once. The pass is then the
+                    # only read of the heads, rather than the heads being read
+                    # again after delivering and again before waiting.
+                    for agent_id in self._attached:
+                        self._buffer.doorbell(agent_id).clear()
+                    behind = False
+                    for attached, head in await self._due():
+                        for raw in await self._deliver(attached, head):
+                            yield raw
+                        # A delivery stops at `CATCH_UP_BATCH` events or at a
+                        # gap, and no doorbell rings for events already there.
+                        behind = behind or attached.cursor < head
+                except Exception as exc:
+                    if not transient_failure(exc):
+                        raise
+                    now = time.monotonic()
+                    if failing_since is None:
+                        failing_since = now
+                    failures += 1
+                    if now - failing_since >= PASS_RETRY_GIVE_UP_SECONDS:
+                        raise
+                    self._note_failed_pass(exc, failures)
+                    await asyncio.sleep(_retry_wait(failures))
+                    continue
+                failing_since, failures = None, 0
                 if behind:
                     continue
 
@@ -243,6 +287,20 @@ class _ControllerStream:
                     attached.unsubscribe()
             self._nudges.close()
             self._presence.detach_stream(conn, self._token)
+
+    def _note_failed_pass(self, exc: Exception, failures: int) -> None:
+        # The first failure in a row with its traceback, then every tenth.
+        if failures == 1 or failures % 10 == 0:
+            logger.warning(
+                "[CONTROLLER] controller=%s connection=%s: a delivery pass "
+                "failed (%s, %d in a row); trying it again rather than closing "
+                "the socket",
+                self._conn.controller_id,
+                self._conn.id,
+                type(exc).__name__,
+                failures,
+                exc_info=failures == 1,
+            )
 
     def _ending(self) -> Closure | None:
         conn = self._conn
@@ -288,9 +346,12 @@ class _ControllerStream:
             )
         return frames
 
-    async def _attach_arrivals(self) -> list[ControllerFrame]:
+    async def _attach_arrivals(self) -> AsyncIterator[ControllerFrame]:
+        """Attach each agent newly bound to the controller, yielding its
+        frames once it is. Nothing about an agent is kept until its reads and
+        writes are done, so an agent whose pass fails part way is attached
+        from the start by the next pass, its gap told then."""
         conn = self._conn
-        frames: list[ControllerFrame] = []
         for agent_id in sorted(
             self._presence.agents_of(conn.controller_id) - set(self._attached)
         ):
@@ -340,30 +401,29 @@ class _ControllerStream:
                     }
                 )
                 cursor = exc.resume_after
+            reader_id = self._presence.holder_id(binding)
+            # Give each of the agent's rooms that has no unread-count baseline
+            # yet a baseline at the room's newest message.
+            for room_id in sorted(rooms):
+                await self._buffer.ensure_counting(
+                    self._tenant, agent_id, reader_id, room_id
+                )
             conn.resume_cursors[agent_id] = cursor
             conn.sent_cursors[agent_id] = cursor
             attached = _Attached(
                 agent_id=agent_id,
-                reader_id=self._presence.holder_id(binding),
+                reader_id=reader_id,
                 cursor=cursor,
+                counted=set(rooms),
             )
             self._subscribe_outcomes(attached)
             self._attached[agent_id] = attached
-            # Give each of the agent's rooms that has no unread-count baseline
-            # yet a baseline at the room's newest message.
-            for room_id in rooms - attached.counted:
-                await self._buffer.ensure_counting(
-                    self._tenant, agent_id, attached.reader_id, room_id
-                )
-                attached.counted.add(room_id)
-            frames.append(
-                frame(
-                    "agent.attached",
-                    {"agent_id": agent_id, "from_seq": cursor, "rooms": sorted(rooms)},
-                )
+            yield frame(
+                "agent.attached",
+                {"agent_id": agent_id, "from_seq": cursor, "rooms": sorted(rooms)},
             )
-            frames.extend(frame("agent.gap", gap) for gap in gaps)
-        return frames
+            for gap in gaps:
+                yield frame("agent.gap", gap)
 
     def _subscribe_outcomes(self, attached: _Attached) -> None:
         if self._approvals is None or self._tenant_id is None:
@@ -386,8 +446,9 @@ class _ControllerStream:
         frames: list[ControllerFrame] = []
         for attached in list(self._attached.values()):
             if attached.resync and self._approvals is not None:
+                undelivered = await self._approvals.undelivered(attached.agent_id)
                 attached.resync = False
-                for outcome in await self._approvals.undelivered(attached.agent_id):
+                for outcome in undelivered:
                     attached.outcomes[
                         (outcome["session_id"], outcome["request_id"])
                     ] = outcome
