@@ -1,0 +1,31 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Look up Sentry issues, events, stack traces and releases, with your token.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: auth_token
+        label: User auth token
+        secret: true
+        help: User Settings, API, User Auth Tokens.
+    identity:
+      method: GET
+      url: https://sentry.io/api/0/users/me/
+      headers:
+        Authorization: "Bearer {auth_token}"
+      account_id: id
+      label: email
+    help_url: https://docs.sentry.io/api/user-auth-tokens/
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    - name: sentry
+      url: "https://mcp.sentry.dev/mcp"
+      headers:
+        Authorization: "Sentry-Bearer {auth_token}"
+tools: { mode: pass_through }
