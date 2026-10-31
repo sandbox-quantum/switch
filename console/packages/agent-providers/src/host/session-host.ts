@@ -37,6 +37,7 @@ import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
 import { ToolDetailBuffer } from './tool-detail-buffer';
+import { toolDetailPreview } from './tool-detail-preview';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -749,6 +750,18 @@ export class HostedSession {
   /** What `turnId` spent, as its provider reported when it ended. */
   usageOf(turnId: string): TokenUsage[] {
     return this.usage.get(turnId) ?? [];
+  }
+
+  /**
+   * A redacted preview of what an item of `turnId` was given and gave back.
+   * None from a host given nothing to redact with, rather than one it could
+   * not scrub.
+   */
+  detailOf(turnId: string, itemId: string): string | null {
+    const redactions = this.config.redactions;
+    if (!redactions) return null;
+    const parts = this.toolDetails.partsOf(this.config.session.epoch, turnId, itemId);
+    return parts ? toolDetailPreview(parts, (text) => redactions.toolDetail(text)) : null;
   }
 
   /**
