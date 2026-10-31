@@ -213,6 +213,21 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
+    async def test_reads_identity_with_a_json_post_when_catalog_requires_it(
+        self, vendor
+    ) -> None:
+        post = STATIC.replace(
+            "  identity:\n",
+            "  identity:\n"
+            "    method: POST\n"
+            '    body: { query: "{ me { id email } }" }\n',
+        )
+        adapter, _ = _adapter(vendor, post)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        assert vendor.identity_requests == [{"query": "{ me { id email } }"}]
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)

@@ -25,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_monday():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "monday",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "monday",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["monday"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -173,6 +176,44 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_monday_entry_uses_graphql_identity_and_minimal_board_scopes():
+    definition = CATALOG["monday"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "reusable"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        86400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("monday", "https://mcp.monday.com/mcp")
+    ]
+    assert definition.auth.identity is not None
+    identity = definition.auth.identity
+    assert (identity.method, identity.url, identity.body) == (
+        "POST",
+        "https://api.monday.com/v2",
+        {"query": "{ me { id email } }"},
+    )
+    assert (identity.account_id, identity.label) == ("data.me.id", "data.me.email")
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["me:read", "boards:read"]
+    assert definition.access.write.scopes == [
+        "me:read",
+        "boards:read",
+        "boards:write",
+    ]
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -501,6 +542,41 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_an_oauth_entry_with_a_post_identity_call(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "  identity:\n",
+            "  identity:\n"
+            "    method: POST\n"
+            '    body: { query: "{ me { id email } }" }\n',
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == (
+        "POST",
+        {"query": "{ me { id email } }"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "message"),
+    [
+        ("    url: https://api.example.test/me\n", "    method: POST\n", "body"),
+        (
+            "    url: https://api.example.test/me\n",
+            "    body: { query: me }\n",
+            "POST",
+        ),
+    ],
+)
+def test_validates_oauth_identity_method_and_body(catalog_copy, old, new, message):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(old, old + new))
+    with pytest.raises(CatalogError, match=f"(?s)example is invalid.*{message}"):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):

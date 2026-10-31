@@ -58,3 +58,8 @@ written out as the equivalent `fill` attributes and its ids removed.
   Fetched 2026-09-29. Vendor permission has not been verified; trademark of its
   owner. Terms: Salesforce's Trademark & Copyright Usage Guidelines
   (https://www.salesforce.com/company/legal/intellectual/tmcusageguidelines/).
+- **Monday.com** (`monday.svg`): the Monday.com icon mark, sourced from the
+  public logo set at
+  https://github.com/gilbarbara/logos/blob/master/logos/monday-icon.svg and
+  reduced to its viewBox and drawing paths. Fetched 2026-10-26. The mark is a
+  trademark of monday.com; vendor permission has not been separately verified.
