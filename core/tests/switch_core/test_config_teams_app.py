@@ -116,13 +116,30 @@ def test_a_federated_token_file_is_accepted(tmp_path: Path) -> None:
         "teams_app_tenant_id",
         "teams_app_notification_certificate",
         "teams_app_notification_private_key",
-        "teams_app_privacy_url",
-        "teams_app_terms_url",
     ],
 )
 def test_a_missing_required_setting_raises(missing: str) -> None:
     with pytest.raises(ValueError, match="Partial distributed Teams app config"):
         _config(**_without(missing))
+
+
+def test_the_privacy_and_terms_pages_default_to_the_published_legal_pages() -> None:
+    config = _config(**_without("teams_app_privacy_url", "teams_app_terms_url"))
+    assert config.teams_app_privacy_url == (
+        "https://docs.switchagents.ai/legal/privacy-policy"
+    )
+    assert config.teams_app_terms_url == "https://docs.switchagents.ai/legal/terms"
+
+
+def test_the_defaulted_pages_alone_do_not_configure_the_app() -> None:
+    assert _config().teams_app_privacy_url
+    assert _config().teams_app_client_id is None
+
+
+@pytest.mark.parametrize("cleared", ["teams_app_privacy_url", "teams_app_terms_url"])
+def test_a_cleared_privacy_or_terms_page_raises(cleared: str) -> None:
+    with pytest.raises(ValueError, match="Partial distributed Teams app config"):
+        _config(**_without(**{cleared: ""}))
 
 
 def test_no_credential_raises() -> None:
