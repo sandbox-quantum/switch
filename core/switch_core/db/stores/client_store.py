@@ -1,25 +1,17 @@
 from collections.abc import Collection
 
-from sqlalchemy import BigInteger, ColumnElement, cast, delete, func, literal, select
-from sqlalchemy.dialects.postgresql import BIT
+from sqlalchemy import ColumnElement, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.fingerprint import Fingerprint, row_hash
 from switch_core.db.models import Agent, Client, ClientRoom, require_tenant_id
-
-# How many clients a tenant runs and what they are, as one pair of numbers:
-# the count, and the sum of a 60-bit hash of each client's id, type and name
-# and of its agent's id, name, display name and description. Equal pairs mean
-# no client was added, removed or renamed and no agent was added, removed or
-# re-described in between. Computed by the database, so reading it costs one
-# row however many clients the tenant has.
-Fingerprint = tuple[int, int]
-
-_FIELD_SEPARATOR = "\x1f"
 
 
 def _row_hash() -> ColumnElement[int]:
-    fields = func.concat_ws(
-        _FIELD_SEPARATOR,
+    """A client's id, type and name, and its agent's id, name, display name
+    and description: what a process running the client, and a bridge holding
+    the agent's platform handle, act on (`ClientStore.fingerprint`)."""
+    return row_hash(
         Client.id,
         Client.type,
         Client.display_name,
@@ -27,11 +19,6 @@ def _row_hash() -> ColumnElement[int]:
         func.coalesce(Agent.name, ""),
         func.coalesce(Agent.display_name, ""),
         func.coalesce(Agent.description, ""),
-    )
-    # The first 15 hex digits of the md5, read as a 60-bit number.
-    return cast(
-        cast(literal("x") + func.substr(func.md5(fields), 1, 15), BIT(60)),
-        BigInteger,
     )
 
 
