@@ -165,12 +165,16 @@ class OAuthClient(BaseModel):
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login). A vendor with no such endpoint for
+    its MCP token names `mcp_tool`: `url` is then the entry's own MCP server,
+    the tool is called with no arguments, and the paths read its structured
+    result (a number in a path picks from a list)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -672,6 +676,13 @@ class ConnectionDefinition(BaseModel):
             ]
             if missing:
                 raise ValueError(f"an oauth entry needs {', '.join(missing)}")
+        identity = self.auth.identity
+        if identity is not None and identity.mcp_tool is not None:
+            if self.mcp is None or identity.url != self.mcp.servers[0].url:
+                raise ValueError(
+                    "an identity read through an MCP tool names the entry's own "
+                    "first MCP server as its url"
+                )
         oauth = self.auth.oauth
         # Discovery starts from an MCP server, so without one the catalog names
         # the endpoints, and the client is the operator's.

@@ -1,12 +1,14 @@
 import shutil
 
 import pytest
+import yaml
 
 from switch_core.connections.loader import (
     CATALOG,
     CATALOG_ROOT,
     MAX_SKILL_BYTES,
     CatalogError,
+    ConnectionDefinition,
     load_catalog,
 )
 
@@ -25,13 +27,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_stripe():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "stripe",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +42,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "stripe",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["stripe"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -1046,3 +1051,63 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_the_shipped_stripe_entry_is_a_dynamic_read_only_mcp_sign_in():
+    definition = CATALOG["stripe"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.revocation_discovered is True
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("stripe", "https://mcp.stripe.com")
+    ]
+    assert definition.access is not None
+    assert definition.access.read.scopes == ["mcp"]
+    assert definition.access.write is None
+    assert definition.token is not None
+    assert definition.token.kind == "pass_through"
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert "test" in definition.description.lower()
+
+
+def test_the_stripe_skill_confirms_before_writing_and_names_no_credential():
+    skill = CATALOG["stripe"].skill_files["SKILL.md"]
+    assert skill.startswith("---\nname: stripe\n")
+    assert "stripe_api_write" in skill
+    assert "confirm" in skill.lower()
+
+
+def test_an_identity_read_through_an_mcp_tool_names_the_entrys_own_server():
+    entry = OAUTH_ENTRY.replace(
+        "    url: https://api.example.test/me\n",
+        "    url: https://api.example.test/me\n    mcp_tool: list_accounts\n",
+    )
+    with pytest.raises(ValueError, match="first MCP server"):
+        ConnectionDefinition.model_validate(yaml.safe_load(entry))
+    own = entry.replace(
+        "url: https://api.example.test/me", "url: https://mcp.example.test/v1/mcp"
+    )
+    assert (
+        ConnectionDefinition.model_validate(yaml.safe_load(own)).auth.identity.mcp_tool
+        == "list_accounts"
+    )
+
+
+def test_the_shipped_stripe_entry_reads_the_account_through_its_own_mcp_server():
+    identity = CATALOG["stripe"].definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.mcp_tool) == (
+        "https://mcp.stripe.com",
+        "list_available_accounts_or_orgs",
+    )
+    assert (identity.account_id, identity.label) == (
+        "accounts.0.stripe_context",
+        "accounts.0.name",
+    )

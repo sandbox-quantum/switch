@@ -641,3 +641,99 @@ class TestThroughTheBroker:
         assert vendor.revoked == []
         async with session_factory() as session:
             assert await STORE.get_connection(session, owner.id, "example") is None
+
+
+MCP_IDENTITY_ENTRY = OAUTH_ENTRY.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    f"    url: {MCP_URL}\n"
+    "    mcp_tool: list_accounts\n"
+    "    account_id: accounts.0.id\n"
+    "    label: accounts.0.name\n",
+)
+ACCOUNTS = {"accounts": [{"id": "acct_one", "name": "Sandbox"}, {"id": "acct_two"}]}
+
+
+class FakeMcpAccounts:
+    """An MCP server that wants initialize, then the initialized notice, then
+    the tool, all in one session, and answers as JSON or as an event stream."""
+
+    def __init__(self, *, stream: bool = False, status: int = 200, error: bool = False):
+        self.stream = stream
+        self.status = status
+        self.error = error
+        self.methods: list[str] = []
+        self.sessions: list[str | None] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if self.status != 200:
+            return httpx.Response(self.status, json={"error": "nope"})
+        message = json.loads(request.content)
+        self.methods.append(message["method"])
+        self.sessions.append(request.headers.get("mcp-session-id"))
+        if message["method"] == "initialize":
+            return httpx.Response(
+                200,
+                headers={"mcp-session-id": "session-1"},
+                json={"jsonrpc": "2.0", "id": 1, "result": {}},
+            )
+        if "id" not in message:
+            return httpx.Response(202)
+        assert message["params"] == {"name": "list_accounts", "arguments": {}}
+        result = (
+            {"isError": True, "content": []}
+            if self.error
+            else {"structuredContent": ACCOUNTS, "content": []}
+        )
+        body = {"jsonrpc": "2.0", "id": 2, "result": result}
+        if self.stream:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=f"event: message\ndata: {json.dumps(body)}\n\n".encode(),
+            )
+        return httpx.Response(200, json=body)
+
+
+def _mcp_identity_adapter(server: FakeMcpAccounts) -> OAuthAdapter:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(server.handle))
+    client = StaticClient(
+        OAuthClientCredentials(
+            STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+        )
+    )
+    return OAuthAdapter(_definition(MCP_IDENTITY_ENTRY), client, http)
+
+
+class TestIdentityThroughAnMcpTool:
+    async def test_reads_the_first_account_from_the_tools_structured_result(
+        self,
+    ) -> None:
+        server = FakeMcpAccounts()
+        identity = await _mcp_identity_adapter(server).identify("token")
+        assert (identity.account_id, identity.label) == ("acct_one", "Sandbox")
+        assert server.methods == [
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+        ]
+        assert server.sessions == [None, "session-1", "session-1"]
+
+    async def test_reads_an_event_stream_answer(self) -> None:
+        identity = await _mcp_identity_adapter(FakeMcpAccounts(stream=True)).identify(
+            "token"
+        )
+        assert identity.account_id == "acct_one"
+
+    async def test_a_refused_token_asks_to_sign_in_again(self) -> None:
+        with pytest.raises(ReauthorizationRequiredError):
+            await _mcp_identity_adapter(FakeMcpAccounts(status=401)).identify("token")
+
+    async def test_a_server_error_answer_is_named_with_its_status(self) -> None:
+        with pytest.raises(ServiceAdapterError, match="HTTP 403"):
+            await _mcp_identity_adapter(FakeMcpAccounts(status=403)).identify("token")
+
+    async def test_a_tool_that_fails_is_not_taken_for_an_account(self) -> None:
+        with pytest.raises(ServiceAdapterError, match="did not say whose"):
+            await _mcp_identity_adapter(FakeMcpAccounts(error=True)).identify("token")

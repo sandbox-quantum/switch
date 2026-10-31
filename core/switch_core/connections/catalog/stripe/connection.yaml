@@ -1,0 +1,48 @@
+slug: stripe
+name: Stripe
+category: Payments
+description: Look up Stripe customers, payments and subscriptions, as you. Read-only by default; connect a Stripe sandbox or test mode account first.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Stripe's authorization server (access.stripe.com/mcp) advertises dynamic
+    # registration, S256 only and public clients, so nothing is set up on the
+    # server.
+    registration: dynamic
+    # Sign-ins come back to Switch Console on a loopback port, as Atlassian's do.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # The server's metadata advertises a revocation endpoint.
+    revocation_discovered: true
+  identity:
+    # No endpoint accepts an MCP token (api.stripe.com answers 401, userinfo
+    # refuses with "OpenID Connect is not enabled for this client", and
+    # registration refuses the openid scope), so the account is read from the
+    # server's own account tool. If several accounts were consented, the first
+    # is the connection's.
+    url: https://mcp.stripe.com
+    mcp_tool: list_available_accounts_or_orgs
+    account_id: accounts.0.stripe_context
+    label: accounts.0.name
+# Stripe's MCP access tokens live 3600 seconds (measured), with a refresh token.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: stripe, url: "https://mcp.stripe.com" }
+access:
+  # Stripe's only scope is mcp, so it cannot tell read from write: what the
+  # connection may do is set on Stripe's consent screen, which grants live
+  # accounts and sandboxes separately and lets the person pick each one's
+  # permissions. Pick read-only there. stripe_api_write covers every POST,
+  # PATCH, PUT and DELETE (refunds, subscription changes), though Stripe asks
+  # the person to approve some, refunds and outbound payments among them.
+  # Only a read level is offered, so Switch never presents this as a
+  # write-capable connection. The owner may revoke it under OAuth sessions in
+  # their Stripe user settings. Stripe's MCP access can also be switched off
+  # for the team under Settings, MCP and CLI access.
+  read:
+    scopes: [mcp]
+tools: { mode: pass_through }
