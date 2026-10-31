@@ -9,6 +9,10 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.email.adapter import (
+    EmailAdapter,
+    EmailConnectionConfig,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -68,11 +72,12 @@ def _service() -> CollaborationBridgeLifecycleService:
 def test_get_registered_types_lists_registered() -> None:
     service = _service()
     service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
+    service.register_adapter("email", EmailAdapter, EmailConnectionConfig)
     service.register_adapter(
         "mattermost", MattermostAdapter, MattermostConnectionConfig
     )
 
-    assert sorted(service.get_registered_types()) == ["mattermost", "slack"]
+    assert sorted(service.get_registered_types()) == ["email", "mattermost", "slack"]
 
 
 def test_discord_adapter_registers_with_expected_required_fields() -> None:
