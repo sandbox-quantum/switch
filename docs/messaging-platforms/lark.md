@@ -30,6 +30,11 @@ The adapter uses Lark's webhook delivery rather than a persistent connection.
 Lark calls the per-connection Switch webhook, which lets any Switch pod accept
 an event. Switch stores each Lark event ID in its shared receipt table before
 dispatch, so platform retries are dropped across pods and restarts.
+Switch also persists outbound event claims, so a normal handoff between pods
+does not post a room message twice. Lark's send API does not provide an
+idempotency key. If a process stops after Lark accepted a message but before
+Switch recorded its message ID, that uncertain send can be repeated after the
+claim expires.
 
 When Lark event encryption is enabled, enter the app's Encrypt Key in Switch.
 The Verification Token is checked on every event and the encrypted event body

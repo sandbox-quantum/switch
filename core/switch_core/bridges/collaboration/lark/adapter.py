@@ -675,8 +675,12 @@ class LarkAdapter(PlatformAdapter):
     ) -> str | None:
         upload_limit = min(self._max_attachment_bytes, _MAX_UPLOAD_BYTES)
         if len(data) > upload_limit:
-            raise BridgeOperationError(
-                f"Lark attachments are limited to {upload_limit} bytes by this Switch deployment."
+            agent = await self.agent_rendering(sender_name)
+            return await self._send(
+                channel_id,
+                f"**{agent.body_label}** could not upload {filename}: Lark attachments "
+                f"are limited to {upload_limit} bytes by this Switch deployment.",
+                thread_root_id,
             )
         uploaded = await self._request(
             "POST",

@@ -18,7 +18,6 @@ from switch_core.bridges.collaboration.lark.adapter import (
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
-    BridgeOperationError,
 )
 from switch_core.bridges.collaboration.platforms import PLATFORMS
 
@@ -181,13 +180,30 @@ async def test_command_event_is_parsed_as_a_switch_command() -> None:
 
 
 @pytest.mark.asyncio
-async def test_outbound_oversize_attachment_is_refused_before_upload() -> None:
+async def test_outbound_oversize_attachment_is_refused_visibly_without_upload() -> None:
     adapter = LarkAdapter(config=_config())
     adapter.set_max_attachment_bytes(3)
-    with pytest.raises(BridgeOperationError, match="3 bytes"):
-        await adapter.send_attachment(
-            "oc_chat", "Agent", "large.bin", "application/octet-stream", b"four"
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "tenant-token"}
+            )
+        return httpx.Response(
+            200, json={"code": 0, "data": {"message": {"message_id": "om_notice"}}}
         )
+
+    await adapter._http.aclose()
+    adapter._http = httpx.AsyncClient(
+        base_url="https://open.larksuite.com", transport=httpx.MockTransport(handler)
+    )
+    result = await adapter.send_attachment(
+        "oc_chat", "Agent", "large.bin", "application/octet-stream", b"four"
+    )
+    assert result == "om_notice"
+    assert all(not request.url.path.endswith("/files") for request in calls)
     await adapter.stop()
 
 
