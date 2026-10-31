@@ -143,6 +143,15 @@ class CollaborationBridgeStore:
         await session.flush()
         return bridge
 
+    async def merge_adapter_state(
+        self, session: AsyncSession, bridge_id: str, changes: dict[str, object]
+    ) -> CollaborationBridge:
+        """Persist adapter cursors without mixing them into credentials."""
+        bridge = await self._locked_for_config_update(session, bridge_id)
+        bridge.adapter_state = {**(bridge.adapter_state or {}), **changes}
+        await session.flush()
+        return bridge
+
     async def _locked_for_config_update(
         self, session: AsyncSession, bridge_id: str
     ) -> CollaborationBridge:

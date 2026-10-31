@@ -15,6 +15,8 @@ from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     InboundCommand,
     InboundMessage,
+    InboundMessageDelete,
+    InboundMessageEdit,
     RetireOutcome,
 )
 
@@ -51,7 +53,14 @@ class _FakeClient:
         self.sent.append((room_id, event_type, content))
         return f"$event{len(self.sent)}"
 
-    async def redact(self, room_id: str, event_id: str, reason: str) -> str:
+    async def redact(
+        self,
+        room_id: str,
+        event_id: str,
+        reason: str,
+        *,
+        txn_id: str | None = None,
+    ) -> str:
         self.redacted.append((room_id, event_id))
         return event_id
 
@@ -214,6 +223,62 @@ async def test_a_message_is_bridged_with_its_thread_root() -> None:
     assert seen[0].content == "hello"
     assert seen[0].root_id == "$root"
     assert seen[0].message_ref == "$m1"
+
+
+async def test_a_matrix_edit_is_forwarded_with_both_event_ids() -> None:
+    adapter = _adapter()
+    edits: list[InboundMessageEdit] = []
+    adapter._on_message_edited = lambda value: _collect(edits, value)
+
+    await adapter._handle_message(
+        ROOM,
+        {
+            "event_id": "$edit1",
+            "sender": "@alice:example.org",
+            "content": {
+                "msgtype": "m.text",
+                "body": "* updated",
+                "m.relates_to": {"rel_type": "m.replace", "event_id": "$m1"},
+                "m.new_content": {"msgtype": "m.text", "body": "updated"},
+            },
+        },
+    )
+
+    assert edits == [
+        InboundMessageEdit(
+            channel_id=ROOM,
+            sender_id="@alice:example.org",
+            sender_name="Alice",
+            message_ref="$m1",
+            edit_ref="$edit1",
+            content="updated",
+        )
+    ]
+
+
+async def test_a_matrix_redaction_is_forwarded_as_a_delete() -> None:
+    adapter = _adapter()
+    deletions: list[InboundMessageDelete] = []
+    adapter._on_message_deleted = lambda value: _collect(deletions, value)
+
+    await adapter._handle_redaction(
+        ROOM,
+        {
+            "event_id": "$redact1",
+            "sender": "@alice:example.org",
+            "redacts": "$m1",
+        },
+    )
+
+    assert deletions == [
+        InboundMessageDelete(
+            channel_id=ROOM,
+            sender_id="@alice:example.org",
+            sender_name="Alice",
+            message_ref="$m1",
+            delete_ref="$redact1",
+        )
+    ]
 
 
 async def test_a_failed_callback_is_retried_not_marked_seen() -> None:
@@ -574,6 +639,41 @@ async def test_a_rejected_token_is_a_credential_error(
                 "access_token": "bad",
             }
         )
+
+
+async def test_sync_resumes_from_and_persists_the_durable_checkpoint() -> None:
+    adapter = _adapter()
+    adapter.load_adapter_state({"sync_token": "saved-token"})
+    checkpoints: list[dict[str, object]] = []
+    adapter.set_adapter_state_persister(
+        lambda state: _collect(checkpoints, dict(state))
+    )
+    client = _client(adapter)
+    requested: list[str | None] = []
+
+    async def sync(since: str | None) -> dict[str, Any]:
+        requested.append(since)
+        adapter._stopping = True
+        return {"next_batch": "next-token", "rooms": {}}
+
+    client.sync = sync  # type: ignore[attr-defined,method-assign]
+    await adapter._sync_forever()
+
+    assert requested == ["saved-token"]
+    assert checkpoints == [{"sync_token": "next-token"}]
+    assert adapter._sync_token == "next-token"
+
+
+async def test_a_nonlease_pod_verifies_the_bot_but_does_not_start_sync() -> None:
+    adapter = _adapter()
+    adapter.set_listening(False)
+
+    async def ignore(*_args: Any) -> None:
+        return None
+
+    await adapter.start(ignore, ignore, ignore, ignore, ignore)
+
+    assert adapter._sync_task is None
 
 
 async def test_retiring_a_room_leaves_it() -> None:

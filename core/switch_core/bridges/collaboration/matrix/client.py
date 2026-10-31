@@ -164,12 +164,19 @@ class MatrixClient:
             raise MatrixApiError(200, None, "Matrix did not return an event id")
         return event_id
 
-    async def redact(self, room_id: str, event_id: str, reason: str) -> str:
+    async def redact(
+        self,
+        room_id: str,
+        event_id: str,
+        reason: str,
+        *,
+        txn_id: str | None = None,
+    ) -> str:
         body = await self._request(
             "PUT",
             (
                 f"/_matrix/client/v3/rooms/{_quote(room_id)}/redact/"
-                f"{_quote(event_id)}/{uuid.uuid4().hex}"
+                f"{_quote(event_id)}/{_quote(txn_id or uuid.uuid4().hex)}"
             ),
             json={"reason": reason},
         )

@@ -7,7 +7,12 @@ from switch_core.clients.actor import Actor, ClientConfig
 from switch_core.clients.consumer import Consumer
 from switch_core.events import CommandEvent
 from switch_core.logging_context import log_context
-from switch_core.transport import InboundMedia, InboundMessage, RoomRef
+from switch_core.transport import (
+    InboundCustomEvent,
+    InboundMedia,
+    InboundMessage,
+    RoomRef,
+)
 
 if TYPE_CHECKING:
     from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
@@ -72,3 +77,16 @@ class WorkspaceConsumer(Consumer[Actor[WorkspaceConsumerConfig]]):
             bridge="collaboration", platform=self._collaboration_core.bridge_type
         ):
             await self._collaboration_core.handle_outbound_command(room, event)
+
+    async def _handle_custom_event(
+        self, room: RoomRef, event: InboundCustomEvent
+    ) -> None:
+        if event.event_type != "m.room.redaction":
+            await super()._handle_custom_event(room, event)
+            return
+        if self._should_ignore(room, event):
+            return
+        try:
+            await self._collaboration_core.handle_outbound_delete(room, event)
+        except Exception:
+            logger.exception("Error relaying a redaction from %s", room.room_id)
