@@ -38,6 +38,8 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDelete,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
     RetireOutcome,
@@ -634,6 +636,12 @@ class PlatformAdapter(ABC):
         # `keeps_quiet_unless_listening`. Set by the lifecycle before `start`.
         self._listening = True
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
+        self._on_message_edited: (
+            Callable[[InboundMessageEdit], Awaitable[None]] | None
+        ) = None
+        self._on_message_deleted: (
+            Callable[[InboundMessageDelete], Awaitable[None]] | None
+        ) = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
         self._on_agent_joined: Callable[[InboundAgentJoin], Awaitable[None]] | None = (
             None
@@ -692,6 +700,9 @@ class PlatformAdapter(ABC):
         self._relay_to_holder: Callable[[dict[str, str]], None] | None = None
         # Set by the lifecycle (`set_gateway_public_url`).
         self._gateway_public_url: str | None = None
+        self._persist_adapter_state: (
+            Callable[[Mapping[str, object]], Awaitable[None]] | None
+        ) = None
 
     def set_max_attachment_bytes(self, max_bytes: int) -> None:
         self._max_attachment_bytes = max_bytes
@@ -738,6 +749,19 @@ class PlatformAdapter(ABC):
         `switchdash://`. None where the server has none, and those links are
         then named in words (`rewrite_console_links`)."""
         self._gateway_public_url = gateway_public_url
+
+    def load_adapter_state(self, state: Mapping[str, object]) -> None:
+        """Restore durable adapter-owned state before the connection starts."""
+
+    def set_adapter_state_persister(
+        self, persist: Callable[[Mapping[str, object]], Awaitable[None]]
+    ) -> None:
+        """Persist resumable connection state through the bridge store."""
+        self._persist_adapter_state = persist
+
+    async def persist_adapter_state(self, state: Mapping[str, object]) -> None:
+        if self._persist_adapter_state is not None:
+            await self._persist_adapter_state(state)
 
     @classmethod
     def describe(cls, key: str) -> MessagingPlatform:
@@ -1942,6 +1966,16 @@ class PlatformAdapter(ABC):
         platforms with interactive message controls ever call it, and an adapter
         that never does needs no change to go on working."""
         self._on_interaction = handler
+
+    def set_message_edit_handler(
+        self, handler: Callable[[InboundMessageEdit], Awaitable[None]]
+    ) -> None:
+        self._on_message_edited = handler
+
+    def set_message_delete_handler(
+        self, handler: Callable[[InboundMessageDelete], Awaitable[None]]
+    ) -> None:
+        self._on_message_deleted = handler
 
     def set_activity_resolver(
         self, resolver: Callable[[str, str], Awaitable[ActivitySnapshot | None]]

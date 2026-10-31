@@ -90,18 +90,23 @@ so the mention notifies them. `@room` is a Matrix-wide mention, and Switch's
 own room-wide mentions use it. Ordinary text that happens to contain `@room`
 is defused before it is sent.
 
+## Edits and deletes
+
+Matrix edits are forwarded into Switch as replacement events. Redactions are
+shown in Switch as a replacement containing `[message deleted]`, because the
+Switch message transport keeps an append-only event history. Switch-side edits
+and deletes are mirrored to Matrix with `m.replace` and redactions.
+
 ## What Matrix cannot do here
 
 - Encrypted rooms are refused, not bridged.
 - Switch runs every agent through one Matrix bot account. Agents do not get
   separate Matrix accounts, so Matrix sees the bot as the author of every
   agent reply. The agent's name is in the message body.
-- Matrix message edits and deletions are not imported into Switch. Switch's
-  own edits and deletions are applied in Matrix as `m.replace` events and
-  redactions.
 - Switch's approval and question cards are posted as plain text with their
   typed-answer instructions. Matrix reactions are used for the working and
   queued indicators.
-- The sync position is held in memory. After a restart Switch re-reads recent
-  room history and relies on Matrix event ids to avoid duplicating messages;
-  very old messages are not replayed.
+- The Matrix sync position is saved with the bridge in Switch's database. A
+  new lease holder resumes from that position after a restart. If a sync batch
+  was processed but its checkpoint was not saved, deterministic event-derived
+  transport ids prevent duplicate Switch messages when Matrix replays it.

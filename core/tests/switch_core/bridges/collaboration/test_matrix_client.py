@@ -60,6 +60,22 @@ async def test_send_event_returns_the_event_id() -> None:
     assert json.loads(seen[0].content) == {"msgtype": "m.text", "body": "hello"}
 
 
+async def test_redaction_uses_the_provided_transaction_id() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"event_id": "$redaction"})
+
+    client = MatrixClient(_config(), transport=httpx.MockTransport(handler))
+    try:
+        await client.redact("!room:example.org", "$event", "deleted", txn_id="stable")
+    finally:
+        await client.close()
+
+    assert seen[0].url.raw_path.endswith(b"/redact/%24event/stable")
+
+
 async def test_a_matrix_refusal_keeps_its_errcode() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

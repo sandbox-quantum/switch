@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, ClassVar
 from urllib.parse import quote
 
@@ -36,6 +37,8 @@ from switch_core.bridges.collaboration.models import (
     InboundAppJoin,
     InboundCommand,
     InboundMessage,
+    InboundMessageDelete,
+    InboundMessageEdit,
     InboundUserJoin,
     RetireOutcome,
 )
@@ -84,6 +87,10 @@ class MatrixAdapter(PlatformAdapter):
         self._mention_targets_lower: dict[str, str] = {}
         self._reactions: dict[tuple[str, str], dict[str, str]] = {}
         self._seen: OrderedDict[str, None] = OrderedDict()
+
+    def load_adapter_state(self, state: Mapping[str, object]) -> None:
+        token = state.get("sync_token")
+        self._sync_token = token if isinstance(token, str) and token else None
 
     async def start(
         self,
@@ -151,6 +158,7 @@ class MatrixAdapter(PlatformAdapter):
                 await self._handle_sync(body)
                 next_batch = body.get("next_batch")
                 if isinstance(next_batch, str) and next_batch:
+                    await self.persist_adapter_state({"sync_token": next_batch})
                     self._sync_token = next_batch
             except asyncio.CancelledError:
                 raise
@@ -241,6 +249,8 @@ class MatrixAdapter(PlatformAdapter):
                 await self._handle_member(room_id, event)
             elif event_type == "m.room.message":
                 await self._handle_message(room_id, event)
+            elif event_type == "m.room.redaction":
+                await self._handle_redaction(room_id, event)
 
     async def _announce_room(
         self, room_id: str, *, state: list[dict[str, Any]] | None = None
@@ -346,6 +356,24 @@ class MatrixAdapter(PlatformAdapter):
 
         relates = content.get("m.relates_to")
         if isinstance(relates, dict) and relates.get("rel_type") == "m.replace":
+            target_id = relates.get("event_id")
+            new_content = content.get("m.new_content")
+            body = new_content.get("body") if isinstance(new_content, dict) else None
+            if (
+                isinstance(target_id, str)
+                and isinstance(body, str)
+                and self._on_message_edited is not None
+            ):
+                await self._on_message_edited(
+                    InboundMessageEdit(
+                        channel_id=room_id,
+                        sender_id=sender,
+                        sender_name=self._member_name(room_id, sender),
+                        message_ref=target_id,
+                        edit_ref=event_id,
+                        content=body,
+                    )
+                )
             self._remember(event_id)
             return
         if relates is not None and not isinstance(relates, dict):
@@ -409,6 +437,32 @@ class MatrixAdapter(PlatformAdapter):
                 self_mention_token=self_mention,
             )
         )
+        self._remember(event_id)
+
+    async def _handle_redaction(self, room_id: str, event: dict[str, Any]) -> None:
+        event_id = event.get("event_id")
+        sender = event.get("sender")
+        content = event.get("content")
+        content_target = content.get("redacts") if isinstance(content, dict) else None
+        target_id = event.get("redacts", content_target)
+        if (
+            not isinstance(event_id, str)
+            or not isinstance(sender, str)
+            or not isinstance(target_id, str)
+            or sender == self._user_id
+            or event_id in self._seen
+        ):
+            return
+        if self._on_message_deleted is not None:
+            await self._on_message_deleted(
+                InboundMessageDelete(
+                    channel_id=room_id,
+                    sender_id=sender,
+                    sender_name=self._member_name(room_id, sender),
+                    message_ref=target_id,
+                    delete_ref=event_id,
+                )
+            )
         self._remember(event_id)
 
     async def _collect_attachment(
@@ -653,7 +707,13 @@ class MatrixAdapter(PlatformAdapter):
             "event_id": message_ref,
         }
         try:
-            await self._client.send_event(channel_id, "m.room.message", content)
+            txn_id = (
+                "switch-edit-"
+                + hashlib.sha256(f"{message_ref}\x1f{body}".encode()).hexdigest()[:32]
+            )
+            await self._client.send_event(
+                channel_id, "m.room.message", content, txn_id=txn_id
+            )
         except MatrixApiError as exc:
             logger.warning(
                 "Could not edit Matrix message %s in %s: %s",
@@ -665,7 +725,13 @@ class MatrixAdapter(PlatformAdapter):
     async def delete_message(self, channel_id: str, message_ref: str) -> None:
         try:
             await self._client.redact(
-                channel_id, message_ref, "Switch deleted this message"
+                channel_id,
+                message_ref,
+                "Switch deleted this message",
+                txn_id=(
+                    "switch-delete-"
+                    + hashlib.sha256(message_ref.encode()).hexdigest()[:32]
+                ),
             )
         except MatrixApiError as exc:
             raise RemovalFailed(

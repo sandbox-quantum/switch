@@ -1603,6 +1603,12 @@ class CollaborationBridge(TenantScoped, Base):
     connection_config: Mapped[dict | None] = mapped_column(
         EncryptedJSONB, nullable=True
     )
+    # Adapter-owned durable cursors and recovery markers. Kept separately
+    # from credentials and shared through the database so a new lease holder
+    # can resume the platform connection after a restart.
+    adapter_state: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     client_id: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     agent_greetings_enabled: Mapped[bool] = mapped_column(

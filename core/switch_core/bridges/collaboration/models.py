@@ -139,6 +139,27 @@ class InboundMessage(BaseModel):
     sender_is_app: bool = False
 
 
+class InboundMessageEdit(BaseModel):
+    """An external platform edited a message already bridged into Switch."""
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    message_ref: str
+    edit_ref: str
+    content: str
+
+
+class InboundMessageDelete(BaseModel):
+    """An external platform deleted a message already bridged into Switch."""
+
+    channel_id: str
+    sender_id: str
+    sender_name: str
+    message_ref: str
+    delete_ref: str
+
+
 class InboundCommand(BaseModel):
     channel_id: str
     channel_type: ChannelType
