@@ -218,12 +218,21 @@ class _ControllerStream:
                 for raw in await self._owed_outcomes():
                     yield raw
 
-                delivered = False
+                # Cleared before the pass reads the heads, so an event added
+                # after that read rings its agent's doorbell again and the
+                # wait below returns at once. The pass is then the only read
+                # of the heads, rather than the heads being read again after
+                # delivering and again before waiting.
+                for agent_id in self._attached:
+                    self._buffer.doorbell(agent_id).clear()
+                behind = False
                 for attached, head in await self._due():
                     for raw in await self._deliver(attached, head):
-                        delivered = True
                         yield raw
-                if delivered:
+                    # A delivery stops at `CATCH_UP_BATCH` events or at a gap,
+                    # and no doorbell rings for events already there.
+                    behind = behind or attached.cursor < head
+                if behind:
                     continue
 
                 if not await self._wait():
@@ -483,9 +492,9 @@ class _ControllerStream:
             )
         return frames
 
-    async def _has_work(self) -> bool:
+    def _connection_changed(self) -> bool:
         conn = self._conn
-        if (
+        return (
             conn.closure is not None
             or conn.stream_token != self._token
             or bool(
@@ -496,23 +505,21 @@ class _ControllerStream:
             )
             or self._presence.agents_of(conn.controller_id) != set(self._attached)
             or any(a.outcomes or a.resync for a in self._attached.values())
-        ):
-            return True
-        if not self._attached:
-            return False
-        heads = await self._buffer.heads(self._tenant, set(self._attached))
-        return any(heads.get(a.agent_id, 0) > a.cursor for a in self._attached.values())
+        )
 
     async def _wait(self) -> bool:
         """Wait for an event, a nudge or a change to the connection. False when
         the idle interval passed with none of them."""
         bells = [self._buffer.doorbell(agent_id) for agent_id in self._attached]
-        for bell in bells:
-            bell.clear()
         self._conn.wake.clear()
-        # Re-checked after clearing: anything that arrived between the last
-        # read and the clear would otherwise wait for the idle timeout.
-        if await self._has_work() or self._nudges.wake.is_set():
+        # A doorbell set now was rung after the pass cleared it, for an event
+        # the pass may not have read. The connection is re-checked after its
+        # wake is cleared, for any change that arrived since the pass began.
+        if (
+            any(bell.is_set() for bell in bells)
+            or self._connection_changed()
+            or self._nudges.wake.is_set()
+        ):
             return True
         waiters = [
             asyncio.ensure_future(event.wait())

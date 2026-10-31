@@ -155,6 +155,11 @@ version of their own to them without also giving them a release of their own.
   each process's 30-second re-check of controllers held by another process
   read every agent's rooms with a query of its own, which grew with
   processes times agents; it is now one query per controller.
+- **A delivery to an agent behind a controller takes two database
+  transactions instead of four.** The controller's stream read the heads of
+  all its agents to find the work, again after delivering, and again before
+  waiting. It now reads them once a pass, and an event that arrives after
+  that read wakes the stream for the next pass.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six

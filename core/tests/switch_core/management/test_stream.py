@@ -8,12 +8,14 @@ since the in-process HTTP transport would wait for a stream that never ends.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import room_control_frame
+from switch_core.bridges.agent.protocol import controller_stream
 from switch_core.bridges.agent.protocol.agent_detail import assemble_agent_detail
 from switch_core.bridges.agent.protocol.liveness import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -802,6 +804,97 @@ async def test_an_idle_pass_reads_its_agents_heads_together(
     assert await anext(stream) is controller_routes.IDLE
     await stream.aclose()
 
-    # One read of the heads for the pass, one more when the wait checks
-    # again for anything that arrived as it began.
+    # One read of the heads for the pass, and none when it waits.
+    assert counting.opened == 1
+
+
+async def test_a_delivery_reads_the_heads_once(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From the doorbell to waiting again, a delivery costs the read of the
+    heads and the agent's pass: the heads are not read again after
+    delivering, nor before waiting."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 60.0)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+    await _ask(harness, agent_id, room_id, "@you")
+    buffer = harness.protocol.event_buffer
+    counting = CountingSessionFactory(buffer._session_factory)
+    monkeypatch.setattr(buffer, "_session_factory", counting)
+
+    [(name, _)] = await take(stream, 1)
+    waiting = asyncio.ensure_future(anext(stream))
+    await asyncio.sleep(0.2)
+    waiting.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiting
+    await stream.aclose()
+
+    assert name == "agent.event"
     assert counting.opened == 2
+
+
+async def test_an_event_added_during_a_pass_is_sent_without_waiting(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An event added after the pass read the heads is past what the pass
+    reads, and its doorbell brings the next pass at once rather than after
+    the idle interval."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 60.0)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+
+    buffer = harness.protocol.event_buffer
+    read_from = buffer.read_from
+    added: list[asyncio.Task[int]] = []
+
+    async def read_while_another_arrives(*args: object, **kwargs: object) -> object:
+        if not added:
+            added.append(asyncio.create_task(_ask(harness, agent_id, room_id, "2nd")))
+            await added[0]
+        return await read_from(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(buffer, "read_from", read_while_another_arrives)
+    await _ask(harness, agent_id, room_id, "1st")
+    frames = await asyncio.wait_for(take(stream, 2), timeout=5)
+    await stream.aclose()
+
+    assert [data["event"]["payload"]["body"] for _, data in frames] == ["1st", "2nd"]
+
+
+async def test_a_backlog_past_one_batch_is_sent_without_waiting(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No doorbell rings for events already there, so a pass that stops at
+    the batch size reads again at once."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 60.0)
+    monkeypatch.setattr(controller_stream, "CATCH_UP_BATCH", 2)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+    for n in range(5):
+        await _ask(harness, agent_id, room_id, f"#{n}")
+
+    frames = await asyncio.wait_for(take(stream, 5), timeout=5)
+    await stream.aclose()
+
+    assert [data["event"]["payload"]["body"] for _, data in frames] == [
+        f"#{n}" for n in range(5)
+    ]
