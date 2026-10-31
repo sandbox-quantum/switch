@@ -635,7 +635,10 @@ export const NewAgentForm = observer(function NewAgentForm({
         ...identity,
         sshHost: isRemoteRun ? runHost : null,
         dir: isRemoteRun ? trimmedRemoteDir : pickState.path,
-        definitionAttributes: advancedAttributesRef.current,
+        definitionAttributes: {
+          ...advancedAttributesRef.current,
+          ...(form.midTurnDelivery === 'queue' ? { midTurnDelivery: 'queue' } : {}),
+        },
         providerConfig: launchProfileConfigRef.current,
       });
       if (result.kind !== 'created') {

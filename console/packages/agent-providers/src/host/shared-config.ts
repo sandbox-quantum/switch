@@ -59,6 +59,10 @@ export const sharedConfigSchema = z.strictObject({
        */
       instructions: z.string().optional(),
       /**
+       * How messages sent mid-turn are delivered: 'steer' (default) or 'queue'.
+       */
+      midTurnDelivery: z.enum(['steer', 'queue']).optional(),
+      /**
        * A definition on the host's disk to run as, named by an earlier Console.
        * Sessions saved then still relaunch from it; a current Console hands the
        * definition over in `start.input` instead.

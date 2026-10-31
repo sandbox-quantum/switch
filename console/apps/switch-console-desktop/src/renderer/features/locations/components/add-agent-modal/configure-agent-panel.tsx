@@ -6,6 +6,7 @@ import {
   PERMISSION_COPY,
   UnsafeBadge,
 } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
+import { MID_TURN_DELIVERY_COPY } from '@renderer/features/locations/components/settings-view/sections/mid-turn-delivery-settings-section';
 import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
@@ -17,8 +18,15 @@ import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
-import { Field, FieldGroup, FieldLabel, FieldTitle } from '@renderer/lib/ui/field';
+import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/lib/ui/select';
 import { Switch } from '@renderer/lib/ui/switch';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { policyNamesOwner } from '@shared/core/switch-servers/owner-policy';
@@ -169,6 +177,39 @@ export const AgentSettingsSection = observer(function AgentSettingsSection({
               checked={form.autoApprove}
               onCheckedChange={form.setAutoApprove}
             />
+
+            <Field>
+              <div className="flex items-center justify-between gap-3">
+                <FieldTitle>
+                  <span className="flex items-center gap-1.5">
+                    {MID_TURN_DELIVERY_COPY.title}
+                    <InfoTooltip
+                      label={MID_TURN_DELIVERY_COPY.infoLabel}
+                      content={MID_TURN_DELIVERY_COPY.info}
+                    />
+                  </span>
+                </FieldTitle>
+                <Select
+                  value={form.midTurnDelivery}
+                  onValueChange={(val) => form.setMidTurnDelivery(val as 'steer' | 'queue')}
+                >
+                  <SelectTrigger className="w-60" aria-label="Mid-turn message handling">
+                    <SelectValue>{MID_TURN_DELIVERY_COPY.options[form.midTurnDelivery]}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="steer">
+                      {MID_TURN_DELIVERY_COPY.options.steer}
+                    </SelectItem>
+                    <SelectItem value="queue">
+                      {MID_TURN_DELIVERY_COPY.options.queue}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <FieldDescription className="text-foreground-muted">
+                {MID_TURN_DELIVERY_COPY.description}
+              </FieldDescription>
+            </Field>
 
             <Field>
               {/* FieldTitle rather than FieldLabel: this is a settings row like

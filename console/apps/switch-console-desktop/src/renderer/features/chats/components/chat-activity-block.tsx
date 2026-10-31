@@ -146,7 +146,8 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
     turn.requests.length > 0 ||
-    turnWarnings(turn).length > 0
+    turnWarnings(turn).length > 0 ||
+    turn.items.some((item) => item.title === 'Steered into running turn')
   );
 }
 
@@ -183,6 +184,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
+  const hasSteeredItem = turn.items.some((item) => item.title === 'Steered into running turn');
   if (!turnShown(activity, turn)) return null;
   return (
     <AgentRow
@@ -197,6 +199,12 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           label={label.label}
           shimmer={running && !reasoning?.completedAt}
           text={reasoning?.text ?? ''}
+        />
+      )}
+      {hasSteeredItem && (
+        <WorkLogRow
+          icon={<ToolKindIcon kind="switch" />}
+          label="Steered mid-turn message into running turn"
         />
       )}
       {!running && work.length >= GROUP_AT ? (

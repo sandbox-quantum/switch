@@ -58,6 +58,8 @@ export function useConfigureAgentForm(serverId: string | null) {
   const [instructions, setInstructions] = useState('');
   const [autoApprove, setAutoApprove] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoApprove);
   const [autoMode, setAutoMode] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoMode);
+  // How mid-turn messages are handled: 'steer' (default) or 'queue' (#801).
+  const [midTurnDelivery, setMidTurnDelivery] = useState<'steer' | 'queue'>('steer');
   // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
   // the default, its owner and the owner's agents. Applied via a follow-up PUT
   // after creation.
@@ -141,6 +143,8 @@ export function useConfigureAgentForm(serverId: string | null) {
     setAutoApprove,
     autoMode,
     setAutoMode,
+    midTurnDelivery,
+    setMidTurnDelivery,
     addressingPolicy,
     setAddressingPolicy,
     iconUrl,

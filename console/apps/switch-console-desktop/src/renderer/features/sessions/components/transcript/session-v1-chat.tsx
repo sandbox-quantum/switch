@@ -463,11 +463,23 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
-                  {item.origin?.surface && item.origin.surface !== 'console' && (
-                    <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-                      {item.origin.surface}
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1.5 ml-auto">
+                    {item.title === 'Steered into running turn' && (
+                      <span className="text-tiny px-1.5 py-0.5 rounded bg-primary/10 text-primary font-medium">
+                        Steered
+                      </span>
+                    )}
+                    {item.title === 'Queued (steering fallback)' && (
+                      <span className="text-tiny px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 font-medium">
+                        Queued
+                      </span>
+                    )}
+                    {item.origin?.surface && item.origin.surface !== 'console' && (
+                      <span className="hidden text-tiny text-foreground-passive xl:inline">
+                        {item.origin.surface}
+                      </span>
+                    )}
+                  </div>
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}
                   </div>
