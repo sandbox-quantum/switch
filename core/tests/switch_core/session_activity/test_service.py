@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from switch_core.addressing import owner_only_policy
 from switch_core.db.models import Agent, ApprovalRequest, TenantUsage
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import AgentSessionActivityStore
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -903,3 +904,49 @@ async def test_tool_text_stops_when_the_setting_is_turned_off(service, session_f
     assert await _tool_text(service, room) != ""
     await _set(session_factory, room=room, room_value=None)
     assert await _tool_text(service, room) == ""
+
+
+async def test_turning_the_setting_off_empties_what_was_stored_while_it_was_on(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    other = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True)
+    await _set(session_factory, room=other, room_value=True)
+    assert await _tool_text(service, room) != ""
+    assert await _tool_text(service, other) != ""
+
+    async with session_factory() as db, db.begin():
+        await RoomStore().set_tool_details(db, room, False)
+        await AgentSessionActivityStore().scrub_hidden_tool_text(
+            db, room_id=room, agent_id=None
+        )
+
+    steps = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert sorted(bool(step.text) for step in steps) == [False, True]
+
+
+async def test_clearing_the_rooms_setting_leaves_text_the_agent_still_shows(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True, agent_value=True)
+    assert await _tool_text(service, room) != ""
+
+    async with session_factory() as db, db.begin():
+        await RoomStore().set_tool_details(db, room, None)
+        await AgentSessionActivityStore().scrub_hidden_tool_text(
+            db, room_id=room, agent_id=None
+        )
+    [step] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert step.text != ""
+
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Agent).where(Agent.id == AGENT).values(tool_details=False)
+        )
+        await AgentSessionActivityStore().scrub_hidden_tool_text(
+            db, room_id=None, agent_id=AGENT
+        )
+    [step] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert step.text == ""

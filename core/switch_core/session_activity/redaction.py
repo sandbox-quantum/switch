@@ -30,15 +30,27 @@ _SHAPES = tuple(
     )
 )
 _URL_PASSWORD = re.compile(r"(\b[a-z][a-z0-9+.-]*://[^/\s:@]+:)[^@\s/]+(@)", re.I)
+# A value: quoted, to its closing quote, or bare, up to a delimiter of whatever
+# holds it.
+_VALUE = r"""\"(?:[^"\\\r\n]|\\.)*\"|'(?:[^'\\\r\n]|\\.)*'|[^\s"',;}\])]+"""
 _BEARER = re.compile(r"(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}", re.I)
 _AUTHORIZATION = re.compile(
-    r"""(\bauthorization["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+""",
+    r"""(\bauthorization["']?\s*[:=]\s*)(?!\[REDACTED\])"""
+    r"""(?:(?:bearer|basic|token|digest)\s+(?:[^\s"',;}\])]+)|""" + _VALUE + ")",
     re.I,
 )
 _ASSIGNMENT = re.compile(
-    r"""(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|token|access[_-]?token|client[_-]?secret|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[REDACTED\])[^\s"',;]+""",
+    r"""(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|token|access[_-]?token|client[_-]?secret|private[_-]?key)["']?\s*[:=]\s*)(?!\[REDACTED\])"""
+    f"(?:{_VALUE})",
     re.I,
 )
+
+
+def _masked(match: re.Match[str]) -> str:
+    """The mask in place of a value, inside the quotes it had."""
+    value = match.group(0)[len(match.group(1)) :]
+    quote = value[0] if value[0] in "\"'" else ""
+    return f"{match.group(1)}{quote}{_MASK}{quote}"
 
 
 def redact_secrets(text: str) -> str:
@@ -46,6 +58,6 @@ def redact_secrets(text: str) -> str:
     for shape in _SHAPES:
         text = shape.sub(_MASK, text)
     text = _URL_PASSWORD.sub(rf"\1{_MASK}\2", text)
-    text = _AUTHORIZATION.sub(rf"\1{_MASK}", text)
+    text = _AUTHORIZATION.sub(_masked, text)
     text = _BEARER.sub(rf"\1{_MASK}", text)
-    return _ASSIGNMENT.sub(rf"\1{_MASK}", text)
+    return _ASSIGNMENT.sub(_masked, text)

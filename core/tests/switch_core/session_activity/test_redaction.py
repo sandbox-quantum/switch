@@ -60,6 +60,25 @@ def test_a_value_assigned_to_a_secret_name_is_masked() -> None:
     )
 
 
+def test_a_quoted_secret_is_masked_whole_inside_its_quotes() -> None:
+    assert redact_secrets('PASSWORD="alpha beta"') == 'PASSWORD="[REDACTED]"'
+    assert redact_secrets("password='alpha beta' next") == "password='[REDACTED]' next"
+    assert (
+        redact_secrets('{"secret": "a \\" b c", "name": "x"}')
+        == '{"secret": "[REDACTED]", "name": "x"}'
+    )
+    assert (
+        redact_secrets('Authorization: "Bearer alpha beta"')
+        == 'Authorization: "[REDACTED]"'
+    )
+
+
+def test_an_unquoted_secret_stops_at_the_delimiter_that_closes_what_holds_it() -> None:
+    assert redact_secrets('{"token":abc}') == '{"token":[REDACTED]}'
+    assert redact_secrets("[password=abc]") == "[password=[REDACTED]]"
+    assert redact_secrets("(secret=abc)") == "(secret=[REDACTED])"
+
+
 @pytest.mark.parametrize(
     "text",
     ["max_tokens: 100", "laughs_total (sk-short)", "tokenizer=bpe", "42 passed"],

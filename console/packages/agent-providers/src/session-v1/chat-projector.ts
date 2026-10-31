@@ -1,11 +1,11 @@
 import type { HostBody, Item, Origin, Session } from '@switch-console/shared/session-v1';
 import type { ProviderRuntimeEvent } from '../events';
 import { Redactions } from '../host/redaction';
-import type { HostToolDetail } from '../host/tool-detail-buffer';
+import type { ToolDetailParts } from '../host/tool-detail-buffer';
 import { toolDetailText } from './tool-detail-text';
 
 /** The tool call a provider item names, as the host holds it; null for one it holds nothing of. */
-export type ToolDetailSource = (turnId: string, providerItemId: string) => HostToolDetail | null;
+export type ToolDetailSource = (turnId: string, providerItemId: string) => ToolDetailParts | null;
 
 type TurnContext = { commandId: string | null; origin: Origin | null };
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };

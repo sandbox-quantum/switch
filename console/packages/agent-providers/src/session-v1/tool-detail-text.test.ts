@@ -1,15 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { Redactions } from '../host/redaction';
-import { TOOL_OUTPUT_GAP, type HostToolDetail } from '../host/tool-detail-buffer';
+import type { ToolDetailParts } from '../host/tool-detail-buffer';
 import { toolDetailText, TOOL_TEXT_CUT } from './tool-detail-text';
 
-const detail = (patch: Partial<HostToolDetail>): HostToolDetail => ({
-  itemId: 'item',
+const parts = (patch: Partial<ToolDetailParts>): ToolDetailParts => ({
   type: 'command_execution',
-  toolName: null,
   input: null,
-  output: null,
-  truncated: false,
+  head: '',
+  tail: '',
+  outputClipped: false,
   exitCode: null,
   ...patch,
 });
@@ -18,24 +17,30 @@ const key = `sk-${'q'.repeat(24)}`;
 describe('toolDetailText', () => {
   const redactions = new Redactions();
 
-  it('shows a command as a shell line and its output', () => {
+  it('shows a shell call as a shell line and its output', () => {
     expect(
       toolDetailText(
-        detail({ input: { command: 'npm test' }, output: '42 passed' }),
+        parts({ input: { command: 'npm test' }, head: '42 passed' }),
         redactions,
         false
       )
     ).toBe('Input: $ npm test\nOutput:\n42 passed');
   });
 
+  it('shows another tool arguments as JSON even when one is named command', () => {
+    expect(
+      toolDetailText(
+        parts({ type: 'mcp_tool_call', input: { command: 'deploy' } }),
+        redactions,
+        false
+      )
+    ).toBe('Input: {"command":"deploy"}');
+  });
+
   it('shows other arguments as compact JSON and says when the call failed', () => {
     expect(
       toolDetailText(
-        detail({
-          input: { path: 'a.txt' },
-          output: 'no such file',
-          exitCode: 2,
-        }),
+        parts({ input: { path: 'a.txt' }, head: 'no such file', exitCode: 2 }),
         redactions,
         false
       )
@@ -43,14 +48,14 @@ describe('toolDetailText', () => {
   });
 
   it('is empty for a call with neither input nor output', () => {
-    expect(toolDetailText(detail({}), redactions, false)).toBe('');
+    expect(toolDetailText(parts({}), redactions, false)).toBe('');
   });
 
   it('masks secrets in input and output', () => {
     const text = toolDetailText(
-      detail({
+      parts({
         input: { command: `curl -H "Authorization: Bearer ${key}"` },
-        output: `key=${key}`,
+        head: `key=${key}`,
       }),
       redactions,
       false
@@ -61,26 +66,48 @@ describe('toolDetailText', () => {
 
   it('holds back the last word of output that is still streaming', () => {
     const partial = key.slice(0, 10);
-    expect(toolDetailText(detail({ output: `got ${partial}` }), redactions, true)).toBe(
+    expect(toolDetailText(parts({ head: `got ${partial}` }), redactions, true)).toBe(
       'Output:\ngot'
     );
-    expect(toolDetailText(detail({ output: `got ${partial}` }), redactions, false)).toContain(
-      partial
-    );
+    expect(toolDetailText(parts({ head: `got ${partial}` }), redactions, false)).toContain(partial);
   });
 
   it('keeps a head and a tail of long output with a note, dropping words the cut split', () => {
-    const output = `${'a'.repeat(1990)} ${'b'.repeat(40)}${TOOL_OUTPUT_GAP}${'c'.repeat(40)} ${'d '.repeat(450)}`;
-    const text = toolDetailText(detail({ output, truncated: true }), redactions, false);
+    const head = `${'a'.repeat(1990)} ${'b'.repeat(40)}`;
+    const tail = `${'c'.repeat(40)} ${'d '.repeat(450)}`;
+    const text = toolDetailText(parts({ head, tail, outputClipped: true }), redactions, false);
     expect(text).toContain(TOOL_TEXT_CUT);
     expect(text).not.toContain('c'.repeat(40));
     expect(text.length).toBeLessThan(4000);
     expect(text.trimEnd().endsWith('d d')).toBe(true);
   });
 
+  it('does not take a separator-looking line in the output for the cut', () => {
+    const output = 'first\n…\nsecond';
+    expect(toolDetailText(parts({ head: output }), redactions, false)).toBe(`Output:\n${output}`);
+    const tail = `${'x '.repeat(300)}\n…\nlast line`;
+    const text = toolDetailText(
+      parts({ head: 'start ', tail: ` ${tail}`, outputClipped: true }),
+      redactions,
+      false
+    );
+    expect(text.startsWith(`Output:\nstart \n${TOOL_TEXT_CUT}\n`)).toBe(true);
+    expect(text.endsWith('last line')).toBe(true);
+  });
+
+  it('does not take a clipped input for a clipped output', () => {
+    const text = toolDetailText(
+      parts({ input: { command: 'x '.repeat(2000) }, head: 'plain\n…\noutput' }),
+      redactions,
+      false
+    );
+    expect(text).toContain('Output:\nplain\n…\noutput');
+    expect(text).not.toContain(`Output:\nplain\n${TOOL_TEXT_CUT}`);
+  });
+
   it('clips a long input with a note', () => {
     const text = toolDetailText(
-      detail({ input: { command: 'x '.repeat(2000) } }),
+      parts({ input: { command: 'x '.repeat(2000) } }),
       redactions,
       false
     );
@@ -88,12 +115,27 @@ describe('toolDetailText', () => {
     expect(text.length).toBeLessThan(1100);
   });
 
-  it('masks a secret that was cut by the buffer before it could be recognised', () => {
-    const head = `log ${key.slice(0, 8)}`;
+  it('keeps a note for an input that is one unbroken word longer than its room', () => {
+    expect(toolDetailText(parts({ input: 'x'.repeat(5000) }), redactions, false)).toBe(
+      `Input: ${TOOL_TEXT_CUT}`
+    );
+  });
+
+  it('keeps a note for output that is one unbroken word longer than its room', () => {
     const text = toolDetailText(
-      detail({
-        output: `${head}${TOOL_OUTPUT_GAP}${key.slice(8)} done`,
-        truncated: true,
+      parts({ head: 'y'.repeat(5000), outputClipped: true }),
+      redactions,
+      false
+    );
+    expect(text).toBe(`Output:\n${TOOL_TEXT_CUT}`);
+  });
+
+  it('masks a secret that was cut by the buffer before it could be recognised', () => {
+    const text = toolDetailText(
+      parts({
+        head: `log ${key.slice(0, 8)}`,
+        tail: `${key.slice(8)} done`,
+        outputClipped: true,
       }),
       redactions,
       false

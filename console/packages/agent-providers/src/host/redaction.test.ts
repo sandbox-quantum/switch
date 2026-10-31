@@ -290,6 +290,21 @@ describe('secret shape redaction', () => {
     expect(redactSecrets('AWS_SECRET_ACCESS_KEY=abc')).toBe('AWS_SECRET_ACCESS_KEY=[REDACTED]');
   });
 
+  it('masks a quoted secret whole, spaces included, inside its quotes', () => {
+    expect(redactSecrets('PASSWORD="alpha beta"')).toBe('PASSWORD="[REDACTED]"');
+    expect(redactSecrets("password='alpha beta' next")).toBe("password='[REDACTED]' next");
+    expect(redactSecrets('{"secret": "a \\" b c", "name": "x"}')).toBe(
+      '{"secret": "[REDACTED]", "name": "x"}'
+    );
+    expect(redactSecrets('Authorization: "Bearer alpha beta"')).toBe('Authorization: "[REDACTED]"');
+  });
+
+  it('stops an unquoted secret at the delimiter that closes what holds it', () => {
+    expect(redactSecrets('{"token":abc}')).toBe('{"token":[REDACTED]}');
+    expect(redactSecrets('[password=abc]')).toBe('[password=[REDACTED]]');
+    expect(redactSecrets('(secret=abc)')).toBe('(secret=[REDACTED])');
+  });
+
   it('leaves ordinary text and near misses alone', () => {
     for (const text of [
       'max_tokens: 100',

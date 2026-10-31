@@ -25,7 +25,7 @@ export const TOOL_INPUT_LIMIT = 12 * 1024;
 export const TOOL_OUTPUT_HEAD = 6 * 1024;
 export const TOOL_OUTPUT_TAIL = 2 * 1024;
 /** What stands between a clipped output's head and its tail. */
-export const TOOL_OUTPUT_GAP = '\n…\n';
+const TOOL_OUTPUT_GAP = '\n…\n';
 /** Roughly how much one answer carries; older turns are left out past it. */
 export const TOOL_ANSWER_LIMIT = 1024 * 1024;
 
@@ -154,6 +154,30 @@ function detailOf(entry: ToolEntry): HostToolDetail {
   };
 }
 
+/**
+ * A call as it is held, for the one reader that renders it: the output's head
+ * and tail apart, so nothing has to find a separator in text a tool wrote.
+ */
+export type ToolDetailParts = {
+  type: ItemType;
+  input: unknown;
+  head: string;
+  tail: string;
+  outputClipped: boolean;
+  exitCode: number | null;
+};
+
+function partsOf(entry: ToolEntry): ToolDetailParts {
+  return {
+    type: entry.type,
+    input: entry.input,
+    head: entry.head,
+    tail: entry.tail,
+    outputClipped: entry.outputClipped,
+    exitCode: entry.exitCode,
+  };
+}
+
 function sizeOf(detail: HostToolDetail): number {
   return (JSON.stringify(detail.input) ?? '').length + (detail.output?.length ?? 0) + 200;
 }
@@ -219,10 +243,10 @@ export class ToolDetailBuffer {
   }
 
   /** The call held for one provider item, or null when none is. */
-  get(epoch: string, turnId: string, providerItemId: string): HostToolDetail | null {
+  get(epoch: string, turnId: string, providerItemId: string): ToolDetailParts | null {
     if (this.epoch !== epoch) return null;
     const entry = this.turns.get(turnId)?.get(providerItemId);
-    return entry ? detailOf(entry) : null;
+    return entry ? partsOf(entry) : null;
   }
 
   /**

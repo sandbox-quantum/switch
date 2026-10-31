@@ -949,11 +949,17 @@ async def _cmd_tool_details(
                 await client._agent_store.update(
                     session, target.id, tool_details=_TOOL_DETAILS_STATES[choice]
                 )
+                await AgentSessionActivityStore().scrub_hidden_tool_text(
+                    session, room_id=None, agent_id=target.id
+                )
                 await session.commit()
                 await session.refresh(target)
         elif choice:
             await client._room_store.set_tool_details(
                 session, meta.room_id, _TOOL_DETAILS_STATES[choice]
+            )
+            await AgentSessionActivityStore().scrub_hidden_tool_text(
+                session, room_id=meta.room_id, agent_id=None
             )
             await session.commit()
         room_setting = await client._room_store.tool_details_setting(

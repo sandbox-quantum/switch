@@ -12,6 +12,7 @@ so each test can say exactly what the command asked for.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -35,6 +36,7 @@ from switch_core.clients.agent_admin import AgentDeletionRequests
 from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AgentSessionActivityItem,
     AuditEvent,
     Client,
     CollaborationBridge,
@@ -580,3 +582,31 @@ class TestToolDetailsForAnAgent:
 
         assert world.replies[0].startswith("Usage:")
         assert await _agent_setting(world) is None
+
+    async def test_turning_it_off_empties_what_was_stored_while_it_was_on(
+        self, world: _World
+    ) -> None:
+        await _tool_details(world, "@notes-taker on", world.owner_chat)
+        async with world.session_factory() as session:
+            session.add(
+                AgentSessionActivityItem(
+                    tenant_id=TENANT_ZERO_ID,
+                    agent_id=world.agent_id,
+                    session_id="s",
+                    turn_id="t",
+                    item_id="tool",
+                    kind="tool-activity",
+                    revision=1,
+                    status="completed",
+                    title="Ran",
+                    text="Output:\nsecret-ish",
+                    occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
+                )
+            )
+            await session.commit()
+
+        await _tool_details(world, "@notes-taker off", world.owner_chat)
+
+        async with world.session_factory() as session:
+            item = await session.scalar(select(AgentSessionActivityItem))
+        assert item is not None and item.text == ""

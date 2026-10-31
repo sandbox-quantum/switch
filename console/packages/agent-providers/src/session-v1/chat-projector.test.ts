@@ -5,7 +5,7 @@ import type { Session } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
 import type { ProviderRuntimeEvent } from '../events';
 import { Redactions } from '../host/redaction';
-import type { HostToolDetail } from '../host/tool-detail-buffer';
+import type { ToolDetailParts } from '../host/tool-detail-buffer';
 import { ChatProjector } from './chat-projector';
 import { EventOutbox } from './event-outbox';
 
@@ -292,13 +292,12 @@ describe('tool details', () => {
     createdAt: '2026-09-07T12:00:00Z',
     turnId: 'turn',
   } as const;
-  const detail: HostToolDetail = {
-    itemId: 'tool',
+  const detail: ToolDetailParts = {
     type: 'command_execution',
-    toolName: null,
     input: { command: `echo ${key}` },
-    output: 'done',
-    truncated: false,
+    head: 'done',
+    tail: '',
+    outputClipped: false,
     exitCode: null,
   };
   const tool = (status: 'in_progress' | 'completed'): ProviderRuntimeEvent => ({
@@ -316,11 +315,11 @@ describe('tool details', () => {
   });
 
   it('publishes redacted input and output once opted in, and follows streamed output', () => {
-    let current: HostToolDetail = { ...detail, output: null };
+    let current: ToolDetailParts = { ...detail, head: '' };
     const projector = new ChatProjector(session('claude'), new Redactions(), () => current);
     projector.bindTurn('turn', context);
     expect(textOf(projector.ingest(tool('in_progress'), 0))).toEqual(['Input: $ echo [REDACTED]']);
-    current = { ...detail, output: 'done\n' };
+    current = { ...detail, head: 'done\n' };
     expect(
       textOf(projector.ingest({ ...base, type: 'item.delta', itemId: 'tool', delta: 'done' }, 300))
     ).toEqual(['Input: $ echo [REDACTED]\nOutput:\ndone']);
