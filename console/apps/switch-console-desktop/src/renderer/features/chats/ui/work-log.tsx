@@ -3,6 +3,7 @@ import {
   Brain,
   ChevronRightIcon,
   CircleAlert,
+  CircleX,
   FileText,
   Globe,
   Hammer,
@@ -46,6 +47,7 @@ export function ToolKindIcon({ kind }: { kind: ToolKind | null }) {
 
 export const ThinkingIcon = () => <Brain aria-hidden className="size-3.5" />;
 export const FailedIcon = () => <CircleAlert aria-hidden className="size-3.5" />;
+export const CancelledIcon = () => <CircleX aria-hidden className="size-3.5" />;
 
 export function WorkLogRow({
   icon,

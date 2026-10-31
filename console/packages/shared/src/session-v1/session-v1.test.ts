@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { SessionChatClient } from './client';
 import type { CommandStatus, SessionTransport } from './client';
-import type { Item, ServerEvent, Snapshot } from './contract';
+import type { Command, Item, ServerEvent, Snapshot } from './contract';
 import activity from './examples.activity.json';
 import examples from './examples.json';
 import questions from './examples.questions.json';
@@ -57,6 +57,39 @@ function transport() {
 }
 
 describe('session-v1 wire contract', () => {
+  it('accepts turn.cancel command and cancelled turn status', () => {
+    const cancelCommand: Command = {
+      contractVersion: 1,
+      commandId: 'cmd-cancel-1',
+      sessionId: 'session-demo',
+      epoch: 'epoch-1',
+      origin: {
+        surface: 'console',
+        actorId: 'user-1',
+        roomId: 'room-1',
+        threadId: null,
+        messageId: 'msg-1',
+      },
+      body: {
+        type: 'turn.cancel',
+        turnId: 'turn-to-cancel',
+      },
+    };
+    expect(commandSchema.parse(cancelCommand)).toEqual(cancelCommand);
+
+    const cancelledTurnEvent: ServerEvent = event(15, {
+      type: 'turn.upsert',
+      turnId: 'turn-to-cancel',
+      status: 'cancelled',
+      commandId: 'cmd-cancel-1',
+    });
+    expect(serverEventSchema.parse(cancelledTurnEvent)).toEqual(cancelledTurnEvent);
+
+    const replica = new SessionReplica(initial());
+    replica.apply(cancelledTurnEvent);
+    expect(replica.snapshot().turns.find((t) => t.turnId === 'turn-to-cancel')?.status).toBe('cancelled');
+  });
+
   it('accepts server approval expiry offsets in snapshots and events', () => {
     const expiresAt = '2026-09-11T15:30:00.123456+00:00';
     const snapshot = initial();

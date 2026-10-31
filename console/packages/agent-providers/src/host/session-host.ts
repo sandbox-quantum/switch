@@ -767,6 +767,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -966,6 +967,38 @@ export class HostedSession {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
+      } else if (body.type === 'turn.cancel') {
+        if (body.turnId === this.activeTurn) {
+          throw new Error('TURN_ALREADY_RUNNING: Message has already started; use !interrupt to stop active execution.');
+        }
+        const queuedIndex = this.queue.findIndex((c) => c.commandId === body.turnId);
+        if (queuedIndex === -1) {
+          const existingTurn = this.snapshot().turns.find((t) => t.turnId === body.turnId);
+          if (existingTurn?.status === 'cancelled') {
+            await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+            this.dispatched.add(command.commandId);
+          } else if (existingTurn && existingTurn.status !== 'queued') {
+            throw new Error(`TURN_NOT_QUEUED: Message is in '${existingTurn.status}' state and cannot be cancelled.`);
+          } else {
+            throw new Error('TURN_NOT_FOUND: No queued message found with that turn ID.');
+          }
+        } else {
+          const [cancelledCommand] = this.queue.splice(queuedIndex, 1);
+          await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+          this.dispatched.add(command.commandId);
+          await this.publish({
+            type: 'turn.upsert',
+            turnId: body.turnId,
+            commandId: cancelledCommand.commandId,
+            status: 'cancelled',
+          });
+          await this.publish({
+            type: 'notice',
+            level: 'info',
+            code: 'TURN_CANCELLED',
+            message: `Queued message ${body.turnId} was cancelled before the agent started.`,
+          });
+        }
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);

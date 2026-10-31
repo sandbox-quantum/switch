@@ -359,6 +359,70 @@ it('stops active and queued turns without dispatching the queue during cleanup',
   expect(adapter.sendTurn).toHaveBeenCalledOnce();
 });
 
+it('cancels a queued message before the agent picks it up, and the agent never sees it', async () => {
+  const { host, adapter, emit } = await start('codex');
+  await host.command(message('active'));
+  await host.command(message('queued-to-cancel'));
+  await host.command(message('queued-to-run'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(host.snapshot().turns.find((t) => t.turnId === 'queued-to-cancel')?.status).toBe('queued');
+
+  const cancelResult = await host.command({
+    ...message('cancel-cmd'),
+    body: { type: 'turn.cancel', turnId: 'queued-to-cancel' },
+  });
+  expect(cancelResult.status).toBe('applied');
+  expect(host.snapshot().turns.find((t) => t.turnId === 'queued-to-cancel')?.status).toBe('cancelled');
+
+  // Finish active turn
+  emit({ type: 'turn.completed', turnId: 'active', outcome: 'completed', usage: [] });
+  // Host must run next turn, which is 'queued-to-run', completely skipping 'queued-to-cancel'
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(adapter.sendTurn).toHaveBeenLastCalledWith(expect.objectContaining({ turnId: 'queued-to-run' }));
+  expect(adapter.sendTurn).not.toHaveBeenCalledWith(expect.objectContaining({ turnId: 'queued-to-cancel' }));
+});
+
+it('refuses to cancel an active turn with a pointer to !interrupt', async () => {
+  const { host, adapter } = await start('codex');
+  await host.command(message('active'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+  const result = await host.command({
+    ...message('cancel-cmd'),
+    body: { type: 'turn.cancel', turnId: 'active' },
+  });
+  expect(result.status).toBe('rejected');
+  expect(result.message).toMatch(/use !interrupt/);
+});
+
+it('rejects cancel for unknown turn ID and handles idempotent repeat', async () => {
+  const { host, adapter } = await start('codex');
+  await host.command(message('active'));
+  await host.command(message('queued-1'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+
+  const nonExistentResult = await host.command({
+    ...message('cancel-cmd'),
+    body: { type: 'turn.cancel', turnId: 'non-existent' },
+  });
+  expect(nonExistentResult.status).toBe('rejected');
+  expect(nonExistentResult.message).toMatch(/No queued message found/);
+
+  // Cancel queued-1
+  const firstCancel = await host.command({
+    ...message('cancel-1'),
+    body: { type: 'turn.cancel', turnId: 'queued-1' },
+  });
+  expect(firstCancel.status).toBe('applied');
+
+  // Idempotent cancel of already cancelled turn
+  const secondCancel = await host.command({
+    ...message('cancel-2'),
+    body: { type: 'turn.cancel', turnId: 'queued-1' },
+  });
+  expect(secondCancel.status).toBe('applied');
+});
+
 it('knows what a turn spent from the moment it reads as ended, and after a restart', async () => {
   const { host, emit, root } = await start('claude');
   const spent = [

@@ -153,6 +153,21 @@ Stops what an agent is doing now.
 !interrupt @agent-name
 ```
 
+### !cancel
+
+Cancels a queued message waiting for an agent before the agent begins executing it.
+
+```text
+!cancel @agent-name <turn-id>
+```
+
+| Argument | Required | Description |
+|---|---|---|
+| `@agent-name` | Yes | The agent (or `@role`) whose queued message you want to cancel |
+| `<turn-id>` | Yes | The ID of the queued message (displayed on the queued activity card) |
+
+If the message has already started executing, `!cancel` is refused with a pointer to use `!interrupt` instead.
+
 ### !compact
 
 Compacts an agent's session context.
