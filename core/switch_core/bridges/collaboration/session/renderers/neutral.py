@@ -100,6 +100,11 @@ _OUTCOME = {
 # log is body text.
 _LOG_TITLE = 200
 _LOG_DETAIL = 120
+# What one call's input and output may take in the log, which is read on
+# request; the lines of a longer detail follow the call's own line, indented.
+_LOG_TOOL_DETAIL = 1500
+_LOG_DETAIL_INDENT = "  "
+_LOG_CUT_DETAIL = "\n[…truncated]"
 
 _LOG_UNTITLED = "(untitled)"
 _LOG_EMPTY = "No activity."
@@ -389,21 +394,33 @@ def in_activity_log(item: Item) -> bool:
     return item.kind == "assistant-message" and bool(item.text)
 
 
-def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
+def _log_line(item: Item, *, escape: Callable[[str], str], compact: bool) -> str:
     """One item as the single line the log gives it.
 
     What the agent said is folded onto one line like everything else in here,
     its own paragraph breaks removed: a sentence spread over four lines is
     indistinguishable from four things having happened.
+
+    A tool call's input and output follow its line, up to `_LOG_TOOL_DETAIL`,
+    and say when they were cut. `compact` keeps one clipped line of them, for
+    where the whole would not fit the room the log has left.
     """
     if item.kind == "assistant-message":
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
     line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
-    if item.text:
-        line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
-    return line
+    text = item.text.strip()
+    if not text:
+        return line
+    if compact or ("\n" not in text and len(text) <= _LOG_DETAIL):
+        return f"{line} — {_fit(' '.join(text.split()), _LOG_DETAIL, escape=escape)}"
+    if len(text) > _LOG_TOOL_DETAIL:
+        text = text[: _LOG_TOOL_DETAIL - len(_LOG_CUT_DETAIL)] + _LOG_CUT_DETAIL
+    first, *rest = escape(text).split("\n")
+    return "\n".join(
+        [f"{line} — {first}", *(f"{_LOG_DETAIL_INDENT}{each}" for each in rest)]
+    )
 
 
 def activity_log(
@@ -458,7 +475,9 @@ def activity_log(
     lines: list[str] = []
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
-        line = _log_line(item, escape=escape)
+        line = _log_line(item, escape=escape, compact=False)
+        if spent + len(line) + 1 > limit:
+            line = _log_line(item, escape=escape, compact=True)
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

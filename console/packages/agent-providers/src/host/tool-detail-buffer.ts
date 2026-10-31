@@ -24,6 +24,8 @@ export const TOOL_INPUT_LIMIT = 12 * 1024;
 /** A tool's output: its head and its tail are kept, the middle dropped. */
 export const TOOL_OUTPUT_HEAD = 6 * 1024;
 export const TOOL_OUTPUT_TAIL = 2 * 1024;
+/** What stands between a clipped output's head and its tail. */
+const TOOL_OUTPUT_GAP = '\n…\n';
 /** Roughly how much one answer carries; older turns are left out past it. */
 export const TOOL_ANSWER_LIMIT = 1024 * 1024;
 
@@ -144,10 +146,34 @@ function detailOf(entry: ToolEntry): HostToolDetail {
     input: entry.input,
     output: entry.hasOutput
       ? entry.outputClipped
-        ? `${entry.head}\n…\n${entry.tail}`
+        ? `${entry.head}${TOOL_OUTPUT_GAP}${entry.tail}`
         : entry.head + entry.tail
       : null,
     truncated: entry.inputClipped || entry.outputClipped,
+    exitCode: entry.exitCode,
+  };
+}
+
+/**
+ * A call as it is held, for the one reader that renders it: the output's head
+ * and tail apart, so nothing has to find a separator in text a tool wrote.
+ */
+export type ToolDetailParts = {
+  type: ItemType;
+  input: unknown;
+  head: string;
+  tail: string;
+  outputClipped: boolean;
+  exitCode: number | null;
+};
+
+function partsOf(entry: ToolEntry): ToolDetailParts {
+  return {
+    type: entry.type,
+    input: entry.input,
+    head: entry.head,
+    tail: entry.tail,
+    outputClipped: entry.outputClipped,
     exitCode: entry.exitCode,
   };
 }
@@ -214,6 +240,13 @@ export class ToolDetailBuffer {
       default:
         return;
     }
+  }
+
+  /** The call held for one provider item, or null when none is. */
+  get(epoch: string, turnId: string, providerItemId: string): ToolDetailParts | null {
+    if (this.epoch !== epoch) return null;
+    const entry = this.turns.get(turnId)?.get(providerItemId);
+    return entry ? partsOf(entry) : null;
   }
 
   /**

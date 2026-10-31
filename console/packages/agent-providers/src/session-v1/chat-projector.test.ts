@@ -5,6 +5,7 @@ import type { Session } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
 import type { ProviderRuntimeEvent } from '../events';
 import { Redactions } from '../host/redaction';
+import type { ToolDetailParts } from '../host/tool-detail-buffer';
 import { ChatProjector } from './chat-projector';
 import { EventOutbox } from './event-outbox';
 
@@ -43,7 +44,7 @@ describe('chat projection', () => {
   it.each(['claude', 'codex', 'opencode', 'antigravity', 'cursor'] as const)(
     'projects %s text with bounded full replacements and immediate final state',
     (provider) => {
-      const projector = new ChatProjector(session(provider), null);
+      const projector = new ChatProjector(session(provider), null, null);
       projector.bindTurn('turn', context);
       const base = {
         provider,
@@ -101,7 +102,7 @@ describe('chat projection', () => {
     }
   );
   it('excludes reasoning and tool payload/output while preserving verified user origin', () => {
-    const projector = new ChatProjector(session('claude'), null);
+    const projector = new ChatProjector(session('claude'), null, null);
     projector.bindTurn('turn', context);
     const base = {
       provider: 'claude',
@@ -185,7 +186,7 @@ it('persists host sequences and acknowledgements across reloads', async () => {
 });
 
 it('preserves a long Unicode response in bounded wire items', () => {
-  const projector = new ChatProjector(session('claude'), null);
+  const projector = new ChatProjector(session('claude'), null, null);
   projector.bindTurn('turn', context);
   const text = '😀\n"'.repeat(20000);
   const events = projector.ingest(
@@ -222,7 +223,7 @@ describe('service tokens in streamed text', () => {
   function projector() {
     const redactions = new Redactions();
     redactions.add(TOKEN);
-    const projected = new ChatProjector(session('claude'), redactions);
+    const projected = new ChatProjector(session('claude'), redactions, null);
     projected.bindTurn('turn', context);
     return projected;
   }
@@ -279,5 +280,48 @@ describe('service tokens in streamed text', () => {
     );
     expect(parts.join('')).toBe(`${'a'.repeat(4096 - 10)}[REDACTED] done`);
     for (const part of parts) expect(part).not.toContain(TOKEN.slice(-8));
+  });
+});
+
+describe('tool details', () => {
+  const key = `sk-${'q'.repeat(24)}`;
+  const base = {
+    provider: 'claude',
+    sessionId: 'session',
+    eventId: 'native-event',
+    createdAt: '2026-09-07T12:00:00Z',
+    turnId: 'turn',
+  } as const;
+  const detail: ToolDetailParts = {
+    type: 'command_execution',
+    input: { command: `echo ${key}` },
+    head: 'done',
+    tail: '',
+    outputClipped: false,
+    exitCode: null,
+  };
+  const tool = (status: 'in_progress' | 'completed'): ProviderRuntimeEvent => ({
+    ...base,
+    type: status === 'completed' ? 'item.completed' : 'item.started',
+    item: { id: 'tool', type: 'command_execution', status, title: 'Ran echo' },
+  });
+  const textOf = (bodies: ReturnType<ChatProjector['ingest']>) =>
+    bodies.flatMap((body) => (body.type === 'item.upsert' ? [body.item.text] : []));
+
+  it('publishes a tool call as its title alone unless the agent opted in', () => {
+    const projector = new ChatProjector(session('claude'), null, null);
+    projector.bindTurn('turn', context);
+    expect(textOf(projector.ingest(tool('completed'), 0))).toEqual(['']);
+  });
+
+  it('publishes redacted input and output once opted in, and follows streamed output', () => {
+    let current: ToolDetailParts = { ...detail, head: '' };
+    const projector = new ChatProjector(session('claude'), new Redactions(), () => current);
+    projector.bindTurn('turn', context);
+    expect(textOf(projector.ingest(tool('in_progress'), 0))).toEqual(['Input: $ echo [REDACTED]']);
+    current = { ...detail, head: 'done\n' };
+    expect(
+      textOf(projector.ingest({ ...base, type: 'item.delta', itemId: 'tool', delta: 'done' }, 300))
+    ).toEqual(['Input: $ echo [REDACTED]\nOutput:\ndone']);
   });
 });

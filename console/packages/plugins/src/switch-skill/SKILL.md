@@ -157,6 +157,13 @@ talking to each other, broadcast updates, or a person thinking out loud
 without `@`-mentioning you, unless it is one of the follow-ups above. Pulling
 it is what `read_context` is for.
 
+Tool details are off unless someone switches them on, for a room with
+`!tool-details on` or for you with `!tool-details @you on`; a room's own
+setting wins over yours, and `!tool-details default` clears one. Then expanding
+one of your tool calls shows its input and output, masked for secrets by
+pattern only, so keep anything you would not show the whole room out of command
+lines and output.
+
 Two annotations tell you when that matters:
 
 - **An unread count** — a delivered line ends with `(N unaddressed room

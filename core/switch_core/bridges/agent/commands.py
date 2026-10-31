@@ -891,6 +891,99 @@ async def _cmd_follow_ups(
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
 
 
+_TOOL_DETAILS_USAGE = (
+    "Usage: `!tool-details on|off|default` for this room, or `!tool-details "
+    "@agent-name on|off|default` for one agent. With no setting, it says what "
+    "is set now."
+)
+_TOOL_DETAILS_CAVEAT = (
+    "Secrets are masked by pattern, which is a best effort: anyone in the room "
+    "can read what is shown."
+)
+_TOOL_DETAILS_STATES = {"on": True, "off": False, "default": None}
+
+
+def _tool_details_word(value: bool | None) -> str:
+    return "not set" if value is None else "**on**" if value else "**off**"
+
+
+async def _cmd_tool_details(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    words = event.args.split()
+    token = _bare_name(words.pop(0)) if words and words[0].startswith("@") else None
+    choice = " ".join(words).lower()
+    if choice not in ("", *_TOOL_DETAILS_STATES):
+        await _reply(client, room, event, _TOOL_DETAILS_USAGE)
+        return
+
+    async with client.session_factory() as session:
+        target: Agent | None = None
+        if token is not None:
+            target = await client._agent_store.get_by_name_insensitive(session, token)
+            if target is None:
+                await _reply(
+                    client,
+                    room,
+                    event,
+                    f"No agent named `{token}`. Run `!list-switch-agents` to see "
+                    "registered agents.",
+                )
+                return
+            if choice:
+                host = cast("CommandConsumer", client)
+                refusal = (
+                    await _manage_authority(host, session, event, target)
+                ).refusal
+                if refusal is not None:
+                    await _reply(client, room, event, f"⚠️ {refusal}")
+                    return
+                await client._agent_store.update(
+                    session, target.id, tool_details=_TOOL_DETAILS_STATES[choice]
+                )
+                await AgentSessionActivityStore().scrub_hidden_tool_text(
+                    session, room_id=None, agent_id=target.id
+                )
+                await session.commit()
+                await session.refresh(target)
+        elif choice:
+            await client._room_store.set_tool_details(
+                session, meta.room_id, _TOOL_DETAILS_STATES[choice]
+            )
+            await AgentSessionActivityStore().scrub_hidden_tool_text(
+                session, room_id=meta.room_id, agent_id=None
+            )
+            await session.commit()
+        room_setting = await client._room_store.tool_details_setting(
+            session, meta.room_id
+        )
+
+    if target is not None:
+        body = (
+            f"Tool details for **{_label(target)}** are "
+            f"{_tool_details_word(target.tool_details)} in every room that has no "
+            f"setting of its own. This room's setting is "
+            f"{_tool_details_word(room_setting)}."
+        )
+    else:
+        body = (
+            f"Tool details are {_tool_details_word(room_setting)} in this room. "
+            "Where it is not set, each agent's own setting applies, and with "
+            "neither set tool calls show their titles only."
+        )
+    if room_setting is not False and (target is None or target.tool_details):
+        body += f" {_TOOL_DETAILS_CAVEAT}"
+    await _reply(client, room, event, body)
+
+
 async def _cmd_assign_agent(
     client: AgentRecipient,
     room: RoomRef,
@@ -2073,6 +2166,20 @@ COMMANDS: list[Command] = [
         "an @. Usage: `!follow-ups on`, `!follow-ups off`, or `!follow-ups`.",
         _cmd_follow_ups,
         args_spec=(CommandArg("state", "on or off", required=False),),
+        admin_owned=True,
+    ),
+    Command(
+        "tool-details",
+        "Turn tool details on or off, for this room or for one agent: whether "
+        "expanding a tool call shows what it was given and returned. Off by "
+        "default; a room's own setting wins over an agent's. Usage: "
+        "`!tool-details on|off|default`, or `!tool-details @agent-name "
+        "on|off|default`.",
+        _cmd_tool_details,
+        args_spec=(
+            CommandArg("agent", "@agent, or leave out for this room", required=False),
+            CommandArg("state", "on, off or default", required=False),
+        ),
         admin_owned=True,
     ),
     Command(

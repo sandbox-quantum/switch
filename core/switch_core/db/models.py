@@ -737,6 +737,11 @@ class Agent(TenantScoped, Base):
     can_manage_agents: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
+    # Whether this agent's tool calls open to show what they were given and
+    # returned (`!tool-details @agent`). NULL is unset, which reads as off. Its
+    # own column rather than a key in `integration_profile` or `metadata`:
+    # re-registering an agent replaces both, and would switch this back off.
+    tool_details: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

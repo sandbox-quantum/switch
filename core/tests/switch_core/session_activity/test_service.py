@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import ApprovalRequest, TenantUsage
+from switch_core.db.models import Agent, ApprovalRequest, TenantUsage
+from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import AgentSessionActivityStore
 from switch_core.session_activity.service import (
     ApprovalOption,
     PlatformPerson,
@@ -71,6 +74,10 @@ def _step(**overrides):
     return values
 
 
+def _message(**overrides):
+    return _step(kind="assistant-message", **overrides)
+
+
 async def _open(service, request_id="req-1", **overrides):
     values = dict(
         request_id=request_id,
@@ -102,16 +109,16 @@ def _answers(*entries: tuple[str, list[str], str | None]) -> QuestionsResult:
 
 
 async def test_a_step_is_upserted_by_revision_and_announced_by_turn(service, changes):
-    assert await service.report_item(AGENT, SESSION, **_step()) is True
-    assert await service.report_item(AGENT, SESSION, **_step()) is False
+    assert await service.report_item(AGENT, SESSION, **_message()) is True
+    assert await service.report_item(AGENT, SESSION, **_message()) is False
     assert (
         await service.report_item(
-            AGENT, SESSION, **_step(revision=2, status="completed", text="done")
+            AGENT, SESSION, **_message(revision=2, status="completed", text="done")
         )
         is True
     )
     assert (
-        await service.report_item(AGENT, SESSION, **_step(revision=1, text="stale"))
+        await service.report_item(AGENT, SESSION, **_message(revision=1, text="stale"))
         is False
     )
     [step] = await service.turn_items(AGENT, SESSION, "turn-1")
@@ -812,3 +819,134 @@ async def test_a_room_control_takes_the_agents_addressing_policy(
             "guarded", room, PlatformPerson(stranger), doing="stop it"
         )
     assert error.value.code == "NOT_AUTHORIZED"
+
+
+_KEY = "sk-" + "q" * 24
+
+
+async def _tool_text(service, room_id) -> str:
+    """The text stored for a fresh tool call reported now."""
+    item_id = f"tool-{uuid.uuid4().hex}"
+    await service.report_item(
+        AGENT,
+        SESSION,
+        **_step(
+            item_id=item_id,
+            room_id=room_id,
+            text=f"Input: $ deploy --token={_KEY}\nOutput:\nok",
+        ),
+    )
+    steps = await service.turn_items(AGENT, SESSION, "turn-1")
+    return next(step.text for step in steps if step.item_id == item_id)
+
+
+async def _set(session_factory, *, room=None, room_value=None, agent_value=None):
+    async with session_factory() as db, db.begin():
+        if room is not None:
+            await RoomStore().set_tool_details(db, room, room_value)
+        await db.execute(
+            update(Agent).where(Agent.id == AGENT).values(tool_details=agent_value)
+        )
+
+
+async def _new_room(session_factory) -> str:
+    async with session_factory() as db, db.begin():
+        return await make_room(db, member=AGENT)
+
+
+async def test_tool_text_is_dropped_when_neither_room_nor_agent_asked_for_it(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    assert await _tool_text(service, room) == ""
+
+
+async def test_tool_text_outside_a_room_follows_the_agent(service, session_factory):
+    assert await _tool_text(service, None) == ""
+    await _set(session_factory, agent_value=True)
+    assert "[REDACTED]" in await _tool_text(service, None)
+
+
+async def test_the_rooms_setting_turns_tool_text_on_and_masks_it(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True)
+    text = await _tool_text(service, room)
+    assert _KEY not in text
+    assert text == "Input: $ deploy --token=[REDACTED]\nOutput:\nok"
+
+
+async def test_the_agents_setting_turns_tool_text_on_in_every_room(
+    service, session_factory
+):
+    first, second = await _new_room(session_factory), await _new_room(session_factory)
+    await _set(session_factory, agent_value=True)
+    assert "[REDACTED]" in await _tool_text(service, first)
+    assert "[REDACTED]" in await _tool_text(service, second)
+
+
+async def test_a_room_that_says_off_blocks_an_agent_that_says_on(
+    service, session_factory
+):
+    blocked, open_room = (
+        await _new_room(session_factory),
+        await _new_room(session_factory),
+    )
+    await _set(session_factory, room=blocked, room_value=False, agent_value=True)
+    assert await _tool_text(service, blocked) == ""
+    assert "[REDACTED]" in await _tool_text(service, open_room)
+
+
+async def test_tool_text_stops_when_the_setting_is_turned_off(service, session_factory):
+    room = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True)
+    assert await _tool_text(service, room) != ""
+    await _set(session_factory, room=room, room_value=None)
+    assert await _tool_text(service, room) == ""
+
+
+async def test_turning_the_setting_off_empties_what_was_stored_while_it_was_on(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    other = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True)
+    await _set(session_factory, room=other, room_value=True)
+    assert await _tool_text(service, room) != ""
+    assert await _tool_text(service, other) != ""
+
+    async with session_factory() as db, db.begin():
+        await RoomStore().set_tool_details(db, room, False)
+        await AgentSessionActivityStore().scrub_hidden_tool_text(
+            db, room_id=room, agent_id=None
+        )
+
+    steps = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert sorted(bool(step.text) for step in steps) == [False, True]
+
+
+async def test_clearing_the_rooms_setting_leaves_text_the_agent_still_shows(
+    service, session_factory
+):
+    room = await _new_room(session_factory)
+    await _set(session_factory, room=room, room_value=True, agent_value=True)
+    assert await _tool_text(service, room) != ""
+
+    async with session_factory() as db, db.begin():
+        await RoomStore().set_tool_details(db, room, None)
+        await AgentSessionActivityStore().scrub_hidden_tool_text(
+            db, room_id=room, agent_id=None
+        )
+    [step] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert step.text != ""
+
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Agent).where(Agent.id == AGENT).values(tool_details=False)
+        )
+        await AgentSessionActivityStore().scrub_hidden_tool_text(
+            db, room_id=None, agent_id=AGENT
+        )
+    [step] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert step.text == ""

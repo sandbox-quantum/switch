@@ -5,6 +5,7 @@ import {
   LogRedactor,
   pipeRedactedLogs,
   Redactions,
+  redactSecrets,
   redactText,
   ShapeLineRedactor,
   tokenForms,
@@ -235,5 +236,91 @@ describe('tokens no exact value catches', () => {
     const redactions = new Redactions();
     redactions.add('synthetic-issued-token');
     expect(redactions.text('see the synth…')).toBe('see the synth…');
+  });
+});
+
+describe('secret shape redaction', () => {
+  // Built from parts so no literal here is, or looks like, a real credential.
+  const fill = (character: string, count: number) => character.repeat(count);
+  const shapes: Record<string, string> = {
+    'an OpenAI or Anthropic key': `sk-${fill('a', 24)}`,
+    'a Slack token': `xoxb-${fill('1', 12)}-${fill('b', 12)}`,
+    'an AWS access key id': `AKIA${fill('A', 16)}`,
+    'a Google API key': `AIza${fill('b', 35)}`,
+    'a GitLab token': `glpat-${fill('c', 22)}`,
+    'a Hugging Face token': `hf_${fill('d', 24)}`,
+    'a Stripe key': `sk_test_${fill('e', 20)}`,
+    'an npm token': `npm_${fill('f', 32)}`,
+    'a JWT': `eyJ${fill('a', 12)}.eyJ${fill('b', 12)}.${fill('c', 12)}`,
+  };
+
+  it.each(Object.entries(shapes))('masks %s', (_name, secret) => {
+    const output = redactSecrets(`before ${secret} after`);
+    expect(output).toBe('before [REDACTED] after');
+  });
+
+  it('masks a PEM private key whole, and one cut short', () => {
+    const whole = `-----BEGIN RSA PRIVATE KEY-----\n${fill('A', 64)}\n-----END RSA PRIVATE KEY-----`;
+    expect(redactSecrets(`key:\n${whole}\nnext`)).toBe('key:\n[REDACTED]\nnext');
+    expect(redactSecrets(`-----BEGIN PRIVATE KEY-----\n${fill('A', 20)}`)).toBe('[REDACTED]');
+  });
+
+  it('masks the password in a connection string and keeps the rest', () => {
+    expect(redactSecrets('postgres://app:hunter2@db.example.test:5432/app')).toBe(
+      'postgres://app:[REDACTED]@db.example.test:5432/app'
+    );
+    expect(redactSecrets('https://example.test/path')).toBe('https://example.test/path');
+  });
+
+  it('masks bearer and authorization credentials', () => {
+    expect(redactSecrets(`Authorization: Bearer ${fill('x', 20)}`)).toBe(
+      'Authorization: [REDACTED]'
+    );
+    expect(redactSecrets('Authorization: Basic dXNlcjpwYXNz')).toBe('Authorization: [REDACTED]');
+    expect(redactSecrets(`curl -H "bearer ${fill('y', 20)}"`)).toBe('curl -H "bearer [REDACTED]"');
+  });
+
+  it('masks values assigned to secret-looking names, in env, flags and JSON', () => {
+    expect(redactSecrets('API_KEY=abc123 PASSWORD: hunter2; client_secret = "s3cret"')).toBe(
+      'API_KEY=[REDACTED] PASSWORD: [REDACTED]; client_secret = "[REDACTED]"'
+    );
+    expect(redactSecrets('{"access_token":"abc","name":"x"}')).toBe(
+      '{"access_token":"[REDACTED]","name":"x"}'
+    );
+    expect(redactSecrets('AWS_SECRET_ACCESS_KEY=abc')).toBe('AWS_SECRET_ACCESS_KEY=[REDACTED]');
+  });
+
+  it('masks a quoted secret whole, spaces included, inside its quotes', () => {
+    expect(redactSecrets('PASSWORD="alpha beta"')).toBe('PASSWORD="[REDACTED]"');
+    expect(redactSecrets("password='alpha beta' next")).toBe("password='[REDACTED]' next");
+    expect(redactSecrets('{"secret": "a \\" b c", "name": "x"}')).toBe(
+      '{"secret": "[REDACTED]", "name": "x"}'
+    );
+    expect(redactSecrets('Authorization: "Bearer alpha beta"')).toBe('Authorization: "[REDACTED]"');
+  });
+
+  it('stops an unquoted secret at the delimiter that closes what holds it', () => {
+    expect(redactSecrets('{"token":abc}')).toBe('{"token":[REDACTED]}');
+    expect(redactSecrets('[password=abc]')).toBe('[password=[REDACTED]]');
+    expect(redactSecrets('(secret=abc)')).toBe('(secret=[REDACTED])');
+  });
+
+  it('leaves ordinary text and near misses alone', () => {
+    for (const text of [
+      'max_tokens: 100',
+      'the task-force (sk-short) laughs_total',
+      'tokenizer=bpe',
+      'ask-for-help-in-the-channel-please',
+    ])
+      expect(redactSecrets(text)).toBe(text);
+  });
+
+  it('Redactions.detail masks issued tokens, GitHub shapes and other shapes together', () => {
+    const redactions = new Redactions();
+    redactions.add('issued-service-token-value');
+    const github = `ghp_${fill('a', 36)}`;
+    expect(
+      redactions.detail(`a issued-service-token-value b ${github} c sk-${fill('z', 20)}`)
+    ).toBe('a [REDACTED] b [REDACTED] c [REDACTED]');
   });
 });

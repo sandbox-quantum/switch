@@ -76,6 +76,12 @@ export type HostSessionStart = {
   /** Service tokens to scrub from every event before it is recorded; none when absent. */
   redactions?: Redactions;
   /**
+   * Whether the tool calls this session publishes carry their redacted,
+   * bounded input and output. On unless `false`: Switch decides, per room and
+   * per agent, whether a room is shown any of it, and drops it otherwise.
+   */
+  toolDetail?: boolean;
+  /**
    * Told each time the provider asks to run a connector's tool, before the
    * request is published, so a notice it raises comes ahead of the card.
    */
@@ -190,7 +196,13 @@ export class HostedSession {
       if (record.type === 'model') config.input.model = { id: record.id, options: record.options };
       if (record.type === 'room-reply') this.roomReplies.add(record.commandId);
     }
-    this.projector = new ChatProjector(config.session, config.redactions ?? null);
+    this.projector = new ChatProjector(
+      config.session,
+      config.redactions ?? null,
+      config.toolDetail === false
+        ? null
+        : (turnId, itemId) => this.toolDetails.get(this.config.session.epoch, turnId, itemId)
+    );
     this.unsubscribe = adapter.subscribe((event) => {
       if (event.sessionId !== config.session.sessionId) return;
       this.reasoningBuffer.ingest(event, this.config.session.epoch, Date.now());
