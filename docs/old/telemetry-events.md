@@ -262,8 +262,8 @@ reasons. Each is now answered rather than ignored:
    costs events, never memory.
 2. **The sender must not pay for it.** The transport and the router hand a
    small record to a queue and return. One worker looks up the room and
-   the sender — cached, so a busy room is read once every five minutes rather
-   than once per message — and emits. That queue is bounded too, and drops with
+   the sender — cached, so a busy room is read once every fifteen minutes
+   rather than once per message — and emits. That queue is bounded too, and drops with
    a warning when it falls behind.
 3. **Content risk.** The events carry the same kind of property as every
    other: closed sets, booleans and counts. There is no property a message body,
@@ -667,8 +667,9 @@ rather than something the product wants to know.
 
 All three come from `telemetry/messages.py`, reported off the sender's path as
 described [above](#message-events-and-what-they-cannot-tell-you). A post with
-several files is one message. Room facts are cached for five minutes, so a
-member count can be that far behind. A room, sender or agent whose lookup
+several files is one message. Room facts are cached for fifteen minutes, so a
+member count can be that far behind; who a sender is and an agent's runtime,
+which do not change, for an hour. A room, sender or agent whose lookup
 fails is not looked up again for five seconds, and its events report it as
 `unknown` meanwhile; every other room carries on. Three failures in a row,
 with no lookup succeeding between them, pause every lookup for five seconds.

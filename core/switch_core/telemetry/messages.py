@@ -8,10 +8,12 @@ thing being reported on. Three rules keep it off that path:
   record and return. One worker task looks up what the event needs (the
   room's platform, type and membership, who the sender is) and emits.
 - **Lookups are cached.** A busy room says a lot and changes membership
-  rarely, so a room is read at most once per `_CACHE_TTL_SECONDS` rather than
-  once per message. The member counts can therefore be that far behind. A
-  lookup that finds nothing is cached too, as `unknown`: a room deleted while
-  its last messages were queued must not cost a query per message.
+  rarely, so a room is read at most once per `_ROOM_TTL_SECONDS` rather than
+  once per message. The member counts can therefore be that far behind. Who
+  a sender is and an agent's runtime do not change, and are kept for
+  `_IDENTITY_TTL_SECONDS`. A lookup that finds nothing is cached too, as
+  `unknown`: a room deleted while its last messages were queued must not cost
+  a query per message.
 - **A failing lookup is left alone.** A room, sender or agent whose lookup
   failed is not looked up again for `_LOOKUP_BACKOFF_SECONDS`, and events
   report it as `unknown` meanwhile. Only that key: one tenant or room that
@@ -53,8 +55,15 @@ from switch_core.transport.observer import ParticipantMessage
 logger = logging.getLogger(__name__)
 
 _QUEUE_SIZE = 10_000
-_CACHE_TTL_SECONDS = 300.0
-_CACHE_MAX_ENTRIES = 10_000
+# A room's facts are re-read this often, so its member counts are at most
+# this far behind. Most rooms are quiet: kept for minutes rather than an hour,
+# a room's lookup is a query for most of its messages.
+_ROOM_TTL_SECONDS = 900.0
+# Who a sender is, and an agent's runtime: neither changes.
+_IDENTITY_TTL_SECONDS = 3600.0
+# Above the agents and rooms of a large deployment, so a cache at its limit
+# does not evict what it is about to be asked again.
+_CACHE_MAX_ENTRIES = 50_000
 _WARNING_INTERVAL_SECONDS = 60.0
 _LOOKUP_BACKOFF_SECONDS = 5.0
 # Failures in a row, from any keys, that read as the database failing rather
@@ -164,13 +173,13 @@ class MessageTelemetry:
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
         self._rooms: _TtlCache[tuple[str, str], _RoomFacts] = _TtlCache(
-            _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
+            _ROOM_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         self._sender_kinds: _TtlCache[tuple[str, str], str] = _TtlCache(
-            _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
+            _IDENTITY_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         self._agent_runtimes: _TtlCache[tuple[str, str], str] = _TtlCache(
-            _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
+            _IDENTITY_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         # Keys whose lookup failed, as `(lookup, tenant_id, id)`, until they
         # may be tried again.

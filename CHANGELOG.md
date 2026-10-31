@@ -159,6 +159,14 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Usage analytics read the database far less per message in a large
+  workspace.** With usage reporting on, each message looked up its room's
+  platform and member counts, its sender and the agent's runtime, each kept
+  for five minutes in caches of at most 10,000 entries. Quiet rooms missed
+  every time, and with thousands of agents the caches evicted what they were
+  about to be asked again. A room's facts are now kept for fifteen minutes,
+  a sender and an agent's runtime, which do not change, for an hour, and up
+  to 50,000 of each.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
