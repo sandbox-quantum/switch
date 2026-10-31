@@ -349,6 +349,10 @@ version of their own to them without also giving them a release of their own.
   through. Slack apps that list `/run-cmd` in their manifest keep showing it,
   answering "Unknown command", until an admin deletes it; Discord and Telegram
   drop it from their command lists by themselves (#730).
+- **Deleting your account now also clears workspaces you were removed from.**
+  Removing a member leaves what they own in that workspace, and deleting their
+  account afterwards failed on it. Those rows are now deleted or handed over as
+  they are in the workspaces you are still in.
 
 ### [0.31.0] - 2026-10-20
 
