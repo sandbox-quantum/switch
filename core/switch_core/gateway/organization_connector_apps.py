@@ -1,17 +1,17 @@
 """An organization's admins set up the apps its workspaces sign in through.
 
-The organization's counterpart of `gateway/connector_apps.py`, and the same
-rules: a save is checked with the vendor first and stored only if the vendor
-accepts it, no response carries a secret, and a different app is taken only
-when asked for on purpose. `org_admin` only, acting on the bound
-workspace's organization; the platform operator has no say here unless they
-are one.
+The organization's counterpart of `gateway/connector_apps.py`, sharing its
+entry shape (`entry_body`) and everything a save asks before it is stored
+(`checked_save`): the vendor checks a save first, no response carries a
+secret, and a different app is taken only when asked for on purpose.
+`org_admin` only, acting on the bound workspace's organization; the
+platform operator has no say here unless they are one.
 
 Which app a workspace then uses is `connections/organization_apps.py`: the
 organization's where it saved one, else the server's. So an organization's
-page shows, beside each of its own apps, whether the server offers one its
-workspaces fall back to. There is nothing to import: configuration is the
-server's alone.
+page shows, beside each of its own apps, whether the server's would serve
+its workspaces meanwhile (`server_app`). There is nothing to import:
+configuration is the server's alone.
 
 Mounted only with both `service_connections` and
 `organization_connector_apps` on. A save or removal takes effect at once in
@@ -22,6 +22,7 @@ organization's audit log.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -36,12 +37,13 @@ from switch_core.connections.app_credentials import (
     UnreadableAppError,
     load_saved_app,
 )
+from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.db.audit import (
     OrganizationAuditAction,
     record_organization_audit_event,
 )
-from switch_core.db.models import OrganizationAppCredential, User
+from switch_core.db.models import User
 from switch_core.db.stores.app_secrets import MissingSecretsError
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
@@ -51,19 +53,20 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user, organization_workspace_ids
 from switch_core.gateway.connector_apps import (
     SaveApp,
+    SavedApp,
+    StoredApp,
     Usage,
-    app_scopes,
+    Usages,
     app_spec,
     check_values,
+    checked_save,
     checks_body,
-    fields_changed,
+    entry_body,
     get_connector_apps,
-    needs_public_url,
     refuse_while_blocked,
+    saved_app,
     saved_app_redirects,
-    secret_views,
-    setup_blocked,
-    usage_in,
+    usages_in,
 )
 from switch_core.gateway.dependencies import (
     get_organization_store,
@@ -104,104 +107,116 @@ async def _admin_of(
     return access.organization_id
 
 
-async def _usage(
+async def _usages(
     session_factory: async_sessionmaker[AsyncSession],
     user: User,
     organization_id: str,
-    service: str,
-) -> Usage:
-    """`service`'s connections in the organization's workspaces."""
-    return await usage_in(
+) -> Usages:
+    """Every connection in the organization's workspaces. The caller's
+    session has let its connection go: this opens one per workspace."""
+    return await usages_in(
         session_factory,
-        service,
         await organization_workspace_ids(session_factory, user.id, organization_id),
+        leave_out_organization_apps=False,
     )
 
 
-def _opened(
+@dataclass(frozen=True)
+class _OrganizationApp:
+    """What the organization saved for a service, read through the request's
+    session before its connection is let go for the usage scan."""
+
+    saved: SavedApp | None
+    values: AppValues | None
+    load_error: str | None
+    unreadable: bool
+
+    @property
+    def current(self) -> str | None:
+        """The client its workspaces go through, if the app can be used."""
+        if self.saved is None or self.load_error is not None:
+            return None
+        return self.saved.client_id
+
+
+async def _read(
+    session: AsyncSession,
     apps: ConnectorApps,
     store: OrganizationAppCredentialStore,
+    organization_id: str,
     spec: AppSpec,
-    row: OrganizationAppCredential,
-) -> tuple[AppValues | None, str | None, bool]:
-    """The saved row's values, why it cannot be used, and whether no key
-    opens it."""
+) -> _OrganizationApp:
+    row = await store.get(session, organization_id, spec.service)
+    if row is None:
+        return _OrganizationApp(None, None, None, False)
+    values: AppValues | None = None
+    load_error: str | None = None
+    unreadable = False
     try:
-        loaded = load_saved_app(
+        values = load_saved_app(
             spec,
             client_id=row.client_id,
             settings=row.settings,
             secrets=lambda: store.secrets(row),
             public_url=apps.public_url,
-        )
+        ).values
     except UnreadableAppError as error:
-        return None, str(error), True
+        load_error, unreadable = str(error), True
     except AppLoadError as error:
-        return None, str(error), False
-    return loaded.values, None, False
+        load_error = str(error)
+    return _OrganizationApp(
+        saved=await saved_app(session, row),
+        values=values,
+        load_error=load_error,
+        unreadable=unreadable,
+    )
 
 
-async def _entry(
+def _entry(
+    apps: ConnectorApps,
+    spec: AppSpec,
+    read: _OrganizationApp,
+    usage: Usage,
+    server_serves: bool,
+) -> dict[str, Any]:
+    return {
+        **entry_body(
+            apps,
+            spec,
+            source="saved" if read.current is not None else "none",
+            configuration_variables=[],
+            deprecated=False,
+            current=read.current,
+            saved=read.saved,
+            shown=read.values,
+            saved_ignored=False,
+            unreadable=read.unreadable,
+            load_error=read.load_error,
+            redirects=saved_app_redirects(apps, spec),
+            usage=usage,
+        ),
+        # Whether the server's app serves the organization's workspaces while
+        # it saves none of its own.
+        "server_app": server_serves,
+    }
+
+
+async def _one_entry(
     session: AsyncSession,
     session_factory: async_sessionmaker[AsyncSession],
     apps: ConnectorApps,
     store: OrganizationAppCredentialStore,
+    broker: ServiceBroker,
     user: User,
     organization_id: str,
     spec: AppSpec,
 ) -> dict[str, Any]:
-    """One service's app, in the shape of the operator's page
-    (`connector_apps._entry`), and whether the server has one to fall back
-    to."""
-    row = await store.get(session, organization_id, spec.service)
-    values, load_error, unreadable = (
-        (None, None, False) if row is None else _opened(apps, store, spec, row)
+    read = await _read(session, apps, store, organization_id, spec)
+    await session.commit()
+    usages = await _usages(session_factory, user, organization_id)
+    return _entry(
+        apps, spec, read, usages.of(spec.service), broker.server_serves(spec.service)
     )
-    in_use = row is not None and load_error is None
-    current = row.client_id if in_use and row is not None else None
-    usage = await _usage(session_factory, user, organization_id, spec.service)
-    people, workspaces = usage.through(current) if current is not None else (0, 0)
-    updated_by = None
-    if row is not None and row.updated_by is not None:
-        author = await session.get(User, row.updated_by)
-        updated_by = None if author is None else author.name
-    slug = None if row is None else row.settings.get("slug")
-    redirects = saved_app_redirects(apps, spec)
-    return {
-        "slug": spec.service,
-        "name": spec.name,
-        "kind": spec.kind,
-        "source": "saved" if in_use else "none",
-        "configuration_variables": [],
-        "deprecated": False,
-        "client_id": None if row is None else row.client_id,
-        "saved_client_id": None if row is None else row.client_id,
-        "fields": {"slug": slug} if spec.kind == "github_app" else {},
-        "secrets": secret_views(
-            spec, None if values is None else values.secrets, row is not None
-        ),
-        "saved_ignored": False,
-        "unreadable": unreadable,
-        "load_error": load_error,
-        "redirect_uri": next(iter(redirects), None),
-        "redirect_uris": redirects,
-        "needs_public_url": needs_public_url(apps, spec),
-        "scopes": app_scopes(apps, spec),
-        "setup_blocked": setup_blocked(spec, apps.public_url),
-        "install_url": (
-            f"https://github.com/apps/{slug}/installations/new"
-            if spec.kind == "github_app" and slug
-            else None
-        ),
-        "updated_by_name": updated_by,
-        "updated_at": None if row is None else row.updated_at.isoformat(),
-        "connected_members": people,
-        "workspaces": workspaces,
-        "stale_connections": usage.stale(current),
-        # Whether the organization's workspaces use the server's app while it
-        # saves none of its own.
-        "server_app": apps.effective(spec.service).source != "none",
-    }
 
 
 @router.get("")
@@ -209,6 +224,7 @@ async def list_organization_connector_apps(
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[Any, Depends(get_session_factory)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     store: Annotated[
         OrganizationAppCredentialStore, Depends(get_organization_app_store)
     ],
@@ -217,13 +233,24 @@ async def list_organization_connector_apps(
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, Any]:
     organization_id = await _admin_of(session, user_store, organization_store, user)
+    reads = [
+        (spec, await _read(session, apps, store, organization_id, spec))
+        for spec in apps.specs.values()
+    ]
+    # The request's connection goes back before the scan opens one per workspace.
+    await session.commit()
+    usages = await _usages(session_factory, user, organization_id)
     return {
         "public_url": apps.public_url,
         "apps": [
-            await _entry(
-                session, session_factory, apps, store, user, organization_id, spec
+            _entry(
+                apps,
+                spec,
+                read,
+                usages.of(spec.service),
+                broker.server_serves(spec.service),
             )
-            for spec in apps.specs.values()
+            for spec, read in reads
         ],
     }
 
@@ -235,6 +262,7 @@ async def save_organization_connector_app(
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[Any, Depends(get_session_factory)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     organization_apps: Annotated[OrganizationApps, Depends(get_organization_apps)],
     store: Annotated[
         OrganizationAppCredentialStore, Depends(get_organization_app_store)
@@ -246,93 +274,32 @@ async def save_organization_connector_app(
     organization_id = await _admin_of(session, user_store, organization_store, user)
     spec = app_spec(apps, service)
     refuse_while_blocked(spec, apps.public_url)
-    given = {
-        name: value
-        for name, value in (
-            ("client_secret", body.client_secret),
-            ("private_key", body.private_key),
-        )
-        if value is not None
-    }
-    unknown = set(given) - spec.secret_names
-    if unknown:
-        raise HTTPException(422, f"{spec.name} has no {', '.join(sorted(unknown))}.")
     row = await store.get(session, organization_id, service)
-    if row is not None and row.client_id != body.client_id and not body.replace:
-        raise HTTPException(
-            409,
-            "This is a different app: everyone connected through the current one "
-            "would have to reconnect. Use a different app to switch on purpose.",
-        )
-    previous: AppValues | None = None
-    if row is not None:
-        values, _, unreadable = _opened(apps, store, spec, row)
-        if unreadable and not spec.secret_names <= set(given):
-            raise HTTPException(
-                422,
-                "Switch can't read the saved secret any more. Enter every secret "
-                "again.",
-            )
-        previous = values or (
-            None
-            if unreadable
-            else AppValues(row.client_id, dict(row.settings), store.secrets(row))
-        )
-    # Another app's secrets are no use to this one: switching names them all.
-    kept = (
-        {}
-        if previous is None or previous.client_id != body.client_id
-        else previous.secrets
-    )
-    candidate_secrets = {**kept, **given}
-    missing = spec.secret_names - set(candidate_secrets)
-    if missing:
-        names = " and ".join(name.replace("_", " ") for name in sorted(missing))
-        raise HTTPException(422, f"Enter the {names}.")
-    result = await check_values(
+    checked = await checked_save(
         apps,
         spec,
-        AppValues(
-            body.client_id,
-            {} if previous is None else previous.settings,
-            candidate_secrets,
-        ),
+        body,
+        None
+        if row is None
+        else StoredApp(row.client_id, row.settings, lambda: store.secrets(row)),
         saved_app_redirects(apps, spec),
     )
-    if not result.ok:
-        failure = result.first_failure()
-        assert failure is not None
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": failure.message,
-                "field": failure.field,
-                "checks": checks_body(result),
-            },
-        )
-    previous_client_id = None if row is None else row.client_id
+    if isinstance(checked, JSONResponse):
+        return checked
     try:
         await store.save(
             session,
             organization_id=organization_id,
             service=service,
             client_id=body.client_id,
-            settings=result.settings,
-            secrets=given,
+            settings=checked.result.settings,
+            secrets=checked.given,
             secret_names=spec.secret_names,
             updated_by=user.id,
         )
     except MissingSecretsError as error:
         raise HTTPException(422, str(error)) from None
-    details: dict[str, Any] = {
-        "service": service,
-        "fields_changed": fields_changed(
-            previous, body.client_id, result.settings, given
-        ),
-        "client_id": body.client_id,
-    }
-    if previous_client_id is not None and previous_client_id != body.client_id:
-        details["previous_client_id"] = previous_client_id
+    details = checked.details(service, body.client_id)
     await record_organization_audit_event(
         session,
         organization_id=organization_id,
@@ -352,10 +319,17 @@ async def save_organization_connector_app(
         details["fields_changed"],
     )
     return {
-        **await _entry(
-            session, session_factory, apps, store, user, organization_id, spec
+        **await _one_entry(
+            session,
+            session_factory,
+            apps,
+            store,
+            broker,
+            user,
+            organization_id,
+            spec,
         ),
-        "checks": checks_body(result),
+        "checks": checks_body(checked.result),
     }
 
 
@@ -375,13 +349,17 @@ async def check_organization_connector_app(
     organization_id = await _admin_of(session, user_store, organization_store, user)
     spec = app_spec(apps, service)
     refuse_while_blocked(spec, apps.public_url)
-    row = await store.get(session, organization_id, service)
-    if row is None:
+    read = await _read(session, apps, store, organization_id, spec)
+    await session.commit()
+    if read.saved is None:
         raise HTTPException(409, f"Your organization has no {spec.name} app to check.")
-    values, load_error, _ = _opened(apps, store, spec, row)
-    if values is None:
-        raise HTTPException(409, load_error or f"{spec.name}'s app cannot be read.")
-    result = await check_values(apps, spec, values, saved_app_redirects(apps, spec))
+    if read.values is None:
+        raise HTTPException(
+            409, read.load_error or f"{spec.name}'s app cannot be read."
+        )
+    result = await check_values(
+        apps, spec, read.values, saved_app_redirects(apps, spec)
+    )
     return {"ok": result.ok, "checks": checks_body(result)}
 
 
@@ -410,7 +388,7 @@ async def organization_connector_app_impact(
         server = apps.effective(service).values
         current = None if server is None else server.client_id
     await session.commit()
-    usage = await _usage(session_factory, user, organization_id, service)
+    usage = (await _usages(session_factory, user, organization_id)).of(service)
     people, workspaces = usage.not_through(client_id, current)
     return {"connected_members": people, "workspaces": workspaces}
 
@@ -455,6 +433,8 @@ async def remove_organization_connector_app(
         user.id,
     )
     people, workspaces = (
-        await _usage(session_factory, user, organization_id, service)
-    ).through(removed.client_id)
+        (await _usages(session_factory, user, organization_id))
+        .of(service)
+        .through(removed.client_id)
+    )
     return {"connected_members": people, "workspaces": workspaces}

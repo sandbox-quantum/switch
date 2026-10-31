@@ -370,6 +370,24 @@ async def tenants_bindable_by(
     return await tenants_bindable_by_user(session_factory, user_id)
 
 
+async def _in_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    candidates: list[str],
+    organization_id: str,
+) -> list[Tenant]:
+    """Those of `candidates` in `organization_id`, in their order. A
+    workspace's organization is readable only bound to it, so each is read
+    on its own short session, one after another: the caller holds no other
+    connection while this runs."""
+    found: list[Tenant] = []
+    for tenant_id in candidates:
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None and tenant.organization_id == organization_id:
+            found.append(tenant)
+    return found
+
+
 async def workspaces_in_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
@@ -378,13 +396,11 @@ async def workspaces_in_organization(
     """The workspaces of `organization_id` that `user_id` holds a membership
     row in. Each workspace is read on its own short session, one after
     another, so the caller holds no other connection while this runs."""
-    found: list[Tenant] = []
-    for tenant_id in await tenants_of_user(session_factory, user_id):
-        async with tenant_session(session_factory, tenant_id) as session:
-            tenant = await session.get(Tenant, tenant_id)
-        if tenant is not None and tenant.organization_id == organization_id:
-            found.append(tenant)
-    return found
+    return await _in_organization(
+        session_factory,
+        await tenants_of_user(session_factory, user_id),
+        organization_id,
+    )
 
 
 async def organization_workspace_ids(
@@ -395,13 +411,14 @@ async def organization_workspace_ids(
     """Every workspace of `organization_id`, as its `org_admin` `admin_id`
     reaches them: an `org_admin` may bind each one. Each read on its own
     short session, as `workspaces_in_organization` does."""
-    found: list[str] = []
-    for tenant_id in await tenants_bindable_by_user(session_factory, admin_id):
-        async with tenant_session(session_factory, tenant_id) as session:
-            tenant = await session.get(Tenant, tenant_id)
-        if tenant is not None and tenant.organization_id == organization_id:
-            found.append(tenant_id)
-    return found
+    return [
+        tenant.id
+        for tenant in await _in_organization(
+            session_factory,
+            await tenants_bindable_by_user(session_factory, admin_id),
+            organization_id,
+        )
+    ]
 
 
 async def workspaces_reached_through_organization(
@@ -414,15 +431,15 @@ async def workspaces_reached_through_organization(
     demoted or removed. Each read on its own short session, as
     `workspaces_in_organization` does."""
     members_of = set(await tenants_of_user(session_factory, user_id))
-    found: list[Tenant] = []
-    for tenant_id in await tenants_bindable_by_user(session_factory, user_id):
-        if tenant_id in members_of:
-            continue
-        async with tenant_session(session_factory, tenant_id) as session:
-            tenant = await session.get(Tenant, tenant_id)
-        if tenant is not None and tenant.organization_id == organization_id:
-            found.append(tenant)
-    return found
+    return await _in_organization(
+        session_factory,
+        [
+            tenant_id
+            for tenant_id in await tenants_bindable_by_user(session_factory, user_id)
+            if tenant_id not in members_of
+        ],
+        organization_id,
+    )
 
 
 async def organizations_bindable_by(
@@ -489,11 +506,9 @@ async def organization_workspaces_bindable_by(
         else await tenants_bindable_by(session_factory, user_id)
     )
     found: list[TenantMembershipResponse] = []
-    for tenant_id in candidates:
+    for tenant in await _in_organization(session_factory, candidates, organization_id):
+        tenant_id = tenant.id
         async with tenant_session(session_factory, tenant_id) as session:
-            tenant = await session.get(Tenant, tenant_id)
-            if tenant is None or tenant.organization_id != organization_id:
-                continue
             role = await user_store.effective_tenant_role(session, tenant_id, user_id)
             organization_role = await user_store.organization_role(
                 session, tenant_id, user_id

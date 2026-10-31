@@ -22,10 +22,12 @@ from switch_core.db.models import (
     OrganizationMember,
     User,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_app_credential_store import (
     OrganizationAppCredentialStore,
 )
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.organization_connector_apps import (
     router as organization_connector_apps_router,
@@ -41,6 +43,7 @@ from tests.switch_core.gateway.test_connector_apps import (
     PUBLIC,
     World,
     _google_body,
+    _tenant_id,
     _user,
 )
 from tests.switch_core.management.harness import cookies_for
@@ -339,3 +342,82 @@ class TestRemoving:
             OrganizationAuditAction.CONNECTOR_APP_REMOVED,
         ]
         assert events[-1].details == {"service": GOOGLE, "client_id": STATIC_CLIENT_ID}
+
+
+async def _connected(session_factory, name: str, tenant: str, client_id: str) -> None:
+    user = await _user(session_factory, name, tenant_id=tenant)
+    async with session_factory() as session:
+        tenant_id = await _tenant_id(session, tenant)
+    async with tenant_session(session_factory, tenant_id) as session:
+        await ServiceConnectionStore().save_connection(
+            session,
+            user_id=user.id,
+            service=GOOGLE,
+            consent="read",
+            granted_scopes=[],
+            account_id=f"account-{name}",
+            external_identity=f"{name}@example.invalid",
+            encrypted_secret=TEST_KEYRING.encrypt("{}"),
+            oauth_client_id=client_id,
+        )
+        await session.commit()
+
+
+class TestTheServersAppAlongside:
+    async def test_the_server_counts_no_connection_made_through_an_organizations_app(
+        self, world: World, session_factory
+    ) -> None:
+        await _install(world)
+        admin = await _org_admin(session_factory, "org-admin")
+        operator = await _user(session_factory, "operator", role="admin")
+        async with world.harness.client() as client:
+            await client.put(
+                f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies_for(operator)
+            )
+            world.google.client_id = "organization-client"
+            saved = await client.put(
+                f"{ORGANIZATION_APPS}/{GOOGLE}",
+                json=_google_body(client_id="organization-client"),
+                cookies=cookies_for(admin),
+            )
+            assert saved.status_code == 200, saved.text
+            await _connected(session_factory, "ada", "default", "organization-client")
+            await _connected(session_factory, "bo", "elsewhere", STATIC_CLIENT_ID)
+            servers = await client.get(APPS, cookies=cookies_for(operator))
+            impact = await client.get(
+                f"{APPS}/{GOOGLE}/impact",
+                params={"client_id": "another-client-id"},
+                cookies=cookies_for(operator),
+            )
+            organizations = await client.get(
+                ORGANIZATION_APPS, cookies=cookies_for(admin)
+            )
+        [server] = [a for a in servers.json()["apps"] if a["slug"] == GOOGLE]
+        assert server["stale_connections"] == 0
+        assert (server["connected_members"], server["workspaces"]) == (1, 1)
+        assert impact.json() == {"connected_members": 1, "workspaces": 1}
+        [own] = [a for a in organizations.json()["apps"] if a["slug"] == GOOGLE]
+        assert (own["connected_members"], own["workspaces"]) == (1, 1)
+
+    async def test_a_server_app_switched_off_is_not_one_to_fall_back_to(
+        self, world: World, session_factory
+    ) -> None:
+        await _install(world)
+        admin = await _org_admin(session_factory, "org-admin")
+        operator = await _user(session_factory, "operator", role="admin")
+        broker: ServiceBroker = world.harness.gateway_app.state.service_broker
+        async with world.harness.client() as client:
+            await client.put(
+                f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies_for(operator)
+            )
+            serving = await client.get(ORGANIZATION_APPS, cookies=cookies_for(admin))
+            # As DISABLED_SERVICES does: refused before any app is looked at.
+            broker._disabled[GOOGLE] = "Google Workspace is switched off here."
+            off = await client.get(ORGANIZATION_APPS, cookies=cookies_for(admin))
+
+        def google(answer) -> dict:
+            [entry] = [a for a in answer.json()["apps"] if a["slug"] == GOOGLE]
+            return entry
+
+        assert google(serving)["server_app"] is True
+        assert google(off)["server_app"] is False
