@@ -520,11 +520,10 @@ export async function bulkDeleteRooms(
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
-): Promise<{ updated: number } | null> {
-  return fetchJson<{ updated: number }>("/rooms/bulk-archive", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds, archived }),
+): Promise<{ updated: number }> {
+  return jsonRequest<{ updated: number }>("/rooms/bulk-archive", "POST", {
+    room_ids: roomIds,
+    archived,
   });
 }
 
@@ -903,12 +902,8 @@ export interface BridgeUpdateInput {
 export async function updateBridge(
   bridgeId: string,
   update: BridgeUpdateInput,
-): Promise<BridgeDetail | null> {
-  return fetchJson<BridgeDetail>(`/collaborations/${bridgeId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(update),
-  });
+): Promise<BridgeDetail> {
+  return jsonRequest<BridgeDetail>(`/collaborations/${bridgeId}`, "PATCH", update);
 }
 
 /** Make a team the connection's default for new channels, which also turns
