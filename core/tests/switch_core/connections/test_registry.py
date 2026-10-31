@@ -65,7 +65,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "atlassian", "datadog", "vercel"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -82,6 +82,7 @@ def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
         CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     assert isinstance(adapters["datadog"], ApiKeyAdapter)
+    assert isinstance(adapters["vercel"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:

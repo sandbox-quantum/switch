@@ -1,7 +1,88 @@
 slug: vercel
 name: Vercel
 category: Deployment
-description: Inspect Vercel projects and deployments.
-enabled: false
+description: Inspect Vercel projects, deployments and deployment logs, with your token.
+enabled: true
+adapter: api_key
 auth:
   type: api_key
+  refresh: none
+  api_key:
+    # A Vercel Personal Access Token created under Account Settings > Tokens.
+    # Vercel's remote MCP server only accepts clients approved by Vercel;
+    # Switch runs the official CLI directly under adapter: api_key.
+    fields:
+      - name: api_key
+        label: Vercel token
+        secret: true
+        help: "Account Settings, Tokens. We recommend creating a token scoped to the teams and projects your agents need to inspect."
+    identity:
+      method: GET
+      url: "https://api.vercel.com/v2/user"
+      headers: { Authorization: "Bearer {api_key}" }
+      account_id: user.id
+      label: user.email
+    help_url: https://vercel.com/account/tokens
+# A key does not expire, and only Vercel can revoke it, so it is never handed
+# to an agent: whatever runs beside the agent could keep it for good.
+token: { kind: pass_through, max_lifetime: null }
+cli:
+  name: vercel
+  binary: vercel
+  env:
+    VERCEL_TOKEN: "{api_key}"
+  # Read-mostly commands for projects, deployments and deployment logs.
+  allow: [list, ls, inspect, logs, project, projects]
+  # Explicitly deny authentication, configuration, administrative and deployment-mutating commands.
+  deny:
+    - login
+    - logout
+    - switch
+    - teams
+    - tokens
+    - deploy
+    - remove
+    - rm
+    - redeploy
+    - rollback
+    - env
+    - link
+    - unlink
+    - init
+    - promote
+    - --token
+    - -t
+    - --global-config
+    - -Q
+    - --local-config
+    - -A
+    - --cwd
+  path_flags: {}
+  path_args: []
+  output_cap_bytes: 65536
+  timeout_s: 120
+  token_refused: { exit_code: 1, json_path: error.code, value: 401 }
+  release:
+    version: 65.5.0
+    targets:
+      darwin-arm64:
+        url: https://registry.npmjs.org/@vercel/vc-native-darwin-arm64/-/vc-native-darwin-arm64-65.5.0.tgz
+        sha256: f38c32ed1c146f2406b445742f79d40be35a4b67f586befdf16b076fd16a9fc5
+        path: package/bin/vercel
+      darwin-x64:
+        url: https://registry.npmjs.org/@vercel/vc-native-darwin-x64/-/vc-native-darwin-x64-65.5.0.tgz
+        sha256: 15491b6016293c4fa19697e44b209b715e30e1e57f30d53917c71df993a7e6d6
+        path: package/bin/vercel
+      linux-arm64:
+        url: https://registry.npmjs.org/@vercel/vc-native-linux-arm64/-/vc-native-linux-arm64-65.5.0.tgz
+        sha256: 05fba292397ed0226e1ff275ef6f62c895693d89f24f7ed2db86104a1541acdf
+        path: package/bin/vercel
+      linux-x64:
+        url: https://registry.npmjs.org/@vercel/vc-native-linux-x64/-/vc-native-linux-x64-65.5.0.tgz
+        sha256: 717a5e0cffddc94039e8bb0d8ae6cc3c7199f4dc65064d133e4506be64170708
+        path: package/bin/vercel
+      win32-x64:
+        url: https://registry.npmjs.org/@vercel/vc-native-win32-x64/-/vc-native-win32-x64-65.5.0.tgz
+        sha256: fbd0b474da5c73b8df6b242bef0e2f3f424baf64b4b5099ebd2e1a67b95e45f1
+        path: package/bin/vercel.exe
+tools: { mode: pass_through }

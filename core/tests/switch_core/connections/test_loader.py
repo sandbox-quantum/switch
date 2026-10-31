@@ -21,17 +21,17 @@ PLACEHOLDERS = {
     "salesforce",
     "box",
     "canva",
-    "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_vercel():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "vercel",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +39,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "vercel",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["vercel"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -945,6 +947,75 @@ def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False
+
+
+def test_the_shipped_vercel_entry_signs_in_and_runs_vercel_cli_as_the_spike_found_it_must():
+    definition = CATALOG["vercel"].definition
+    assert definition.adapter == "api_key"
+    sign_in = definition.auth.api_key
+    assert sign_in is not None
+    assert [(f.name, f.secret) for f in sign_in.fields] == [("api_key", True)]
+    assert sign_in.identity.url == "https://api.vercel.com/v2/user"
+    assert sign_in.identity.headers == {"Authorization": "Bearer {api_key}"}
+    assert (sign_in.identity.account_id, sign_in.identity.label) == (
+        "user.id",
+        "user.email",
+    )
+    assert definition.token is not None
+    assert definition.token.kind == "pass_through"
+    assert definition.token.max_lifetime is None
+    assert definition.token.issued_to_agents is False
+
+    cli = definition.cli
+    assert cli is not None and definition.mcp is None
+    assert (cli.binary, cli.token_env) == ("vercel", None)
+    assert cli.env == {"VERCEL_TOKEN": "{api_key}"}
+    assert cli.allow == ["list", "ls", "inspect", "logs", "project", "projects"]
+    assert {
+        "login",
+        "logout",
+        "switch",
+        "teams",
+        "tokens",
+        "deploy",
+        "remove",
+        "rm",
+        "redeploy",
+        "rollback",
+        "env",
+        "link",
+        "unlink",
+        "init",
+        "promote",
+        "--token",
+        "-t",
+        "--global-config",
+        "-Q",
+        "--local-config",
+        "-A",
+        "--cwd",
+    } <= set(cli.deny)
+    assert cli.path_flags == {}
+    assert cli.path_args == []
+    assert (
+        cli.token_refused.exit_code,
+        cli.token_refused.json_path,
+        cli.token_refused.value,
+    ) == (1, "error.code", 401)
+    assert cli.release.version == "65.5.0"
+    assert sorted(cli.release.targets) == [
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-arm64",
+        "linux-x64",
+        "win32-x64",
+    ]
+    for target, build in cli.release.targets.items():
+        assert build.url.startswith("https://registry.npmjs.org/@vercel/vc-native-")
+        assert build.url.endswith("-65.5.0.tgz")
+        assert build.path == (
+            "package/bin/vercel.exe" if target == "win32-x64" else "package/bin/vercel"
+        )
 
 
 def test_loads_an_api_key_entry(catalog_copy):
