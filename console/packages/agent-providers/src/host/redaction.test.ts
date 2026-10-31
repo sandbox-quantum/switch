@@ -237,3 +237,42 @@ describe('tokens no exact value catches', () => {
     expect(redactions.text('see the synth…')).toBe('see the synth…');
   });
 });
+
+describe('tool detail shown in a chat', () => {
+  it('redacts credentials a command or its output names, keeping what they are', () => {
+    const redactions = new Redactions();
+    const output = [
+      'curl -H "Authorization: Bearer synthetic-bearer-value-0123"',
+      'export DATABASE_PASSWORD=synthetic-password-value',
+      '{"client_secret":"synthetic-secret-value"}',
+    ].join('\n');
+
+    expect(redactions.toolDetail(output)).toBe(
+      [
+        'curl -H "Authorization: [REDACTED]"',
+        'export DATABASE_PASSWORD=[REDACTED]',
+        '{"client_secret":"[REDACTED]"}',
+      ].join('\n')
+    );
+  });
+
+  it('redacts the password in a connection string, which the local log keeps', () => {
+    const redactions = new Redactions();
+    expect(redactions.toolDetail('psql postgres://app:synthetic-pass@db.example.com/app')).toBe(
+      'psql postgres://app:[REDACTED]@db.example.com/app'
+    );
+  });
+
+  it('redacts an issued token as text does, before the shapes run', () => {
+    const redactions = new Redactions();
+    const token = 'synthetic-issued-token-with-no-shape-0123456789';
+    redactions.add(token);
+    expect(redactions.toolDetail(`echo ${token}`)).toBe('echo [REDACTED]');
+  });
+
+  it('leaves output that only mentions secrets alone', () => {
+    const redactions = new Redactions();
+    const output = 'max_tokens: 4096\nrotate the token in Settings\n12 passed, 0 failed';
+    expect(redactions.toolDetail(output)).toBe(output);
+  });
+});

@@ -1,5 +1,6 @@
 import type { FileHandle } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
+import { redactSecrets } from '@switch-console/shared';
 
 /**
  * Exact-value redaction of secrets: what a host scrubs from the logs, journals
@@ -91,6 +92,12 @@ function redactShapes(text: string): string {
 }
 
 /**
+ * `scheme://user:password@`, as a connection string or a clone URL carries it.
+ * Kept in the local log as personal data, but not shown in a chat.
+ */
+const URL_CREDENTIALS = /\b([a-z][a-z0-9+.-]*:\/\/[^\s:/?#@]+:)[^\s@/?#]+@/gi;
+
+/**
  * The service tokens a process has handed out, in every form, to scrub wherever
  * it writes, and anything shaped like a GitHub token besides.
  */
@@ -113,6 +120,15 @@ export class Redactions {
   text(input: string): string {
     if (!this.values.size) return redactShapes(input);
     return redactShapes(this.cutTail(redactText(input, this.list())));
+  }
+
+  /**
+   * A tool's input or output as a chat may show it: `text`'s redaction, then
+   * whatever is shaped like a credential. Run on the whole of it before it is
+   * cut short, so a cut never leaves half a secret that no shape still matches.
+   */
+  toolDetail(input: string): string {
+    return redactSecrets(this.text(input)).replace(URL_CREDENTIALS, '$1[REDACTED]@');
   }
 
   /**
