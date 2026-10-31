@@ -224,6 +224,13 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Registering, renaming or deleting an agent no longer makes every process
+  read every client and agent.** The change now names the clients it touched,
+  and each process reads only those, where it read every client of the
+  workspace and, with a messaging app connected, every agent as well. The
+  30-second re-check reads every client only when a fingerprint of the
+  workspace's clients and agents has changed since its last full read, where
+  it read them all every time.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's

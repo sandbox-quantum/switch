@@ -700,7 +700,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
-        self.client_lifecycle.announce(client_record.tenant_id)
+        self.client_lifecycle.announce(client_record.tenant_id, [client_record.id])
         return agent.id
 
     async def _reregister_agent(
@@ -1100,9 +1100,9 @@ class AgentCore:
             # the next message that already matched its old name.
             if isinstance(actor, AgentActor):
                 actor.set_agent(agent)
-        # Every other process re-reads the tenant's clients, so its copy of the
+        # Every other process re-reads the agent's client, so its copy of the
         # agent and the bridges it holds take the new name too.
-        self.client_lifecycle.announce(tenant_id)
+        self.client_lifecycle.announce(tenant_id, [agent.client_id])
         if self._agent_rename_listener is not None:
             await self._agent_rename_listener(tenant_id, agent_id, old_name)
         await self._agent_profile_changed(agent_id)
@@ -1404,7 +1404,7 @@ class AgentCore:
             # its client must not stay stopped here.
             self.client_lifecycle.deletion_failed(client_id)
             raise
-        self.client_lifecycle.announce(tenant_id)
+        self.client_lifecycle.announce(tenant_id, [client_id])
         self.api_key_cache.invalidate_agent(resolved_id)
         # Its connections end with it, here and in whichever process holds
         # one: their rows went with its row. After its key is dropped, so a

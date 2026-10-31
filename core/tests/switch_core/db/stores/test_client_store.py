@@ -3,13 +3,15 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import delete, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, Room, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, Agent, Client, Room, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
+from tests.switch_core.test_room_wide_mention_wakes_no_agent import _make_agent
 
 
 async def _make_client(session: AsyncSession, transport_user_id: str) -> Client:
@@ -216,3 +218,128 @@ class TestGetByTransportUserIdMultiTenant:
             )
             assert result is not None
             assert result.id == other_id
+
+
+class TestFingerprint:
+    """What the periodic re-check compares before reading every client
+    (`ClientLifecycleService.recheck_all`): equal fingerprints have to mean
+    nothing a process runs from the rows changed, and each of these changes
+    has to show."""
+
+    _NOT_RUN = ("bridge", "user", "member")
+
+    async def _fingerprint(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[int, int]:
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            return await ClientStore().fingerprint(
+                session, TENANT_ZERO_ID, self._NOT_RUN
+            )
+
+    async def test_the_rows_and_their_fingerprint_come_back_together(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            await _make_agent(session, f"fp-{uuid.uuid4().hex[:8]}")
+            await _make_client(session, f"@plain-{uuid.uuid4().hex[:8]}:test")
+            await session.commit()
+
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            records, fingerprint = await ClientStore().get_running(
+                session, TENANT_ZERO_ID, self._NOT_RUN
+            )
+
+        assert fingerprint == await self._fingerprint(session_factory)
+        assert fingerprint[0] == len(records) >= 2
+
+    async def test_a_rename_shows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            client = await _make_client(session, f"@named-{uuid.uuid4().hex[:8]}:test")
+            await session.commit()
+        before = await self._fingerprint(session_factory)
+
+        async with session_factory() as session:
+            row = await session.get(Client, client.id)
+            assert row is not None
+            row.display_name = "renamed"
+            await session.commit()
+
+        after = await self._fingerprint(session_factory)
+        assert after[0] == before[0]
+        assert after != before
+
+    async def test_an_agent_row_arriving_after_its_client_shows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Registration commits the client row first. A full read between the
+        two skips the client, so the agent row's arrival has to count as a
+        change for the next re-check to start it."""
+        async with session_factory() as session:
+            agent = await _make_agent(session, f"late-{uuid.uuid4().hex[:8]}")
+            await session.commit()
+            columns = {
+                attr.key: getattr(agent, attr.key)
+                for attr in inspect(Agent).column_attrs
+            }
+        async with session_factory() as session:
+            await session.execute(delete(Agent).where(Agent.id == agent.id))
+            await session.commit()
+        client_only = await self._fingerprint(session_factory)
+
+        async with session_factory() as session:
+            session.add(Agent(**columns))
+            await session.commit()
+
+        assert await self._fingerprint(session_factory) != client_only
+
+    async def test_an_agents_description_shows(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """No signal names a description edited in another process, and a
+        bridge there keeps it with the agent's platform handle."""
+        async with session_factory() as session:
+            agent = await _make_agent(session, f"desc-{uuid.uuid4().hex[:8]}")
+            await session.commit()
+        before = await self._fingerprint(session_factory)
+
+        async with session_factory() as session:
+            row = await session.get(Agent, agent.id)
+            assert row is not None
+            row.description = "does something else now"
+            await session.commit()
+
+        assert await self._fingerprint(session_factory) != before
+
+    async def test_clients_not_run_as_clients_do_not_count(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        before = await self._fingerprint(session_factory)
+
+        async with session_factory() as session:
+            session.add(
+                Client(
+                    transport_user_id=f"@person-{uuid.uuid4().hex[:8]}:test",
+                    display_name="a person a bridge speaks for",
+                    type="user",
+                )
+            )
+            await session.commit()
+
+        assert await self._fingerprint(session_factory) == before
+
+    async def test_another_tenants_clients_do_not_count(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        other_tenant = f"tenant-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
+            await session.commit()
+        before = await self._fingerprint(session_factory)
+
+        async with tenant_session(session_factory, other_tenant) as other:
+            await _make_client(other, f"@theirs-{uuid.uuid4().hex[:8]}:test")
+            await other.commit()
+
+        assert await self._fingerprint(session_factory) == before

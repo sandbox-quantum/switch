@@ -15,7 +15,7 @@ import asyncio
 import logging
 import random
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from sqlalchemy.exc import InterfaceError, OperationalError
@@ -30,7 +30,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import Agent, Client, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
-from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.client_store import ClientStore, Fingerprint
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -46,6 +46,10 @@ if TYPE_CHECKING:
 # The kind of owned work a client's consumer is, where only one process may
 # run it (`ownership.py`), keyed by client id.
 CLIENT_CONSUMERS = "client"
+
+# Told a tenant and the clients whose agents may have changed, or None when
+# any of the tenant's agents may have.
+AgentsChangedListener = Callable[[str, frozenset[str] | None], None]
 
 logger = logging.getLogger(__name__)
 
@@ -135,19 +139,26 @@ class ClientLifecycleService:
             start=self._start_owned_consumer,
             stop=self._stop_owned_consumer,
         )
-        # Told the tenant whenever a re-read starts or stops an agent client
-        # here, which is how an agent registered or deleted in another process
+        # Told the tenant, and the clients whose agents to read again or None
+        # for all of them, whenever a re-read may have changed an agent here,
+        # which is how an agent registered or deleted in another process
         # reaches what keeps per-agent state of its own (a bridge's platform
         # identities, `CollaborationBridgeLifecycleService.agents_changed`).
-        self._agents_changed_listeners: list[Callable[[str], None]] = []
+        self._agents_changed_listeners: list[AgentsChangedListener] = []
+        # Each tenant's fingerprint as its last full read found it
+        # (`reconcile_tenant`), which the periodic re-check compares with the
+        # table's before reading every client again (`recheck_all`).
+        self._fingerprints: dict[str, Fingerprint] = {}
 
-    def add_agents_changed_listener(self, listener: Callable[[str], None]) -> None:
+    def add_agents_changed_listener(self, listener: AgentsChangedListener) -> None:
         self._agents_changed_listeners.append(listener)
 
-    def _agents_changed(self, tenant_id: str) -> None:
+    def _agents_changed(
+        self, tenant_id: str, client_ids: frozenset[str] | None
+    ) -> None:
         for listener in self._agents_changed_listeners:
             try:
-                listener(tenant_id)
+                listener(tenant_id, client_ids)
             except Exception:
                 logger.exception(
                     "Telling a listener that tenant %s's agents changed failed",
@@ -159,12 +170,15 @@ class ClientLifecycleService:
         other process starts or stops its own copy (`client_signals.py`)."""
         self._signals = signals
 
-    def announce(self, tenant_id: str) -> None:
-        """A client of `tenant_id` was registered or deleted, and has
-        committed: every process reconciles its copies of the tenant's
-        clients with the table."""
+    def announce(
+        self, tenant_id: str, client_ids: Collection[str] | None = None
+    ) -> None:
+        """Clients of `tenant_id` were registered, renamed or deleted, and
+        that has committed: every process reconciles its copies of
+        `client_ids` with the table, or of all the tenant's clients when no
+        ids are given."""
         if self._signals is not None:
-            self._signals.changed(tenant_id)
+            self._signals.changed(tenant_id, client_ids)
 
     @property
     def tenants_isolated(self) -> bool:
@@ -175,6 +189,10 @@ class ClientLifecycleService:
         return f"@{localpart}:{self._config.id_server_name}"
 
     COLLAB_CLIENT_TYPES = ("bridge", "user")
+    # Collaboration clients (bridges and the people they speak for) are the
+    # bridges' to start and stop, and the chats routes write a member client's
+    # messages themselves, so neither runs as a client here.
+    _NOT_RUN_HERE = (*COLLAB_CLIENT_TYPES, MEMBER_CLIENT_TYPE)
 
     async def ensure_system_client(self, client_type: str) -> None:
         """One system client of `client_type` per tenant, created where missing.
@@ -336,6 +354,23 @@ class ClientLifecycleService:
         for tenant_id in await all_tenant_ids(self._session_factory):
             await self.reconcile_tenant(tenant_id)
 
+    async def recheck_all(self) -> None:
+        """The periodic re-check: `reconcile_tenant` for every tenant whose
+        clients have changed since its last full read here.
+
+        Whether they have is one aggregate query (`ClientStore.fingerprint`),
+        where the full read loads every client of the tenant, so a re-check
+        with nothing to repair no longer costs a read of every client on every
+        process. A change already applied from its signal still counts as a
+        change, so the next re-check after it reads in full once."""
+        for tenant_id in await all_tenant_ids(self._session_factory):
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                fingerprint = await self._client_store.fingerprint(
+                    session, tenant_id, self._NOT_RUN_HERE
+                )
+            if fingerprint != self._fingerprints.get(tenant_id):
+                await self.reconcile_tenant(tenant_id)
+
     async def reconcile_tenant(self, tenant_id: str) -> None:
         """Run here exactly the tenant's clients that `start_all` would run.
 
@@ -350,36 +385,91 @@ class ClientLifecycleService:
         The registration's own signal comes after both have committed.
         Collaboration clients (bridges and the people they speak for) are the
         bridges' to start and stop, and a client that crashed stays stopped.
+
+        The read's fingerprint is kept for `recheck_all`. Where it differs
+        from the last one, something may have changed that no signal named
+        (an agent's description edited elsewhere sends none), so whatever
+        keeps per-agent state reads every agent again.
         """
-        # Only a client already running before the read can be judged deleted
-        # by it. One registered in this process while the read awaits has a
-        # row the read may not have seen, and stopping it would put it in
-        # `_left_stopped`, where later re-checks leave it.
-        running_before = [
-            client_id
-            for client_id, client_tenant in self._client_tenants.items()
-            if client_tenant == tenant_id
-            and self._client_types.get(client_id) not in self.COLLAB_CLIENT_TYPES
-        ]
+        running_before = self._running_in(tenant_id, scope=None)
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            records, fingerprint = await self._client_store.get_running(
+                session, tenant_id, self._NOT_RUN_HERE
+            )
+        changed = await self._apply(tenant_id, records, running_before, scope=None)
+        last = self._fingerprints.get(tenant_id)
+        self._fingerprints[tenant_id] = fingerprint
+        if last is not None and last != fingerprint:
+            self._agents_changed(tenant_id, None)
+        elif changed:
+            self._agents_changed(tenant_id, frozenset(changed))
+
+    async def reconcile_clients(
+        self, tenant_id: str, client_ids: Collection[str]
+    ) -> None:
+        """`reconcile_tenant` for the named clients only: their rows are read,
+        and each is started, stopped or renamed here to match, where the full
+        read loads every client of the tenant.
+
+        This is what a signal naming its clients does, and with thousands of
+        agents it is the difference between reading one row per change and
+        every row per change on every process. Whatever keeps per-agent state
+        is told the named clients either way, so the process that made the
+        change, which started or stopped its own copy already, reads them too.
+        """
+        scope = frozenset(client_ids)
+        if not scope:
+            return
+        running_before = self._running_in(tenant_id, scope=scope)
         async with tenant_session(self._session_factory, tenant_id) as session:
             records = [
                 record
-                for record in await self._client_store.get_all(session)
-                if record.tenant_id == tenant_id
-                and record.type not in self.COLLAB_CLIENT_TYPES
-                # As in `start_all`: the chats routes write a member client's
-                # messages themselves, so it has nothing to run.
-                and record.type != MEMBER_CLIENT_TYPE
+                for record in await self._client_store.get_many(
+                    session, tenant_id, scope
+                )
+                if record.type not in self._NOT_RUN_HERE
             ]
+        await self._apply(tenant_id, records, running_before, scope=scope)
+        self._agents_changed(tenant_id, scope)
+
+    def _running_in(self, tenant_id: str, *, scope: frozenset[str] | None) -> list[str]:
+        """The clients of `tenant_id` running here that a read of `scope`
+        (every client when None) can judge deleted.
+
+        Taken before the read: only a client already running before it can be
+        judged deleted by it. One registered in this process while the read
+        awaits has a row the read may not have seen, and stopping it would put
+        it in `_left_stopped`, where later re-checks leave it."""
+        return [
+            client_id
+            for client_id, client_tenant in self._client_tenants.items()
+            if client_tenant == tenant_id
+            and (scope is None or client_id in scope)
+            and self._client_types.get(client_id) not in self.COLLAB_CLIENT_TYPES
+        ]
+
+    async def _apply(
+        self,
+        tenant_id: str,
+        records: list[Client],
+        running_before: list[str],
+        *,
+        scope: frozenset[str] | None,
+    ) -> set[str]:
+        """Start, stop and rename the copies here of what a read of `scope`
+        (every client of the tenant when None) found in `records`. Returns
+        the agent clients it started, stopped or renamed."""
         present = {record.id for record in records}
         # A client whose row is gone will not be started again: nothing is
         # left to hold back.
         self._left_stopped = {
             client_id: client_tenant
             for client_id, client_tenant in self._left_stopped.items()
-            if client_tenant != tenant_id or client_id in present
+            if client_tenant != tenant_id
+            or client_id in present
+            or (scope is not None and client_id not in scope)
         }
-        agents_changed = False
+        changed: set[str] = set()
         # A rename served elsewhere changes the name a copy here sends under
         # (bridges recognise an agent's own messages by it) and the identities
         # a bridge here holds for the agent, so both follow it now.
@@ -387,11 +477,13 @@ class ClientLifecycleService:
             actor = self._clients.get(record.id)
             if actor is not None and actor.display_name != record.display_name:
                 await actor.set_display_name(record.display_name)
-                agents_changed |= record.type == "agent"
+                if record.type == "agent":
+                    changed.add(record.id)
         for client_id in running_before:
             if client_id in self._client_tenants and client_id not in present:
                 logger.info("Client %s was deleted elsewhere; stopping it", client_id)
-                agents_changed |= self._client_types.get(client_id) == "agent"
+                if self._client_types.get(client_id) == "agent":
+                    changed.add(client_id)
                 await self.stop(client_id)
         missing = [
             record
@@ -399,9 +491,7 @@ class ClientLifecycleService:
             if record.id not in self._clients and record.id not in self._left_stopped
         ]
         if not missing:
-            if agents_changed:
-                self._agents_changed(tenant_id)
-            return
+            return changed
         agents = await self._agents_by_client_id(missing)
         for record in missing:
             agent = agents.get(record.id)
@@ -419,9 +509,9 @@ class ClientLifecycleService:
             actor = self._register(record)
             if agent is not None and isinstance(actor, _PreloadsAgent):
                 actor.preload_agent(agent)
-            agents_changed |= agent is not None
-        if agents_changed:
-            self._agents_changed(tenant_id)
+            if agent is not None:
+                changed.add(record.id)
+        return changed
 
     async def _agents_by_client_id(self, records: list[Client]) -> dict[str, Agent]:
         """The agent row behind each client, one query per tenant.
@@ -588,7 +678,7 @@ class ClientLifecycleService:
         """
         tenant_id = self._left_stopped.pop(client_id, None)
         if tenant_id is not None:
-            self.announce(tenant_id)
+            self.announce(tenant_id, [client_id])
 
     def get(self, client_id: str) -> Actor[ClientConfig] | None:
         return self._clients.get(client_id)
