@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import secrets
 from typing import Annotated, cast
@@ -51,6 +52,7 @@ STORE = ServiceConnectionStore()
 
 KIND = "github"
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
+APP_CHANGED = "The GitHub App changed during your sign-in. Start it again."
 
 
 def service(request: Request) -> GitHubConnections:
@@ -116,7 +118,7 @@ def page(message: str, status: int) -> HTMLResponse:
     return HTMLResponse(
         "<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width'>"
         "<title>Switch · GitHub</title><body><main><h1>Switch · GitHub</h1><p>"
-        + message
+        + html.escape(message)
         + "</p></main></body></html>",
         status_code=status,
         headers={
@@ -189,6 +191,17 @@ async def start(
     }
 
 
+async def _failed_before_leaving(
+    flows: SignInFlows, flow: StoredFlow, message: str, status: int
+) -> HTMLResponse:
+    """The browser cannot leave for GitHub: the flow fails with `message`,
+    for Console's poll to read, and the browser is told the same."""
+    await flows.advance(
+        flow, expect=("pending",), to="failed", changes={"error": message}
+    )
+    return page(message, status)
+
+
 @router.get("/authorize")
 async def authorize(
     state: str,
@@ -203,12 +216,15 @@ async def authorize(
         flow = await browser_flow(flows, state)
     except GitHubError:
         return page(INTERRUPTED, 400)
-    github = app_for_workspace(
-        request, await broker.organization_app_of(flow.tenant_id, "github")
-    )
+    try:
+        github = app_for_workspace(
+            request, await broker.organization_app_of(flow.tenant_id, "github")
+        )
+    except HTTPException as refusal:
+        return await _failed_before_leaving(flows, flow, str(refusal.detail), 503)
     # Started under another App: the code GitHub issued would be refused.
     if flow.details.get("client_id") not in (None, github.client_id):
-        return page(INTERRUPTED, 400)
+        return await _failed_before_leaving(flows, flow, APP_CHANGED, 400)
     try:
         taken = await flows.advance(
             flow,
@@ -313,11 +329,10 @@ async def complete(
     if recorded is not None and recorded != github.client_id:
         # The code was issued to the App the flow started with: with another
         # in its place, GitHub would refuse it, and less clearly.
-        changed = "The GitHub App changed during your sign-in. Start it again."
         await flows.advance(
-            flow, expect=("delivered",), to="failed", changes={"error": changed}
+            flow, expect=("delivered",), to="failed", changes={"error": APP_CHANGED}
         )
-        raise HTTPException(400, changed)
+        raise HTTPException(400, APP_CHANGED)
     checking = await flows.advance(
         flow, expect=("delivered",), to="checking", changes={}
     )
