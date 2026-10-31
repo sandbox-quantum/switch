@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
-import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
+import { type DoctorInputs, runDoctor } from './doctor';
+import { formatChecks } from './report';
 import { MemorySecretStore } from './secrets';
 
 function inputs(overrides: Partial<DoctorInputs> = {}): DoctorInputs {

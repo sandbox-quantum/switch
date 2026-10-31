@@ -382,3 +382,45 @@ describe.skipIf(process.platform === 'win32')('planServiceReleases', () => {
     );
   });
 });
+
+describe('status output', () => {
+  function stdout(): string[] {
+    const out: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      out.push(String(chunk));
+      return true;
+    });
+    return out;
+  }
+
+  it('prints a directory that is not enrolled as text, and exits 1 as before', async () => {
+    const out = stdout();
+    expect(await main(['status', '--data-dir', dir])).toBe(1);
+    const text = out.join('');
+    expect(text).toContain('Data directory:');
+    expect(text).toContain('Not enrolled.');
+    // A pipe reads the same text: no colour without a terminal.
+    expect(text).not.toContain('\\u001b[');
+  });
+
+  it('prints the same not-enrolled directory as one JSON object with --json', async () => {
+    const out = stdout();
+    expect(await main(['status', '--data-dir', dir, '--json'])).toBe(1);
+    const parsed = JSON.parse(out.join(''));
+    expect(parsed.identity).toBeNull();
+    expect(parsed.assignment).toEqual({ kind: 'none' });
+    expect(parsed.dataDir).toContain('controller-main-');
+    expect(parsed.relayPort).toBeNull();
+  });
+
+  it('lists --json in the help it prints, without colour', async () => {
+    const out = stdout();
+    expect(await main(['--help'])).toBe(EXIT_OK);
+    const text = out.join('');
+    expect(text).toContain('status [--data-dir <dir>] [--shared-host-bundle <path>] [--json]');
+    expect(text).toContain(
+      'doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>] [--json]'
+    );
+    expect(text).not.toContain('\\u001b[');
+  });
+});

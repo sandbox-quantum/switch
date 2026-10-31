@@ -23,7 +23,7 @@ import {
 } from './api';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
-import { formatChecks, runDoctor } from './doctor';
+import { runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
 import {
@@ -49,11 +49,11 @@ import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
-import { definitionProblem } from './reconcile';
 import { TRUSTED_RELEASE_KEYS } from './release-keys';
 import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { isManagedRelease, readCurrent, throughCurrent } from './releases';
-import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
+import { colorsFor, doctorJson, formatChecks, formatUsage } from './report';
+import { InProcessRuntime, probeProvider } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION, PROVIDERS, type UpdatedBy } from './schemas';
 import {
@@ -101,9 +101,9 @@ import {
   serviceState,
   uninstallService,
 } from './service';
+import { collectSnapshot, formatSnapshot, snapshotJson } from './snapshot';
 import {
   contractPlatform,
-  mapAgentProcess,
   PathProviderLocator,
   providerLoginTest,
   ProviderStatuses,
@@ -155,8 +155,9 @@ Commands:
       Rename this machine and/or change its description on the server, with
       this controller's own credential. Either or both; --description ""
       clears the description. The same limits as at enrollment.
-  status [--data-dir <dir>] [--shared-host-bundle <path>]
+  status [--data-dir <dir>] [--shared-host-bundle <path>] [--json]
       Show this controller's identity and its agents, from local state only.
+      --json prints the same as one JSON object, for scripts.
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
       Run this controller as a service of this user: a systemd user unit on
       Linux, a launchd agent on macOS. It starts now and again at each login
@@ -184,9 +185,10 @@ Commands:
   uninstall-service --separate-users [--user <name>]
       As root: stop the controller and its agents, and remove what the setup
       made. The agents' directories are kept.
-  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>]
+  doctor [--data-dir <dir>] [--shared-host-bundle <path>] [--env-file <path>] [--json]
       Check this machine can run agents: Node, enrollment, the credential, the
       server, the provider CLIs and their sign-in, the service, and updates.
+      --json prints the checks as one JSON object, for scripts.
   update [--check] [--data-dir <dir>]
       Install the newest release with npm, and restart the service if it runs.
       --check only says whether there is one.
@@ -305,7 +307,10 @@ async function enrollCommand(args: string[]): Promise<number> {
       `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
     const warning = secrets.startupWarning();
-    if (warning) process.stderr.write(`Warning: ${warning}\n`);
+    if (warning)
+      process.stderr.write(
+        `${colorsFor(process.stderr, process.env).warn('Warning:')} ${warning}\n`
+      );
     return EXIT_OK;
   } finally {
     store.close();
@@ -685,7 +690,11 @@ async function runCommand(args: string[]): Promise<number> {
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+      json: { type: 'boolean' },
+    },
     strict: true,
   });
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
@@ -701,78 +710,29 @@ async function statusCommand(args: string[]): Promise<number> {
           now: Date.now,
         })
       : null;
-    const out: string[] = [`Data directory: ${dataDir}`];
-    if (separateUsers)
-      out.push(
-        `Agents:         each as a user of its own, in ${separateUsers.agentsDir} (${separateUserNames(separateUsers.uid).controllerUnit})`
-      );
-    const identity = store.identity();
-    if (!identity) {
-      out.push('Not enrolled.');
-      process.stdout.write(`${out.join('\n')}\n`);
-      return 1;
-    }
-    out.push(
-      `Controller:     ${identity.controllerId} ("${identity.name}")`,
-      `Server:         ${identity.server}`,
-      `Enrolled at:    ${identity.enrolledAt}`,
-      `Secret store:   ${secrets.description}`
+    const snapshot = await collectSnapshot({
+      version: VERSION,
+      dataDir,
+      layout,
+      store,
+      secrets,
+      separateUsers:
+        separateUsers === null
+          ? null
+          : {
+              agentsDir: separateUsers.agentsDir,
+              controllerUnit: separateUserNames(separateUsers.uid).controllerUnit,
+            },
+      separateRuntime,
+      unitSummaryFor: async (agentId: string) =>
+        separateUsers ? await unitSummary(separateUsers, store.agentUser(agentId)) : null,
+    });
+    process.stdout.write(
+      values.json
+        ? `${snapshotJson(snapshot)}\n`
+        : `${formatSnapshot(snapshot, colorsFor(process.stdout, process.env))}\n`
     );
-    const relayPort = store.relayPort();
-    out.push(
-      `Relay:          ${relayPort === null ? 'never started' : `http://127.0.0.1:${relayPort} (where agents were last pointed)`}`
-    );
-    const revokedAt = store.revokedAt();
-    if (revokedAt) out.push(`Revoked at:     ${revokedAt}`);
-    else if (!(await secrets.get(CONTROLLER_CREDENTIAL)))
-      out.push('Credential:     not in this data directory (missing, or handed over at run time)');
-    const cached = store.cachedAssignment();
-    if (cached.kind === 'none') {
-      out.push('Assignment:     not pulled yet');
-      process.stdout.write(`${out.join('\n')}\n`);
-      return 0;
-    }
-    if (cached.kind === 'unreadable') {
-      out.push(
-        `Assignment:     saved by an earlier version and not readable by this one (${cached.detail}); pulled again when the controller next runs`
-      );
-      process.stdout.write(`${out.join('\n')}\n`);
-      return 0;
-    }
-    out.push(
-      `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
-    );
-    for (const entry of cached.assignment.agents) {
-      const row = store.agent(entry.agent_id);
-      let observation = emptyObservation();
-      let unreadable: string | null = null;
-      if (!definitionProblem(entry)) {
-        if (separateRuntime)
-          observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
-            unreadable = errorMessage(error);
-            return emptyObservation();
-          });
-        else observation = await observeOnDisk(layout, entry.agent_id);
-      }
-      // Whether events flow is the running controller's to know; this reads only disk.
-      const mapped = mapAgentProcess({
-        assignment: entry,
-        row,
-        observation,
-        relayAttached: false,
-        nowMs: Date.now(),
-      });
-      out.push(
-        '',
-        `  ${entry.definition.name} (${entry.agent_id})`,
-        `    provider ${entry.definition.provider}, desired ${entry.desired_state}, revision ${entry.revision}, applied ${row?.appliedRevision ?? 'never'}`,
-        unreadable && separateUsers
-          ? `    ${await unitSummary(separateUsers, store.agentUser(entry.agent_id))}; the rest needs the agents' group (${unreadable})`
-          : `    ${mapped.process}${mapped.reason ? ` [${mapped.reason}]` : ''}${mapped.detail ? `: ${mapped.detail}` : ''}`
-      );
-    }
-    process.stdout.write(`${out.join('\n')}\n`);
-    return 0;
+    return snapshot.identity ? EXIT_OK : 1;
   } finally {
     store.close();
   }
@@ -1043,6 +1003,7 @@ async function doctorCommand(args: string[]): Promise<number> {
       'data-dir': { type: 'string' },
       'shared-host-bundle': { type: 'string' },
       'env-file': { type: 'string' },
+      json: { type: 'boolean' },
     },
     strict: true,
   });
@@ -1091,7 +1052,11 @@ async function doctorCommand(args: string[]): Promise<number> {
       },
       latest: () => latestRelease(fetch, releasesRepository(process.env)),
     });
-    process.stdout.write(`${formatChecks(checks)}\n`);
+    process.stdout.write(
+      values.json
+        ? `${doctorJson(VERSION, process.version, checks)}\n`
+        : `${formatChecks(checks, colorsFor(process.stdout, process.env))}\n`
+    );
     return checks.some((check) => check.status === 'fail') ? 1 : EXIT_OK;
   } finally {
     store.close();
@@ -1199,7 +1164,7 @@ export async function main(argv: string[]): Promise<number> {
       case '-h':
       case '--help':
       case 'help':
-        process.stdout.write(USAGE);
+        process.stdout.write(formatUsage(USAGE, colorsFor(process.stdout, process.env)));
         return command === undefined ? EXIT_CONFIGURATION : EXIT_OK;
       case '--version':
         process.stdout.write(`${VERSION}\n`);
