@@ -163,14 +163,22 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
+    """Where the account's stable id is read: a GET or POST of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
     people recognise (an email, a login)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"] = "GET"
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _body_for_post(self) -> "ConnectionIdentity":
+        if (self.body is not None) != (self.method == "POST"):
+            raise ValueError("a POST identity call sends a body, and only one does")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
