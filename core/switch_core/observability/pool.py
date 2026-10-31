@@ -17,8 +17,9 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
-from types import FrameType
+from types import CodeType, FrameType
 from typing import Any
 
 import greenlet
@@ -146,10 +147,16 @@ UNKNOWN_CALLER = "unknown"
 class _Hold:
     started: float
     caller: str
-    stack: tuple[str, ...]
+    # The borrower's innermost switch_core frames, as each one's code and the
+    # line it was on: written out as text only for a hold long enough to log.
+    places: tuple[tuple[CodeType, int], ...] = ()
+
+    @property
+    def stack(self) -> tuple[str, ...]:
+        return tuple(_place(code, line) for code, line in self.places)
 
 
-def _frames_of_borrower() -> list[FrameType]:
+def _frames_of_borrower() -> Iterator[FrameType]:
     """The call stack of the code borrowing a connection, innermost first.
 
     A checkout on the async engine runs inside SQLAlchemy's greenlet, whose
@@ -157,52 +164,76 @@ def _frames_of_borrower() -> list[FrameType]:
     awaited it. That coroutine is suspended in the parent greenlet, so the
     walk continues from the parent's frame when the local one runs out.
     """
-    frames: list[FrameType] = []
     frame: FrameType | None = sys._getframe(1)
     while frame is not None:
-        frames.append(frame)
+        yield frame
         frame = frame.f_back
     current = greenlet.getcurrent()
     parent = current.parent
     if parent is not None and parent.gr_frame is not None:
         frame = parent.gr_frame
         while frame is not None:
-            frames.append(frame)
+            yield frame
             frame = frame.f_back
-    return frames
 
 
-def _ours(frame: FrameType) -> bool:
-    filename = frame.f_code.co_filename
-    return (
-        _PACKAGE_MARKER in filename
-        and _TESTS_MARKER not in filename
-        and not any(p in filename for p in _PLUMBING)
-    )
+# Whether a file's frames are ours, and the label a function is named by,
+# kept: asked on every checkout, of the same few dozen functions. Keyed by
+# file and name rather than by code object, as two functions compiled from
+# the same source in different files compare equal.
+_OURS: dict[str, bool] = {}
+_LABELS: dict[tuple[str, str], str] = {}
 
 
-def _module(frame: FrameType) -> str:
-    filename = frame.f_code.co_filename
-    tail = filename.rsplit(_PACKAGE_MARKER, 1)[-1]
-    return "switch_core." + tail.removesuffix(".py").replace(os.sep, ".")
+def _ours(code: CodeType) -> bool:
+    filename = code.co_filename
+    ours = _OURS.get(filename)
+    if ours is None:
+        ours = _OURS[filename] = (
+            _PACKAGE_MARKER in filename
+            and _TESTS_MARKER not in filename
+            and not any(p in filename for p in _PLUMBING)
+        )
+    return ours
+
+
+def _label(code: CodeType) -> str:
+    key = (code.co_filename, code.co_name)
+    label = _LABELS.get(key)
+    if label is None:
+        tail = code.co_filename.rsplit(_PACKAGE_MARKER, 1)[-1]
+        module = "switch_core." + tail.removesuffix(".py").replace(os.sep, ".")
+        label = _LABELS[key] = f"{module}:{code.co_name}"
+    return label
+
+
+def _place(code: CodeType, line: int) -> str:
+    return f"{_label(code)}:{line}"
+
+
+def _borrower() -> tuple[str, tuple[tuple[CodeType, int], ...]]:
+    """The innermost switch_core function borrowing a connection, as a label,
+    and the borrower's innermost switch_core frames, as places."""
+    places: list[tuple[CodeType, int]] = []
+    for frame in _frames_of_borrower():
+        code = frame.f_code
+        if _ours(code):
+            places.append((code, frame.f_lineno))
+            if len(places) == _LONG_HOLD_STACK_DEPTH:
+                break
+    if not places:
+        return UNKNOWN_CALLER, ()
+    return _label(places[0][0]), tuple(places)
 
 
 def describe_borrower() -> tuple[str, tuple[str, ...]]:
     """`module:function` of the innermost switch_core frame, and a short stack.
 
     The label is bounded by the code rather than the traffic, so it can be a
-    metric attribute. Asked on every checkout: walking a few dozen frames is
-    microseconds against a round trip of a hundred or more.
+    metric attribute.
     """
-    ours = [f for f in _frames_of_borrower() if _ours(f)]
-    if not ours:
-        return UNKNOWN_CALLER, ()
-    caller = f"{_module(ours[0])}:{ours[0].f_code.co_name}"
-    stack = tuple(
-        f"{_module(f)}:{f.f_code.co_name}:{f.f_lineno}"
-        for f in ours[:_LONG_HOLD_STACK_DEPTH]
-    )
-    return caller, stack
+    caller, places = _borrower()
+    return caller, tuple(_place(code, line) for code, line in places)
 
 
 class _LongHoldLog:
@@ -245,8 +276,8 @@ def install_hold_timer(engine: AsyncEngine) -> None:
 
     @event.listens_for(engine.sync_engine, "checkout")
     def _on_checkout(_dbapi: object, record: Any, _proxy: object) -> None:
-        caller, stack = describe_borrower()
-        record.info[_HOLD_KEY] = _Hold(time.perf_counter(), caller, stack)
+        caller, places = _borrower()
+        record.info[_HOLD_KEY] = _Hold(time.perf_counter(), caller, places)
 
     @event.listens_for(engine.sync_engine, "checkin")
     def _on_checkin(_dbapi: object, record: Any) -> None:
