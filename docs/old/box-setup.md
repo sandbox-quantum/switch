@@ -97,10 +97,19 @@ BOX_CLIENT_CONFIG_PATH=/etc/switch/box-client.json
 If the variable is set but the file cannot be read or holds anything else,
 switch-core does not start, and says why.
 
+## Turn it on for a workspace
+
+Workspaces made since connectors started off have every connector off until
+an admin turns it on, and until then connecting Box is refused. A workspace
+admin opens **Admin** in Switch Console and **Connectors** under Workspace,
+and turns Box on. This is the workspace's own switch, separate from the
+operator's client under Connector apps.
+
 ## What people do
 
-1. In Switch Console: Settings, Connections, Box, Connect. The browser opens
-   Box's sign-in and consent page, which asks to read and write all files and
+1. In Switch Console, open **Connectors** in the workspace's sidebar, find
+   Box under **Discover**, and choose **Connect**. The browser opens Box's
+   sign-in and consent page, which asks to read and write all files and
    folders, and comes back to Switch Console.
 2. On an agent's page (in Switch Console or the dashboard), the agent's owner
    turns Box on. The agent acts as its owner: it sees only what they can open
@@ -130,8 +139,9 @@ holds, which Box then refuses. Use one of the above to stop Switch too.
 ## Limits worth knowing
 
 - Access tokens last 60 to 70 minutes. Each refresh replaces the refresh
-  token, and a sign-in unused for 60 days lapses and shows as needing
-  reconnection under Connections.
+  token, and a sign-in unused for 60 days lapses at Box. Switch finds out on
+  the next use, when Box refuses the refresh; from then on the connection
+  shows as needing reconnection under Connectors.
 - A Box connection is read-write: Switch asks Box for `root_readwrite`, and
   Box's consent page has nothing to untick. Box still refuses whatever the
   person cannot do in a folder themselves.

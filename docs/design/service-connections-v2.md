@@ -597,7 +597,8 @@ sign-in run against a free Box developer account; the operator's setup is in
   Console's logs, or either database outside the encrypted columns. After a
   refresh, Box refused the previous access token within a few minutes.
 
-To connect: Settings, Connections in Switch Console, then Box. To roll back,
+To connect: once a workspace admin has turned Box on under Admin, Connectors,
+open Connectors in Switch Console and connect Box. To roll back,
 add `box` to `DISABLED_SERVICES` and restart switch-core, remove its client
 under Connector apps, or unset `BOX_CLIENT_CONFIG_PATH` and restart (and
 remove any client saved under Connector apps, which then takes over), or set
