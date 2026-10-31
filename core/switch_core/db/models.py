@@ -3367,6 +3367,7 @@ SESSION_ACTIVITY_KINDS = (
     "user-message",
     "assistant-message",
     "tool-activity",
+    "subagent",
     "notice",
 )
 TURN_STATUS_MARKS = ("queued", "working")
@@ -3489,7 +3490,7 @@ class AgentSessionActivityItem(TenantScoped, Base):
         ),
         CheckConstraint(
             "kind IN ('turn', 'user-message', 'assistant-message', "
-            "'tool-activity', 'notice')",
+            "'tool-activity', 'subagent', 'notice')",
             name="ck_session_activity_items_kind",
         ),
         Index("ix_session_activity_items_updated_at", "updated_at"),

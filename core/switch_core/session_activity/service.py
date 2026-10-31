@@ -90,6 +90,7 @@ ITEM_STATUSES: dict[str, frozenset[str]] = {
     "user-message": frozenset({"in-progress", "completed", "failed", "declined"}),
     "assistant-message": frozenset({"in-progress", "completed", "failed", "declined"}),
     "tool-activity": frozenset({"in-progress", "completed", "failed", "declined"}),
+    "subagent": frozenset({"in-progress", "completed", "failed", "declined"}),
     "notice": frozenset({"info", "warning", "error"}),
 }
 

@@ -261,6 +261,10 @@ _TASK_STATUS = {
 _SAID_ICON = "comment"
 _TOOL_ICON = "code"
 
+# A subagent is drawn as a call, told apart by this label in front of its title.
+_CALL_KINDS = ("tool-activity", "subagent")
+_SUBAGENT_LABEL = "Subagent:"
+
 _DANGEROUS = {"decline", "cancel"}
 
 # How a tool call went, in one character, because it is read at a glance and
@@ -1053,7 +1057,7 @@ def render_activity(
             )
         return SlackMessage(text=state, blocks=[_context(state)])
     said = [item for item in items if item.kind == "assistant-message"]
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [item for item in items if item.kind in _CALL_KINDS]
 
     blocks: list[dict[str, Any]] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
@@ -1125,7 +1129,7 @@ def render_activity_text(
     is skipped rather than shown quoted back.
     """
     said = [item for item in items if item.kind == "assistant-message"]
-    did = [item for item in items if item.kind == "tool-activity"]
+    did = [item for item in items if item.kind in _CALL_KINDS]
 
     lines: list[str] = []
     hidden = max(len(said) - _MAX_MESSAGES, 0)
@@ -1170,6 +1174,8 @@ def _activity_lines(items: list[Item]) -> list[str]:
     spent = 0
     for position, item in enumerate(reversed(items), start=1):
         title = _fit(item.title, _MAX_ACTIVITY_TITLE) if item.title else "_(untitled)_"
+        if item.kind == "subagent":
+            title = f"{_SUBAGENT_LABEL} {title}"
         line = f"{_ACTIVITY[item.status]} {title}"
         if item.text:
             line += f" — {_fit(item.text, _MAX_ACTIVITY_DETAIL)}"
@@ -1574,7 +1580,7 @@ def _running(drawn: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
     """
     if turn.status in TURN_ENDED:
         return None
-    calls = [index for index, item in enumerate(drawn) if item.kind == "tool-activity"]
+    calls = [index for index, item in enumerate(drawn) if item.kind in _CALL_KINDS]
     if not calls:
         return None
     current = next(
@@ -1583,7 +1589,10 @@ def _running(drawn: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
     )
     index = calls[-1] if current is None else current
     label = "Last" if current is None else "Running"
-    title = plain_text(drawn[index].title) if drawn[index].title else "Tool"
+    live = drawn[index]
+    title = plain_text(live.title) if live.title else "Tool"
+    if live.kind == "subagent":
+        title = f"{_SUBAGENT_LABEL} {title}"
     return index, f"{label}: {title}"
 
 
@@ -1675,6 +1684,8 @@ def _plan_task(item: Item) -> dict[str, Any]:
             "details": _rich_text(_truncate_prose(item.text, _MAX_SAID_DETAILS)),
         }
     title = plain_text(item.title) if item.title else ""
+    if item.kind == "subagent":
+        title = f"{_SUBAGENT_LABEL} {title}".strip()
     if item.status in ("failed", "declined"):
         title = f"{_ACTIVITY[item.status]} {title}".strip()
     task: dict[str, Any] = {

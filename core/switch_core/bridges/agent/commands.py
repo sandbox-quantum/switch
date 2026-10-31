@@ -278,6 +278,11 @@ def retry_target(args: str) -> str | None:
     return tokens[1] if len(tokens) > 1 and tokens[0].startswith("@") else None
 
 
+def child_target(args: str) -> str | None:
+    """The subagent an `!interrupt @agent <child id>` names: the token after the target."""
+    return retry_target(args)
+
+
 def room_control_frame(
     *,
     agent_id: str,
@@ -290,6 +295,7 @@ def room_control_frame(
     surface: str,
     requester_name: str,
     target_message_id: str | None,
+    child_id: str | None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
@@ -297,7 +303,9 @@ def room_control_frame(
     so the session can answer that person once the control has applied.
     `session_id` is None for a controller-backed agent, whose controller
     picks the session from the room. `target_message_id` is the message a
-    `retry` runs again, and None for every other control.
+    `retry` runs again, and None for every other control. `child_id` is the
+    subagent an `interrupt` stops instead of the whole turn, and None for every
+    other control.
     """
     if action == "retry":
         if target_message_id is None:
@@ -310,6 +318,10 @@ def room_control_frame(
         body = _CONTROL_BODIES.get(action)
     if body is None:
         raise ValueError(f"{action} is not a room control")
+    if child_id is not None:
+        if action != "interrupt":
+            raise ValueError(f"{action} does not take a subagent")
+        body = {**body, "childId": child_id}
     frame = _control_frame(
         command_id=str(
             uuid.uuid5(
@@ -591,6 +603,7 @@ async def _decide_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
             target_message_id=target,
+            child_id=child_target(event.args) if command == "interrupt" else None,
         )
 
         async def relay() -> None:
@@ -1995,7 +2008,8 @@ COMMANDS: list[Command] = [
     Command(
         "interrupt",
         "Interrupt a targeted agent's current turn. "
-        "Usage: `!interrupt @agent-name` or `!interrupt @role` (the role's holder). "
+        "Usage: `!interrupt @agent-name` or `!interrupt @role` (the role's holder); "
+        "add a subagent id from the activity log to stop only that subagent. "
         "A target is required — use `!interrupt-all-agents` for everyone.",
         _cmd_interrupt,
         decide=_decide_interrupt,

@@ -1168,6 +1168,36 @@ describe('ClaudeAdapter background subagents', () => {
     return { type: 'system', subtype, uuid: randomUUID(), session_id: 'native-1', ...fields };
   }
 
+  it('names a subagent once its task starts and stops it alone', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    query.emit(
+      assistantMessage('msg_4', [
+        { type: 'tool_use', id: 'tool-a', name: 'Agent', input: { description: 'Search' } },
+      ])
+    );
+    await recorder.waitFor('item.started', (event) => event.item.id === 'tool-a', 1_000);
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-1',
+        tool_use_id: 'tool-a',
+        task_type: 'local_agent',
+        description: 'Search',
+      })
+    );
+    const named = await recorder.waitFor(
+      'item.updated',
+      (event) => event.item.nativeChildId === 'agent-1',
+      1_000
+    );
+    expect(named.item.id).toBe('tool-a');
+
+    await adapter.stopSubagent(SESSION, 'agent-1');
+    expect(query.stoppedTasks).toEqual(['agent-1']);
+    expect(query.interruptCount).toBe(0);
+  });
+
   it('reports background work while a subagent outlives its turn, until it settles', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });

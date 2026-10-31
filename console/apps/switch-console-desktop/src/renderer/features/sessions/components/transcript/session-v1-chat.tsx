@@ -490,7 +490,9 @@ export function SessionV1Chat({
                     ) : (
                       <Wrench className="size-3" />
                     )}
-                    <span className="min-w-0 flex-1 break-words">{item.title}</span>
+                    <span className="min-w-0 flex-1 break-words">
+                      {item.kind === 'subagent' ? `Subagent: ${item.title}` : item.title}
+                    </span>
                     <span>
                       {item.status === 'in-progress'
                         ? (stoppedTurns.get(item.turnId) ?? item.status)

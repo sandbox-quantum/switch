@@ -313,6 +313,34 @@ it('records uncertain interrupt delivery and never sends it twice', async () => 
   expect(adapter.interruptTurn).toHaveBeenCalledOnce();
 });
 
+it('refuses to stop one subagent where the provider cannot, leaving the turn running', async () => {
+  const { host, adapter } = await start('codex');
+  await host.command(message('turn'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  await host.command({
+    ...message('interrupt'),
+    body: { type: 'turn.interrupt', turnId: 'turn', childId: 'child' },
+  });
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
+it('stops one subagent through an adapter that can, not the whole turn', async () => {
+  const { host, adapter } = await start('claude');
+  adapter.stopSubagent = vi.fn(async () => {});
+  await host.command(message('turn'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  expect(
+    (
+      await host.command({
+        ...message('interrupt'),
+        body: { type: 'turn.interrupt', turnId: 'turn', childId: 'agent-1' },
+      })
+    ).status
+  ).toBe('applied');
+  expect(adapter.stopSubagent).toHaveBeenCalledWith('session', 'agent-1');
+  expect(adapter.interruptTurn).not.toHaveBeenCalled();
+});
+
 it('rejects a completed turn interrupt without ending the host', async () => {
   const { host, adapter } = await start('codex');
   expect(

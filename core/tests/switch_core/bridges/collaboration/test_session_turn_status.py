@@ -118,3 +118,25 @@ def test_a_warning_too_long_for_the_message_is_cut() -> None:
     assert len(lines) == 1
     assert len(lines[0]) <= 10
     assert lines[0].startswith("⚠️")
+
+
+# ── Subagents ────────────────────────────────────────────────────────────────
+
+
+def test_a_running_turn_lists_its_subagents_and_marks_each_as_it_finishes() -> None:
+    items = [
+        _item(kind="subagent", status="in-progress", title="Audit the parser"),
+        _item(kind="subagent", status="completed", title="Write the tests"),
+    ]
+
+    lines = _status(items, "running", tool_detail=False)
+
+    assert lines[1:] == ["⛓ ▸ Audit the parser", "⛓ ✓ Write the tests"]
+
+
+def test_an_ended_turn_stops_listing_subagents() -> None:
+    items = [_item(kind="subagent", status="in-progress", title="Audit the parser")]
+
+    lines = _status(items, "completed", tool_detail=True)
+
+    assert lines == ["**Turn complete. 1 step left unfinished.**"]

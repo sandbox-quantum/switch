@@ -153,6 +153,25 @@ describe('chat projection', () => {
         0
       )[0]
     ).toMatchObject({ item: { origin: context.origin } });
+    expect(
+      projector.ingest(
+        {
+          ...base,
+          type: 'item.started',
+          item: {
+            id: 'child',
+            type: 'subagent',
+            status: 'in_progress',
+            title: 'Audit parser',
+            text: 'private prompt',
+            nativeChildId: 'task-1',
+          },
+        },
+        0
+      )[0]
+    ).toMatchObject({
+      item: { kind: 'subagent', status: 'in-progress', title: 'Audit parser', text: 'task-1' },
+    });
     expect(() =>
       projector.ingest(
         { ...base, sessionId: 'wrong', type: 'turn.started' } as ProviderRuntimeEvent,

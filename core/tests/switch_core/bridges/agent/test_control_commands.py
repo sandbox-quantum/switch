@@ -427,8 +427,46 @@ def test_an_interrupt_names_the_current_turn() -> None:
         surface="slack",
         requester_name="louisa",
         target_message_id=None,
+        child_id=None,
     )
     assert frame["body"] == {"type": "turn.interrupt", "turnId": "current"}
+
+
+def test_an_interrupt_may_name_one_subagent_to_stop() -> None:
+    assert commands.child_target("@helper agent-1") == "agent-1"
+    assert commands.child_target("@helper") is None
+    frame = commands.room_control_frame(
+        agent_id="a",
+        session_id="s",
+        room_id="r",
+        action="interrupt",
+        actor_id="@u:s",
+        message_id="m",
+        thread_id=None,
+        surface="slack",
+        requester_name="louisa",
+        target_message_id=None,
+        child_id="agent-1",
+    )
+    assert frame["body"] == {
+        "type": "turn.interrupt",
+        "turnId": "current",
+        "childId": "agent-1",
+    }
+    with pytest.raises(ValueError):
+        commands.room_control_frame(
+            agent_id="a",
+            session_id="s",
+            room_id="r",
+            action="reset",
+            actor_id="@u:s",
+            message_id="m",
+            thread_id=None,
+            surface="slack",
+            requester_name="louisa",
+            target_message_id=None,
+            child_id="agent-1",
+        )
 
 
 def test_a_retry_runs_again_the_message_it_names() -> None:
@@ -446,6 +484,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
         surface="switch-web",
         requester_name="louisa",
         target_message_id="$m1",
+        child_id=None,
     )
     assert frame["body"] == {"type": "message.retry", "messageId": "$m1"}
     with pytest.raises(ValueError):
@@ -460,6 +499,7 @@ def test_a_retry_runs_again_the_message_it_names() -> None:
             surface="switch-web",
             requester_name="louisa",
             target_message_id=None,
+            child_id=None,
         )
 
 
