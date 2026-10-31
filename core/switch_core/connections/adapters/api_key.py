@@ -74,6 +74,19 @@ def key_token(sign_in: ApiKeySignIn, values: dict[str, str]) -> str:
 def _path_value(document: Any, path: str) -> Any:
     value = document
     for part in path.split("."):
+        if isinstance(value, list) and part.isdigit():
+            if len(value) != 1:
+                raise ServiceAdapterError(
+                    f"The vendor's identity list has {len(value)} entries; "
+                    "exactly 1 is expected."
+                )
+            idx = int(part)
+            if idx != 0:
+                raise ServiceAdapterError(
+                    f"The vendor's identity list index {idx} is out of range."
+                )
+            value = value[idx]
+            continue
         if not isinstance(value, dict):
             return None
         value = value.get(part)

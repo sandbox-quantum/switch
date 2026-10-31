@@ -928,6 +928,7 @@ async def _pass_through(
     expires_in: float,
     max_lifetime: int = 3600,
     entry: str = OAUTH_ENTRY,
+    access: str = "write",
 ) -> PassThrough:
     vendor = FakeVendor()
     vendor.pass_through = True
@@ -952,7 +953,7 @@ async def _pass_through(
             session,
             user_id=owner.id,
             service="example",
-            consent="write",
+            consent=access,
             granted_scopes=["read:items", "write:items"],
             account_id="acct-1",
             external_identity="ada@example.test",
@@ -972,7 +973,7 @@ async def _pass_through(
             agent_id=agent.id,
             owner_id=owner.id,
             service="example",
-            access="write",
+            access=access,
             tool_mode="deny",
             tools=[],
             resources={},
@@ -1001,6 +1002,33 @@ class TestPassThrough:
         ]
         assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
+
+    async def test_the_grant_uses_read_url_for_read_access(
+        self, session_factory, tmp_path
+    ) -> None:
+        read_entry = OAUTH_ENTRY.replace(
+            '    - { name: example, url: "https://mcp.example.test/v1/mcp" }\n',
+            '    - name: example\n      url: "https://mcp.example.test/v1/mcp"\n'
+            '      read_url: "https://mcp.example.test/v1/mcp?read_only=true"\n',
+        )
+        pt = await _pass_through(
+            session_factory,
+            tmp_path / "c",
+            expires_in=50 * 60,
+            entry=read_entry,
+            access="read",
+        )
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            [grant] = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        assert grant["mcp_servers"] == [
+            {
+                "name": "example",
+                "url": "https://mcp.example.test/v1/mcp?read_only=true",
+                "headers": {"Authorization": "Bearer {token}"},
+            }
+        ]
 
     async def test_the_grant_names_the_vendors_cli_as_the_catalog_has_it(
         self, session_factory, tmp_path

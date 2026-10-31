@@ -1,0 +1,47 @@
+slug: supabase
+name: Supabase
+category: Database
+description: Inspect and change Supabase projects, databases and logs, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Supabase rotates refresh tokens with each use; old tokens are revoked immediately.
+  refresh: rotating
+  oauth:
+    # Supabase supports Dynamic Client Registration (RFC 7591) at https://api.supabase.com/v1/oauth.
+    # It issues a client_secret without specifying token_endpoint_auth_method,
+    # defaulting to client_secret_basic.
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    remove_access: >-
+      Remove Switch under Organization Settings, Integrations, Authorized Apps in
+      Supabase. Until then, the sign-in lives on at Supabase.
+  identity:
+    url: https://api.supabase.com/v1/organizations
+    account_id: 0.id
+    label: 0.name
+# Supabase access tokens expire in 86400 seconds (24 hours).
+token: { kind: pass_through, max_lifetime: 86400 }
+mcp:
+  servers:
+    - name: supabase
+      url: "https://mcp.supabase.com/mcp?features=account,database,debugging,docs"
+      read_url: "https://mcp.supabase.com/mcp?read_only=true&features=account,database,debugging,docs"
+access:
+  read:
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - analytics:read
+  write:
+    # projects:write and secrets:read are deliberately excluded for least privilege.
+    scopes:
+      - organizations:read
+      - projects:read
+      - database:read
+      - analytics:read
+      - database:write
+tools: { mode: pass_through }
