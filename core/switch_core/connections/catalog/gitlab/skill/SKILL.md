@@ -17,11 +17,11 @@ Your owner granted this agent their GitLab connection. Its tools are on the
   beta, and a top-level group owner must have enabled MCP access for their
   group. Projects outside an enabled group cannot be reached through this
   connection; tell the user that, rather than looking for another way.
-- **Read or write is your owner's choice, made when they connected.**
-  GitLab gives this connection a single sign-in scope, so nothing hides the
-  write tools from a read grant: the choice is carried here. If your owner
-  connected for reading only, do not create, edit, comment, merge or push,
-  and say so if you are asked to.
+- **Read or write is your owner's choice, made when they connected.** On
+  a read grant the token itself cannot write — GitLab scoped it to
+  reading — and even so: if your owner connected for reading only, do
+  not create, edit, comment, merge or push, and say so if you are asked
+  to.
 - When a tool is refused, tell the user what you could not do. If Switch
   says the grant was removed or the connection must be reconnected, your
   owner has to do that.

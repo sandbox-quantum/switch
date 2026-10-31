@@ -8,26 +8,37 @@ auth:
   type: oauth
   refresh: rotating
   oauth:
-    # GitLab offers dynamic client registration: Core registers one itself,
-    # a public client with no secret, as GitLab's MCP sign-in requires.
-    registration: dynamic
-    # Sign-ins come back to Switch Console, on a loopback port. GitLab's
-    # registered redirect accepts varying loopback ports, so no ports are
-    # fixed here; Atlassian, which matches the port exactly, fixes five.
-    redirect: [loopback]
-    revocation_discovered: true
-  # The identity read uses GitLab's current-user endpoint, which normally
-  # expects a read_user or api grant; GitLab does not document whether the
-  # single mcp scope of an MCP sign-in may call it. Nothing in the loader
-  # tests can prove that — a live connect is what settles it.
+    # GitLab offers dynamic client registration, but not enough of it.
+    # Measured live on 2026-10-31: POST https://gitlab.com/oauth/register
+    # answers scope "mcp" and grant_types ["authorization_code"] whatever
+    # the request asks for — asking for read_api, read_user and the
+    # refresh_token grant changes neither. A client registered that way
+    # can never call the identity endpoint below, and with no refresh
+    # grant its sign-ins could not be renewed. So each server's operator
+    # registers a GitLab application instead, with the scopes named under
+    # access, and names its settings in GITLAB_CLIENT_CONFIG_PATH or
+    # saves it under Connectors in the dashboard.
+    registration: static
+    client_settings: GITLAB
+    # Sign-ins come back to Core's own callback, the address the operator
+    # registers in the GitLab application.
+    redirect: [core]
+    authorization_url: https://gitlab.com/oauth/authorize
+    token_url: https://gitlab.com/oauth/token
+    revocation_url: https://gitlab.com/oauth/revoke
+  # The identity read uses GitLab's current-user endpoint, which expects
+  # a read_user or api grant; the operator's application carries
+  # read_user at both levels (see access), which is what a dynamically
+  # registered client could never be given. A live connect remains the
+  # end-to-end proof, and is still pending.
   identity:
     url: https://gitlab.com/api/v4/user
     account_id: id
     label: username
-# GitLab does not publish how long an MCP sign-in's token lives, so this is
-# an allowance rather than a measurement: a token living up to eight hours is
-# accepted, and refresh tokens rotate.
-token: { kind: pass_through, max_lifetime: 28800 }
+# GitLab's access tokens live two hours (expires_in 7200); a refreshed
+# one is minted only from the refresh token, and GitLab rotates both on
+# every refresh, which is why refresh is rotating above.
+token: { kind: pass_through, max_lifetime: 7200 }
 mcp:
   # GitLab's MCP server is in beta. A top-level group owner must turn MCP
   # server access on for their group before anyone in it can connect; a
@@ -38,14 +49,14 @@ mcp:
   servers:
     - { name: gitlab, url: "https://gitlab.com/api/v4/mcp" }
 access:
-  # GitLab grants exactly one scope to an MCP sign-in, `mcp`, at either
-  # level: its authorization server offers no narrower scope, and its tools
-  # pass through unclassified, so no level can be narrowed by scope or by
-  # tool list. Read and write name the same scope, and the difference
-  # between the levels is carried by the skill: a read grant is told to
-  # read only, and to say so rather than write.
+  # The MCP server needs a token carrying `mcp`, and its tools then call
+  # the REST API with that same token, so the levels are told apart by
+  # the REST scope the token carries: read_api keeps a read grant from
+  # writing, api is what lets a write grant change anything, and
+  # read_user covers the identity read at both levels. The tools
+  # themselves pass through unclassified.
   read:
-    scopes: [mcp]
+    scopes: [mcp, read_api, read_user]
   write:
-    scopes: [mcp]
+    scopes: [mcp, api, read_user]
 tools: { mode: pass_through }
