@@ -119,6 +119,15 @@ const roomInstructionsAnswerSchema = z.object({ instructions: z.string() });
 const PARK_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Whether this host reports tool input and output with a tool call: on unless
+ * `SWITCH_TOOL_DETAIL=0`. Reporting is not showing. Switch drops it unless the
+ * room or the agent has switched tool details on.
+ */
+export function toolDetailEnabled(): boolean {
+  return process.env.SWITCH_TOOL_DETAIL !== '0';
+}
+
+/**
  * The park timeout for this process: `SWITCH_SESSION_PARK_AFTER_MS` in
  * milliseconds, `off` to never park, or one day when unset.
  */
@@ -412,6 +421,7 @@ export async function runSharedHost(
         resumeOperationId: options.resumeOperationId,
         authenticate: options.authenticate,
         redactions: options.redactions,
+        toolDetail: toolDetailEnabled(),
         connectorApproval: () => options.serviceNotices.raise(CONNECTOR_APPROVAL_NOTICE),
         stageAttachments: (attachments) =>
           Promise.all(

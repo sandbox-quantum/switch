@@ -136,7 +136,9 @@ _MAX_PLAN_TASKS = 50
 _MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
-_MAX_PLAN_TASK_DETAILS = 200
+# A tool call's detail is what it was given and returned, which a reader
+# opens on purpose. `_fit_details` pulls it back whenever the message is heavy.
+_MAX_PLAN_TASK_DETAILS = 2000
 # Prose gets more room than a tool result because it is read rather than
 # scanned, and because a card's detail is the one part of this block Slack will
 # expand on request.
@@ -1683,7 +1685,8 @@ def _plan_task(item: Item) -> dict[str, Any]:
         "icon": {"type": "icon", "name": _TOOL_ICON},
         "status": _TASK_STATUS[item.status],
     }
-    details = plain_text(item.text) if item.text else ""
+    # Not `plain_text`: tool output is code, and stripping its `*` and `_` alters it.
+    details = item.text.strip()
     if details:
         task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))
     return task

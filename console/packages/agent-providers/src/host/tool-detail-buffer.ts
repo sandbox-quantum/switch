@@ -24,6 +24,8 @@ export const TOOL_INPUT_LIMIT = 12 * 1024;
 /** A tool's output: its head and its tail are kept, the middle dropped. */
 export const TOOL_OUTPUT_HEAD = 6 * 1024;
 export const TOOL_OUTPUT_TAIL = 2 * 1024;
+/** What stands between a clipped output's head and its tail. */
+export const TOOL_OUTPUT_GAP = '\n…\n';
 /** Roughly how much one answer carries; older turns are left out past it. */
 export const TOOL_ANSWER_LIMIT = 1024 * 1024;
 
@@ -144,7 +146,7 @@ function detailOf(entry: ToolEntry): HostToolDetail {
     input: entry.input,
     output: entry.hasOutput
       ? entry.outputClipped
-        ? `${entry.head}\n…\n${entry.tail}`
+        ? `${entry.head}${TOOL_OUTPUT_GAP}${entry.tail}`
         : entry.head + entry.tail
       : null,
     truncated: entry.inputClipped || entry.outputClipped,
@@ -214,6 +216,13 @@ export class ToolDetailBuffer {
       default:
         return;
     }
+  }
+
+  /** The call held for one provider item, or null when none is. */
+  get(epoch: string, turnId: string, providerItemId: string): HostToolDetail | null {
+    if (this.epoch !== epoch) return null;
+    const entry = this.turns.get(turnId)?.get(providerItemId);
+    return entry ? detailOf(entry) : null;
   }
 
   /**

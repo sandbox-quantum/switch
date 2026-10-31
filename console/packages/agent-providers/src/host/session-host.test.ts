@@ -1557,6 +1557,46 @@ it.each(['codex', 'claude'] as const)(
   }
 );
 
+async function toolTextAfterACall(toolDetail: boolean | undefined): Promise<string | undefined> {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const fixture = setup('claude');
+  const config = toolDetail === undefined ? fixture.config : { ...fixture.config, toolDetail };
+  const host = await startHost(root, config, fixture.adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
+  await host.command(message('turn'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  const { emit } = fixture;
+  emit({
+    type: 'item.started',
+    turnId: 'turn',
+    item: {
+      id: 't1',
+      type: 'command_execution',
+      status: 'in_progress',
+      title: 'Ran echo',
+      payload: { command: 'echo hi' },
+    },
+  });
+  emit({ type: 'item.delta', turnId: 'turn', itemId: 't1', delta: 'hi\n' });
+  emit({
+    type: 'item.completed',
+    turnId: 'turn',
+    item: { id: 't1', type: 'command_execution', status: 'completed', title: 'Ran echo' },
+  });
+  emit({ type: 'turn.completed', turnId: 'turn', outcome: 'completed', usage: [] });
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('completed'));
+  await host.barrier();
+  return host.snapshot().items.find((item) => item.kind === 'tool-activity')?.text;
+}
+
+it('reports a tool call with its redacted input and output unless the host turns that off', async () => {
+  expect(await toolTextAfterACall(undefined)).toBe('Input: $ echo hi\nOutput:\nhi');
+  expect(await toolTextAfterACall(true)).toBe('Input: $ echo hi\nOutput:\nhi');
+  expect(await toolTextAfterACall(false)).toBe('');
+});
+
 it('times reasoning only from a real start: Codex has one, Claude does not', async () => {
   const codex = await runTurn('codex', true);
   const [timed] = codex.host.reasoning(null).turns;
@@ -1569,8 +1609,13 @@ it('times reasoning only from a real start: Codex has one, Claude does not', asy
   expect(untimed?.completedAt).toEqual(expect.any(String));
 });
 
-it('keeps tool input and output off the event stream, the journal and the snapshot', async () => {
-  const { host, emit, root } = await start('claude');
+it('keeps tool input and output off the event stream, the journal and the snapshot when the host turns it off', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(root);
+  const { emit, config, adapter } = setup('claude');
+  const host = await startHost(root, { ...config, toolDetail: false }, adapter);
+  hosts.push(host);
+  await until(() => expect(host.snapshot().session.status).toBe('ready'));
   const published: unknown[] = [];
   host.onPublished((event) => published.push(event.body));
   await host.command(message('turn'));

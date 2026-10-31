@@ -1,6 +1,11 @@
 import type { HostBody, Item, Origin, Session } from '@switch-console/shared/session-v1';
 import type { ProviderRuntimeEvent } from '../events';
-import type { Redactions } from '../host/redaction';
+import { Redactions } from '../host/redaction';
+import type { HostToolDetail } from '../host/tool-detail-buffer';
+import { toolDetailText } from './tool-detail-text';
+
+/** The tool call a provider item names, as the host holds it; null for one it holds nothing of. */
+export type ToolDetailSource = (turnId: string, providerItemId: string) => HostToolDetail | null;
 
 type TurnContext = { commandId: string | null; origin: Origin | null };
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };
@@ -16,10 +21,16 @@ export class ChatProjector {
    * from an assistant message's whole text before it is split into parts,
    * and text still streaming in holds back what could be the start of one,
    * so no published revision or part carries a token in pieces.
+   *
+   * `toolDetail` is null unless this session's agent has opted in to showing
+   * what a tool did: then a tool call's text is its redacted, bounded input
+   * and output, and otherwise it stays empty and nothing of a tool call
+   * leaves the host.
    */
   constructor(
     private readonly session: Session,
-    private readonly redactions: Redactions | null
+    private readonly redactions: Redactions | null,
+    private readonly toolDetail: ToolDetailSource | null
   ) {}
 
   bindTurn(turnId: string, context: TurnContext): void {
@@ -75,7 +86,11 @@ export class ChatProjector {
             : event.item.type === 'user_message'
               ? 'user-message'
               : 'tool-activity';
-        // Raw tool output and vendor payloads are not a shared tool summary.
+        // Vendor payloads are not a shared tool summary; only the host's redacted rendering is.
+        const toolText =
+          kind === 'tool-activity'
+            ? this.toolText(event.turnId, event.item.id, event.item.status)
+            : '';
         const item: Item = {
           itemId: key,
           turnId: event.turnId,
@@ -83,7 +98,8 @@ export class ChatProjector {
           kind,
           status: event.item.status === 'in_progress' ? 'in-progress' : event.item.status,
           title: event.item.title.slice(0, 4096),
-          text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
+          text:
+            kind === 'tool-activity' ? toolText : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
         };
@@ -106,8 +122,14 @@ export class ChatProjector {
         buffered.dirty = true;
         return this.emitItem(buffered, now, false);
       }
-      case 'item.delta':
-        return []; // Tool output and reasoning stay on the execution host.
+      case 'item.delta': {
+        // Reasoning stays on the execution host, and tool output with it unless opted in.
+        const buffered = this.items.get(JSON.stringify([event.turnId, event.itemId]));
+        if (!buffered || buffered.item.kind !== 'tool-activity' || !this.toolDetail) return [];
+        buffered.item.text = this.toolText(event.turnId, event.itemId, buffered.item.status);
+        buffered.dirty = true;
+        return this.emitItem(buffered, now, false);
+      }
       default:
         return [];
     }
@@ -134,6 +156,13 @@ export class ChatProjector {
         text: characters.slice(index * 4096, (index + 1) * 4096).join(''),
       },
     }));
+  }
+
+  private toolText(turnId: string, providerItemId: string, status: string): string {
+    const detail = this.toolDetail?.(turnId, providerItemId);
+    if (!detail) return '';
+    const streaming = status === 'in_progress' || status === 'in-progress';
+    return toolDetailText(detail, this.redactions ?? new Redactions(), streaming);
   }
 
   private visible(text: string, final: boolean): string {
