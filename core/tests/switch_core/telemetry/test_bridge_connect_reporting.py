@@ -269,7 +269,7 @@ class TestEachStartFailurePointReportsAndReraises:
             await session.execute(
                 update(CollaborationBridge)
                 .where(CollaborationBridge.id == bridge_id)
-                .values(type="irc")
+                .values(type="xmpp")
             )
             await session.commit()
 
