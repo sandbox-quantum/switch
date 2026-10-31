@@ -70,6 +70,8 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    CONNECTOR_APP_SAVED = "organization.connector_app_saved"
+    CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
 
 
 class ServerAuditAction(StrEnum):

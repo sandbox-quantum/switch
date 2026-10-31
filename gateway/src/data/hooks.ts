@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
-  CONNECTORS_NOT_ENABLED,
+  type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
   type AgentDetail,
@@ -183,8 +183,13 @@ export function useKnownAgentTypes(): UseQueryResult<KnownAgentType[]> {
   return useQuery(fetchKnownAgentTypes);
 }
 
-/** The server's connector apps; the operator's only, so call it only for them. */
-export function useConnectorApps(): UseQueryResult<ConnectorApps> {
+/** The connector apps of `scope`: the server's, which only its operator
+ * reads, or the current organization's, which only its org admins do. A 404
+ * is the routes not being mounted: `notEnabled` says so. */
+export function useConnectorApps(
+  scope: ConnectorAppScope,
+  notEnabled: string,
+): UseQueryResult<ConnectorApps> {
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +199,7 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    fetchConnectorApps().then(
+    fetchConnectorApps(scope).then(
       (result) => {
         if (cancelled) return;
         setData(result);
@@ -205,7 +210,7 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
         if (cancelled) return;
         setError(
           err instanceof ApiError && err.status === 404
-            ? CONNECTORS_NOT_ENABLED
+            ? notEnabled
             : err instanceof Error
               ? err.message
               : String(err),
@@ -216,7 +221,7 @@ export function useConnectorApps(): UseQueryResult<ConnectorApps> {
     return () => {
       cancelled = true;
     };
-  }, [tick]);
+  }, [scope, notEnabled, tick]);
 
   return { data, loading, error, refetch };
 }

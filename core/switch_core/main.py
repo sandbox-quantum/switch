@@ -1368,6 +1368,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    gateway_app.state.organization_apps = organization_apps
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,

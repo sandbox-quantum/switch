@@ -181,6 +181,7 @@ describe("ServiceAccessSection", () => {
     connectable: true,
     unavailable_reason: null,
     server_setup_needed: false,
+    app_source: "server",
     status,
     pass_through: true,
     token_lifetime: 3600,
@@ -274,6 +275,22 @@ describe("ServiceAccessSection", () => {
     expect(screen.getByText(/first connect it from Switch Console/)).toBeTruthy();
     expect(screen.getByText("Coming to this server soon.")).toBeTruthy();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("says a service signs in through the organization's app only while that app works", async () => {
+    const through = "Signs in through your organization's Example app.";
+    mockServer(NONE, [onOff("active", { app_source: "organization" })]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(through)).toBeTruthy();
+    cleanup();
+
+    const broken = "Your organization's Example app can't be used: it is broken.";
+    mockServer(NONE, [
+      onOff("active", { app_source: "organization", unavailable_reason: broken }),
+    ]);
+    render(<ServiceAccessSection agent={agent} onAgentUpdated={vi.fn()} />);
+    expect(await screen.findByText(broken)).toBeTruthy();
+    expect(screen.queryByText(through)).toBeNull();
   });
 
   const NOT_SET_UP =
