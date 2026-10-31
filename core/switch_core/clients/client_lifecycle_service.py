@@ -108,8 +108,13 @@ class ClientLifecycleService:
         # Every running row is an actor; the ones that read rooms also have a
         # consumer, keyed by the same client id.
         self._clients: dict[str, Actor[ClientConfig]] = {}
-        # Agent id to the id of its client, for `get_by_agent_id`.
+        # Agent id to the id of its client, for `get_by_agent_id`; and the
+        # agents' clients whose agent this has not seen yet, the only ones a
+        # lookup the index cannot answer has to look at.
         self._client_of_agent: dict[str, str] = {}
+        self._agent_unseen: dict[str, None] = {}
+        # Each tenant's running clients of each type, for `get_by_type`.
+        self._clients_of_type: dict[tuple[str, str], dict[str, None]] = {}
         self._consumers: dict[str, Consumer[Any]] = {}
         self._client_types: dict[str, str] = {}
         # Which tenant each running client's row belongs to. The actor
@@ -332,6 +337,7 @@ class ClientLifecycleService:
             agent = agents.get(record.id)
             if agent is not None and isinstance(actor, _PreloadsAgent):
                 actor.preload_agent(agent)
+                self._agent_seen(record.id, agent.id)
 
     async def reconcile_all(self) -> None:
         """`reconcile_tenant` for every tenant."""
@@ -421,6 +427,7 @@ class ClientLifecycleService:
             actor = self._register(record)
             if agent is not None and isinstance(actor, _PreloadsAgent):
                 actor.preload_agent(agent)
+                self._agent_seen(record.id, agent.id)
             agents_changed |= agent is not None
         if agents_changed:
             self._agents_changed(tenant_id)
@@ -484,9 +491,7 @@ class ClientLifecycleService:
     def _register(self, record: Client) -> Actor[ClientConfig]:
         self._left_stopped.pop(record.id, None)
         actor = self._client_factory.create_actor(record)
-        self._clients[record.id] = actor
-        self._client_types[record.id] = record.type
-        self._client_tenants[record.id] = record.tenant_id
+        self._track(record.id, actor, record.type, record.tenant_id)
         # The actor here, and the consumer, if the type has one, where this
         # process owns the client.
         self._consumers.pop(record.id, None)
@@ -494,6 +499,47 @@ class ClientLifecycleService:
         if self._client_factory.has_consumer(record.type):
             self._owned.want(record.id)
         return actor
+
+    def _track(
+        self,
+        client_id: str,
+        actor: Actor[ClientConfig],
+        client_type: str,
+        tenant_id: str,
+    ) -> None:
+        """Hold `actor` as the client's running copy, where every lookup of
+        the running clients finds it."""
+        self._forget(client_id)
+        self._clients[client_id] = actor
+        self._client_types[client_id] = client_type
+        self._client_tenants[client_id] = tenant_id
+        self._clients_of_type.setdefault((client_type, tenant_id), {})[client_id] = None
+        if isinstance(actor, AgentActor):
+            known = actor.agent_id
+            if known is None:
+                self._agent_unseen[client_id] = None
+            else:
+                self._agent_seen(client_id, known)
+
+    def _forget(self, client_id: str) -> None:
+        """Let go of the client's running copy and every lookup's note of it."""
+        actor = self._clients.pop(client_id, None)
+        client_type = self._client_types.pop(client_id, None)
+        tenant_id = self._client_tenants.pop(client_id, None)
+        if client_type is not None and tenant_id is not None:
+            of_type = self._clients_of_type.get((client_type, tenant_id))
+            if of_type is not None:
+                of_type.pop(client_id, None)
+                if not of_type:
+                    del self._clients_of_type[(client_type, tenant_id)]
+        self._agent_unseen.pop(client_id, None)
+        if isinstance(actor, AgentActor) and actor.agent_id is not None:
+            if self._client_of_agent.get(actor.agent_id) == client_id:
+                del self._client_of_agent[actor.agent_id]
+
+    def _agent_seen(self, client_id: str, agent_id: str) -> None:
+        self._client_of_agent[agent_id] = client_id
+        self._agent_unseen.pop(client_id, None)
 
     async def create_and_start(
         self,
@@ -529,9 +575,7 @@ class ClientLifecycleService:
         task = self._cancel_task(client_id)
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
-        del self._clients[client_id]
-        self._client_types.pop(client_id, None)
-        self._client_tenants.pop(client_id, None)
+        self._forget(client_id)
         logger.info("Stopped client %s", client_id)
 
     async def stop_all(self) -> None:
@@ -558,6 +602,9 @@ class ClientLifecycleService:
         self._consumers.clear()
         self._client_types.clear()
         self._client_tenants.clear()
+        self._clients_of_type.clear()
+        self._client_of_agent.clear()
+        self._agent_unseen.clear()
         self._tasks.clear()
 
     async def delete_record(self, session: AsyncSession, client_id: str) -> None:
@@ -621,9 +668,18 @@ class ClientLifecycleService:
             actor = self._clients.get(client_id)
             if isinstance(actor, AgentActor) and actor.agent_id == agent_id:
                 return actor
-        for client_id, actor in self._clients.items():
-            if isinstance(actor, AgentActor) and actor.agent_id == agent_id:
-                self._client_of_agent[agent_id] = client_id
+        # Every other agent's client is in the index under its own agent, so
+        # only the ones whose agent this has not seen yet can be this one.
+        for client_id in list(self._agent_unseen):
+            actor = self._clients.get(client_id)
+            if not isinstance(actor, AgentActor):
+                del self._agent_unseen[client_id]
+                continue
+            seen = actor.agent_id
+            if seen is None:
+                continue
+            self._agent_seen(client_id, seen)
+            if seen == agent_id:
                 return actor
         return None
 
@@ -644,10 +700,9 @@ class ClientLifecycleService:
         own a room takes the whole process down with it.
         """
         return [
-            client
-            for client_id, client in self._clients.items()
-            if self._client_types.get(client_id) == client_type
-            and self._client_tenants.get(client_id) == tenant_id
+            self._clients[client_id]
+            for client_id in self._clients_of_type.get((client_type, tenant_id), ())
+            if client_id in self._clients
         ]
 
     async def _start_owned_consumer(self, client_id: str, fence: Fence) -> None:
@@ -823,8 +878,6 @@ class ClientLifecycleService:
                     actor.transport_user_id,
                 )
                 self._leave_stopped(client_id)
-                self._clients.pop(client_id, None)
+                self._forget(client_id)
                 self._consumers.pop(client_id, None)
-                self._client_types.pop(client_id, None)
-                self._client_tenants.pop(client_id, None)
                 self._tasks.pop(client_id, None)
