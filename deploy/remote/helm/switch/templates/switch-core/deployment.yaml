@@ -183,6 +183,10 @@ spec:
             - name: AIRTABLE_CLIENT_CONFIG_PATH
               value: /etc/switch-airtable/client.json
             {{- end }}
+            {{- if .Values.switchCore.bigqueryClientSecret }}
+            - name: BIGQUERY_CLIENT_CONFIG_PATH
+              value: /etc/switch-bigquery/client.json
+            {{- end }}
             {{- if .Values.switchCore.gitlabClientSecret }}
             - name: GITLAB_CLIENT_CONFIG_PATH
               value: /etc/switch-gitlab/client.json
@@ -262,6 +266,11 @@ spec:
               mountPath: /etc/switch-airtable
               readOnly: true
             {{- end }}
+            {{- if .Values.switchCore.bigqueryClientSecret }}
+            - name: bigquery-client
+              mountPath: /etc/switch-bigquery
+              readOnly: true
+            {{- end }}
             {{- if .Values.switchCore.gitlabClientSecret }}
             - name: gitlab-client
               mountPath: /etc/switch-gitlab
@@ -312,6 +321,12 @@ spec:
         - name: airtable-client
           secret:
             secretName: {{ .Values.switchCore.airtableClientSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.switchCore.bigqueryClientSecret }}
+        - name: bigquery-client
+          secret:
+            secretName: {{ .Values.switchCore.bigqueryClientSecret | quote }}
             defaultMode: 0400
         {{- end }}
         {{- if .Values.switchCore.gitlabClientSecret }}
