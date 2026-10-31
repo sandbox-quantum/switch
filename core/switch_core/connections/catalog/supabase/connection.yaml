@@ -26,8 +26,11 @@ mcp:
 access:
   read:
     scopes:
-      - "all"
+      - "projects:read"
+      - "database:read"
   write:
     scopes:
-      - "all"
+      - "projects:read"
+      - "database:read"
+      - "database:write"
 tools: { mode: pass_through }

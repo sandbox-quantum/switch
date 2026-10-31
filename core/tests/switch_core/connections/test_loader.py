@@ -201,8 +201,12 @@ def test_the_shipped_supabase_entry_configures_oauth_and_mcp_servers():
         ("supabase", "https://mcp.supabase.com/mcp")
     ]
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["all"]
-    assert definition.access.write.scopes == ["all"]
+    assert definition.access.read.scopes == ["projects:read", "database:read"]
+    assert definition.access.write.scopes == [
+        "projects:read",
+        "database:read",
+        "database:write",
+    ]
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.supabase.com/v1/profile"
 
