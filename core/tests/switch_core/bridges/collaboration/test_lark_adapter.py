@@ -38,6 +38,7 @@ def test_lark_is_registered_as_a_webhook_platform() -> None:
     assert registration.config is LarkConnectionConfig
     assert LarkAdapter.receives_webhooks
     assert LarkAdapter.keeps_quiet_unless_listening
+    assert LarkAdapter.supports_channel_creation
 
 
 @pytest.mark.asyncio
@@ -249,4 +250,41 @@ async def test_reply_is_sent_in_the_lark_thread() -> None:
     assert calls[-2].url.path == "/open-apis/im/v1/messages/om_reply"
     assert calls[-1].method == "DELETE"
     assert calls[-1].url.path == "/open-apis/im/v1/messages/om_reply"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_group_creation_and_member_addition_use_lark_chat_apis() -> None:
+    adapter = LarkAdapter(config=_config())
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "tenant-token"}
+            )
+        if request.method == "POST" and request.url.path.endswith("/chats"):
+            return httpx.Response(200, json={"code": 0, "data": {"chat_id": "oc_new"}})
+        return httpx.Response(
+            200,
+            json={"code": 0, "data": {"invalid_user_id_list": ["ou_missing"]}},
+        )
+
+    await adapter._http.aclose()
+    adapter._http = httpx.AsyncClient(
+        base_url="https://open.larksuite.com", transport=httpx.MockTransport(handler)
+    )
+    chat_id = await adapter.create_channel("Switch room", "Issue discussion")
+    failures = await adapter.add_users_to_channel(
+        chat_id, ["Mina", "Missing"], ["ou_mina", "ou_missing"]
+    )
+    assert chat_id == "oc_new"
+    assert failures == ["ou_missing"]
+    create = next(request for request in calls if request.url.path.endswith("/chats"))
+    assert json.loads(create.content)["chat_mode"] == "group"
+    assert json.loads(create.content)["chat_type"] == "public"
+    add_members = calls[-1]
+    assert add_members.url.path == "/open-apis/im/v1/chats/oc_new/members"
+    assert json.loads(add_members.content)["id_list"] == ["ou_mina", "ou_missing"]
     await adapter.stop()

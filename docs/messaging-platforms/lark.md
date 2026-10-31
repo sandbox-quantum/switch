@@ -12,7 +12,9 @@ chat service.
 2. Add the bot capability. Under app credentials, copy the App ID and App
    Secret. Under Event Subscriptions, copy the Verification Token.
 3. Grant the app permission to receive messages and send messages in direct
-   and group chats. Publish or enable the app for your test organization.
+   and group chats. If users will add the bot to cross-organization groups,
+   enable the app's external group availability. Publish or enable the app for
+   your test organization.
 4. In Switch Console, create a Lark / Feishu connection and enter those
    credentials. Choose **Lark** for `open.larksuite.com` or **Feishu** for
    `open.feishu.cn`.
@@ -41,6 +43,9 @@ is decrypted before dispatch.
   sent as the app bot, with the agent name in the message.
 - Lark slash commands are not registered by this adapter. Use Switch's `!`
   command syntax in a message instead.
+- Switch can create a Lark group chat and add people when their Lark Open IDs
+  are available. The created chat contains the bot; agents share the app bot
+  identity and are distinguished by their names in message text.
 - Text and post messages are bridged. Long messages are split on paragraph or
   word boundaries within the API message limit.
 - Image and file attachments are downloaded from Lark and uploaded back to
@@ -57,8 +62,9 @@ is decrypted before dispatch.
   processing.
 - Activity is visible as status text. Native reaction indicators are not
   supported.
-- The adapter cannot create rooms, search the Lark directory, or add people to
-  rooms created in Switch. Invite the bot to existing rooms on Lark.
+- The adapter cannot search the Lark directory. Invite the bot to existing
+  rooms on Lark, or create a group from Switch when the app has group creation
+  and member management permissions.
 - Encrypted rooms are not supported by this adapter. Lark's bot APIs deliver
   readable message bodies to the app; when the API delivers a message without
   readable content, Switch posts a notice explaining that the bot cannot
@@ -71,5 +77,7 @@ permission to send messages (`im:message`, with the relevant group and direct
 message permissions enabled). To bridge unaddressed group messages, select the
 permission to receive all group messages. If the app has only the permission to
 receive messages that mention the bot, Lark will deliver only those messages.
-Depending on your organization and app approval settings, an administrator may
-need to approve these permissions before the bot can be used.
+For room creation and adding people, grant `im:chat:create` and
+`im:chat.members:write_only`. Depending on your organization and app approval
+settings, an administrator may need to approve these permissions before the
+bot can be used.

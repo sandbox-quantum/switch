@@ -211,7 +211,7 @@ class LarkAdapter(PlatformAdapter):
     docs_slug: ClassVar[str | None] = "lark"
     receives_webhooks: ClassVar[bool] = True
     draws_session_activity: ClassVar[bool] = True
-    supports_channel_creation: ClassVar[bool] = False
+    supports_channel_creation: ClassVar[bool] = True
     supports_directory_search: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
     keeps_quiet_unless_listening: ClassVar[bool] = True
@@ -599,12 +599,35 @@ class LarkAdapter(PlatformAdapter):
     async def create_channel(
         self, name: str, topic: str, *, channel_type: ChannelType = "channel_public"
     ) -> str:
-        raise ChannelCreationUnsupported(
-            "Lark room creation from Switch is not supported by this adapter."
+        if channel_type not in {"channel_public", "channel_private"}:
+            raise ChannelCreationUnsupported(
+                "Lark only supports creating group chats from Switch."
+            )
+        data = await self._request(
+            "POST",
+            "/open-apis/im/v1/chats",
+            params={"user_id_type": "open_id"},
+            json={
+                "name": name,
+                "description": topic,
+                "chat_mode": "group",
+                "chat_type": "public"
+                if channel_type == "channel_public"
+                else "private",
+                "group_message_type": "chat",
+            },
         )
+        chat_id = data.get("chat_id")
+        if not chat_id:
+            raise BridgeOperationError(
+                "Lark created a group without returning its chat ID."
+            )
+        return str(chat_id)
 
     async def get_channel_type(self, channel_id: str) -> ChannelType:
-        return "channel_public"
+        data = await self._request("GET", f"/open-apis/im/v1/chats/{channel_id}")
+        chat_type = (data.get("chat") or {}).get("chat_type")
+        return "channel_public" if chat_type == "public" else "channel_private"
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -614,7 +637,21 @@ class LarkAdapter(PlatformAdapter):
     async def add_users_to_channel(
         self, channel_id: str, user_names: list[str], user_external_ids: list[str]
     ) -> list[str]:
-        return list(user_external_ids)
+        if not user_external_ids:
+            return []
+        try:
+            data = await self._request(
+                "POST",
+                f"/open-apis/im/v1/chats/{channel_id}/members",
+                params={"member_id_type": "open_id"},
+                json={"id_list": user_external_ids},
+            )
+        except BridgeOperationError:
+            return list(user_external_ids)
+        invalid_ids = (
+            data.get("invalid_user_id_list") or data.get("invalid_id_list") or []
+        )
+        return [str(user_id) for user_id in invalid_ids]
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:
         return []
