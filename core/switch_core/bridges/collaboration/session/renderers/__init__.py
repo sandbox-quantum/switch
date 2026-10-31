@@ -45,6 +45,15 @@ TURN_STATE = {
 }
 
 
+def call_title(item: Item) -> str:
+    """A tool call's title, led by the agent it runs when it starts a subagent."""
+    if item.subagent is None or item.subagent.agent is None:
+        return item.title
+    if not item.title:
+        return item.subagent.agent
+    return f"{item.subagent.agent}: {item.title}"
+
+
 def turn_state(
     items: list[Item],
     turn: TurnUpsert,
@@ -58,7 +67,8 @@ def turn_state(
     in progress for good. What ended the call is whatever the host last said
     and is not rewritten here — the host is the only thing that knows how the
     call actually ended — so the count is what tells the reader those lines
-    are not still moving.
+    are not still moving. A subagent is the exception: it can run on after its
+    turn, and its host says when it ends, so it is counted as still running.
 
     Calls only. What the agent said arrives as items too, and the last of them
     is routinely still marked in progress when the turn stops, so counting
@@ -89,15 +99,20 @@ def turn_state(
     if elapsed_seconds is not None:
         worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
         state = worked if turn.status == "completed" else f"{state} {worked}"
-    unfinished = sum(
-        1
+    open_calls = [
+        item
         for item in items
         if item.kind == "tool-activity" and item.status == "in-progress"
-    )
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+    ]
+    running = sum(1 for item in open_calls if item.subagent is not None)
+    unfinished = len(open_calls) - running
+    if unfinished:
+        step = "step" if unfinished == 1 else "steps"
+        state = f"{state} {unfinished} {step} left unfinished."
+    if running:
+        subagent = "subagent" if running == 1 else "subagents"
+        state = f"{state} {running} {subagent} still running."
+    return state
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:

@@ -269,6 +269,52 @@ async def test_more_than_one_unfinished_step_is_counted_as_more_than_one() -> No
     assert _state(items, _turn("interrupted")).endswith("3 steps left unfinished.")
 
 
+async def test_a_subagent_still_working_after_its_turn_is_running_not_unfinished() -> (
+    None
+):
+    items = [
+        _item(
+            itemId="agent",
+            status="in-progress",
+            title="count files",
+            subagent={"agent": "Explore"},
+        ),
+        _item(itemId="call", status="in-progress", title="Ran pytest"),
+    ]
+
+    assert _state(items, _turn("completed")) == (
+        "Turn complete. 1 step left unfinished. 1 subagent still running."
+    )
+
+
+async def test_a_subagent_card_is_titled_with_the_agent_it_runs() -> None:
+    cards = _cards(
+        [
+            _item(
+                itemId="agent",
+                status="in-progress",
+                title="count files",
+                subagent={"agent": "Explore"},
+            )
+        ]
+    )
+
+    assert "Explore: count files" in cards
+
+
+async def test_a_finished_subagent_leaves_nothing_to_say() -> None:
+    items = [
+        _item(
+            itemId="agent",
+            status="completed",
+            title="count files",
+            subagent={"agent": "Explore"},
+        )
+    ]
+
+    assert _state(items, _turn("completed")) == "Turn complete."
+
+
 async def test_the_fallback_carries_the_turn_state_too() -> None:
     """It is the whole message on a client that will not render blocks."""
     text = render_activity_text(await _items(), _turn("completed"))

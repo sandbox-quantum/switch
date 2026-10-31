@@ -39,6 +39,7 @@ from switch_core.session_activity.service import (
     QuestionOption,
     TokenSpend,
 )
+from switch_core.sessions.contract import Subagent
 from switch_core.telemetry import TelemetryService
 from switch_core.telemetry.session_start import (
     SessionStartLimiter,
@@ -75,6 +76,11 @@ class TokenUsageIn(BaseModel):
     cache_write_tokens: int = Field(ge=0, le=MAX_TOKENS)
 
 
+class SubagentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent: str | None = Field(max_length=MAX_TITLE_CHARS)
+
+
 class ActivityReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
     turn_id: _Id
@@ -95,6 +101,8 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    # Nor do hosts that predate subagents send this.
+    subagent: SubagentIn | None = None
 
 
 class OptionIn(BaseModel):
@@ -224,6 +232,7 @@ async def report_activity(
             )
             for u in body.usage
         ],
+        subagent=Subagent(agent=body.subagent.agent) if body.subagent else None,
     )
     return ActivityReceipt(recorded=recorded)
 
