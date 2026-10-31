@@ -9,8 +9,11 @@ describeConformance('grok-build', {
     return probe.error || probe.status !== 0 ? 'the grok binary is not on PATH' : null;
   },
   skip: {
+    'approval-declined':
+      'Grok Build ACP terminates the turn with an interrupted outcome when a tool approval is declined.',
     'user-input': 'Grok Build ACP does not expose an interactive ask-the-user tool over stdio.',
-    'steer-mid-turn': 'Grok Build ACP queues subsequent messages rather than steering the running turn.',
+    'steer-mid-turn':
+      'Grok Build ACP queues subsequent messages rather than steering the running turn.',
     subagent: 'Grok Build ACP does not declare a subagent delegation tool over stdio.',
   },
   mcpServers: { echo: echoMcpServerSpec() },

@@ -158,7 +158,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="grok-build",
         label="Grok Build",
         connector_type="Grok Build CLI",
-        sign_in_command="grok auth login",
+        sign_in_command="grok login",
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),

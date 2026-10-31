@@ -67,6 +67,85 @@ describe('grokBuildAcp', () => {
       expect(result).toBeDefined();
       expect(result?.status).toBe('unknown');
     });
+
+    it('reports authenticated when handshake returns cached_token authMethod', async () => {
+      const result = await grokBuildAcp.checkSignIn?.({
+        binaryPath: 'grok',
+        cwd: '/workspace',
+        env: {},
+        handshake: async () =>
+          ({
+            authMethods: [{ id: 'cached_token', name: 'Cached Token' }],
+          }) as never,
+      });
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe('authenticated');
+      expect(result?.message).toContain('Signed in to Grok Build');
+    });
+
+    it('reports unauthenticated when handshake returns login methods without cached_token', async () => {
+      const result = await grokBuildAcp.checkSignIn?.({
+        binaryPath: 'grok',
+        cwd: '/workspace',
+        env: {},
+        handshake: async () =>
+          ({
+            authMethods: [{ id: 'grok.com', name: 'Grok.com' }],
+          }) as never,
+      });
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe('unauthenticated');
+      expect(result?.message).toContain(GROK_BUILD_LOGIN);
+    });
+
+    it('reports unauthenticated when handshake throws an auth error', async () => {
+      const result = await grokBuildAcp.checkSignIn?.({
+        binaryPath: 'grok',
+        cwd: '/workspace',
+        env: {},
+        handshake: async () => {
+          throw new Error('User is unauthenticated');
+        },
+      });
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe('unauthenticated');
+      expect(result?.message).toContain(GROK_BUILD_LOGIN);
+    });
+  });
+
+  describe('mcpServerOf', () => {
+    it('extracts server name from rawInput.tool_name', () => {
+      const server = grokBuildAcp.mcpServerOf?.({
+        rawInput: { tool_name: 'echo__switch_echo' },
+      } as never);
+      expect(server).toBe('echo');
+    });
+
+    it('extracts server name from title with __ delimiter', () => {
+      const server = grokBuildAcp.mcpServerOf?.({
+        title: 'echo__switch_echo',
+      } as never);
+      expect(server).toBe('echo');
+    });
+
+    it('extracts server name from rawOutput.server_name', () => {
+      const server = grokBuildAcp.mcpServerOf?.({
+        title: 'switch_echo',
+        rawOutput: { server_name: 'echo' },
+      } as never);
+      expect(server).toBe('echo');
+    });
+
+    it('returns undefined when no server identifier is found', () => {
+      const server = grokBuildAcp.mcpServerOf?.({
+        title: 'bash',
+        rawInput: { command: 'ls' },
+      } as never);
+      expect(server).toBeUndefined();
+    });
   });
 
   it('creates an adapter instance', () => {

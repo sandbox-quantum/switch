@@ -111,5 +111,5 @@ Its sign-in check reads `authMethods` from the handshake and never calls
 `authenticate`, which would open a browser.
 
 **Grok Build** connects through `grok agent stdio`, authenticating via `XAI_API_KEY` or
-interactive login (`grok auth login`). It supports ACP sessions with approvals,
+interactive login (`grok login`). It supports ACP sessions with approvals,
 permissions, and session continuation.
