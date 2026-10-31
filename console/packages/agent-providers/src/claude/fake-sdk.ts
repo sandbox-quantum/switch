@@ -23,6 +23,7 @@ export class FakeQuery {
   readonly flagSettingsCalls: unknown[] = [];
   readonly setModelCalls: Array<string | undefined> = [];
   interruptCount = 0;
+  readonly stoppedTasks: string[] = [];
   closed = false;
 
   private readonly outbox: SDKMessage[] = [];
@@ -60,6 +61,11 @@ export class FakeQuery {
   interrupt(): Promise<undefined> {
     this.interruptCount += 1;
     return Promise.resolve(undefined);
+  }
+
+  stopTask(taskId: string): Promise<void> {
+    this.stoppedTasks.push(taskId);
+    return Promise.resolve();
   }
 
   setModel(model?: string): Promise<void> {

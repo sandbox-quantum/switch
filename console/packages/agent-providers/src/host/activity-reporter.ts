@@ -21,7 +21,7 @@ const MAX_LABEL = 200;
 export type ActivityRow = {
   turn_id: string;
   item_id: string;
-  kind: 'turn' | 'user-message' | 'assistant-message' | 'tool-activity' | 'notice';
+  kind: 'turn' | 'user-message' | 'assistant-message' | 'tool-activity' | 'subagent' | 'notice';
   revision: number;
   status: string;
   title: string;

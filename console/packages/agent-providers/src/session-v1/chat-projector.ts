@@ -95,7 +95,9 @@ export class ChatProjector {
             ? 'assistant-message'
             : event.item.type === 'user_message'
               ? 'user-message'
-              : 'tool-activity';
+              : event.item.type === 'subagent'
+                ? 'subagent'
+                : 'tool-activity';
         // Raw tool output and vendor payloads are not a shared tool summary.
         const item: Item = {
           itemId: key,
@@ -104,7 +106,13 @@ export class ChatProjector {
           kind,
           status: event.item.status === 'in_progress' ? 'in-progress' : event.item.status,
           title: event.item.title.slice(0, ITEM_PART_CHARACTERS),
-          text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
+          // A subagent's text is the id `!interrupt` takes to stop it alone.
+          text:
+            kind === 'subagent'
+              ? (event.item.nativeChildId ?? '')
+              : kind === 'tool-activity'
+                ? ''
+                : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
         };
