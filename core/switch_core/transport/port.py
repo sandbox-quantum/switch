@@ -76,10 +76,15 @@ class MessageTransport(Protocol):
         """Bind inbound callbacks. Call before `receive_forever`."""
         ...
 
-    async def receive_forever(self, progress: DeliveryProgress) -> None:
+    async def receive_forever(
+        self,
+        progress: DeliveryProgress,
+        *,
+        row_types: frozenset[str] | None = None,
+    ) -> None:
         """Deliver inbound events to the registered handlers until closed,
         starting each room where `progress` says and recording through it how
-        far the client got."""
+        far the client got. With `row_types`, only events of those types."""
         ...
 
     def held_back_released(self, room_id: str) -> None:

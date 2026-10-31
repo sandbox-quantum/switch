@@ -2453,6 +2453,14 @@ class Message(TenantScoped, Base):
         # across every room. The index above leads on the room, so it cannot
         # serve that and each pass would scan the whole table.
         Index("ix_messages_tenant_sent_at", "tenant_id", "sent_at"),
+        # The rows Switch's own reader acts on (`CommandConsumer.ROW_TYPES`),
+        # so it reads just those however far behind its cursor is.
+        Index(
+            "ix_messages_room_commands",
+            "room_id",
+            "seq",
+            postgresql_where=text("event_type = 'com.switch.command'"),
+        ),
         Index(
             "ix_messages_thread_root",
             "room_id",

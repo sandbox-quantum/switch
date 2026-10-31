@@ -68,14 +68,19 @@ async def _make_room(session: AsyncSession) -> str:
     return room.id
 
 
-async def _write(session: AsyncSession, room_id: str, seq: int) -> None:
+async def _write(
+    session: AsyncSession,
+    room_id: str,
+    seq: int,
+    event_type: str = "m.room.message",
+) -> None:
     session.add(
         Message(
             seq=seq,
             room_id=room_id,
             transport_event_id=f"$e{uuid.uuid4().hex[:8]}",
             sender_id="@a:test",
-            event_type="m.room.message",
+            event_type=event_type,
             msgtype="m.text",
             body="hello",
             content={"body": "hello"},
@@ -88,6 +93,13 @@ class TestParsingAnnouncements:
     def test_a_payload_becomes_an_announcement(self) -> None:
         announcement = Announcement.parse('{"room_id": "r1", "seq": 4, "id": "m1"}')
         assert announcement == Announcement(room_id="r1", seq=4, message_id="m1")
+
+    def test_the_rows_type_comes_with_it(self) -> None:
+        announcement = Announcement.parse(
+            '{"room_id": "r1", "seq": 4, "id": "m1", "type": "com.switch.command"}'
+        )
+        assert announcement is not None
+        assert announcement.type == "com.switch.command"
 
     @pytest.mark.parametrize(
         "payload", ["not json", "{}", '{"room_id": "r1", "seq": "no"}', "[]"]
@@ -220,3 +232,52 @@ class TestDelivery:
 
         await asyncio.sleep(0.5)
         assert woken.rooms == []
+
+
+class TestAReaderOfSomeTypes:
+    """Switch's own reader acts on command rows only, and was woken for every
+    row of every room to find them."""
+
+    _COMMANDS = frozenset({"com.switch.command"})
+
+    async def test_it_is_woken_by_its_types_only(
+        self,
+        listener: MessageListener,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        async with session_factory() as session:
+            room_id = await _make_room(session)
+            await session.commit()
+        commands, everything = Woken(), Woken()
+        listener.subscribe(room_id, commands, types=self._COMMANDS)
+        listener.subscribe(room_id, everything)
+        await commands.wait()  # subscribing wakes once by design
+        await everything.wait()
+        commands.rooms.clear()
+        everything.rooms.clear()
+
+        async with session_factory() as session:
+            await _write(session, room_id, 1)
+        # Both are handed the room in the same pass: once the other reader has
+        # been woken, this one has been passed over.
+        await everything.wait()
+        assert commands.rooms == []
+
+        async with session_factory() as session:
+            await _write(session, room_id, 2, "com.switch.command")
+        await commands.wait()
+        assert commands.rooms == [room_id]
+
+    async def test_a_row_of_unknown_type_wakes_it(
+        self, listener: MessageListener
+    ) -> None:
+        """What a database announcing no type, before its migration, sends."""
+        commands = Woken()
+        listener.subscribe("room-a", commands, types=self._COMMANDS)
+        await commands.wait()
+        commands.rooms.clear()
+
+        listener._on_notify(None, 0, "", '{"room_id": "room-a", "seq": 3, "id": "m3"}')
+
+        await commands.wait()
+        assert commands.rooms == ["room-a"]

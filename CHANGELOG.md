@@ -159,6 +159,12 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **Switch's own reader is woken only by commands.** The process that holds
+  a workspace's admin client read every row of every room to find the
+  `!command` rows it answers. A new row's announcement now names its type,
+  and that reader is woken for command rows only and reads only those, from
+  a partial index on them. Its warnings for tags nobody can answer are
+  already posted by the process that writes the message.
 - **The heads-up for tagging an agent that isn't in the room comes from the
   process that wrote the message, and costs nothing when every name tagged
   is one of the room's agents.** The admin's consumer, which reads every
