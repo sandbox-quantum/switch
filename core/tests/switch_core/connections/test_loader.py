@@ -14,7 +14,6 @@ from switch_core.connections.loader import (
 
 PLACEHOLDERS = {
     "asana",
-    "gitlab",
     "bitbucket",
     "microsoft-365",
     "new-relic",
@@ -32,6 +31,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "airtable",
         "atlassian",
         "datadog",
+        "gitlab",
         "google-workspace",
         "notion",
         "sentry",
@@ -41,6 +41,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "atlassian",
         "datadog",
         "github",
+        "gitlab",
         "google-workspace",
         "notion",
         "sentry",
@@ -49,6 +50,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["gitlab"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
@@ -394,6 +396,46 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+def test_gitlab_uses_static_oauth_with_identity_renewal_and_official_mcp():
+    definition = CATALOG["gitlab"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, definition.auth.type) == ("oauth", "oauth")
+    assert (oauth.registration, oauth.client_settings, oauth.redirect) == (
+        "static",
+        "GITLAB",
+        ["core"],
+    )
+    assert oauth.loopback_ports is None
+    # Discovery keeps the adapter's S256 capability check in use.
+    assert oauth.authorization_url is None and oauth.token_url is None
+    assert oauth.revocation_discovered and oauth.revocation_url is None
+    assert oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://gitlab.com/api/v4/user",
+        "id",
+        "username",
+    )
+    token = definition.token
+    assert token is not None
+    assert (token.kind, token.max_lifetime) == ("pass_through", 7200)
+    mcp = definition.mcp
+    assert mcp is not None
+    assert [(s.name, s.url) for s in mcp.servers] == [
+        ("gitlab", "https://gitlab.com/api/v4/mcp")
+    ]
+
+
+def test_gitlab_requests_only_the_intended_scopes_at_each_level():
+    access = CATALOG["gitlab"].definition.access
+    assert access is not None and access.write is not None
+    assert set(access.read.scopes or []) == {"mcp", "read_api", "read_user"}
+    assert set(access.write.scopes or []) == {"mcp", "api", "read_user"}
 
 
 @pytest.fixture

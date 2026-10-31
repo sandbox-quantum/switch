@@ -665,6 +665,50 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## GitLab
+
+Read and update GitLab projects, issues, merge requests, branches and
+pipelines through GitLab's remote MCP server (`https://gitlab.com/api/v4/mcp`).
+The operator's setup is in [`docs/old/gitlab-setup.md`](../old/gitlab-setup.md).
+
+- **Static OAuth application.** Although GitLab supports OAuth 2.0 Dynamic
+  Client Registration (RFC 7591), GitLab.com limits dynamically registered
+  clients to the `mcp` scope only, without issuing refresh tokens or user profile
+  scopes. Without a refresh token, access tokens cannot renew; without
+  `read_user`, user identity cannot be determined; and without `read_api` /
+  `api`, fine-grained read-only separation is not enforceable. The connector
+  therefore uses an operator-registered static OAuth application
+  (`registration: static`, `client_settings: GITLAB`, `redirect: [core]`).
+- The browser comes back to Core's callback
+  (`https://<GATEWAY_PUBLIC_URL>/gateway/service-connections/gitlab/flows/callback`).
+  The operator configures the application in Admin > Connector apps or names its
+  configuration in `GITLAB_CLIENT_CONFIG_PATH`.
+- **Scopes & least privilege.** Read access requests `[mcp, read_api, read_user]`.
+  Write access requests `[mcp, api, read_user]`. `mcp` connects to the MCP
+  server; `read_user` allows reading `/api/v4/user` for identity; `read_api`
+  restricts agents to read operations. `api` is GitLab's only write scope for
+  creating, updating, and modifying projects, issues, merge requests, branches
+  and running pipelines, and it also reaches delete endpoints. The skill
+  instructs agents to obtain user confirmation before deleting or performing
+  consequential actions.
+- **Identity.** Identity is resolved via `GET https://gitlab.com/api/v4/user`,
+  mapping `id` to `account_id` and `username` to `label`.
+- **Tokens.** GitLab access tokens live 7200 seconds (2 hours, `max_lifetime: 7200`);
+  refresh tokens rotate on use (`refresh: rotating`). Revocation endpoint is
+  `https://gitlab.com/oauth/revoke`.
+- The MCP server requires an account on GitLab.com, and a top-level group owner
+  or instance admin must allow MCP access for the relevant group.
+- **Self-managed GitLab instances.** Connecting a self-managed GitLab instance
+  would require supporting configurable authorization, token, and revocation
+  base URLs instead of hardcoded `gitlab.com` endpoints, custom MCP server
+  endpoints (`https://<instance>/api/v4/mcp`), and instance-level MCP enablement
+  by an instance administrator. For v1, the connector targets GitLab.com.
+
+To connect: Settings, Connections in Switch Console, then GitLab. To roll
+back, add `gitlab` to `DISABLED_SERVICES`, remove its client under
+Connector apps or unset `GITLAB_CLIENT_CONFIG_PATH`, or set the entry's
+`enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

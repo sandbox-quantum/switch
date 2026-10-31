@@ -49,6 +49,7 @@ export interface SecretField {
 
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
+const GITLAB = "gitlab";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -313,6 +314,28 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === GITLAB)
+    return [
+      {
+        text: "In GitLab, open your profile's Access, Applications page and add a new application for Switch.",
+        copy: [],
+        link: { label: "Open GitLab applications", href: "https://gitlab.com/-/user_settings/applications" },
+        items: [],
+      },
+      redirectStep("Set the Redirect URI to:", app.redirect_uris),
+      {
+        text: "Keep Confidential selected. Under Scopes, select exactly these:",
+        copy: [],
+        link: null,
+        items: [...app.scopes],
+      },
+      {
+        text: "Save the application, then copy its Application ID and Secret into Switch. A top-level group owner must also allow MCP server access for the projects people will use.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
@@ -479,4 +502,4 @@ export function changeBlocked(app: ConnectorApp, publicUrl: string | null): bool
 }
 
 export const PUBLIC_URL_BANNER =
-  "Set GATEWAY_PUBLIC_URL first: Google and GitHub need to know where to send people back to Switch.";
+  "Set GATEWAY_PUBLIC_URL first so connectors know where to send people back to Switch.";

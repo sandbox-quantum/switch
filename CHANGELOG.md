@@ -580,6 +580,16 @@ version of their own to them without also giving them a release of their own.
   making someone Org Admin is done in WorkOS, and taking it away in Switch
   lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
   way. Setup and limits: `docs/old/workos-directory.md`.
+- **The GitLab connection.** A person connects GitLab from Switch Console,
+  authorizing access to GitLab projects, and a granted agent reads and updates
+  issues, merge requests, repository files, branches and pipelines, as that
+  person, through GitLab's remote MCP server (`https://gitlab.com/api/v4/mcp`).
+  Each server's operator registers a GitLab OAuth application and saves it
+  under Connector apps or in `GITLAB_CLIENT_CONFIG_PATH` (see
+  `docs/old/gitlab-setup.md`). Like Google Workspace and Airtable, it needs
+  `GATEWAY_PUBLIC_URL` so GitLab can return to Core's callback. A top-level
+  group owner or instance admin must allow MCP access before connecting.
+  Access tokens live 2 hours and refresh tokens rotate on use (#816).
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
