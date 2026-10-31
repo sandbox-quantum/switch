@@ -171,7 +171,9 @@ describe("OrganizationPage", () => {
       setting: null,
       updated_by_name: null,
       updated_at: null,
+      server_switched_off: null,
       workspaces_on: 2,
+      workspaces_set_own: 1,
       connected_members: 3,
     };
     const fetchMock = answer({
@@ -186,7 +188,7 @@ describe("OrganizationPage", () => {
     render(<OrganizationPage />);
 
     const card = await screen.findByTestId("organization-service-github");
-    expect(within(card).getByText("On in 2 of 3 workspaces · 3 people connected")).toBeTruthy();
+    expect(within(card).getByText("On in 2 of 3 workspaces · 1 sets its own · 3 people connected")).toBeTruthy();
     expect((within(card).getByLabelText("Lock GitHub") as HTMLInputElement).disabled).toBe(true);
     fireEvent.mouseDown(within(card).getByRole("combobox"));
     fireEvent.click(await screen.findByRole("option", { name: "Off" }));

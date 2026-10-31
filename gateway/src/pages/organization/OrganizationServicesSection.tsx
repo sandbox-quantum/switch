@@ -32,9 +32,17 @@ function choiceOf(service: OrganizationService): Choice {
   return service.setting.enabled ? "on" : "off";
 }
 
-/** "On in 2 of 3 workspaces · 4 people connected · set by Ada, 1 Oct 2026". */
+/** "On in 2 of 3 workspaces · 1 sets its own · 4 people connected · set by Ada, 1 Oct 2026". */
 export function reachText(service: OrganizationService, workspaces: number): string {
-  const parts = [`On in ${service.workspaces_on} of ${workspaces} workspace${workspaces === 1 ? "" : "s"}`];
+  if (service.server_switched_off !== null) return service.server_switched_off;
+  const parts = [
+    `On in ${service.workspaces_on} of ${workspaces} workspace${workspaces === 1 ? "" : "s"}`,
+  ];
+  // An unlocked setting doesn't reach a workspace that set its own.
+  if (service.workspaces_set_own > 0 && !service.setting?.locked)
+    parts.push(
+      `${service.workspaces_set_own} ${service.workspaces_set_own === 1 ? "sets its" : "set their"} own`,
+    );
   if (service.connected_members > 0)
     parts.push(
       `${service.connected_members} ${service.connected_members === 1 ? "person" : "people"} connected`,
@@ -90,9 +98,11 @@ export default function OrganizationServicesSection() {
     <Stack spacing={1.5}>
       <Typography variant="h6">Services</Typography>
       <Typography variant="body2" sx={{ color: "text.secondary" }}>
-        Switch a service on or off for every workspace in the organization. Workspace admins can
-        change it in their own workspace unless you lock it. Switching a service off keeps
-        agents&apos; grants, and gives them back when it is switched on again.
+        Switch a service on or off for the workspaces in the organization. Unlocked, your
+        setting applies only where a workspace admin hasn&apos;t set the service themselves, and
+        they can still change it. Locked, it applies to every workspace and they can&apos;t.
+        Switching a service off keeps agents&apos; grants, and gives them back when it is
+        switched on again.
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
       {actionError && (

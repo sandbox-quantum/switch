@@ -1294,9 +1294,13 @@ export interface OrganizationService {
   setting: OrganizationServiceSetting | null;
   updated_by_name: string | null;
   updated_at: string | null;
+  /** Why the server switched it off everywhere, whatever any workspace says; null if it didn't. */
+  server_switched_off: string | null;
   /** In how many of the organization's workspaces it is on now. */
   workspaces_on: number;
-  /** People across the organization's workspaces with it connected. */
+  /** Workspaces whose admin set it themselves: an unlocked setting doesn't reach them. */
+  workspaces_set_own: number;
+  /** People across the organization's workspaces with it connected, each once. */
   connected_members: number;
 }
 

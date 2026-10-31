@@ -26,14 +26,20 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.connections.broker import ServiceBroker, get_service_broker
+from switch_core.connections.broker import (
+    ServiceBroker,
+    get_service_broker,
+    organization_locked,
+)
 from switch_core.connections.loader import CATALOG
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
+    OrganizationServiceSetting,
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
     User,
+    WorkspaceServiceSetting,
     require_tenant_id,
 )
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
@@ -63,18 +69,20 @@ async def list_workspace_services(
     """Every catalog service that can be connected, whether the workspace has
     it on, and who it reaches: what an admin weighs before switching it off."""
     settings = await STORE.list_settings(session)
+    above = await STORE.organization_settings(session) if organizations else {}
     switches = await STORE.switches(
         session,
         [entry.definition.slug for entry in CATALOG.values()],
         organizations=organizations,
     )
+    authors = {setting.updated_by for setting in settings.values()} | {
+        setting.updated_by
+        for setting in above.values()
+        if setting.updated_by is not None
+    }
     names = {
         user.id: user.name
-        for user in await session.scalars(
-            select(User).where(
-                User.id.in_({setting.updated_by for setting in settings.values()})
-            )
-        )
+        for user in await session.scalars(select(User).where(User.id.in_(authors)))
     }
     connected = await _counts(session, ServiceConnection.user_id, ServiceConnection)
     granted = await _counts(session, ServiceGrant.agent_id, ServiceGrant)
@@ -83,7 +91,12 @@ async def list_workspace_services(
         definition = entry.definition
         if not definition.enabled:
             continue
-        setting = settings.get(definition.slug)
+        switch = switches[definition.slug]
+        # A locked switch is the organization's doing, and named so; otherwise
+        # whoever last touched this workspace's own.
+        setting: WorkspaceServiceSetting | OrganizationServiceSetting | None = (
+            above[definition.slug] if switch.locked else settings.get(definition.slug)
+        )
         updated_at: datetime | None = None if setting is None else setting.updated_at
         services.append(
             {
@@ -94,8 +107,13 @@ async def list_workspace_services(
                 # does nothing until an organization admin unlocks it.
                 "organization_locked": switches[definition.slug].locked,
                 "updated_by_name": (
-                    None if setting is None else names.get(setting.updated_by)
+                    None
+                    if setting is None or setting.updated_by is None
+                    else names.get(setting.updated_by)
                 ),
+                # Whether this workspace's admin set it themselves, which an
+                # organization's unlocked setting does not override.
+                "workspace_set": definition.slug in settings,
                 "updated_at": None if updated_at is None else updated_at.isoformat(),
                 "connected_members": connected.get(definition.slug, 0),
                 "granted_agents": granted.get(definition.slug, 0),
@@ -132,12 +150,9 @@ async def set_workspace_service(
         service
     ]
     if switch.locked:
-        state = "on" if switch.enabled else "off"
         raise HTTPException(
             status_code=409,
-            detail=f"Your organization has {entry.definition.name} locked {state} "
-            "for its workspaces. An organization admin can change it under "
-            "Organization, Services.",
+            detail=organization_locked(entry.definition.name, switch.enabled),
         )
     await STORE.set_enabled(session, service, body.enabled, user.id)
     issued_for_it = (ServiceTokenIssuance.service == service,)
@@ -161,3 +176,46 @@ async def set_workspace_service(
         None if body.enabled else await broker.revoke_withdrawn(session, issued_for_it)
     )
     return {"slug": service, "enabled": body.enabled, "warning": warning}
+
+
+@router.delete("/{service}")
+async def clear_workspace_service(
+    service: str,
+    user: Annotated[User, Depends(require_tenant_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    organizations: Annotated[bool, Depends(organization_apps_on)],
+) -> dict[str, Any]:
+    """Drop the workspace's own switch for `service`, so its organization's
+    setting applies, or else the workspace's default. Where that leaves it
+    off, what was issued for it is withdrawn, as switching it off does."""
+    entry = CATALOG.get(service)
+    if entry is None or not entry.definition.enabled:
+        raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    if not await STORE.clear(session, service):
+        raise HTTPException(
+            status_code=404,
+            detail=f"This workspace has no switch of its own for {entry.definition.name}.",
+        )
+    switch = (await STORE.switches(session, [service], organizations=organizations))[
+        service
+    ]
+    issued_for_it = (ServiceTokenIssuance.service == service,)
+    if not switch.enabled:
+        await broker.queue_revocation(session, *issued_for_it)
+    await record_audit_event(
+        session,
+        tenant_id=require_tenant_id(),
+        actor_user_id=user.id,
+        action=AuditAction.WORKSPACE_SERVICE_CLEARED,
+        target_type="service",
+        target_id=service,
+        details={"service": service, "enabled": switch.enabled},
+    )
+    await session.commit()
+    warning = (
+        None
+        if switch.enabled
+        else await broker.revoke_withdrawn(session, issued_for_it)
+    )
+    return {"slug": service, "enabled": switch.enabled, "warning": warning}

@@ -253,6 +253,7 @@ class TestResults:
             "enabled": on_by_default,
             "organization_locked": False,
             "updated_by_name": None,
+            "workspace_set": False,
             "updated_at": None,
             "connected_members": 0,
             "granted_agents": 0,
