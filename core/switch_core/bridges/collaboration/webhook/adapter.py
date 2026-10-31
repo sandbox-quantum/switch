@@ -21,6 +21,7 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -83,7 +84,11 @@ from switch_core.bridges.collaboration.session.renderers.neutral import (
     turn_status,
 )
 from switch_core.bridges.collaboration.webhook.chunking import split_markdown
-from switch_core.outbound import OutboundURLRefused, guarded_async_client
+from switch_core.outbound import (
+    OutboundPolicy,
+    OutboundURLRefused,
+    guarded_async_client,
+)
 from switch_core.sessions.contract import TURN_ENDED, ApprovalContent
 
 logger = logging.getLogger(__name__)
@@ -100,6 +105,10 @@ TOKEN_HEADER = "x-webhook-token"
 _SIGNATURE_TOLERANCE_SECONDS = 300
 
 _TIMEOUT_SECONDS = 10.0
+
+_MAX_TIMESTAMP_DIGITS = 16
+
+_ALLOWED_HOSTS_ENV = "OUTBOUND_ALLOWED_PRIVATE_HOSTS"
 
 # What a receiver is asked to hold in one message. A longer post is split; a
 # turn's status is edited in place, so it is cut to fit instead.
@@ -364,13 +373,17 @@ class WebhookAdapter(PlatformAdapter):
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Send `health.check` as `start` will send everything else.
 
-        `outbound_url` has been through the outbound policy before this is
-        called. A receiver that cannot be reached, or rejects the signature,
-        fails the connection here instead of at the first message.
+        A receiver that cannot be reached, or rejects the signature, fails the
+        connection here instead of at the first message.
         """
         config = WebhookConnectionConfig.model_validate(connection_config)
-        async with httpx.AsyncClient(
-            follow_redirects=False, timeout=_TIMEOUT_SECONDS, trust_env=False
+        # A classmethod has no adapter to hand it the policy, so it is read the
+        # way `SwitchConfig.outbound_allowed_private_hosts` is: from the
+        # environment. The connection is then checked as it is made, which the
+        # registration-time URL check cannot do.
+        policy = OutboundPolicy.parse(os.environ.get(_ALLOWED_HOSTS_ENV, ""))
+        async with guarded_async_client(
+            policy, follow_redirects=False, timeout=_TIMEOUT_SECONDS
         ) as client:
             await _post_event(client, config, "health.check", {})
 
@@ -411,14 +424,20 @@ class WebhookAdapter(PlatformAdapter):
             token and _same(token, self._config.inbound_token) for token in presented
         ):
             return
-        if request.method == "POST" and self._signature_matches(request):
+        if self._signature_matches(request):
             return
         raise WebhookAuthenticityError("no valid inbound token or signature")
 
     def _signature_matches(self, request: WebhookRequest) -> bool:
         given = request.headers.get(SIGNATURE_HEADER, "")
         timestamp = request.headers.get(TIMESTAMP_HEADER, "")
-        if not given or not timestamp.isascii() or not timestamp.isdecimal():
+        # The length bound keeps `int` from refusing an absurdly long number.
+        if (
+            not given
+            or len(timestamp) > _MAX_TIMESTAMP_DIGITS
+            or not timestamp.isascii()
+            or not timestamp.isdecimal()
+        ):
             return False
         if abs(time.time() - int(timestamp)) > _SIGNATURE_TOLERANCE_SECONDS:
             return False
@@ -451,7 +470,7 @@ class WebhookAdapter(PlatformAdapter):
         event_type = payload.get("type")
         model = _EVENT_MODELS.get(event_type) if isinstance(event_type, str) else None
         if model is None:
-            if event_type in _NOT_RELAYED:
+            if isinstance(event_type, str) and event_type in _NOT_RELAYED:
                 raise WebhookPayloadError(
                     f"{event_type} cannot be relayed into a room yet"
                 )
@@ -653,7 +672,8 @@ class WebhookAdapter(PlatformAdapter):
         that has ids of its own returns `{"message_id": ...}` and that is used.
         A body over `_MAX_MESSAGE_CHARS` goes out as several messages; the
         first carries the files and the room-wide mention and is the one whose
-        id is returned.
+        id is returned. The rest are replies under it, or in the thread it was
+        already in.
         """
         rendering = await self.agent_rendering(sender_name)
         first_id: str | None = None
@@ -688,6 +708,7 @@ class WebhookAdapter(PlatformAdapter):
                 first_id = (
                     returned if isinstance(returned, str) and returned else message_id
                 )
+                thread_root_id = thread_root_id or first_id
         assert first_id is not None
         return first_id
 
@@ -758,7 +779,7 @@ class WebhookAdapter(PlatformAdapter):
         return await self._create_message(
             channel_id,
             sender_name,
-            caption or "",
+            self.translate_outbound(caption) if caption else "",
             thread_root_id,
             sender_type="agent",
             room_wide_mention=False,
@@ -795,7 +816,7 @@ class WebhookAdapter(PlatformAdapter):
                     "is_typing": is_typing,
                 },
             )
-        except BridgeOperationError:
+        except (BridgeOperationError, BridgeCredentialError):
             # Typing is a hint that expires on its own; a receiver that is down
             # is reported by the sends that matter.
             logger.warning(

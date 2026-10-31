@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -30,6 +31,10 @@ SIGNING_SECRET = os.environ["SWITCH_SIGNING_SECRET"]
 INBOUND_URL = os.environ["SWITCH_INBOUND_URL"]
 INBOUND_TOKEN = os.environ["SWITCH_INBOUND_TOKEN"]
 PORT = int(os.environ.get("PORT", "9000"))
+
+# What Switch itself treats as a command; anything else starting with `!` is
+# an ordinary message.
+BANG_COMMAND = re.compile(r"!([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.*))?", re.DOTALL)
 
 # Matches the adapter's tolerance for signed requests.
 TOLERANCE_SECONDS = 300
@@ -52,7 +57,10 @@ def expected_signature(timestamp: str, body: bytes) -> str:
 def authentic(headers, body: bytes) -> bool:
     timestamp = headers.get("X-Switch-Timestamp", "")
     given = headers.get("X-Switch-Signature-256", "")
-    if not timestamp.isdecimal() or abs(time.time() - int(timestamp)) > TOLERANCE_SECONDS:
+    if (
+        not timestamp.isdecimal()
+        or abs(time.time() - int(timestamp)) > TOLERANCE_SECONDS
+    ):
         return False
     return hmac.compare_digest(given, expected_signature(timestamp, body))
 
@@ -137,7 +145,11 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             with lock:
                 shown = [i for i in items if i["channel_id"] == channel]
-                who = [n for (c, n), until in typing.items() if c == channel and until > now]
+                who = [
+                    n
+                    for (c, n), until in typing.items()
+                    if c == channel and until > now
+                ]
             self.reply(200, json.dumps({"items": shown, "typing": who}).encode())
         else:
             self.reply(404, b"{}")
@@ -169,7 +181,10 @@ class Handler(BaseHTTPRequestHandler):
         message_id = uuid.uuid4().hex
         event = {"type": "message", "message_id": message_id, **request}
         send_to_switch(event)
-        if not request["text"].lstrip().startswith("!"):
+        is_command = not request.get("attachments") and BANG_COMMAND.fullmatch(
+            request["text"].strip()
+        )
+        if not is_command:
             with lock:
                 items.append(
                     {

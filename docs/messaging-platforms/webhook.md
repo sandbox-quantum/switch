@@ -126,7 +126,8 @@ for it in Switch's memory.
   app decides what that means.
 - Several files sent together arrive in one event.
 - A post longer than 8000 characters arrives as several `message.created`
-  events in order, in the same thread. Cuts fall on a paragraph, then a line,
+  events in order, as replies under the first one (or in the thread it was
+  already in). Cuts fall on a paragraph, then a line,
   then a space. A fenced code block open at a cut is closed at the end of that
   event and reopened, with its language, at the start of the next. The files
   and `room_wide_mention` are on the first event, and its `message_id` is the
@@ -200,7 +201,7 @@ Authenticate with any one of:
 - the same `X-Switch-Timestamp` and `X-Switch-Signature-256` headers Switch
   sends, computed with the signing secret (timestamp within five minutes).
 
-An unauthenticated request gets `401` before its body is read. Switch answers
+An unauthenticated request gets `401` before its body is parsed or logged. Switch answers
 `200` at once and handles the event after, so a slow agent never makes your app
 time out. `400` means the body was authentic and unreadable; the reason is in
 Switch's log.
