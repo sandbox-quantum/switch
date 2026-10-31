@@ -12,6 +12,7 @@ import asyncio
 import time
 import uuid
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -668,6 +669,33 @@ class TestCaching:
             for name, p in reported
             if name == "switch_core.agent_message_sent"
         ] == ["unknown", "unknown"]
+
+
+class TestHowLongLookupsAreKept:
+    def test_a_room_for_a_quarter_hour_and_who_someone_is_for_an_hour(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = SimpleNamespace(now=100.0)
+        monkeypatch.setattr(
+            messages_module, "time", SimpleNamespace(monotonic=lambda: clock.now)
+        )
+        telemetry = MessageTelemetry(telemetry=MagicMock(), session_factory=MagicMock())
+        room = _RoomFacts(
+            bridge_platform="slack", channel_type="channel", user_count=2, agent_count=1
+        )
+        telemetry._rooms.put(("t", "room"), room)
+        telemetry._sender_kinds.put(("t", "@alice:test"), "user")
+        telemetry._agent_runtimes.put(("t", "client"), "claude_code")
+
+        clock.now += 14 * 60
+        assert telemetry._rooms.get(("t", "room")) == room
+        clock.now += 2 * 60
+        assert telemetry._rooms.get(("t", "room")) is None
+        assert telemetry._sender_kinds.get(("t", "@alice:test")) == "user"
+        assert telemetry._agent_runtimes.get(("t", "client")) == "claude_code"
+        clock.now += 45 * 60
+        assert telemetry._sender_kinds.get(("t", "@alice:test")) is None
+        assert telemetry._agent_runtimes.get(("t", "client")) is None
 
 
 class TestTtlCache:
