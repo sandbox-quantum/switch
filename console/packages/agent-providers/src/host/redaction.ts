@@ -84,6 +84,48 @@ const TOKEN_SHAPES = [
   /eC1hY2Nlc3MtdG9rZW46[A-Za-z0-9+/]*={0,2}/g,
 ];
 
+/**
+ * Secrets that are recognised by how they look, for text that leaves the host
+ * for a room (a tool's input and output): other vendors' key prefixes, JWTs,
+ * private keys, passwords in URLs, and values assigned to a name that says
+ * what they are. Heuristic, so it errs towards masking: `redactSecrets` is
+ * not a promise that nothing secret is left.
+ */
+const SECRET_SHAPES: readonly RegExp[] = [
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g,
+  /\bsk-[A-Za-z0-9_-]{16,}/g,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/g,
+  /\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g,
+  /\bAIza[0-9A-Za-z_-]{35}/g,
+  /\bglpat-[A-Za-z0-9_-]{20,}/g,
+  /\bhf_[A-Za-z0-9]{20,}/g,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/g,
+  /\bnpm_[A-Za-z0-9]{30,}/g,
+  /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+];
+
+/** `scheme://user:password@host`: the password is masked, the rest kept. */
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^@\s/]+(@)/gi;
+
+/** `Bearer <token>` anywhere, and `Authorization: <scheme> <credentials>`. */
+const BEARER = /(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
+const AUTHORIZATION =
+  /(\bauthorization["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+/gi;
+
+/** A value assigned to a name that says it is secret: `password=…`, `"api_key": "…"`. */
+const SECRET_ASSIGNMENT =
+  /(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|token|access[_-]?token|client[_-]?secret|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[REDACTED\])[^\s"',;]+/gi;
+
+/** `text` with anything shaped like a secret masked. */
+export function redactSecrets(text: string): string {
+  const masked = SECRET_SHAPES.reduce((output, shape) => output.replace(shape, '[REDACTED]'), text);
+  return masked
+    .replace(URL_PASSWORD, '$1[REDACTED]$2')
+    .replace(AUTHORIZATION, '$1[REDACTED]')
+    .replace(BEARER, '$1[REDACTED]')
+    .replace(SECRET_ASSIGNMENT, '$1[REDACTED]');
+}
+
 const CUT_TAIL_MIN = 8;
 
 function redactShapes(text: string): string {
@@ -144,6 +186,14 @@ export class Redactions {
           break;
         }
     return longest;
+  }
+
+  /**
+   * `input` with everything this process issued or can recognise masked, for
+   * text a room will read: `text` and then the secret shapes.
+   */
+  detail(input: string): string {
+    return redactSecrets(this.text(input));
   }
 
   /** `input` with every string in it redacted: for JSON values, such as a tool call's arguments. */
