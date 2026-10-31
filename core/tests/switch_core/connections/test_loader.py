@@ -19,23 +19,24 @@ PLACEHOLDERS = {
     "notion",
     "linear",
     "salesforce",
-    "box",
     "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_box():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "box",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "box",
         "datadog",
         "github",
         "google-workspace",
@@ -44,6 +45,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["box"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -173,6 +175,40 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_box_entry_configures_oauth_and_mcp_servers():
+    definition = CATALOG["box"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "BOX"
+    assert oauth.authorization_url == "https://account.box.com/api/oauth2/authorize"
+    assert oauth.token_url == "https://api.box.com/oauth2/token"
+    assert oauth.revocation_url == "https://api.box.com/oauth2/revoke"
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("box", "https://mcp.box.com")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["root_readwrite"]
+    assert definition.access.write.scopes == [
+        "root_readwrite",
+        "ai.readwrite",
+        "docgen.readwrite",
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.box.com/2.0/users/me"
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
