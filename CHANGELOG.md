@@ -157,6 +157,13 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Notion connection.** A person connects Notion from Switch Console,
+  picks the workspace at Notion's consent screen, and a granted agent searches,
+  reads and updates its pages, databases and comments, as them, through
+  Notion's remote MCP server. Core registers its own client, so nothing is set
+  up on the server. A Notion MCP token reaches only Notion MCP, so an entry's
+  identity can now be read from the sign-in's own token answer instead of an
+  identity call; every other entry keeps its call.
 
 #### Changed
 - **An agent's stream reads in one database session per pass, and pooled

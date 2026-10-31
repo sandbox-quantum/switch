@@ -1,7 +1,39 @@
 slug: notion
 name: Notion
 category: Knowledge base
-description: Read and write Notion pages and databases.
-enabled: false
+description: Search, read and update Notion pages and databases, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Every refresh hands out a new refresh token and retires the old one.
+  refresh: rotating
+  oauth:
+    # Notion offers dynamic registration, so Core registers its client.
+    registration: dynamic
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect Notion too. The ports are Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    revocation_discovered: true
+  # A Notion MCP token works only with Notion MCP, so the account is read
+  # from the sign-in's token answer, which names the person and workspace.
+  identity:
+    account_id: user_id
+    label: workspace_name
+# Notion's access tokens lived 28,800 s when measured, and none can be asked
+# for shorter, so an agent's copy may outlive its grant by up to that long.
+# Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: notion, url: "https://mcp.notion.com/mcp" }
+access:
+  # A person's sign-in has one scope, which reaches every tool they can use,
+  # so every connection is granted the write level. Notion's other scope,
+  # ema_issuer:manage, is for enterprise identity providers.
+  read:
+    scopes: [default]
+  write:
+    scopes: [default]
+tools: { mode: pass_through }

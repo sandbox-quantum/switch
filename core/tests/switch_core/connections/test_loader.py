@@ -16,7 +16,6 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "notion",
     "linear",
     "salesforce",
     "box",
@@ -25,13 +24,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_notion():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "notion",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +39,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "notion",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["notion"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -225,6 +227,41 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_notion_entry_reads_its_account_from_the_token_answer():
+    definition = CATALOG["notion"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback"],
+    )
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.revocation_discovered is True
+    # Every refresh retires the refresh token it spends.
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        8 * 3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("notion", "https://mcp.notion.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == ["default"]
+    assert definition.access.write.scopes == ["default"]
+    # A Notion MCP token works only with Notion MCP: no identity call is made.
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        None,
+        "user_id",
+        "workspace_name",
+    )
 
 
 @pytest.fixture
@@ -475,6 +512,14 @@ tools: { mode: pass_through }
 """
 
 
+TOKEN_IDENTITY_ENTRY = OAUTH_ENTRY.replace(
+    "    url: https://api.example.test/me\n"
+    "    account_id: account.id\n"
+    "    label: account.email\n",
+    "    account_id: user_id\n    label: workspace_name\n",
+)
+
+
 def _write_example(root, text: str = OAUTH_ENTRY) -> None:
     directory = root / "example"
     directory.mkdir(exist_ok=True)
@@ -501,6 +546,17 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_an_identity_read_from_the_token_answer(catalog_copy):
+    _write_example(catalog_copy, TOKEN_IDENTITY_ENTRY)
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        None,
+        "user_id",
+        "workspace_name",
+    )
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):

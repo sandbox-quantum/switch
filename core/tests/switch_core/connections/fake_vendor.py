@@ -345,6 +345,9 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # More fields in a code's token answer only, as Notion names the
+        # account there and nowhere else.
+        self.code_answer: dict[str, Any] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -477,7 +480,7 @@ class FakeOAuthServer:
                 or pending.resource != form.get("resource")
             ):
                 return _json(400, {"error": "invalid_grant"})
-            return _json(200, self.mint(pending.scopes))
+            return _json(200, {**self.mint(pending.scopes), **self.code_answer})
         if form.get("grant_type") == "refresh_token":
             refresh = form.get("refresh_token", "")
             scopes = self.live_refresh.get(refresh)

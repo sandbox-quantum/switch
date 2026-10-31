@@ -125,11 +125,13 @@ class Identity:
 
 @dataclass(frozen=True)
 class SignIn:
-    """What an authorization code was exchanged for, and through which client."""
+    """What an authorization code was exchanged for, and through which client.
+    `account` is set when the token answer itself says whose it is."""
 
     secret: ConnectionSecret
     granted_scopes: list[str]
     client_id: str
+    account: Identity | None
 
 
 @dataclass(frozen=True)
@@ -484,10 +486,16 @@ class OAuthAdapter:
             ConnectionSecret(values),
             granted.split() if isinstance(granted, str) else list(scopes),
             answer.client_id,
+            # Only the code's answer names the account; a refresh's does not.
+            self._account(answer.body) if self._identity.url is None else None,
         )
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        if self._identity.url is None:
+            raise ServiceAdapterError(
+                f"{self._name} says whose sign-in it is only in its token answer."
+            )
         response = await self._send(
             self._http.build_request(
                 "GET",
@@ -507,7 +515,9 @@ class OAuthAdapter:
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
-        body = self._json(response, "account")
+        return self._account(self._json(response, "account"))
+
+    def _account(self, body: Any) -> Identity:
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
         if type(account_id) is int:
