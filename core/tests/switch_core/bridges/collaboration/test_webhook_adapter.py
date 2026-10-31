@@ -371,6 +371,15 @@ class TestOutboundRequests:
         assert data["attachments"][0]["size"] == 5
         assert data["attachments"][1]["mimetype"] == "image/png"
 
+    async def test_a_caption_is_translated_like_any_other_outbound_text(
+        self, adapter: WebhookAdapter, receiver: _Receiver
+    ) -> None:
+        await adapter.send_attachment(
+            CHANNEL, "builder", "a.txt", "text/plain", b"a", caption="ping @everyone"
+        )
+
+        assert "@everyone" not in receiver.events()[0]["data"]["content"]
+
     async def test_one_file_is_a_single_attachment_message(
         self, adapter: WebhookAdapter, receiver: _Receiver
     ) -> None:
@@ -428,6 +437,29 @@ class TestLongReplies:
             if line.startswith("value_")
         )
         assert recovered == "".join(f"value_{n} = {n}\n" for n in range(1200))
+
+    async def test_a_top_level_reply_threads_its_later_pieces_under_the_first(
+        self, adapter: WebhookAdapter, receiver: _Receiver
+    ) -> None:
+        body = "\n".join("line of text " * 10 for _ in range(200))
+
+        ref = await adapter.send_message(CHANNEL, "builder", body)
+
+        first, *later = [event["data"] for event in receiver.events()]
+        assert first["thread_root_id"] is None
+        assert later
+        assert all(data["thread_root_id"] == ref for data in later)
+
+    async def test_later_pieces_thread_under_the_receivers_id_for_the_first(
+        self, adapter: WebhookAdapter, receiver: _Receiver
+    ) -> None:
+        receiver.reply = {"message_id": "their-id"}
+        body = "\n".join("line of text " * 10 for _ in range(200))
+
+        await adapter.send_message(CHANNEL, "builder", body)
+
+        _, *later = [event["data"] for event in receiver.events()]
+        assert later and all(d["thread_root_id"] == "their-id" for d in later)
 
     async def test_only_the_first_piece_carries_the_files_and_the_page(
         self, adapter: WebhookAdapter, receiver: _Receiver
@@ -541,6 +573,32 @@ class TestSplitMarkdown:
         assert pieces[0].startswith("```\ncode\n```")
         assert all("```" not in piece for piece in pieces[1:])
 
+    @pytest.mark.parametrize("limit", [1, 2, 5, 8, 12, 20, 40])
+    def test_a_tiny_limit_on_a_fenced_body_terminates_within_the_limit(
+        self, limit: int
+    ) -> None:
+        body = "```python\n" + "x\n" * 50 + "```\nafter"
+
+        pieces = split_markdown(body, limit)
+
+        assert all(len(piece) <= limit for piece in pieces)
+        assert sum(piece.count("x") for piece in pieces) == 50
+        assert "after" in "".join(pieces).replace("\n", "")
+
+    def test_a_limit_no_larger_than_the_reopened_fence_falls_back_to_plain_text(
+        self,
+    ) -> None:
+        body = "```python\n" + "word " * 40 + "\n```"
+
+        pieces = split_markdown(body, 10)
+
+        assert all(len(piece) <= 10 for piece in pieces)
+        assert "".join(piece for piece in pieces).count("word") == 40
+
+    def test_a_non_positive_limit_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="at least 1"):
+            split_markdown("text", 0)
+
     def test_an_absurd_info_string_cannot_stall_the_split(self) -> None:
         body = "```" + "x" * 500 + "\n" + "line\n" * 400 + "```"
 
@@ -551,6 +609,16 @@ class TestSplitMarkdown:
 
 
 class TestOutboundFailures:
+    async def test_a_typing_hint_the_receiver_rejects_is_logged_not_raised(
+        self,
+        adapter: WebhookAdapter,
+        receiver: _Receiver,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        receiver.status = 401
+        await adapter.send_typing(CHANNEL, "builder", True)
+        assert "Could not send a typing indicator" in caplog.text
+
     @pytest.mark.parametrize("status", [401, 403])
     async def test_a_rejected_signature_is_a_credential_error(
         self, adapter: WebhookAdapter, receiver: _Receiver, status: int
@@ -599,19 +667,23 @@ class TestVerifyCredentials:
     @pytest.fixture
     def receiver_at(
         self, monkeypatch: pytest.MonkeyPatch
-    ) -> Callable[[_Receiver], None]:
-        def install(receiver: _Receiver) -> None:
-            real = httpx.AsyncClient
+    ) -> Callable[[_Receiver], list[tuple[OutboundPolicy, dict[str, Any]]]]:
+        def install(receiver: _Receiver) -> list[tuple[OutboundPolicy, dict[str, Any]]]:
+            guarded_calls: list[tuple[OutboundPolicy, dict[str, Any]]] = []
 
-            def client(**kwargs: Any) -> httpx.AsyncClient:
-                return real(transport=httpx.MockTransport(receiver), **kwargs)
+            def guarded(policy: OutboundPolicy, **kwargs: Any) -> httpx.AsyncClient:
+                guarded_calls.append((policy, kwargs))
+                return httpx.AsyncClient(transport=httpx.MockTransport(receiver))
 
-            monkeypatch.setattr(webhook_module.httpx, "AsyncClient", client)
+            monkeypatch.setattr(webhook_module, "guarded_async_client", guarded)
+            return guarded_calls
 
         return install
 
     async def test_a_healthy_receiver_passes(
-        self, receiver: _Receiver, receiver_at: Callable[[_Receiver], None]
+        self,
+        receiver: _Receiver,
+        receiver_at: Callable[[_Receiver], list[tuple[OutboundPolicy, dict[str, Any]]]],
     ) -> None:
         receiver_at(receiver)
 
@@ -620,8 +692,50 @@ class TestVerifyCredentials:
         assert receiver.requests[0].headers["x-switch-event"] == "health.check"
         assert receiver.events()[0]["event"] == "health.check"
 
+    async def test_the_check_goes_through_the_guarded_client_with_the_deployments_policy(
+        self,
+        receiver: _Receiver,
+        receiver_at: Callable[[_Receiver], list[tuple[OutboundPolicy, dict[str, Any]]]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(
+            "OUTBOUND_ALLOWED_PRIVATE_HOSTS", "chat.internal,10.1.0.0/16"
+        )
+        calls = receiver_at(receiver)
+
+        await WebhookAdapter.verify_credentials(_config().model_dump())
+
+        ((policy, kwargs),) = calls
+        assert policy.allowed_hostnames == frozenset({"chat.internal"})
+        assert len(policy.allowed_networks) == 1
+        assert kwargs["follow_redirects"] is False
+
+    async def test_with_no_allowed_hosts_the_policy_allows_none(
+        self,
+        receiver: _Receiver,
+        receiver_at: Callable[[_Receiver], list[tuple[OutboundPolicy, dict[str, Any]]]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("OUTBOUND_ALLOWED_PRIVATE_HOSTS", raising=False)
+        calls = receiver_at(receiver)
+
+        await WebhookAdapter.verify_credentials(_config().model_dump())
+
+        assert calls[0][0] == OutboundPolicy.parse("")
+
+    async def test_a_private_receiver_is_refused_at_connect_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OUTBOUND_ALLOWED_PRIVATE_HOSTS", raising=False)
+        config = _config(outbound_url="https://169.254.169.254/hook")
+
+        with pytest.raises(BridgeOperationError, match="metadata"):
+            await WebhookAdapter.verify_credentials(config.model_dump())
+
     async def test_a_receiver_that_rejects_the_signature_fails_the_connection(
-        self, receiver: _Receiver, receiver_at: Callable[[_Receiver], None]
+        self,
+        receiver: _Receiver,
+        receiver_at: Callable[[_Receiver], list[tuple[OutboundPolicy, dict[str, Any]]]],
     ) -> None:
         receiver.status = 401
         receiver_at(receiver)
@@ -630,7 +744,9 @@ class TestVerifyCredentials:
             await WebhookAdapter.verify_credentials(_config().model_dump())
 
     async def test_a_receiver_that_errors_fails_the_connection(
-        self, receiver: _Receiver, receiver_at: Callable[[_Receiver], None]
+        self,
+        receiver: _Receiver,
+        receiver_at: Callable[[_Receiver], list[tuple[OutboundPolicy, dict[str, Any]]]],
     ) -> None:
         receiver.status = 502
         receiver_at(receiver)
@@ -863,6 +979,40 @@ class TestVerifyWebhook:
         with pytest.raises(WebhookAuthenticityError):
             await adapter.verify_webhook(_post(b"{}", headers))
 
+    async def test_a_signed_address_check_is_accepted(
+        self, adapter: WebhookAdapter
+    ) -> None:
+        stamp = str(int(time.time()))
+        await adapter.verify_webhook(
+            WebhookRequest(
+                method="GET",
+                headers={
+                    "x-switch-timestamp": stamp,
+                    "x-switch-signature-256": sign(SIGNING_SECRET, stamp, b""),
+                },
+                query={"challenge": "abc"},
+                body=b"",
+            )
+        )
+
+    @pytest.mark.parametrize("method", ["GET", "POST"])
+    async def test_an_absurdly_long_timestamp_is_refused_not_a_crash(
+        self, adapter: WebhookAdapter, method: str
+    ) -> None:
+        stamp = "9" * 10_000
+        with pytest.raises(WebhookAuthenticityError):
+            await adapter.verify_webhook(
+                WebhookRequest(
+                    method=method,
+                    headers={
+                        "x-switch-timestamp": stamp,
+                        "x-switch-signature-256": sign(SIGNING_SECRET, stamp, b""),
+                    },
+                    query={},
+                    body=b"",
+                )
+            )
+
     async def test_the_query_token_proves_only_an_address_check(
         self, adapter: WebhookAdapter
     ) -> None:
@@ -965,6 +1115,16 @@ class TestParseWebhook:
     ) -> None:
         with pytest.raises(WebhookPayloadError, match="cannot be relayed"):
             adapter.parse_webhook(_post(_event(event_type, channel_id=CHANNEL)))
+
+    @pytest.mark.parametrize("event_type", [[1, 2], {"a": 1}, 7, None])
+    def test_a_type_that_is_not_a_string_is_refused_not_a_crash(
+        self, adapter: WebhookAdapter, event_type: object
+    ) -> None:
+        body = json.dumps(
+            {"schema_version": 1, "event_id": "e", "type": event_type}
+        ).encode()
+        with pytest.raises(WebhookPayloadError, match="unsupported event type"):
+            adapter.parse_webhook(_post(body))
 
     def test_an_unknown_type_names_the_supported_ones(
         self, adapter: WebhookAdapter

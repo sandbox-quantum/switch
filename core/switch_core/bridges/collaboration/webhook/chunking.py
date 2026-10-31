@@ -41,8 +41,26 @@ def _cut(text: str, budget: int) -> int:
     return budget
 
 
+def _plain(text: str, limit: int) -> list[str]:
+    pieces: list[str] = []
+    while len(text) > limit:
+        cut = _cut(text, limit)
+        pieces.append(text[:cut].rstrip("\n"))
+        text = text[cut:].removeprefix(" ").lstrip("\n")
+    if text:
+        pieces.append(text)
+    return pieces
+
+
 def split_markdown(body: str, limit: int) -> list[str]:
-    """`body` as pieces of at most `limit` characters, fences kept balanced."""
+    """`body` as pieces of at most `limit` characters, fences kept balanced.
+
+    Where `limit` leaves no room for a fence's closer and reopener beside any
+    text, the rest is split as plain text instead: whole and unformatted beats
+    a split that never advances.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
     if len(body) <= limit:
         return [body]
     pieces: list[str] = []
@@ -53,11 +71,14 @@ def split_markdown(body: str, limit: int) -> list[str]:
         if len(candidate) <= limit:
             pieces.append(candidate)
             return pieces
-        cut = _cut(candidate, limit - 4)
+        cut = _cut(candidate, max(limit - 4, 1))
         fence = _open_fence(candidate[:cut])
         if fence is not None and len(fence[0]) + 1 > 4:
-            cut = _cut(candidate, limit - len(fence[0]) - 1)
+            cut = _cut(candidate, max(limit - len(fence[0]) - 1, 1))
             fence = _open_fence(candidate[:cut])
+        closer = 0 if fence is None else len(fence[0]) + 1
+        if cut <= len(reopen) or cut + closer > limit:
+            return pieces + _plain(rest, limit)
         head = candidate[:cut]
         # The separator the cut was made on belongs to neither piece.
         tail = candidate[cut:].removeprefix(" ")
