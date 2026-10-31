@@ -1209,6 +1209,97 @@ describe('ClaudeAdapter background subagents', () => {
     return { type: 'system', subtype, uuid: randomUUID(), session_id: 'native-1', ...fields };
   }
 
+  function toolResult(toolUseId: string, content: string) {
+    return {
+      type: 'user',
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: 'native-1',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: toolUseId, content }],
+      },
+    };
+  }
+
+  /** The order the CLI sends a background `Agent` call in, up to the end of its turn. */
+  async function launchInBackground() {
+    const started = await startSession();
+    const { sdk, adapter, recorder } = started;
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
+    const query = sdk.latest();
+    const [sent] = await query.waitForSent(1);
+    query.emit(
+      assistantMessage('msg_1', [
+        {
+          type: 'tool_use',
+          id: 'tool-agent',
+          name: 'Agent',
+          input: { description: 'count files', subagent_type: 'general-purpose' },
+        },
+      ])
+    );
+    query.emit(
+      task('task_started', {
+        task_id: 'agent-1',
+        tool_use_id: 'tool-agent',
+        task_type: 'local_agent',
+        description: 'count files',
+        is_backgrounded: true,
+      })
+    );
+    query.emit(toolResult('tool-agent', 'Async agent launched successfully.'));
+    query.emit(resultMessage([sent!.uuid!]));
+    await recorder.waitFor('turn.completed', () => true, 1_000);
+    return { ...started, query };
+  }
+
+  it('keeps a background subagent in progress past its turn, until its task ends', async () => {
+    const { adapter, recorder, query } = await launchInBackground();
+    const agentItem = (event: { item: { id: string } }) => event.item.id === 'tool-agent';
+    expect(recorder.ofType('item.completed').filter(agentItem)).toHaveLength(0);
+
+    query.emit(task('background_tasks_changed', { tasks: [] }));
+    query.emit(task('task_updated', { task_id: 'agent-1', patch: { status: 'completed' } }));
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-1',
+        tool_use_id: 'tool-agent',
+        status: 'completed',
+        output_file: '',
+        summary: 'done',
+      })
+    );
+
+    const completed = await recorder.waitFor('item.completed', agentItem, 1_000);
+    expect(completed).toMatchObject({
+      turnId: 'turn-1',
+      item: { type: 'subagent', status: 'completed', title: 'count files' },
+    });
+    expect(recorder.ofType('item.completed').filter(agentItem)).toHaveLength(1);
+    await adapter.stopAll();
+  });
+
+  it('fails a background subagent whose task is stopped', async () => {
+    const { adapter, recorder, query } = await launchInBackground();
+    query.emit(
+      task('task_notification', {
+        task_id: 'agent-1',
+        tool_use_id: 'tool-agent',
+        status: 'stopped',
+        output_file: '',
+        summary: '',
+      })
+    );
+    const completed = await recorder.waitFor(
+      'item.completed',
+      (event) => event.item.id === 'tool-agent',
+      1_000
+    );
+    expect(completed.item.status).toBe('failed');
+    await adapter.stopAll();
+  });
+
   it('reports background work while a subagent outlives its turn, until it settles', async () => {
     const { sdk, adapter, recorder } = await startSession();
     await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'fan out' });
