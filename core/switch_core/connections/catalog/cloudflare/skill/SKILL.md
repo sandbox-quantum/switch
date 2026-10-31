@@ -24,8 +24,6 @@ edge resources, DNS records, and Cloudflare Workers.
   and inspect record configurations.
 - **Workers inspection:** View Workers script metadata, bindings, and deployment
   status.
-- **Analytics & health:** Check zone traffic statistics, threat mitigation metrics,
-  and DNS resolution health.
 
 ## Safety and etiquette
 

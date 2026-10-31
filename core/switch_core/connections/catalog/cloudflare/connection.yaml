@@ -1,7 +1,7 @@
 slug: cloudflare
 name: Cloudflare
 category: Cloud infrastructure
-description: Inspect and manage Cloudflare resources, Workers, DNS and analytics, as you.
+description: Inspect and manage Cloudflare resources, Workers and DNS, as you.
 enabled: true
 adapter: oauth
 auth:
@@ -26,18 +26,14 @@ mcp:
 access:
   read:
     scopes:
-      - "account:read"
-      - "user:read"
-      - "zone:read"
-      - "dns_records:read"
-      - "workers:read"
+      - "zone.read"
+      - "dns.read"
+      - "workers-scripts.read"
   write:
     scopes:
-      - "account:read"
-      - "user:read"
-      - "zone:read"
-      - "dns_records:read"
-      - "workers:read"
-      - "dns_records:edit"
-      - "workers:edit"
+      - "zone.read"
+      - "dns.read"
+      - "workers-scripts.read"
+      - "dns.write"
+      - "workers-scripts.write"
 tools: { mode: pass_through }

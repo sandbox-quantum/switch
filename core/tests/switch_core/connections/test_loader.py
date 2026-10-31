@@ -202,17 +202,15 @@ def test_the_shipped_cloudflare_entry_configures_oauth_and_mcp_servers():
     ]
     assert definition.access is not None and definition.access.write is not None
     read_scopes = [
-        "account:read",
-        "user:read",
-        "zone:read",
-        "dns_records:read",
-        "workers:read",
+        "zone.read",
+        "dns.read",
+        "workers-scripts.read",
     ]
     assert definition.access.read.scopes == read_scopes
     assert definition.access.write.scopes == [
         *read_scopes,
-        "dns_records:edit",
-        "workers:edit",
+        "dns.write",
+        "workers-scripts.write",
     ]
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.cloudflare.com/client/v4/user"
