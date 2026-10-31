@@ -22,6 +22,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "zendesk",
 }
 
 
@@ -288,9 +289,12 @@ def test_rejects_an_oversized_skill(catalog_copy):
 
 def test_rejects_a_symlink_in_a_skill(catalog_copy, tmp_path):
     (tmp_path / "outside.md").write_text("outside")
-    (catalog_copy / "github" / "skill" / "linked.md").symlink_to(
-        tmp_path / "outside.md"
-    )
+    try:
+        (catalog_copy / "github" / "skill" / "linked.md").symlink_to(
+            tmp_path / "outside.md"
+        )
+    except OSError as err:
+        pytest.skip(f"symlinks require elevated privilege on Windows: {err}")
     with pytest.raises(CatalogError, match="symlink"):
         load_catalog(catalog_copy)
 
