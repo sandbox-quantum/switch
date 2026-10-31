@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, Text, and_, column, func, or_, select, text, values
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment
 
 
@@ -184,7 +185,7 @@ class MessageStore:
             return {}
         result = await session.execute(
             select(Message.room_id, func.max(Message.seq))
-            .where(Message.room_id.in_(room_ids))
+            .where(any_of(Message.room_id, room_ids))
             .group_by(Message.room_id)
         )
         heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}

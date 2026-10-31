@@ -226,6 +226,12 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **A client in more than 32,767 rooms starts reading them.** The reads a
+  client makes as it starts matched its rooms with one parameter each, and
+  Postgres takes at most 32,767 per statement. Switch's own client is in
+  every room of its workspace, archived ones included, so past that many it
+  failed to start, retried, and failed again while the process ran, taking
+  up rooms one at a time in between. The rooms now go as one array.
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
   reply.** Every running turn's card was redrawn every 5 seconds to tick its
   clock. Slack closes a streamed card after 10 minutes, so on a longer turn
