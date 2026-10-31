@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _MAX_BODY_CHARS = 40_000
+_MAX_OUTBOUND_CHARS = 18_000
 _COMMAND_PREFIX = "!"
 _THREAD_PREFIX = "email-ref:"
 
@@ -167,6 +168,29 @@ def _strip_quoted_history(text: str) -> str:
             continue
         kept.append(line)
     return "\n".join(kept).strip()[:_MAX_BODY_CHARS]
+
+
+def _split_outbound_body(text: str, limit: int = _MAX_OUTBOUND_CHARS) -> list[str]:
+    """Split long mail at readable boundaries while keeping every character."""
+    remaining = text.strip()
+    if not remaining:
+        return [""]
+    chunks: list[str] = []
+    while len(remaining) > limit:
+        paragraph_break = remaining.rfind("\n\n", 0, limit)
+        line_break = remaining.rfind("\n", 0, limit)
+        if paragraph_break >= limit // 2:
+            cut = paragraph_break + 2
+        elif line_break >= limit // 2:
+            cut = line_break + 1
+        else:
+            word_break = remaining.rfind(" ", 0, limit)
+            cut = word_break + 1 if word_break >= limit // 2 else limit
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 class _PlainTextFromHtml(HTMLParser):
@@ -575,10 +599,26 @@ class EmailAdapter(PlatformAdapter):
         *,
         room_wide_mention: bool = False,
     ) -> str | None:
-        message_id = await asyncio.to_thread(
-            self._send_email, channel_id, sender_name, content, thread_root_id, []
-        )
-        return message_id
+        chunks = _split_outbound_body(content)
+        recipient, subject = _decode_channel_id(channel_id)
+        root_ref = thread_root_id
+        first_message_id: str | None = None
+        for index, chunk in enumerate(chunks, start=1):
+            if len(chunks) > 1:
+                chunk = f"Part {index} of {len(chunks)}\n\n{chunk}"
+            message_id = await asyncio.to_thread(
+                self._send_email,
+                channel_id,
+                sender_name,
+                chunk,
+                root_ref,
+                [],
+            )
+            if first_message_id is None:
+                first_message_id = message_id
+                if root_ref is None and len(chunks) > 1:
+                    root_ref = _thread_ref(first_message_id, recipient, subject)
+        return first_message_id
 
     async def admin_message(
         self,

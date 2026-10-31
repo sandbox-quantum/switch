@@ -58,13 +58,17 @@ network policy when the connection is created and started.
   the display name.
 - Plain text is preferred. If only HTML is present, tags are converted to
   text. Outbound mail contains a plain-text part and a sanitized HTML part with
-  Markdown formatting.
+  Markdown formatting. Replies longer than 18,000 characters are split at
+  paragraph or line boundaries into numbered emails in the same email thread.
 - Common quoted history markers, `>` quote lines, and the standard `-- ` email
   signature delimiter are removed. Provider-specific quote layouts may not be
   recognized.
 - `!commands` are routed to Switch. Approval and question prompts use Switch's
-  text format; reply in the email thread with the request handle and answer
-  format shown in the message. Email cannot show native buttons.
+  text format and are answerable by replying in the email thread. Use the
+  handle and answer form printed in the prompt, for example `A7 1`, `A7 yes`,
+  or `A8 q1="staging"`. A bare `yes` or `no` works only as the first reply
+  directly to an approval prompt. The sender must have a linked Switch
+  identity for the decision to be recorded. Email cannot show native buttons.
 - Images and files are transferred as MIME attachments. Oversized files are
   disclosed in the room. Outbound attachments are limited to 20 MiB, or the
   lower attachment limit configured for the Switch deployment.
@@ -77,13 +81,19 @@ network policy when the connection is created and started.
 The active lease holder polls unread messages. Other pods stay quiet. The
 mailbox's IMAP seen flag is the shared cursor, so progress does not depend on
 process memory. Switch marks a message seen after handing it to the room
-transport. A crash after the room write but before the flag is set can cause
-that email to be delivered twice when polling resumes.
+transport. The adapter uses the RFC `Message-ID` as the stable external message
+reference, with IMAP `UIDVALIDITY` and UID as a fallback. Switch derives
+transport event IDs from that bridge, room, and reference; if a crash happens
+after the room write but before the seen flag is set, retrying writes no second
+room message or duplicate attachment rows. Inbound mail therefore resumes
+without process-local deduplication state.
 
 SMTP does not provide an idempotency key. If an SMTP server accepts an email
 but its response is lost before Switch records the sent message ID, a retry
-after a process failure can send a duplicate. The adapter cannot guarantee
-exactly-once delivery across that uncertain network outcome.
+after a process failure can send a duplicate. Generic SMTP offers no safe way
+to distinguish that case from a message the server never accepted, so
+exactly-once outbound delivery cannot be guaranteed for every user-provided
+mail server.
 
 The mailbox and sender/subject identifiers are carried by the room and thread
 references rather than process-local maps, so replies continue to route after

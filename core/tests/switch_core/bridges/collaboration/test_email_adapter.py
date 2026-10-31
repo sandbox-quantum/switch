@@ -14,12 +14,14 @@ from switch_core.bridges.collaboration.email.adapter import (
     _decode_thread_ref,
     _normal_subject,
     _render_html,
+    _split_outbound_body,
     _strip_quoted_history,
     _thread_headers,
     _thread_ref,
 )
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.bridges.collaboration.platforms import PLATFORMS
+from switch_core.bridges.collaboration.session.text import parse_text_answer
 
 
 def _config(**overrides: object) -> EmailConnectionConfig:
@@ -106,6 +108,15 @@ def test_quoted_history_and_signatures_are_removed() -> None:
     assert _strip_quoted_history("Keep this\n> quoted line") == "Keep this"
 
 
+def test_long_outbound_body_splits_at_readable_boundaries_without_losing_text() -> None:
+    paragraphs = [f"Paragraph {index}. " + "x" * 6000 for index in range(4)]
+    original = "\n\n".join(paragraphs)
+    chunks = _split_outbound_body(original)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 18_000 for chunk in chunks)
+    assert "".join(chunks) == original
+
+
 def test_inbound_attachments_are_decoded_and_oversize_is_visible() -> None:
     message = EmailMessage()
     message["From"] = "mina@example.test"
@@ -161,12 +172,56 @@ async def test_email_dispatch_maps_thread_and_attachments_to_room_message() -> N
             references="<root@example.test>",
         ),
     )
+    await adapter._dispatch_email("7", "44", _message(body="New answer"))
     assert received[0].channel_id == received[1].channel_id
     assert received[0].root_id is None
     assert received[1].root_id is not None
     assert received[0].content == "New answer"
     assert received[1].content == "Follow up"
     assert received[0].sender_id == "mina@example.test"
+    assert received[0].message_ref == received[2].message_ref
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_email_threaded_approval_and_question_answers_reach_shared_answer_flow() -> (
+    None
+):
+    adapter = EmailAdapter(config=_config())
+    adapter.set_listening(False)
+    received = []
+
+    async def on_message(value):
+        received.append(value)
+
+    async def unused(_):
+        pytest.fail("unexpected callback")
+
+    await adapter.start(on_message, unused, unused, unused, unused)
+    await adapter._dispatch_email(
+        "7",
+        "44",
+        _message(
+            message_id="<decision@example.test>",
+            body="A7 yes",
+            references="<approval-card@example.test>",
+        ),
+    )
+    await adapter._dispatch_email(
+        "7",
+        "45",
+        _message(
+            message_id="<answer@example.test>",
+            body='A8 q1="staging"',
+            references="<question-card@example.test>",
+        ),
+    )
+    approval, question = received
+    assert parse_text_answer(approval.content).handle == "A7"
+    assert approval.root_id is not None
+    assert parse_text_answer(question.content).handle == "A8"
+    assert parse_text_answer(question.content).parts[0].question == 1
+    assert question.root_id is not None
     await adapter.stop()
 
 
@@ -248,6 +303,67 @@ def test_email_reply_uses_smtp_from_agent_and_sets_thread_headers(
     assert plain_part.get_content().strip() == "Here is the **answer**."
     html_part = message.get_body(preferencelist=("html",))
     assert "<strong>answer</strong>" in html_part.get_content()
+
+
+@pytest.mark.asyncio
+async def test_long_email_replies_are_split_and_follow_the_first_part_thread(
+    monkeypatch,
+) -> None:
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def ehlo(self):
+            return None
+
+        def starttls(self, **kwargs):
+            return None
+
+        def login(self, username, password):
+            return None
+
+        def send_message(self, message):
+            sent.append(message)
+            return {}
+
+        def quit(self):
+            return None
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.smtplib.SMTP", FakeSMTP
+    )
+
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(
+        "switch_core.bridges.collaboration.email.adapter.asyncio.to_thread",
+        run_inline,
+    )
+    adapter = EmailAdapter(config=_config())
+    content = "\n\n".join(f"Paragraph {index}. " + "x" * 6000 for index in range(4))
+    first_id = await adapter.send_message(
+        _channel_id("mina@example.test", "Project update"), "Avery", content
+    )
+    assert len(sent) > 1
+    assert sent[0]["Message-ID"] == first_id
+    assert sent[0]["Subject"] == "Project update"
+    assert sent[1]["In-Reply-To"] == first_id
+    assert sent[1]["References"] == first_id
+    assert (
+        sent[0]
+        .get_body(preferencelist=("plain",))
+        .get_content()
+        .startswith("Part 1 of")
+    )
+    assert (
+        sent[-1]
+        .get_body(preferencelist=("plain",))
+        .get_content()
+        .startswith(f"Part {len(sent)} of {len(sent)}")
+    )
 
 
 @pytest.mark.asyncio
