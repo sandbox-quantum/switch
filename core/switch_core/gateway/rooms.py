@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC
 from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -24,6 +25,7 @@ from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
@@ -37,6 +39,7 @@ from switch_core.gateway.dependencies import (
     get_external_user_store,
     get_protocol,
     get_room_group_store,
+    get_room_schedule_store,
     get_room_service,
     get_room_store,
     get_room_yaml_service,
@@ -59,6 +62,9 @@ from switch_core.gateway.schemas import (
     RoomRoleCreateRequest,
     RoomRoleDetail,
     RoomRoleUpdateRequest,
+    RoomScheduleCreateRequest,
+    RoomScheduleResponse,
+    RoomScheduleUpdateRequest,
     RoomSetGroupRequest,
     RoomSummary,
     RoomUpdateRequest,
@@ -73,6 +79,11 @@ from switch_core.rooms_yaml import (
     RoomReader,
     RoomYamlService,
     template_json_schema,
+)
+from switch_core.scheduler.cron_util import (
+    compute_next_run,
+    validate_cron_expression,
+    validate_timezone,
 )
 from switch_core.telemetry import emit_safely
 from switch_core.template_installs import record_install, vouched_source
@@ -1425,3 +1436,282 @@ async def bulk_archive_rooms(
         await room_service.set_room_archived(room_id, req.archived)
         updated += 1
     return BulkArchiveResponse(updated=updated)
+
+
+# ── Room Schedules ──────────────────────────────────────────────────────────
+
+
+@router.get("/{room_id}/schedules")
+async def list_room_schedules(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> list[RoomScheduleResponse]:
+    """List all scheduled routines for a room. Requires read access to the room."""
+    await _require_room(session, room_store, room_id, user, "read", is_admin)
+    schedules = await schedule_store.list_for_room(session, room_id)
+    return [
+        RoomScheduleResponse.model_validate(s, from_attributes=True) for s in schedules
+    ]
+
+
+@router.post("/{room_id}/schedules", status_code=201)
+async def create_room_schedule(
+    room_id: str,
+    req: RoomScheduleCreateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomScheduleResponse:
+    """Create a new schedule for a room. Only users allowed to manage the room can create schedules."""
+    room = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    try:
+        require_manage(Principal(user.id, is_admin), room.owner_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
+    # Verify target agents are currently members of the room
+    agent_ids_in_room = set(await room_store.get_agent_ids(session, room_id))
+    invalid_agents = [
+        aid for aid in req.target_agent_ids if aid not in agent_ids_in_room
+    ]
+    if invalid_agents:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Target agents not present in room: {', '.join(invalid_agents)}",
+        )
+
+    # Validate timing and calculate next run
+    if req.schedule_type == "recurring":
+        if not req.cron_expression or not validate_cron_expression(req.cron_expression):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid cron expression: '{req.cron_expression}'",
+            )
+        if not validate_timezone(req.timezone):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid timezone: '{req.timezone}'",
+            )
+        next_run = compute_next_run(req.cron_expression, req.timezone)
+    else:
+        if req.one_off_datetime is None:
+            raise HTTPException(
+                status_code=400,
+                detail="one_off_datetime is required for one_off schedules",
+            )
+        next_run = (
+            req.one_off_datetime
+            if req.one_off_datetime.tzinfo is not None
+            else req.one_off_datetime.replace(tzinfo=UTC)
+        )
+
+    created = await schedule_store.create(
+        session,
+        room_id=room_id,
+        created_by_user_id=user.id,
+        name=req.name,
+        message=req.message,
+        target_agent_ids=req.target_agent_ids,
+        schedule_type=req.schedule_type,
+        cron_expression=req.cron_expression,
+        timezone=req.timezone,
+        next_run_at=next_run,
+        status="active",
+        missed_run_policy=req.missed_run_policy,
+    )
+    await session.commit()
+    return RoomScheduleResponse.model_validate(created, from_attributes=True)
+
+
+@router.get("/{room_id}/schedules/{schedule_id}")
+async def get_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomScheduleResponse:
+    """Get a single schedule by ID."""
+    await _require_room(session, room_store, room_id, user, "read", is_admin)
+    schedule = await schedule_store.get(session, schedule_id)
+    if schedule is None or schedule.room_id != room_id:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return RoomScheduleResponse.model_validate(schedule, from_attributes=True)
+
+
+@router.patch("/{room_id}/schedules/{schedule_id}")
+async def update_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    req: RoomScheduleUpdateRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomScheduleResponse:
+    """Update a room schedule. Only room managers can update schedules."""
+    room = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    try:
+        require_manage(Principal(user.id, is_admin), room.owner_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
+    schedule = await schedule_store.get(session, schedule_id)
+    if schedule is None or schedule.room_id != room_id:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if req.target_agent_ids is not None:
+        agent_ids_in_room = set(await room_store.get_agent_ids(session, room_id))
+        invalid_agents = [
+            aid for aid in req.target_agent_ids if aid not in agent_ids_in_room
+        ]
+        if invalid_agents:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Target agents not present in room: {', '.join(invalid_agents)}",
+            )
+
+    new_timezone = req.timezone or schedule.timezone
+    new_cron = req.cron_expression or schedule.cron_expression
+    next_run_at = schedule.next_run_at
+
+    if req.timezone is not None and not validate_timezone(req.timezone):
+        raise HTTPException(
+            status_code=400, detail=f"Invalid timezone: '{req.timezone}'"
+        )
+
+    if req.cron_expression is not None and not validate_cron_expression(
+        req.cron_expression
+    ):
+        raise HTTPException(
+            status_code=400, detail=f"Invalid cron expression: '{req.cron_expression}'"
+        )
+
+    if schedule.schedule_type == "recurring" and (
+        req.cron_expression is not None or req.timezone is not None
+    ):
+        if (
+            new_cron
+            and validate_cron_expression(new_cron)
+            and validate_timezone(new_timezone)
+        ):
+            next_run_at = compute_next_run(new_cron, new_timezone)
+    elif req.one_off_datetime is not None:
+        next_run_at = (
+            req.one_off_datetime
+            if req.one_off_datetime.tzinfo is not None
+            else req.one_off_datetime.replace(tzinfo=UTC)
+        )
+
+    updated = await schedule_store.update(
+        session,
+        schedule_id,
+        name=req.name,
+        message=req.message,
+        target_agent_ids=req.target_agent_ids,
+        cron_expression=req.cron_expression,
+        timezone=req.timezone,
+        next_run_at=next_run_at,
+        missed_run_policy=req.missed_run_policy,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await session.commit()
+    return RoomScheduleResponse.model_validate(updated, from_attributes=True)
+
+
+@router.post("/{room_id}/schedules/{schedule_id}/pause")
+async def pause_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomScheduleResponse:
+    """Pause an active room schedule."""
+    room = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    try:
+        require_manage(Principal(user.id, is_admin), room.owner_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
+    schedule = await schedule_store.get(session, schedule_id)
+    if schedule is None or schedule.room_id != room_id:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    updated = await schedule_store.set_status(session, schedule_id, "paused")
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await session.commit()
+    return RoomScheduleResponse.model_validate(updated, from_attributes=True)
+
+
+@router.post("/{room_id}/schedules/{schedule_id}/resume")
+async def resume_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomScheduleResponse:
+    """Resume a paused room schedule."""
+    room = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    try:
+        require_manage(Principal(user.id, is_admin), room.owner_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
+    schedule = await schedule_store.get(session, schedule_id)
+    if schedule is None or schedule.room_id != room_id:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    next_run = None
+    if schedule.schedule_type == "recurring" and schedule.cron_expression:
+        next_run = compute_next_run(schedule.cron_expression, schedule.timezone)
+
+    updated = await schedule_store.set_status(
+        session, schedule_id, "active", next_run_at=next_run
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    await session.commit()
+    return RoomScheduleResponse.model_validate(updated, from_attributes=True)
+
+
+@router.delete("/{room_id}/schedules/{schedule_id}", status_code=204)
+async def delete_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    schedule_store: Annotated[RoomScheduleStore, Depends(get_room_schedule_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> Response:
+    """Delete a schedule for a room."""
+    room = await _require_room(session, room_store, room_id, user, "write", is_admin)
+    try:
+        require_manage(Principal(user.id, is_admin), room.owner_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
+
+    schedule = await schedule_store.get(session, schedule_id)
+    if schedule is None or schedule.room_id != room_id:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    await schedule_store.delete(session, schedule_id)
+    await session.commit()
+    return Response(status_code=204)

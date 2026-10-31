@@ -1031,6 +1031,81 @@ class Room(TenantScoped, Base):
     )
 
 
+# ── Room Schedules ─────────────────────────────────────────────────────────────
+
+
+class RoomSchedule(TenantScoped, Base):
+    """A scheduled message rule configured on a room.
+
+    Fires on a recurring (cron) or one-off schedule, dispatching the message
+    into the room as the system administrator account, addressed to the
+    configured agents.
+    """
+
+    __tablename__ = "room_schedules"
+    __table_args__ = (
+        Index("ix_room_schedules_next_run", "status", "next_run_at"),
+        Index("ix_room_schedules_room_id", "room_id"),
+        Index("ix_room_schedules_tenant_id", "tenant_id"),
+        UniqueConstraint("id", "tenant_id", name="uq_room_schedules_id_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_schedules_room",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["created_by_user_id"],
+            ["users.id"],
+            name="fk_room_schedules_created_by_user",
+            ondelete="SET NULL",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'paused', 'completed')",
+            name="ck_room_schedules_status",
+        ),
+        CheckConstraint(
+            "schedule_type IN ('recurring', 'one_off')",
+            name="ck_room_schedules_schedule_type",
+        ),
+        CheckConstraint(
+            "missed_run_policy IN ('run_once', 'skip')",
+            name="ck_room_schedules_missed_run_policy",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    target_agent_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    schedule_type: Mapped[str] = mapped_column(
+        Text, nullable=False, default="recurring"
+    )
+    cron_expression: Mapped[str | None] = mapped_column(Text, nullable=True)
+    timezone: Mapped[str] = mapped_column(Text, nullable=False, default="UTC")
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="active")
+    missed_run_policy: Mapped[str] = mapped_column(
+        Text, nullable=False, default="run_once"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # ── Room Groups ─────────────────────────────────────────────────────────────────
 
 

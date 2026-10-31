@@ -13,6 +13,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.skill_store import SkillStore
 from switch_core.db.stores.template_store import TemplateStore
@@ -35,6 +36,7 @@ __all__ = [
     "ReferenceTypeStore",
     "RoomGroupStore",
     "RoomLinkStore",
+    "RoomScheduleStore",
     "RoomStore",
     "SkillStore",
     "TemplateStore",

@@ -25,6 +25,7 @@ from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.messaging_install_store import MessagingInstallStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -56,6 +57,7 @@ def init_dependencies(
     join_domain_store: JoinDomainStore,
     template_store: TemplateStore,
     usage_store: UsageStore,
+    room_schedule_store: RoomScheduleStore | None = None,
     budget_store: BudgetStore,
     resource_service: ResourceService,
     protocol: AgentCore,
@@ -80,6 +82,7 @@ def init_dependencies(
     _state["join_domain_store"] = join_domain_store
     _state["template_store"] = template_store
     _state["usage_store"] = usage_store
+    _state["room_schedule_store"] = room_schedule_store or RoomScheduleStore()
     _state["budget_store"] = budget_store
     _state["resource_service"] = resource_service
     _state["protocol"] = protocol
@@ -159,6 +162,10 @@ def get_agent_store() -> AgentStore:
 
 def get_room_store() -> RoomStore:
     return _state["room_store"]  # type: ignore[no-any-return]
+
+
+def get_room_schedule_store() -> RoomScheduleStore:
+    return _state["room_schedule_store"]  # type: ignore[no-any-return]
 
 
 def get_room_group_store() -> RoomGroupStore:

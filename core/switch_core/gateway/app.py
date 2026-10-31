@@ -30,6 +30,7 @@ from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -102,6 +103,7 @@ def create_gateway_app(
     join_domain_store: JoinDomainStore,
     template_store: TemplateStore,
     usage_store: UsageStore,
+    room_schedule_store: RoomScheduleStore | None = None,
     budget_store: BudgetStore,
     resource_service: ResourceService,
     protocol: AgentCore,
@@ -129,6 +131,7 @@ def create_gateway_app(
         join_domain_store=join_domain_store,
         template_store=template_store,
         usage_store=usage_store,
+        room_schedule_store=room_schedule_store,
         budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,

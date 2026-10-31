@@ -159,6 +159,7 @@ from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_schedule_store import RoomScheduleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.service_app_credential_store import ServiceAppCredentialStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
@@ -201,6 +202,7 @@ from switch_core.provisioning import Provisioning
 from switch_core.provisioning.postgres import PostgresProvisioning
 from switch_core.room_changes import COALESCE_SECONDS, RoomChanges
 from switch_core.room_service import RoomService
+from switch_core.scheduler.runner import RoomScheduleRunner
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
@@ -737,6 +739,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     room_link_store = RoomLinkStore()
     room_group_store = RoomGroupStore()
     room_role_store = RoomRoleStore()
+    room_schedule_store = RoomScheduleStore()
     message_store = MessageStore()
     usage_store = UsageStore()
     budget_store = BudgetStore()
@@ -1218,6 +1221,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         join_domain_store=join_domain_store,
         template_store=template_store,
         usage_store=usage_store,
+        room_schedule_store=room_schedule_store,
         budget_store=budget_store,
         resource_service=resource_service,
         protocol=protocol,
@@ -1369,6 +1373,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         live_session_count=connections.live_connection_count,
     )
 
+    room_schedule_runner = RoomScheduleRunner(
+        session_factory=session_factory,
+        client_lifecycle=client_lifecycle,
+        room_store=room_store,
+        room_schedule_store=room_schedule_store,
+    )
+
     @asynccontextmanager
     async def lifespan(app: object) -> AsyncIterator[None]:
         nonlocal observability
@@ -1396,6 +1407,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             )
             shared_connections_task = asyncio.create_task(shared_connections.run())
             cursor_writer_task = asyncio.create_task(cursor_writer.run())
+            schedule_runner_task = asyncio.create_task(room_schedule_runner.run())
             management_task = (
                 asyncio.create_task(management.run())
                 if management is not None
@@ -1432,6 +1444,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             try:
                 yield
             finally:
+                schedule_runner_task.cancel()
                 sweep_task.cancel()
                 retention_task.cancel()
                 attachment_group_task.cancel()
