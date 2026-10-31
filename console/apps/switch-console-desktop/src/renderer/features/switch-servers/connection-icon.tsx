@@ -39,6 +39,7 @@ const MARK_COLOR: Record<string, string> = {
   sentry: 'text-[#362D59] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
+  bigquery: 'text-[#669DF6]',
 };
 
 export function hasConnectionIcon(slug: string): boolean {

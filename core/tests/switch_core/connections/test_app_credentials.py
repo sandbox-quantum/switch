@@ -148,10 +148,12 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "bigquery": "oauth_client",
             "gitlab": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
+        assert specs["bigquery"].variables == ("BIGQUERY_CLIENT_CONFIG_PATH",)
         assert specs["gitlab"].variables == ("GITLAB_CLIENT_CONFIG_PATH",)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
 
