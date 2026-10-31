@@ -37,6 +37,7 @@ const guardForbiddenImports = {
 
 await rm('dist-sidecar/sidecar.mjs', { force: true });
 await rm('dist-sidecar/agent-controller.mjs', { force: true });
+await rm('dist-sidecar/stdio-mcp-bridge.mjs', { force: true });
 
 await build({
   entryPoints: ['../../packages/agent-providers/src/host/shared-daemon.ts'],
@@ -52,7 +53,16 @@ await build({
   logLevel: 'info',
   plugins: [guardForbiddenImports],
 });
-
+await build({
+  entryPoints: ['../../packages/agent-providers/src/host/stdio-mcp-bridge.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  outfile: 'dist-sidecar/stdio-mcp-bridge.mjs',
+  tsconfig: '../../packages/agent-providers/tsconfig.json',
+  logLevel: 'info',
+});
 /**
  * The agent controller Console runs as a child process when "Run managed
  * agents on this computer" is on: the same `switch-agent-controller` CLI a

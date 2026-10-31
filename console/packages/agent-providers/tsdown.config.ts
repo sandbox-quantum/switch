@@ -6,6 +6,7 @@ export default defineConfig({
     testing: 'src/testing/index.ts',
     'host-daemon': 'src/host/daemon.ts',
     'shared-host-daemon': 'src/host/shared-daemon.ts',
+    'stdio-mcp-bridge': 'src/host/stdio-mcp-bridge.ts',
   },
   format: ['esm'],
   dts: true,
@@ -13,3 +14,4 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
 });
+

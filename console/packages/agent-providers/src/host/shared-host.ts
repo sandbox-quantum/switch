@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { commandSchema } from '@switch-console/shared/session-v1';
 import type { Command, CommandStatus, Session, Snapshot } from '@switch-console/shared/session-v1';
@@ -1164,7 +1164,8 @@ export async function hostSessionProcess(input: {
       input.services,
       endpoint && { endpoint, execPath: process.execPath, entrypoint: input.entrypoint },
       { ...vendors.specs, ...clis.specs },
-      (secret) => redactions.add(secret)
+      (secret) => redactions.add(secret),
+      join(dirname(input.entrypoint), 'stdio-mcp-bridge.mjs')
     );
     for (const notice of prepared.notices) serviceNotices.raise(notice);
     // The people watching see it as a notice; the agent reads it with the
@@ -1204,3 +1205,4 @@ export async function hostSessionProcess(input: {
     await mcp.close();
   }
 }
+
