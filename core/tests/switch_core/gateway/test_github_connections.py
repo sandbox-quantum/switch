@@ -12,9 +12,10 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select, update
 
-from switch_core.connections.adapters.github import GitHubAdapter
+from switch_core.connections.adapters.github import GitHubAdapter, GitHubApp
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
+from switch_core.connections.organization_apps import OrganizationApp
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
     ServiceConnection,
@@ -27,7 +28,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
-from switch_core.gateway.github_connections import router
+from switch_core.gateway.github_connections import APP_CHANGED, router
 from switch_core.keys import Keyring
 from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
 from switch_core.providers.github_installation import GitHubInstallationCredentials
@@ -100,7 +101,9 @@ async def github_app(request, tmp_path, session_factory):
         yield client, github, identity, session_factory
 
 
-def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI:
+def _process(
+    github, identity, session_factory, workspace_gate: bool, organization_apps=None
+) -> FastAPI:
     """One switch-core process's gateway: its own app, broker and flow store,
     on the shared database."""
 
@@ -115,8 +118,10 @@ def _process(github, identity, session_factory, workspace_gate: bool) -> FastAPI
         session_factory=session_factory,
         keyring=TEST_KEYRING,
         catalog=CATALOG,
-        adapters={"github": GitHubAdapter(github, AsyncMock())},
-        organization_apps=None,
+        adapters={}
+        if github is None
+        else {"github": GitHubAdapter(github, AsyncMock())},
+        organization_apps=organization_apps,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
@@ -680,6 +685,174 @@ async def test_an_app_replaced_during_the_sign_in_is_refused(github_app):
     response = await complete(client, flow_id)
     assert response.status_code == 400
     assert response.json()["detail"] == (
-        "This server's GitHub App changed during your sign-in. Start it again."
+        "The GitHub App changed during your sign-in. Start it again."
     )
     github.exchange.assert_not_called()
+
+
+def _organization_github(client_id: str) -> GitHubConnections:
+    """An organization's own GitHub App, called back at the server's address."""
+    github = GitHubConnections(
+        client_id=client_id,
+        client_secret="SYNTHETIC-ORGANIZATION",
+        slug="organization-app",
+        origin="https://switch.example.com",
+    )
+    github.exchange = AsyncMock(
+        return_value={
+            "access_token": "SYNTHETIC-ORG-ACCESS",
+            "refresh_token": "SYNTHETIC-ORG-REFRESH",
+            "expires_at": time.time() + 3600,
+            "refresh_expires_at": time.time() + 7200,
+        }
+    )
+    github.revoke = AsyncMock()
+    github.request = AsyncMock(return_value={"id": 321, "login": "org-user"})
+    return github
+
+
+class _Organizations:
+    """Organizations' apps on: the App the workspace's organization saved,
+    or None, and which workspace each lookup was for."""
+
+    def __init__(self, app: OrganizationApp | None) -> None:
+        self.app = app
+        self.tenants: list[str] = []
+
+    async def for_workspace(self, session, tenant_id: str, service: str):
+        self.tenants.append(tenant_id)
+        return self.app if service == "github" else None
+
+
+def _saved(
+    github: GitHubConnections | None, problem: str | None = None
+) -> OrganizationApp:
+    return OrganizationApp(
+        organization_id="org-example",
+        adapter=None if github is None else GitHubAdapter(github, AsyncMock()),
+        github_app=None if github is None else GitHubApp(github, None),
+        problem=problem,
+        changed_at=datetime.now(UTC),
+    )
+
+
+async def _client(app: FastAPI) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example.com"
+    )
+
+
+class TestOrganizationsApp:
+    async def test_a_workspace_signs_in_through_its_organizations_app(
+        self, github_app
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        own = _organization_github("organization-client")
+        organizations = _Organizations(_saved(own))
+        # The server has no App of its own: the organization's is all there is.
+        app = _process(None, identity, factory, False, organizations)
+        app.state.github_connections = None
+
+        async with await _client(app) as client:
+            state = secrets.token_urlsafe(32)
+            started = await client.post(
+                BASE + "/flows",
+                json={"port": 12345, "state": state, "completion_secret": SECRET},
+            )
+            assert started.status_code == 200, started.text
+            left = await client.get(started.json()["url"])
+            assert parse_qs(urlsplit(left.headers["location"]).query)["client_id"] == [
+                "organization-client"
+            ]
+            await relay(client, state)
+            completed = await complete(client, state)
+            assert completed.status_code == 200, completed.text
+            assert (await client.get(BASE + f"/flows/{state}")).json()[
+                "status"
+            ] == "connected"
+
+        own.exchange.assert_awaited_once()
+        server_github.exchange.assert_not_awaited()
+        flow_tenant = organizations.tenants[1]
+        assert set(organizations.tenants) == {flow_tenant}
+        async with factory() as session:
+            row = await session.scalar(
+                select(ServiceConnection).where(ServiceConnection.service == "github")
+            )
+        assert row is not None and row.oauth_client_id == "organization-client"
+
+    async def test_an_unusable_organization_app_is_refused_not_replaced(
+        self, github_app
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        problem = "Your organization's GitHub app can't be used: it is broken."
+        app = _process(
+            server_github,
+            identity,
+            factory,
+            False,
+            _Organizations(_saved(None, problem)),
+        )
+
+        async with await _client(app) as client:
+            refused = await client.post(
+                BASE + "/flows",
+                json={
+                    "port": 12345,
+                    "state": secrets.token_urlsafe(32),
+                    "completion_secret": SECRET,
+                },
+            )
+
+        assert refused.status_code == 503
+        assert refused.json()["detail"] == problem
+
+    async def test_a_sign_in_begun_under_another_app_is_refused_at_authorize(
+        self, github_app
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        organizations = _Organizations(None)
+        app = _process(server_github, identity, factory, False, organizations)
+
+        async with await _client(app) as client:
+            state = secrets.token_urlsafe(32)
+            started = await client.post(
+                BASE + "/flows",
+                json={"port": 12345, "state": state, "completion_secret": SECRET},
+            )
+            assert started.status_code == 200
+            # The organization saves its own App while the browser is on its way.
+            organizations.app = _saved(_organization_github("organization-client"))
+            left = await client.get(started.json()["url"])
+            polled = (await client.get(BASE + f"/flows/{state}")).json()
+
+        assert left.status_code == 400
+        assert APP_CHANGED in left.text
+        assert polled["status"] == "failed"
+        assert polled["error"] == APP_CHANGED
+
+    async def test_an_app_unusable_by_authorize_fails_the_flow_with_its_problem(
+        self, github_app
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        organizations = _Organizations(None)
+        app = _process(server_github, identity, factory, False, organizations)
+        problem = "Your organization's GitHub app can't be used: it is <broken>."
+
+        async with await _client(app) as client:
+            state = secrets.token_urlsafe(32)
+            started = await client.post(
+                BASE + "/flows",
+                json={"port": 12345, "state": state, "completion_secret": SECRET},
+            )
+            assert started.status_code == 200
+            organizations.app = _saved(None, problem)
+            left = await client.get(started.json()["url"])
+            polled = (await client.get(BASE + f"/flows/{state}")).json()
+
+        assert left.status_code == 503
+        assert left.headers["content-type"].startswith("text/html")
+        assert left.headers["cache-control"] == "no-store"
+        assert "it is &lt;broken&gt;." in left.text
+        assert polled["status"] == "failed"
+        assert polled["error"] == problem

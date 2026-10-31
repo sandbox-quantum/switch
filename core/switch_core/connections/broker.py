@@ -65,7 +65,10 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     TokenPolicy,
 )
-from switch_core.connections.organization_apps import OrganizationApps
+from switch_core.connections.organization_apps import (
+    OrganizationApp,
+    OrganizationApps,
+)
 from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -543,13 +546,33 @@ class ServiceBroker:
         """The adapter `service` goes through in the bound workspace: its
         organization's app where it saved one, else the server's. `session`
         is bound to the workspace."""
-        if self._organization_apps is not None:
-            app = await self._organization_apps.for_workspace(
-                session, require_tenant_id(), service
-            )
-            if app is not None:
-                return _Choice(app.adapter, app.problem)
+        app = await self.organization_app(session, service)
+        if app is not None:
+            return _Choice(app.adapter, app.problem)
         return _Choice(self._adapters.get(service), None)
+
+    async def organization_app(
+        self, session: AsyncSession, service: str
+    ) -> OrganizationApp | None:
+        """The app the bound workspace's organization saved for `service`, or
+        None where the server's applies. `session` is bound to the workspace."""
+        if self._organization_apps is None:
+            return None
+        return await self._organization_apps.for_workspace(
+            session, require_tenant_id(), service
+        )
+
+    async def organization_app_of(
+        self, tenant_id: str, service: str
+    ) -> OrganizationApp | None:
+        """`organization_app` for a workspace no signed-in request has bound,
+        such as a browser's step of a sign-in, read in a session of its own."""
+        if self._organization_apps is None:
+            return None
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            return await self._organization_apps.for_workspace(
+                session, tenant_id, service
+            )
 
     async def _here(self, session: AsyncSession, service: str) -> ServiceAdapter | None:
         """`service`'s adapter in the bound workspace, or None."""
