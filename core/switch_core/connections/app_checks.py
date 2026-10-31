@@ -218,6 +218,22 @@ async def check_oauth_client(
     redirect_uri: str,
 ) -> CheckResult:
     name = definition.name
+    if definition.slug == "snowflake":
+        oauth = definition.auth.oauth
+        assert oauth is not None
+        return CheckResult(
+            [
+                Check(
+                    "client",
+                    True,
+                    "Snowflake's client will be verified when someone connects an "
+                    "account-specific MCP endpoint.",
+                    "client_id",
+                    oauth.unchecked,
+                )
+            ],
+            settings={},
+        )
     client = OAuthClientCredentials(
         values.client_id, values.secrets["client_secret"], authentication=None
     )

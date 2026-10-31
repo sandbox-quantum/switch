@@ -37,6 +37,7 @@ const MARK_COLOR: Record<string, string> = {
   bitbucket: 'text-[#0052CC] emdark:text-foreground',
   box: 'text-[#0061D5] emdark:text-foreground',
   datadog: 'text-[#632CA6] emdark:text-foreground',
+  snowflake: 'text-[#29B5E8]',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
   airtable: 'text-foreground emdark:text-[#18BFFF]',
 };

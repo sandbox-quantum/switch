@@ -3554,7 +3554,12 @@ const serviceFlows = (service: string) =>
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: {
+    port: number;
+    state: string;
+    completion_secret: string;
+    mcp_endpoint?: string;
+  }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');

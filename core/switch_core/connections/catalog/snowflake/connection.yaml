@@ -1,0 +1,38 @@
+slug: snowflake
+name: Snowflake
+category: Data
+description: Query data through your Snowflake Cortex MCP server, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    # Snowflake has no dynamic client registration. The account needs an
+    # enabled custom OAuth integration and its static client configured here.
+    # Set OAUTH_REDIRECT_URI to
+    # <GATEWAY_PUBLIC_URL>/gateway/service-connections/snowflake/flows/callback,
+    # enforce PKCE, and enable refresh-token issuance.
+    registration: static
+    client_settings: SNOWFLAKE
+    redirect: [core]
+    revocation_discovered: true
+    unchecked: >-
+      Switch verifies the client during account-specific sign-in. External
+      OAuth endpoints on a different host are not supported.
+  identity:
+    url: "https://{mcp_origin}/oauth/userinfo"
+    account_id: sub
+    label: name
+# Snowflake access-token validity defaults to 600 seconds and is configurable
+# up to 3600; Switch honors the expiry returned by the account.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: snowflake, url: "https://{snowflake_mcp_endpoint}" }
+access:
+  read:
+    # This selects DEFAULT_ROLE, not every role. For read-only access, the
+    # integration must allow a read-only role and disable secondary roles.
+    scopes: [session:role:all]
+tools: { mode: pass_through }

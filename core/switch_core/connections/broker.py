@@ -66,6 +66,7 @@ from switch_core.connections.loader import (
     TokenPolicy,
 )
 from switch_core.connections.shielded import finish_shielded
+from switch_core.connections.snowflake import validate_mcp_endpoint
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -1124,6 +1125,36 @@ class ServiceBroker:
             skill = None if entry is None else entry.skill_files.get("SKILL.md")
             mcp = None if entry is None else entry.definition.mcp
             cli = None if entry is None else entry.definition.cli
+            snowflake_endpoint = None
+            if grant.service == "snowflake":
+                if agent.owner_id is None:
+                    raise ServiceError(
+                        500,
+                        INTERNAL,
+                        "The Snowflake grant has no connection owner.",
+                        retryable=False,
+                    )
+                connection = await self._store.get_connection(
+                    session, agent.owner_id, grant.service
+                )
+                if connection is None:
+                    raise ServiceError(
+                        500,
+                        INTERNAL,
+                        "The Snowflake grant has no connected endpoint.",
+                        retryable=False,
+                    )
+                try:
+                    snowflake_endpoint = validate_mcp_endpoint(
+                        self._secret(connection).values.get("mcp_endpoint", "")
+                    )
+                except ValueError as error:
+                    raise ServiceError(
+                        500,
+                        INTERNAL,
+                        f"The Snowflake connection endpoint is invalid: {error}",
+                        retryable=False,
+                    ) from None
             grants.append(
                 {
                     "service": grant.service,
@@ -1148,7 +1179,7 @@ class ServiceBroker:
                         else [
                             {
                                 "name": server.name,
-                                "url": server.url,
+                                "url": snowflake_endpoint or server.url,
                                 "headers": server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }

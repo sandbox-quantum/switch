@@ -17,6 +17,7 @@ from switch_core.connections.loader import CATALOG
 
 REDIRECT = "https://switch.example.test/gateway/service-connections/google-workspace/flows/callback"
 GOOGLE = CATALOG["google-workspace"].definition
+SNOWFLAKE = CATALOG["snowflake"].definition
 
 
 def _http(status: int, body: object) -> httpx.AsyncClient:
@@ -31,6 +32,19 @@ def _google(secret: str = "example-secret-0000") -> AppValues:
 
 
 class TestOAuthClient:
+    async def test_snowflake_client_is_verified_during_account_sign_in(self) -> None:
+        result = await check_oauth_client(
+            _http(500, {}),
+            SNOWFLAKE,
+            AppValues("example-client-id", {}, {"client_secret": "example-secret"}),
+            REDIRECT,
+        )
+
+        assert result.ok
+        [check] = result.checks
+        assert "verified when someone connects" in check.message
+        assert check.note is not None
+
     @pytest.mark.parametrize(
         ("status", "error", "ok", "says", "field"),
         [

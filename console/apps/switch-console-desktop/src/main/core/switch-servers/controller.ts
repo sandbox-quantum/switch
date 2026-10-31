@@ -351,9 +351,9 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(serverId, (server) => cancelGitHubBrowserFlow(server, id)),
   disconnectGitHub: (serverId: string) =>
     withReachableServerWorkspaceSession(serverId, (server) => disconnectGitHub(server)),
-  startServiceConnection: (serverId: string, service: string) =>
+  startServiceConnection: (serverId: string, service: string, mcpEndpoint?: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
-      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, service, (url) => appService.openExternal(url), mcpEndpoint)
     ),
   getServiceFlow: (serverId: string, service: string, id: string) =>
     withReachableServerWorkspaceSession(serverId, (server) =>
