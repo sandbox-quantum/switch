@@ -1,7 +1,25 @@
-from sqlalchemy import delete, select
+from collections.abc import Collection
+
+from sqlalchemy import ColumnElement, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Client, ClientRoom, require_tenant_id
+from switch_core.db.fingerprint import Fingerprint, row_hash
+from switch_core.db.models import Agent, Client, ClientRoom, require_tenant_id
+
+
+def _row_hash() -> ColumnElement[int]:
+    """A client's id, type and name, and its agent's id, name, display name
+    and description: what a process running the client, and a bridge holding
+    the agent's platform handle, act on (`ClientStore.fingerprint`)."""
+    return row_hash(
+        Client.id,
+        Client.type,
+        Client.display_name,
+        func.coalesce(Agent.id, ""),
+        func.coalesce(Agent.name, ""),
+        func.coalesce(Agent.display_name, ""),
+        func.coalesce(Agent.description, ""),
+    )
 
 
 class ClientStore:
@@ -11,6 +29,49 @@ class ClientStore:
 
     async def get(self, session: AsyncSession, client_id: str) -> Client | None:
         return await session.get(Client, client_id)
+
+    async def get_many(
+        self, session: AsyncSession, tenant_id: str, client_ids: Collection[str]
+    ) -> list[Client]:
+        """The tenant's clients among `client_ids`, in one query. An id with
+        no row in the tenant is left out."""
+        if not client_ids:
+            return []
+        result = await session.execute(
+            select(Client).where(
+                Client.tenant_id == tenant_id, Client.id.in_(list(client_ids))
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_running(
+        self, session: AsyncSession, tenant_id: str, excluded_types: Collection[str]
+    ) -> tuple[list[Client], Fingerprint]:
+        """The tenant's clients of every type but `excluded_types`, and the
+        fingerprint of those rows, from one statement and so from one
+        snapshot of the table."""
+        result = await session.execute(
+            select(Client, func.count().over(), func.sum(_row_hash()).over())
+            .outerjoin(Agent, Agent.client_id == Client.id)
+            .where(Client.tenant_id == tenant_id, Client.type.not_in(excluded_types))
+        )
+        rows = result.all()
+        if not rows:
+            return [], (0, 0)
+        return [row[0] for row in rows], (int(rows[0][1]), int(rows[0][2]))
+
+    async def fingerprint(
+        self, session: AsyncSession, tenant_id: str, excluded_types: Collection[str]
+    ) -> Fingerprint:
+        """The fingerprint `get_running` returns, without the rows."""
+        result = await session.execute(
+            select(func.count(), func.coalesce(func.sum(_row_hash()), 0))
+            .select_from(Client)
+            .outerjoin(Agent, Agent.client_id == Client.id)
+            .where(Client.tenant_id == tenant_id, Client.type.not_in(excluded_types))
+        )
+        count, total = result.one()
+        return int(count), int(total)
 
     async def get_by_transport_user_id(
         self, session: AsyncSession, transport_user_id: str

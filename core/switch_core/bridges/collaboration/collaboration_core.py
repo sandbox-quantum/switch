@@ -7,7 +7,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -320,10 +320,18 @@ class CollaborationCore:
         # Identity provisioning runs in the background — see _create_agent_identities.
         self._identity_task: asyncio.Task[None] | None = None
         # Agents given an identity by this copy of the bridge, so one deleted
-        # by another process is let go of here too; and whether the agents
-        # changed while a provisioning run was going.
+        # by another process is let go of here too.
         self._provisioned_agents: dict[str, AgentIdentity] = {}
+        # The tenant's agents as this copy last read them, by agent id, and
+        # which agent each client is, kept up to date by reading only the
+        # agents a change names (`_update_agent_identities`). None until a
+        # run has read them all.
+        self._agent_view: dict[str, AgentIdentity] | None = None
+        self._agent_of_client: dict[str, str] = {}
+        # Whether every agent has to be read again, and the clients whose
+        # agents do, for the provisioning run going or the next one.
         self._identities_stale = False
+        self._identities_owed: set[str] = set()
         self._channel_type_refresh_task: asyncio.Task[None] | None = None
         # Turns and request cards from the tables the host reports to, pushed
         # as they change. Only where the platform draws session activity.
@@ -552,14 +560,18 @@ class CollaborationCore:
         """Whether this process holds the bridge and listens for it."""
         return self._active
 
-    def agents_changed(self) -> None:
-        """Agents were registered or deleted in this bridge's tenant, maybe by
-        another process: give the new ones their platform identities here and
-        let go of the deleted ones'. A run already going reads the agents
-        again once it is done, in case it read them before the change."""
-        self._identities_stale = True
+    def agents_changed(self, client_ids: Collection[str] | None = None) -> None:
+        """Agents were registered, renamed or deleted in this bridge's tenant,
+        maybe by another process: give the new ones their platform identities
+        here and let go of the deleted ones'. Only the agents of `client_ids`
+        are read again, or every agent when None. A run already going reads
+        them once it is done, in case it read them before the change."""
+        if client_ids is None or self._agent_view is None:
+            self._identities_stale = True
+        else:
+            self._identities_owed.update(client_ids)
         if not self._awaiting_shared_connection():
-            self._provision_identities_on_attach()
+            self._start_identity_run()
 
     def _awaiting_shared_connection(self) -> bool:
         """Whether the bridge waits to be attached to its platform's shared
@@ -682,6 +694,10 @@ class CollaborationCore:
         against the connection as it is by then; one that has finished is
         replaced.
         """
+        self._identities_stale = True
+        self._start_identity_run()
+
+    def _start_identity_run(self) -> None:
         if self._identity_task is not None and not self._identity_task.done():
             return
         self._identity_task = asyncio.create_task(self._run_agent_identities())
@@ -702,9 +718,19 @@ class CollaborationCore:
     async def _run_agent_identities_unbound(self) -> None:
         try:
             while True:
-                self._identities_stale = False
-                await self._create_agent_identities()
-                if not self._identities_stale:
+                if self._identities_stale:
+                    self._identities_stale = False
+                    self._identities_owed = set()
+                    await self._create_agent_identities()
+                elif self._identities_owed:
+                    owed, self._identities_owed = self._identities_owed, set()
+                    try:
+                        await self._update_agent_identities(owed)
+                    except BaseException:
+                        # Read again by the next run, whatever starts it.
+                        self._identities_owed |= owed
+                        raise
+                else:
                     break
         except asyncio.CancelledError:
             logger.info(
@@ -722,12 +748,54 @@ class CollaborationCore:
             self._session_factory, self._bridge_tenant_id
         ) as session:
             agents = await self._agent_store.get_all(session)
+        current = {agent.id: agent_identity(agent) for agent in agents}
+        self._agent_view = current
+        self._agent_of_client = {agent.client_id: agent.id for agent in agents}
+        await self._sync_agent_identities(current, sorted(self._provisioned_agents))
 
+    async def _update_agent_identities(self, client_ids: set[str]) -> None:
+        """`_create_agent_identities` for the agents of `client_ids` only:
+        their rows are read and the rest of the tenant's agents are taken as
+        this copy last read them, which with thousands of agents is the
+        difference between reading one row per change and every row."""
+        if self._agent_view is None:
+            await self._create_agent_identities()
+            return
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            agents = await self._agent_store.get_by_client_ids(
+                session, sorted(client_ids)
+            )
+        found = {agent.client_id: agent for agent in agents}
+        view = self._agent_view
+        changed: set[str] = set()
+        for client_id in client_ids:
+            agent = found.get(client_id)
+            known = self._agent_of_client.pop(client_id, None)
+            if known is not None:
+                view.pop(known, None)
+                changed.add(known)
+            if agent is not None:
+                self._agent_of_client[client_id] = agent.id
+                view[agent.id] = agent_identity(agent)
+                changed.add(agent.id)
+        await self._sync_agent_identities(
+            view, sorted(changed & self._provisioned_agents.keys())
+        )
+
+    async def _sync_agent_identities(
+        self, current: dict[str, AgentIdentity], compared: list[str]
+    ) -> None:
+        """Bring the platform in line with `current`, the tenant's agents:
+        the agents of `compared` this copy gave an identity to are renamed,
+        relabelled or let go of to match it, then every agent's identity is
+        provisioned."""
         # Deleted, renamed or relabelled since the last run here, wherever that
         # was served: a change served by another process reaches this copy of
-        # the bridge only through this re-read.
-        current = {agent.id: agent_identity(agent) for agent in agents}
-        for agent_id, before in sorted(self._provisioned_agents.items()):
+        # the bridge only through a re-read.
+        for agent_id in compared:
+            before = self._provisioned_agents[agent_id]
             after = current.get(agent_id)
             try:
                 if after is None:
@@ -767,14 +835,14 @@ class CollaborationCore:
             logger.warning(
                 "Provisioned %s identities for %d agents; %d failed",
                 self._bridge_type,
-                len(agents),
+                len(current),
                 len(failures),
             )
         else:
             logger.info(
                 "Provisioned %s identities for %d agents",
                 self._bridge_type,
-                len(agents),
+                len(current),
             )
 
     async def _ensure_channel_captures(self) -> None:
