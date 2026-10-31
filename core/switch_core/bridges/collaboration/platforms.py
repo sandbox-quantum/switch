@@ -28,6 +28,10 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostConnectionConfig,
 )
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
+from switch_core.bridges.collaboration.rocketchat.adapter import (
+    RocketChatAdapter,
+    RocketChatConnectionConfig,
+)
 from switch_core.bridges.collaboration.signal.adapter import (
     SignalAdapter,
     SignalConnectionConfig,
@@ -78,6 +82,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("zulip", ZulipAdapter, ZulipConnectionConfig),
     PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
     PlatformRegistration("matrix", MatrixAdapter, MatrixConnectionConfig),
+    PlatformRegistration("rocketchat", RocketChatAdapter, RocketChatConnectionConfig),
 )
 
 
