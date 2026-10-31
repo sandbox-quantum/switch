@@ -1,0 +1,43 @@
+slug: cloudflare
+name: Cloudflare
+category: Cloud infrastructure
+description: Inspect and manage Cloudflare resources, Workers, DNS and analytics, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39241, 39242, 39243, 39244, 39245]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.cloudflare.com/client/v4/user
+    account_id: result.id
+    label: result.email
+# Cloudflare OAuth access tokens live 1 hour; refresh rotates.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: cloudflare
+      url: "https://mcp.cloudflare.com/mcp"
+access:
+  read:
+    scopes:
+      - "account:read"
+      - "user:read"
+      - "zone:read"
+      - "dns_records:read"
+      - "workers:read"
+  write:
+    scopes:
+      - "account:read"
+      - "user:read"
+      - "zone:read"
+      - "dns_records:read"
+      - "workers:read"
+      - "dns_records:edit"
+      - "workers:edit"
+tools: { mode: pass_through }
