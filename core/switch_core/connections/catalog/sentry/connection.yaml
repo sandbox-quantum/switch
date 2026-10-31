@@ -1,0 +1,37 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Look up Sentry issues, events, stack traces and releases, with your token.
+enabled: true
+adapter: api_key
+auth:
+  type: api_key
+  refresh: none
+  api_key:
+    # A Sentry User Auth Token created under User Settings > API > User Auth Tokens.
+    # We choose adapter: api_key because while mcp.sentry.dev advertises OAuth with DCR,
+    # it does not provide an RFC 7662 token introspection or OIDC /userinfo REST GET endpoint
+    # to read user identity (it only provides the whoami tool via JSON-RPC over MCP).
+    # Upstream sentry.io/api/0/users/me/ validates the User Auth Token directly.
+    fields:
+      - name: auth_token
+        label: User Auth Token
+        secret: true
+        help: "User Settings, API, User Auth Tokens. Required scopes: org:read, project:read, project:write, team:read, event:read."
+    identity:
+      method: GET
+      url: "https://sentry.io/api/0/users/me/"
+      headers: { Authorization: "Bearer {auth_token}" }
+      account_id: id
+      label: email
+    help_url: https://docs.sentry.io/api/
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # Sentry's remote MCP server at mcp.sentry.dev supports direct authentication
+    # via the Sentry-Bearer header scheme, forwarding calls to upstream Sentry.
+    - name: sentry
+      url: "https://mcp.sentry.dev/mcp"
+      headers:
+        Authorization: "Sentry-Bearer {auth_token}"
+tools: { mode: pass_through }
