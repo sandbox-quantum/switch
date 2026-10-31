@@ -39,8 +39,10 @@ behavior, performance bottlenecks, and incident root causes.
 - **Cite evidence:** When answering incident or debugging questions, quote the
   NRQL query executed and the observed metrics (such as p95 latency or error rates)
   so team members can independently verify the findings.
-- **Mutations require confirmation:** Only create, acknowledge, or resolve alerts
-  or mute rules if explicitly directed by the user.
+- **Mutations require confirmation:** Always inspect current alert configurations,
+  entities, or policy rules first. Request explicit user confirmation before executing
+  each create, acknowledge, resolve, or mute-rule modification, stating the exact
+  target entity or policy and the planned change.
 
 If a tool reports that MCP access is disabled, an organization administrator
 must enable it under New Relic's Feature Control Manager.

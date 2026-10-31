@@ -964,7 +964,7 @@ def test_the_shipped_new_relic_entry_configures_its_mcp_server_and_fields():
     assert server.headers == {
         "api-key": "{api_key}",
     }
-    assert sign_in.identity.headers == {"Api-Key": "{api_key}"}
+    assert sign_in.identity.headers == {"X-Api-Key": "{api_key}"}
     assert definition.token is not None
     assert definition.token.max_lifetime is None
     assert definition.token.issued_to_agents is False

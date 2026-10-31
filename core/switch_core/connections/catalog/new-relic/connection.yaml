@@ -20,10 +20,11 @@ auth:
         choices:
           - newrelic.com
           - eu.newrelic.com
+          - jp.newrelic.com
     identity:
       method: GET
       url: "https://api.{site}/v2/users.json"
-      headers: { Api-Key: "{api_key}" }
+      headers: { X-Api-Key: "{api_key}" }
     help_url: https://docs.newrelic.com/docs/agentic-ai/mcp/setup/
 # A key does not expire, and only New Relic can revoke it, so it is never handed
 # to an agent.
