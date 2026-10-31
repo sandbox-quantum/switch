@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { sessionSchema } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
-import type { CodexKeyringLogin, HttpMcpServerSpec, ProviderSessionStartInput } from '../adapter';
+import type {
+  CodexKeyringLogin,
+  HttpMcpServerSpec,
+  ProviderSessionStartInput,
+  StdioMcpServerSpec,
+} from '../adapter';
 import { codexSourceHome, prepareCodexSessionHome } from '../codex/home';
 import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
@@ -128,7 +133,8 @@ export async function prepareSharedConfig(
   services: SessionServices,
   helpers: ServiceHelpers | null,
   vendors: Record<string, HttpMcpServerSpec>,
-  redact: (secret: string) => void
+  redact: (secret: string) => void,
+  stdioBridgePath?: string
 ) {
   if (config.session.provider !== config.start.provider)
     throw new Error('Shared SDK host provider mismatch.');
@@ -220,6 +226,31 @@ export async function prepareSharedConfig(
     input.mcpServers[name] = spec;
   }
   input.mcpServers.switch = runtime;
+  if (config.start.provider === 'auggie') {
+    if (!stdioBridgePath) {
+      throw new Error('Auggie MCP stdio bridge path is not configured.');
+    }
+
+    for (const [name, spec] of Object.entries(input.mcpServers)) {
+      if (spec.transport !== 'http') continue;
+
+      for (const value of Object.values(spec.headers ?? {})) {
+        redact(value);
+      }
+
+      const stdioSpec: StdioMcpServerSpec = {
+        transport: 'stdio',
+        command: process.execPath,
+        args: [stdioBridgePath],
+        env: {
+          SWITCH_MCP_URL: spec.url,
+          SWITCH_MCP_HEADERS: JSON.stringify(spec.headers ?? {}),
+        },
+      };
+
+      input.mcpServers[name] = stdioSpec;
+    }
+  }
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   // Read from the grants as the session starts, never from the saved
