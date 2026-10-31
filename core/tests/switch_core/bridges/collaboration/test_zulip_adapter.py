@@ -15,6 +15,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from switch_core.bridges.collaboration.adapter import ActivityMarkRefused
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     InboundCommand,
@@ -407,3 +408,178 @@ async def test_people_are_added_by_user_id_and_those_refused_are_named(
     )
 
     assert left_out == ["99"]
+
+
+# ── Files ────────────────────────────────────────────────────────────────────
+
+
+async def test_a_file_is_uploaded_and_posted_as_a_link(server: Zulip) -> None:
+    server.on(
+        "POST",
+        "/api/v1/user_uploads",
+        lambda r: _ok(url="/user_uploads/2/ab/report.pdf"),
+    )
+    server.on("POST", "/api/v1/messages", lambda r: _ok(id=60))
+    adapter, _ = await _started(server)
+
+    ref = await adapter.send_attachment(
+        str(STREAM_ID),
+        "helper",
+        "report.pdf",
+        "application/pdf",
+        b"%PDF",
+        caption="Here it is.",
+    )
+
+    assert ref == "60"
+    assert b"report.pdf" in server.sent("POST", "/api/v1/user_uploads")[0].content
+    content = _form(server.sent("POST", "/api/v1/messages")[0])["content"]
+    assert (
+        content
+        == "**helper:** Here it is.\n[report.pdf](/user_uploads/2/ab/report.pdf)"
+    )
+
+
+async def test_a_file_zulip_will_not_take_is_named_with_its_reason(
+    server: Zulip,
+) -> None:
+    server.on(
+        "POST",
+        "/api/v1/user_uploads",
+        lambda r: httpx.Response(
+            400,
+            json={"result": "error", "code": "BAD_REQUEST", "msg": "File too large"},
+        ),
+    )
+    server.on("POST", "/api/v1/messages", lambda r: _ok(id=61))
+    adapter, _ = await _started(server)
+
+    await adapter.send_attachment(
+        str(STREAM_ID), "helper", "huge.bin", "application/octet-stream", b"x"
+    )
+
+    content = _form(server.sent("POST", "/api/v1/messages")[0])["content"]
+    assert "huge.bin" in content and "File too large" in content
+
+
+async def test_a_linked_upload_is_relayed_with_the_message(server: Zulip) -> None:
+    server.on("GET", "/api/v1/messages", _topic_rooted_at(15))
+    server.on(
+        "GET",
+        "/api/v1/user_uploads/2/ab/notes.txt",
+        lambda r: _ok(url="/user_uploads/temporary/t1"),
+    )
+    server.on(
+        "GET",
+        "/user_uploads/temporary/t1",
+        lambda r: httpx.Response(
+            200,
+            content=b"hello",
+            headers={"content-type": 'text/plain; charset="ascii"'},
+        ),
+    )
+    adapter, heard = await _started(server)
+
+    await adapter._relay(
+        _message(content="see [notes.txt](/user_uploads/2/ab/notes.txt)"), []
+    )
+
+    [file] = heard[0].attachments
+    assert (file.filename, file.mimetype, file.data) == (
+        "notes.txt",
+        "text/plain",
+        b"hello",
+    )
+    assert heard[0].attachment_failures == []
+
+
+async def test_a_linked_upload_too_large_to_relay_is_reported_not_dropped(
+    server: Zulip,
+) -> None:
+    server.on("GET", "/api/v1/messages", _topic_rooted_at(15))
+    server.on(
+        "GET",
+        "/api/v1/user_uploads/2/ab/big.bin",
+        lambda r: _ok(url="/user_uploads/temporary/t2"),
+    )
+    server.on(
+        "GET",
+        "/user_uploads/temporary/t2",
+        lambda r: httpx.Response(200, content=b"x" * 2048),
+    )
+    adapter, heard = await _started(server)
+    adapter.set_max_attachment_bytes(1024)
+
+    await adapter._relay(_message(content="[big.bin](/user_uploads/2/ab/big.bin)"), [])
+
+    assert heard[0].attachments == []
+    [failure] = heard[0].attachment_failures
+    assert failure.filename == "big.bin"
+
+
+# ── Work marks ───────────────────────────────────────────────────────────────
+
+
+async def test_work_marks_are_reactions_and_a_mark_already_as_asked_is_fine(
+    server: Zulip,
+) -> None:
+    def react(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and _form(request)["emoji_name"] == "hourglass":
+            return httpx.Response(
+                400,
+                json={
+                    "result": "error",
+                    "code": "REACTION_ALREADY_EXISTS",
+                    "msg": "exists",
+                },
+            )
+        return _ok()
+
+    server.on("POST", "/api/v1/messages/15/reactions", react)
+    server.on("DELETE", "/api/v1/messages/15/reactions", react)
+    adapter, _ = await _started(server)
+
+    await adapter.mark_activity(
+        str(STREAM_ID), "15", agent_name="helper", mark="working", on=True
+    )
+    await adapter.mark_activity(
+        str(STREAM_ID), "15", agent_name="helper", mark="queued", on=True
+    )
+    await adapter.mark_activity(
+        str(STREAM_ID), "15", agent_name="helper", mark="working", on=False
+    )
+
+    assert [
+        _form(r)["emoji_name"]
+        for r in server.sent("POST", "/api/v1/messages/15/reactions")
+    ] == [
+        "eyes",
+        "hourglass",
+    ]
+    assert (
+        server.sent("DELETE", "/api/v1/messages/15/reactions")[0].url.params[
+            "emoji_name"
+        ]
+        == "eyes"
+    )
+
+
+async def test_a_mark_zulip_refuses_is_refused_for_good(server: Zulip) -> None:
+    server.on(
+        "POST",
+        "/api/v1/messages/15/reactions",
+        lambda r: httpx.Response(
+            400,
+            json={
+                "result": "error",
+                "code": "BAD_REQUEST",
+                "msg": "Invalid message(s)",
+            },
+        ),
+    )
+    adapter, _ = await _started(server)
+
+    with pytest.raises(ActivityMarkRefused, match="Invalid message"):
+        await adapter.mark_activity(
+            str(STREAM_ID), "15", agent_name="helper", mark="working", on=True
+        )

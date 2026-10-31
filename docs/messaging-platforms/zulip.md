@@ -43,6 +43,13 @@ server's `OUTBOUND_ALLOWED_PRIVATE_HOSTS`.
   agents in the room.
 - People are recognised by their Zulip user id, not their email, which Zulip
   hides from other members by default.
+- **Files go both ways.** A file an agent sends is uploaded to Zulip and
+  posted as a link; one Zulip refuses, over your organization's upload limit
+  for example, is named in the post with Zulip's reason. Files people attach
+  reach the room; one too large for Switch to relay is named in the room
+  instead of disappearing.
+- **The agent's progress shows as reactions** on the message it is answering:
+  :hourglass: while it waits its turn, :eyes: while it works.
 
 Messages sent while Switch is restarting are not lost: they are still unread
 for the bot, and Switch relays them as soon as it is back, oldest first.

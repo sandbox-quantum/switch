@@ -30,8 +30,15 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import Field, field_validator
 
-from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
+    ActivityMarkRefused,
+    AgentIdentity,
+    PlatformAdapter,
+)
 from switch_core.bridges.collaboration.models import (
+    Attachment,
+    AttachmentFailure,
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
@@ -60,6 +67,14 @@ _DEFAULT_MESSAGE_LIMIT = 10_000
 # Where an agent's post goes when it starts a conversation rather than
 # answering in one: Zulip refuses a stream message without a topic.
 NEW_CONVERSATION_TOPIC = "Switch"
+# What each work mark is drawn as. One account may hold several reactions on a
+# message, so a prompt still waiting and one being worked on are told apart.
+_ACTIVITY_EMOJI: dict[ActivityMark, str] = {"working": "eyes", "queued": "hourglass"}
+# What adding a reaction already there, or removing one that is not, answers:
+# the mark is as asked either way.
+_REACTION_AS_ASKED = ("REACTION_ALREADY_EXISTS", "REACTION_DOES_NOT_EXIST")
+# A file a person attached, as Zulip writes its link into the message.
+_UPLOAD_LINK = re.compile(r"\[([^\]]*)\]\(/user_uploads/([^)\s]+)\)")
 # `@**name**` and `@_**name**` (silent), each optionally `|user_id`.
 _MENTION = re.compile(r"@_?\*\*([^*|]+)(?:\|\d+)?\*\*")
 # The mentions that notify everyone in a stream or topic.
@@ -117,6 +132,8 @@ class ZulipAdapter(PlatformAdapter):
     supports_directory_search: ClassVar[bool] = False
     # Zulip links only web addresses, so a Console deeplink would arrive as text.
     renders_custom_url_schemes: ClassVar[bool] = False
+    supports_activity_reactions: ClassVar[bool] = True
+    supports_queue_reaction: ClassVar[bool] = True
 
     def __init__(self, *, config: ZulipConnectionConfig) -> None:
         super().__init__()
@@ -290,7 +307,8 @@ class ZulipAdapter(PlatformAdapter):
         root_id = None if root == message_id else root
         channel_type = await self.get_channel_type(stream_id)
         channel_name = str(message.get("display_recipient") or "") or None
-        content = self.translate_inbound(str(message["content"]))
+        raw = str(message["content"])
+        content = self.translate_inbound(raw)
         if content.strip().startswith("!") and self._on_command is not None:
             command, _, args = content.strip()[1:].partition(" ")
             await self._on_command(
@@ -307,6 +325,7 @@ class ZulipAdapter(PlatformAdapter):
                 )
             )
             return
+        attachments, attachment_failures = await self._attachments(raw)
         await self._on_message(
             InboundMessage(
                 channel_id=stream_id,
@@ -317,6 +336,8 @@ class ZulipAdapter(PlatformAdapter):
                 message_ref=message_id,
                 root_id=root_id,
                 channel_name=channel_name,
+                attachments=attachments,
+                attachment_failures=attachment_failures,
                 self_mention_token=(
                     self._bot_name
                     if "mentioned" in flags and self._mentions_bot(message["content"])
@@ -324,6 +345,48 @@ class ZulipAdapter(PlatformAdapter):
                 ),
             )
         )
+
+    async def _attachments(
+        self, content: str
+    ) -> tuple[list[Attachment], list[AttachmentFailure]]:
+        """The files a message links to, fetched through the bot's own access.
+
+        One too large to relay, or that cannot be fetched, is reported rather
+        than dropped, so the room says what it is missing.
+        """
+        attachments: list[Attachment] = []
+        failures: list[AttachmentFailure] = []
+        for name, path in _UPLOAD_LINK.findall(content):
+            filename = name or path.rsplit("/", 1)[-1]
+            try:
+                grant = await self._call("GET", f"/api/v1/user_uploads/{path}")
+                response = await self._http.get(str(grant["url"]))
+                response.raise_for_status()
+            except (ZulipError, httpx.HTTPError) as exc:
+                failures.append(
+                    AttachmentFailure(
+                        filename=filename, reason=f"Zulip did not hand it over: {exc}"
+                    )
+                )
+                continue
+            if len(response.content) > self._max_attachment_bytes:
+                failures.append(
+                    AttachmentFailure(
+                        filename=filename,
+                        reason=f"larger than the {self._max_attachment_bytes // (1024 * 1024)} MiB Switch relays",
+                    )
+                )
+                continue
+            attachments.append(
+                Attachment(
+                    filename=filename,
+                    mimetype=response.headers.get(
+                        "content-type", "application/octet-stream"
+                    ),
+                    data=response.content,
+                )
+            )
+        return attachments, failures
 
     def _mentions_bot(self, content: str) -> bool:
         return any(name == self._bot_name for name in _MENTION.findall(content))
@@ -396,6 +459,68 @@ class ZulipAdapter(PlatformAdapter):
             )
             first = first or str(sent["id"])
         return first
+
+    async def send_attachment(
+        self,
+        channel_id: str,
+        sender_name: str,
+        filename: str,
+        mimetype: str,
+        data: bytes,
+        caption: str | None = None,
+        thread_root_id: str | None = None,
+    ) -> str | None:
+        """Upload the file to Zulip and post a link to it, as Zulip's own clients do.
+
+        A file Zulip refuses, one over the organization's upload limit say, is
+        named in the post with Zulip's reason instead.
+        """
+        try:
+            uploaded = await self._call(
+                "POST",
+                "/api/v1/user_uploads",
+                files={"file": (filename, data, mimetype)},
+            )
+        except ZulipError as exc:
+            note = f"_sent {filename}, which Zulip would not take: {exc.msg}_"
+            body = f"{caption}\n{note}" if caption else note
+            return await self.send_message(
+                channel_id, sender_name, body, thread_root_id
+            )
+        link = f"[{filename}]({uploaded['url']})"
+        body = f"{caption}\n{link}" if caption else link
+        return await self.send_message(channel_id, sender_name, body, thread_root_id)
+
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
+    ) -> None:
+        """One reaction per mark through the one bot, whichever agent it is for.
+
+        Adding a mark already there, or removing one that is not, leaves the
+        message as asked, which is what a restart's reconciliation (`force`)
+        relies on. Anything else Zulip refuses, it will refuse again.
+        """
+        emoji = _ACTIVITY_EMOJI[mark]
+        path = f"/api/v1/messages/{message_ref}/reactions"
+        try:
+            if on:
+                await self._call("POST", path, data={"emoji_name": emoji})
+            else:
+                await self._call("DELETE", path, params={"emoji_name": emoji})
+        except ZulipError as exc:
+            if exc.code in _REACTION_AS_ASKED:
+                return
+            raise ActivityMarkRefused(
+                f"Zulip refused to {'add' if on else 'remove'} the {mark} reaction on "
+                f"{message_ref}: {exc.msg}"
+            ) from exc
 
     async def update_message(
         self, channel_id: str, message_ref: str, new_content: str
