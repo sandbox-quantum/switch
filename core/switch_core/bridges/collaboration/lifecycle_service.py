@@ -1164,6 +1164,11 @@ class CollaborationBridgeLifecycleService:
                     bridge_id, tenant_id, service_url
                 )
             )
+            adapter.set_state_persister(
+                lambda changes: self._persist_adapter_state(
+                    bridge_id, tenant_id, changes
+                )
+            )
             adapter.set_channel_team_persister(
                 lambda channel_id, team_id: self._persist_channel_team(
                     bridge_id, tenant_id, channel_id, team_id
@@ -1321,6 +1326,16 @@ class CollaborationBridgeLifecycleService:
         bridge's tenant is carried here explicitly rather than inherited."""
         async with tenant_session(self._session_factory, tenant_id) as session:
             await self._bridge_store.set_service_url(session, bridge_id, service_url)
+            await session.commit()
+
+    async def _persist_adapter_state(
+        self, bridge_id: str, tenant_id: str, changes: dict[str, object]
+    ) -> None:
+        """Merge an adapter's resumable state into its connection config."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            await self._bridge_store.merge_connection_config(
+                session, bridge_id, changes
+            )
             await session.commit()
 
     async def _persist_channel_team(
