@@ -538,6 +538,36 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Trello
+
+Built from sign-in runs against a free Trello account:
+
+- Trello's MCP server signs in through Atlassian, which registers clients
+  dynamically and matches a loopback port exactly, so Core registers its own
+  client and Trello connects through Switch Console on Atlassian's five ports.
+  It is not reached through the Atlassian connection: Trello data is only on
+  its own server.
+- The person picks one workspace and the permissions to grant on Atlassian's
+  consent screen. On the account used, it offered Read alone: Atlassian then
+  granted the read scopes and dropped the write ones, and the connection is
+  recorded as read, which Switch already does whenever the write scopes are
+  not all granted. A request for board writes without the Inbox and Planner
+  scopes was refused outright ("Permissions are blocked for these
+  workspaces"), so both levels ask for them. Writing was not tried.
+- Not asked for: `write:organization:trello`, which changes workspaces.
+  Trello's tools archive cards and lists rather than delete them.
+- Access tokens live 8 hours (28,800 s measured), and every refresh returns a
+  new refresh token. Revoking it worked, and a refresh after revoking was
+  refused (403). `api.atlassian.com/me` names the account, by `account_id`
+  and email.
+- A read sign-in lists nine tools (`trelloRead*` and `trelloSearch`). Each
+  takes an `action`, and ids are Atlassian resource ids taken from the read
+  tools; the skill says so, after Atlassian's own `trello-use` skill.
+
+To connect: Settings, Connections in Switch Console, then Trello. Nothing
+needs configuring on the server. To roll back, add `trello` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

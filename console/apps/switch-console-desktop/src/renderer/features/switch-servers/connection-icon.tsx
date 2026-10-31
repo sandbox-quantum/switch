@@ -35,6 +35,7 @@ const MARK_COLOR: Record<string, string> = {
   gitlab: 'text-[#FC6D26]',
   atlassian: 'text-[#0052CC] emdark:text-foreground',
   bitbucket: 'text-[#0052CC] emdark:text-foreground',
+  trello: 'text-[#0052CC] emdark:text-foreground',
   box: 'text-[#0061D5] emdark:text-foreground',
   datadog: 'text-[#632CA6] emdark:text-foreground',
   'new-relic': 'text-foreground emdark:text-[#1CE783]',
