@@ -17,6 +17,7 @@ from pydantic import Field, field_validator
 from pydantic.json_schema import SkipJsonSchema
 
 from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
+from switch_core.bridges.collaboration.matrix.chunking import MAX_MESSAGE, chunk_message
 from switch_core.bridges.collaboration.matrix.client import MatrixApiError, MatrixClient
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -455,10 +456,26 @@ class MatrixAdapter(PlatformAdapter):
         room_wide_mention: bool = False,
     ) -> str | None:
         self._refuse_encrypted(channel_id)
-        return await self._require_client().send_message(
-            channel_id,
-            self._text_content(sender_name, content, thread_root_id=thread_root_id),
-        )
+        plain = self._plain(content)
+        if len(plain) <= MAX_MESSAGE:
+            return await self._require_client().send_message(
+                channel_id,
+                self._text_content(sender_name, content, thread_root_id=thread_root_id),
+            )
+
+        first_ref: str | None = None
+        chunks = chunk_message(plain)
+        for index, chunk in enumerate(chunks):
+            label = sender_name if index == 0 else f"{sender_name} (continued)"
+            ref = await self._require_client().send_message(
+                channel_id,
+                self._text_content(
+                    label, html.escape(chunk), thread_root_id=thread_root_id
+                ),
+            )
+            if first_ref is None:
+                first_ref = ref
+        return first_ref
 
     async def send_attachment(
         self,

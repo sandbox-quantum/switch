@@ -10,6 +10,7 @@ from switch_core.bridges.collaboration.matrix.adapter import (
     MatrixAdapter,
     MatrixConnectionConfig,
 )
+from switch_core.bridges.collaboration.matrix.chunking import chunk_message
 from switch_core.bridges.collaboration.matrix.client import MatrixApiError, MatrixClient
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
@@ -393,6 +394,27 @@ async def test_outbound_message_contains_matrix_thread_relation() -> None:
     assert content["body"] == "Ada: Hello world"
     assert content["m.relates_to"]["rel_type"] == "m.thread"
     assert content["m.relates_to"]["event_id"] == "$root"
+
+
+def test_long_message_chunker_prefers_readable_boundaries() -> None:
+    chunks = chunk_message("alpha beta\ngamma delta", limit=11)
+    assert chunks == ["alpha beta", "gamma delta"]
+    assert all(len(chunk) <= 11 for chunk in chunks)
+
+
+@pytest.mark.asyncio
+async def test_long_outbound_message_is_split_and_returns_first_ref() -> None:
+    value = adapter()
+    ref = await value.send_message(
+        "!room:example.com", "Ada", "<p>" + ("word " * 1000) + "</p>", "$root"
+    )
+    assert ref == "$event"
+    fake = cast(FakeMatrixClient, value._client)
+    sends = [call for call in fake.calls if call[0] == "send_message"]
+    assert len(sends) == 2
+    assert sends[0][1][1]["body"].startswith("Ada: ")
+    assert sends[1][1][1]["body"].startswith("Ada (continued): ")
+    assert all(send[1][1]["m.relates_to"]["event_id"] == "$root" for send in sends)
 
 
 @pytest.mark.asyncio
