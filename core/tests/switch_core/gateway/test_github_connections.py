@@ -28,7 +28,7 @@ from switch_core.db.stores.service_connection_store import ServiceConnectionStor
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import get_config, get_session
-from switch_core.gateway.github_connections import router
+from switch_core.gateway.github_connections import APP_CHANGED, router
 from switch_core.keys import Keyring
 from switch_core.providers.github import GitHubConnections, GitHubError, GitHubReach
 from switch_core.providers.github_installation import GitHubInstallationCredentials
@@ -824,5 +824,35 @@ class TestOrganizationsApp:
             # The organization saves its own App while the browser is on its way.
             organizations.app = _saved(_organization_github("organization-client"))
             left = await client.get(started.json()["url"])
+            polled = (await client.get(BASE + f"/flows/{state}")).json()
 
         assert left.status_code == 400
+        assert APP_CHANGED in left.text
+        assert polled["status"] == "failed"
+        assert polled["error"] == APP_CHANGED
+
+    async def test_an_app_unusable_by_authorize_fails_the_flow_with_its_problem(
+        self, github_app
+    ) -> None:
+        _, server_github, identity, factory = github_app
+        organizations = _Organizations(None)
+        app = _process(server_github, identity, factory, False, organizations)
+        problem = "Your organization's GitHub app can't be used: it is <broken>."
+
+        async with await _client(app) as client:
+            state = secrets.token_urlsafe(32)
+            started = await client.post(
+                BASE + "/flows",
+                json={"port": 12345, "state": state, "completion_secret": SECRET},
+            )
+            assert started.status_code == 200
+            organizations.app = _saved(None, problem)
+            left = await client.get(started.json()["url"])
+            polled = (await client.get(BASE + f"/flows/{state}")).json()
+
+        assert left.status_code == 503
+        assert left.headers["content-type"].startswith("text/html")
+        assert left.headers["cache-control"] == "no-store"
+        assert "it is &lt;broken&gt;." in left.text
+        assert polled["status"] == "failed"
+        assert polled["error"] == problem
