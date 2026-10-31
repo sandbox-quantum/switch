@@ -1,7 +1,7 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Read and inspect Bitbucket Cloud repositories and pull requests, as you.
+description: Read and manage Bitbucket Cloud repositories and pull requests, as you.
 enabled: true
 adapter: oauth
 auth:
@@ -37,7 +37,6 @@ access:
       - email
       - offline_access
       - read:bitbucket:agent-interface
-      - search:bitbucket:agent-interface
   write:
     scopes:
       - read:me
@@ -45,6 +44,5 @@ access:
       - email
       - offline_access
       - read:bitbucket:agent-interface
-      - search:bitbucket:agent-interface
       - write:bitbucket:agent-interface
 tools: { mode: pass_through }

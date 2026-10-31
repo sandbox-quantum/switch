@@ -202,10 +202,7 @@ def test_the_shipped_bitbucket_entry_signs_in_as_the_spike_found_it_must():
     ]
     assert definition.access is not None and definition.access.write is not None
     identity = ["read:me", "read:account", "email", "offline_access"]
-    bitbucket_read = [
-        "read:bitbucket:agent-interface",
-        "search:bitbucket:agent-interface",
-    ]
+    bitbucket_read = ["read:bitbucket:agent-interface"]
     assert definition.access.read.scopes == identity + bitbucket_read
     assert definition.access.write.scopes == [
         *identity,
