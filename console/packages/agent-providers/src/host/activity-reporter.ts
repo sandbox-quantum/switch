@@ -36,6 +36,11 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /**
+   * On a tool call that runs a subagent, which agent it runs. Left out on
+   * every other row, so a server that predates it takes the row.
+   */
+  subagent?: { agent: string | null };
 };
 
 export type UsageRow = {
@@ -116,7 +121,8 @@ export class ActivityReporter {
   reports(
     event: ServerEvent,
     originOf: (turnId: string) => Origin | null,
-    usageOf: (turnId: string) => TokenUsage[]
+    usageOf: (turnId: string) => TokenUsage[],
+    subagentOf: (turnId: string, itemId: string) => { agent: string | null } | null
   ): Report[] {
     const body = event.body;
     const place = (turnId: string): Placement => {
@@ -153,6 +159,8 @@ export class ActivityReporter {
       }
       case 'item.upsert': {
         const { item } = body;
+        const subagent =
+          item.kind === 'tool-activity' ? subagentOf(item.turnId, item.itemId) : null;
         return [
           {
             kind: 'activity',
@@ -167,6 +175,7 @@ export class ActivityReporter {
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,
+              ...(subagent ? { subagent } : {}),
             },
           },
         ];
