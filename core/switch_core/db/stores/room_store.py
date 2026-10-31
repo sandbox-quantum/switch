@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
     Agent,
     Client,
@@ -645,7 +646,7 @@ class RoomStore:
         result = await session.execute(
             select(ClientRoom.room_id, ClientRoom.joined_at).where(
                 ClientRoom.client_id == client_id,
-                ClientRoom.room_id.in_(room_ids),
+                any_of(ClientRoom.room_id, room_ids),
             )
         )
         return {room_id: joined_at for room_id, joined_at in result.all()}
