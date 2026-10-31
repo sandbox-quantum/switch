@@ -40,6 +40,8 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.bridges.collaboration.sms.adapter import SmsAdapter
+from switch_core.bridges.collaboration.sms.config import SmsConnectionConfig
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
     TeamsConnectionConfig,
@@ -88,6 +90,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("matrix", MatrixAdapter, MatrixConnectionConfig),
     PlatformRegistration("rocketchat", RocketChatAdapter, RocketChatConnectionConfig),
     PlatformRegistration("webex", WebexAdapter, WebexConnectionConfig),
+    PlatformRegistration("sms", SmsAdapter, SmsConnectionConfig),
 )
 
 
