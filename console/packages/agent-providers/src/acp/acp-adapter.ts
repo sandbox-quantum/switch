@@ -405,7 +405,7 @@ export class AcpAdapter implements ProviderAdapter {
       return;
     }
     if (!state.models.some((choice) => choice.id === model.id))
-      throw new ProviderSessionError(this.provider, id, Unavailable model: );
+      throw new ProviderSessionError(this.provider, id, `Unavailable model: ${model.id}`);
     const result = await state.client.request<{ configOptions?: AcpConfigOption[] }>(
       'session/set_config_option',
       { sessionId: state.nativeId, configId: 'model', value: model.id }
@@ -417,7 +417,7 @@ export class AcpAdapter implements ProviderAdapter {
         throw new ProviderSessionError(
           this.provider,
           id,
-          Failed to apply model : agent retained 
+          `Failed to apply model ${model.id}: agent retained ${current}`
         );
       }
     }

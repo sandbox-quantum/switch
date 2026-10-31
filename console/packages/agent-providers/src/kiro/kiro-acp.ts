@@ -1,10 +1,15 @@
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks, AcpSessionContext } from '../acp/hooks';
+import type { AcpToolCall } from '../acp/protocol';
 import type { ItemType } from '../events';
 import { execProvider } from '../provider-process';
-import { commandOutput, readiness, type ProviderReadiness, type SignInCheckInput } from '../readiness';
+import {
+  commandOutput,
+  readiness,
+  type ProviderReadiness,
+  type SignInCheckInput,
+} from '../readiness';
 import { JsonRpcError } from '../transport/stdio-json-rpc';
-import type { AcpToolCall } from '../acp/protocol';
 
 export const KIRO_LOGIN = 'kiro-cli login';
 export const KIRO_LOGIN_HINT = `Sign in on the execution machine with ${KIRO_LOGIN} (use \`${KIRO_LOGIN} --use-device-flow\` in SSH or headless environments).`;
@@ -46,10 +51,7 @@ export function parseKiroWhoami(output: string): ProviderReadiness {
   try {
     const data = JSON.parse(trimmed) as Record<string, unknown>;
     if (typeof data !== 'object' || data === null) {
-      return readiness(
-        'unknown',
-        'Could not verify authentication: malformed status output.'
-      );
+      return readiness('unknown', 'Could not verify authentication: malformed status output.');
     }
 
     if (
@@ -87,10 +89,7 @@ export function parseKiroWhoami(output: string): ProviderReadiness {
       'Could not verify authentication. Check provider setup and try again.'
     );
   } catch {
-    return readiness(
-      'unknown',
-      'Could not verify authentication: malformed status output.'
-    );
+    return readiness('unknown', 'Could not verify authentication: malformed status output.');
   }
 }
 
@@ -106,10 +105,7 @@ export async function checkKiroSignIn(input: SignInCheckInput): Promise<Provider
     output = res.stdout;
   } catch (error) {
     const err = error as NodeJS.ErrnoException & { stdout?: unknown; stderr?: unknown };
-    if (
-      err.code === 'ENOENT' ||
-      /not found|not recognized|no such file/i.test(err.message ?? '')
-    ) {
+    if (err.code === 'ENOENT' || /not found|not recognized|no such file/i.test(err.message ?? '')) {
       return readiness(
         'unconfigured',
         `Kiro CLI is not installed or not found on PATH: ${input.binaryPath}.`
@@ -234,4 +230,3 @@ export const kiroAcp: AcpProviderHooks = {
 export function createKiroAdapter(options: AcpAdapterOptions = {}): AcpAdapter {
   return createAcpAdapter(kiroAcp, options);
 }
-

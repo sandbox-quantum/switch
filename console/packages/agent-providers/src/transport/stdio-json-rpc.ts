@@ -294,7 +294,9 @@ export class StdioJsonRpcClient {
             error: {
               code: cause instanceof JsonRpcError ? cause.code : -32603,
               message: cause instanceof Error ? cause.message : String(cause),
-              ...(cause instanceof JsonRpcError && cause.data !== undefined ? { data: cause.data } : {}),
+              ...(cause instanceof JsonRpcError && cause.data !== undefined
+                ? { data: cause.data }
+                : {}),
             },
           })
       )

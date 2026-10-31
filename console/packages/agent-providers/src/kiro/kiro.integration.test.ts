@@ -16,4 +16,3 @@ describeConformance('kiro', {
   mcpServers: { echo: echoMcpServerSpec() },
   ...(process.env.KIRO_API_KEY ? { env: { KIRO_API_KEY: process.env.KIRO_API_KEY } } : {}),
 });
-

@@ -256,13 +256,8 @@ describe('Kiro ACP Hooks', () => {
       // Send request for unadvertised optional method
       const unadvertisedPromise = new Promise<{ error?: { code: number; message: string } }>(
         (resolve) => {
-          server.stdout.on('data', (chunk) => {
-            for (const line of chunk.toString('utf8').split('\n')) {
-              if (line.trim()) {
-                const msg = JSON.parse(line);
-                if (msg.id === 999) resolve(msg);
-              }
-            }
+          server.on('message', (msg) => {
+            if (msg.id === 999) resolve(msg);
           });
         }
       );
@@ -285,14 +280,14 @@ describe('Kiro ACP Hooks', () => {
       expect(session.nativeSessionId).toBe('kiro-session-1');
       const models = await adapter.listModels(session.sessionId);
       expect(models).toEqual([
-        { id: 'claude-3-5-sonnet', name: 'Claude 3.5 Sonnet' },
-        { id: 'claude-3-haiku', name: 'Claude 3 Haiku' },
+        { id: 'claude-3-5-sonnet', label: 'Claude 3.5 Sonnet', imageInput: true, options: {} },
+        { id: 'claude-3-haiku', label: 'Claude 3 Haiku', imageInput: true, options: {} },
       ]);
     });
 
     it('sets model via session/set_config_option with configId model', async () => {
       const { adapter, server, session } = await setupSession();
-      server.reply('session/set_config_option', (params) => {
+      server.reply('session/set_config_option', (params: Record<string, unknown>) => {
         expect(params).toMatchObject({
           sessionId: 'kiro-session-1',
           configId: 'model',
@@ -342,8 +337,6 @@ describe('Kiro ACP Hooks', () => {
         update: { sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Execute command' },
       });
 
-      const decisionPromise = adapter.respondToRequest(session.sessionId, 'req-1', 'accept');
-
       // Server requests permission from client
       server.send({
         id: 101,
@@ -360,7 +353,10 @@ describe('Kiro ACP Hooks', () => {
         },
       });
 
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
       const openedEvent = events.find((e) => e.type === 'request.opened') as {
+        requestId: string;
         options: Array<{ decision: string; label: string }>;
       };
       expect(openedEvent).toBeDefined();
@@ -373,7 +369,11 @@ describe('Kiro ACP Hooks', () => {
       ]);
       expect(openedEvent.options.some((o) => /permanent|future/i.test(o.label))).toBe(false);
 
-      await decisionPromise;
+      await adapter.respondToRequest(session.sessionId, openedEvent.requestId, 'accept');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(server.received.find((m) => m.id === 101)?.result).toEqual({
+        outcome: { outcome: 'selected', optionId: 'opt-once' },
+      });
     });
 
     it('auto-approves in full-access mode without presenting prompt to user', async () => {
@@ -383,13 +383,8 @@ describe('Kiro ACP Hooks', () => {
 
       const replyPromise = new Promise<{ result?: { outcome?: { optionId?: string } } }>(
         (resolve) => {
-          server.stdout.on('data', (chunk) => {
-            for (const line of chunk.toString('utf8').split('\n')) {
-              if (line.trim()) {
-                const msg = JSON.parse(line);
-                if (msg.id === 202) resolve(msg);
-              }
-            }
+          server.on('message', (msg) => {
+            if (msg.id === 202) resolve(msg);
           });
         }
       );
