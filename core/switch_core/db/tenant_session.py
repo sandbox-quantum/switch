@@ -66,7 +66,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import event
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 
@@ -135,6 +135,9 @@ def register_tenant_session_hook() -> None:
     _registered = True
 
 
+_SET_TENANT = "SELECT set_config('app.tenant_id', $1, true)"
+
+
 def _set_tenant_on_begin(
     session: Session, transaction: SessionTransaction, connection: Connection
 ) -> None:
@@ -155,10 +158,9 @@ def _set_tenant_on_begin(
     session.info[_STAMPED] = tenant_id
     if tenant_id is None:
         return
-    connection.execute(
-        text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-        {"tenant_id": tenant_id},
-    )
+    # Sent to the driver as it is: a `text()` construct would be built and
+    # compiled again for every transaction, which is every session.
+    connection.exec_driver_sql(_SET_TENANT, (tenant_id,))
 
 
 def _forget_the_stamp(session: Session, transaction: SessionTransaction) -> None:
