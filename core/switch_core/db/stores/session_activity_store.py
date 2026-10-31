@@ -29,6 +29,7 @@ from switch_core.db.models import (
     AgentSessionActivityItem,
     AgentSessionPlacement,
     ApprovalRequest,
+    Room,
     SwitchCoreProcess,
 )
 
@@ -375,6 +376,47 @@ class AgentSessionActivityStore:
             )
         )
         return list(result.scalars())
+
+    async def scrub_hidden_tool_text(
+        self,
+        session: AsyncSession,
+        *,
+        room_id: str | None,
+        agent_id: str | None,
+    ) -> None:
+        """Empty the stored input and output of tool calls that tool details
+        no longer show: the room's setting when it has one, else its agent's.
+
+        Run when a setting is turned off or cleared, for the room or the agent
+        that changed. A row written while the setting was on still holds its
+        text, and readers show a row as stored.
+        """
+        room_flag = (
+            select(Room.metadata_["tool_details"].as_boolean())
+            .where(Room.id == AgentSessionActivityItem.room_id)
+            .scalar_subquery()
+        )
+        agent_flag = (
+            select(Agent.tool_details)
+            .where(Agent.id == AgentSessionActivityItem.agent_id)
+            .scalar_subquery()
+        )
+        hidden = or_(
+            room_flag.is_(False),
+            and_(room_flag.is_(None), func.coalesce(agent_flag, False).is_(False)),
+        )
+        scope = [
+            AgentSessionActivityItem.kind == "tool-activity",
+            AgentSessionActivityItem.text != "",
+            hidden,
+        ]
+        if room_id is not None:
+            scope.append(AgentSessionActivityItem.room_id == room_id)
+        if agent_id is not None:
+            scope.append(AgentSessionActivityItem.agent_id == agent_id)
+        await session.execute(
+            update(AgentSessionActivityItem).where(*scope).values(text="")
+        )
 
     async def prune_before(self, session: AsyncSession, cutoff: datetime) -> int:
         result = await session.execute(

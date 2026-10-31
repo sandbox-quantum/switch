@@ -107,23 +107,37 @@ const SECRET_SHAPES: readonly RegExp[] = [
 /** `scheme://user:password@host`: the password is masked, the rest kept. */
 const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^@\s/]+(@)/gi;
 
+/** A value: quoted, to its closing quote, or bare, up to a delimiter of whatever holds it. */
+const VALUE = String.raw`"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|[^\s"',;}\])]+`;
+
 /** `Bearer <token>` anywhere, and `Authorization: <scheme> <credentials>`. */
 const BEARER = /(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi;
-const AUTHORIZATION =
-  /(\bauthorization["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+/gi;
+const AUTHORIZATION = new RegExp(
+  String.raw`(\bauthorization["']?\s*[:=]\s*)(?!\[REDACTED\])(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;}\])]+)`,
+  'gi'
+);
 
 /** A value assigned to a name that says it is secret: `password=…`, `"api_key": "…"`. */
-const SECRET_ASSIGNMENT =
-  /(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|token|access[_-]?token|client[_-]?secret|private[_-]?key)["']?\s*[:=]\s*["']?)(?!\[REDACTED\])[^\s"',;]+/gi;
+const SECRET_ASSIGNMENT = new RegExp(
+  String.raw`(\b(?:[a-z0-9]+[_-])*(?:api[_-]?key|secret(?:[_-]?access)?(?:[_-]?key)?|password|passwd|token|access[_-]?token|client[_-]?secret|private[_-]?key)["']?\s*[:=]\s*)(?!\[REDACTED\])(?:${VALUE})`,
+  'gi'
+);
+
+/** The mask in place of a value, inside the quotes it had. */
+function maskedValue(match: string, head: string): string {
+  const value = match.slice(head.length);
+  const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
+  return `${head}${quote}[REDACTED]${quote}`;
+}
 
 /** `text` with anything shaped like a secret masked. */
 export function redactSecrets(text: string): string {
   const masked = SECRET_SHAPES.reduce((output, shape) => output.replace(shape, '[REDACTED]'), text);
   return masked
     .replace(URL_PASSWORD, '$1[REDACTED]$2')
-    .replace(AUTHORIZATION, '$1[REDACTED]')
+    .replace(AUTHORIZATION, maskedValue)
     .replace(BEARER, '$1[REDACTED]')
-    .replace(SECRET_ASSIGNMENT, '$1[REDACTED]');
+    .replace(SECRET_ASSIGNMENT, maskedValue);
 }
 
 const CUT_TAIL_MIN = 8;
