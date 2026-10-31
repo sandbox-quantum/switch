@@ -251,6 +251,7 @@ class TestResults:
             "slug": "datadog",
             "name": "Datadog",
             "enabled": on_by_default,
+            "organization_locked": False,
             "updated_by_name": None,
             "updated_at": None,
             "connected_members": 0,

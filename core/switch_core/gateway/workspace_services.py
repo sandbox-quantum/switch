@@ -10,6 +10,10 @@ switching it back on returns them. A token already handed out may be used
 until that restart; one the vendor can revoke (GitHub's) is revoked here, and
 one no vendor can revoke alone is marked withdrawn and stays valid until it
 expires, which the answer's warning says.
+
+With `organization_connector_apps` on, the workspace's organization has a say
+(`gateway/organization_services.py`): a service it locked is out of the
+workspace admin's reach, and one it set unlocked is the workspace's default.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway.auth import require_tenant_admin
+from switch_core.gateway.connector_apps import organization_apps_on
 from switch_core.gateway.dependencies import get_session
 
 router = APIRouter(prefix="/workspace/services")
@@ -53,11 +58,16 @@ async def _counts(session: AsyncSession, column: Any, model: Any) -> dict[str, i
 async def list_workspace_services(
     _: Annotated[User, Depends(require_tenant_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    organizations: Annotated[bool, Depends(organization_apps_on)],
 ) -> dict[str, Any]:
     """Every catalog service that can be connected, whether the workspace has
     it on, and who it reaches: what an admin weighs before switching it off."""
     settings = await STORE.list_settings(session)
-    on_by_default = await STORE.on_by_default(session)
+    switches = await STORE.switches(
+        session,
+        [entry.definition.slug for entry in CATALOG.values()],
+        organizations=organizations,
+    )
     names = {
         user.id: user.name
         for user in await session.scalars(
@@ -79,7 +89,10 @@ async def list_workspace_services(
             {
                 "slug": definition.slug,
                 "name": definition.name,
-                "enabled": on_by_default if setting is None else setting.enabled,
+                "enabled": switches[definition.slug].enabled,
+                # Locked by the workspace's organization: the admin's switch
+                # does nothing until an organization admin unlocks it.
+                "organization_locked": switches[definition.slug].locked,
                 "updated_by_name": (
                     None if setting is None else names.get(setting.updated_by)
                 ),
@@ -103,6 +116,7 @@ async def set_workspace_service(
     user: Annotated[User, Depends(require_tenant_admin)],
     session: Annotated[AsyncSession, Depends(get_session)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    organizations: Annotated[bool, Depends(organization_apps_on)],
 ) -> dict[str, Any]:
     """Switch `service` on or off for the workspace.
 
@@ -114,6 +128,17 @@ async def set_workspace_service(
     entry = CATALOG.get(service)
     if entry is None or not entry.definition.enabled:
         raise HTTPException(status_code=404, detail=f"No service named {service!r}.")
+    switch = (await STORE.switches(session, [service], organizations=organizations))[
+        service
+    ]
+    if switch.locked:
+        state = "on" if switch.enabled else "off"
+        raise HTTPException(
+            status_code=409,
+            detail=f"Your organization has {entry.definition.name} locked {state} "
+            "for its workspaces. An organization admin can change it under "
+            "Organization, Services.",
+        )
     await STORE.set_enabled(session, service, body.enabled, user.id)
     issued_for_it = (ServiceTokenIssuance.service == service,)
     if not body.enabled:

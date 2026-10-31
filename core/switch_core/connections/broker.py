@@ -172,6 +172,14 @@ UnavailableCode = Literal[
 ]
 
 
+def organization_switched_off(name: str) -> str:
+    """Why a service is off where the workspace's organization locked it so."""
+    return (
+        f"Your organization has switched {name} off for its workspaces. An "
+        "organization admin can change it under Organization, Services."
+    )
+
+
 # Whose app a service goes through in a workspace: its organization's, or
 # the server's (which includes services with no app at all).
 AppSource = Literal["organization", "server"]
@@ -470,6 +478,9 @@ class ServiceBroker:
         self._adapters = adapters
         # Organizations' own apps, with `organization_connector_apps` on.
         self._organization_apps = organization_apps
+        # Organizations' service settings count with the same flag as their
+        # apps (`organization_connector_apps`): a phase ships whole.
+        self._organization_settings = organization_apps is not None
         # Switched off here, by service, with the reason people are shown.
         self._disabled = {
             service: reason or SWITCHED_OFF for service, reason in disabled.items()
@@ -533,21 +544,31 @@ class ServiceBroker:
         if not self._workspace_gate:
             return
         self._require_switched_on(service)
-        if not await self._workspace_services.is_enabled(session, service):
-            raise ServiceError(
-                403,
-                FORBIDDEN,
-                f"{name} is not enabled in this workspace. Ask a workspace admin; "
-                "they switch it on under Connectors in Switch Console.",
-                retryable=False,
+        switch = (
+            await self._workspace_services.switches(
+                session, [service], organizations=self._organization_settings
             )
+        )[service]
+        if switch.enabled:
+            return
+        raise ServiceError(
+            403,
+            FORBIDDEN,
+            organization_switched_off(name)
+            if switch.locked
+            else f"{name} is not enabled in this workspace. Ask a workspace admin; "
+            "they switch it on under Connectors in Switch Console.",
+            retryable=False,
+        )
 
     async def workspace_disabled(self, session: AsyncSession) -> set[str]:
         """The services off in this workspace, by an admin's switch or the
         workspace's default; none with the gate off."""
         if not self._workspace_gate:
             return set()
-        return await self._workspace_services.disabled_services(session, self._catalog)
+        return await self._workspace_services.disabled_services(
+            session, self._catalog, organizations=self._organization_settings
+        )
 
     async def _choose(self, session: AsyncSession, service: str) -> _Choice:
         """The adapter `service` goes through in the bound workspace: its

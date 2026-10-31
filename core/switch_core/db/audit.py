@@ -72,6 +72,8 @@ class OrganizationAuditAction(StrEnum):
     MEMBER_REMOVED = "organization.member_removed"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"
     CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
+    SERVICE_SET = "organization.service_set"
+    SERVICE_CLEARED = "organization.service_cleared"
 
 
 class ServerAuditAction(StrEnum):
