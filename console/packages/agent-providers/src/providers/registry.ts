@@ -2,6 +2,7 @@ import { checkAcpSignIn, createAcpAdapter } from '../acp/acp-adapter';
 import type { AcpProviderHooks } from '../acp/hooks';
 import type { ProviderAdapter } from '../adapter';
 import { antigravityAcp } from '../antigravity/antigravity-adapter';
+import { auggieAcp } from '../auggie/auggie-acp';
 import { createClaudeAdapter } from '../claude/claude-adapter';
 import { checkClaudeSignIn, CLAUDE_LOGIN } from '../claude/sign-in';
 import { createCodexAdapter } from '../codex/codex-adapter';
@@ -99,6 +100,7 @@ export const PROVIDER_RUNTIMES: readonly ProviderRuntime[] = [
     checkSignIn: checkOpencodeSignIn,
   },
   acpProviderRuntime(antigravityAcp),
+  acpProviderRuntime(auggieAcp),
   acpProviderRuntime(cursorAcp),
 ];
 
