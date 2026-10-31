@@ -231,6 +231,12 @@ version of their own to them without also giving them a release of their own.
   30-second re-check reads every client only when a fingerprint of the
   workspace's clients and agents has changed since its last full read, where
   it read them all every time.
+- **The 30-second re-check of which controller runs each agent reads one
+  query, and nothing when no placement changed.** Every process read every
+  placed agent's definition, document included, then each controller with a
+  query of its own. It now reads the columns a binding is made of in one
+  query per workspace, and only when a fingerprint of the placements has
+  changed since its last full read.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's

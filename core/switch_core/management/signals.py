@@ -45,6 +45,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from switch_core.db.fingerprint import Fingerprint
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.management.bindings import (
@@ -122,6 +123,9 @@ class ControllerSignals:
         # periodic re-check tells a held controller only what is new to it.
         self._nudged_revision: dict[str, int] = {}
         self._nudged_operations: dict[str, set[str]] = {}
+        # Each tenant's placements as the last full read of the bindings here
+        # found them, which the periodic re-check compares first.
+        self._binding_fingerprints: dict[str, Fingerprint] = {}
         # Controllers, by (tenant id, controller id), whose bindings another
         # process changed and this one has still to read.
         self._bindings_owed = bus.pending_work(
@@ -391,14 +395,16 @@ class ControllerSignals:
         re-nudge every controller this process holds from what the database
         says now: its assignment revision and its open operations, or its
         revocation."""
-        await self._reconcile_all_bindings()
+        await self._reconcile_all_bindings(check_first=False)
         await self._read_all_connections()
         await self._renudge_held(only_new=False)
 
     async def recheck(self) -> None:
-        """What `resync` does, but a held controller is nudged only with what
-        this process has not told it yet."""
-        await self._reconcile_all_bindings()
+        """What `resync` does, but the bindings are read only when a tenant's
+        placements have changed since the last full read, and a held
+        controller is nudged only with what this process has not told it
+        yet."""
+        await self._reconcile_all_bindings(check_first=True)
         await self._read_all_connections()
         await self._renudge_held(only_new=True)
 
@@ -408,13 +414,13 @@ class ControllerSignals:
         except Exception:
             logger.error("Could not re-read controller connections", exc_info=True)
 
-    async def _reconcile_all_bindings(self) -> None:
+    async def _reconcile_all_bindings(self, *, check_first: bool) -> None:
         try:
             await reconcile_bindings(
                 session_factory=self._session_factory,
                 definitions=self._definitions,
-                controllers=self._controllers,
                 presence=self._presence,
+                fingerprints=self._binding_fingerprints if check_first else None,
             )
         except Exception:
             logger.error("Could not re-read controller bindings", exc_info=True)
