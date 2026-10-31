@@ -33,6 +33,8 @@ from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundInteraction,
     InboundMessage,
+    InboundMessageDelete,
+    InboundMessageEdit,
     InboundUserJoin,
     OutboundAttachment,
 )
@@ -83,15 +85,16 @@ from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.sessions.errors import SessionError
 from switch_core.tenant_context import no_tenant, tenant_scope
 from switch_core.transport import (
+    InboundCustomEvent,
+    RoomRef,
+    TransportError,
+    writes_derived_from,
+)
+from switch_core.transport import (
     InboundMedia as TransportMedia,
 )
 from switch_core.transport import (
     InboundMessage as TransportMessage,
-)
-from switch_core.transport import (
-    RoomRef,
-    TransportError,
-    writes_derived_from,
 )
 from switch_core.trust.client import (
     NullTrustClient,
@@ -117,6 +120,8 @@ _InboundEventT = TypeVar(
     "_InboundEventT",
     InboundInteraction,
     InboundMessage,
+    InboundMessageEdit,
+    InboundMessageDelete,
     InboundCommand,
     InboundAgentJoin,
     InboundUserJoin,
@@ -499,6 +504,12 @@ class CollaborationCore:
         self._adapter.set_channel_type_handler(self._record_channel_type)
         self._adapter.set_channel_rename_handler(self._handle_channel_named)
         self._adapter.set_agent_presentation_resolver(self._agent_presentation)
+        self._adapter.set_message_edit_handler(
+            self._traced("message_edit", self._handle_inbound_edit)
+        )
+        self._adapter.set_message_delete_handler(
+            self._traced("message_delete", self._handle_inbound_delete)
+        )
         # A bridge on a shared connection that started before the connection
         # was up is attached later (when it comes up, or on its first event).
         # Provisioning that ran at start unattached would have failed, so it is
@@ -1010,6 +1021,92 @@ class CollaborationCore:
         await self._adapter.admin_message(
             msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
         )
+
+    async def _mapped_external_message(
+        self, channel_id: str, message_ref: str
+    ) -> tuple[str, str, str] | None:
+        """Resolve an external post to its Switch room and transport event."""
+        room_ids = self._channel_to_room.get(channel_id)
+        if room_ids is None:
+            return None
+        async with self._session_factory() as session:
+            mapping = await self._bridge_message_map_store.get_by_external_post_id(
+                session, self._bridge_id, message_ref
+            )
+        if mapping is None:
+            return None
+        return room_ids[0], room_ids[1], mapping.transport_event_id
+
+    async def _handle_inbound_edit(self, edit: InboundMessageEdit) -> None:
+        target = await self._mapped_external_message(edit.channel_id, edit.message_ref)
+        if target is None:
+            return
+        room_id, transport_room_id, original_event_id = target
+        actor = await self._ensure_human_in_room(
+            external_user_id=edit.sender_id,
+            external_username=edit.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if actor is None:
+            return
+        body = self._adapter.translate_inbound(edit.content)
+        replacement: dict[str, object] = {
+            "msgtype": "m.text",
+            "body": body,
+        }
+        content = {
+            "msgtype": "m.text",
+            "body": f"* {body}",
+            "com.switch.bridge.external_edit": True,
+            "m.new_content": replacement,
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": original_event_id,
+            },
+        }
+        with writes_derived_from(
+            actor.client_id,
+            f"{_post_source(self._bridge_id, edit.channel_id, edit.message_ref)}"
+            f"\x1fedit\x1f{edit.edit_ref}",
+        ):
+            await actor.send_event(transport_room_id, "m.room.message", content)
+
+    async def _handle_inbound_delete(self, deletion: InboundMessageDelete) -> None:
+        target = await self._mapped_external_message(
+            deletion.channel_id, deletion.message_ref
+        )
+        if target is None:
+            return
+        room_id, transport_room_id, original_event_id = target
+        actor = await self._ensure_human_in_room(
+            external_user_id=deletion.sender_id,
+            external_username=deletion.sender_name,
+            room_id=room_id,
+            transport_room_id=transport_room_id,
+        )
+        if actor is None:
+            return
+        tombstone = {
+            "msgtype": "m.text",
+            "body": "[message deleted]",
+        }
+        content = {
+            "msgtype": "m.text",
+            "body": "* [message deleted]",
+            "com.switch.bridge.external_edit": True,
+            "m.new_content": tombstone,
+            "m.relates_to": {
+                "rel_type": "m.replace",
+                "event_id": original_event_id,
+            },
+        }
+        with writes_derived_from(
+            actor.client_id,
+            f"{_post_source(self._bridge_id, deletion.channel_id, deletion.message_ref)}"
+            f"\x1fdelete\x1f{deletion.delete_ref}",
+        ):
+            await actor.send_event(transport_room_id, "m.room.message", content)
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> None:
         logger.debug(
@@ -2341,6 +2438,16 @@ class CollaborationCore:
     async def handle_outbound_message(
         self, room: RoomRef, event: TransportMessage
     ) -> None:
+        relates = event.content.get("m.relates_to")
+        if isinstance(relates, dict) and relates.get("rel_type") == "m.replace":
+            if event.content.get("com.switch.bridge.external_edit"):
+                return
+            target_id = relates.get("event_id")
+            new_content = event.content.get("m.new_content")
+            body = new_content.get("body") if isinstance(new_content, dict) else None
+            if isinstance(target_id, str) and isinstance(body, str):
+                await self._handle_outbound_edit(room, target_id, body)
+            return
         logger.debug(
             "[BRIDGE-OUT] room message from=%s room=%s body=%s",
             event.sender,
@@ -2365,6 +2472,41 @@ class CollaborationCore:
         with tenant_scope(await self._room_tenant(room_id)):
             with self._counted_outbound("message"):
                 await self._relay_outbound_message(channel_id, event)
+
+    async def _handle_outbound_edit(
+        self, room: RoomRef, target_event_id: str, content: str
+    ) -> None:
+        channel_id = await self._channel_for_room(room.room_id)
+        if channel_id is None:
+            return
+        external_post_id = await self._external_post_for_event(target_event_id)
+        if external_post_id is None:
+            return
+        room_id, _ = self._channel_to_room[channel_id]
+        with tenant_scope(await self._room_tenant(room_id)):
+            with self._counted_outbound("message_edit"):
+                await self._adapter.update_message(
+                    channel_id,
+                    external_post_id,
+                    self._adapter.translate_outbound(content),
+                )
+
+    async def handle_outbound_delete(
+        self, room: RoomRef, event: InboundCustomEvent
+    ) -> None:
+        target_id = event.content.get("redacts")
+        if not isinstance(target_id, str):
+            return
+        channel_id = await self._channel_for_room(room.room_id)
+        if channel_id is None:
+            return
+        external_post_id = await self._external_post_for_event(target_id)
+        if external_post_id is None:
+            return
+        room_id, _ = self._channel_to_room[channel_id]
+        with tenant_scope(await self._room_tenant(room_id)):
+            with self._counted_outbound("message_delete"):
+                await self._adapter.delete_message(channel_id, external_post_id)
 
     async def handle_outbound_command(self, room: RoomRef, event: CommandEvent) -> None:
         """Post a room command as the text that types it, so the reply threaded
