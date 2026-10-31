@@ -396,43 +396,51 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
-# Every value below comes from GitLab's published MCP documentation and
-# authorization-server metadata, not from an observed connect: live-connect
-# QA is still pending (see the identity note in the shipped entry).
+
+
+# The endpoint and scope values come from GitLab's published MCP
+# documentation and authorization-server metadata; the registration shape
+# was measured live on 2026-10-31 (two POSTs to /oauth/register, see the
+# shipped entry's comment). Live-connect QA is still pending.
 def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     definition = CATALOG["gitlab"].definition
     oauth = definition.auth.oauth
     assert oauth is not None
     assert (definition.adapter, oauth.registration, oauth.redirect) == (
         "oauth",
-        "dynamic",
-        ["loopback"],
+        "static",
+        ["core"],
     )
-    # GitLab's registered redirect accepts varying loopback ports, so unlike
-    # Atlassian no ports are fixed.
+    # The operator's application is named through its settings variable.
+    assert oauth.client_settings == "GITLAB"
+    # No loopback redirect, so no ports are fixed or listed.
     assert oauth.loopback_ports is None
-    # And nothing is named that dynamic registration discovers instead: no
-    # fixed endpoints, and no prompt forced on every authorization.
-    assert oauth.authorization_url is None
-    assert oauth.revocation_url is None
+    # A static entry names its endpoints (the discovery document's own
+    # values) instead of discovering them, and no prompt is forced on
+    # every authorization.
+    assert oauth.authorization_url == "https://gitlab.com/oauth/authorize"
+    assert oauth.token_url == "https://gitlab.com/oauth/token"
+    assert oauth.revocation_url == "https://gitlab.com/oauth/revoke"
     assert oauth.prompt is None
-    assert oauth.revocation_discovered is True
+    assert oauth.revocation_discovered is False
     assert definition.auth.refresh == "rotating"
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == (
         "pass_through",
-        8 * 3600,
+        2 * 3600,
     )
     assert definition.mcp is not None
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("gitlab", "https://gitlab.com/api/v4/mcp")
     ]
-    # GitLab grants an MCP sign-in exactly one scope, `mcp`, at either level:
-    # its authorization server offers no narrower scope to narrow a read
-    # grant with.
+    # The operator's application carries the REST scopes beside `mcp`:
+    # read_api is what keeps a read grant from writing, api is what lets
+    # a write grant change anything, and read_user covers the identity
+    # read below — the scopes a dynamically registered client is never
+    # given, which is why the entry is static.
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["mcp"]
-    assert definition.access.write.scopes == ["mcp"]
+    assert definition.access.read.scopes == ["mcp", "read_api", "read_user"]
+    assert definition.access.write.scopes == ["mcp", "api", "read_user"]
     assert definition.tools is not None
     assert definition.tools.mode == "pass_through"
     assert definition.auth.identity is not None
