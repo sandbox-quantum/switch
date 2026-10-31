@@ -38,6 +38,7 @@ async def _turn(service, session_id: str, status: str) -> None:
         message_id=None,
         occurred_at=datetime.now(UTC),
         usage=[],
+        detail=None,
     )
 
 

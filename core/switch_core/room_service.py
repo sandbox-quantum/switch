@@ -1190,6 +1190,7 @@ class RoomService:
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
+        show_tool_detail: bool | None = None,
     ) -> None:
         if name is not None:
             name = name.strip()
@@ -1220,6 +1221,7 @@ class RoomService:
                 admin_mode=admin_mode,
                 read_visibility=read_visibility,
                 write_visibility=write_visibility,
+                show_tool_detail=show_tool_detail,
             )
             await session.commit()
         self.room_changed(tenant_id, room_id)

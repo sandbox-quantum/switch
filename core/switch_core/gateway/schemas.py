@@ -104,6 +104,7 @@ class RoomSummary(BaseModel):
 
 class RoomDetail(RoomSummary):
     transport_room_id: str
+    show_tool_detail: bool
     # Deprecated alias of `transport_room_id`, sent for the compatibility
     # window. Connectors are installed copies and only update when someone
     # clicks Update, so both names are carried until the shipped ones have
@@ -160,6 +161,7 @@ class RoomUpdateRequest(BaseModel):
     admin_mode: bool | None = None
     read_visibility: str | None = None
     write_visibility: str | None = None
+    show_tool_detail: bool | None = None
 
 
 class RoomSetGroupRequest(BaseModel):

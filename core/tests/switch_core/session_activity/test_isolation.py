@@ -84,6 +84,7 @@ async def test_each_tenant_sees_only_its_own_activity_and_requests(rls_harness):
                 message_id=None,
                 occurred_at=datetime.now(UTC),
                 usage=[],
+                detail=None,
             )
             await service.open_approval(
                 tenant,

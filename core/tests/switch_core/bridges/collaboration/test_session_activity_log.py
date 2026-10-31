@@ -50,6 +50,7 @@ def _log(
     *,
     limit: int = 10_000,
     heading: bool = True,
+    detail: bool = False,
 ) -> list[str]:
     return activity_log(
         items,
@@ -59,6 +60,7 @@ def _log(
         markup=MARKDOWN,
         elapsed_seconds=None,
         heading=heading,
+        detail=detail,
     ).splitlines()
 
 
@@ -79,6 +81,33 @@ def test_a_call_that_said_something_says_it_beside_the_name() -> None:
     lines = _log([_call(title="Ran the tests", text="42 passed")])
 
     assert lines[1] == "⌗ ✓ Ran the tests — 42 passed"
+
+
+def test_a_calls_detail_is_shown_under_it_where_the_platform_shows_detail() -> None:
+    call = _item(
+        kind="tool-activity",
+        status="completed",
+        title="Ran pytest",
+        detail="Input: pytest\nOutput:\n12 passed",
+    )
+
+    assert _log([call], detail=True)[1:] == [
+        "⌗ ✓ Ran pytest",
+        "```",
+        "Input: pytest",
+        "Output:",
+        "12 passed",
+        "```",
+    ]
+    assert _log([call], detail=False)[1:] == ["⌗ ✓ Ran pytest"]
+
+
+def test_a_detail_that_does_not_fit_is_left_out_whole() -> None:
+    call = _item(
+        kind="tool-activity", status="completed", title="Ran pytest", detail="x" * 500
+    )
+
+    assert _log([call], limit=200, detail=True, heading=False) == ["⌗ ✓ Ran pytest"]
 
 
 def test_how_a_call_went_is_on_the_line_rather_than_left_to_the_tally() -> None:
@@ -173,6 +202,7 @@ def test_a_remark_is_escaped_the_way_a_call_name_is() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         heading=False,
+        detail=False,
     ).splitlines()
 
     assert lines == ["❝ &lt;b>not bold&lt;/b>"]
@@ -306,7 +336,15 @@ def test_host_text_is_put_through_the_platforms_own_escape() -> None:
         markup=MARKDOWN,
         elapsed_seconds=None,
         heading=True,
+        detail=False,
     )
 
     assert "*not bold*" in seen
     assert "\\*not bold\\*" in drawn
+
+
+def test_a_detail_cannot_close_the_block_it_is_shown_in() -> None:
+    block = MARKDOWN.block("before\n```\n@channel **loud**\n````\nafter")
+
+    assert block.startswith("`````\n")
+    assert block.endswith("\n`````")
