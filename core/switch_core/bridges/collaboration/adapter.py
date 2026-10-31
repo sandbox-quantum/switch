@@ -1792,6 +1792,23 @@ class PlatformAdapter(ABC):
         carried on inbound activities) override this to persist it."""
         return None
 
+    def set_state_persister(
+        self, persist: Callable[[dict[str, object]], Awaitable[None]]
+    ) -> None:
+        """Install a callback for durable, adapter-owned connection state.
+
+        Some dial-out protocols hand the client an opaque resume cursor that
+        must survive both process restarts and bridge lease handoff. The state
+        belongs beside the connection credential because every pod constructs
+        the adapter from that same row. Adapters persist only non-secret values
+        their config model explicitly accepts; the lifecycle merges them under
+        the bridge row's existing config lock.
+
+        Default is a no-op so adapters with no resumable cursor expose no new
+        behavior. Matrix uses it for its ``/sync`` ``next_batch`` token.
+        """
+        return None
+
     def set_bridge_id(self, bridge_id: str) -> None:
         """Tell the adapter the id of the bridge it serves.
 
