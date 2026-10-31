@@ -154,6 +154,12 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="glob", description="Finds files by pattern"),
         ),
     ),
+    AgentProvider(
+        id="amp",
+        label="Amp",
+        sign_in_command="amp login",
+        connector_type="Amp CLI",
+    ),
 )
 
 
