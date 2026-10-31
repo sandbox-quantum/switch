@@ -17,5 +17,10 @@ describeConformance('cline', {
     // every session as unauthenticated.
     ...(process.env.USERPROFILE ? { USERPROFILE: process.env.USERPROFILE } : {}),
     ...(process.env.CLINE_API_KEY ? { CLINE_API_KEY: process.env.CLINE_API_KEY } : {}),
+    // In ACP mode Cline ignores its saved default provider/model, so without
+    // these the suite would run on the `cline` provider regardless of what's
+    // configured on the machine.
+    ...(process.env.CLINE_PROVIDER ? { CLINE_PROVIDER: process.env.CLINE_PROVIDER } : {}),
+    ...(process.env.CLINE_MODEL ? { CLINE_MODEL: process.env.CLINE_MODEL } : {}),
   },
 });

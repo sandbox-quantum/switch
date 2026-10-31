@@ -48,6 +48,10 @@ export const clineAcp: AcpProviderHooks = {
       await client.dispose();
     }
   },
+  // In ACP mode Cline ignores its saved default provider/model, so without
+  // CLINE_PROVIDER/CLINE_MODEL on the execution machine every session runs on
+  // the `cline` provider; Console's model picker only chooses among that
+  // provider's models.
   inheritEnv: ['CLINE_API_KEY', 'CLINE_PROVIDER', 'CLINE_MODEL'],
   // Cline's own modes are a plan/act workflow, not permission levels, so the
   // runtime mode is enforced on its permission requests instead, as Cursor's
