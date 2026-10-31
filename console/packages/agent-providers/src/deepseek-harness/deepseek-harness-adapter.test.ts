@@ -71,6 +71,100 @@ describe('deepseekHarnessAcp', () => {
       expect(result).toBeDefined();
       expect(result?.status).toBe('unknown');
     });
+
+    it('reports authenticated when handshake succeeds with empty authMethods', async () => {
+      const result = await deepseekHarnessAcp.checkSignIn?.({
+        binaryPath: 'dsh',
+        cwd: '/workspace',
+        env: {},
+        handshake: async () => ({ authMethods: [] }) as never,
+      });
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe('authenticated');
+      expect(result?.message).toContain('Signed in to DeepSeek Harness.');
+    });
+
+    it('reports unauthenticated when handshake returns authMethods', async () => {
+      const result = await deepseekHarnessAcp.checkSignIn?.({
+        binaryPath: 'dsh',
+        cwd: '/workspace',
+        env: {},
+        handshake: async () => ({ authMethods: [{ id: 'oauth', name: 'DeepSeek' }] }) as never,
+      });
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe('unauthenticated');
+      expect(result?.message).toContain(DSH_LOGIN);
+    });
+
+    it('reports unauthenticated when handshake throws an authentication error', async () => {
+      const result = await deepseekHarnessAcp.checkSignIn?.({
+        binaryPath: 'dsh',
+        cwd: '/workspace',
+        env: {},
+        handshake: async () => {
+          throw new Error('Authentication required');
+        },
+      });
+
+      expect(result).toBeDefined();
+      expect(result?.status).toBe('unauthenticated');
+      expect(result?.message).toContain(DSH_LOGIN);
+    });
+  });
+
+  describe('itemType', () => {
+    it('maps write and edit tools to file_change', () => {
+      expect(
+        deepseekHarnessAcp.itemType?.({
+          toolCallId: '1',
+          title: 'write',
+          status: 'completed',
+        })
+      ).toBe('file_change');
+      expect(
+        deepseekHarnessAcp.itemType?.({
+          toolCallId: '2',
+          title: 'edit',
+          status: 'completed',
+        })
+      ).toBe('file_change');
+    });
+
+    it('maps bash and command tools to command_execution', () => {
+      expect(
+        deepseekHarnessAcp.itemType?.({
+          toolCallId: '1',
+          title: 'bash',
+          status: 'completed',
+        })
+      ).toBe('command_execution');
+      expect(
+        deepseekHarnessAcp.itemType?.({
+          toolCallId: '2',
+          title: 'command',
+          status: 'completed',
+        })
+      ).toBe('command_execution');
+      expect(
+        deepseekHarnessAcp.itemType?.({
+          toolCallId: '3',
+          title: 'exec',
+          status: 'completed',
+        })
+      ).toBe('command_execution');
+    });
+
+    it('returns undefined for other tools', () => {
+      expect(
+        deepseekHarnessAcp.itemType?.({
+          toolCallId: '1',
+          title: 'read',
+          status: 'completed',
+        })
+      ).toBeUndefined();
+    });
   });
 
   it('creates an adapter instance', () => {

@@ -9,9 +9,13 @@ describeConformance('deepseek-harness', {
     return probe.error || probe.status !== 0 ? 'the dsh binary is not on PATH' : null;
   },
   skip: {
-    'user-input': 'dsh-acp user-input support not yet verified.',
-    'steer-mid-turn': 'dsh-acp steering support not yet verified.',
-    subagent: 'dsh-acp subagent support not yet verified.',
+    'approval-required':
+      'dsh --profile acp operates with trusted client controller permissions and executes tool calls without interactive ACP permission prompts.',
+    'approval-declined':
+      'dsh --profile acp operates with trusted client controller permissions and executes tool calls without interactive ACP permission prompts.',
+    'steer-mid-turn': 'dsh --profile acp does not support steering a turn mid-execution.',
+    'user-input': 'dsh --profile acp does not expose interactive user input tools over ACP.',
+    subagent: 'dsh --profile acp does not emit subagent task items over ACP.',
   },
   mcpServers: { echo: echoMcpServerSpec() },
   ...(process.env.DEEPSEEK_API_KEY ? { env: { DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY } } : {}),
