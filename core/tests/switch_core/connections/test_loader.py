@@ -201,7 +201,7 @@ def test_the_shipped_box_entry_configures_oauth_and_mcp_servers():
         ("box", "https://mcp.box.com")
     ]
     assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == ["root_readwrite"]
+    assert definition.access.read.scopes == ["root_readonly"]
     assert definition.access.write.scopes == [
         "root_readwrite",
         "ai.readwrite",

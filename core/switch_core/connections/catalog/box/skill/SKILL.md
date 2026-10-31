@@ -15,8 +15,8 @@ files and folders stored in Box.
 - **Enterprise files & Box AI:** Search for content, read text files, inspect
   folder trees, and query document summaries using Box AI where enabled on the
   account.
-- **Never print, log, or store credentials.** Authentication and token renewal
-  are handled transparently by the session host.
+- **Authentication managed transparently:** Session tokens and authentication
+  are handled by the session host. Never request or persist authentication data.
 
 ## Tasks and tools
 

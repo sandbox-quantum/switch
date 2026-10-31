@@ -29,7 +29,7 @@ mcp:
 access:
   read:
     scopes:
-      - root_readwrite
+      - root_readonly
   write:
     scopes:
       - root_readwrite
