@@ -9,8 +9,14 @@ from alembic.operations import Operations
 from sqlalchemy import select, update
 
 from switch_core.addressing import owner_only_policy
-from switch_core.db.models import AgentSessionActivityItem, ApprovalRequest, TenantUsage
+from switch_core.db.models import (
+    AgentSessionActivityItem,
+    ApprovalRequest,
+    Room,
+    TenantUsage,
+)
 from switch_core.session_activity.service import (
+    MAX_TOOL_DETAIL_CHARS,
     ApprovalOption,
     PlatformPerson,
     Question,
@@ -69,6 +75,7 @@ def _step(**overrides):
         message_id=None,
         occurred_at=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
         usage=[],
+        detail=None,
     )
     values.update(overrides)
     return values
@@ -144,6 +151,7 @@ def _turn(turn_id: str, revision: int, status: str, usage=()):
         title="",
         text="",
         usage=list(usage),
+        detail=None,
     )
 
 
@@ -266,6 +274,56 @@ async def test_a_step_for_a_room_the_agent_is_not_in_is_refused(
             AGENT, SESSION, **_step(item_id="tool-2", room_id=foreign)
         )
     assert error.value.code == "NOT_AUTHORIZED"
+
+
+async def _stored_detail(session_factory, item_id: str) -> str | None:
+    async with session_factory() as db:
+        return await db.scalar(
+            select(AgentSessionActivityItem.detail).where(
+                AgentSessionActivityItem.item_id == item_id
+            )
+        )
+
+
+async def test_a_tool_calls_detail_is_kept_only_while_its_room_shows_it(
+    service, session_factory
+):
+    async with session_factory() as db, db.begin():
+        room = await make_room(db, member=AGENT)
+
+    detail = 'Input: {"command":"pytest"}'
+    await service.report_item(
+        AGENT, SESSION, **_step(item_id="hidden", room_id=room, detail=detail)
+    )
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Room).where(Room.id == room).values(show_tool_detail=True)
+        )
+    await service.report_item(
+        AGENT, SESSION, **_step(item_id="shown", room_id=room, detail=detail)
+    )
+    await service.report_item(
+        AGENT, SESSION, **_step(item_id="roomless", room_id=None, detail=detail)
+    )
+
+    assert await _stored_detail(session_factory, "hidden") is None
+    assert await _stored_detail(session_factory, "shown") == detail
+    assert await _stored_detail(session_factory, "roomless") is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"kind": "assistant-message", "status": "completed", "detail": "x"},
+        {"detail": "x" * (MAX_TOOL_DETAIL_CHARS + 1)},
+    ],
+)
+async def test_detail_anywhere_but_a_tool_call_or_too_long_is_refused(
+    service, overrides
+):
+    with pytest.raises(SessionError) as error:
+        await service.report_item(AGENT, SESSION, **_step(**overrides))
+    assert error.value.code == "INVALID_EVENT"
 
 
 async def test_old_steps_are_pruned(service):

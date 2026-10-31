@@ -203,6 +203,7 @@ async def _step(
         occurred_at=datetime.now(UTC),
         usage=[],
         subagent=subagent,
+        detail=None,
     )
 
 

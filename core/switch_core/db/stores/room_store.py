@@ -975,6 +975,13 @@ class RoomStore:
             room.archived_at = None
         await session.flush()
 
+    async def shows_tool_detail(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether the room's chat shows its agents' tool detail; False for no room."""
+        shown = await session.scalar(
+            select(Room.show_tool_detail).where(Room.id == room_id)
+        )
+        return bool(shown)
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -986,6 +993,7 @@ class RoomStore:
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
+        show_tool_detail: bool | None = None,
     ) -> None:
         room = await session.get(Room, room_id)
         if room is None:
@@ -1004,6 +1012,8 @@ class RoomStore:
             room.read_visibility = read_visibility
         if write_visibility is not None:
             room.write_visibility = write_visibility
+        if show_tool_detail is not None:
+            room.show_tool_detail = show_tool_detail
         await session.flush()
 
     async def set_platform_name(

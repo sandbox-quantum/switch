@@ -376,6 +376,13 @@ class Markup:
     def bold(self, text: str) -> str:
         return f"**{text}**"
 
+    def block(self, text: str) -> str:
+        """`text` as it is, fenced longer than any run of backticks inside it,
+        so nothing in it closes the block, mentions anyone or marks anything up."""
+        longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+        fence = "`" * max(3, longest + 1)
+        return f"{fence}\n{text}\n{fence}"
+
     def literal(self, escape: Callable[[str], str]) -> Callable[[str], str]:
         """The escape that gets text intact through `code` and `command`.
 
