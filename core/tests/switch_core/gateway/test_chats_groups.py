@@ -1065,49 +1065,6 @@ async def test_a_change_to_one_chat_re_summarises_only_that_chat(
     assert summaries == [room_ids[0]] * 3
 
 
-async def test_group_only_requests_are_refused_while_group_chats_is_off(
-    chats: _Harness,
-) -> None:
-    agent = await chats.agent("helper", owner=chats.alice)
-    other = await chats.agent("other", owner=chats.alice)
-    room_id = await chats.new_chat(chats.alice, agent, "c1")
-    chats.service.group_chats_enabled = False
-
-    refusals = [
-        await chats.client.post(
-            "/chats",
-            json={
-                "agentId": agent.id,
-                "memberUserIds": [chats.bob.id],
-                "requestId": "g1",
-            },
-            headers=chats.as_user(chats.alice),
-        ),
-        await chats.client.post(
-            "/chats",
-            json={"agentIds": [], "requestId": "g2"},
-            headers=chats.as_user(chats.alice),
-        ),
-        await _add_agent(chats, chats.alice.id, room_id, other),
-        await chats.client.delete(
-            f"/chats/{room_id}/agents/{agent.id}", headers=chats.as_user(chats.alice)
-        ),
-        await chats.send(
-            chats.alice, room_id, "s1", "@alice", mentionUserIds=[chats.alice.id]
-        ),
-        await _candidates(chats, chats.alice, room_id),
-    ]
-    assert [(r.status_code, _code(r)) for r in refusals] == [
-        (409, "GROUP_CHATS_OFF")
-    ] * len(refusals)
-    # What was there before group chats still works.
-    assert (await chats.send(chats.alice, room_id, "s2", "hi")).status_code == 200
-    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
-
-    chats.service.group_chats_enabled = True
-    assert (await _add_agent(chats, chats.alice.id, room_id, other)).status_code == 200
-
-
 def _utf16(text: str) -> bytes:
     return text.encode("utf-16-le")
 

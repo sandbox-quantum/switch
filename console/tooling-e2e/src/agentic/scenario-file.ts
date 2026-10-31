@@ -19,11 +19,11 @@ import type { ScenarioHeader } from '../core/scenario.ts';
  *     covers: [read_context]           # as any scenario header
  *     persona: |                       # who the driver plays
  *     goal: |                          # what they want; the driver stops once they have it
- *     room:                            # the room the conversation happens in (optional),
- *       instructions: |                #   as create_room_from_yaml takes one: description,
- *                                      #   instructions, roles, docs. The harness adds the
- *                                      #   name, the bridge and the members. Without it, the
- *                                      #   lane's shared room is used.
+ *     room:                            # the room the conversation happens in (optional):
+ *       instructions: |                #   description, instructions, roles, as POST /rooms
+ *                                      #   takes them. The harness adds the name and the
+ *                                      #   members, and keeps it off any messaging app.
+ *                                      #   Without it, the lane's shared room is used.
  *     setup_messages: [...]            # posted, unaddressed, before the opening (optional)
  *     opening: "…"                     # the first message, sent as written, addressed to the agent
  *     max_turns: 3                     # human messages, the opening included
@@ -39,7 +39,7 @@ export interface AgenticScenario {
   header: ScenarioHeader;
   persona: string;
   goal: string;
-  /** The scenario's own room, as `create_room_from_yaml` takes one without name, bridge or members; null for the lane's shared room. */
+  /** The scenario's own room, as `POST /rooms` takes one without name, bridge or members; null for the lane's shared room. */
   room: Record<string, unknown> | null;
   setupMessages: string[];
   opening: string;
@@ -63,22 +63,7 @@ export interface Fact {
 }
 
 /** What a scenario's `room:` may say. The rest of a room document is the harness's to fill in. */
-const ROOM_KEYS = new Set(['description', 'instructions', 'roles', 'docs']);
-
-/** The server's room-template placeholder, `{name}` or `{$name}` (`PLACEHOLDER_RE` in `rooms_yaml.py`). */
-const PLACEHOLDER = /\{\$?[A-Za-z_][A-Za-z0-9_]*\}/g;
-
-function placeholdersIn(node: unknown): string[] {
-  if (typeof node === 'string') return node.match(PLACEHOLDER) ?? [];
-  if (Array.isArray(node)) return node.flatMap(placeholdersIn);
-  if (typeof node === 'object' && node !== null) {
-    return Object.entries(node).flatMap(([key, value]) => [
-      ...placeholdersIn(key),
-      ...placeholdersIn(value),
-    ]);
-  }
-  return [];
-}
+const ROOM_KEYS = new Set(['description', 'instructions', 'roles']);
 
 /** Where the scenario files live: `console/tooling-e2e/agentic/`. */
 export const AGENTIC_SCENARIO_DIR = path.resolve(
@@ -182,11 +167,6 @@ export function parseScenario(file: string, raw: string): AgenticScenario {
           );
         }
       }
-      for (const placeholder of new Set(placeholdersIn(room))) {
-        problems.push(
-          `'room' contains the placeholder '${placeholder}': the server fills placeholders in a room document and has no way to escape one, so the agent would read other text than the scenario wrote`
-        );
-      }
     }
   }
 
@@ -244,7 +224,7 @@ export function parseScenario(file: string, raw: string): AgenticScenario {
       lane: 'agentic',
       environments: ['ephemeral', 'local', 'dev', 'staging'],
       owner: text('owner'),
-      requires: ['mattermost', 'agentic-models'],
+      requires: ['agentic-models'],
     },
     persona: text('persona'),
     goal: text('goal'),

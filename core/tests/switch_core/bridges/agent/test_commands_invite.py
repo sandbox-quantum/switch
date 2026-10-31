@@ -45,8 +45,13 @@ def _build_client(
     async def _add_agents_to_room(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
         added.append((room_id, list(agent_names or [])))
 
+    async def _no_client(_session, _transport_user_id):  # type: ignore[no-untyped-def]
+        return None
+
     client = SimpleNamespace(
         session_factory=_session_factory,
+        tenant_id="tenant-1",
+        client_store=SimpleNamespace(get_by_transport_user_id=_no_client),
         _resolve_room_meta=_resolve_room_meta,
         reply_command=_reply_command,
         _agent_store=SimpleNamespace(get_by_name_insensitive=_get_by_name_insensitive),
@@ -57,7 +62,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, user_id="@chat-u:x", thread_id=None
+    )
 
 
 def _agent(

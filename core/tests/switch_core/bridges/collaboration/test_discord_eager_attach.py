@@ -126,7 +126,7 @@ class TestTheLifecycle:
             await session.commit()
 
         service = _service(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
         events: list[str] = []
         handed: list[PlatformAdapter] = []
 

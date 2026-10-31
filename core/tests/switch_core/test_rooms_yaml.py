@@ -797,7 +797,15 @@ async def test_provision_duplicate_doc_name_is_best_effort(env):
 
 
 @pytest.mark.asyncio
-async def test_provision_users_without_bridge_fails(env):
+async def test_provision_users_without_bridge_hands_them_to_the_room(env):
+    created: list[RoomCreateConfig] = []
+    create_room = env["rooms"].create_room
+
+    async def recording(config: RoomCreateConfig) -> RoomCreateResult:
+        created.append(config)
+        return await create_room(config)
+
+    env["rooms"].create_room = recording
     spec, _ = _svc(env).parse(
         """
         room:
@@ -806,8 +814,10 @@ async def test_provision_users_without_bridge_fails(env):
           users: ["bob"]
         """
     )
-    with pytest.raises(ValueError, match="without a bridge|no bridge"):
-        await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+    assert created[0].bridge_id is None
+    assert created[0].user_names == ["bob"]
 
 
 # ── export ───────────────────────────────────────────────────────────────────
@@ -931,8 +941,8 @@ async def test_export_includes_users_from_bridge(env):
         session.add_all([workspace_consumer, user_client])
         await session.flush()
         bridge = CollaborationBridge(
-            type="mattermost",
-            display_name="Mattermost",
+            type="discord",
+            display_name="Discord",
             client_id=workspace_consumer.id,
             status="active",
         )
@@ -948,7 +958,7 @@ async def test_export_includes_users_from_bridge(env):
         )
         room = Room(
             transport_room_id="!bridged:test.local",
-            name="Mattermost: Bridged",
+            name="Discord: Bridged",
             description="d",
             channel_type="channel_public",
             bridge_id=bridge.id,
@@ -964,9 +974,9 @@ async def test_export_includes_users_from_bridge(env):
 
     yaml_text = await _svc(env).export(room_id)
     reparsed, _ = _svc(env).parse(yaml_text)
-    # The "Mattermost: " display-name prefix is stripped on export.
+    # The "Discord: " display-name prefix is stripped on export.
     assert reparsed.name == "Bridged"
-    assert reparsed.bridge == "Mattermost"
+    assert reparsed.bridge == "Discord"
     assert reparsed.users == ["bob"]
 
 
@@ -1733,7 +1743,7 @@ async def test_builtins_creator_resolves_named_bridge(env):
     bridge."""
     await _seed_bridge_with_claim(
         env["session_factory"],
-        display_name="Mattermost",
+        display_name="Discord",
         is_default=True,
         claimed_by=env["user_id"],
         external_username="abel.mm",
@@ -1760,7 +1770,7 @@ async def test_builtins_creator_resolves_a_bridge_param_from_inputs(env):
     claim is looked up, so the creator is found on the app they picked."""
     await _seed_bridge_with_claim(
         env["session_factory"],
-        display_name="Mattermost",
+        display_name="Discord",
         is_default=True,
         claimed_by=env["user_id"],
         external_username="abel.mm",
@@ -1806,7 +1816,7 @@ async def test_resolve_defaults_walks_each_chain_in_order(env):
     """The first candidate the server has wins: Teams is not set up, so the
     bridge falls through to the default app; no agent is called nobody, so the
     first agent by name stands in. An input the caller did send is kept."""
-    for name, is_default in (("Mattermost", False), ("Slack", True)):
+    for name, is_default in (("Discord", False), ("Slack", True)):
         await _seed_bridge_with_claim(
             env["session_factory"],
             display_name=name,
@@ -1820,14 +1830,14 @@ async def test_resolve_defaults_walks_each_chain_in_order(env):
     assert filled == {"bridge": "Slack", "helper": "claude-code.alice"}
 
     kept = await svc.resolve_defaults(
-        CHAIN_TEXT, {"bridge": "Mattermost"}, reader=_reader(env)
+        CHAIN_TEXT, {"bridge": "Discord"}, reader=_reader(env)
     )
-    assert kept == {"bridge": "Mattermost", "helper": "claude-code.alice"}
+    assert kept == {"bridge": "Discord", "helper": "claude-code.alice"}
 
-    named = CHAIN_TEXT.replace("[Teams, $first]", "[Mattermost, $first]")
+    named = CHAIN_TEXT.replace("[Teams, $first]", "[Discord, $first]")
     assert (await svc.resolve_defaults(named, None, reader=_reader(env)))[
         "bridge"
-    ] == "Mattermost"
+    ] == "Discord"
 
 
 async def test_a_chain_with_no_hit_is_reported_as_missing(env):

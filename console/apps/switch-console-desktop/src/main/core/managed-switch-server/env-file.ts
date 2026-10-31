@@ -1,11 +1,7 @@
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
+import { CHECKOUT_IMAGE_TAG } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { TelemetryFlintEnv } from '../telemetry/config';
-import {
-  LOCAL_SERVER_ADMIN_EMAIL,
-  LOCAL_SERVER_BIND_ADDR,
-  LOCAL_SERVER_MATTERMOST_TEAM,
-  LOCAL_SERVER_MATTERMOST_USER,
-} from './constants';
+import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from './constants';
 import { apiUrlFor, gatewayUrlFor, type LocalServerPorts } from './free-port';
 import type { LocalServerSecrets } from './secret-values';
 
@@ -37,28 +33,29 @@ export type LocalServerEnvParams = {
 };
 
 /**
- * The feature flags a server Console runs is started with, in a build with the
- * new first run: what switch-buddy needs (agent management, its chat and the
- * buddy itself), addressing an agent without tagging it, and connectors such
- * as GitHub (service connections). A build without it
- * starts them with none, as before.
+ * The feature flags a server Console runs is started with. The pinned
+ * switch-core needs agent_chats to offer in-Console chats; a stack run from a
+ * checkout runs this repo's switch-core, where chats are always on. A build
+ * with the new first run also gets what switch-buddy needs (agent management
+ * and the buddy itself), addressing an agent without tagging it, and
+ * connectors such as GitHub (service connections).
  */
-export function managedServerFeatureFlags(newFirstRun: boolean): readonly string[] {
+export function managedServerFeatureFlags(
+  newFirstRun: boolean,
+  fromCheckout: boolean
+): readonly string[] {
+  // shortcut: drop agent_chats when the pin moves past 0.31.0; group chats then come with the server
+  const chats = fromCheckout ? [] : ['agent_chats'];
   return newFirstRun
     ? [
         'agent_management',
-        'agent_chats',
+        ...chats,
         'switch_buddy',
         'follow_the_conversation',
         'service_connections',
       ]
-    : [];
+    : chats;
 }
-
-/** The feature flags every managed stack is started with, in this build. */
-export const MANAGED_SERVER_FEATURE_FLAGS = managedServerFeatureFlags(
-  BUILD_FEATURE_FLAGS.onboarding
-);
 
 /** The variable the server reads its telemetry gate from. Named here because
  * reading the choice back off a host has to look for the same key. */
@@ -94,7 +91,6 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `SWITCH_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
     `GATEWAY_HOST_PORT=${ports.gateway}`,
     `API_HOST_PORT=${ports.api}`,
-    `MATTERMOST_HOST_PORT=${ports.mattermost}`,
     `POSTGRES_HOST_PORT=${ports.postgres}`,
     '',
     'DB_HOST=postgres',
@@ -116,10 +112,10 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `AGENT_REGISTRATION_TOKEN=${secrets.agentRegistrationToken}`,
     `JWT_SECRET_KEY=${secrets.jwtSecretKey}`,
     `SECRET_KEYS=${secrets.secretKeys}`,
-    // The flags a managed stack runs with (MANAGED_SERVER_FEATURE_FLAGS).
-    // Currently none: a managed stack starts with agent management off. The
-    // variable is still written (empty) so the stack's flag set is explicit.
-    `FEATURE_FLAGS_ENABLED=${MANAGED_SERVER_FEATURE_FLAGS.join(',')}`,
+    `FEATURE_FLAGS_ENABLED=${managedServerFeatureFlags(
+      BUILD_FEATURE_FLAGS.onboarding,
+      version === CHECKOUT_IMAGE_TAG
+    ).join(',')}`,
     `CONTROLLER_TOKEN_SECRET=${secrets.controllerTokenSecret}`,
     `GATEWAY_ADMIN_EMAIL=${LOCAL_SERVER_ADMIN_EMAIL}`,
     `GATEWAY_ADMIN_PASSWORD=${secrets.gatewayAdminPassword}`,
@@ -147,12 +143,6 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     // Tells the server's agents that Switch Console runs it, so switch-buddy
     // can tell this apart from Switch Cloud and a self-hosted server.
     'MANAGED_BY_CONSOLE=true',
-    '',
-    'MATTERMOST_ADMIN_USER=admin',
-    `MATTERMOST_ADMIN_PASSWORD=${secrets.mattermostAdminPassword}`,
-    `MATTERMOST_TEAM_NAME=${LOCAL_SERVER_MATTERMOST_TEAM}`,
-    `MATTERMOST_USER=${LOCAL_SERVER_MATTERMOST_USER}`,
-    `MATTERMOST_USER_PASSWORD=${secrets.mattermostUserPassword}`,
     '',
   ].join('\n');
 }
@@ -207,23 +197,15 @@ export type StackEnvReading =
 const PORT_KEYS: [keyof LocalServerPorts, string][] = [
   ['gateway', 'GATEWAY_HOST_PORT'],
   ['api', 'API_HOST_PORT'],
-  ['mattermost', 'MATTERMOST_HOST_PORT'],
   ['postgres', 'POSTGRES_HOST_PORT'],
 ];
 
-type PlainSecret =
-  | 'agentRegistrationToken'
-  | 'jwtSecretKey'
-  | 'gatewayAdminPassword'
-  | 'mattermostAdminPassword'
-  | 'mattermostUserPassword';
+type PlainSecret = 'agentRegistrationToken' | 'jwtSecretKey' | 'gatewayAdminPassword';
 
 const SECRET_KEYS: [PlainSecret, string][] = [
   ['agentRegistrationToken', 'AGENT_REGISTRATION_TOKEN'],
   ['jwtSecretKey', 'JWT_SECRET_KEY'],
   ['gatewayAdminPassword', 'GATEWAY_ADMIN_PASSWORD'],
-  ['mattermostAdminPassword', 'MATTERMOST_ADMIN_PASSWORD'],
-  ['mattermostUserPassword', 'MATTERMOST_USER_PASSWORD'],
 ];
 
 function readPort(env: string, key: string): number | null {

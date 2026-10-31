@@ -1,4 +1,5 @@
 import type { ChatSummary } from '@shared/core/chats/chats';
+import type { FeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 
 /**
@@ -21,6 +22,17 @@ export function isConsoleDirectChatSummary(
   return isConsoleDirectChat({ ...chat, agentCount: chat.agents.length });
 }
 
+/**
+ * Whether the room lists leave 1-1 Console chats out. They are listed on their
+ * agent's managed page, which exists only under agent management; without it
+ * the room lists are the only place to find them again.
+ */
+export function hidesConsoleDirectChats(
+  flags: Pick<FeatureFlags, 'agent_chats' | 'agent_management'>
+): boolean {
+  return flags.agent_chats && flags.agent_management;
+}
+
 /** A Console group chat: an unbridged chat that is not a 1-1 Console chat. It opens as a room. */
 export function isConsoleGroupChatSummary(
   chat: Pick<ChatSummary, 'channelType' | 'bridgeType' | 'agents'>
@@ -29,17 +41,23 @@ export function isConsoleGroupChatSummary(
 }
 
 /**
- * `rooms` and, as rooms, the group chats not among them: the room list holds
- * only rooms you own or that are public, so a person invited to a chat would
- * not see it otherwise.
+ * `rooms` and, as rooms, the group chats not among them (and the 1-1 chats,
+ * when `withDirect`): the room list holds only rooms you own or that are
+ * public, so a person invited to a chat would not see it otherwise.
  */
 export function withConsoleGroupChats(
   rooms: RemoteRoomSummary[],
-  chats: Iterable<ChatSummary>
+  chats: Iterable<ChatSummary>,
+  withDirect: boolean
 ): RemoteRoomSummary[] {
   const listed = new Set(rooms.map((room) => room.id));
   const added = [...chats]
-    .filter((chat) => isConsoleGroupChatSummary(chat) && !listed.has(chat.roomId))
+    .filter(
+      (chat) =>
+        chat.bridgeType === null &&
+        (withDirect || !isConsoleDirectChatSummary(chat)) &&
+        !listed.has(chat.roomId)
+    )
     .map((chat): RemoteRoomSummary => ({
       id: chat.roomId,
       name: chat.name,

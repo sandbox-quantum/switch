@@ -25,10 +25,9 @@ HOSTED_VALUES = REPO_ROOT / "deploy/hosted/chart/values.yaml"
 DIGESTS = {
     "switch-core": "sha256:" + "a" * 64,
     "gateway": "sha256:" + "b" * 64,
-    "setup": "sha256:" + "c" * 64,
     "switch-hosted-controller": "sha256:" + "f" * 64,
 }
-SWITCH_IMAGES = ("switch-core", "gateway", "setup")
+SWITCH_IMAGES = ("switch-core", "gateway")
 
 
 def _load(name: str) -> ModuleType:
@@ -107,7 +106,6 @@ def test_pins_every_first_party_image_in_the_real_values_file() -> None:
         pinned["switchCore"]["image"] == f"switch-core:1.2.3@{DIGESTS['switch-core']}"
     )
     assert pinned["gateway"]["image"] == f"gateway:1.2.3@{DIGESTS['gateway']}"
-    assert pinned["setup"]["image"] == f"setup:1.2.3@{DIGESTS['setup']}"
 
 
 def test_changes_only_the_pinned_lines() -> None:
@@ -119,7 +117,7 @@ def test_changes_only_the_pinned_lines() -> None:
         for a, b in zip(original.splitlines(), pinned.splitlines(), strict=True)
         if a != b
     ]
-    assert len(changed) == 4  # the registry, then one image line per image
+    assert len(changed) == 3  # the registry, then one image line per image
     # Pull policy is left to the chart, which derives it from the digest.
     assert yaml.safe_load(pinned)["switchCore"]["imagePullPolicy"] == ""
 
@@ -127,7 +125,7 @@ def test_changes_only_the_pinned_lines() -> None:
 @pytest.mark.parametrize(
     "digests",
     [
-        {k: v for k, v in DIGESTS.items() if k != "setup"},
+        {k: v for k, v in DIGESTS.items() if k != "gateway"},
         {**DIGESTS, "sidecar": "sha256:" + "d" * 64},
         {**DIGESTS, "gateway": "latest"},
         {**DIGESTS, "gateway": "sha256:" + "A" * 64},
@@ -195,15 +193,14 @@ def _render(*extra: str) -> str:
     return "---\n".join(
         [
             _pod(_pinned("switch-core"), init=(_pinned("switch-core"), "busybox:1.36")),
-            _pod(_pinned("gateway")),
-            _pod(_pinned("setup"), "postgres:16-alpine"),
+            _pod(_pinned("gateway"), "postgres:16-alpine"),
             *(_pod(ref) for ref in extra),
         ]
     )
 
 
 def test_verify_accepts_a_fully_pinned_render() -> None:
-    assert len(pin_chart_images.verify("switch", _render(), "ghcr.io/acme")) == 3
+    assert len(pin_chart_images.verify("switch", _render(), "ghcr.io/acme")) == 2
 
 
 @pytest.mark.parametrize(
@@ -212,7 +209,7 @@ def test_verify_accepts_a_fully_pinned_render() -> None:
         ("ghcr.io/acme/switch-core:1.2.3", "not pinned by digest"),
         ("switch-core:latest", "not from ghcr.io/acme"),
         ("ghcr.io/other/gateway:1.2.3@" + DIGESTS["gateway"], "not from ghcr.io/acme"),
-        ("registry.example:5000/setup", "not pinned by digest"),
+        ("registry.example:5000/gateway", "not pinned by digest"),
         (
             "ghcr.io/acme/sidecar:1.2.3@" + "sha256:" + "d" * 64,
             "not an image of the switch chart",
@@ -232,8 +229,8 @@ def test_verify_rejects_a_stray_first_party_reference(extra: str, problem: str) 
 
 
 def test_verify_rejects_a_render_missing_an_image() -> None:
-    rendered = "---\n".join([_pod(_pinned("switch-core")), _pod(_pinned("gateway"))])
-    with pytest.raises(pin_chart_images.PinError, match="setup"):
+    rendered = _pod(_pinned("switch-core"))
+    with pytest.raises(pin_chart_images.PinError, match="gateway"):
         pin_chart_images.verify("switch", rendered, "ghcr.io/acme")
 
 

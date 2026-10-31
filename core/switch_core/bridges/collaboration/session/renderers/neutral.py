@@ -3,7 +3,7 @@
 Slack has cards: Block Kit for the turn and for the request, with the text
 forms beside them as the notification string (`slack.py`). Nothing here is a
 smaller version of those. This is what a platform gets when the message body
-*is* the artefact — Mattermost today — so the shapes are chosen for a reader
+*is* the artefact, so the shapes are chosen for a reader
 looking at a paragraph rather than at a card, and for a writer who has one
 message to say everything in.
 
@@ -147,7 +147,7 @@ ACTIVITY_NOT_A_MEMBER = (
     "activity is not shown."
 )
 # What a platform's permissions establish, where it has them to consult. Kept
-# apart from membership because they are not the same claim: an open Mattermost
+# apart from membership because they are not the same claim: an open
 # channel is readable by people who have not joined it, so membership is the
 # narrower fact and saying "cannot read" on the strength of it is a claim
 # nothing checked.

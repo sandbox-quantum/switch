@@ -18,22 +18,8 @@
 #
 # Profiles keep optional services opt-in:
 #   (core, no profile) postgres, init-db, switch  — always started
-#   collab            mattermost, setup            — Mattermost bridge + seeder
 #   gateway           gateway                      — operator dashboard
-# Select them with `--profile collab --profile gateway` or COMPOSE_PROFILES.
-#
-# init-db is core, not collab, even though the database it seeds
-# (`mattermost`) is only ever read by a collab service. What init-db also
-# does — create the DB_USER runtime role — has nothing to do with the
-# collaboration bridge: switch-core authenticates as that role on every boot,
-# profile or no profile, so the role has to exist before switch does its own
-# grant-and-verify step. Gating that behind `collab` meant a default,
-# Mattermost-less stack pointed switch at a role nobody had created. Creating
-# the unused `mattermost` database on a core-only stack is harmless and
-# idempotent, and keeping one service rather than splitting role creation out
-# of it is simpler than a second init container for one CREATE ROLE. This
-# widens what a default `up` starts, but the contract's service names are
-# unchanged — init-db already existed under `collab`, it just moves to core.
+# Select it with `--profile gateway` or COMPOSE_PROFILES.
 #
 # Image coordinates are env-interpolated so the same file retargets registries
 # and pins versions without edits:
@@ -93,12 +79,10 @@ services:
 
   init-db:
     image: postgres:16-alpine
-    # No profile here on purpose — see the note above the profile table. This
-    # runs on every `up`, collab or not, because switch alone needs the
-    # runtime role it creates.
+    # No profile here on purpose: switch alone needs the runtime role it creates.
     environment:
       PGPASSWORD: ${DB_OWNER_PASSWORD}
-    # Runs as the owner: creating a database and a role both need privileges
+    # Runs as the owner: creating a role needs privileges
     # the runtime role is deliberately never given. Note the mixed quoting in
     # the CREATE ROLE / ALTER ROLE statements is not optional — DB_USER is an
     # identifier (double-quoted, and safe only because .env.example pins it to
@@ -136,8 +120,6 @@ services:
           fi
           sleep 1
         done
-        psql -h postgres -U ${DB_OWNER_USER} -d postgres -tc \"SELECT 1 FROM pg_database WHERE datname='mattermost'\" | grep -q 1 ||
-          psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'CREATE DATABASE mattermost;'
         psql -h postgres -U ${DB_OWNER_USER} -d postgres -tc \"SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'\" | grep -q 1 ||
           psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'CREATE ROLE \"${DB_USER}\" LOGIN PASSWORD '\\''${DB_PASSWORD}'\\'' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;'
         psql -h postgres -U ${DB_OWNER_USER} -d postgres -c 'ALTER ROLE \"${DB_USER}\" PASSWORD '\\''${DB_PASSWORD}'\\'';'
@@ -145,67 +127,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-
-  mattermost:
-    # Pinned rather than `latest`: Switch Console embeds this Mattermost's web UI
-    # and depends on its DOM structure, so an unattended upgrade could break
-    # the embedded room view on a `docker compose pull` no one initiated.
-    image: mattermost/mattermost-team-edition:11.9.0
-    # Mattermost publishes team-edition for amd64 only, so an Apple Silicon or
-    # other arm64 host fails the pull outright without this. Runs emulated.
-    platform: linux/amd64
-    profiles: ["collab"]
-    ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${MATTERMOST_HOST_PORT:-8065}:8065"
-    volumes:
-  # Kept deliberately after Tuwunel was removed. It still holds every media
-  # blob and the raw history, and it is the only copy — the backfill moved the
-  # messages into Postgres but not the files. Dropping it belongs to a later
-  # release than the one that stops reading it.
-      - mmdata:/mattermost/data
-    environment:
-      MM_SQLSETTINGS_DRIVERNAME: postgres
-      # The owner's credentials, not the runtime role's: init-db creates the
-      # `mattermost` database as the owner, and the runtime role (DB_USER)
-      # neither owns it nor was granted anything on it — only `switch`'s
-      # tables get the runtime role's grants, issued by switch-core itself at
-      # boot. Mattermost's own schema has no row-level security in it, so
-      # there is no isolation reason to run it as the restricted role too.
-      MM_SQLSETTINGS_DATASOURCE: postgres://${DB_OWNER_USER}:${DB_OWNER_PASSWORD}@postgres:5432/mattermost?sslmode=disable
-      MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTERMOST_HOST_PORT:-8065}
-      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
-      # The first-run onboarding checklist opens a modal over a dimmed page,
-      # which in the embedded room view is chrome the user cannot meaningfully
-      # act on and has to dismiss per account.
-      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
-      # Agents post `switchdash://session?…` deeplinks so a human can jump from
-      # a message to the session behind it. Mattermost only turns known schemes
-      # into links, so without this they render as unclickable plain text.
-      MM_DISPLAYSETTINGS_CUSTOMURLSCHEMES: switchdash
-      MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: "true"
-      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "true"
-      # Mattermost refuses to call a private address from an integration unless
-      # the host is named here, and a button on a Switch card is delivered by
-      # exactly that path — a POST from this container to switch-core's callback
-      # port on the compose network. Without it a press fails inside Mattermost
-      # and the person sees nothing.
-      MM_SERVICESETTINGS_ALLOWEDUNTRUSTEDINTERNALCONNECTIONS: switch
-      MM_TEAMSETTINGS_ENABLEOPENSERVER: "true"
-      MM_TEAMSETTINGS_TEAMMATENAMEDISPLAY: "full_name"
-      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
-      MM_LOGSETTINGS_ENABLESENTRY: "false"
-      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
-      MM_ANNOUNCEMENTSETTINGS_ADMINNOTICESENABLED: "false"
-      MM_ANNOUNCEMENTSETTINGS_USERNOTICESENABLED: "false"
-      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
-      # Neither plugin is usable in a bundled Switch deployment: Copilot has no
-      # configured provider and throws a 404 looking up its bot on every page
-      # load, and Calls ships a WebRTC service nothing here can reach.
-      MM_PLUGINSETTINGS_PLUGINSTATES: |
-        {"mattermost-ai":{"Enable":false},"com.mattermost.calls":{"Enable":false}}
-    depends_on:
-      init-db:
-        condition: service_completed_successfully
 
   switch:
     image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/switch-core:${SWITCH_VERSION:?required, set it in .env, there is no default}
@@ -232,9 +153,7 @@ services:
       # Served over plain http on this machine by default, where a Secure
       # cookie would never be sent back. Set it to true behind https.
       GATEWAY_COOKIE_SECURE: ${GATEWAY_COOKIE_SECURE:-false}
-      # The bundled Mattermost is on the compose network, a private address,
-      # so it is always allowed; .env adds to it rather than replacing it.
-      OUTBOUND_ALLOWED_PRIVATE_HOSTS: mattermost,${OUTBOUND_ALLOWED_PRIVATE_HOSTS:-}
+      OUTBOUND_ALLOWED_PRIVATE_HOSTS: ${OUTBOUND_ALLOWED_PRIVATE_HOSTS:-}
       # Replaced by the agent_management feature flag. Still passed through so
       # switch-core refuses a .env that turns it on, rather than ignoring it.
       AGENT_MANAGEMENT_ENABLED: ${AGENT_MANAGEMENT_ENABLED:-false}
@@ -333,33 +252,12 @@ services:
     depends_on:
       - switch
 
-  setup:
-    image: ${SWITCH_REGISTRY:-ghcr.io}/${SWITCH_IMAGE_NAMESPACE:-sandbox-quantum}/setup:${SWITCH_VERSION:?required, set it in .env, there is no default}
-    profiles: ["collab"]
-    restart: on-failure
-    environment:
-      SWITCH_URL: http://switch:8000
-      MATTERMOST_URL: http://mattermost:8065
-      MATTERMOST_URL_FOR_SWITCH: http://mattermost:8065
-      # The route back: where the Mattermost container reaches switch-core's
-      # callback port, for the button presses Mattermost delivers by HTTP.
-      MATTERMOST_CALLBACK_BASE_URL: http://switch:8081
-      MATTERMOST_ADMIN_USER: ${MATTERMOST_ADMIN_USER}
-      MATTERMOST_ADMIN_PASSWORD: ${MATTERMOST_ADMIN_PASSWORD}
-      MATTERMOST_TEAM_NAME: ${MATTERMOST_TEAM_NAME}
-      MATTERMOST_USER: ${MATTERMOST_USER}
-      MATTERMOST_USER_PASSWORD: ${MATTERMOST_USER_PASSWORD}
-      GATEWAY_ADMIN_EMAIL: ${GATEWAY_ADMIN_EMAIL}
-      GATEWAY_ADMIN_PASSWORD: ${GATEWAY_ADMIN_PASSWORD}
-    depends_on:
-      - mattermost
-      - switch
-
 volumes:
   # Kept deliberately after Tuwunel was removed. It still holds every media
   # blob and the raw history, and it is the only copy — the backfill moved the
   # messages into Postgres but not the files. Dropping it belongs to a later
   # release than the one that stops reading it.
   pgdata:
-  mmdata:
   tuwuneldata:
+  # Kept deliberately after Mattermost was removed, so a reset (`down -v`) still deletes it.
+  mmdata:

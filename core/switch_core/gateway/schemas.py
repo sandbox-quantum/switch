@@ -67,11 +67,11 @@ class RoomSummary(BaseModel):
     connected_user_names: list[str]
     bridge_id: str | None
     bridge_display_name: str | None
-    # Bridge platform type (e.g. "slack", "mattermost") when bridged, else null.
+    # Bridge platform type (e.g. "slack", "discord") when bridged, else null.
     # Stable identifier, unlike the user-chosen display name.
     bridge_type: str | None = None
     # Native deeplink that opens this room's external channel in the messaging
-    # app's desktop client (e.g. slack://channel?…, mattermost://…). Null when
+    # app's desktop client (e.g. slack://channel?…). Null when
     # the room isn't bridged, the bridge isn't running, or the platform has no
     # such scheme. Built by the live collaboration adapter.
     external_channel_url: str | None = None
@@ -724,7 +724,7 @@ class BridgeCreateRequest(BaseModel):
     # for a platform that cannot, rather than storing a claim it cannot honour.
     channel_creation_enabled: bool = True
     # Registered by the deployment's own setup step rather than by a person.
-    # Set by the headless standalone bootstrap for the Mattermost it bundles,
+    # Set by a deployment for a connector it bundles,
     # so onboarding telemetry measures a person connecting their platform
     # rather than the deployment booting. Everyone else leaves it off.
     preconfigured: bool = False
@@ -783,7 +783,7 @@ class DirectorySearchResponse(BaseModel):
 class ClaimIdentityRequest(BaseModel):
     """Claim a platform identity for a Switch user.
 
-    `external_user_id` is the platform's own id (a Slack `U…`, a Mattermost
+    `external_user_id` is the platform's own id (a Slack `U…`, a Discord
     user id), not an `ExternalUser.id` — that row may not exist yet for
     someone who has never posted, and is created on demand.
     """

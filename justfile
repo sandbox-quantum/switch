@@ -159,16 +159,15 @@ test *args:
     uv run --project core pytest -c core/pyproject.toml core/tests/ {{ args }}
 
 # ── End-to-end proof for "follow the conversation" ─────────────────────────────
-# Plays every journey as two people in a fresh local Mattermost against
+# Plays every journey as two people in the in-Console chat against
 # switch-core from this checkout, then writes a report with the server's log
-# line for each message, plus screenshots. Needs Docker and Chrome, and your
-# local stack stopped. `--video` also records a captioned demo (needs ffmpeg);
+# line for each message. Needs Docker, and your local stack stopped.
 # `--keep` leaves it running to try by hand. Output: build/e2e/follow-the-conversation.
 e2e-follow-ups *args:
     core/tests/e2e/follow_the_conversation/run.sh {{ args }}
 
 # ── End-to-end harness, fast lane, on a throwaway stack ────────────────────────
-# Fresh Postgres and Mattermost, switch-core from this checkout, then the
+# Fresh Postgres, switch-core from this checkout, then the
 # provider-free scenarios in console/tooling-e2e, then teardown. Needs Docker
 # and your local stack stopped. `--keep` leaves it running; arguments after
 # `--` go to vitest. Output: build/e2e/ephemeral.
@@ -235,19 +234,19 @@ gateway-test:
 # ── Standalone deployment (all-in-one Docker, no host toolchain) ──────────────
 # Repo users build from source: the build override re-adds the `build:` blocks
 # so images come from the working tree, not GHCR. All profiles are enabled to
-# bring up the full all-in-one stack (Mattermost bridge + gateway).
+# bring up the full all-in-one stack (core + gateway).
 standalone-up:
-    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile collab --profile gateway --project-directory . up -d --build
+    docker compose -f deploy/local/standalone-docker-compose.yml -f deploy/local/standalone-docker-compose.build.yml --profile gateway --project-directory . up -d --build
 
 standalone-down:
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down
 
 standalone-reset:
     #!/usr/bin/env bash
     set -euo pipefail
     read -r -p "⚠️  This deletes ALL standalone data volumes (rooms, messages, agents, users). Continue? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 1; }
-    docker compose -f deploy/local/standalone-docker-compose.yml --profile collab --profile gateway --project-directory . down -v
+    docker compose -f deploy/local/standalone-docker-compose.yml --profile gateway --project-directory . down -v
 
 # ── Documentation ──────────────────────────────────────────────────────────────
 # Clones the docs repository unless --source names a checkout of it:

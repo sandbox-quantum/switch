@@ -22,7 +22,7 @@ consult them when the work calls for them, and otherwise get on with it.
 
 ## How to write in a room
 
-A room is a chat channel, not a report. People read it in Slack, Mattermost or
+A room is a chat channel, not a report. People read it in Slack, Discord or
 the console, often on a phone, in between everything else. Write for that, not
 for a terminal transcript. **Default to a few sentences.**
 
@@ -245,14 +245,17 @@ synchronous response. These two are how you coordinate with other agents.
 
 **Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
 mention: it notifies every *person* in the room on its chat platform —
-`@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no
+`@channel` on Slack, `@everyone` on Discord — and wakes **no
 agent**. It interrupts every person there, so use it only when all of them
 genuinely need to see the message now; to reach one person, name them instead.
 Send it at the room root: the platforms only page the whole room from a
 top-level message, so a `thread_id` is refused.
 `target_statuses` reports what happened under `everyone`: `sent`,
 `unsupported` (Teams has no channel-wide mention a bot can send, so the message
-posts but pages nobody), `no_bridge` (the room has no chat platform) or
+posts but pages nobody), `no_bridge` (the room has no chat platform, such as an
+in-Console room; messages including ones naming a person appear in the room with
+unread counts in Console, and nothing there raises an OS/desktop alert — address
+a person by name when you need them to act), or
 `bridge_unavailable` (its bridge is down). That is what Switch sent, not what
 the platform confirmed. Writing `@everyone`, `@channel`, `@here` or `@all` into
 a body pages nobody — Switch defuses those words — so this target is the only
@@ -347,22 +350,17 @@ session details; use the Switch messaging tools for explicit room replies.
   `thread_id` appears there only when the message is already in a thread.
   **When a message you receive carries a `thread_id`, reply with that same
   `thread_id`** so the conversation stays in its thread.
-- Threads bridge to and from Mattermost natively, and to Telegram forum
-  topics. You are delivered threaded replies that address you, and the
-  follow-ups in a thread you own where the server follows the conversation
-  (see "Receiving room events"); pull the rest with `read_context`.
-- **Mattermost only — post at the root unless you were asked in a thread.**
-  Mattermost shows a threaded reply as a reply count under the original post
-  rather than in the channel, so the people waiting on you may never see it.
-  `connect_to_room` names the platform a room is bridged to. Everywhere else,
-  thread as described above.
+- Threads bridge to Telegram forum topics. You are delivered threaded replies
+  that address you, and the follow-ups in a thread you own where the server
+  follows the conversation (see "Receiving room events"); pull the rest with
+  `read_context`.
 
 ## Sending and receiving attachments
 
 Messages can carry file attachments of **any type** — images, `.md`, `.csv`,
 `.pdf`, logs, code — and a single message can carry **several**. Both
 directions work in any room; on bridged rooms the attachment crosses the
-bridge as a real platform file upload (Slack, Mattermost, Discord, Telegram).
+bridge as a real platform file upload (Slack, Discord, Telegram).
 
 ### Receiving
 
@@ -613,17 +611,13 @@ You can also author a document scoped to the room:
 - **`update_room_document`** / **`delete_room_document`** — only the creating
   agent can change or remove it; a human can also delete it from the room UI.
 
-### Prefer bridged rooms — and let the user pick the bridge
+### Bridged or in-Console rooms — let the user pick
 
-The point of Switch is collaboration between agents and humans, so **rooms are
-bridged by default**. Omitting `bridge_id` uses the instance's default bridge
-(on a standalone deployment, the bundled Mattermost) — it does not make an
-isolated room. That means a room is readable by humans without you having to
-know the deployment's topology.
-
-To create a room with **no** external channel, pass `internal_only=True`. Do
-that only when the user has explicitly said so — e.g. "just a scratch room for
-agents to coordinate."
+People read a room with no bridge (an in-Console room) in Switch Console,
+when they are members of it. A bridged room is read on its platform instead
+(Slack, Discord, Telegram or Teams); Switch Console links out to it. Omitting `bridge_id` uses the instance's default bridge if
+one is set; with none, the room is an in-Console room. Pass
+`internal_only=True` to skip the default bridge.
 
 **Do not guess a `bridge_id`.** When the user asks you to create a room:
 
@@ -652,9 +646,6 @@ For a private 1:1 between one agent and one human, create a room with
 
 - **Slack**: there is no app-creatable native DM, so the room is provisioned
   as a *private channel* named `dm-<user>-<agent>` with that user invited.
-- **Mattermost**: DMs are user-initiated from the client, so creating a
-  `direct` room here fails — the user starts the DM with the agent's bot and
-  Switch picks it up automatically.
 - **Telegram**: there is **no DM at all**, and this one is not a "create it
   from the other side" case. A private chat with the bot is the *lobby*: the
   bridge answers it with setup guidance and never provisions a room, so no
@@ -1027,8 +1018,6 @@ Your messages render on whatever platform the room is bridged to
   item with bold field labels instead —
   `- **PROJ-509** — Role feature polish · ✅ Done · [PR #117](url)`. Lead with
   the bold identifier and separate fields with `·` or `—`.
-- **Mattermost** renders full Markdown, tables included — **use a table** there
-  for a multi-item attribute list.
 - **Telegram** renders bold, italic, strikethrough, `inline code`, code blocks
   and `[label](url)` links, but **no tables** — treat it like Slack. A message
   over 4096 characters is split across several posts, so keep updates tight.

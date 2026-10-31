@@ -1,89 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import {
-  bridgeCanEmbed,
-  channelUrlFromDeeplink,
-  embedIsStale,
-  mattermostPartition,
-  type RoomEmbed,
-} from './room-embed';
+import { resolveRoomEmbed } from './room-embed';
 
-describe('bridgeCanEmbed', () => {
-  it('draws only Mattermost inline', () => {
-    expect(bridgeCanEmbed('mattermost')).toBe(true);
-    expect(bridgeCanEmbed('slack')).toBe(false);
-    expect(bridgeCanEmbed(null)).toBe(false);
-  });
-});
-
-describe('channelUrlFromDeeplink', () => {
-  it('rewrites a Mattermost deeplink onto the origin we serve it from', () => {
-    expect(
-      channelUrlFromDeeplink(
-        'mattermost://localhost:8065/switch/channels/town-square',
-        'http://127.0.0.1:51002'
-      )
-    ).toBe('http://127.0.0.1:51002/switch/channels/town-square');
+describe('resolveRoomEmbed', () => {
+  it('says a room with no bridge has no channel', () => {
+    expect(resolveRoomEmbed(null, null).kind).toBe('unavailable');
   });
 
-  it('keeps channel names containing dashes intact', () => {
-    // Bridged channels are named after the room, so double dashes are common
-    // and were an early suspect for the blank-page bug.
-    expect(
-      channelUrlFromDeeplink(
-        'mattermost://localhost:8065/switch/channels/mattermost--off-topic',
-        'http://127.0.0.1:8065'
-      )
-    ).toBe('http://127.0.0.1:8065/switch/channels/mattermost--off-topic');
+  it('offers the link into the platform a room is bridged to', () => {
+    expect(resolveRoomEmbed('slack', 'slack://channel?id=C1')).toEqual({
+      kind: 'external',
+      url: 'slack://channel?id=C1',
+      platform: 'slack',
+    });
   });
 
-  it('tolerates a trailing slash on the origin', () => {
-    expect(
-      channelUrlFromDeeplink('mattermost://host/switch/channels/x', 'http://127.0.0.1:8065/')
-    ).toBe('http://127.0.0.1:8065/switch/channels/x');
-  });
-
-  it('returns null for a non-Mattermost deeplink rather than mangling it', () => {
-    expect(channelUrlFromDeeplink('slack://channel?id=C123', 'http://127.0.0.1:8065')).toBeNull();
-  });
-
-  it('returns null when the deeplink names no channel path', () => {
-    expect(channelUrlFromDeeplink('mattermost://localhost:8065', 'http://x')).toBeNull();
-  });
-});
-
-describe('mattermostPartition', () => {
-  it('is per-server, so two servers cannot share a session', () => {
-    expect(mattermostPartition('a')).not.toBe(mattermostPartition('b'));
-  });
-
-  it('is persistent, so the session survives a pane remount', () => {
-    expect(mattermostPartition('a').startsWith('persist:')).toBe(true);
-  });
-});
-
-describe('embedIsStale', () => {
-  const unavailable: RoomEmbed = { kind: 'unavailable', reason: 'down' };
-  const inline: RoomEmbed = {
-    kind: 'inline',
-    url: 'http://localhost:8065/switch/channels/town-square',
-    partition: 'persist:mm',
-    chromeless: true,
-  };
-
-  it('decides again once the link a room was missing comes back', () => {
-    expect(embedIsStale(unavailable, null, 'mattermost://town-square')).toBe(true);
-  });
-
-  it('leaves a room whose link has not changed', () => {
-    expect(embedIsStale(unavailable, null, null)).toBe(false);
-    expect(embedIsStale(inline, 'mattermost://a', 'mattermost://a')).toBe(false);
-  });
-
-  it('keeps a live conversation when its link merely goes missing', () => {
-    expect(embedIsStale(inline, 'mattermost://a', null)).toBe(false);
-  });
-
-  it('decides again when the link points somewhere else', () => {
-    expect(embedIsStale(inline, 'mattermost://a', 'mattermost://b')).toBe(true);
+  it('names the platform when there is no link to open', () => {
+    expect(resolveRoomEmbed('discord', null)).toEqual({ kind: 'unlinked', platform: 'discord' });
   });
 });

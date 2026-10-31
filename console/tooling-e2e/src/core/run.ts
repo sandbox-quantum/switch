@@ -29,15 +29,14 @@ export function isHarnessArtifact(name: string): boolean {
 }
 
 /**
- * Mattermost usernames: lowercase, 3-22 chars, `[a-z0-9._-]`, must start
- * alphanumeric. Agent names become Mattermost bot usernames verbatim, so every
- * agent name has to pass this, bridged or not.
+ * Lowercase, 3-22 chars, `[a-z0-9._-]`, starting alphanumeric: short and plain
+ * enough to be an agent name and a chat handle anywhere.
  */
-export function isValidMattermostUsername(name: string): boolean {
+export function isValidArtifactName(name: string): boolean {
   return /^[a-z0-9][a-z0-9._-]{2,21}$/.test(name);
 }
 
-/** Lowercase, filesystem- and Mattermost-username-safe run id. */
+/** Lowercase, filesystem- and handle-safe run id. */
 export function shortId(): string {
   return Math.random().toString(36).slice(2, 8).padEnd(6, '0');
 }
@@ -84,17 +83,15 @@ export class NameScope {
   /**
    * The name for an agent, room or channel.
    *
-   * `role` is kept short because the result has to fit a Mattermost username;
-   * a name that does not is refused here rather than failing bot creation on
-   * the bridge, where it surfaces only as a room that is never provisioned.
-   * Asking for the same role twice is refused too: two artefacts sharing a name
+   * `role` is kept short because the result has to pass
+   * {@link isValidArtifactName}; a name that does not is refused here. Asking for the same role twice is refused too: two artefacts sharing a name
    * would make teardown and every by-name lookup ambiguous.
    */
   name(role: string): string {
     const name = `${ARTIFACT_PREFIX}${this.runId}${this.letter}-${role}`;
-    if (!isValidMattermostUsername(name)) {
+    if (!isValidArtifactName(name)) {
       throw new Error(
-        `Derived name '${name}' is not a valid Mattermost username ` +
+        `Derived name '${name}' is not a valid artefact name ` +
           `(lowercase, 3-22 chars, [a-z0-9._-]). Shorten the role '${role}'.`
       );
     }

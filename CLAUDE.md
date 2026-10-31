@@ -22,7 +22,7 @@ history — a later commit cannot take it back. Keep internal detail out of it:
 
 ## Project Overview
 
-Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using a Postgres-backed message store as the internal message bus. Agents register via the Agent Bridge API and communicate through Switch rooms, with collaboration bridges to external platforms (Slack, Mattermost, Discord, Teams, Telegram).
+Switch is an AI agent orchestration and governance platform. It onboards, orchestrates, and secures third-party AI agents using a Postgres-backed message store as the internal message bus. Agents register via the Agent Bridge API and communicate through Switch rooms, with collaboration bridges to external platforms (Slack, Discord, Teams, Telegram).
 
 The target architecture is documented in `docs/`.
 
@@ -48,7 +48,7 @@ uv sync                          # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets
-just up                          # start the supporting stack (Postgres, Mattermost) in Docker
+just up                          # start the supporting stack (Postgres) in Docker
 just run                         # run switch-core locally (:8000)
 just down                        # stop the supporting stack
 
@@ -83,7 +83,7 @@ just test -k "test_name"         # run specific test
 - `delivery/` decides who a row is for: `addressing.py` (the rules), `router.py` (`MessageRouter`, which decides every row for every agent in its room as the row is written, in the same transaction) and `recipient.py` (`AgentRecipient`, one agent's decisions and the replies posted on its behalf)
 - `bridges/` — External integrations
   - `agent/` — Agent Bridge (HTTP API, MCP server); `protocol/agent_core.py` is `AgentCore`, `protocol/agent_connections.py` holds each `AgentConnection`
-  - `collaboration/` — Collaboration Bridge: one `CollaborationCore` per workspace, driving a `PlatformAdapter` (Slack, Mattermost, Discord, Teams, Telegram)
+  - `collaboration/` — Collaboration Bridge: one `CollaborationCore` per workspace, driving a `PlatformAdapter` (Slack, Discord, Teams, Telegram)
   - `resource/` — Resource Bridge (platform resource management)
 - `gateway/` — Management API for the frontend
 
@@ -182,7 +182,7 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   are out of date; where it and the code disagree, the code in
   `core/switch_core/bridges/agent/` is right.
 - `docs/old/bridges/` — collaboration bridge setup: `README.md` plus one page each
-  for Slack, Mattermost, Discord, Teams, and Telegram
+  for Slack, Discord, Teams, and Telegram
 - `docs/old/airtable-setup.md` — offering Airtable on a self-hosted server:
   registering and publishing the Airtable OAuth integration, its redirect
   URL and scopes, saving it under Connector apps or in

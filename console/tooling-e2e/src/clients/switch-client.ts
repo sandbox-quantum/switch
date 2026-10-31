@@ -1,9 +1,9 @@
-import { randomBytes } from "node:crypto";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
-import type { Environment, SwitchEnv } from "../core/env.ts";
-import { assertAllowed } from "../core/guard.ts";
-import type { IssuedSecrets } from "../core/secrets.ts";
+import { randomBytes } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import type { Environment, SwitchEnv } from '../core/env.ts';
+import { assertAllowed } from '../core/guard.ts';
+import type { IssuedSecrets } from '../core/secrets.ts';
 
 /**
  * Thin client for the two Switch HTTP surfaces the harness talks to, both served
@@ -70,7 +70,7 @@ export interface AgentSummary {
  * ```json
  * { "type": "message", "room_id": "…", "bridge_id": "…",
  *   "channel_type": "channel_public",
- *   "payload": { "addressed": true, "sender": "@switch-mattermost-…:localhost",
+ *   "payload": { "addressed": true, "sender": "@switch-…:localhost",
  *                "sender_name": "user", "message_id": "$…",
  *                "body": "@agent hello", "timestamp": 1788…, "thread_id": null,
  *                "attachments": [] } }
@@ -108,7 +108,7 @@ export interface AgentEvent {
 /** The human-readable text of an event, or `''` when it carries none. */
 export function eventText(event: AgentEvent): string {
   const body = event.payload?.body;
-  return typeof body === "string" ? body : "";
+  return typeof body === 'string' ? body : '';
 }
 
 /** What a route answered to a probe: its status, and what it said its body was. */
@@ -126,7 +126,7 @@ export class SwitchHttpError extends Error {
   readonly path: string;
   constructor(method: string, path: string, status: number, body: string) {
     super(`${method} ${path} -> ${status}: ${truncate(body, 400)}`);
-    this.name = "SwitchHttpError";
+    this.name = 'SwitchHttpError';
     this.status = status;
     this.body = body;
     this.method = method;
@@ -137,10 +137,10 @@ export class SwitchHttpError extends Error {
 /** An agent's addressing policy: anyone no rule matches is refused. */
 export interface AddressingPolicy {
   rules: {
-    rooms: "*" | string[];
-    room_groups: "*" | string[];
-    users: "*" | string[];
-    agents: "*" | string[];
+    rooms: '*' | string[];
+    room_groups: '*' | string[];
+    users: '*' | string[];
+    agents: '*' | string[];
     owner: boolean;
     owner_agents: boolean;
     platform: boolean;
@@ -151,8 +151,8 @@ export interface AddressingPolicy {
 export const OWNER_ONLY: AddressingPolicy = {
   rules: [
     {
-      rooms: "*",
-      room_groups: "*",
+      rooms: '*',
+      room_groups: '*',
       users: [],
       agents: [],
       owner: true,
@@ -177,12 +177,9 @@ export interface TemplateRun {
 /** A template run the server refused, having created nothing. */
 export class TemplateRefusal extends Error {
   readonly problems: { slot: string; code: string; message: string }[];
-  constructor(
-    cause: SwitchHttpError,
-    problems: { slot: string; code: string; message: string }[],
-  ) {
+  constructor(cause: SwitchHttpError, problems: { slot: string; code: string; message: string }[]) {
     super(cause.message, { cause });
-    this.name = "TemplateRefusal";
+    this.name = 'TemplateRefusal';
     this.problems = problems;
   }
 }
@@ -195,7 +192,7 @@ export function managementErrorCode(error: unknown): string | null {
   if (!(error instanceof SwitchHttpError)) return null;
   try {
     const parsed = JSON.parse(error.body) as { error?: { code?: unknown } };
-    return typeof parsed.error?.code === "string" ? parsed.error.code : null;
+    return typeof parsed.error?.code === 'string' ? parsed.error.code : null;
   } catch {
     return null;
   }
@@ -205,7 +202,7 @@ export function managementErrorCode(error: unknown): string | null {
 export function errorDetail(body: string): string {
   try {
     const parsed = JSON.parse(body) as { detail?: unknown };
-    return typeof parsed.detail === "string" ? parsed.detail : body;
+    return typeof parsed.detail === 'string' ? parsed.detail : body;
   } catch {
     return body;
   }
@@ -261,50 +258,41 @@ export class SwitchClient {
   private requestId(): Record<string, string> {
     if (this.tagging.tag === null) return {};
     this.tagging.count += 1;
-    return { "X-Request-Id": `${this.tagging.tag}-${this.tagging.count}` };
+    return { 'X-Request-Id': `${this.tagging.tag}-${this.tagging.count}` };
   }
 
-  private async request<T>(
-    method: string,
-    path: string,
-    init: SwitchRequest = {},
-  ): Promise<T> {
+  private async request<T>(method: string, path: string, init: SwitchRequest = {}): Promise<T> {
     return (await this.rawRequest(method, path, init)).parsed as T;
   }
 
   private async rawRequest(
     method: string,
     path: string,
-    init: SwitchRequest,
+    init: SwitchRequest
   ): Promise<{ parsed: unknown; response: Response }> {
     assertAllowed(this.environment, method, path);
     const headers: Record<string, string> = {
-      Accept: "application/json",
+      Accept: 'application/json',
       ...this.requestId(),
     };
     if (init.token) headers.Authorization = `Bearer ${init.token}`;
     if (init.cookie) headers.Cookie = init.cookie;
-    if (init.body !== undefined) headers["Content-Type"] = "application/json";
+    if (init.body !== undefined) headers['Content-Type'] = 'application/json';
 
     const response = await fetch(`${this.apiUrl}${path}`, {
       method,
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
-      redirect: "manual",
+      redirect: 'manual',
       signal: AbortSignal.timeout(init.timeoutMs ?? 30_000),
     });
 
     if (!response.ok) {
-      throw new SwitchHttpError(
-        method,
-        path,
-        response.status,
-        await response.text(),
-      );
+      throw new SwitchHttpError(method, path, response.status, await response.text());
     }
     if (response.status === 204) return { parsed: undefined, response };
     const text = await response.text();
-    return { parsed: text === "" ? undefined : JSON.parse(text), response };
+    return { parsed: text === '' ? undefined : JSON.parse(text), response };
   }
 
   /**
@@ -312,10 +300,7 @@ export class SwitchClient {
    * key, no body. For the check that every route which takes a session refuses
    * a request without one.
    */
-  async statusWithoutCredentials(
-    method: string,
-    path: string,
-  ): Promise<RouteProbe> {
+  async statusWithoutCredentials(method: string, path: string): Promise<RouteProbe> {
     return this.probe(method, path, null);
   }
 
@@ -328,29 +313,25 @@ export class SwitchClient {
     return this.probe(method, path, await this.gatewayLogin());
   }
 
-  private async probe(
-    method: string,
-    path: string,
-    cookie: string | null,
-  ): Promise<RouteProbe> {
-    if (method === "WS") return this.upgradeProbe(path, cookie);
+  private async probe(method: string, path: string, cookie: string | null): Promise<RouteProbe> {
+    if (method === 'WS') return this.upgradeProbe(path, cookie);
     assertAllowed(this.environment, method, path);
     const tag = this.requestId();
     const response = await fetch(`${this.apiUrl}${path}`, {
       method,
       headers: {
-        Accept: "application/json",
+        Accept: 'application/json',
         ...(cookie === null ? {} : { Cookie: cookie }),
         ...tag,
       },
-      redirect: "manual",
+      redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
     });
     await response.body?.cancel();
     return {
       status: response.status,
-      contentType: response.headers.get("content-type") ?? "",
-      requestId: tag["X-Request-Id"] ?? null,
+      contentType: response.headers.get('content-type') ?? '',
+      requestId: tag['X-Request-Id'] ?? null,
     };
   }
 
@@ -362,37 +343,39 @@ export class SwitchClient {
    */
   private upgradeProbe(path: string, cookie: string | null): Promise<RouteProbe> {
     // The handshake is a GET, and a refused one changes nothing.
-    assertAllowed(this.environment, "GET", path);
+    assertAllowed(this.environment, 'GET', path);
     const tag = this.requestId();
     const url = new URL(`${this.apiUrl}${path}`);
-    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const send = url.protocol === 'https:' ? httpsRequest : httpRequest;
     return new Promise((resolve, reject) => {
       const request = send(url, {
         headers: {
-          Connection: "Upgrade",
-          Upgrade: "websocket",
-          "Sec-WebSocket-Version": "13",
-          "Sec-WebSocket-Key": randomBytes(16).toString("base64"),
+          Connection: 'Upgrade',
+          Upgrade: 'websocket',
+          'Sec-WebSocket-Version': '13',
+          'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
           ...(cookie === null ? {} : { Cookie: cookie }),
           ...tag,
         },
         timeout: 30_000,
       });
-      const requestId = tag["X-Request-Id"] ?? null;
-      request.on("response", (response) => {
+      const requestId = tag['X-Request-Id'] ?? null;
+      request.on('response', (response) => {
         response.resume();
         resolve({
           status: response.statusCode ?? 0,
-          contentType: response.headers["content-type"] ?? "",
+          contentType: response.headers['content-type'] ?? '',
           requestId,
         });
       });
-      request.on("upgrade", (response, socket) => {
+      request.on('upgrade', (response, socket) => {
         socket.destroy();
-        resolve({ status: response.statusCode ?? 101, contentType: "", requestId });
+        resolve({ status: response.statusCode ?? 101, contentType: '', requestId });
       });
-      request.on("timeout", () => request.destroy(new Error(`No answer to the handshake on ${path}`)));
-      request.on("error", reject);
+      request.on('timeout', () =>
+        request.destroy(new Error(`No answer to the handshake on ${path}`))
+      );
+      request.on('error', reject);
       request.end();
     });
   }
@@ -412,7 +395,7 @@ export class SwitchClient {
         gatewayAdminPassword: password,
       },
       this.environment,
-      this.issued,
+      this.issued
     );
     other.tagging = this.tagging;
     return other;
@@ -423,9 +406,9 @@ export class SwitchClient {
     name: string;
     email: string;
     password: string;
-    role: "user" | "admin";
+    role: 'user' | 'admin';
   }): Promise<{ id: string }> {
-    return this.gateway<{ id: string }>("POST", "/users", params);
+    return this.gateway<{ id: string }>('POST', '/users', params);
   }
 
   /**
@@ -434,39 +417,25 @@ export class SwitchClient {
    * acts in the new workspace.
    */
   async createTenant(name: string): Promise<string> {
-    const { parsed, response } = await this.rawRequest(
-      "POST",
-      "/gateway/tenants",
-      {
-        cookie: await this.gatewayLogin(),
-        body: { name },
-      },
-    );
+    const { parsed, response } = await this.rawRequest('POST', '/gateway/tenants', {
+      cookie: await this.gatewayLogin(),
+      body: { name },
+    });
     const cookie = sessionCookieFrom(response);
-    if (!cookie)
-      throw new Error(
-        "Creating a workspace returned no switch_auth cookie for it.",
-      );
-    this.issued.record(cookie.slice("switch_auth=".length));
+    if (!cookie) throw new Error('Creating a workspace returned no switch_auth cookie for it.');
+    this.issued.record(cookie.slice('switch_auth='.length));
     this.gatewayCookie = cookie;
     return (parsed as { id: string }).id;
   }
 
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */
-  async registerAgentAsUser(params: {
-    name: string;
-    description: string;
-  }): Promise<AgentRef> {
-    const body = await this.gateway<{ id: string; api_key: string }>(
-      "POST",
-      "/agents/register",
-      {
-        agent_type: "opencode",
-        name: params.name,
-        description: params.description,
-        options: { auto_session: false },
-      },
-    );
+  async registerAgentAsUser(params: { name: string; description: string }): Promise<AgentRef> {
+    const body = await this.gateway<{ id: string; api_key: string }>('POST', '/agents/register', {
+      agent_type: 'opencode',
+      name: params.name,
+      description: params.description,
+      options: { auto_session: false },
+    });
     this.issued.record(body.api_key);
     return { id: body.id, name: params.name };
   }
@@ -475,10 +444,8 @@ export class SwitchClient {
   async enabledFeatureFlags(): Promise<Set<string>> {
     const body = await this.gateway<{
       flags: { key: string; enabled: boolean }[];
-    }>("GET", "/feature-flags");
-    return new Set(
-      body.flags.filter((flag) => flag.enabled).map((flag) => flag.key),
-    );
+    }>('GET', '/feature-flags');
+    return new Set(body.flags.filter((flag) => flag.enabled).map((flag) => flag.key));
   }
 
   /**
@@ -487,15 +454,15 @@ export class SwitchClient {
    * {@link SwitchHttpError} carrying them.
    */
   async ready(): Promise<void> {
-    await this.request("GET", "/health/ready", { timeoutMs: 10_000 });
+    await this.request('GET', '/health/ready', { timeoutMs: 10_000 });
   }
 
   /** `GET /health` — the reachability probe the suite skips on. */
   async health(): Promise<void> {
-    const body = await this.request<{ status?: string }>("GET", "/health", {
+    const body = await this.request<{ status?: string }>('GET', '/health', {
       timeoutMs: 5_000,
     });
-    if (body?.status !== "ok") {
+    if (body?.status !== 'ok') {
       throw new Error(`Switch /health returned ${JSON.stringify(body)}`);
     }
   }
@@ -513,26 +480,23 @@ export class SwitchClient {
    */
   async gatewayLogin(): Promise<string> {
     if (this.gatewayCookie) return this.gatewayCookie;
-    const { response } = await this.rawRequest("POST", "/gateway/auth/login", {
+    const { response } = await this.rawRequest('POST', '/gateway/auth/login', {
       body: { email: this.adminEmail, password: this.adminPassword },
     });
     const cookie = sessionCookieFrom(response);
     if (!cookie) {
       throw new Error(
-        "Gateway login succeeded but returned no switch_auth cookie — the gateway " +
-          "authenticates with a session cookie, not a bearer token.",
+        'Gateway login succeeded but returned no switch_auth cookie — the gateway ' +
+          'authenticates with a session cookie, not a bearer token.'
       );
     }
-    this.issued.record(cookie.slice("switch_auth=".length));
+    this.issued.record(cookie.slice('switch_auth='.length));
     this.gatewayCookie = cookie;
     return cookie;
   }
 
-  private async gateway<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-  ): Promise<T> {
+  /** A gateway request as the signed-in admin; also what `ConsoleChatClient` sends through. */
+  async gateway<T>(method: string, path: string, body?: unknown): Promise<T> {
     return this.request<T>(method, `/gateway${path}`, {
       cookie: await this.gatewayLogin(),
       body,
@@ -540,31 +504,20 @@ export class SwitchClient {
   }
 
   async listRooms(): Promise<RoomSummary[]> {
-    const rows = await this.gateway<RawRoom[]>("GET", "/rooms");
+    const rows = await this.gateway<RawRoom[]>('GET', '/rooms');
     return rows.map(toRoomSummary);
   }
 
   async getRoom(roomId: string): Promise<RoomDetail> {
-    return toRoomDetail(await this.gateway<RawRoom>("GET", `/rooms/${roomId}`));
+    return toRoomDetail(await this.gateway<RawRoom>('GET', `/rooms/${roomId}`));
   }
 
   /**
-   * `POST /gateway/rooms` — create a Switch room and let the bridge provision
-   * the platform channel for it.
+   * `POST /gateway/rooms` — create a Switch room; with a bridge, the bridge
+   * provisions the platform channel for it.
    *
-   * This is the harness's room-creation path, and the choice is not arbitrary.
-   * The "add the agent's bot to a channel" route relies on some *other* agent's
-   * websocket witnessing the join (`_handle_user_added` in the Mattermost
-   * adapter), so adding the FIRST bot to a brand-new channel is witnessed by
-   * nobody and no room is ever created — verified against a live server, see
-   * README.md. Creating the room here makes Switch create the channel and add
-   * the bot itself, which is deterministic.
-   *
-   * `userNames` are platform usernames added to the channel — the harness adds
-   * itself, since it has to be a channel member to post as the human.
-   *
-   * `bridgeId: null` makes an internal-only room: no platform channel, so the
-   * only participants are agents and the fast lane needs no bridge at all.
+   * `userNames` are people put in the room. `bridgeId: null` makes a room with
+   * no platform channel, even where the server has a default messaging app.
    */
   async createRoom(params: {
     name: string;
@@ -572,16 +525,20 @@ export class SwitchClient {
     bridgeId: string | null;
     agentNames: string[];
     userNames: string[];
+    instructions?: unknown;
+    roles?: unknown;
   }): Promise<RoomDetail> {
-    const row = await this.gateway<RawRoom>("POST", "/rooms", {
+    const row = await this.gateway<RawRoom>('POST', '/rooms', {
       name: params.name,
       description: params.description,
+      instructions: params.instructions,
+      roles: params.roles,
       ...(params.bridgeId === null
         ? { internal_only: true }
         : {
             bridge_id: params.bridgeId,
             internal_only: false,
-            channel_type: "channel_public",
+            channel_type: 'channel_public',
           }),
       agent_names: params.agentNames,
       user_names: params.userNames,
@@ -590,12 +547,12 @@ export class SwitchClient {
   }
 
   async deleteRoom(roomId: string): Promise<void> {
-    await this.gateway("DELETE", `/rooms/${roomId}`);
+    await this.gateway('DELETE', `/rooms/${roomId}`);
   }
 
   /** `DELETE /gateway/room-groups/{id}` — a group's rooms and subgroups move up a level, so delete those first. */
   async deleteRoomGroup(groupId: string): Promise<void> {
-    await this.gateway("DELETE", `/room-groups/${groupId}`);
+    await this.gateway('DELETE', `/room-groups/${groupId}`);
   }
 
   /** `POST /gateway/packages` — a private package owned by the signed-in admin, with nothing in it. */
@@ -604,19 +561,16 @@ export class SwitchClient {
     description: string;
     instructions: string;
   }): Promise<{ id: string; name: string }> {
-    return this.gateway<{ id: string; name: string }>("POST", "/packages", params);
+    return this.gateway<{ id: string; name: string }>('POST', '/packages', params);
   }
 
   async deletePackage(packageId: string): Promise<void> {
-    await this.gateway("DELETE", `/packages/${packageId}`);
+    await this.gateway('DELETE', `/packages/${packageId}`);
   }
 
   /** `GET /gateway/rooms/{id}/packages` — the packages attached to a room. */
   async roomPackages(roomId: string): Promise<{ id: string; name: string }[]> {
-    return this.gateway<{ id: string; name: string }[]>(
-      "GET",
-      `/rooms/${roomId}/packages`,
-    );
+    return this.gateway<{ id: string; name: string }[]>('GET', `/rooms/${roomId}/packages`);
   }
 
   /**
@@ -624,19 +578,19 @@ export class SwitchClient {
    * `/rooms/from-yaml` takes, so the room can be built again from it.
    */
   async exportRoomYaml(roomId: string): Promise<string> {
-    assertAllowed(this.environment, "GET", `/gateway/rooms/${roomId}/yaml`);
+    assertAllowed(this.environment, 'GET', `/gateway/rooms/${roomId}/yaml`);
     const response = await fetch(`${this.apiUrl}/gateway/rooms/${roomId}/yaml`, {
       headers: {
-        Accept: "application/x-yaml",
+        Accept: 'application/x-yaml',
         Cookie: await this.gatewayLogin(),
         ...this.requestId(),
       },
-      redirect: "manual",
+      redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
     });
     const text = await response.text();
     if (!response.ok) {
-      throw new SwitchHttpError("GET", `/gateway/rooms/${roomId}/yaml`, response.status, text);
+      throw new SwitchHttpError('GET', `/gateway/rooms/${roomId}/yaml`, response.status, text);
     }
     return text;
   }
@@ -647,7 +601,7 @@ export class SwitchClient {
    * the cleanup script for agents left behind by an interrupted run.
    */
   async deleteAgentByName(name: string): Promise<void> {
-    await this.gateway("DELETE", `/agents/by-name/${encodeURIComponent(name)}`);
+    await this.gateway('DELETE', `/agents/by-name/${encodeURIComponent(name)}`);
   }
 
   /**
@@ -666,15 +620,15 @@ export class SwitchClient {
     definition: ManagedAgentDefinition;
   }): Promise<AgentRef> {
     const view = await this.gateway<{ agent_id: string; name: string }>(
-      "POST",
-      "/management/agents",
+      'POST',
+      '/management/agents',
       {
         name: params.name,
         description: params.description,
         controller_id: params.controllerId,
-        desired_state: "running",
+        desired_state: 'running',
         definition: params.definition,
-      },
+      }
     );
     return { id: view.agent_id, name: view.name };
   }
@@ -693,11 +647,8 @@ export class SwitchClient {
   }
 
   /** `PUT /gateway/agents/{id}/addressing-policy` — who may address the agent; null lets anyone. */
-  async setAddressingPolicy(
-    agentId: string,
-    policy: AddressingPolicy | null,
-  ): Promise<void> {
-    await this.gateway("PUT", `/agents/${agentId}/addressing-policy`, {
+  async setAddressingPolicy(agentId: string, policy: AddressingPolicy | null): Promise<void> {
+    await this.gateway('PUT', `/agents/${agentId}/addressing-policy`, {
       policy,
     });
   }
@@ -713,18 +664,17 @@ export class SwitchClient {
     templateName: string;
   }): Promise<TemplateRun> {
     try {
-      return await this.gateway<TemplateRun>(
-        "POST",
-        "/rooms/from-template-document",
-        { template: params.template, template_name: params.templateName },
-      );
+      return await this.gateway<TemplateRun>('POST', '/rooms/from-template-document', {
+        template: params.template,
+        template_name: params.templateName,
+      });
     } catch (error) {
       if (error instanceof SwitchHttpError && error.status === 409) {
         const body = JSON.parse(error.body) as {
           code?: string;
           problems?: { slot: string; code: string; message: string }[];
         };
-        if (body.code === "agents_not_created") {
+        if (body.code === 'agents_not_created') {
           throw new TemplateRefusal(error, body.problems ?? []);
         }
       }
@@ -737,15 +687,12 @@ export class SwitchClient {
    * is attending the room; `dormant` means an auto-session connector is watching
    * and would spawn one; `no_session` / `disconnected` mean nothing is there.
    */
-  async agentStatusInRoom(
-    roomId: string,
-    agentId: string,
-  ): Promise<string | null> {
-    const row = await this.gateway<RawRoom>("GET", `/rooms/${roomId}`);
+  async agentStatusInRoom(roomId: string, agentId: string): Promise<string | null> {
+    const row = await this.gateway<RawRoom>('GET', `/rooms/${roomId}`);
     const statuses = row.agent_statuses;
-    if (!statuses || typeof statuses !== "object") return null;
+    if (!statuses || typeof statuses !== 'object') return null;
     const status = (statuses as Record<string, unknown>)[agentId];
-    return typeof status === "string" ? status : null;
+    return typeof status === 'string' ? status : null;
   }
 
   /**
@@ -755,7 +702,7 @@ export class SwitchClient {
   async renameAgent(
     agentId: string,
     name: string,
-    displayName: string | null,
+    displayName: string | null
   ): Promise<{
     name: string;
     displayName: string | null;
@@ -764,7 +711,7 @@ export class SwitchClient {
     const body = await this.gateway<{
       agent: { name: string; display_name: string | null };
       bridge_failures: string[];
-    }>("PUT", `/agents/${agentId}/name`, { name, display_name: displayName });
+    }>('PUT', `/agents/${agentId}/name`, { name, display_name: displayName });
     return {
       name: body.agent.name,
       displayName: body.agent.display_name,
@@ -772,41 +719,11 @@ export class SwitchClient {
     };
   }
 
-  /**
-   * `POST /gateway/collaborations/{bridge}/identities` on the default bridge
-   * of `bridgeType` — link a chat account to the signed-in Switch user, so
-   * Switch can recognise that person in a room (what the rename and delete
-   * chat commands check).
-   */
-  async claimIdentity(
-    bridgeType: string,
-    externalUserId: string,
-    username: string,
-  ): Promise<void> {
-    const bridges = await this.gateway<
-      { bridge_id: string; bridge_type: string; is_default?: boolean }[]
-    >("GET", "/collaborations");
-    const ofType = bridges.filter((row) => row.bridge_type === bridgeType);
-    const bridge = ofType.find((row) => row.is_default) ?? ofType[0];
-    if (!bridge)
-      throw new Error(
-        `No ${bridgeType} collaboration bridge on this Switch server`,
-      );
-    await this.gateway(
-      "POST",
-      `/collaborations/${bridge.bridge_id}/identities`,
-      {
-        external_user_id: externalUserId,
-        username,
-        user_id: null,
-      },
-    );
-  }
-
   async listAgents(): Promise<AgentSummary[]> {
-    const rows = await this.gateway<
-      { id: string; name: string; created_at: string }[]
-    >("GET", "/agents");
+    const rows = await this.gateway<{ id: string; name: string; created_at: string }[]>(
+      'GET',
+      '/agents'
+    );
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -819,10 +736,10 @@ export class SwitchClient {
     const state = await this.gateway<{
       state: string;
       tenant: { id: string } | null;
-    }>("GET", "/auth/session");
+    }>('GET', '/auth/session');
     if (state.tenant === null) {
       throw new Error(
-        `The gateway admin's session is bound to no workspace (state '${state.state}').`,
+        `The gateway admin's session is bound to no workspace (state '${state.state}').`
       );
     }
     return state.tenant.id;
@@ -832,11 +749,7 @@ export class SwitchClient {
    * `GET /gateway/tenants/{tenant_id}/usage` — what each client spent, per
    * metric and model, over `[since, until)`. Counted in whole UTC hours.
    */
-  async usage(
-    tenantId: string,
-    since: Date,
-    until: Date,
-  ): Promise<UsageTotal[]> {
+  async usage(tenantId: string, since: Date, until: Date): Promise<UsageTotal[]> {
     const query = `since=${encodeURIComponent(since.toISOString())}&until=${encodeURIComponent(until.toISOString())}`;
     const rows = await this.gateway<
       {
@@ -846,7 +759,7 @@ export class SwitchClient {
         model: string;
         amount: number;
       }[]
-    >("GET", `/tenants/${tenantId}/usage?${query}`);
+    >('GET', `/tenants/${tenantId}/usage?${query}`);
     return rows.map((row) => ({
       metric: row.metric,
       clientId: row.client_id,
@@ -854,33 +767,6 @@ export class SwitchClient {
       model: row.model,
       amount: row.amount,
     }));
-  }
-
-  /** The bridge id of the default collaboration bridge of `type`. */
-  async defaultBridgeId(type: string): Promise<string> {
-    return (await this.defaultBridge(type)).id;
-  }
-
-  /** The default collaboration bridge of `type`: its id, and the display name a room document names it by. */
-  async defaultBridge(
-    type: string,
-  ): Promise<{ id: string; displayName: string }> {
-    const rows = await this.gateway<
-      {
-        id: string;
-        bridge_type: string;
-        display_name: string;
-        is_default?: boolean;
-      }[]
-    >("GET", "/collaborations");
-    const ofType = rows.filter((row) => row.bridge_type === type);
-    if (ofType.length === 0) {
-      throw new Error(
-        `No ${type} collaboration bridge registered on this Switch server`,
-      );
-    }
-    const row = ofType.find((candidate) => candidate.is_default) ?? ofType[0]!;
-    return { id: row.id, displayName: row.display_name };
   }
 
   /**
@@ -893,23 +779,18 @@ export class SwitchClient {
     const result = await this.gateway<{
       room_id?: string;
       failed_attachments?: unknown[];
-    }>("POST", "/rooms/from-yaml", { yaml });
+    }>('POST', '/rooms/from-yaml', { yaml });
     if (result.room_id === undefined) {
-      throw new Error(
-        `from-yaml did not make one room: ${JSON.stringify(result)}`,
-      );
+      throw new Error(`from-yaml did not make one room: ${JSON.stringify(result)}`);
     }
     const roomId = result.room_id;
-    if (
-      result.failed_attachments !== undefined &&
-      result.failed_attachments.length > 0
-    ) {
+    if (result.failed_attachments !== undefined && result.failed_attachments.length > 0) {
       throw await this.withRoomDeleted(
         roomId,
         new Error(
           `from-yaml made room ${roomId} without part of what it was given: ` +
-            JSON.stringify(result.failed_attachments),
-        ),
+            JSON.stringify(result.failed_attachments)
+        )
       );
     }
     try {
@@ -920,10 +801,7 @@ export class SwitchClient {
   }
 
   /** Delete a room a call made before failing, and return the failure, saying whether the room went too. */
-  private async withRoomDeleted(
-    roomId: string,
-    failure: unknown,
-  ): Promise<Error> {
+  private async withRoomDeleted(roomId: string, failure: unknown): Promise<Error> {
     const reason = failure instanceof Error ? failure.message : String(failure);
     try {
       await this.deleteRoom(roomId);
@@ -936,47 +814,9 @@ export class SwitchClient {
         `${reason} (and room ${roomId} could not be deleted, delete it by hand: ${why})`,
         {
           cause: failure,
-        },
+        }
       );
     }
-  }
-
-  /**
-   * Find the Switch room bound to a given external (Mattermost) channel id.
-   * The room list does not carry `external_channel_id`, so each candidate room
-   * on the bridge is read in full — the set is small on a dev server, and the
-   * alternative (matching on display name) is ambiguous.
-   */
-  async findRoomByExternalChannel(
-    bridgeId: string,
-    externalChannelId: string,
-  ): Promise<RoomDetail | null> {
-    const rooms = await this.listRooms();
-    for (const room of rooms) {
-      if (room.bridgeId !== bridgeId || room.archived) continue;
-      const detail = await this.getRoom(room.id);
-      if (detail.externalChannelId === externalChannelId) return detail;
-    }
-    return null;
-  }
-
-  /** Poll {@link findRoomByExternalChannel} until the bridge has created the room. */
-  async waitForRoomByExternalChannel(
-    bridgeId: string,
-    externalChannelId: string,
-    deadlineMs: number,
-  ): Promise<RoomDetail> {
-    const until = Date.now() + deadlineMs;
-    let last: RoomDetail | null = null;
-    while (Date.now() < until) {
-      last = await this.findRoomByExternalChannel(bridgeId, externalChannelId);
-      if (last) return last;
-      await sleep(2_000);
-    }
-    throw new Error(
-      `No Switch room appeared for Mattermost channel ${externalChannelId} within ${deadlineMs}ms. ` +
-        `Is the Mattermost bridge running and is the agent's bot a member of the channel?`,
-    );
   }
 
   // ── agent bridge: registration ────────────────────────────────────────────
@@ -986,22 +826,16 @@ export class SwitchClient {
    * auth). `agentType` is one of the gateway's known types — `claude-code`,
    * `codex`, `opencode`, `cursor` or `antigravity` — and `options` is that
    * type's option schema, which for OpenCode is `{ auto_session, repo_dir }`.
-   *
-   * Registration is also what mints the agent's Mattermost bot account: the
-   * protocol service calls `create_agent_identity` on every collaboration
-   * bridge, and the Mattermost adapter creates a bot whose **username is the
-   * agent name verbatim**. So the agent must be registered before its bot can
-   * be added to a channel.
    */
   async registerKnownAgent(params: {
-    agentType: "opencode" | "codex" | "claude-code" | "antigravity" | "cursor";
+    agentType: 'opencode' | 'codex' | 'claude-code' | 'antigravity' | 'cursor';
     name: string;
     description: string;
     options?: Record<string, unknown>;
   }): Promise<RegisteredAgent> {
     const body = await this.request<{ id: string; api_key: string }>(
-      "POST",
-      "/agents/register-known",
+      'POST',
+      '/agents/register-known',
       {
         token: this.registrationToken,
         body: {
@@ -1010,7 +844,7 @@ export class SwitchClient {
           description: params.description,
           options: params.options ?? {},
         },
-      },
+      }
     );
     this.issued.record(body.api_key);
     return { id: body.id, name: params.name, apiKey: body.api_key };
@@ -1022,7 +856,7 @@ export class SwitchClient {
    * the path id.
    */
   async deleteAgent(agent: RegisteredAgent): Promise<void> {
-    await this.request("DELETE", `/agents/${agent.id}`, {
+    await this.request('DELETE', `/agents/${agent.id}`, {
       token: agent.apiKey,
     });
   }
@@ -1038,14 +872,11 @@ export class SwitchClient {
    *
    * Returns `[]` on the server's 204 (nothing within the timeout).
    */
-  async pollNotifications(
-    agent: RegisteredAgent,
-    timeoutSeconds = 10,
-  ): Promise<AgentEvent[]> {
+  async pollNotifications(agent: RegisteredAgent, timeoutSeconds = 10): Promise<AgentEvent[]> {
     const body = await this.request<{ events?: AgentEvent[] } | undefined>(
-      "GET",
+      'GET',
       `/agents/${agent.id}/notifications?timeout=${timeoutSeconds}`,
-      { token: agent.apiKey, timeoutMs: (timeoutSeconds + 15) * 1000 },
+      { token: agent.apiKey, timeoutMs: (timeoutSeconds + 15) * 1000 }
     );
     return body?.events ?? [];
   }
@@ -1054,12 +885,12 @@ export class SwitchClient {
   async pollRoomEvents(
     agent: RegisteredAgent,
     roomId: string,
-    timeoutSeconds = 10,
+    timeoutSeconds = 10
   ): Promise<AgentEvent[]> {
     const body = await this.request<{ events?: AgentEvent[] } | undefined>(
-      "GET",
+      'GET',
       `/agents/${agent.id}/rooms/${roomId}/events?timeout=${timeoutSeconds}`,
-      { token: agent.apiKey, timeoutMs: (timeoutSeconds + 15) * 1000 },
+      { token: agent.apiKey, timeoutMs: (timeoutSeconds + 15) * 1000 }
     );
     return body?.events ?? [];
   }
@@ -1072,15 +903,12 @@ export class SwitchClient {
   async waitForNotification(
     agent: RegisteredAgent,
     predicate: (event: AgentEvent) => boolean,
-    deadlineMs: number,
+    deadlineMs: number
   ): Promise<{ match: AgentEvent | null; seen: AgentEvent[] }> {
     const until = Date.now() + deadlineMs;
     const seen: AgentEvent[] = [];
     while (Date.now() < until) {
-      const remaining = Math.max(
-        1,
-        Math.min(10, Math.ceil((until - Date.now()) / 1000)),
-      );
+      const remaining = Math.max(1, Math.min(10, Math.ceil((until - Date.now()) / 1000)));
       const events = await this.pollNotifications(agent, remaining);
       for (const event of events) {
         seen.push(event);
@@ -1093,13 +921,12 @@ export class SwitchClient {
   /**
    * `GET /agents/{id}/rooms/{room_id}/history?limit=` as the agent — the room's
    * recent messages, addressed or not. Unlike the notification stream this shows
-   * ordinary channel chatter, which is what makes it usable as a bridge-liveness
-   * probe that does not wake the agent.
+   * ordinary chatter, so it reads the room without waking the agent.
    */
   async roomHistory(
     agent: RegisteredAgent,
     roomId: string,
-    limit = 20,
+    limit = 20
   ): Promise<
     {
       sender: string;
@@ -1115,7 +942,7 @@ export class SwitchClient {
         body: string;
         timestamp: number | null;
       }[];
-    }>("GET", `/agents/${agent.id}/rooms/${roomId}/history?limit=${limit}`, {
+    }>('GET', `/agents/${agent.id}/rooms/${roomId}/history?limit=${limit}`, {
       token: agent.apiKey,
     });
     return body.events;
@@ -1123,18 +950,13 @@ export class SwitchClient {
 
   /**
    * `POST /agents/{id}/message` with `{room_id, content}` — post into a room as
-   * the agent. The bridge relays it to Mattermost as the agent's bot. Returns
-   * the Matrix event id.
+   * the agent. Returns the event id.
    */
-  async sendMessage(
-    agent: RegisteredAgent,
-    roomId: string,
-    content: string,
-  ): Promise<string> {
+  async sendMessage(agent: RegisteredAgent, roomId: string, content: string): Promise<string> {
     const body = await this.request<{ ok: boolean; event_id: string }>(
-      "POST",
+      'POST',
       `/agents/${agent.id}/message`,
-      { token: agent.apiKey, body: { room_id: roomId, content } },
+      { token: agent.apiKey, body: { room_id: roomId, content } }
     );
     return body.event_id;
   }
@@ -1146,29 +968,25 @@ export class SwitchClient {
   async uploadMedia(
     agent: RegisteredAgent,
     roomId: string,
-    file: { name: string; bytes: Uint8Array<ArrayBuffer>; contentType: string },
+    file: { name: string; bytes: Uint8Array<ArrayBuffer>; contentType: string }
   ): Promise<{ eventId: string; mxc: string }> {
     const path = `/agents/${agent.id}/rooms/${roomId}/media`;
-    assertAllowed(this.environment, "POST", path);
+    assertAllowed(this.environment, 'POST', path);
     const form = new FormData();
-    form.append(
-      "file",
-      new Blob([file.bytes], { type: file.contentType }),
-      file.name,
-    );
+    form.append('file', new Blob([file.bytes], { type: file.contentType }), file.name);
     const response = await fetch(`${this.apiUrl}${path}`, {
-      method: "POST",
+      method: 'POST',
       headers: {
-        Accept: "application/json",
+        Accept: 'application/json',
         Authorization: `Bearer ${agent.apiKey}`,
         ...this.requestId(),
       },
       body: form,
-      redirect: "manual",
+      redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
     });
     const text = await response.text();
-    if (!response.ok) throw new SwitchHttpError("POST", path, response.status, text);
+    if (!response.ok) throw new SwitchHttpError('POST', path, response.status, text);
     const body = JSON.parse(text) as { event_id: string; mxc: string };
     return { eventId: body.event_id, mxc: body.mxc };
   }
@@ -1180,22 +998,22 @@ export class SwitchClient {
   async downloadMedia(
     agent: RegisteredAgent,
     roomId: string,
-    mxc: string,
+    mxc: string
   ): Promise<{ bytes: Uint8Array; contentType: string; contentDisposition: string }> {
     const path = `/agents/${agent.id}/rooms/${roomId}/media?mxc=${encodeURIComponent(mxc)}`;
-    assertAllowed(this.environment, "GET", path);
+    assertAllowed(this.environment, 'GET', path);
     const response = await fetch(`${this.apiUrl}${path}`, {
       headers: { Authorization: `Bearer ${agent.apiKey}`, ...this.requestId() },
-      redirect: "manual",
+      redirect: 'manual',
       signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
-      throw new SwitchHttpError("GET", path, response.status, await response.text());
+      throw new SwitchHttpError('GET', path, response.status, await response.text());
     }
     return {
       bytes: new Uint8Array(await response.arrayBuffer()),
-      contentType: response.headers.get("content-type") ?? "",
-      contentDisposition: response.headers.get("content-disposition") ?? "",
+      contentType: response.headers.get('content-type') ?? '',
+      contentDisposition: response.headers.get('content-disposition') ?? '',
     };
   }
 
@@ -1206,13 +1024,13 @@ export class SwitchClient {
    */
   async agentAttempt(
     agent: RegisteredAgent,
-    method: "GET" | "POST",
+    method: 'GET' | 'POST',
     path: string,
-    body: unknown,
+    body: unknown
   ): Promise<{ status: number; detail: string }> {
     try {
       await this.request(method, path, { token: agent.apiKey, body: body ?? undefined });
-      return { status: 200, detail: "" };
+      return { status: 200, detail: '' };
     } catch (error) {
       if (!(error instanceof SwitchHttpError)) throw error;
       return { status: error.status, detail: errorDetail(error.body) };
@@ -1228,9 +1046,9 @@ export class SwitchClient {
    */
   async listOperations(agent: RegisteredAgent): Promise<string[]> {
     const body = await this.request<{ operations: Record<string, unknown> }>(
-      "GET",
+      'GET',
       `/agents/${agent.id}/ops`,
-      { token: agent.apiKey },
+      { token: agent.apiKey }
     );
     return Object.keys(body.operations);
   }
@@ -1244,16 +1062,12 @@ export class SwitchClient {
   async callOperation<T>(
     agent: RegisteredAgent,
     operation: string,
-    args: Record<string, unknown>,
+    args: Record<string, unknown>
   ): Promise<T> {
-    const body = await this.request<{ result: T }>(
-      "POST",
-      `/agents/${agent.id}/ops/${operation}`,
-      {
-        token: agent.apiKey,
-        body: args,
-      },
-    );
+    const body = await this.request<{ result: T }>('POST', `/agents/${agent.id}/ops/${operation}`, {
+      token: agent.apiKey,
+      body: args,
+    });
     return body.result;
   }
 
@@ -1264,7 +1078,7 @@ export class SwitchClient {
    * rather than DISCONNECTED in rooms with no live session.
    */
   async watchHeartbeat(agent: RegisteredAgent): Promise<void> {
-    await this.request("POST", `/agents/${agent.id}/watch/heartbeat`, {
+    await this.request('POST', `/agents/${agent.id}/watch/heartbeat`, {
       token: agent.apiKey,
       body: {},
     });
@@ -1311,12 +1125,12 @@ function toRoomSummary(row: RawRoom): RoomSummary {
  */
 export function sessionCookieFrom(response: Response): string | null {
   const raw =
-    typeof response.headers.getSetCookie === "function"
+    typeof response.headers.getSetCookie === 'function'
       ? response.headers.getSetCookie()
-      : [response.headers.get("set-cookie") ?? ""];
+      : [response.headers.get('set-cookie') ?? ''];
   for (const header of raw) {
-    const pair = header.split(";", 1)[0]?.trim();
-    if (pair?.startsWith("switch_auth=")) return pair;
+    const pair = header.split(';', 1)[0]?.trim();
+    if (pair?.startsWith('switch_auth=')) return pair;
   }
   return null;
 }

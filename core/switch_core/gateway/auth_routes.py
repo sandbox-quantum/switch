@@ -391,6 +391,9 @@ async def my_identities(
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
+        # A retired Mattermost connector is no connection to show the user.
+        if bridge.type == "mattermost" and bridge.status != "active":
+            continue
         linked.append(
             LinkedIdentity(
                 id=identity.id,

@@ -830,7 +830,7 @@ async def claim_bridge_identity(
     """Claim a platform identity for a Switch user (CHOO-2137).
 
     This is what makes owner-only addressing enforceable: until the person
-    behind a Slack or Mattermost account is known to be a particular Switch
+    behind a Slack or Discord account is known to be a particular Switch
     user, an owner-scoped rule can never recognise them.
 
     Claiming one for someone else is an admin action; claiming one for
@@ -847,6 +847,11 @@ async def claim_bridge_identity(
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
         raise HTTPException(status_code=404, detail="Bridge not found")
+    if bridge.status != "active":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Bridge is {bridge.status}; identities can only be claimed on an active bridge",
+        )
 
     target_user_id = payload.user_id or caller_id
     if target_user_id != caller_id and not is_admin:

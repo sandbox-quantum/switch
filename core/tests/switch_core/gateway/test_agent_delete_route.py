@@ -70,7 +70,7 @@ async def test_deleting_by_name_reports_it_too(
         await add_agent(session, name="local", owner_id=owner.id)
         protocol = AsyncMock()
         protocol.delete_agent.return_value = AgentDeletionResult(
-            bridge_failures=["mattermost: timed out"]
+            bridge_failures=["discord: timed out"]
         )
 
         assert await delete_agent_by_name(
@@ -81,6 +81,6 @@ async def test_deleting_by_name_reports_it_too(
             owner,
             await is_admin(session, owner),
         ) == DeleteAgentResponse(
-            ok=True, bridge_cleanup_failures=["mattermost: timed out"]
+            ok=True, bridge_cleanup_failures=["discord: timed out"]
         )
         protocol.delete_agent.assert_awaited_once_with(agent_name="local")

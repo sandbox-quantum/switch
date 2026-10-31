@@ -177,7 +177,7 @@ special inside a chain:
 ```yaml
 bridge:
   type: bridge
-  default: [Slack, Mattermost, $first]   # Slack if set up, else Mattermost, else the default app
+  default: [Slack, Discord, $first]   # Slack if set up, else Discord, else the default app
 ```
 
 A chain with no hit leaves the input empty. With `required: true` that

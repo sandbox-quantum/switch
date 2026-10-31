@@ -78,10 +78,9 @@ export const LOCAL_SERVER_NAME = 'Local Switch server';
 // stack never collides with a dev's existing services. Resolve them via
 // gatewayUrlFor()/apiUrlFor() from the persisted port set.
 
-/** Compose profiles Switch Console enables: `collab` (Mattermost bridge + seeder) so
- * the stack has a working collaboration bridge, and `gateway` so the operator
- * web dashboard is available. */
-export const LOCAL_SERVER_PROFILES = ['collab', 'gateway'] as const;
+/** Compose profiles Switch Console enables: `gateway` so the operator web
+ * dashboard is available. */
+export const LOCAL_SERVER_PROFILES = ['gateway'] as const;
 
 /** Registry the release images are published to and pulled from. */
 export const GHCR_REGISTRY = 'ghcr.io';
@@ -96,17 +95,6 @@ export const LOCAL_SERVER_ADMIN_EMAIL = 'admin@switch.local';
  * compose's own default, so the single-user local stack is never exposed to the
  * LAN. */
 export const LOCAL_SERVER_BIND_ADDR = '127.0.0.1';
-
-/** Mattermost team the stack's seeder creates (MATTERMOST_TEAM_NAME). Named
- * rather than inlined because it is also what a link into the bundled
- * Mattermost has to path through — the two must not drift. */
-export const LOCAL_SERVER_MATTERMOST_TEAM = 'switch';
-
-/** The human account the stack's seeder creates (MATTERMOST_USER), paired with
- * the generated `mattermostUserPassword`. Three places depend on it being the
- * name the seeder actually used — the generated env, the embed's silent login,
- * and the sign-in Switch Console shows the user — so it is named once here. */
-export const LOCAL_SERVER_MATTERMOST_USER = 'user';
 
 /** Its container stands for "the stack is up", its image tag is the stack's
  * version, and its environment carries the server's settings. */

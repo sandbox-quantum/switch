@@ -4,7 +4,7 @@ import { platformLogoMarkdown } from '@renderer/features/chats/ui/platform-logo'
 const PLATFORMS: { type: string; name: string }[] = [
   { type: 'slack', name: 'Slack' },
   { type: 'teams', name: 'Microsoft Teams' },
-  { type: 'mattermost', name: 'Mattermost' },
+  { type: 'discord', name: 'Discord' },
   { type: 'telegram', name: 'Telegram' },
 ];
 

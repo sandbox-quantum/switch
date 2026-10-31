@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
-from sqlalchemy import and_, func, select, true
+from sqlalchemy import and_, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -215,13 +215,18 @@ async def chat_summaries(
         else {}
     )
     bridge_ids = {room.bridge_id for room in rooms if room.bridge_id is not None}
+    # A retired Mattermost connector is no connection to label the chat with.
     bridges = (
         {
             bridge.id: bridge
             for bridge in (
                 await session.execute(
                     select(CollaborationBridge).where(
-                        CollaborationBridge.id.in_(bridge_ids)
+                        CollaborationBridge.id.in_(bridge_ids),
+                        or_(
+                            CollaborationBridge.type != "mattermost",
+                            CollaborationBridge.status == "active",
+                        ),
                     )
                 )
             ).scalars()

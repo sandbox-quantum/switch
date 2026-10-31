@@ -6,7 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from switch_core.config import SwitchConfig
-from switch_core.feature_flags import ECOSYSTEM_SHOW_OWNERS, KNOWN_FEATURE_FLAGS
+from switch_core.feature_flags import (
+    AGENT_CHATS,
+    ECOSYSTEM_SHOW_OWNERS,
+    GROUP_CHATS,
+    KNOWN_FEATURE_FLAGS,
+)
 
 _BASE_KWARGS = dict(
     db_host="db",
@@ -23,20 +28,30 @@ _BASE_KWARGS = dict(
 )
 
 
-def test_unset_leaves_every_flag_off(
+def test_unset_leaves_every_flag_but_the_chat_flags_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("FEATURE_FLAGS_ENABLED", raising=False)
     assert SwitchConfig(**_BASE_KWARGS).feature_flags == {  # type: ignore[arg-type]
-        key: False for key in KNOWN_FEATURE_FLAGS
+        key: key in (AGENT_CHATS, GROUP_CHATS) for key in KNOWN_FEATURE_FLAGS
     }
 
 
 def test_listed_flags_are_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FEATURE_FLAGS_ENABLED", f" {ECOSYSTEM_SHOW_OWNERS} ,")
     assert SwitchConfig(**_BASE_KWARGS).feature_flags == {  # type: ignore[arg-type]
-        key: key == ECOSYSTEM_SHOW_OWNERS for key in KNOWN_FEATURE_FLAGS
+        key: key in (ECOSYSTEM_SHOW_OWNERS, AGENT_CHATS, GROUP_CHATS)
+        for key in KNOWN_FEATURE_FLAGS
     }
+
+
+def test_chat_flags_listed_by_an_old_config_still_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEATURE_FLAGS_ENABLED", f"{AGENT_CHATS},{GROUP_CHATS}")
+    flags = SwitchConfig(**_BASE_KWARGS).feature_flags  # type: ignore[arg-type]
+    assert flags[AGENT_CHATS] is True
+    assert flags[GROUP_CHATS] is True
 
 
 def test_an_unknown_flag_is_a_startup_error(monkeypatch: pytest.MonkeyPatch) -> None:

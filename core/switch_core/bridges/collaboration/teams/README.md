@@ -1,6 +1,6 @@
 # Microsoft Teams collaboration bridge
 
-Integrates Switch with Microsoft Teams alongside Slack and Mattermost, following
+Integrates Switch with Microsoft Teams alongside Slack, Discord and Telegram, following
 the same adapter contract (`../adapter.py`). This note covers the Teams-specific
 architecture, the ops prerequisites, and the per-bridge configuration. A Teams
 workspace is connected **per bridge through the gateway** — all credentials live
@@ -13,8 +13,7 @@ in the bridge's stored `connection_config`, never in global/env config.
 
 ## Architecture
 
-Teams has no persistent bot socket (unlike Slack Socket Mode / Mattermost
-WebSocket), so the adapter uses two Microsoft APIs and hosts its own HTTP
+Teams has no persistent bot socket (unlike Slack Socket Mode), so the adapter uses two Microsoft APIs and hosts its own HTTP
 listener:
 
 - **Bot Framework** (outbound + partial inbound). Outbound messages post via the
@@ -121,7 +120,7 @@ but per-channel Graph subscriptions are skipped and an error is logged.
 
 ## Known limitations / follow-ups
 
-- **Switch-initiated DM rooms** are user-initiated (as on Mattermost);
+- **Switch-initiated DM rooms** are user-initiated;
   bootstrapping one bot-side needs proactive app installation via Graph.
 - **Attachments** (inbound media and outbound files) are currently **disclosed,
   not relayed**: the message text bridges and a note names the un-relayed media.

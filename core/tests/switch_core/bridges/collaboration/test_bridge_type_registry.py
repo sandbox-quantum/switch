@@ -12,10 +12,6 @@ from switch_core.bridges.collaboration.discord.adapter import (
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
-)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -41,8 +37,6 @@ def _service() -> CollaborationBridgeLifecycleService:
     shared callback listener is constructed up front, from it.
     """
     config = MagicMock()
-    config.collaboration_callback_host = "127.0.0.1"
-    config.collaboration_callback_port = 0
     config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     return CollaborationBridgeLifecycleService(
         bridge_store=None,  # type: ignore[arg-type]
@@ -68,11 +62,9 @@ def _service() -> CollaborationBridgeLifecycleService:
 def test_get_registered_types_lists_registered() -> None:
     service = _service()
     service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
-    service.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
+    service.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
 
-    assert sorted(service.get_registered_types()) == ["mattermost", "slack"]
+    assert sorted(service.get_registered_types()) == ["discord", "slack"]
 
 
 def test_discord_adapter_registers_with_expected_required_fields() -> None:
@@ -144,7 +136,7 @@ def test_only_telegram_cannot_create_channels() -> None:
     # A platform fact, not a preference. Telegram's Bot API has no call to make
     # a chat; every other platform Switch bridges to does.
     assert TelegramAdapter.supports_channel_creation is False
-    for adapter in (SlackAdapter, MattermostAdapter, DiscordAdapter, TeamsAdapter):
+    for adapter in (SlackAdapter, DiscordAdapter, TeamsAdapter):
         assert adapter.supports_channel_creation is True
 
 

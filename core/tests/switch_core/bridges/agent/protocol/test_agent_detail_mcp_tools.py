@@ -492,7 +492,7 @@ class _RecordingAdapter:
 class _RecordingBridges:
     def __init__(self, adapter: _RecordingAdapter) -> None:
         self.adapter = adapter
-        self.bridge_type = "mattermost"
+        self.bridge_type = "slack"
 
     def bridges_for_tenant(self, tenant_id: str) -> list[_RecordingBridges]:
         return [self]

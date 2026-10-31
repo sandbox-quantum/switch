@@ -217,7 +217,7 @@ class _Seed:
     async def _bridges(self, session: AsyncSession) -> None:
         if self.bridges:
             return
-        for platform in ("slack", "mattermost"):
+        for platform in ("slack", "discord"):
             client = await self._client(session, "bridge")
             bridge = CollaborationBridge(
                 type=platform,

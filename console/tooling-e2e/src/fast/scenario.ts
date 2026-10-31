@@ -1,4 +1,4 @@
-import type { MattermostClient } from '../clients/mattermost-client.ts';
+import type { ConsoleChatClient } from '../clients/console-chat-client.ts';
 import type { SwitchClient } from '../clients/switch-client.ts';
 import type { HarnessEnv } from '../core/env.ts';
 import type { NameScope } from '../core/run.ts';
@@ -22,8 +22,8 @@ export interface FastContext {
   /** Names and markers for this scenario, unique within the run. */
   names: NameScope;
   switchClient: SwitchClient;
-  /** Present exactly when the header requires `mattermost`. */
-  mattermost: MattermostClient | null;
+  /** The human side: the in-Console chat, as the gateway admin. */
+  chat: ConsoleChatClient;
   fixtures: Fixtures;
   log: (message: string) => void;
 }

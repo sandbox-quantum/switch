@@ -35,18 +35,12 @@ export interface ScenarioHeader {
 }
 
 /**
- * `mattermost`: a Mattermost and a human token on it are configured.
  * `agent-dir`: the provider session's working directory is on this machine.
  * `gateway-ui`: the address of a gateway UI served against this Switch server.
  * `agentic-models`: the driver and judge models, and the spending limit.
  * `controller`: an agent controller that runs the agents Switch manages.
  */
-export type Prerequisite =
-  | 'mattermost'
-  | 'agent-dir'
-  | 'gateway-ui'
-  | 'agentic-models'
-  | 'controller';
+export type Prerequisite = 'agent-dir' | 'gateway-ui' | 'agentic-models' | 'controller';
 
 const OPERATION = /^[a-z][a-z0-9_]*$/;
 const ROUTE = /^(GET|POST|PUT|PATCH|DELETE) \/\S*$/;
@@ -94,8 +88,6 @@ export function assertValidHeaders(headers: readonly ScenarioHeader[]): void {
  * is simply not this run's business. A missing prerequisite is different: the
  * scenario belongs here and cannot run, which skips on a developer machine and
  * fails in strict mode — CI must not report a scenario that never ran as green.
- * The exception is a prerequisite the environment declares it lacks by design
- * (`SWITCH_E2E_NO_MATTERMOST`): that skips everywhere, with the reason given.
  */
 export type Admission = { run: true } | { run: false; reason: string; failure: boolean };
 
@@ -112,26 +104,17 @@ export function admit(header: ScenarioHeader, env: HarnessEnv): Admission {
   }
   const missing = header.requires.filter((prerequisite) => !satisfied(prerequisite, env));
   if (missing.length > 0) {
-    const byDesign = missing.every((prerequisite) => absentByDesign(prerequisite, env));
     return {
       run: false,
-      reason:
-        `needs ${missing.map(describePrerequisite).join(' and ')}` +
-        (byDesign ? `, which '${env.environment}' does not deploy (SWITCH_E2E_NO_MATTERMOST)` : ''),
-      failure: env.strict && !byDesign,
+      reason: `needs ${missing.map(describePrerequisite).join(' and ')}`,
+      failure: env.strict,
     };
   }
   return { run: true };
 }
 
-function absentByDesign(prerequisite: Prerequisite, env: HarnessEnv): boolean {
-  return prerequisite === 'mattermost' && env.noMattermost;
-}
-
 function satisfied(prerequisite: Prerequisite, env: HarnessEnv): boolean {
   switch (prerequisite) {
-    case 'mattermost':
-      return env.mattermost !== null;
     case 'agent-dir':
       return env.provider.agentRepoDir !== null;
     case 'gateway-ui':
@@ -149,8 +132,6 @@ function satisfied(prerequisite: Prerequisite, env: HarnessEnv): boolean {
 
 function describePrerequisite(prerequisite: Prerequisite): string {
   switch (prerequisite) {
-    case 'mattermost':
-      return 'Mattermost (MATTERMOST_URL, MATTERMOST_TOKEN, MATTERMOST_TEAM)';
     case 'agent-dir':
       return 'the session working directory (SWITCH_E2E_AGENT_DIR)';
     case 'gateway-ui':

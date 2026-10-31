@@ -82,12 +82,12 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
         buildNativeCoreSettings({
           apiPort: ports.api,
           postgresPort: ports.postgres,
-          callbackPort: ports.gateway,
           secrets,
           telemetryEnabled: false,
           telemetryEnvironment: 'local',
           telemetryInternal: false,
           telemetryEndpoint: 'https://relay.example.test',
+          fromCheckout: false,
         })
       );
       expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);
@@ -109,12 +109,12 @@ describe.skipIf(!process.env.SWITCH_NATIVE_INTEGRATION)('native toolchain', () =
         buildNativeCoreSettings({
           apiPort: ports.api,
           postgresPort: ports.postgres,
-          callbackPort: ports.gateway,
           secrets,
           telemetryEnabled: false,
           telemetryEnvironment: 'local',
           telemetryInternal: false,
           telemetryEndpoint: 'https://relay.example.test',
+          fromCheckout: false,
         })
       );
       expect(await waitForHealth(nativeApiUrl(ports.api), { timeoutMs: 120_000 })).toBe(true);

@@ -150,7 +150,7 @@ function openServerSettings(serverId: string): void {
   appState.navigation.navigate('server', { serverId });
   toast.error('This server has no Server page here', {
     description:
-      "Someone else runs it, so its start, stop, update and Mattermost settings aren't in this Switch Console.",
+      "Someone else runs it, so its start, stop and update settings aren't in this Switch Console.",
   });
 }
 

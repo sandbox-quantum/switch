@@ -118,12 +118,10 @@ const hostSecrets: LocalServerSecrets = {
   secretKeys: 'console:host-secret-keys',
   controllerTokenSecret: 'controller-token-secret-value',
   gatewayAdminPassword: 'host-admin-pw',
-  mattermostAdminPassword: 'host-mm-admin',
-  mattermostUserPassword: 'host-mm-user',
 };
-const hostPorts = { gateway: 41000, api: 41001, mattermost: 41002, postgres: 41003 };
+const hostPorts = { gateway: 41000, api: 41001, postgres: 41003 };
 const cachedSecrets: LocalServerSecrets = { ...hostSecrets, gatewayAdminPassword: 'cached-pw' };
-const cachedPorts = { gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 };
+const cachedPorts = { gateway: 3300, api: 8000, postgres: 5432 };
 
 function present(
   overrides: Partial<Extract<StackOnHost, { kind: 'present' }>> = {},
@@ -1165,7 +1163,7 @@ describe('choosing ports for a new stack', () => {
   it('chooses new ports when one it kept from a stack since gone is taken here', async () => {
     inspectStackMock.mockResolvedValue({ kind: 'absent' });
     const { host, checkNetworking } = sharedHost();
-    const fresh = { gateway: 42000, api: 42001, mattermost: 42002, postgres: 42003 };
+    const fresh = { gateway: 42000, api: 42001, postgres: 42003 };
     (host as unknown as { pickFreePorts: () => Promise<typeof fresh> }).pickFreePorts = vi.fn(
       async () => fresh
     );

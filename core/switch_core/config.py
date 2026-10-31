@@ -219,8 +219,8 @@ class SwitchConfig(BaseSettings):
     # run and whatever it signed may stop working.
     jwt_secret_key: str | None = None
 
-    # Private hosts Switch may reach at a URL a tenant or agent supplied (a
-    # Mattermost server, an agent icon): comma-separated
+    # Private hosts Switch may reach at a URL a tenant or agent supplied (an
+    # agent icon): comma-separated
     # hostnames and CIDRs. Anything else that is not a public address is
     # refused. Link-local and metadata addresses are refused even when listed.
     # See `outbound.py`.
@@ -528,30 +528,16 @@ class SwitchConfig(BaseSettings):
     # badge from ui-avatars.com with their name in the URL, so the services
     # see the name. Slack and Discord fetch the image on their own servers and
     # serve their copy, Teams draws it inside each card (some Teams clients may
-    # load it from the service directly), the Mattermost adapter fetches it
-    # from this server, and Switch Console loads it on each user's machine.
+    # load it from the service directly), and Switch Console loads it on each
+    # user's machine.
     # False sends no such URL anywhere, stored ones included: each platform
-    # shows its own default icon (a Mattermost bot keeps the image it already
-    # has), new agents get no generated icon, setting an icon on one of those
-    # services is refused, and Switch Console stops drawing them for this
-    # server's agents.
+    # shows its own default icon, new agents get no generated icon, setting an
+    # icon on one of those services is refused, and Switch Console stops
+    # drawing them for this server's agents.
     third_party_avatars_enabled: bool = True
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000
-
-    # Where collaboration bridges take platform callbacks. Only a Mattermost
-    # button press needs one today: the press is delivered by the Mattermost
-    # server to a URL, where every other platform Switch bridges to sends it
-    # down a connection Switch already holds open.
-    #
-    # A socket of its own, not a route on the port above, which carries the
-    # agent API, the MCP server and the operator dashboard. What an operator
-    # has to expose for a button to work should be callbacks and nothing else,
-    # so that one over-broad proxy rule cannot publish the other three. It
-    # stays unbound in a deployment where no bridge asks to be called back.
-    collaboration_callback_host: str = "0.0.0.0"
-    collaboration_callback_port: int = 8081
 
     frontend_base_url: str | None = None
 
@@ -1298,7 +1284,10 @@ class SwitchConfig(BaseSettings):
     def feature_flags(self) -> dict[str, bool]:
         """Every known flag and whether this deployment turned it on."""
         enabled = self._enabled_feature_flags()
-        return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
+        return {
+            key: key in enabled or key in (AGENT_CHATS, GROUP_CHATS)
+            for key in sorted(KNOWN_FEATURE_FLAGS)
+        }
 
     @property
     def agent_management_enabled(self) -> bool:
@@ -1315,14 +1304,6 @@ class SwitchConfig(BaseSettings):
     @property
     def follow_the_conversation_enabled(self) -> bool:
         return self.feature_flags[FOLLOW_THE_CONVERSATION]
-
-    @property
-    def agent_chats_enabled(self) -> bool:
-        return self.feature_flags[AGENT_CHATS]
-
-    @property
-    def group_chats_enabled(self) -> bool:
-        return self.feature_flags[GROUP_CHATS]
 
     @model_validator(mode="after")
     def _validate_outbound_allowed_private_hosts(self) -> "SwitchConfig":

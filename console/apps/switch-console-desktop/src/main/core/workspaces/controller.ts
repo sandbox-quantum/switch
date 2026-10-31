@@ -472,7 +472,7 @@ export const workspacesController = createRPCController({
 
   listBridges: (workspaceId: string): Promise<RemoteBridge[]> =>
     withReachableWorkspaceSession(workspaceId, async (server) =>
-      withResolvedHomeUrls(server, await fetchBridges(server))
+      withResolvedHomeUrls(await fetchBridges(server))
     ),
 
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>

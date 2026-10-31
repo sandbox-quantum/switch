@@ -529,7 +529,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
   // A server set up on Docker before native mode existed still needs Docker to
-  // start; a native one (every new install) needs it only for Mattermost.
+  // start; a native one (every new install) does not.
   const native = store.runtime === 'native';
   const needsDocker = store.runtime === 'docker';
   const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
@@ -605,7 +605,6 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
               <SetupStepItem>Run them in the background on this computer</SetupStepItem>
-              <SetupStepItem>{mattermostStep(docker, store.mattermost)}</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -618,7 +617,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>Pull the Switch images from GHCR if needed</SetupStepItem>
-              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Run Postgres and Switch in Docker</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -720,23 +719,6 @@ function StartOver({ disabled, onConfirm }: { disabled: boolean; onConfirm: () =
       </div>
     </div>
   );
-}
-
-/**
- * What starting does about Mattermost beside a server that otherwise needs no
- * Docker. Mattermost only ships as a container image, so it runs wherever
- * Docker answers, unless it was turned off for this server, and the list says
- * which, so chat being there or not is never a surprise.
- */
-function mattermostStep(
-  docker: { available: true } | { available: false; detail: string } | null,
-  enabled: boolean
-): string {
-  if (docker === null) return 'Run Mattermost for team chat if Docker is available';
-  if (!docker.available)
-    return 'Skip Mattermost for team chat, which needs Docker. You can connect a messaging app later';
-  if (!enabled) return 'Skip Mattermost, which is turned off for this server';
-  return 'Run Mattermost in Docker for team chat, downloading its image the first time';
 }
 
 /**

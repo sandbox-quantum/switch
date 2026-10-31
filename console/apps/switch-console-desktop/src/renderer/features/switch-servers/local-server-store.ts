@@ -114,28 +114,6 @@ export class LocalServerStore {
     return this.runtime === 'native';
   }
 
-  /**
-   * Whether Mattermost is on for a native server: for a running one, whether
-   * it is up or coming up, where that is known; otherwise whether the next
-   * start runs it. A running server going without it (left out at start, or
-   * failed to come up) reads off, so turning the switch on brings it up rather
-   * than a click on a switch already on turning it off.
-   */
-  get mattermost(): boolean {
-    if (this.isRunning) {
-      const state = this.mattermostState;
-      if (state === 'off' || state === 'failed') return false;
-      if (state === 'starting' || state === 'running') return true;
-    }
-    // Never chosen means on wherever Docker can run it.
-    return this.status?.mattermost ?? this.docker?.available ?? false;
-  }
-
-  /** How the Mattermost beside a native server is doing, when known. */
-  get mattermostState(): LocalServerStatus['mattermostState'] {
-    return this.status?.mattermostState ?? null;
-  }
-
   get isTransitioning(): boolean {
     return this.busy || this.phase === 'starting' || this.phase === 'stopping';
   }
@@ -213,15 +191,6 @@ export class LocalServerStore {
       });
     } catch (cause) {
       this.setError(cause, 'Could not check Docker availability.');
-    }
-  }
-
-  /** Turn Mattermost on or off for a native server; a running one applies it now. */
-  async setMattermost(enabled: boolean): Promise<void> {
-    try {
-      await rpc.localSwitchServer.setMattermost(enabled);
-    } catch (cause) {
-      this.setError(cause, 'Could not change the Mattermost setting.');
     }
   }
 

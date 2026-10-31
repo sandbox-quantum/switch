@@ -44,6 +44,15 @@ describe('composeUp', () => {
     expect(streamCommand.mock.calls[0]![1]).toEqual(expect.arrayContaining(['up', '-d']));
   });
 
+  /** An earlier stack ran Mattermost, which the compose file no longer has. */
+  it('removes containers of services the compose file no longer has', async () => {
+    const { host, streamCommand } = hostSpy();
+
+    await composeUp(host, () => {}, false);
+
+    expect(streamCommand.mock.calls[0]![1]).toContain('--remove-orphans');
+  });
+
   /** The dev-only checkout build layers the build override on top of the
    * pinned compose file and asks compose to build; without `--build` an
    * already-built image is reused and the working tree's changes never land. */

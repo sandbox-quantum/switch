@@ -1,5 +1,14 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import {
+  ExternalLink,
+  FileText,
+  Loader2,
+  MessagesSquare,
+  Plus,
+  RefreshCw,
+  Search,
+  X,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { chatMembersQueryKey, workspaceRosterQuery } from '@renderer/features/chats/chat-people';
@@ -53,6 +62,7 @@ import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
+import { roomTabStore } from './room-tab-store';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -563,7 +573,13 @@ const DeleteRoomSection = observer(function DeleteRoomSection({
   );
 });
 
-function RoomHeading({ serverId, room }: { serverId: string | null; room: RemoteRoomDetail }) {
+const RoomHeading = observer(function RoomHeading({
+  serverId,
+  room,
+}: {
+  serverId: string | null;
+  room: RemoteRoomDetail;
+}) {
   const platform = bridgePlatformLabel(room.bridgeType);
   const { navigate } = useNavigate();
   return (
@@ -573,7 +589,7 @@ function RoomHeading({ serverId, room }: { serverId: string | null; room: Remote
         <p className="text-sm text-foreground-muted">
           {room.bridgeDisplayName
             ? `Room bridged to ${room.bridgeDisplayName}`
-            : 'Room with no messaging app'}
+            : 'Chat in Switch Console'}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -585,6 +601,12 @@ function RoomHeading({ serverId, room }: { serverId: string | null; room: Remote
           >
             <FileText className="size-3.5" />
             Capture as template
+          </Button>
+        )}
+        {!room.bridgeType && opensAsConsoleChat(room.id) && (
+          <Button variant="outline" size="sm" onClick={() => roomTabStore.setTab(room.id, 'chat')}>
+            <MessagesSquare className="size-3.5" />
+            Open chat
           </Button>
         )}
         {room.externalChannelUrl && (
@@ -603,7 +625,7 @@ function RoomHeading({ serverId, room }: { serverId: string | null; room: Remote
       </div>
     </div>
   );
-}
+});
 
 /** What the section is doing, once the user has stopped typing in it. */
 type SaveState = { phase: 'idle' | 'saving' | 'saved' } | { phase: 'failed'; message: string };

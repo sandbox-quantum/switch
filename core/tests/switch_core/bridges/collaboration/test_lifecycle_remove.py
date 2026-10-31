@@ -7,13 +7,13 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.discord.adapter import (
+    DiscordAdapter,
+    DiscordConnectionConfig,
+)
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
     _workspace_consumer_localpart,
-)
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
 )
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -110,8 +110,8 @@ async def _make_client(session: AsyncSession, *, client_type: str) -> str:
 async def _make_bridge(session: AsyncSession) -> tuple[str, str]:
     client_id = await _make_client(session, client_type="bridge")
     bridge = CollaborationBridge(
-        type="mattermost",
-        display_name="MM",
+        type="discord",
+        display_name="Discord",
         client_id=client_id,
         status="active",
     )
@@ -482,9 +482,7 @@ async def test_a_bridge_that_cannot_start_is_not_left_registered(
     """Stored and not startable would be a row that fails every boot — and,
     for an install, a second bridge on the customer's next attempt."""
     service = _service(session_factory, _RegisteringClientLifecycle(session_factory))
-    service.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
+    service.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
 
     async def refuse(bridge_id: str) -> None:
         raise RuntimeError("the bridge could not start")
@@ -498,19 +496,14 @@ async def test_a_bridge_that_cannot_start_is_not_left_registered(
     monkeypatch.setattr(service, "check_outbound_urls", reachable)
     monkeypatch.setattr(service, "start", refuse)
     monkeypatch.setattr(
-        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+        DiscordAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
     )
 
     with pytest.raises(RuntimeError, match="could not start"):
         await service.register(
-            bridge_type="mattermost",
-            display_name="MM",
-            connection_config={
-                "url": "https://mm.example",
-                "admin_user": "admin",
-                "admin_password": "pw",
-                "team_name": "team",
-            },
+            bridge_type="discord",
+            display_name="Discord",
+            connection_config={"bot_token": "discord-test", "guild_id": "111"},
             channel_creation_enabled=False,
             preconfigured=False,
         )
@@ -526,9 +519,7 @@ async def test_a_failed_cleanup_does_not_hide_why_the_bridge_could_not_start(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     service = _service(session_factory, _RegisteringClientLifecycle(session_factory))
-    service.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
+    service.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
 
     async def refuse(bridge_id: str) -> None:
         raise RuntimeError("the bridge could not start")
@@ -546,19 +537,14 @@ async def test_a_failed_cleanup_does_not_hide_why_the_bridge_could_not_start(
     monkeypatch.setattr(service, "start", refuse)
     monkeypatch.setattr(service, "remove", remove_fails)
     monkeypatch.setattr(
-        MattermostAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
+        DiscordAdapter, "verify_credentials", classmethod(lambda cls, c: accept(c))
     )
 
     with pytest.raises(RuntimeError, match="could not start"):
         await service.register(
-            bridge_type="mattermost",
-            display_name="MM",
-            connection_config={
-                "url": "https://mm.example",
-                "admin_user": "admin",
-                "admin_password": "pw",
-                "team_name": "team",
-            },
+            bridge_type="discord",
+            display_name="Discord",
+            connection_config={"bot_token": "discord-test", "guild_id": "111"},
             channel_creation_enabled=False,
             preconfigured=False,
         )

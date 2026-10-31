@@ -43,9 +43,6 @@ from switch_core.keys import Keyring
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import TelemetryRecord
 from tests.ownership import SoleOwner
-from tests.switch_core.bridges.collaboration.test_lifecycle_callback_endpoint import (
-    _FailingClient,
-)
 from tests.switch_core.bridges.collaboration.test_lifecycle_tenant_binding import (
     _make_bridge,
     _make_tenant,
@@ -68,7 +65,6 @@ class _RecordingSink:
 def _service_with_telemetry(
     session_factory: async_sessionmaker[AsyncSession],
     *,
-    callback_port: int = 0,
     client_store: Any = None,
     installed_at: datetime | None = None,
 ) -> tuple[CollaborationBridgeLifecycleService, _RecordingSink]:
@@ -85,8 +81,6 @@ def _service_with_telemetry(
     )
     config = MagicMock()
     config.gateway_public_url = "https://gw.example"
-    config.collaboration_callback_host = "127.0.0.1"
-    config.collaboration_callback_port = callback_port
     config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     service = CollaborationBridgeLifecycleService(
         bridge_store=CollaborationBridgeStore(),
@@ -136,6 +130,15 @@ async def _bridge_connected_events(sink: _RecordingSink) -> list[dict[str, Any]]
     return events
 
 
+class _FailingClient:
+    """A bridge client whose connection to the room server never comes up."""
+
+    client_id = "bridge-client"
+
+    async def start(self, progress: object) -> None:
+        raise RuntimeError("the room client is down")
+
+
 class _StrictConfig(BridgeConnectionConfig):
     """A config schema with a required field nothing in these tests supplies,
     standing in for an adapter whose schema gained a new required setting
@@ -174,11 +177,11 @@ async def _bridge_row(
     session: AsyncSession,
     *,
     tenant_id: str,
-    bridge_type: str = "mattermost",
+    bridge_type: str = "slack",
     connection_config: dict[str, Any] | None = None,
 ) -> str:
     """A stored bridge (and its client) with a caller-chosen type and config,
-    for the scenarios `_make_bridge` (fixed to a plain "mattermost" row) does
+    for the scenarios `_make_bridge` (fixed to a plain "slack" row) does
     not cover."""
     client = Client(
         tenant_id=tenant_id,
@@ -241,7 +244,7 @@ class TestEachStartFailurePointReportsAndReraises:
             await session.commit()
 
         service, sink = _service_with_telemetry(session_factory)
-        # Deliberately not calling register_adapter for "mattermost".
+        # Deliberately not calling register_adapter for "slack".
 
         with pytest.raises(ValueError, match="Unknown bridge type"):
             await service.start(bridge_id)
@@ -251,7 +254,7 @@ class TestEachStartFailurePointReportsAndReraises:
         assert events == [
             {
                 "bridge": "collaboration",
-                "bridge_platform": "mattermost",
+                "bridge_platform": "slack",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
             }
@@ -338,7 +341,7 @@ class TestEachStartFailurePointReportsAndReraises:
             await session.commit()
 
         service, sink = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StrictConfig)
+        service.register_adapter("slack", _StubAdapter, _StrictConfig)
 
         with pytest.raises(Exception, match="required_setting"):
             await service.start(bridge_id)
@@ -348,7 +351,7 @@ class TestEachStartFailurePointReportsAndReraises:
         assert events == [
             {
                 "bridge": "collaboration",
-                "bridge_platform": "mattermost",
+                "bridge_platform": "slack",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
             }
@@ -365,7 +368,7 @@ class TestEachStartFailurePointReportsAndReraises:
             await session.commit()
 
         service, sink = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _ExplodingAdapter, _StubConfig)
+        service.register_adapter("slack", _ExplodingAdapter, _StubConfig)
 
         with pytest.raises(RuntimeError, match="adapter construction blew up"):
             await service.start(bridge_id)
@@ -375,7 +378,7 @@ class TestEachStartFailurePointReportsAndReraises:
         assert events == [
             {
                 "bridge": "collaboration",
-                "bridge_platform": "mattermost",
+                "bridge_platform": "slack",
                 "outcome": "failure",
                 # RuntimeError carries no reason any rule recognises -- an
                 # adapter constructor can fail for reasons that fit none of
@@ -403,7 +406,7 @@ class TestEachStartFailurePointReportsAndReraises:
         service, sink = _service_with_telemetry(
             session_factory, client_store=missing_client_store
         )
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
 
         with pytest.raises(ValueError, match="Bridge client not found"):
             await service.start(bridge_id)
@@ -413,7 +416,7 @@ class TestEachStartFailurePointReportsAndReraises:
         assert events == [
             {
                 "bridge": "collaboration",
-                "bridge_platform": "mattermost",
+                "bridge_platform": "slack",
                 "outcome": "failure",
                 "failure_reason": "config_invalid",
             }
@@ -441,7 +444,7 @@ class TestStartAllsBootPathIsCoveredToo:
             await session.commit()
 
         service, sink = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
         # Isolates start_all's own boot loop from _run_bridge's separate
         # (already covered) success/failure reporting.
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
@@ -479,7 +482,7 @@ class TestStartingSuccessfullyDoesNotReportAnything:
             await session.commit()
 
         service, sink = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
         # `_run_bridge` is where success (and a post-schedule failure) is
         # reported; stubbing it isolates exactly what `start` itself does.
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
@@ -505,7 +508,7 @@ class TestATaskFailureAfterStartSucceedsIsStillReportedExactlyOnce:
             await session.commit()
 
         service, sink = _service_with_telemetry(session_factory)
-        service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+        service.register_adapter("slack", _StubAdapter, _StubConfig)
         service._run_bridge = AsyncMock()  # type: ignore[method-assign]
 
         await service.start(bridge_id)

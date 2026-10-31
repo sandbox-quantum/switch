@@ -282,34 +282,6 @@ async function venvSitePackages(venv: string): Promise<string> {
   return path.join(lib, python, 'site-packages');
 }
 
-/**
- * The install a start already made for `version`, without installing anything,
- * or null when there is none that runs. For acting on a running server
- * (bringing its Mattermost up) without going through a start.
- */
-export async function existingSwitchCoreInstall(
-  layout: NativeLayout,
-  version: string,
-  checkoutRoot: string | null
-): Promise<SwitchCoreInstall | null> {
-  if (checkoutRoot !== null) {
-    const python = venvPython(path.join(layout.switchCore, CHECKOUT_IMAGE_TAG, 'venv'));
-    return (await runs(python))
-      ? {
-          version: CHECKOUT_IMAGE_TAG,
-          sourceRoot: checkoutRoot,
-          projectDir: path.join(checkoutRoot, 'core'),
-          python,
-        }
-      : null;
-  }
-  const dir = path.join(layout.switchCore, version);
-  const src = path.join(dir, 'src');
-  const python = venvPython(path.join(dir, 'venv'));
-  if ((await readMarker(dir))?.version !== version || !(await runs(python))) return null;
-  return { version, sourceRoot: src, projectDir: path.join(src, 'core'), python };
-}
-
 /** Remove installed releases other than `keep`, once a start on it has
  * succeeded. The checkout environment is left alone. */
 export async function pruneSwitchCoreInstalls(layout: NativeLayout, keep: string): Promise<void> {

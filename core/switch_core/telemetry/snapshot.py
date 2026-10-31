@@ -122,7 +122,7 @@ class UsageCounts:
     user_internal_active_7d: int = 0
     active_user_ids_1d: set[str] = field(default_factory=set)
     active_user_ids_7d: set[str] = field(default_factory=set)
-    # Chat identities — a Slack, Mattermost or other platform account — that
+    # Chat identities — a Slack or other platform account — that
     # used a room with an agent, whether or not anyone has claimed them. One
     # person on two platforms is two identities, and most identities belong to
     # no Switch account, which is why this runs above `user_active_*`.

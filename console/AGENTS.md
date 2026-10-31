@@ -43,8 +43,8 @@ Still `switchdash`, deliberately — **do not "fix" these**:
   in the shared database. Measured on macOS: the bundle names are not consulted,
   only this call. Nothing a user reads comes from it — display strings take
   `PRODUCT_NAME`
-- the `switchdash://` deeplink scheme — links already posted into Slack and Mattermost
-  are permanent, and deployed Mattermost stacks whitelist the scheme in their config
+- the `switchdash://` deeplink scheme — links already posted into Slack and other platforms
+  are permanent
 - the per-project config file (`.switchdash.json`) and per-repo state dir
   (`.switchdash/`)
 - `SWITCHDASH_*` environment variables and the `X-Switchdash-*` hook headers — baked

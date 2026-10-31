@@ -115,7 +115,7 @@ async def test_no_greeting_when_the_bridge_has_them_disabled(
         session.add(
             CollaborationBridge(
                 id="quiet-bridge",
-                type="mattermost",
+                type="slack",
                 display_name="Quiet",
                 client_id=host_agent.client_id,
                 status="active",

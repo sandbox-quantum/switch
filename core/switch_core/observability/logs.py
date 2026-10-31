@@ -5,8 +5,8 @@ working and a collector outage costs a copy rather than the record.
 
 Three constraints shape it:
 
-**It must never block.** `logger.info` is called from anywhere, including the
-OS thread the Mattermost adapter dispatches on, so the handler only enqueues
+**It must never block.** `logger.info` is called from anywhere, including OS
+threads off the event loop, so the handler only enqueues
 and a task drains.
 
 **It must never grow without bound.** A collector that stops answering while

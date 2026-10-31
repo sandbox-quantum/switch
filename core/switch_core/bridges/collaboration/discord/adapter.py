@@ -591,8 +591,7 @@ class DiscordAdapter(PlatformAdapter):
     channel_mention: ClassVar[str | None] = "@everyone"
 
     # The status is the turn's one post, so the clock rides along with the next
-    # real change rather than rewriting a message somebody is reading. See the
-    # matching choice on Mattermost.
+    # real change rather than rewriting a message somebody is reading.
     redraws_for_elapsed_time: ClassVar[bool] = False
 
     supports_activity_reactions: ClassVar[bool] = True
@@ -1011,7 +1010,7 @@ class DiscordAdapter(PlatformAdapter):
     ) -> str | None:
         """Relay a file into a Discord channel under the agent's identity.
 
-        Unlike Slack/Mattermost, a Discord webhook post carries both a
+        Unlike Slack, a Discord webhook post carries both a
         per-message username/avatar override AND a file, so the attachment
         renders under the agent's name and icon exactly like a normal message
         (with the image preview intact — embeds are not suppressed). DM

@@ -58,7 +58,7 @@ async def test_a_running_bridge_is_left_alone_until_its_row_changes(
     monkeypatch.setattr(lifecycle_module, "STOP_GRACE_SECONDS", 0.01)
     bridge_id = await _bridge(session_factory)
     service = _service(session_factory)
-    service.register_adapter("mattermost", _StubAdapter, _StubConfig)
+    service.register_adapter("slack", _StubAdapter, _StubConfig)
     starts: list[str] = []
 
     async def run(bridge_id: str, *_: object) -> None:

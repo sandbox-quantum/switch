@@ -8,25 +8,29 @@ import {
 } from './free-port';
 
 describe('pickFreePorts', () => {
-  it('returns four distinct, positive host ports', async () => {
+  it('returns three distinct, positive host ports', async () => {
     const ports = await pickFreePorts();
-    const values = [ports.gateway, ports.api, ports.mattermost, ports.postgres];
+    const values = [ports.gateway, ports.api, ports.postgres];
     for (const p of values) {
       expect(p).toBeGreaterThan(0);
       expect(p).toBeLessThan(65536);
     }
-    expect(new Set(values).size).toBe(4);
+    expect(new Set(values).size).toBe(3);
   });
 });
 
 describe('isPorts', () => {
   it('accepts a complete numeric port set', () => {
+    expect(isPorts({ gateway: 1, api: 2, postgres: 4 })).toBe(true);
+  });
+
+  it('accepts a set saved when the stack also published Mattermost', () => {
     expect(isPorts({ gateway: 1, api: 2, mattermost: 3, postgres: 4 })).toBe(true);
   });
 
   it('rejects partial or non-numeric shapes', () => {
-    expect(isPorts({ gateway: 1, api: 2, mattermost: 3 })).toBe(false);
-    expect(isPorts({ gateway: '1', api: 2, mattermost: 3, postgres: 4 })).toBe(false);
+    expect(isPorts({ gateway: 1, api: 2 })).toBe(false);
+    expect(isPorts({ gateway: '1', api: 2, postgres: 4 })).toBe(false);
     expect(isPorts(null)).toBe(false);
     expect(isPorts('nope')).toBe(false);
   });
@@ -34,13 +38,13 @@ describe('isPorts', () => {
 
 describe('url helpers', () => {
   it('build loopback URLs from the chosen ports', () => {
-    const ports = { gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 };
+    const ports = { gateway: 3300, api: 8000, postgres: 5432 };
     expect(gatewayUrlFor(ports)).toBe('http://localhost:3300');
     expect(apiUrlFor(ports)).toBe('http://localhost:8000');
   });
 
   it('registers a managed stack on switch-core’s port, with the dashboard on its own', () => {
-    const ports = { gateway: 3300, api: 8000, mattermost: 8065, postgres: 5432 };
+    const ports = { gateway: 3300, api: 8000, postgres: 5432 };
     expect(managedServerAddresses(ports)).toEqual({
       url: 'http://localhost:8000',
       dashboardUrl: 'http://localhost:3300',

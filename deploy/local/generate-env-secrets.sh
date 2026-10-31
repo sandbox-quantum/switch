@@ -11,8 +11,7 @@ file="$1"
 label="$2"
 command -v openssl >/dev/null 2>&1 || { echo "openssl is required to generate secrets." >&2; exit 1; }
 for key in DB_PASSWORD DB_OWNER_PASSWORD \
-           AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD \
-           MATTERMOST_ADMIN_PASSWORD MATTERMOST_USER_PASSWORD; do
+           AGENT_REGISTRATION_TOKEN GATEWAY_ADMIN_PASSWORD; do
   grep -q "^${key}=" "$file" || { echo "$file has no ${key}= line to fill." >&2; exit 1; }
   sed -i.bak "s|^${key}=.*|${key}=$(openssl rand -hex 24)|" "$file"
 done

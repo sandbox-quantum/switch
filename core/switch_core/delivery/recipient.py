@@ -985,9 +985,8 @@ class AgentRecipient:
         opening message), else its usual line, except in a Switch Console
         chat, which says nothing more.
 
-        The per-agent greeting can be switched off per bridge: on Mattermost,
-        for one, whose native "X joined the channel" notice makes it
-        redundant.
+        The per-agent greeting can be switched off per bridge, for a platform
+        whose native "X joined the channel" notice makes it redundant.
         """
         meta = self._meta
         name = self.agent.name
@@ -1764,8 +1763,8 @@ class AgentRecipient:
         """The @-handle to tag the message sender with.
 
         Prefers the bridge-provided `sender_name` (the external username, which
-        the collaboration bridge rewrites into a real @mention on Slack /
-        Mattermost); falls back to the participant id's localpart for a client with no
+        the collaboration bridge rewrites into a real @mention on Slack);
+        falls back to the participant id's localpart for a client with no
         bridge-provided name (paired with `mentions=[event.sender]` so the
         mention renders as a pill).
         """

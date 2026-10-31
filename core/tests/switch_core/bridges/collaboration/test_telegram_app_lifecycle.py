@@ -402,8 +402,6 @@ class TestDeliveryHealth:
 
 def _lifecycle() -> CollaborationBridgeLifecycleService:
     config = MagicMock()
-    config.collaboration_callback_host = "127.0.0.1"
-    config.collaboration_callback_port = 0
     config.jwt_secret_key = "server-secret-for-tests"
     lifecycle = CollaborationBridgeLifecycleService(
         bridge_store=None,  # type: ignore[arg-type]

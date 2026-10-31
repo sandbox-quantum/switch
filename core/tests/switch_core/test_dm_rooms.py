@@ -164,14 +164,14 @@ async def test_create_dm_room_refused_when_operator_withheld_channel_creation() 
 
 
 async def test_base_adapter_rejects_dm_channel_creation() -> None:
-    # The default raises so platforms whose DMs are user-initiated (Mattermost)
+    # The default raises so platforms whose DMs are user-initiated
     # fail loud rather than silently no-op. The refusal reaches whoever asked
     # for the room, so it names the platform rather than its adapter class.
     with pytest.raises(
-        ChannelCreationUnsupported, match="Mattermost cannot create DM channels"
+        ChannelCreationUnsupported, match="Discord cannot create DM channels"
     ):
         await PlatformAdapter.create_dm_channel(
-            SimpleNamespace(platform_name="Mattermost"),
+            SimpleNamespace(platform_name="Discord"),
             agent_name="a",
             user_name="u",
             user_external_id="U1",

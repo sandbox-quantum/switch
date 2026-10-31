@@ -1,6 +1,6 @@
 """Active users are Switch accounts; chat identities are counted beside them.
 
-A person reaches Switch through a chat account — Slack, Mattermost, and so on
+A person reaches Switch through a chat account — Slack, Teams, and so on
 — and an account is active when a chat account it has claimed speaks in a room
 with an agent. Unclaimed chat accounts, and one person's second platform, are
 what made "active" run above "registered"; they are still counted, as

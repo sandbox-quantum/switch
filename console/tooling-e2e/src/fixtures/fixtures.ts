@@ -1,16 +1,7 @@
-import type {
-  MattermostChannel,
-  MattermostClient,
-  MattermostUser,
-} from "../clients/mattermost-client.ts";
-import {
-  sleep,
-  type RegisteredAgent,
-  type RoomDetail,
-  type SwitchClient,
-} from "../clients/switch-client.ts";
-import type { HarnessAgentType, HarnessEnv } from "../core/env.ts";
-import type { NameScope } from "../core/run.ts";
+import type { ChatUser, ConsoleChatClient } from '../clients/console-chat-client.ts';
+import type { RegisteredAgent, RoomDetail, SwitchClient } from '../clients/switch-client.ts';
+import type { HarnessAgentType, HarnessEnv } from '../core/env.ts';
+import type { NameScope } from '../core/run.ts';
 
 /**
  * What a scenario stands up, and the teardown that removes it.
@@ -25,23 +16,20 @@ export class Fixtures {
   readonly env: HarnessEnv;
   readonly names: NameScope;
   readonly switchClient: SwitchClient;
-  readonly mattermost: MattermostClient | null;
+  readonly chat: ConsoleChatClient;
   private readonly cleanups: { label: string; run: () => Promise<void> }[] = [];
-  private readonly agentCleanups = new Map<
-    string,
-    { label: string; run: () => Promise<void> }
-  >();
+  private readonly agentCleanups = new Map<string, { label: string; run: () => Promise<void> }>();
 
   constructor(
     env: HarnessEnv,
     names: NameScope,
     switchClient: SwitchClient,
-    mattermost: MattermostClient | null,
+    chat: ConsoleChatClient
   ) {
     this.env = env;
     this.names = names;
     this.switchClient = switchClient;
-    this.mattermost = mattermost;
+    this.chat = chat;
   }
 
   /**
@@ -57,11 +45,11 @@ export class Fixtures {
       autoSession?: boolean;
       agentType?: HarnessAgentType;
       repoDir?: string;
-    } = {},
+    } = {}
   ): Promise<RegisteredAgent> {
     const name = this.names.name(role);
     const agent = await this.switchClient.registerKnownAgent({
-      agentType: options.agentType ?? "opencode",
+      agentType: options.agentType ?? 'opencode',
       name,
       description: `Switch end-to-end harness agent (run ${this.names.runId}). Safe to delete.`,
       options: {
@@ -80,10 +68,7 @@ export class Fixtures {
   }
 
   /** A room with no platform channel: agents only, no bridge involved. */
-  async internalRoom(
-    role: string,
-    agents: RegisteredAgent[],
-  ): Promise<RoomDetail> {
+  async internalRoom(role: string, agents: RegisteredAgent[]): Promise<RoomDetail> {
     const name = this.names.name(role);
     const room = await this.switchClient.createRoom({
       name,
@@ -92,84 +77,32 @@ export class Fixtures {
       agentNames: agents.map((agent) => agent.name),
       userNames: [],
     });
-    this.defer(`room ${name} (${room.id})`, () =>
-      this.switchClient.deleteRoom(room.id),
-    );
+    this.defer(`room ${name} (${room.id})`, () => this.switchClient.deleteRoom(room.id));
     if (room.externalChannelId !== null) {
-      throw new Error(
-        `Internal-only room ${room.id} came back with a platform channel.`,
-      );
+      throw new Error(`Internal-only room ${room.id} came back with a platform channel.`);
     }
     return room;
   }
 
   /**
-   * A room on the Mattermost bridge, with the human the harness posts as in its
-   * channel, and the bridge proven live in both directions' first hop.
-   *
-   * Created from the gateway so Switch provisions the channel and adds the bots
-   * itself. The other route — make a channel, add a bot — creates no room when
-   * the bot is the first in a new channel, because nobody's websocket witnesses
-   * the join.
+   * An in-Console group chat with `agents`: a Switch room with no bridge, with
+   * the gateway admin the harness posts as in it, made the way Switch Console
+   * makes one. A message reaches an agent only when it names it, as in a
+   * shared channel.
    */
-  async mattermostRoom(
-    role: string,
-    agents: RegisteredAgent[],
-  ): Promise<BridgedRoom> {
-    const mattermost = this.requireMattermost();
-    const human = await mattermost.me();
-    const bridgeId = await this.switchClient.defaultBridgeId("mattermost");
-    // Resolved even though room creation does not need it: it fails fast and
-    // clearly when MATTERMOST_TEAM names a team that does not exist.
-    await mattermost.findTeam(this.mattermostTeam());
-
-    // Registration mints each agent's bot; wait for them so the room's members
-    // and any later `@name` mention have accounts to resolve to.
-    const bots = new Map<string, MattermostUser>();
-    for (const agent of agents) {
-      bots.set(agent.id, await mattermost.waitForBotUser(agent.name, 60_000));
-    }
-
+  async consoleRoom(role: string, agents: RegisteredAgent[]): Promise<ConsoleRoom> {
+    const human = await this.chat.me();
     const name = this.names.name(role);
-    const room = await this.switchClient.createRoom({
+    const roomId = await this.chat.createGroupChat({
       name,
-      description: `Switch end-to-end harness (run ${this.names.runId}). Safe to delete.`,
-      bridgeId,
-      agentNames: agents.map((agent) => agent.name),
-      userNames: [human.username],
+      agentIds: agents.map((agent) => agent.id),
     });
-    const channelId = room.externalChannelId;
-    // One step, in order: the room first, then its channel only if deleting the
-    // room did not already archive it.
-    this.defer(
-      `room ${name} (${room.id}) and channel ${channelId ?? "none"}`,
-      async () => {
-        await this.switchClient.deleteRoom(room.id);
-        if (channelId === null) return;
-        const left = await mattermost.getChannel(channelId);
-        if (!left.delete_at) await mattermost.archiveChannel(channelId);
-      },
-    );
-    if (channelId === null) {
-      throw new Error(
-        `Switch room ${room.id} was created without a Mattermost channel — ` +
-          `the collaboration bridge did not provision one.`,
-      );
+    this.defer(`room ${name} (${roomId})`, () => this.switchClient.deleteRoom(roomId));
+    const room = await this.switchClient.getRoom(roomId);
+    if (room.externalChannelId !== null) {
+      throw new Error(`Console room ${room.id} came back with a platform channel.`);
     }
-
-    const channel = await mattermost.getChannel(channelId);
-    const bridged: BridgedRoom = { room, channel, human, bots };
-    const witness = agents[0];
-    if (!witness) throw new Error("A bridged room needs at least one agent.");
-    await waitForBridgeReady({
-      switchClient: this.switchClient,
-      mattermost,
-      agent: witness,
-      room,
-      channel,
-      runId: this.names.runId,
-    });
-    return bridged;
+    return { room, human };
   }
 
   /**
@@ -178,8 +111,7 @@ export class Fixtures {
    */
   removed(agent: RegisteredAgent): void {
     const cleanup = this.agentCleanups.get(agent.id);
-    if (cleanup === undefined)
-      throw new Error(`Agent ${agent.id} was not registered here.`);
+    if (cleanup === undefined) throw new Error(`Agent ${agent.id} was not registered here.`);
     this.agentCleanups.delete(agent.id);
     this.cleanups.splice(this.cleanups.indexOf(cleanup), 1);
   }
@@ -207,90 +139,16 @@ export class Fixtures {
         await cleanup.run();
       } catch (error) {
         failures.push(
-          `could not remove ${cleanup.label}: ${error instanceof Error ? error.message : String(error)}`,
+          `could not remove ${cleanup.label}: ${error instanceof Error ? error.message : String(error)}`
         );
       }
     }
     return failures;
   }
-
-  private requireMattermost(): MattermostClient {
-    if (!this.mattermost) {
-      throw new Error(
-        "This scenario needs Mattermost but none is configured — declare " +
-          "`requires: ['mattermost']` in its header so it is skipped or failed up front.",
-      );
-    }
-    return this.mattermost;
-  }
-
-  private mattermostTeam(): string {
-    if (!this.env.mattermost) throw new Error("No Mattermost configured.");
-    return this.env.mattermost.team;
-  }
 }
 
-export interface BridgedRoom {
+export interface ConsoleRoom {
   room: RoomDetail;
-  channel: MattermostChannel;
-  /** The human the harness posts as. */
-  human: MattermostUser;
-  /** Each agent's Mattermost bot, by agent id. A bot's username is the agent's name. */
-  bots: Map<string, MattermostUser>;
-}
-
-/**
- * Block until a plain channel message actually reaches Switch.
- *
- * This is not belt-and-braces. The Mattermost adapter reads inbound posts off
- * its bots' websockets, and each bot's socket is opened on a background thread
- * after the bot account is created — the server log shows
- * `Websocket authentification OK` arriving after the room already exists. A
- * message posted before any bot in the channel is listening is silently
- * dropped, which shows up later as a scenario that times out for no visible
- * reason. A post is handled whichever bot's socket it arrives on (the adapter
- * dedupes by post id), so one bot's socket being up is enough for the room to
- * hear a message: the probe may read through any agent in the room.
- *
- * The probe is deliberately **unaddressed**: it proves Mattermost → Switch
- * delivery without putting an `@agent` mention on the wire, so it cannot spawn a
- * console session or consume a turn. It is read back through the agent's room
- * history, which carries ordinary chatter, rather than the notification stream,
- * which by design carries only addressed messages.
- */
-export async function waitForBridgeReady(params: {
-  switchClient: SwitchClient;
-  mattermost: MattermostClient;
-  agent: RegisteredAgent;
-  room: RoomDetail;
-  channel: MattermostChannel;
-  runId: string;
-  deadlineMs?: number;
-}): Promise<void> {
-  const deadlineMs = params.deadlineMs ?? 120_000;
-  const probe = `switch-e2e-bridge-probe ${params.runId}`;
-  const until = Date.now() + deadlineMs;
-
-  while (Date.now() < until) {
-    // Re-post rather than only re-read: if the socket was down when the last
-    // one went out, that message is gone for good and no amount of polling
-    // will produce it.
-    await params.mattermost.post({
-      channelId: params.channel.id,
-      message: probe,
-    });
-    const history = await params.switchClient.roomHistory(
-      params.agent,
-      params.room.id,
-      50,
-    );
-    if (history.some((event) => event.body.includes(probe))) return;
-    await sleep(5_000);
-  }
-
-  throw new Error(
-    `Mattermost -> Switch delivery never came up for room ${params.room.id} ` +
-      `(channel ${params.channel.id}) within ${deadlineMs}ms: a plain channel message ` +
-      `never reached the agent's room history. The agent bot's websocket is probably not connected.`,
-  );
+  /** The human the harness posts as: the gateway admin. */
+  human: ChatUser;
 }

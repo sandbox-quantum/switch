@@ -42,11 +42,11 @@ RESERVED = ["everyone", "channel", "here", "all", "Everyone", "CHANNEL"]
         ("@channel hi", f"@{ZWSP}channel hi"),
         ("@everyone, look", f"@{ZWSP}everyone, look"),
         ("@Here", f"@{ZWSP}Here"),
-        # Mattermost strips trailing `.`, `-` and `_` before matching, so
+        # Some platforms strip trailing `.`, `-` and `_` before matching, so
         # `@channel.` pages the channel just as `@channel` does.
         ("ping @all.", f"ping @{ZWSP}all."),
         ("ping @channel-", f"ping @{ZWSP}channel-"),
-        # Strict means everywhere: each of these pages a Mattermost channel,
+        # Strict means everywhere: each of these pages a channel somewhere,
         # and each got past an exemption that tried to recognise code or a
         # link the way Markdown does.
         ("[docs](https://x.com),@channel", f"[docs](https://x.com),@{ZWSP}channel"),

@@ -285,7 +285,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     # shipped. Together they are the activation funnel.
     "deployment_installed": dict(_SINCE_INSTALL),
     # The first connector a person added. One the setup step registered itself
-    # never claims it, or the bundled Mattermost would, seconds after install.
+    # never claims it, or a bundled connector would, seconds after install.
     "first_connector_added": {**_SINCE_INSTALL, "bridge_platform": BRIDGE_PLATFORM},
     "first_room_created": {
         **_SINCE_INSTALL,
@@ -389,7 +389,7 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
         "bridge_platform": BRIDGE_PLATFORM,
         "seconds_since_install": NUMBER,
         "seconds_since_configured": NUMBER,
-        # Registered by the deployment's setup step (the bundled Mattermost)
+        # Registered by the deployment's setup step (a bundled connector)
         # rather than by a person. Filter these out to measure onboarding.
         "is_preconfigured": BOOLEAN,
         # The first connector a person added: never true for a preconfigured

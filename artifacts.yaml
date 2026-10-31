@@ -110,11 +110,6 @@ artifacts:
     version_from: switch-core
     published_as: gateway
 
-  setup:
-    description: The collaboration-bridge seeder image.
-    version_from: switch-core
-    published_as: setup
-
   helm-chart:
     description: >-
       The Kubernetes chart. Its values.yaml is a consumer-facing interface —

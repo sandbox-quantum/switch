@@ -125,7 +125,7 @@ class TestCommandThreadMapping:
 
     async def test_in_thread_command_maps_root_when_unbridged(self) -> None:
         # Thread root not yet bridged: map the command event to the thread root
-        # (a valid Mattermost root post), NOT to the mid-thread command post.
+        # (a valid platform root post), NOT to the mid-thread command post.
         bridge = _fake_bridge(
             SendResult(
                 event_id="$cmd-event", event_type="com.switch.command", content={}

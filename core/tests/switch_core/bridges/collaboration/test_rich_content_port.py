@@ -169,8 +169,7 @@ async def test_update_rich_does_not_raise_when_the_platform_only_swallows() -> N
     """Discord and (mostly) Telegram log their own update failure and return
     normally — there is nothing here for the base to detect or raise on, which
     is the existing runtime-status contract. A platform that publishes SDK
-    sessions cannot leave it there and overrides this seam to raise; Mattermost
-    does, and its own tests cover it."""
+    sessions cannot leave it there and overrides this seam to raise."""
     adapter = _BareAdapter()
     items = [_item(kind="assistant-message", title="", text="Looking now.")]
 

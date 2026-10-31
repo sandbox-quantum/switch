@@ -94,13 +94,17 @@ class _Harness:
         async def _administers(_session, user):  # type: ignore[no-untyped-def]
             return user.id in admins
 
+        async def _no_client(_session, _transport_user_id):  # type: ignore[no-untyped-def]
+            return None
+
         async def _remove_agents_from_room(room_id, agent_ids, **_kw):  # type: ignore[no-untyped-def]
             self.removed.append((room_id, list(agent_ids)))
 
         self.client = SimpleNamespace(
             session_factory=None,
             tenant_id="tenant-1",
-            client_store=None,
+            # A sender from a chat platform, which no client here stands for.
+            client_store=SimpleNamespace(get_by_transport_user_id=_no_client),
             _resolve_room_meta=_resolve_room_meta,
             reply_command=_reply_command,
             _agent_store=SimpleNamespace(get=_get_agent),

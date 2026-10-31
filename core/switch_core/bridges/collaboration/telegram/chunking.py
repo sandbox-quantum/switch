@@ -3,7 +3,7 @@ breaking the markup it carries.
 
 Telegram caps a message at 4,096 characters and rejects anything longer
 outright — well under what an agent writes when it answers a real question, and
-tighter than Slack or Mattermost. Splitting on line boundaries alone is not
+tighter than Slack. Splitting on line boundaries alone is not
 enough here: the body has already been rendered to Telegram's HTML subset, and a
 cut through an open tag makes Telegram refuse *both* halves, so a long code
 block arrives as unformatted text. Tags open at a cut are therefore closed at

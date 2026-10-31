@@ -148,7 +148,7 @@ class TestWhatMayStart:
         await service.refuse_uninstalled_bridge(
             bridge_id="any",
             tenant_id=ids.tenant_b,
-            bridge_type="mattermost",
+            bridge_type="discord",
             connection_config=_shared(ids.workspace),
         )
 

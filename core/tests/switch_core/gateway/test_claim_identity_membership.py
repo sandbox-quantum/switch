@@ -63,7 +63,7 @@ async def _setup(
         session.add(Tenant(id=other_tenant, slug=other_tenant, name=other_tenant))
         await session.flush()
         bridge = CollaborationBridge(
-            type="mattermost",
+            type="slack",
             display_name="MM",
             client_id=await _make_client(session, "bridge"),
             status="active",

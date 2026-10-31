@@ -1,6 +1,6 @@
 """One platform workspace, connected at most once on the instance.
 
-Two bridges into the same Slack workspace, Discord server or Mattermost team
+Two bridges into the same Slack workspace or Discord server
 would each deliver its events to their own tenant. The hosted install path
 already holds a workspace to one tenant; these pin the same rule for bridges
 registered by hand, and that Slack's `workspace_id` is the token's own rather
@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from pydantic import ValidationError
 from slack_sdk.errors import SlackApiError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,10 +25,6 @@ from switch_core.bridges.collaboration.discord.adapter import (
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
     CollaborationBridgeLifecycleService,
-)
-from switch_core.bridges.collaboration.mattermost.adapter import (
-    MattermostAdapter,
-    MattermostConnectionConfig,
 )
 from switch_core.bridges.collaboration.models import BridgeCredentialError
 from switch_core.bridges.collaboration.slack.adapter import (
@@ -45,12 +40,6 @@ from tests.ownership import SoleOwner
 
 _SLACK = {"bot_token": "xoxb-test", "app_token": "xapp-test", "workspace_id": "T1"}
 _DISCORD = {"bot_token": "discord-test", "guild_id": "111"}
-_MATTERMOST = {
-    "url": "https://chat.example.invalid",
-    "admin_user": "bot",
-    "admin_password": "placeholder",  # gitleaks:allow
-    "team_name": "eng",
-}
 
 
 def _service(
@@ -77,9 +66,6 @@ def _service(
     )
     service.register_adapter("slack", SlackAdapter, SlackConnectionConfig)
     service.register_adapter("discord", DiscordAdapter, DiscordConnectionConfig)
-    service.register_adapter(
-        "mattermost", MattermostAdapter, MattermostConnectionConfig
-    )
     return service
 
 
@@ -131,60 +117,11 @@ class TestWhatAWorkspaceIs:
     def test_discord_is_claimed_by_its_server(self) -> None:
         assert DiscordAdapter.claimed_workspace(_DISCORD) == "Discord server 111"
 
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://chat.example.invalid",
-            "https://chat.example.invalid/",
-            "HTTPS://Chat.Example.Invalid:443",
-        ],
-    )
-    def test_a_mattermost_team_is_the_same_however_its_url_is_written(
-        self, url: str
-    ) -> None:
-        config = {**_MATTERMOST, "url": url, "team_name": "Eng"}
-        assert (
-            MattermostAdapter.claimed_workspace(config)
-            == "Mattermost team eng on https://chat.example.invalid"
-        )
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "chat.example.invalid",
-            "http://chat.example.invalid",
-            "chat.example.invalid:8065/",
-            "HTTP://chat.example.invalid:8065",
-        ],
-    )
-    def test_a_url_with_no_scheme_is_the_server_the_driver_reaches(
-        self, url: str
-    ) -> None:
-        """The driver reads no scheme as http, and http with no port as 8065."""
-        config = {**_MATTERMOST, "url": url, "team_name": "eng"}
-        assert (
-            MattermostAdapter.claimed_workspace(config)
-            == "Mattermost team eng on http://chat.example.invalid"
-        )
-
-    def test_port_80_is_not_the_drivers_http_default(self) -> None:
-        plain = {**_MATTERMOST, "url": "http://chat.example.invalid"}
-        on_80 = {**_MATTERMOST, "url": "http://chat.example.invalid:80"}
-        assert MattermostAdapter.claimed_workspace(
-            plain
-        ) != MattermostAdapter.claimed_workspace(on_80)
-
-    def test_a_mattermost_team_on_another_port_is_another_team(self) -> None:
-        config = {**_MATTERMOST, "url": "https://chat.example.invalid:8065"}
-        assert MattermostAdapter.claimed_workspace(config) != (
-            MattermostAdapter.claimed_workspace(_MATTERMOST)
-        )
-
 
 class TestRegistrationRefusesASecondClaim:
     @pytest.mark.parametrize(
         ("bridge_type", "config"),
-        [("slack", _SLACK), ("discord", _DISCORD), ("mattermost", _MATTERMOST)],
+        [("slack", _SLACK), ("discord", _DISCORD)],
     )
     async def test_another_tenants_workspace_is_refused_without_naming_it(
         self,
@@ -370,32 +307,3 @@ class TestSlackWorkspaceIdIsTheTokens:
         ):
             with pytest.raises(BridgeCredentialError, match="Could not reach Slack"):
                 await SlackAdapter.verify_credentials(dict(_SLACK))
-
-
-class TestMattermostUrlIsCheckedUpFront:
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://chat.example.invalid:99999",
-            "https://chat.example.invalid:abc",
-            "ftp://chat.example.invalid",
-            "https://",
-        ],
-    )
-    async def test_an_edit_with_a_bad_url_is_a_validation_error(
-        self, session_factory: async_sessionmaker[AsyncSession], url: str
-    ) -> None:
-        tenant = await _tenant(session_factory)
-        with tenant_scope(tenant):
-            with pytest.raises(ValidationError, match="url"):
-                await _service(session_factory).check_edited_connection_config(
-                    bridge_id="the-edited-bridge",
-                    bridge_type="mattermost",
-                    connection_config={**_MATTERMOST, "url": url},
-                )
-
-    def test_a_url_with_no_scheme_is_still_valid(self) -> None:
-        """Bridges configured before the check, the way the driver accepts."""
-        MattermostConnectionConfig.model_validate(
-            {**_MATTERMOST, "url": "chat.example.invalid:8065"}
-        )

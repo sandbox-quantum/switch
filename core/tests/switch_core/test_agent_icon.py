@@ -1,8 +1,8 @@
 """Icon URL validation (CHOO-2171).
 
-The rejection cases matter more than the acceptance ones: the Mattermost
-adapter fetches an agent's icon server-side, so a stored URL is a request
-Switch will make on behalf of whoever typed it.
+The rejection cases matter more than the acceptance ones: an adapter may fetch
+an agent's icon server-side, so a stored URL is a request Switch will make on
+behalf of whoever typed it.
 """
 
 import pytest
@@ -88,8 +88,8 @@ def test_rejects_non_https_schemes(url: str) -> None:
     ],
 )
 def test_rejects_internal_addresses(url: str) -> None:
-    """A URL naming the host or its private network would turn the
-    Mattermost avatar fetch into an internal probe."""
+    """A URL naming the host or its private network would turn a
+    server-side avatar fetch into an internal probe."""
     with pytest.raises(InvalidIconUrl):
         validate_icon_url(url)
 

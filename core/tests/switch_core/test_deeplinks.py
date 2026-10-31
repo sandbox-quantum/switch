@@ -27,7 +27,7 @@ class TestDeeplinkForPlatform:
     The gateway redirect exists for platforms that will not linkify a custom
     scheme — Discord, Telegram. It was being handed to every platform on any
     deployment that configured a gateway URL, which every managed stack does,
-    so Mattermost was sending readers through the browser to reach a link its
+    so a client that opens it natively was sent through the browser to reach a link its
     own client would have opened.
     """
 

@@ -121,7 +121,7 @@ def _event(thread_id: str | None, *, is_auto_reply: bool = False) -> InboundMess
     return InboundMessage(
         room_id="!matrix:server",
         event_id="$trigger",
-        sender="@switch-mattermost-louisa:switch.local",
+        sender="@switch-slack-louisa:switch.local",
         timestamp=0,
         content=content,
         body="@cc-bug-fixing can you help",
@@ -139,9 +139,7 @@ async def test_no_session_reply_threads_under_triggering_mention() -> None:
     assert send_message.calls[0]["thread_root_id"] == "$thread-root"
     # The reply tags the sender so they get notified.
     assert send_message.calls[0]["body"].startswith("@louisa ")
-    assert send_message.calls[0]["mentions"] == [
-        "@switch-mattermost-louisa:switch.local"
-    ]
+    assert send_message.calls[0]["mentions"] == ["@switch-slack-louisa:switch.local"]
     # The reply is stamped as an auto-reply so it can't re-trigger another one.
     assert send_message.calls[0]["extra_content"] == {AUTO_REPLY_FLAG: True}
     # Switch said it, not the agent, so the tenant is not charged for it.

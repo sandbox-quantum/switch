@@ -102,7 +102,7 @@ class _Platform:
 
     async def say(self, *, user_id: str, text: str, ref: str) -> None:
         """Someone writes in the channel. Every open connection hears it, as
-        Mattermost hands every post to every socket. A bridge connects in its
+        a platform hands every post to every socket. A bridge connects in its
         own task once it is started, so this waits for a connection first."""
         async with asyncio.timeout(TIMEOUT):
             while not self.listening:
@@ -149,7 +149,7 @@ class _ChatConfig(BridgeConnectionConfig):
 
 class _Chat(PlatformAdapter):
     """A platform that listens over a connection of its own, like Slack's
-    Socket Mode or Mattermost's websocket, and keeps quiet when told to."""
+    Socket Mode, and keeps quiet when told to."""
 
     display_name: ClassVar[str] = "Fake Chat"
     supports_channel_creation: ClassVar[bool] = False
@@ -303,8 +303,6 @@ def _config() -> Any:
     config = MagicMock()
     config.gateway_public_url = "https://gw.example"
     config.messaging_public_url = None
-    config.collaboration_callback_host = "127.0.0.1"
-    config.collaboration_callback_port = 0
     config.keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
     config.agent_media_max_bytes = 1 << 20
     config.id_server_name = "test"

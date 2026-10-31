@@ -33,6 +33,6 @@ body:
         - gateway (operator dashboard)
         - Switch Console (desktop app)
         - Agent sessions (Claude Code / Codex / OpenCode / Cursor / Antigravity)
-        - Collaboration bridge (Slack / Mattermost / Discord / Teams / Telegram)
+        - Collaboration bridge (Slack / Discord / Teams / Telegram)
         - Deployment (Docker Compose / Helm)
         - Not sure

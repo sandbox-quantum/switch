@@ -870,21 +870,6 @@ async def test_a_v2_template_with_its_room_off_creates_the_agent_alone(managed):
     assert await _rooms(managed) == []
 
 
-@pytest.mark.asyncio
-async def test_users_with_no_messaging_app_are_refused_before_any_agent(managed):
-    template_id = await _stored(
-        managed,
-        V2_EXPERT.replace(
-            "    agents: [expert]\n", '    agents: [expert]\n    users: ["ada"]\n'
-        ),
-        kind="agent",
-    )
-
-    with pytest.raises(ValueError, match="on no messaging app"):
-        await _as(managed["agent_id"], run_template, template_id=template_id)
-    assert managed["management"].created == []
-
-
 async def _install_of(env: dict[str, Any], template_id: str) -> Any:
     store = TemplateInstallStore()
     async with env["session_factory"]() as session:

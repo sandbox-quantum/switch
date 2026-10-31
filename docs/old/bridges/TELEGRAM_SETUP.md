@@ -144,7 +144,7 @@ join from a Telegram client or an invite link.
 ## 5. Link your own Telegram account — after you have been seen, not before
 
 Switch has to know which Telegram account is you, or an agent set to answer only
-its owner will read your messages as a stranger's. On Slack or Mattermost you do
+its owner will read your messages as a stranger's. On Slack you do
 this straight after connecting, by searching the workspace directory. **Telegram
 has no directory a bot may search**, so there is nothing to search until you
 have spoken. Switch Console therefore does not offer the step on the way in, and
@@ -285,7 +285,7 @@ Two signals, both in every bridged chat.
 **👀 on the message that asked.** When an agent starts a turn the bot reacts to
 the message it is answering, and clears the reaction when the turn ends. It
 needs no administrator rights, and it is the same reaction the Slack and
-Mattermost bridges use, so a room reads the same wherever it is bridged.
+other bridges use, so a room reads the same wherever it is bridged.
 
 Only that one. Those bridges also show ⏳ on a message whose prompt is waiting
 behind one already running; Telegram does not, because a bot may hold exactly

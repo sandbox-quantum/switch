@@ -17,15 +17,7 @@ import httpx
 import pytest
 from aiohttp.client_reqrep import ConnectionKey
 from discord.errors import DiscordException, LoginFailure
-from mattermostdriver.exceptions import (
-    NoAccessTokenProvided,
-    NotEnoughPermissions,
-    ResourceNotFound,
-)
 from pydantic import BaseModel, ValidationError
-from requests.exceptions import ConnectionError as RequestsConnectionError
-from requests.exceptions import JSONDecodeError as RequestsJSONDecodeError
-from requests.exceptions import Timeout as RequestsTimeout
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 from sqlalchemy.exc import DBAPIError
@@ -41,7 +33,6 @@ from telegram.error import (
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import DiscordAdapter
 from switch_core.bridges.collaboration.lifecycle_service import _failure_reason
-from switch_core.bridges.collaboration.mattermost.adapter import MattermostAdapter
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     BridgeOperationError,
@@ -57,8 +48,7 @@ def _raised_by(exc: BaseException) -> type[PlatformAdapter]:
 
     The lifecycle classifies a failure with the adapter of the bridge that
     failed, so each case is classified the way it would be in production: a
-    Slack SDK error by the Slack adapter, a `requests` error by Mattermost's
-    (the only adapter on `requests`), and a transport or Switch-raised error by
+    Slack SDK error by the Slack adapter, and a transport or Switch-raised error by
     the adapter that would see it — Teams, which adds no rules of its own.
     """
     module = type(exc).__module__
@@ -66,8 +56,6 @@ def _raised_by(exc: BaseException) -> type[PlatformAdapter]:
         return SlackAdapter
     if module.startswith("discord"):
         return DiscordAdapter
-    if module.startswith(("mattermostdriver", "requests")):
-        return MattermostAdapter
     if module.startswith("telegram"):
         return TelegramAdapter
     return TeamsAdapter
@@ -135,23 +123,6 @@ CASES: list[tuple[str, BaseException, str]] = [
         "some other Discord SDK failure",
         DiscordException("the gateway connection dropped"),
         "platform_error",
-    ),
-    ("Mattermost 401 on admin login", NoAccessTokenProvided("401"), "auth_failed"),
-    ("Mattermost 403 on admin login", NotEnoughPermissions("403"), "auth_failed"),
-    (
-        "Mattermost refuses for an unrelated reason",
-        ResourceNotFound("404"),
-        "platform_error",
-    ),
-    (
-        "Mattermost's transport (requests) cannot connect",
-        RequestsConnectionError("Connection refused"),
-        "network",
-    ),
-    (
-        "Mattermost's transport (requests) times out",
-        RequestsTimeout("timed out"),
-        "network",
     ),
     ("Telegram rejects the bot token", InvalidToken("Invalid token"), "auth_failed"),
     ("Telegram cannot be reached", NetworkError("timed out"), "network"),
@@ -339,21 +310,6 @@ class TestTheTransportFailuresThatHaveNoLibraryName:
     )
     def test_it_reports_network(self, description: str, exc: Exception) -> None:
         assert _failure_reason(exc, _raised_by(exc)) == "network", description
-
-
-class TestABodyThatIsNotJsonIsNotTheOperatorsConfig:
-    """`requests` folds an unparseable body into `InvalidJSONError`, which is a
-    `ValueError` — so it fell through to `config_invalid` and reported a
-    Mattermost server answering with a proxy error page as a connection config
-    somebody typed wrong."""
-
-    def test_an_unparseable_mattermost_body_is_the_platform(self) -> None:
-        assert (
-            _failure_reason(
-                RequestsJSONDecodeError("not json", "<html>", 0), MattermostAdapter
-            )
-            == "platform_error"
-        )
 
 
 class TestTheAdapterOwnsItsPlatformsExceptions:
