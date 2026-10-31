@@ -172,11 +172,13 @@ UnavailableCode = Literal[
 ]
 
 
-def organization_switched_off(name: str) -> str:
-    """Why a service is off where the workspace's organization locked it so."""
+def organization_locked(name: str, enabled: bool) -> str:
+    """Why a service's switch is out of a workspace's hands: its organization
+    locked it on or off. What agents and the dashboard both say."""
     return (
-        f"Your organization has switched {name} off for its workspaces. An "
-        "organization admin can change it under Organization, Services."
+        f"Your organization has {name} locked {'on' if enabled else 'off'} for its "
+        "workspaces. An organization admin can change it under Organization, "
+        "Services."
     )
 
 
@@ -529,6 +531,11 @@ class ServiceBroker:
             )
         return definition, choice.adapter
 
+    def server_switched_off(self, service: str) -> str | None:
+        """Why the server switched `service` off for every workspace
+        (`DISABLED_SERVICES`), or None where it did not."""
+        return self._disabled.get(service)
+
     def _require_switched_on(self, service: str) -> None:
         reason = self._disabled.get(service)
         if reason is not None:
@@ -554,7 +561,7 @@ class ServiceBroker:
         raise ServiceError(
             403,
             FORBIDDEN,
-            organization_switched_off(name)
+            organization_locked(name, enabled=False)
             if switch.locked
             else f"{name} is not enabled in this workspace. Ask a workspace admin; "
             "they switch it on under Connectors in Switch Console.",

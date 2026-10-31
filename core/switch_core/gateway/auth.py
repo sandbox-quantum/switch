@@ -403,6 +403,20 @@ async def workspaces_in_organization(
     )
 
 
+async def organization_workspaces(
+    session_factory: async_sessionmaker[AsyncSession],
+    admin_id: str,
+    organization_id: str,
+) -> list[Tenant]:
+    """Every workspace of `organization_id`, as its `org_admin` `admin_id`
+    reaches them, each read on its own short session."""
+    return await _in_organization(
+        session_factory,
+        await tenants_bindable_by_user(session_factory, admin_id),
+        organization_id,
+    )
+
+
 async def organization_workspace_ids(
     session_factory: async_sessionmaker[AsyncSession],
     admin_id: str,

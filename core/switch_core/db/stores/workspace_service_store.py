@@ -17,9 +17,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import Text, and_, column, delete, func, literal, select, values
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from switch_core.db.models import (
     OrganizationServiceSetting,
@@ -38,6 +39,38 @@ class ServiceSwitch:
     locked: bool
 
 
+@dataclass(frozen=True)
+class OrganizationSetting:
+    """What an organization set for a service: on or off, locked or not."""
+
+    enabled: bool
+    locked: bool
+
+
+def resolve(
+    default: bool, own: bool | None, organization: OrganizationSetting | None
+) -> ServiceSwitch:
+    """The first of: the organization's setting, if locked; the workspace's
+    own; the organization's, unlocked; the workspace's default."""
+    if organization is not None and organization.locked:
+        return ServiceSwitch(organization.enabled, locked=True)
+    if own is not None:
+        return ServiceSwitch(own, locked=False)
+    if organization is not None:
+        return ServiceSwitch(organization.enabled, locked=False)
+    return ServiceSwitch(default, locked=False)
+
+
+@dataclass(frozen=True)
+class _Sides:
+    """For one service: the workspace's default, its admin's own switch (None
+    if never touched), and its organization's setting (None if it has none)."""
+
+    default: bool
+    own: bool | None
+    organization: OrganizationSetting | None
+
+
 class WorkspaceServiceStore:
     async def on_by_default(self, session: AsyncSession) -> bool:
         """Whether a service no admin has switched is on in the workspace."""
@@ -49,28 +82,89 @@ class WorkspaceServiceStore:
             raise LookupError(f"No workspace {tenant_id!r}.")
         return on
 
+    async def _sides(
+        self, session: AsyncSession, services: list[str], *, organizations: bool
+    ) -> dict[str, _Sides]:
+        """Every side of each of `services`, in one query: it is on the path
+        of every token an agent is issued."""
+        tenant_id = require_tenant_id()
+        if not services:
+            return {}
+        wanted = values(column("service", Text), name="wanted").data(
+            [(service,) for service in services]
+        )
+        own = aliased(WorkspaceServiceSetting)
+        above = aliased(OrganizationServiceSetting)
+        query = (
+            select(
+                wanted.c.service,
+                Tenant.services_on_by_default,
+                own.enabled,
+                above.enabled,
+                above.locked,
+            )
+            .select_from(wanted)
+            .join(Tenant, Tenant.id == tenant_id)
+            .outerjoin(
+                own, and_(own.tenant_id == Tenant.id, own.service == wanted.c.service)
+            )
+            .outerjoin(
+                above,
+                and_(
+                    literal(organizations),
+                    above.organization_id == Tenant.organization_id,
+                    above.service == wanted.c.service,
+                ),
+            )
+        )
+        sides = {
+            service: _Sides(
+                default=default,
+                own=own_enabled,
+                organization=(
+                    None
+                    if above_enabled is None
+                    else OrganizationSetting(above_enabled, above_locked)
+                ),
+            )
+            for service, default, own_enabled, above_enabled, above_locked in (
+                await session.execute(query)
+            ).tuples()
+        }
+        if len(sides) != len(set(services)):
+            raise LookupError(f"No workspace {tenant_id!r}.")
+        return sides
+
     async def switches(
         self, session: AsyncSession, services: Iterable[str], *, organizations: bool
     ) -> dict[str, ServiceSwitch]:
         """Each of `services`, on or off in the workspace, and whether its
         organization locked it."""
-        default = await self.on_by_default(session)
-        own = await self.list_settings(session)
-        organization = (
-            await self.organization_settings(session) if organizations else {}
-        )
-        switches: dict[str, ServiceSwitch] = {}
-        for service in services:
-            set_above = organization.get(service)
-            if set_above is not None and set_above.locked:
-                switches[service] = ServiceSwitch(set_above.enabled, locked=True)
-            elif service in own:
-                switches[service] = ServiceSwitch(own[service].enabled, locked=False)
-            elif set_above is not None:
-                switches[service] = ServiceSwitch(set_above.enabled, locked=False)
-            else:
-                switches[service] = ServiceSwitch(default, locked=False)
-        return switches
+        return {
+            service: resolve(side.default, side.own, side.organization)
+            for service, side in (
+                await self._sides(session, list(services), organizations=organizations)
+            ).items()
+        }
+
+    async def switches_under(
+        self,
+        session: AsyncSession,
+        services: Iterable[str],
+        organization: dict[str, OrganizationSetting],
+    ) -> dict[str, tuple[ServiceSwitch, bool]]:
+        """Each of `services` in the workspace were its organization's
+        settings `organization`, as one the organization already holds or is
+        about to make; and whether the workspace's admin set it themselves."""
+        return {
+            service: (
+                resolve(side.default, side.own, organization.get(service)),
+                side.own is not None,
+            )
+            for service, side in (
+                await self._sides(session, list(services), organizations=False)
+            ).items()
+        }
 
     async def disabled_services(
         self, session: AsyncSession, services: Iterable[str], *, organizations: bool
@@ -142,3 +236,14 @@ class WorkspaceServiceStore:
                 },
             )
         )
+
+    async def clear(self, session: AsyncSession, service: str) -> bool:
+        """Drop the workspace admin's own switch, so the organization's
+        setting or the workspace's default applies; whether there was one."""
+        result = await session.execute(
+            delete(WorkspaceServiceSetting).where(
+                WorkspaceServiceSetting.tenant_id == require_tenant_id(),
+                WorkspaceServiceSetting.service == service,
+            )
+        )
+        return bool(result.rowcount)  # type: ignore[attr-defined]
