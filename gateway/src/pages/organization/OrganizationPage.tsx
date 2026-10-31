@@ -6,6 +6,7 @@ import { administersOrganization } from "../../data/sessionState";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
 import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
+import OrganizationServicesSection from "./OrganizationServicesSection";
 import OrganizationMembersSection from "./OrganizationMembersSection";
 import WorkspacesSection from "./WorkspacesSection";
 
@@ -43,6 +44,7 @@ export default function OrganizationPage() {
         {(isAdmin || session.user.is_operator) && (
           <OrganizationMembersSection selfId={session.user.id} asOperator={!isAdmin} />
         )}
+        {isAdmin && <OrganizationServicesSection />}
         {isAdmin && <OrganizationConnectorsSection />}
         {isAdmin && <OrganizationAuditSection />}
       </Stack>
