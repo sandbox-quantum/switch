@@ -9,16 +9,22 @@ opening an issue.
 
 ## Development setup
 
+> ⚡ **First-time or hackathon contributor?**
+> Follow our [Five-Minute Quickstart Guide](docs/contributing/quickstart.md) for a
+> complete walkthrough: getting the local server up, building and connecting Switch Console,
+> creating an agent and a room, and getting a reply.
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
-[uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
-(`brew install just`).
+[uv](https://docs.astral.sh/uv/), [just](https://github.com/casey/just)
+(`brew install just`), and Node.js/pnpm for the frontend and desktop Console.
 
 ```bash
 just init-env            # first-time setup — generate .env with random secrets
 uv sync                  # install Python dependencies
-just gateway-install     # install gateway frontend deps (first time only)
 just up                  # start the supporting stack (Docker Compose)
+just migrate             # apply database migrations
 just run                 # run switch-core locally (:8000)
+just gateway-install     # install gateway frontend deps (first time only)
 just gateway-dev         # run the gateway frontend (separate terminal)
 ```
 
@@ -31,8 +37,9 @@ hot-reload while developing: `just run` (switch-core on `:8000`) and
 If you only want to see Switch running rather than develop against it, the
 standalone stack in the [README](README.md#getting-started) is a shorter path.
 
-See [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md) for the
-fuller account of this setup — what each port serves, and how to point
+See [Five-Minute Quickstart](docs/contributing/quickstart.md) for the fast contributor
+onboarding tutorial, and [`docs/old/LOCAL_DEVELOPMENT.md`](docs/old/LOCAL_DEVELOPMENT.md)
+for the fuller account of this setup — what each port serves, and how to point
 Switch Console at your local server.
 
 ## Common commands
