@@ -1,7 +1,50 @@
 slug: bitbucket
 name: Bitbucket
 category: Source control
-description: Work with Bitbucket repositories and pull requests.
-enabled: false
+description: Read and inspect Bitbucket Cloud repositories and pull requests, as you.
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  refresh: rotating
+  oauth:
+    # Atlassian offers no client to configure: Core registers one itself.
+    registration: dynamic
+    # It returns a sign-in to Core's own address only where a site admin has
+    # added it, so sign-ins come back to Switch Console, on a port registered
+    # with the client: Atlassian matches the port exactly.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    # Without it, consenting to scopes fails after Accept.
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian's MCP access tokens live 8 hours, and Atlassian offers no way to
+# ask for a shorter one or to revoke one alone, so an agent's copy may outlive
+# its grant by up to that long. Agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: bitbucket, url: "https://mcp.atlassian.com/v2/mcp" }
+access:
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - search:bitbucket:agent-interface
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - email
+      - offline_access
+      - read:bitbucket:agent-interface
+      - search:bitbucket:agent-interface
+      - write:bitbucket:agent-interface
+tools: { mode: pass_through }
