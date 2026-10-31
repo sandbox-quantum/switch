@@ -163,6 +163,44 @@ describe("OrganizationPage", () => {
     );
   });
 
+  it("lets an organization admin switch a service off and lock it for every workspace", async () => {
+    signedInAs(session("org_admin", true));
+    const github = {
+      slug: "github",
+      name: "GitHub",
+      setting: null,
+      updated_by_name: null,
+      updated_at: null,
+      workspaces_on: 2,
+      connected_members: 3,
+    };
+    const fetchMock = answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/services": { workspaces: 3, services: [github] },
+      "PUT /organizations/current/services/github": { warning: null },
+    });
+
+    render(<OrganizationPage />);
+
+    const card = await screen.findByTestId("organization-service-github");
+    expect(within(card).getByText("On in 2 of 3 workspaces · 3 people connected")).toBeTruthy();
+    expect((within(card).getByLabelText("Lock GitHub") as HTMLInputElement).disabled).toBe(true);
+    fireEvent.mouseDown(within(card).getByRole("combobox"));
+    fireEvent.click(await screen.findByRole("option", { name: "Off" }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/gateway/organizations/current/services/github",
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ enabled: false, locked: false }),
+        }),
+      ),
+    );
+  });
+
   it("shows no connectors where the server keeps them to itself", async () => {
     signedInAs(session("org_admin", true));
     const fetchMock = answer({
