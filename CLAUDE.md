@@ -191,6 +191,10 @@ Tests live in `core/tests/switch_core/` mirroring the module structure. Uses pyt
   registering and publishing the Airtable OAuth integration, its redirect
   URL and scopes, saving it under Connector apps or in
   `AIRTABLE_CLIENT_CONFIG_PATH`, and switching it off
+- `docs/old/bigquery-setup.md` — offering BigQuery on a self-hosted server:
+  registering the Google Cloud OAuth app, redirect URI, user IAM roles,
+  saving it under Connector apps or in `BIGQUERY_CLIENT_CONFIG_PATH`, and
+  switching it off
 - `docs/old/GATEWAY_OIDC_SETUP.md` — configuring the gateway's bring-your-own
   OIDC browser sign-in (variables, redirect URI, WorkOS Connect setup)
 - `docs/old/workos-directory.md` — keeping organizations in WorkOS

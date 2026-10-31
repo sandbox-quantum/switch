@@ -72,6 +72,8 @@ GOOGLE = "google-workspace"
 AIRTABLE = "airtable"
 AIRTABLE_CALLBACK = f"{PUBLIC}/gateway/service-connections/{AIRTABLE}/flows/callback"
 AIRTABLE_SECRET = "example-airtable-secret-0000"
+BIGQUERY = "bigquery"
+BIGQUERY_CALLBACK = f"{PUBLIC}/gateway/service-connections/{BIGQUERY}/flows/callback"
 GITHUB_CLIENT_ID = "example-github-client-id"
 GITHUB_SECRET = "example-github-secret-0000"
 
@@ -391,7 +393,7 @@ class TestOnlyTheOperator:
         body = listed.json()
         assert body["public_url"] == PUBLIC
         apps = {entry["slug"]: entry for entry in body["apps"]}
-        assert set(apps) == {"github", GOOGLE, AIRTABLE, "gitlab"}
+        assert set(apps) == {"github", GOOGLE, AIRTABLE, BIGQUERY, "gitlab"}
         assert apps[GOOGLE]["source"] == "none"
         google = f"{PUBLIC}/gateway/service-connections/{GOOGLE}/flows/callback"
         assert apps[GOOGLE]["redirect_uri"] == google
@@ -421,6 +423,10 @@ class TestOnlyTheOperator:
             "data.records:write",
             "data.recordComments:write",
         ]
+        # BigQuery has its own Google client, so it has its own callback.
+        assert apps[BIGQUERY]["source"] == "none"
+        assert apps[BIGQUERY]["redirect_uris"] == [BIGQUERY_CALLBACK]
+        assert apps[BIGQUERY]["needs_public_url"] is True
         # A client Core registers itself is nothing for the operator to set up.
         assert not {"atlassian", "linear", "notion", "sentry"} & set(apps)
         assert set(body) == {"public_url", "apps"}

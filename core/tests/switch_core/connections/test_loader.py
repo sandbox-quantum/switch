@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "github",
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "google-workspace",
         "gitlab",
@@ -42,6 +43,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "github",
         "gitlab",
@@ -54,6 +56,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["bigquery"].skill_files
     assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
     assert "SKILL.md" in CATALOG["gitlab"].skill_files
@@ -543,6 +546,55 @@ def test_the_shipped_gitlab_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.url == "https://gitlab.com/api/v4/user"
     assert definition.auth.identity.account_id == "id"
     assert definition.auth.identity.label == "username"
+
+
+def test_the_shipped_bigquery_entry_signs_in_as_google_was_measured_to():
+    definition = CATALOG["bigquery"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Its own Google client, apart from Google Workspace's.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "BIGQUERY",
+    )
+    assert (
+        oauth.client_settings
+        != CATALOG["google-workspace"].definition.auth.oauth.client_settings
+    )  # type: ignore[union-attr]
+    # Back to Switch Console, on the fixed ports the Web client registers.
+    assert oauth.redirect == ["loopback"]
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    # Google ends the whole grant on a revocation, and hands out a refresh
+    # token only for offline access, asked with consent.
+    assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    assert oauth.revocation_ends_grant is True
+    assert oauth.authorization_params == {"access_type": "offline"}
+    assert oauth.prompt == "consent select_account"
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url
+        == "https://openidconnect.googleapis.com/v1/userinfo"
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bigquery", "https://bigquery.googleapis.com/mcp")
+    ]
+    # One scope, so one level, read and write: both name the same scopes, and
+    # the description says it can change data.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == definition.access.write.scopes
+    assert f"{GOOGLE}bigquery" in (definition.access.write.scopes or [])
+    assert "changes data" in definition.description
+    skill = CATALOG["bigquery"].skill_files["SKILL.md"]
+    assert "This connection can write." in skill
+    assert "execute_sql_readonly" in skill
 
 
 @pytest.fixture

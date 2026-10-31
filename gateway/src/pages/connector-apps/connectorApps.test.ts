@@ -324,6 +324,33 @@ const AIRTABLE = app({
   workspaces: 0,
 });
 
+describe("BigQuery application setup", () => {
+  it("shows its Web client, loopback callbacks and project roles", () => {
+    const bigquery = app({
+      ...LOOPBACK,
+      slug: "bigquery",
+      name: "BigQuery",
+      redirect_uri: `${PUBLIC_URL}/gateway/service-connections/bigquery/flows/callback`,
+    });
+    const steps = setupInstructions(bigquery, "internal", PUBLIC_URL);
+    expect(steps[0]!.link).toEqual({
+      label: "Create a project",
+      href: "https://console.cloud.google.com/projectcreate",
+    });
+    expect(steps[1]!.link).toEqual({
+      label: "Open Branding",
+      href: "https://console.cloud.google.com/auth/branding",
+    });
+    expect(steps[2]!.link).toEqual({
+      label: "Open Clients",
+      href: "https://console.cloud.google.com/auth/clients",
+    });
+    expect(steps[3]!.copy).toEqual(LOOPBACK_CALLBACKS);
+    expect(steps.at(-1)!.text).toMatch(/BigQuery MCP Tool User/);
+    expect(changeBlocked(bigquery, null)).toBe(false);
+  });
+});
+
 /** An app whose sign-ins return to Switch Console, on one of several ports. */
 const LOOPBACK = app({
   ...AIRTABLE,
