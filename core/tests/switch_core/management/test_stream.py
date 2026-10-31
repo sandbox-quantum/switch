@@ -12,6 +12,7 @@ import contextlib
 import time
 
 import pytest
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.commands import room_control_frame
@@ -898,3 +899,122 @@ async def test_a_backlog_past_one_batch_is_sent_without_waiting(
     assert [data["event"]["payload"]["body"] for _, data in frames] == [
         f"#{n}" for n in range(5)
     ]
+
+
+async def test_a_pass_that_cannot_get_a_connection_is_tried_again(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pass that fails because the pool had no connection for it is tried
+    again, and its event is delivered, rather than the stream ending and the
+    controller's socket closing with every agent on it."""
+    monkeypatch.setattr(controller_stream, "PASS_RETRY_FIRST_SECONDS", 0.01)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+
+    buffer = harness.protocol.event_buffer
+    read_from = buffer.read_from
+    failed: list[bool] = []
+
+    async def no_connection_the_first_time(*args: object, **kwargs: object) -> object:
+        if not failed:
+            failed.append(True)
+            raise PoolTimeoutError("QueuePool limit reached, connection timed out")
+        return await read_from(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(buffer, "read_from", no_connection_the_first_time)
+    await _ask(harness, agent_id, room_id, "@you")
+    [(name, data)] = await take(stream, 1)
+    await stream.aclose()
+
+    assert failed == [True]
+    assert name == "agent.event"
+    assert data["event"]["payload"]["body"] == "@you"
+
+
+async def test_a_pass_that_fails_for_another_reason_ends_the_stream(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+
+    async def broken(*args: object, **kwargs: object) -> object:
+        raise ValueError("a bug, not the database")
+
+    monkeypatch.setattr(harness.protocol.event_buffer, "read_from", broken)
+    await _ask(harness, agent_id, room_id, "@you")
+    with pytest.raises(ValueError, match="a bug"):
+        await take(stream, 1)
+
+
+async def test_a_pass_still_failing_after_the_last_wait_ends_the_stream(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(controller_stream, "PASS_RETRY_FIRST_SECONDS", 0.01)
+    monkeypatch.setattr(controller_stream, "PASS_RETRY_GIVE_UP_SECONDS", 0.2)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+
+    async def never_a_connection(*args: object, **kwargs: object) -> object:
+        raise PoolTimeoutError("QueuePool limit reached, connection timed out")
+
+    monkeypatch.setattr(harness.protocol.event_buffer, "read_from", never_a_connection)
+    await _ask(harness, agent_id, room_id, "@you")
+    with pytest.raises(PoolTimeoutError):
+        await take(stream, 1, timeout=5)
+
+
+async def test_an_attach_that_fails_part_way_is_done_again_and_told_once(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing about an agent is kept until its attach is done, so one whose
+    attach fails is attached again from the start, and the controller hears
+    it attached once."""
+    monkeypatch.setattr(controller_stream, "PASS_RETRY_FIRST_SECONDS", 0.01)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+
+    buffer = harness.protocol.event_buffer
+    ensure_counting = buffer.ensure_counting
+    failed: list[bool] = []
+
+    async def no_connection_the_first_time(*args: object, **kwargs: object) -> object:
+        if not failed:
+            failed.append(True)
+            raise PoolTimeoutError("QueuePool limit reached, connection timed out")
+        return await ensure_counting(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(buffer, "ensure_counting", no_connection_the_first_time)
+    stream = await open_stream(harness, controller, opened)
+    opening = await take(stream, 2)
+    await _ask(harness, agent_id, room_id, "@you")
+    [(name, _)] = await take(stream, 1)
+    await stream.aclose()
+
+    assert failed == [True]
+    assert [frame_name for frame_name, _ in opening] == [
+        "connection_state",
+        "agent.attached",
+    ]
+    assert name == "agent.event"
