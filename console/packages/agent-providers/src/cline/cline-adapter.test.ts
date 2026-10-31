@@ -100,5 +100,7 @@ it('hints to sign in when session/new refuses the session as unauthenticated', a
     handshake: unusedHandshake,
   });
   expect(result.status).toBe('unauthenticated');
-  expect(result.message).toBe('Sign in on the execution machine with cline auth.');
+  expect(result.message).toBe(
+    'Sign in on the execution machine with cline auth, or set CLINE_PROVIDER and CLINE_API_KEY there.'
+  );
 });

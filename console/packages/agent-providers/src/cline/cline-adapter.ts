@@ -1,9 +1,11 @@
 import { acpInitialize, createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks } from '../acp/hooks';
-import { readiness, signInWith } from '../readiness';
+import { readiness } from '../readiness';
 import { JsonRpcError, noopLogger, StdioJsonRpcClient } from '../transport/stdio-json-rpc';
 
 const CLINE_LOGIN = 'cline auth';
+const CLINE_SIGN_IN =
+  'Sign in on the execution machine with cline auth, or set CLINE_PROVIDER and CLINE_API_KEY there.';
 
 /** Cline's `cline --acp`. */
 export const clineAcp: AcpProviderHooks = {
@@ -42,7 +44,7 @@ export const clineAcp: AcpProviderHooks = {
       return readiness('authenticated', 'Signed in.');
     } catch (error) {
       if (error instanceof JsonRpcError && /authentication required/i.test(error.message))
-        return readiness('unauthenticated', signInWith(CLINE_LOGIN));
+        return readiness('unauthenticated', CLINE_SIGN_IN);
       throw error;
     } finally {
       await client.dispose();
