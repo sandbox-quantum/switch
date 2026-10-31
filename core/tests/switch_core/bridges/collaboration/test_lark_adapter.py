@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import os
+import time
 
 import httpx
 import pytest
@@ -28,6 +32,49 @@ def _config(**overrides: str) -> LarkConnectionConfig:
         app_secret="app-secret",
         verification_token="verify",
         **overrides,
+    )
+
+
+def _encrypted_request(
+    *, timestamp: str | None = None, nonce: str = "request-nonce"
+) -> WebhookRequest:
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    key_text = "encrypt-secret"
+    event = {
+        "schema": "2.0",
+        "header": {
+            "token": "verify",
+            "event_id": "evt-encrypted",
+            "event_type": "im.message.receive_v1",
+        },
+        "event": {},
+    }
+    plaintext = json.dumps(event, separators=(",", ":")).encode()
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded = padder.update(plaintext) + padder.finalize()
+    iv = os.urandom(16)
+    key = hashlib.sha256(key_text.encode()).digest()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
+    body = json.dumps(
+        {"encrypt": base64.b64encode(iv + ciphertext).decode()},
+        separators=(",", ":"),
+    ).encode()
+    timestamp = timestamp or str(int(time.time()))
+    signature = hashlib.sha256(
+        (timestamp + nonce + key_text).encode() + body
+    ).hexdigest()
+    return WebhookRequest(
+        "POST",
+        {
+            "x-lark-request-timestamp": timestamp,
+            "x-lark-request-nonce": nonce,
+            "x-lark-signature": signature,
+        },
+        {},
+        body,
     )
 
 
@@ -69,6 +116,55 @@ async def test_webhook_rejects_another_apps_token() -> None:
     )
     with pytest.raises(WebhookAuthenticityError):
         await adapter.verify_webhook(request)
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_encrypted_event_verifies_signature_before_decrypting() -> None:
+    adapter = LarkAdapter(config=_config(encrypt_key="encrypt-secret"))
+    request = _encrypted_request()
+    await adapter.verify_webhook(request)
+    parsed = adapter.parse_webhook(request)
+    assert parsed.external_event_id == "evt-encrypted"
+    assert parsed.envelope_type == "im.message.receive_v1"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_encrypted_event_rejects_tampering_and_missing_signature() -> None:
+    adapter = LarkAdapter(config=_config(encrypt_key="encrypt-secret"))
+    request = _encrypted_request()
+    tampered = WebhookRequest(
+        request.method,
+        request.headers,
+        request.query,
+        request.body.replace(b'"encrypt":"', b'"encrypt":"A', 1),
+    )
+    with pytest.raises(WebhookAuthenticityError, match="signature"):
+        await adapter.verify_webhook(tampered)
+    missing = WebhookRequest(request.method, {}, request.query, request.body)
+    with pytest.raises(WebhookAuthenticityError, match="missing its signature"):
+        await adapter.verify_webhook(missing)
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_encrypted_event_rejects_stale_signed_replay() -> None:
+    adapter = LarkAdapter(config=_config(encrypt_key="encrypt-secret"))
+    stale = _encrypted_request(timestamp=str(int(time.time()) - 8 * 60 * 60 - 1))
+    with pytest.raises(WebhookAuthenticityError, match="outside the allowed window"):
+        await adapter.verify_webhook(stale)
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_event_without_stable_id_is_rejected_for_shared_deduplication() -> None:
+    adapter = LarkAdapter(config=_config())
+    body = {"header": {"token": "verify", "event_type": "unknown"}}
+    request = WebhookRequest("POST", {}, {}, json.dumps(body).encode())
+    await adapter.verify_webhook(request)
+    with pytest.raises(WebhookPayloadError, match="stable event ID"):
+        adapter.parse_webhook(request)
     await adapter.stop()
 
 

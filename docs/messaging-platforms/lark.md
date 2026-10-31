@@ -37,8 +37,13 @@ Switch recorded its message ID, that uncertain send can be repeated after the
 claim expires.
 
 When Lark event encryption is enabled, enter the app's Encrypt Key in Switch.
-The Verification Token is checked on every event and the encrypted event body
-is decrypted before dispatch.
+Switch verifies `X-Lark-Signature` over the raw request body using Lark's
+timestamp, nonce, and Encrypt Key before decrypting. Signed requests older than
+eight hours or more than five minutes in the future are refused. The
+Verification Token is checked after decryption, and shared event receipts drop
+replayed event IDs across pods and restarts. Lark's CBC format carries a
+per-message IV in the first 16 decoded bytes; the signature authenticates the
+ciphertext because CBC itself does not provide authentication.
 
 ## Behavior and limits
 

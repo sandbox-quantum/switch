@@ -45,6 +45,8 @@ _API_HOSTS = {
 }
 _MAX_MESSAGE = 4000
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+_WEBHOOK_MAX_AGE_SECONDS = 8 * 60 * 60
+_WEBHOOK_FUTURE_SKEW_SECONDS = 5 * 60
 
 
 class LarkConnectionConfig(BridgeConnectionConfig):
@@ -80,16 +82,45 @@ def _decrypt_event(value: str, encrypt_key: str) -> dict[str, Any]:
         from cryptography.hazmat.primitives import padding
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-        ciphertext = base64.b64decode(value, validate=True)
+        encrypted = base64.b64decode(value, validate=True)
+        block_size = algorithms.AES.block_size // 8
+        if len(encrypted) < block_size * 2:
+            raise ValueError("Lark encrypted event is too short")
+        iv, ciphertext = encrypted[:block_size], encrypted[block_size:]
         key = hashlib.sha256(encrypt_key.encode("utf-8")).digest()
-        decryptor = Cipher(algorithms.AES(key), modes.CBC(key[:16])).decryptor()
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
         padded = decryptor.update(ciphertext) + decryptor.finalize()
         unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
         plaintext = unpadder.update(padded) + unpadder.finalize()
-        # The first 16 bytes are random bytes added by Lark before encryption.
-        return _json_object(plaintext[16:])
+        return _json_object(plaintext)
     except (ValueError, TypeError) as exc:
         raise WebhookAuthenticityError("Lark event could not be decrypted") from exc
+
+
+def _verify_encrypted_webhook_signature(
+    request: WebhookRequest, encrypt_key: str
+) -> None:
+    timestamp = request.headers.get("x-lark-request-timestamp")
+    nonce = request.headers.get("x-lark-request-nonce")
+    signature = request.headers.get("x-lark-signature")
+    if not timestamp or not nonce or not signature:
+        raise WebhookAuthenticityError("Lark encrypted event is missing its signature")
+    try:
+        sent_at = int(timestamp)
+    except ValueError as exc:
+        raise WebhookAuthenticityError("Lark event timestamp is invalid") from exc
+    now = int(time.time())
+    if (
+        sent_at < now - _WEBHOOK_MAX_AGE_SECONDS
+        or sent_at > now + _WEBHOOK_FUTURE_SKEW_SECONDS
+    ):
+        raise WebhookAuthenticityError(
+            "Lark event timestamp is outside the allowed window"
+        )
+    signed = (timestamp + nonce + encrypt_key).encode("utf-8") + request.body
+    expected = hashlib.sha256(signed).hexdigest()
+    if not hmac.compare_digest(signature.lower(), expected):
+        raise WebhookAuthenticityError("Lark event signature did not match")
 
 
 def _body(config: LarkConnectionConfig, raw: bytes) -> dict[str, Any]:
@@ -306,6 +337,9 @@ class LarkAdapter(PlatformAdapter):
         await self._http.aclose()
 
     async def verify_webhook(self, request: WebhookRequest) -> None:
+        outer = _json_object(request.body)
+        if outer.get("encrypt") is not None and self._config.encrypt_key:
+            _verify_encrypted_webhook_signature(request, self._config.encrypt_key)
         try:
             envelope = _body(self._config, request.body)
         except WebhookAuthenticityError:
@@ -343,13 +377,16 @@ class LarkAdapter(PlatformAdapter):
             if isinstance(header, dict)
             else envelope.get("type")
         )
+        stable_event_id = event_id or legacy_id
+        if not stable_event_id:
+            raise WebhookPayloadError(
+                "Lark event has no stable event ID for deduplication"
+            )
         return InboundWebhook(
             envelope_type=str(event_type or "unknown"),
             payload=envelope,
             handshake=None,
-            external_event_id=str(event_id or legacy_id)
-            if event_id or legacy_id
-            else None,
+            external_event_id=str(stable_event_id),
             delivery_attempt=0,
             answers_inline=False,
         )
