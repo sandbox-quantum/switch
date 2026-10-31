@@ -110,3 +110,19 @@ def test_organizations_connector_apps_are_mounted_only_with_both_flags() -> None
     assert ORGANIZATION_APP_ROUTES <= paths(
         "service_connections,organization_connector_apps"
     )
+
+
+def test_organizations_service_settings_are_mounted_only_with_both_flags() -> None:
+    def paths(flags: str) -> set[str]:
+        return {
+            route.path
+            for route in _app(feature_flags_enabled=flags).routes  # type: ignore[attr-defined]
+        }
+
+    routes = {
+        "/organizations/current/services",
+        "/organizations/current/services/{service}",
+    }
+    assert not routes & paths("service_connections")
+    assert not routes & paths("organization_connector_apps")
+    assert routes <= paths("service_connections,organization_connector_apps")
