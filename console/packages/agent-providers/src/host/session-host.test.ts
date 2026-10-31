@@ -317,10 +317,14 @@ it('refuses to stop one subagent where the provider cannot, leaving the turn run
   const { host, adapter } = await start('codex');
   await host.command(message('turn'));
   await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
-  await host.command({
-    ...message('interrupt'),
-    body: { type: 'turn.interrupt', turnId: 'turn', childId: 'child' },
-  });
+  expect(
+    (
+      await host.command({
+        ...message('interrupt'),
+        body: { type: 'turn.interrupt', turnId: 'turn', childId: 'child' },
+      })
+    ).status
+  ).toBe('rejected');
   expect(adapter.interruptTurn).not.toHaveBeenCalled();
 });
 

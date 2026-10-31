@@ -963,13 +963,12 @@ export class HostedSession {
         }
       } else if (body.type === 'turn.interrupt') {
         if (body.turnId !== this.activeTurn) throw new Error('Turn is no longer active.');
+        if (body.childId && !this.adapter.stopSubagent)
+          throw new Error('This provider cannot stop a single subagent.');
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
-        if (body.childId) {
-          if (!this.adapter.stopSubagent)
-            throw new Error('This provider cannot stop a single subagent.');
-          await this.adapter.stopSubagent(session.sessionId, body.childId);
-        } else await this.adapter.interruptTurn(session.sessionId);
+        if (body.childId) await this.adapter.stopSubagent!(session.sessionId, body.childId);
+        else await this.adapter.interruptTurn(session.sessionId);
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);

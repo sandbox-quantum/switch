@@ -2017,6 +2017,12 @@ COMMANDS: list[Command] = [
             CommandArg(
                 "target", "Agent name, alias, or role to interrupt", required=True
             ),
+            CommandArg(
+                "child_id",
+                "Subagent ID to stop instead of the whole turn",
+                required=False,
+                free_text=True,
+            ),
         ),
         addressed=_addressed_by_required_first_mention,
         admin_check=_check_control_target,

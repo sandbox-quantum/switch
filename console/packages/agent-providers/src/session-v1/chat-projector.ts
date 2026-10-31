@@ -88,7 +88,7 @@ export class ChatProjector {
           // A subagent's text is the id `!interrupt` takes to stop it alone.
           text:
             kind === 'subagent'
-              ? (event.item.nativeChildId ?? '')
+              ? (event.item.nativeChildId ?? previous?.item.text ?? '')
               : kind === 'tool-activity'
                 ? ''
                 : (event.item.text ?? previous?.item.text ?? ''),
