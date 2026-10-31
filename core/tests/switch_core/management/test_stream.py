@@ -228,9 +228,9 @@ class TestOpening:
     async def test_an_agents_pass_reads_in_one_session(
         self, harness: Harness, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The agent's head, its own events, what was dropped after its cursor
-        and the unread counts cost one pool checkout and one transaction, not
-        one of each per read."""
+        """The agent's own events, what was dropped after its cursor and the
+        unread counts cost one pool checkout and one transaction, not one of
+        each per read, after one read of the heads of the controller's agents."""
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             controller = await enroll_console(harness, client, owner)
@@ -249,7 +249,7 @@ class TestOpening:
 
         assert name == "agent.event"
         assert data["event"]["payload"]["body"] == "@you"
-        assert counting.opened == 1
+        assert counting.opened == 2
 
     async def test_a_cursor_from_before_a_restart_is_a_gap(
         self, harness: Harness
@@ -776,3 +776,32 @@ async def test_a_waiting_stream_wakes_promptly_for_an_event(harness: Harness) ->
     raw = await asyncio.wait_for(pending, timeout=2)
     await stream.aclose()
     assert raw["event"] == "agent.event"
+
+
+async def test_an_idle_pass_reads_its_agents_heads_together(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With nothing new for any agent, the pass after each idle interval reads
+    the heads of all the controller's agents in one query, not each agent's
+    events in a session of its own."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 0.05)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        for n in range(5):
+            agent_id = await place_agent(client, controller, name=f"agent-{n}")
+            await add_room(harness.session_factory, agent_id, name=f"room-{n}")
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 6)
+    assert await anext(stream) is controller_routes.IDLE
+
+    buffer = harness.protocol.event_buffer
+    counting = CountingSessionFactory(buffer._session_factory)
+    monkeypatch.setattr(buffer, "_session_factory", counting)
+    assert await anext(stream) is controller_routes.IDLE
+    await stream.aclose()
+
+    # One read of the heads for the pass, one more when the wait checks
+    # again for anything that arrived as it began.
+    assert counting.opened == 2

@@ -219,8 +219,8 @@ class _ControllerStream:
                     yield raw
 
                 delivered = False
-                for attached in list(self._attached.values()):
-                    for raw in await self._deliver(attached):
+                for attached, head in await self._due():
+                    for raw in await self._deliver(attached, head):
                         delivered = True
                         yield raw
                 if delivered:
@@ -393,7 +393,23 @@ class _ControllerStream:
             )
         return frames
 
-    async def _deliver(self, attached: _Attached) -> list[ControllerFrame]:
+    async def _due(self) -> list[tuple[_Attached, int]]:
+        """The attached agents a delivery pass has work for, each with its
+        head: events past its cursor, or rooms without an unread-count baseline
+        yet. The heads are read in one query, so a pass over a controller's
+        agents, such as the one after each idle interval, costs one read when
+        nothing is new rather than a session per agent."""
+        if not self._attached:
+            return []
+        heads = await self._buffer.heads(self._tenant, set(self._attached))
+        return [
+            (attached, heads[attached.agent_id])
+            for attached in list(self._attached.values())
+            if heads[attached.agent_id] > attached.cursor
+            or self._presence.rooms(attached.agent_id) - attached.counted
+        ]
+
+    async def _deliver(self, attached: _Attached, bound: int) -> list[ControllerFrame]:
         agent_id = attached.agent_id
         for room_id in self._presence.rooms(agent_id) - attached.counted:
             await self._buffer.ensure_counting(
@@ -405,12 +421,11 @@ class _ControllerStream:
         # read. The frames are built after it, and returned rather than
         # yielded, so the connection is back in the pool before any is sent.
         async with self._buffer.one_session(self._tenant):
-            # Take the number of the newest of the agent's own events before
-            # reading, and read no further than it. A read that finds nothing moves
-            # the cursor up to this number. An event added to `agent_events` while
-            # the read runs is numbered above it, so the cursor does not skip that
-            # event.
-            bound = await self._buffer.head(self._tenant, agent_id)
+            # `bound` is the agent's head, read before this: the read goes no
+            # further than it, and a read that finds nothing moves the cursor
+            # up to it. An event added to `agent_events` since is numbered above
+            # it, so the cursor does not skip that event; its doorbell brings
+            # the next pass.
             try:
                 pending = await self._buffer.read_from(
                     self._tenant,

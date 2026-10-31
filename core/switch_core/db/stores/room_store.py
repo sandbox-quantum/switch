@@ -462,6 +462,24 @@ class RoomStore:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def room_ids_by_agent(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> dict[str, set[str]]:
+        """The ids of every room each agent is a member of, archived rooms
+        included, in one query: what `get_rooms_for_agent(include_archived=True)`
+        gives one agent at a time. Every agent asked about has a key."""
+        by_agent: dict[str, set[str]] = {agent_id: set() for agent_id in agent_ids}
+        if not by_agent:
+            return by_agent
+        result = await session.execute(
+            select(room_agents.c.agent_id, room_agents.c.room_id)
+            .join(Room, Room.id == room_agents.c.room_id)
+            .where(room_agents.c.agent_id.in_(by_agent))
+        )
+        for agent_id, room_id in result.all():
+            by_agent[agent_id].add(room_id)
+        return by_agent
+
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(room_agents.c.agent_id).where(room_agents.c.room_id == room_id)
@@ -692,6 +710,24 @@ class RoomStore:
             client_id: transport_user_id
             for client_id, transport_user_id in result.all()
         }
+
+    async def member_agent_clients_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, dict[str, str]]:
+        """`get_member_agent_clients` for many rooms in one query, keyed by
+        room id. A room with no agent members has no key."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(room_agents.c.room_id, Client.id, Client.transport_user_id)
+            .join(Agent, Agent.id == room_agents.c.agent_id)
+            .join(Client, Client.id == Agent.client_id)
+            .where(room_agents.c.room_id.in_(room_ids))
+        )
+        by_room: dict[str, dict[str, str]] = {}
+        for room_id, client_id, transport_user_id in result.all():
+            by_room.setdefault(room_id, {})[client_id] = transport_user_id
+        return by_room
 
     async def get_by_bridge(self, session: AsyncSession, bridge_id: str) -> list[Room]:
         result = await session.execute(select(Room).where(Room.bridge_id == bridge_id))
