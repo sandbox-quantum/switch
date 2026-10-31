@@ -1148,12 +1148,22 @@ class AgentSessionActivityPublisher:
 
     # ── Turns ─────────────────────────────────────────────────────────────────
 
+    async def _shows_tool_detail(
+        self, db: AsyncSession, rows: list[AgentSessionActivityItem]
+    ) -> bool:
+        """Whether the room a turn's rows are drawn in shows tool detail now."""
+        room_id = next(
+            (row.room_id for row in rows if row.item_id == TURN_ITEM_ID), None
+        )
+        return room_id is not None and await self._rooms.shows_tool_detail(db, room_id)
+
     async def _publish_turn(
         self, key: _Key, agent_id: str, session_id: str, turn_id: str
     ) -> None:
         async with tenant_session(self._sessions, self._tenant_id) as db:
+            rows = await self._activity.turn(db, agent_id, session_id, turn_id)
             view = turn_view(
-                await self._activity.turn(db, agent_id, session_id, turn_id)
+                rows, show_tool_detail=await self._shows_tool_detail(db, rows)
             )
             if view is None or view.row.room_id is None:
                 self._forget_turn(key)
@@ -1759,9 +1769,10 @@ class AgentSessionActivityPublisher:
         post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
         if post is None:
             return None
-        view = turn_view(
-            await self._activity.turn(db, post.agent_id, post.session_id, post.turn_id)
+        rows = await self._activity.turn(
+            db, post.agent_id, post.session_id, post.turn_id
         )
+        view = turn_view(rows, show_tool_detail=await self._shows_tool_detail(db, rows))
         if view is None or view.row.room_id is None:
             return None
         found = await self._rooms.get_with_membership(

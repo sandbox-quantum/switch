@@ -123,6 +123,9 @@ class Item(_Model):
     text: str
     attachments: list[Attachment]
     origin: Origin | None
+    # A tool call's redacted preview, only where its room shows tool detail;
+    # clients that predate it omit it.
+    detail: str | None = None
 
 
 class ApprovalOption(_Model):

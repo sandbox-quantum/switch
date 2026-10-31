@@ -432,6 +432,7 @@ def activity_log(
     markup: Markup,
     elapsed_seconds: float | None,
     heading: bool,
+    detail: bool,
 ) -> str:
     """What a turn did and what it said, one to a line, oldest cut first.
 
@@ -456,6 +457,11 @@ def activity_log(
     `heading` says whether the log has to name the turn it belongs to. It does
     wherever it is read apart from that turn's own message; a caller declining
     it is saying the status directly above already names the turn.
+
+    `detail` says whether this platform shows a call's detail, where the room
+    shows it: under the call's line, in a block nothing inside reaches out of,
+    and only where the whole of it fits, since half a preview reads as all of
+    one.
     """
     head = None
     if heading:
@@ -476,6 +482,10 @@ def activity_log(
     omitted = 0
     for position, item in enumerate(reversed(shown), start=1):
         line = _log_line(item, escape=escape)
+        if detail and item.detail:
+            with_detail = f"{line}\n{markup.block(item.detail)}"
+            if spent + len(with_detail) + 1 <= limit:
+                line = with_detail
         if spent + len(line) + 1 > limit:
             omitted = len(shown) - position + 1
             break

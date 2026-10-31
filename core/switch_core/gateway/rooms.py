@@ -265,6 +265,7 @@ async def _build_room_detail(
         is_console_chat=is_console_chat(room),
         people_are_members=people_are_members(room),
         transport_room_id=room.transport_room_id,
+        show_tool_detail=room.show_tool_detail,
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
         instructions=room.instructions,
@@ -1033,7 +1034,13 @@ async def patch_room(
     # publicly-writable room grants to everyone) is not enough. Otherwise any
     # user could re-permission any room and lock out its owner. It is the rule
     # for deleting the room, asked the same way so `can_manage` cannot drift.
-    changes_access = req.read_visibility is not None or req.write_visibility is not None
+    # Showing tool detail decides who reads what every agent in the room ran,
+    # so it is the owner's and the admins' too.
+    changes_access = (
+        req.read_visibility is not None
+        or req.write_visibility is not None
+        or req.show_tool_detail is not None
+    )
     if changes_access and not can(principal, "delete", target):
         raise HTTPException(
             status_code=403, detail="Not authorized to change this room's access"
@@ -1047,6 +1054,7 @@ async def patch_room(
             admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
             write_visibility=req.write_visibility,
+            show_tool_detail=req.show_tool_detail,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
