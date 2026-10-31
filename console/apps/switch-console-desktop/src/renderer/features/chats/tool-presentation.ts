@@ -215,14 +215,14 @@ const VERBS: Record<Exclude<ToolKind, 'switch' | 'mcp' | 'other'>, Verbs> = {
   },
 };
 
-/** What a tool row is drawn from: an activity row's status, title and text. */
-export type ToolItem = { status: string; title: string; text: string };
+/** What a tool row is drawn from: an activity row's status, title and text, and its kind where it has one. */
+export type ToolItem = { status: string; title: string; text: string; kind?: string };
 
 export function presentTool(item: ToolItem, detail: ToolDetail | null): ToolPresentation {
   const running = item.status === 'in-progress';
   const titled = fromTitle(item.title);
   const name = detail?.toolName ?? titled.name;
-  const kind = kindOf(name, detail?.type ?? null);
+  const kind = kindOf(name, detail?.type ?? (item.kind === 'subagent' ? 'subagent' : null));
   const input = isRecord(detail?.input) ? detail.input : {};
   const output = nonEmpty(detail?.output) ?? nonEmpty(item.text);
   const truncated = detail?.truncated ?? false;
