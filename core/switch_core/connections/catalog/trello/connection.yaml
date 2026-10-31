@@ -1,0 +1,44 @@
+slug: trello
+name: Trello
+category: Project management
+description: Read and update Trello boards, lists and cards, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Atlassian issues rotating refresh tokens.
+  refresh: rotating
+  oauth:
+    # Discovered from https://mcp.trello.com/.well-known/oauth-protected-resource/v1
+    # which points to Atlassian's auth server supporting Dynamic Client Registration (RFC 7591).
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.atlassian.com/me
+    account_id: account_id
+    label: email
+# Atlassian MCP access tokens live 8 hours (28800s).
+token: { kind: pass_through, max_lifetime: 28800 }
+mcp:
+  servers:
+    - { name: trello, url: "https://mcp.trello.com/v1" }
+access:
+  read:
+    scopes:
+      - read:me
+      - read:account
+      - offline_access
+      - read:board:trello
+      - read:member:trello
+  write:
+    scopes:
+      - read:me
+      - read:account
+      - offline_access
+      - read:board:trello
+      - write:board:trello
+      - read:member:trello
+tools: { mode: pass_through }
