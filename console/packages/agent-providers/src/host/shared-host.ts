@@ -474,13 +474,17 @@ export async function runSharedHost(
           null
         );
     };
-    // A server that predates usage refuses a row that carries it. The row is
-    // what platforms draw, so it goes again without, and the spend is not counted.
-    const sentWithoutUsage = async (item: Report, error: RequestError): Promise<boolean> => {
-      if (item.kind !== 'activity' || !item.row.usage || error.status !== 422) return false;
-      const { usage: _usage, ...row } = item.row;
+    // A server that predates usage, or tool detail, refuses a row that carries
+    // them. The row is what platforms draw, so it goes again without: the spend
+    // is not counted, and the call is drawn without its detail.
+    const sentWithoutExtras = async (item: Report, error: RequestError): Promise<boolean> => {
+      if (item.kind !== 'activity' || error.status !== 422) return false;
+      const { usage, detail, ...row } = item.row;
+      if (!usage && !detail) return false;
       console.warn(
-        `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+        usage
+          ? `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
+          : `Switch refused the detail of ${row.item_id}, so it is drawn without: ${error.message}`
       );
       await send({ kind: 'activity', row });
       return true;
@@ -496,7 +500,8 @@ export async function runSharedHost(
         const reports = reporter.reports(
           event,
           (turnId) => host!.originOf(turnId),
-          (turnId) => host!.usageOf(turnId)
+          (turnId) => host!.usageOf(turnId),
+          (turnId, itemId) => host!.detailOf(turnId, itemId)
         );
         for (const item of reports) {
           try {
@@ -504,7 +509,7 @@ export async function runSharedHost(
           } catch (error) {
             if (!(error instanceof RequestError)) throw error;
             if (unsupported(error)) return;
-            if (await sentWithoutUsage(item, error)) continue;
+            if (await sentWithoutExtras(item, error)) continue;
             // A request Switch refused, or one opened before this session
             // first reported here, has nothing to close.
             if (item.kind === 'approval.close' && error.code === 'NOT_FOUND') continue;

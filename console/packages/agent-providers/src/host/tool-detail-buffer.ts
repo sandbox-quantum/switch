@@ -6,10 +6,11 @@ import type { ItemType, ProviderRuntimeEvent } from '../events';
  * by the session host beside the reasoning buffer and under the same rules.
  *
  * A session-v1 tool item carries only a title: raw tool input and output are
- * not a shared summary, so they are never published, journaled, snapshotted
- * or sent to Switch (whose renderers show an item's text in Slack and the
- * like). A Console on the same machine, or over SSH, reads them here to show
- * what a tool did. Every value is clipped as it is taken, so the buffer and an
+ * not a shared summary, so they are never published, journaled or
+ * snapshotted. A Console on the same machine, or over SSH, reads them here to
+ * show what a tool did, and Switch is sent only a redacted, capped preview of
+ * them on the call's activity row (`tool-detail-preview.ts`), which it keeps
+ * for a room that has asked to see tool detail. Every value is clipped as it is taken, so the buffer and an
  * answer stay bounded however large a file read or a command's output is.
  */
 
@@ -55,6 +56,15 @@ export const hostToolTurnSchema = z.object({
   tools: z.array(hostToolDetailSchema),
 });
 export type HostToolTurn = z.infer<typeof hostToolTurnSchema>;
+
+/** One call's input, and its output's head and tail apart: where the middle was dropped, each end is a cut. */
+export type ToolDetailParts = {
+  input: unknown;
+  head: string;
+  tail: string;
+  outputClipped: boolean;
+  hasOutput: boolean;
+};
 
 type ToolEntry = {
   itemId: string;
@@ -214,6 +224,21 @@ export class ToolDetailBuffer {
       default:
         return;
     }
+  }
+
+  /** The parts of the session-v1 item `itemId` of `turnId`; null for one this buffer does not hold. */
+  partsOf(epoch: string, turnId: string, itemId: string): ToolDetailParts | null {
+    if (this.epoch !== epoch) return null;
+    for (const entry of this.turns.get(turnId)?.values() ?? [])
+      if (entry.itemId === itemId)
+        return {
+          input: entry.input,
+          head: entry.head,
+          tail: entry.tail,
+          outputClipped: entry.outputClipped,
+          hasOutput: entry.hasOutput,
+        };
+    return null;
   }
 
   /**
