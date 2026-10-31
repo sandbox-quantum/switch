@@ -332,7 +332,8 @@ function OnOffGrant({
           {grant.summary}
         </Typography>
       )}
-      {service.app_source === "organization" && (
+      {/* Only while it works: a broken organization app says why below. */}
+      {service.app_source === "organization" && service.unavailable_reason === null && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           Signs in through your organization&apos;s {service.name} app.
         </Typography>
