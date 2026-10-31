@@ -31,7 +31,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionm
 # junction tables) on `Base.metadata`.
 import switch_core.db.models  # noqa: F401
 from switch_core.db.base import Base
-from switch_core.db.rls_ddl import GLOBAL_TABLES, scoped_tables, unscoped_tables
+from switch_core.db.rls_ddl import (
+    GLOBAL_TABLES,
+    organization_scoped_tables,
+    scoped_tables,
+    unscoped_tables,
+)
 
 
 def _scoped_tables() -> set[str]:
@@ -137,7 +142,11 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
 
     async def test_scoped_is_everything_else(self) -> None:
         scoped = _scoped_tables()
-        assert scoped == set(Base.metadata.tables) - set(GLOBAL_TABLES)
+        organization_scoped = set(organization_scoped_tables(Base.metadata))
+        assert scoped.isdisjoint(organization_scoped)
+        assert scoped | organization_scoped == set(Base.metadata.tables) - set(
+            GLOBAL_TABLES
+        )
         # Not vacuous, and the shape is what the design doc describes.
         assert len(scoped) >= 30, scoped
         assert {"messages", "agents", "tenants", "tenant_members"} <= scoped

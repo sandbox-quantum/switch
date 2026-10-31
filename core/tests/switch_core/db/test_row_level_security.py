@@ -46,6 +46,7 @@ from switch_core.db.rls_ddl import (
     GLOBAL_TABLES,
     POLICY_NAME,
     REQUIRE_TENANT_FUNCTION_NAME,
+    organization_scoped_tables,
     scoped_tables,
     unscoped_tables,
 )
@@ -372,7 +373,16 @@ class TestCatalogueCoverage:
         mode a derived list has: silently being short."""
         assert unscoped_tables(Base.metadata) == []
         scoped = scoped_tables(Base.metadata)
-        assert set(scoped) == set(Base.metadata.tables) - set(GLOBAL_TABLES)
+        organization_scoped = organization_scoped_tables(Base.metadata)
+        assert set(scoped).isdisjoint(organization_scoped)
+        assert set(scoped) | set(organization_scoped) == set(
+            Base.metadata.tables
+        ) - set(GLOBAL_TABLES)
+        assert organization_scoped == {
+            "organizations": "id",
+            "organization_members": "organization_id",
+            "organization_audit_events": "organization_id",
+        }
         assert len(scoped) >= 30, scoped
         assert scoped["tenants"] == "id"
         assert scoped["messages"] == "tenant_id"

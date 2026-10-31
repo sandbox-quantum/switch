@@ -26,6 +26,8 @@ import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
+import OperatorWorkspacesPage from "./pages/operator/OperatorWorkspacesPage";
+import OrganizationPage from "./pages/organization/OrganizationPage";
 import UsagePage from "./pages/usage/UsagePage";
 import UsersPage from "./pages/users/UsersPage";
 import WorkspacePage from "./pages/workspace/WorkspacePage";
@@ -144,6 +146,8 @@ export function AppRoutes() {
         <Route path="users" element={<UsersPage />} />
         <Route path="connectors" element={<ConnectorAppsPage />} />
         <Route path="workspace" element={<WorkspacePage />} />
+        <Route path="organization" element={<OrganizationPage />} />
+        <Route path="operator/workspaces" element={<OperatorWorkspacesPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
       <Route path="/login" element={<Navigate to="/" replace />} />

@@ -906,7 +906,24 @@ class TenantMembershipResponse(BaseModel):
     id: str
     slug: str
     name: str
+    # The role the caller acts with here: an organization's `org_admin` is
+    # reported as at least `admin` of each of its workspaces, membership row
+    # or not.
     role: str
+    organization_role: str | None
+    # None only for a workspace from before organizations that no migration
+    # has given one yet.
+    organization_id: str | None
+
+
+class OperatorWorkspaceResponse(BaseModel):
+    """One workspace on the server, as the platform operator's list shows it."""
+
+    id: str
+    slug: str
+    name: str
+    organization_id: str | None
+    organization_name: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -918,6 +935,59 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
+    name: str
+
+
+class OrganizationCreateRequest(BaseModel):
+    name: str
+    # The first workspace's name; the organization's when left out.
+    workspace_name: str | None = None
+
+
+class OrganizationSummary(BaseModel):
+    """One organization the caller belongs to, and their role in it."""
+
+    id: str
+    slug: str
+    name: str
+    role: str
+
+
+class CurrentOrganizationResponse(BaseModel):
+    """The bound workspace's organization, and the caller's role in it: None
+    for the platform operator there on the operator flag alone."""
+
+    id: str
+    slug: str
+    name: str
+    role: str | None
+
+
+class OrganizationAuditEventDetail(BaseModel):
+    """An organization audit event, with the people it names resolved to
+    names: an actor or a target removed since, or never a member (the platform
+    operator), is not on the organization's member list to look up."""
+
+    id: str
+    occurred_at: str
+    actor_user_id: str | None
+    actor_name: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    target_name: str | None
+    details: dict[str, Any] | None
+
+
+class OrganizationCreateResponse(BaseModel):
+    """A new organization and its first workspace, which the session is now
+    bound to."""
+
+    organization: OrganizationSummary
+    workspace: TenantMembershipResponse
+
+
+class WorkspaceCreateRequest(BaseModel):
     name: str
 
 
@@ -950,7 +1020,13 @@ class SessionStateResponse(BaseModel):
     tenant: TenantMembershipResponse | None
     tenants: list[TenantMembershipResponse]
     state: Literal["ready", "needs_selection", "needs_workspace"]
+    # Whether the caller may create a new organization with its first
+    # workspace (`POST /organizations`, and `POST /tenants` before it).
     can_create_workspace: bool
+    # Whether the caller may add a workspace to the bound workspace's
+    # organization (`POST /organizations/current/workspaces`): its
+    # `org_admin`, within their allowance. False with no workspace bound.
+    can_add_workspace: bool
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
@@ -1090,6 +1166,13 @@ class InvitationCreateResponse(InvitationDetail):
 
 
 class MemberDetail(BaseModel):
+    """One person in a workspace's roster.
+
+    `via_organization` marks an organization's `org_admin` who holds no
+    membership row here: listed as `admin`, because that is what they act
+    as, and changed or removed only through the organization's members.
+    """
+
     user_id: str
     name: str
     email: str
@@ -1098,6 +1181,8 @@ class MemberDetail(BaseModel):
     # The agent-registration bootstrap owner: kept in the roster, never a
     # person to add to a chat.
     service_account: bool
+    organization_role: str | None
+    via_organization: bool
 
 
 class UsageTotalResponse(BaseModel):
@@ -1117,6 +1202,21 @@ class UsageTotalResponse(BaseModel):
 
 class MemberUpdateRequest(BaseModel):
     role: str
+
+
+class OrganizationMemberDetail(BaseModel):
+    user_id: str
+    name: str
+    email: str
+    role: str
+    created_at: str
+    # What could not be revoked at a vendor when a demotion took away what
+    # they held in workspaces they were in only as `org_admin`.
+    warning: str | None
+
+
+class OrganizationMemberUpdateRequest(BaseModel):
+    role: Literal["org_admin", "member"]
 
 
 class OidcLoginOptionView(BaseModel):

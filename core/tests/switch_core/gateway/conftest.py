@@ -250,6 +250,7 @@ async def _user(session: AsyncSession, name: str, role: str | None) -> User:
             tenant_id="00000000-0000-0000-0000-000000000000",
             user_id=user.id,
             role=role,
+            organization_role="org_admin" if role in ("owner", "admin") else "member",
         )
     return user
 

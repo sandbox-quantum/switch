@@ -6,6 +6,11 @@ const getActiveId = vi.hoisted(() => vi.fn());
 const setActive = vi.hoisted(() => vi.fn());
 const serversWithoutMembership = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const subscribers = vi.hoisted(() => new Map<string, (data: unknown) => void>());
+const createWorkspace = vi.hoisted(() => vi.fn());
+const addOrganizationWorkspace = vi.hoisted(() => vi.fn());
+const invalidateQueries = vi.hoisted(() => vi.fn(async () => {}));
+
+vi.mock('@renderer/lib/query-client', () => ({ queryClient: { invalidateQueries } }));
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: {
@@ -14,7 +19,10 @@ vi.mock('@renderer/lib/ipc', () => ({
       return () => subscribers.delete(event.name);
     },
   },
-  rpc: { workspaces: { list, getActiveId, setActive, serversWithoutMembership } },
+  rpc: {
+    workspaces: { list, getActiveId, setActive, serversWithoutMembership },
+    switchServers: { createWorkspace, addOrganizationWorkspace },
+  },
 }));
 
 const { WorkspacesStore } = await import('./workspaces-store');
@@ -28,6 +36,9 @@ function workspace(id: string, serverId: string, name = id): Workspace {
     tenantId: `tenant-${id}`,
     slug: id,
     role: 'member',
+    organizationId: null,
+    organizationName: null,
+    organizationRole: null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   };
@@ -181,5 +192,32 @@ describe('the workspace a server-routed view acts in', () => {
     const store = await loaded([workspace('ws-a', 'srv-1')], 'ws-a');
 
     expect(store.idOnServerInScope(null)).toBeNull();
+  });
+});
+
+describe('creating', () => {
+  // The server may have spent the account's allowance, and an answer cached
+  // from before would go on offering Create until a refusal said otherwise.
+  it('asks the server again what may be created once an organization is made', async () => {
+    const store = await loaded([], null);
+    createWorkspace.mockResolvedValue(workspace('ws-9', 'srv-1'));
+
+    await store.create('srv-1', 'Acme');
+
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['workspace-creation', 'srv-1'],
+    });
+  });
+
+  it('asks the server again once a workspace is added to an organization', async () => {
+    const store = await loaded([workspace('ws-1', 'srv-1')], 'ws-1');
+    addOrganizationWorkspace.mockResolvedValue(workspace('ws-9', 'srv-1'));
+
+    await store.addToOrganization('ws-1', 'Labs');
+
+    expect(addOrganizationWorkspace).toHaveBeenCalledWith({ workspaceId: 'ws-1', name: 'Labs' });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ['workspace-creation', 'srv-1'],
+    });
   });
 });

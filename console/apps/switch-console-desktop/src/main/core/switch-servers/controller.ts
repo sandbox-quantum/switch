@@ -11,9 +11,15 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
 import {
   withReachableServerWorkspaceSession,
+  withReachableWorkspaceSession,
   withServerWorkspaceSession,
+  withWorkspaceSession,
+  workspaceServer,
 } from '@main/core/workspaces/workspace-session';
-import { listWorkspacesForServer } from '@main/core/workspaces/workspaces-store';
+import {
+  listWorkspacesForServer,
+  requireWorkspaceForServer,
+} from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
   SaveConnectorAppInput,
@@ -68,9 +74,9 @@ import {
   acceptInvitation,
   acceptPendingInvitation,
   joinWorkspaceByDomain,
-  createTenant,
+  createOrganization,
+  createOrganizationWorkspace,
   fetchAuthConfig,
-  fetchCanCreateWorkspace,
   deleteMyAccount,
   fetchMe,
   fetchJoinableWorkspaces,
@@ -83,6 +89,8 @@ import {
   importConnectorApp,
   removeConnectorApp,
   saveConnectorApp,
+  fetchWorkspaceCreation,
+  type WorkspaceCreation,
 } from './gateway-client';
 import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
@@ -162,28 +170,38 @@ async function adoptWorkspaces(server: SwitchServer): Promise<void> {
 }
 
 /**
+ * The local row for a membership a server has just given the account, by
+ * creating a workspace or adding it to one; `recorded` names which, for the
+ * error raised when no row turns up.
+ *
+ * Reconciled rather than inserted here: which local row a membership belongs
+ * to is decided in one place.
+ */
+async function recordMembership(
+  server: SwitchServer,
+  tenant: RemoteTenant,
+  recorded: string
+): Promise<Workspace> {
+  await reconcileServerWorkspaces(server.id);
+  const workspaces = await listWorkspacesForServer(server.id);
+  const found = workspaces.find((workspace) => workspace.tenantId === tenant.id);
+  if (!found) throw new Error(`${server.name} ${recorded}, but this install did not record it.`);
+  return found;
+}
+
+async function recordCreated(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
+  return recordMembership(server, tenant, `created the workspace ${tenant.name}`);
+}
+
+async function recordJoined(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
+  return recordMembership(server, tenant, `added you to ${tenant.name}`);
+}
+
+/**
  * Reported by reason rather than by outcome: the two are the same fact, and a
  * sign-in that never left this machine — the server's host is down — has a
  * reason of its own but no result to read one from.
  */
-/**
- * The local row for a workspace a server has just added the account to.
- *
- * Reconciled rather than inserted here, the same as `createWorkspace`: which
- * local row a membership belongs to is decided in one place.
- */
-async function recordJoined(server: SwitchServer, tenant: RemoteTenant): Promise<Workspace> {
-  await reconcileServerWorkspaces(server.id);
-  const workspaces = await listWorkspacesForServer(server.id);
-  const joined = workspaces.find((workspace) => workspace.tenantId === tenant.id);
-  if (!joined) {
-    throw new Error(
-      `${server.name} added you to ${tenant.name}, but this install did not record it.`
-    );
-  }
-  return joined;
-}
-
 function reportSignIn(
   method: TelemetryAuthMethod,
   server: SwitchServer,
@@ -237,9 +255,20 @@ export const switchServersController = createRPCController({
     withReachableServerWorkspaceSession(params.serverId, (server) =>
       fetchAgentIconChoices(server, params.name, params.page)
     ),
-  /** Whether the signed-in account may create a workspace on the server. */
-  canCreateWorkspace: (serverId: string) =>
-    withServerWorkspaceSession(serverId, (server) => fetchCanCreateWorkspace(server)),
+  /**
+   * What the signed-in account may create on the server, answered for the
+   * workspace a call about the server is scoped to, which is named alongside:
+   * adding a workspace is a question about that workspace's organization.
+   */
+  workspaceCreation: async (
+    serverId: string
+  ): Promise<WorkspaceCreation & { workspaceId: string }> => {
+    const workspace = await requireWorkspaceForServer(serverId);
+    const answer = await withWorkspaceSession(workspace.id, (server) =>
+      fetchWorkspaceCreation(server)
+    );
+    return { ...answer, workspaceId: workspace.id };
+  },
   /** Whether this server allows a third-party avatar URL (DiceBear, ui-avatars.com)
    * to be generated or sent anywhere. */
   avatarSettings: (serverId: string) =>
@@ -410,7 +439,9 @@ export const switchServersController = createRPCController({
   },
 
   /**
-   * Create a workspace on a server, owned by the signed-in user.
+   * Create an organization on a server, with a first workspace of the same
+   * name, owned by the signed-in user, and return that workspace. A server
+   * from before organizations creates the workspace alone.
    *
    * Addressed by server rather than by workspace — the exception the split
    * allows itself, because the thing being created is the workspace: there is
@@ -428,17 +459,22 @@ export const switchServersController = createRPCController({
    */
   createWorkspace: async (params: { serverId: string; name: string }): Promise<Workspace> => {
     const server = await requireReachableServer(params.serverId);
-    const tenant = await createTenant(server, params.name);
-    await reconcileServerWorkspaces(params.serverId);
+    return recordCreated(server, await createOrganization(server, params.name));
+  },
 
-    const workspaces = await listWorkspacesForServer(params.serverId);
-    const created = workspaces.find((workspace) => workspace.tenantId === tenant.id);
-    if (!created) {
-      throw new Error(
-        `${server.name} created the workspace ${tenant.name}, but this install did not record it.`
-      );
-    }
-    return created;
+  /**
+   * Add a workspace to the organization `workspaceId` belongs to, owned by the
+   * signed-in user, and return it. The gateway reads the organization from the
+   * workspace the session selects, so the call is scoped to that one.
+   */
+  addOrganizationWorkspace: async (params: {
+    workspaceId: string;
+    name: string;
+  }): Promise<Workspace> => {
+    const tenant = await withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createOrganizationWorkspace(server, params.name)
+    );
+    return recordCreated(await workspaceServer(params.workspaceId), tenant);
   },
 
   /**

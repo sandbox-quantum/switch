@@ -43,6 +43,8 @@ from switch_core.db.models import (
     ApiKey,
     Client,
     Invitation,
+    Organization,
+    OrganizationMember,
     ServiceTokenIssuance,
     SignInFlow,
     Tenant,
@@ -56,6 +58,7 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.budget_store import BudgetStore
 from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.usage_store import UsageStore
@@ -71,6 +74,7 @@ from switch_core.gateway.invite_mail import (
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
 from tests.ownership import NeverOwned
+from tests.switch_core.statement_counts import StatementCounts
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -82,8 +86,10 @@ class _FakeClientLifecycle:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def create_tenant(self, name: str, slug: str) -> Tenant:
-        tenant = Tenant(id=str(uuid.uuid4()), name=name, slug=slug)
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+        tenant = Tenant(
+            id=str(uuid.uuid4()), name=name, slug=slug, organization_id=organization_id
+        )
         async with tenant_session(self._session_factory, tenant.id) as session:
             await TenantStore().create(session, tenant)
             await session.commit()
@@ -98,10 +104,17 @@ class _ProvisioningFailsLifecycle(_FakeClientLifecycle):
         super().__init__(session_factory)
         self.calls = 0
 
-    async def create_tenant(self, name: str, slug: str) -> Tenant:
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
         self.calls += 1
-        await super().create_tenant(name, slug)
+        await super().create_tenant(name, slug, organization_id)
         raise IntegrityError("INSERT INTO clients ...", None, Exception("duplicate"))
+
+
+class _FailsBeforeTheWorkspaceLifecycle(_FakeClientLifecycle):
+    """Fails before writing anything, the way a dropped connection does."""
+
+    async def create_tenant(self, name: str, slug: str, organization_id: str) -> Tenant:
+        raise ConnectionResetError("connection to the database was lost")
 
 
 class _RecordingMailer:
@@ -149,6 +162,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_invitation_store] = lambda: InvitationStore()
     app.dependency_overrides[gw_deps.get_join_domain_store] = lambda: JoinDomainStore()
+    app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
+        OrganizationStore()
+    )
     app.dependency_overrides[gw_deps.get_usage_store] = lambda: UsageStore()
     app.dependency_overrides[gw_deps.get_budget_store] = lambda: BudgetStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: _fake_protocol()
@@ -489,6 +505,34 @@ class TestCreateTenant:
                 await client.post("/tenants", json={"name": "Unlucky Co"})
 
         assert lifecycle.calls == 1
+        async with session_factory() as session:
+            tenant = await session.scalar(
+                select(Tenant).where(Tenant.name == "Unlucky Co")
+            )
+        assert tenant is not None and tenant.organization_id is not None
+
+    async def test_any_failure_before_the_workspace_discards_its_organization(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Left behind, the organization would hold the slug in
+        `organizations.slug` and push the next workspace of that name onto a
+        suffix."""
+        user_id = await _make_unaffiliated_user(
+            session_factory, name="disconnected", role="user"
+        )
+        token = _token(user_id, "disconnected@example.invalid", None)
+        lifecycle = _FailsBeforeTheWorkspaceLifecycle(session_factory)
+
+        app = _app(session_factory, client_lifecycle=lifecycle, signup_mode="open")
+        async with _client(app, token) as client:
+            with pytest.raises(ConnectionResetError):
+                await client.post("/tenants", json={"name": "Disconnected Co"})
+
+        async with session_factory() as session:
+            organization = await session.scalar(
+                select(Organization).where(Organization.slug == "disconnected-co")
+            )
+        assert organization is None
 
     async def test_a_name_with_no_slug_characters_is_400(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1690,6 +1734,55 @@ def _window() -> dict[str, str]:
 
 
 class TestCurrentTenantRoute:
+    async def test_a_members_request_reads_the_organization_once_at_most(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+    ) -> None:
+        """Checking a member's role reads their membership row, and the
+        organization only when that row does not answer, so a workspace in an
+        organization costs a member no more statements than one without."""
+        tenant_id = f"tenant-{uuid.uuid4().hex[:8]}"
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="O")
+            )
+            await session.flush()
+            session.add(
+                Tenant(
+                    id=tenant_id,
+                    slug=tenant_id,
+                    name=tenant_id,
+                    organization_id=organization_id,
+                )
+            )
+            await session.commit()
+        user_id = await _make_member(
+            session_factory,
+            name=f"counted-{uuid.uuid4().hex[:6]}",
+            tenant_id=tenant_id,
+            role="member",
+        )
+        async with session_factory() as session:
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id, user_id=user_id, role="member"
+                )
+            )
+            await session.commit()
+        token = _token(user_id, "counted@example.invalid", tenant_id)
+
+        async with _client(
+            statement_counts.wrap(_app(session_factory)), token
+        ) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        statements = statement_counts.scopes[-1].statements
+        assert sum("organization_members" in s for s in statements) == 1
+        assert len(statements) <= 7, statements
+
     async def test_a_member_is_told_the_workspace_they_are_bound_to(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -1712,6 +1805,8 @@ class TestCurrentTenantRoute:
             "slug": TENANT_A,
             "name": TENANT_A,
             "role": "member",
+            "organization_role": None,
+            "organization_id": None,
             "administers": False,
         }
 
@@ -1740,6 +1835,199 @@ class TestCurrentTenantRoute:
 
         assert response.status_code == 200
         assert response.json()["administers"] is True
+
+
+class TestOrganizationAdmins:
+    """An organization's `org_admin` administers every workspace in it, and
+    may bind one without holding a membership row there."""
+
+    async def _organization_of(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *tenant_ids: str,
+        members: dict[str, str],
+    ) -> str:
+        """An organization owning `tenant_ids`, with `members` (user id ->
+        organization role)."""
+        organization_id = f"org-{uuid.uuid4().hex[:8]}"
+        async with session_factory() as session:
+            session.add(
+                Organization(id=organization_id, slug=organization_id, name="Acme")
+            )
+            await session.flush()
+            for tenant_id in tenant_ids:
+                session.add(
+                    Tenant(
+                        id=tenant_id,
+                        slug=tenant_id,
+                        name=tenant_id,
+                        organization_id=organization_id,
+                    )
+                )
+            for user_id, role in members.items():
+                session.add(
+                    OrganizationMember(
+                        organization_id=organization_id, user_id=user_id, role=role
+                    )
+                )
+            await session.commit()
+        return organization_id
+
+    async def test_an_org_admin_binds_a_workspace_they_are_not_a_member_of(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        organization_id = await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "id": TENANT_A,
+            "slug": TENANT_A,
+            "name": TENANT_A,
+            "role": "admin",
+            "organization_role": "org_admin",
+            "organization_id": organization_id,
+            "administers": True,
+        }
+
+    async def test_an_org_admin_is_offered_and_may_switch_to_every_workspace_of_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, TENANT_B, members={admin_id: "org_admin"}
+        )
+        token = _token(admin_id, "org-admin@example.invalid", None)
+
+        async with _client(_app(session_factory), token) as client:
+            listed = await client.get("/tenants")
+            switched = await client.post(f"/tenants/{TENANT_B}/switch")
+
+        assert listed.status_code == 200, listed.text
+        assert {
+            (t["id"], t["role"], t["organization_role"]) for t in listed.json()
+        } == {
+            (TENANT_A, "admin", "org_admin"),
+            (TENANT_B, "admin", "org_admin"),
+        }
+        assert switched.status_code == 200, switched.text
+        assert _tenant_claim(switched) == TENANT_B
+
+    async def test_an_org_admin_may_not_bind_another_organizations_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        await self._organization_of(session_factory, TENANT_B, members={})
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_B)
+
+        async with _client(_app(session_factory), token) as client:
+            current = await client.get("/tenants/current")
+            switched = await client.post(f"/tenants/{TENANT_B}/switch")
+
+        assert current.status_code == 403
+        assert switched.status_code == 403
+
+    async def test_an_organization_member_binds_only_their_own_workspaces(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        member_id = await _make_unaffiliated_user(
+            session_factory, name="org-member", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={member_id: "member"}
+        )
+        token = _token(member_id, "org-member@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            response = await client.get("/tenants/current")
+
+        assert response.status_code == 403
+
+    async def test_an_org_admin_manages_members_as_a_workspace_admin_does(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Admin-level, not owner-level: the ownership set is still the
+        workspace owners' own."""
+        admin_id = await _make_unaffiliated_user(
+            session_factory, name="org-admin", role="user"
+        )
+        await self._organization_of(
+            session_factory, TENANT_A, members={admin_id: "org_admin"}
+        )
+        member_id = await _make_member(
+            session_factory, name="ws-admin", tenant_id=TENANT_A, role="admin"
+        )
+        owner_id = await _make_member(
+            session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
+        )
+        token = _token(admin_id, "org-admin@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            demoted = await client.patch(
+                f"/tenants/{TENANT_A}/members/{member_id}", json={"role": "member"}
+            )
+            owner = await client.patch(
+                f"/tenants/{TENANT_A}/members/{owner_id}", json={"role": "member"}
+            )
+
+        assert demoted.status_code == 200, demoted.text
+        assert demoted.json()["role"] == "member"
+        assert owner.status_code == 403
+
+    @pytest.mark.parametrize("method", ["patch", "delete"])
+    async def test_a_workspace_cannot_demote_or_remove_an_org_admin(
+        self, session_factory: async_sessionmaker[AsyncSession], method: str
+    ) -> None:
+        """Their standing comes from the organization; changing the row here
+        would take nothing away while looking as if it had."""
+        organization_id = await self._organization_of(
+            session_factory, TENANT_A, members={}
+        )
+        owner_id = await _make_member(
+            session_factory, name="ws-owner", tenant_id=TENANT_A, role="owner"
+        )
+        admin_id = await _make_member(
+            session_factory, name="org-admin", tenant_id=TENANT_A, role="owner"
+        )
+        async with session_factory() as session:
+            session.add(
+                OrganizationMember(
+                    organization_id=organization_id, user_id=admin_id, role="org_admin"
+                )
+            )
+            await session.commit()
+        token = _token(owner_id, "ws-owner@example.invalid", TENANT_A)
+
+        async with _client(_app(session_factory), token) as client:
+            if method == "patch":
+                response = await client.patch(
+                    f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
+                )
+            else:
+                response = await client.delete(
+                    f"/tenants/{TENANT_A}/members/{admin_id}"
+                )
+
+        assert response.status_code == 409, response.text
+        assert "organization" in response.json()["detail"]
+        async with session_factory() as session:
+            membership = await session.get(TenantMember, (TENANT_A, admin_id))
+        assert membership is not None and membership.role == "owner"
 
 
 class TestUsageRoute:

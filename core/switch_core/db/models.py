@@ -52,7 +52,7 @@ from switch_core.db.session_activity_notify_ddl import (
     CREATE_SESSION_ACTIVITY_NOTIFY_FUNCTION,
 )
 from switch_core.db.tenant_lookup import attach_tenant_lookups
-from switch_core.tenant_context import current_tenant_id
+from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 #: The highest boot number `agent_event_boot` hands out. An agent's own event
 #: numbers start at the boot number shifted left 32 bits, so they stay below
@@ -80,6 +80,79 @@ def _uuid() -> str:
 # ── Tenants ─────────────────────────────────────────────────────────────────
 
 
+class Organization(Base):
+    """The customer: it owns workspaces, its own admins and, later, its billing.
+
+    Every workspace (`Tenant`) belongs to one organization. Organization-scoped
+    tables compare against it (`db/rls_ddl.py`), on `id` here as `tenants`
+    does. `workos_organization_id` is the customer's root organization at
+    WorkOS where the hosted service links one, and `customer_id` the
+    customer's id as WorkOS and billing know it; both are null on a server
+    that keeps organizations in its own database. See
+    `docs/design/organizations-v1.md`.
+    """
+
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    workos_organization_id: Mapped[str | None] = mapped_column(
+        Text, unique=True, nullable=True
+    )
+    customer_id: Mapped[str | None] = mapped_column(Text, unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OrganizationMember(Base):
+    """A user's membership in an organization, and their role in it.
+
+    `org_admin` administers the organization and every workspace in it;
+    `member` is what joining any of its workspaces makes someone. Workspace
+    roles stay on `TenantMember`. A checked string, as `tenant_members.role`
+    is.
+
+    Not derived from workspace roles, and never recomputed from them: an
+    organization's admin administers every workspace in it, so promoting a
+    workspace's admin to `org_admin` would hand them every other workspace
+    too. Joining a workspace adds a `member` row when there is none, and
+    changing or removing a workspace membership leaves this row as it is. Only
+    an organization's own `org_admin`s grant or revoke `org_admin`, through
+    the organization's API. The one exception is migration `238c68b7306e`:
+    it made each existing workspace's owners `org_admin` of the organization
+    it created for that workspace alone, which gave them nothing they did not
+    already control.
+    """
+
+    __tablename__ = "organization_members"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('org_admin', 'member')", name="ck_organization_members_role"
+        ),
+        # Which workspaces a person may enter is read by user on every
+        # authenticated request (`tenants_bindable_by_user`).
+        Index("ix_organization_members_user_id", "user_id"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("organizations.id", name="fk_organization_members_organization"),
+        primary_key=True,
+    )
+    # Cascades: someone who has left every workspace of an organization is
+    # still its member, and no workspace-bound session reaches that row when
+    # their account is deleted.
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Tenant(Base):
     """The top-level customer boundary every scoped table hangs off.
 
@@ -89,6 +162,7 @@ class Tenant(Base):
     """
 
     __tablename__ = "tenants"
+    __table_args__ = (Index("ix_tenants_organization_id", "organization_id"),)
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
@@ -102,6 +176,13 @@ class Tenant(Base):
     # what they were using kept working.
     services_on_by_default: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
+    )
+    # Nullable until every process writes it: a release from before
+    # organizations creates workspaces without one.
+    organization_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("organizations.id", name="fk_tenants_organization"),
+        nullable=True,
     )
 
 
@@ -204,6 +285,51 @@ class TenantScoped:
             ),
             nullable=False,
             default=require_tenant_id,
+        )
+
+
+class OrganizationNotBoundError(RuntimeError):
+    """An organization-scoped row was constructed with no organization bound.
+
+    The organization's counterpart of `TenantNotBoundError`. A write reached
+    from a workspace-bound request names its organization explicitly
+    (`Tenant.organization_id`) or binds it with `organization_scope`.
+    """
+
+
+def require_organization_id() -> str:
+    """The organization bound to this unit of work, raising when none is.
+
+    The Python-side default on every organization-scoped column, named after
+    the SQL function in `db/rls_ddl.py`. Unlike that function it does not
+    derive the organization from a bound workspace: that needs a read, and a
+    column default is no place for one.
+    """
+    organization_id = current_organization_id()
+    if organization_id is None:
+        raise OrganizationNotBoundError(
+            "no organization is bound to this session; pass organization_id "
+            "explicitly, or bind one with organization_scope before writing"
+        )
+    return organization_id
+
+
+class OrganizationScoped:
+    """Mixin carrying the organization column of every per-organization table.
+
+    The foreign key is named for the reason `TenantScoped`'s is.
+    """
+
+    @declared_attr
+    def organization_id(cls) -> Mapped[str]:  # noqa: N805 - SQLAlchemy convention
+        return mapped_column(
+            Text,
+            ForeignKey(
+                "organizations.id",
+                name=f"fk_{cls.__tablename__}_organization",  # type: ignore[attr-defined]
+            ),
+            nullable=False,
+            default=require_organization_id,
         )
 
 
@@ -577,6 +703,38 @@ class AuditEvent(TenantScoped, Base):
     __tablename__ = "audit_events"
     __table_args__ = (
         Index("ix_audit_events_tenant_occurred_at", "tenant_id", "occurred_at"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.clock_timestamp(), nullable=False
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_type: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class OrganizationAuditEvent(OrganizationScoped, Base):
+    """One change to an organization as a whole: its members, their roles,
+    its workspaces. The organization's counterpart of `AuditEvent`, with the
+    same rules: written in the transaction of the change it records,
+    append-only for the runtime role, `actor_user_id` without a foreign key,
+    and `details` free of secrets.
+
+    A change inside one workspace stays in that workspace's `audit_events`;
+    this holds what no single workspace owns, so an organization's admins
+    read it in one place whichever workspace the change was made from.
+    """
+
+    __tablename__ = "organization_audit_events"
+    __table_args__ = (
+        Index(
+            "ix_organization_audit_events_organization_occurred_at",
+            "organization_id",
+            "occurred_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)

@@ -74,10 +74,10 @@ from switch_core.db.models import (
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
-    TenantMember,
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.standing import stands_in
 from switch_core.db.stores.service_connection_store import (
     ServiceConnectionBusy,
     ServiceConnectionStore,
@@ -543,12 +543,7 @@ class ServiceBroker:
                 403, FORBIDDEN, "This agent has no owner to act for.", retryable=False
             )
         owner_id = agent.owner_id
-        if (
-            await session.get(
-                TenantMember, (tenant_id, owner_id), populate_existing=True
-            )
-            is None
-        ):
+        if not await stands_in(session, tenant_id, owner_id):
             raise ServiceError(
                 403,
                 FORBIDDEN,

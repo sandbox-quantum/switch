@@ -2,8 +2,9 @@ import { Alert, Button, CircularProgress, Stack, TextField } from "@mui/material
 import { useState } from "react";
 import { createTenant } from "../../data/api";
 
-/** Creating a workspace also switches the session into it (the server
- * re-mints the cookie), so success reloads into the app. */
+/** Creates an organization with a first workspace of the same name, and the
+ * server switches the session into that workspace (it re-mints the cookie),
+ * so success reloads into the app. */
 export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => void }) {
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -17,7 +18,7 @@ export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => voi
       await createTenant(name.trim());
       window.location.assign("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the workspace");
+      setError(err instanceof Error ? err.message : "Could not create the organization");
       setSubmitting(false);
     }
   };
@@ -26,10 +27,11 @@ export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => voi
     <Stack component="form" onSubmit={submit} spacing={2}>
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
-        label="Workspace name"
+        label="Organization name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="e.g. your company or team"
+        helperText="It starts with one workspace of the same name. You can add more later."
         required
         autoFocus
       />
@@ -41,7 +43,7 @@ export default function CreateWorkspaceForm({ onCancel }: { onCancel?: () => voi
           disabled={submitting || name.trim() === ""}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
-          Create workspace
+          Create organization
         </Button>
         {onCancel && (
           <Button onClick={onCancel} disabled={submitting}>

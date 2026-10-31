@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 from sqlalchemy import select
 
 from switch_core.attachments import parse_attachment_group
+from switch_core.authz import ORGANIZATION_ADMIN_TENANT_ROLE, TENANT_ADMIN_ROLES
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
@@ -68,6 +69,7 @@ from switch_core.clients.mentions import (
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.standing import organization_admin_of
 from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
@@ -1748,17 +1750,25 @@ class AgentRecipient:
         principal = await self._addressing.resolve_sender(session, sender, content)
         if principal is None or principal.kind != "user" or not principal.user_ids:
             return None
+        tenant_id = self.tenant_id
         roles = set(
             await session.scalars(
                 select(TenantMember.role).where(
-                    TenantMember.user_id.in_(principal.user_ids)
+                    TenantMember.tenant_id == tenant_id,
+                    TenantMember.user_id.in_(principal.user_ids),
                 )
             )
         )
-        for role in ("owner", "admin", "member"):
+        for role in TENANT_ADMIN_ROLES:
             if role in roles:
                 return role
-        return None
+        # An organization's admin administers the workspace without a
+        # membership row, and is told to agents as an admin, as the workspace's
+        # own pages show them.
+        for user_id in principal.user_ids:
+            if await session.scalar(select(organization_admin_of(tenant_id, user_id))):
+                return ORGANIZATION_ADMIN_TENANT_ROLE
+        return "member" if "member" in roles else None
 
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.

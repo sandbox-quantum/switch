@@ -28,6 +28,12 @@ export function canAdminTenant(session: Session | null): boolean {
   return role === "owner" || role === "admin";
 }
 
+/** Is this session an admin of the current workspace's organization? The
+ * platform operator is not, by the operator bit alone. */
+export function administersOrganization(session: Session | null): boolean {
+  return session?.tenant?.organization_role === "org_admin";
+}
+
 const INVITE_KEY = "switch.pendingInvite";
 
 /** Session storage, not local: an invite token is a bearer credential, and

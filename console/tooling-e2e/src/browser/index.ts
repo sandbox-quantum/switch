@@ -29,7 +29,7 @@ const everyPage: BrowserScenario = {
     const links = await ui.navLinks();
     expect(links.map((link) => link.path)).toEqual(expect.arrayContaining(['/rooms', '/agents']));
     for (const link of links) {
-      await ui.nav().getByRole('link', { name: link.label }).click();
+      await ui.nav().getByRole('link', { name: link.label, exact: true }).click();
       await expect.poll(() => ui.path()).toBe(link.path);
       await ui.settled();
       log(`${link.label} (${link.path}) opened`);

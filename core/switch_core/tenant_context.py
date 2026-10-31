@@ -36,6 +36,15 @@ _current_tenant_id: ContextVar[str | None] = ContextVar(
     "switch_tenant_id", default=None
 )
 
+# The organization bound to the current context, for work that acts on an
+# organization with no workspace in hand (creating its first workspace, its
+# settings). A workspace-bound session needs none: the database derives the
+# organization from the bound workspace (`require_organization_id()` in
+# `db/rls_ddl.py`), so binding both is allowed only when they agree.
+_current_organization_id: ContextVar[str | None] = ContextVar(
+    "switch_organization_id", default=None
+)
+
 
 def current_tenant_id() -> str | None:
     """The tenant bound to the current context, or `None` if none is."""
@@ -61,8 +70,17 @@ def clear_tenant_id() -> Token[str | None]:
     return _current_tenant_id.set(None)
 
 
+def current_organization_id() -> str | None:
+    """The organization bound to the current context, or `None` if none is.
+
+    `None` while only a workspace is bound: the workspace's organization is
+    the database's to derive, not something this context carries.
+    """
+    return _current_organization_id.get()
+
+
 @contextmanager
-def _held(token: Token[str | None]) -> Iterator[None]:
+def _held(var: ContextVar[str | None], token: Token[str | None]) -> Iterator[None]:
     """Hold `token` for the block and restore what it replaced on the way out.
 
     Not restored when the block is unwound by `GeneratorExit`. That is a frame
@@ -82,13 +100,25 @@ def _held(token: Token[str | None]) -> Iterator[None]:
         raise
     finally:
         if not finalising:
-            unbind_tenant_id(token)
+            var.reset(token)
 
 
 @contextmanager
 def tenant_scope(tenant_id: str) -> Iterator[None]:
     """Bind `tenant_id` for the duration of the block."""
-    with _held(bind_tenant_id(tenant_id)):
+    with _held(_current_tenant_id, bind_tenant_id(tenant_id)):
+        yield
+
+
+@contextmanager
+def organization_scope(organization_id: str) -> Iterator[None]:
+    """Bind `organization_id` for the duration of the block.
+
+    For work on an organization itself. Inside a `tenant_scope` it must name
+    the bound workspace's own organization, or the first statement touching an
+    organization's table is refused.
+    """
+    with _held(_current_organization_id, _current_organization_id.set(organization_id)):
         yield
 
 
@@ -109,5 +139,8 @@ def no_tenant() -> Iterator[None]:
       has to bind the tenant of the row it is acting on — and one that forgets
       reads nothing rather than reading the wrong tenant.
     """
-    with _held(clear_tenant_id()):
+    with (
+        _held(_current_tenant_id, clear_tenant_id()),
+        _held(_current_organization_id, _current_organization_id.set(None)),
+    ):
         yield

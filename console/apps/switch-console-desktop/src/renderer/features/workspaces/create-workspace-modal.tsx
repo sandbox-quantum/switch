@@ -17,12 +17,57 @@ import { Input } from '@renderer/lib/ui/input';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
 import { createWorkspaceFailureText } from './describe-create-failure';
 
+/**
+ * What is being created.
+ *
+ * - `organization`: an organization with a first workspace of the same name,
+ *   which is what creating means on a server with organizations.
+ * - `workspace`: a workspace on its own, on a server from before them.
+ * - `organization-workspace`: another workspace in an organization the account
+ *   is an `org_admin` of, asked for through `through`, one of its workspaces.
+ */
+export type CreateTarget =
+  | { kind: 'organization' }
+  | { kind: 'workspace' }
+  | { kind: 'organization-workspace'; through: string; organizationName: string | null };
+
 type CreateWorkspaceModalArgs = {
-  /** The server to create it on: the one whose "New workspace" was chosen. */
+  /** The server to create it on: the one whose group the action was chosen in. */
   serverId: string;
+  target: CreateTarget;
 };
 
+function title(target: CreateTarget, serverName: string | null): string {
+  switch (target.kind) {
+    case 'organization':
+      return serverName ? `Create an organization on ${serverName}` : 'Create an organization';
+    case 'workspace':
+      return serverName ? `Create a workspace on ${serverName}` : 'Create a workspace';
+    case 'organization-workspace':
+      return target.organizationName
+        ? `Add a workspace to ${target.organizationName}`
+        : 'Add a workspace to your organization';
+  }
+}
+
+function placement(target: CreateTarget, serverName: string): string {
+  switch (target.kind) {
+    case 'organization':
+      return `It will live on ${serverName}, with a first workspace of the same name for its rooms and agents. You can add more workspaces to it later.`;
+    case 'workspace':
+      return `It will live on ${serverName}, along with its rooms and agents.`;
+    case 'organization-workspace':
+      return `You will own it, and every admin of ${target.organizationName ?? 'the organization'} can manage it.`;
+  }
+}
+
 type Props = BaseModalProps<Workspace> & CreateWorkspaceModalArgs;
+
+const CONFIRM_LABEL: Record<CreateTarget['kind'], string> = {
+  organization: 'Create organization',
+  workspace: 'Create workspace',
+  'organization-workspace': 'Add workspace',
+};
 
 /**
  * Why a server cannot be asked to create a workspace, or null when it can.
@@ -49,11 +94,12 @@ function whyNotReady(serverId: string): string | null {
 }
 
 /**
- * Make a workspace from the switcher.
+ * Make an organization, or a workspace in one, from the switcher.
  *
- * A workspace belongs to a server, and the switcher has already said which:
- * each server's group ends with its own New workspace, so the server is the
- * one whose row was chosen and this asks only for the name.
+ * Both belong to a server, and the switcher has already said which: each
+ * server's group ends with its own Create organization, and each organization
+ * an `org_admin` runs with its own Add workspace, so this asks only for the
+ * name.
  *
  * Only a server you are signed in to can be asked. Offering the rest and
  * letting Create come back with an authentication failure would blame the name
@@ -67,6 +113,7 @@ function whyNotReady(serverId: string): string | null {
  */
 export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
   serverId,
+  target: creating,
   onSuccess,
   onClose,
 }: Props) {
@@ -102,7 +149,11 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
     setCloseGuard(true);
     setError(null);
     try {
-      const workspace = created ?? (await workspacesStore.create(where, trimmed));
+      const workspace =
+        created ??
+        (creating.kind === 'organization-workspace'
+          ? await workspacesStore.addToOrganization(creating.through, trimmed)
+          : await workspacesStore.create(where, trimmed));
       setCreated(workspace);
       // Made and then entered: you asked for a workspace to work in, and
       // leaving the window in the old one would look like nothing happened.
@@ -131,9 +182,7 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>
-          {target ? `Create a workspace on ${target.name}` : 'Create a workspace'}
-        </DialogTitle>
+        <DialogTitle>{title(creating, target?.name ?? null)}</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="pt-0">
         <FieldGroup>
@@ -162,24 +211,24 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
           ) : notReady !== null ? (
             <p className="text-xs text-destructive">{notReady}</p>
           ) : target !== null ? (
-            <p className="text-xs text-foreground-muted">
-              It will live on {target.name}, along with its rooms and agents.
-            </p>
+            <p className="text-xs text-foreground-muted">{placement(creating, target.name)}</p>
           ) : null}
 
           {error && <p className="text-xs text-destructive">{error}</p>}
 
-          <p className="text-xs text-foreground-muted">
-            Rather put it somewhere else?{' '}
-            <button
-              type="button"
-              className="underline underline-offset-2 hover:text-foreground disabled:opacity-50"
-              disabled={submitting || created !== null}
-              onClick={() => transitionModal('addServerModal', {})}
-            >
-              Add a server
-            </button>
-          </p>
+          {creating.kind !== 'organization-workspace' && (
+            <p className="text-xs text-foreground-muted">
+              Rather put it somewhere else?{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+                disabled={submitting || created !== null}
+                onClick={() => transitionModal('addServerModal', {})}
+              >
+                Add a server
+              </button>
+            </p>
+          )}
         </FieldGroup>
       </DialogContentArea>
       <DialogFooter>
@@ -198,7 +247,7 @@ export const CreateWorkspaceModal = observer(function CreateWorkspaceModal({
               : 'Open workspace'
             : submitting
               ? 'Creating…'
-              : 'Create workspace'}
+              : CONFIRM_LABEL[creating.kind]}
         </ConfirmButton>
       </DialogFooter>
     </>

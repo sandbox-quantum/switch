@@ -17,7 +17,11 @@ const passwordLogin = vi.hoisted(() => vi.fn());
 const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
 const listWorkspacesForServer = vi.hoisted(() => vi.fn());
-const createTenant = vi.hoisted(() => vi.fn());
+const createOrganization = vi.hoisted(() => vi.fn());
+const createOrganizationWorkspace = vi.hoisted(() => vi.fn());
+const fetchWorkspaceCreation = vi.hoisted(() => vi.fn());
+const requireWorkspaceForServer = vi.hoisted(() => vi.fn());
+const sessionScopes = vi.hoisted(() => [] as string[]);
 const acceptInvitation = vi.hoisted(() => vi.fn());
 // Stubbed rather than reimplemented: what the tests below assert is that the
 // kind reaches the event, not how a row is read as one.
@@ -54,7 +58,10 @@ vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
 vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces,
 }));
-vi.mock('@main/core/workspaces/workspaces-store', () => ({ listWorkspacesForServer }));
+vi.mock('@main/core/workspaces/workspaces-store', () => ({
+  listWorkspacesForServer,
+  requireWorkspaceForServer,
+}));
 // Writes to the app's log file, which a test has no business creating.
 vi.mock('@main/lib/logger', () => ({
   log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -75,6 +82,15 @@ vi.mock('@main/core/workspaces/workspace-session', async (importOriginal) => ({
     fn({ id: serverId, name: 'S' }),
   withReachableServerWorkspaceSession: async (serverId: string, fn: (s: unknown) => unknown) =>
     fn({ id: serverId, name: 'S' }),
+  withWorkspaceSession: async (workspaceId: string, fn: (s: unknown) => unknown) => {
+    sessionScopes.push(workspaceId);
+    return fn({ id: 'srv', name: 'S' });
+  },
+  withReachableWorkspaceSession: async (workspaceId: string, fn: (s: unknown) => unknown) => {
+    sessionScopes.push(workspaceId);
+    return fn({ id: 'srv', name: 'S' });
+  },
+  workspaceServer: async () => ({ id: 'srv', name: 'S' }),
 }));
 vi.mock('./gateway-client', () => ({
   fetchMe,
@@ -85,7 +101,9 @@ vi.mock('./gateway-client', () => ({
   fetchAgentRooms: vi.fn(),
   fetchAgents: vi.fn(),
   fetchAuthConfig,
-  createTenant,
+  createOrganization,
+  createOrganizationWorkspace,
+  fetchWorkspaceCreation,
   acceptInvitation,
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
@@ -476,7 +494,7 @@ describe('createWorkspace', () => {
   });
 
   it('returns the local row for the workspace the gateway minted', async () => {
-    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
     listWorkspacesForServer.mockResolvedValue([
       workspaceRow({ id: 'ws-1', tenantId: 't1' }),
       workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Acme', role: 'owner' }),
@@ -487,7 +505,7 @@ describe('createWorkspace', () => {
       name: 'Acme',
     });
 
-    expect(createTenant).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'Acme');
+    expect(createOrganization).toHaveBeenCalledWith(expect.objectContaining({ id: 'srv' }), 'Acme');
     expect(created.id).toBe('ws-9');
   });
 
@@ -498,7 +516,7 @@ describe('createWorkspace', () => {
    * success the install has no trace of.
    */
   it('raises when the reconcile that records the workspace fails', async () => {
-    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
     reconcileServerWorkspaces.mockRejectedValue(new Error('the gateway stopped answering'));
 
     await expect(
@@ -511,7 +529,7 @@ describe('createWorkspace', () => {
   // nothing, would leave the app scoped to a workspace that is not the one just
   // made — so it says so instead.
   it('raises when the new workspace did not land locally', async () => {
-    createTenant.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
+    createOrganization.mockResolvedValue({ id: 't9', slug: 'acme', name: 'Acme', role: 'owner' });
     listWorkspacesForServer.mockResolvedValue([workspaceRow({ id: 'ws-1', tenantId: 't1' })]);
 
     await expect(
@@ -526,7 +544,67 @@ describe('createWorkspace', () => {
     await expect(
       switchServersController.createWorkspace({ serverId: 'srv', name: 'Acme' })
     ).rejects.toThrow();
-    expect(createTenant).not.toHaveBeenCalled();
+    expect(createOrganization).not.toHaveBeenCalled();
+  });
+});
+
+describe('addOrganizationWorkspace', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionScopes.length = 0;
+    reconcileServerWorkspaces.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('asks through the workspace named, and returns the local row for the new one', async () => {
+    createOrganizationWorkspace.mockResolvedValue({
+      id: 't9',
+      slug: 'labs',
+      name: 'Labs',
+      role: 'owner',
+      organizationId: 'o1',
+      organizationRole: 'org_admin',
+    });
+    listWorkspacesForServer.mockResolvedValue([
+      workspaceRow({ id: 'ws-1', tenantId: 't1' }),
+      workspaceRow({ id: 'ws-9', tenantId: 't9', name: 'Labs', role: 'owner' }),
+    ]);
+
+    const created = await switchServersController.addOrganizationWorkspace({
+      workspaceId: 'ws-1',
+      name: 'Labs',
+    });
+
+    expect(sessionScopes).toEqual(['ws-1']);
+    expect(createOrganizationWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'srv' }),
+      'Labs'
+    );
+    expect(reconcileServerWorkspaces).toHaveBeenCalledWith('srv');
+    expect(created.id).toBe('ws-9');
+  });
+});
+
+describe('workspaceCreation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionScopes.length = 0;
+  });
+
+  it('answers for the workspace a call about the server is scoped to, and names it', async () => {
+    requireWorkspaceForServer.mockResolvedValue(workspaceRow({ id: 'ws-2' }));
+    fetchWorkspaceCreation.mockResolvedValue({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: true,
+    });
+
+    await expect(switchServersController.workspaceCreation('srv')).resolves.toEqual({
+      canCreate: true,
+      canAddWorkspace: false,
+      organizations: true,
+      workspaceId: 'ws-2',
+    });
+    expect(sessionScopes).toEqual(['ws-2']);
   });
 });
 

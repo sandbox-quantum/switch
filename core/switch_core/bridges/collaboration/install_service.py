@@ -126,6 +126,7 @@ from switch_core.db.stores.messaging_install_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import tenant_of_messaging_install
 from switch_core.keys import Keyring
+from switch_core.platform_access import administers_on_record
 from switch_core.tenant_context import no_tenant, tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -1048,7 +1049,15 @@ class MessagingInstallService:
         self, session: AsyncSession, burnt: MessagingInstallState, platform: str
     ) -> None:
         user = await session.get(User, burnt.created_by_user_id)
-        if user is None or not await self._users.administers(session, user):
+        if user is None or not await administers_on_record(
+            session,
+            self._session_factory,
+            self._users,
+            user,
+            target_type="messaging_install",
+            target_id=None,
+            details={"event": "messaging_install", "platform": platform},
+        ):
             raise InstallClaimNotPermitted(
                 f"connecting the first {platform} chat turns {platform} on for "
                 "this organisation, which only an admin can do. Ask an admin to "

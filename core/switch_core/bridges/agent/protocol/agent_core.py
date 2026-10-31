@@ -122,6 +122,7 @@ from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.platform_access import administers_on_record
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -3137,8 +3138,14 @@ class AgentCore:
         owner_is_admin = False
         if agent.owner_id is not None:
             owner = await session.get(User, agent.owner_id)
-            owner_is_admin = owner is not None and await self.user_store.administers(
-                session, owner
+            owner_is_admin = owner is not None and await administers_on_record(
+                session,
+                self.session_factory,
+                self.user_store,
+                owner,
+                target_type="agent",
+                target_id=agent.id,
+                details={"event": "agent_acting"},
             )
         return agent, agent.owner_id, owner_is_admin
 
