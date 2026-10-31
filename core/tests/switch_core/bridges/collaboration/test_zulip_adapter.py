@@ -15,12 +15,18 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from switch_core.bridges.collaboration.adapter import ActivityMarkRefused
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
+    PlatformAdapter,
+    RequestCard,
+)
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
     InboundCommand,
     InboundMessage,
 )
+from switch_core.bridges.collaboration.session.renderers import RequestReference
+from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
 from switch_core.bridges.collaboration.zulip import adapter as zulip
 from switch_core.bridges.collaboration.zulip.adapter import (
     NEW_CONVERSATION_TOPIC,
@@ -28,6 +34,8 @@ from switch_core.bridges.collaboration.zulip.adapter import (
     ZulipConnectionConfig,
     ZulipError,
 )
+
+from .session_fixtures import open_request
 
 SERVER = "https://chat.example.com"
 BOT_ID = 10
@@ -583,3 +591,43 @@ async def test_a_mark_zulip_refuses_is_refused_for_good(server: Zulip) -> None:
         await adapter.mark_activity(
             str(STREAM_ID), "15", agent_name="helper", mark="working", on=True
         )
+
+
+# ── Cards ────────────────────────────────────────────────────────────────────
+
+
+async def test_a_card_names_whoever_answered_it_as_zulip_does(server: Zulip) -> None:
+    server.on("GET", "/api/v1/messages", _topic_rooted_at(15))
+    adapter, _ = await _started(server)
+    await adapter._relay(_message(content="R7 1"), [])
+    request = open_request()
+    reference = RequestReference(token="tok-1", handle="R7")
+
+    drawn = adapter.rich_fallback_text(
+        RequestCard(request, reference, responder_external_id=str(PERSON_ID))
+    )
+
+    assert drawn == request_summary(
+        request,
+        reference,
+        escape=adapter._rich_escape,
+        limit=adapter.rich_fallback_limit(),
+        markup=adapter.rich_markup(),
+        responder=f"@_**Test Person|{PERSON_ID}**",
+        unavailable_reason=None,
+    )
+
+
+async def test_a_card_answered_by_someone_not_seen_here_keeps_the_base_text(
+    server: Zulip,
+) -> None:
+    adapter, _ = await _started(server)
+    card = RequestCard(
+        open_request(),
+        RequestReference(token="tok-1", handle="R7"),
+        responder_external_id="77",
+    )
+
+    assert adapter.rich_fallback_text(card) == PlatformAdapter.rich_fallback_text(
+        adapter, card
+    )

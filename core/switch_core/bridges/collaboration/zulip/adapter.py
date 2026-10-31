@@ -35,6 +35,8 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     AgentIdentity,
     PlatformAdapter,
+    RequestCard,
+    RichContent,
 )
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -52,6 +54,7 @@ from switch_core.bridges.collaboration.models import (
     InboundUserJoin,
     RetireOutcome,
 )
+from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +135,10 @@ class ZulipAdapter(PlatformAdapter):
     supports_directory_search: ClassVar[bool] = False
     # Zulip links only web addresses, so a Console deeplink would arrive as text.
     renders_custom_url_schemes: ClassVar[bool] = False
+    # Turns, and the approval and question cards they wait on, are drawn as
+    # the base's text: Zulip gives a bot no buttons, so a card is answered by
+    # typing what it says.
+    draws_session_activity: ClassVar[bool] = True
     supports_activity_reactions: ClassVar[bool] = True
     supports_queue_reaction: ClassVar[bool] = True
 
@@ -145,6 +152,10 @@ class ZulipAdapter(PlatformAdapter):
         self._listener: asyncio.Task[None] | None = None
         self._on_message: Callable[[InboundMessage], Awaitable[None]] | None = None
         self._on_command: Callable[[InboundCommand], Awaitable[None]] | None = None
+        # The names of people this process has relayed, by Zulip user id, to
+        # name whoever answers a card. Safe to lose: the card then names the
+        # person's Switch identity instead.
+        self._names: dict[str, str] = {}
 
     # ── Who we are ───────────────────────────────────────────────────────────
 
@@ -307,6 +318,7 @@ class ZulipAdapter(PlatformAdapter):
         root_id = None if root == message_id else root
         channel_type = await self.get_channel_type(stream_id)
         channel_name = str(message.get("display_recipient") or "") or None
+        self._names[str(message["sender_id"])] = str(message["sender_full_name"])
         raw = str(message["content"])
         content = self.translate_inbound(raw)
         if content.strip().startswith("!") and self._on_command is not None:
@@ -543,6 +555,27 @@ class ZulipAdapter(PlatformAdapter):
     ) -> None:
         """Nothing: Zulip shows typing only within a topic, and this names none."""
         return None
+
+    def rich_fallback_limit(self) -> int:
+        return self._message_limit
+
+    def rich_fallback_text(self, content: RichContent) -> str:
+        """The base's text, with whoever answered a card named as Zulip names them.
+
+        A silent mention, so it links the person without notifying them again.
+        """
+        if not isinstance(content, RequestCard):
+            return super().rich_fallback_text(content)
+        name = self._names.get(content.responder_external_id or "")
+        return request_summary(
+            content.request,
+            content.reference,
+            escape=self._rich_escape,
+            limit=self.rich_fallback_limit(),
+            markup=self.rich_markup(),
+            responder=f"@_**{name}|{content.responder_external_id}**" if name else None,
+            unavailable_reason=content.unavailable_reason,
+        )
 
     # ── Streams ──────────────────────────────────────────────────────────────
 
