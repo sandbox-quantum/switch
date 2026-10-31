@@ -1,7 +1,40 @@
 slug: new-relic
 name: New Relic
 category: Observability
-description: Query New Relic telemetry and alerts.
-enabled: false
+description: Query New Relic telemetry, metrics, alerts, NRQL and entities, with your user key.
+enabled: true
+adapter: api_key
 auth:
   type: api_key
+  refresh: none
+  api_key:
+    fields:
+      - name: api_key
+        label: User API key
+        secret: true
+        help: Personal API keys in New Relic (User key type, starting with 'NRAK-').
+      - name: site
+        label: Region
+        secret: false
+        help: The data center region hosting your New Relic account.
+        choices:
+          - newrelic.com
+          - eu.newrelic.com
+          - jp.newrelic.com
+    identity:
+      method: GET
+      url: "https://api.{site}/v2/users.json"
+      headers: { X-Api-Key: "{api_key}" }
+    help_url: https://docs.newrelic.com/docs/agentic-ai/mcp/setup/
+# A key does not expire, and only New Relic can revoke it, so it is never handed
+# to an agent.
+token: { kind: pass_through, max_lifetime: null }
+mcp:
+  servers:
+    # New Relic's remote MCP server accepts the user key in the api-key header.
+    # An organization admin must switch MCP on in the Feature Control Manager.
+    - name: new-relic
+      url: "https://mcp.{site}/mcp/"
+      headers:
+        api-key: "{api_key}"
+tools: { mode: pass_through }
