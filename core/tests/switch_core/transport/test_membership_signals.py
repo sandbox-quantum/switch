@@ -48,7 +48,9 @@ class _Listener:
     def __init__(self) -> None:
         self.wakers: dict[str, set[Any]] = {}
 
-    def subscribe(self, room_id: str, waker: Any) -> None:
+    def subscribe(
+        self, room_id: str, waker: Any, *, types: frozenset[str] | None = None
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
 
     def unsubscribe(self, room_id: str, waker: Any) -> None:

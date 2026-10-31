@@ -4,7 +4,9 @@ Delivery is the table announcing its own inserts, and a listener reading the
 rows back.
 
 **The notification is a hint, never the payload.** It carries a room, a
-position and a row id, and a consumer reads the row itself. That is what makes
+position, a row id and the row's type, and a consumer reads the row itself.
+The type lets a reader that acts on some kinds of row only be woken for those
+(`MessageListener.subscribe`). That is what makes
 a lost notification cost latency instead of data: a consumer that keeps a
 position can always ask what it has not seen, and one that never hears
 anything is behind rather than wrong. Putting the message in the payload would
@@ -53,7 +55,8 @@ BEGIN
         json_build_object(
             'room_id', NEW.room_id,
             'seq', NEW.seq,
-            'id', NEW.id
+            'id', NEW.id,
+            'type', NEW.event_type
         )::text
     );
     RETURN NULL;

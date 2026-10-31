@@ -46,7 +46,13 @@ class QuietRooms:
     `MessageListener` instead (`tests/routing.py`, `room_bells`).
     """
 
-    def subscribe(self, room_id: str, waker: Callable[[str], Awaitable[None]]) -> None:
+    def subscribe(
+        self,
+        room_id: str,
+        waker: Callable[[str], Awaitable[None]],
+        *,
+        types: frozenset[str] | None = None,
+    ) -> None:
         return None
 
     def unsubscribe(

@@ -23,7 +23,7 @@ from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.events import CommandEvent
+from switch_core.events import COMMAND_EVENT_TYPE, CommandEvent
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -36,17 +36,21 @@ DELETE_CONFIRM_SECONDS = 120.0
 
 
 class CommandConsumer(Consumer[SystemActor]):
-    """Reads every room for Switch itself, and answers through its SystemActor.
+    """Reads every room's commands for Switch itself, and answers through its
+    SystemActor.
 
     Handles the room/info/alias `!` commands (the admin-owned set) and
     renders their results as admin messages. The heads-up for a message that
     tags an agent not in the room, or a role nobody live-holds, is posted by
-    the router once the message commits (`clients/mention_warnings.py`).
+    the router once the message commits (`clients/mention_warnings.py`), so
+    the command rows are all this reads, and it is woken for nothing else.
 
     Every admin message carries the admin marker so it renders natively per
     bridge and never triggers another member (loop-safe). The system is not an
     agent — it holds no Agent row — so it reasons purely from the stores.
     """
+
+    ROW_TYPES = frozenset({COMMAND_EVENT_TYPE})
 
     def __init__(
         self,

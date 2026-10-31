@@ -157,22 +157,34 @@ class MessageStore:
         )
         return int(result.scalar_one()) + 1
 
-    async def head_seq(self, session: AsyncSession, room_id: str) -> int:
+    async def head_seq(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        types: Collection[str] | None = None,
+    ) -> int:
         """The room's current position, or 0 when nothing has been sent.
 
         What a subscriber starts from when it wants everything after now
         rather than everything. Reconstructed history is numbered below zero,
         so an empty live log answers 0 whatever has been backfilled into it.
+        With `types`, the position of the last row of those types.
         """
-        result = await session.execute(
-            select(func.coalesce(func.max(Message.seq), 0)).where(
-                Message.room_id == room_id
-            )
+        query = select(func.coalesce(func.max(Message.seq), 0)).where(
+            Message.room_id == room_id
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query)
         return max(int(result.scalar_one()), 0)
 
     async def head_seqs(
-        self, session: AsyncSession, room_ids: list[str]
+        self,
+        session: AsyncSession,
+        room_ids: list[str],
+        *,
+        types: Collection[str] | None = None,
     ) -> dict[str, int]:
         """`head_seq` for many rooms in one query, 0 for a room with nothing sent.
 
@@ -182,11 +194,12 @@ class MessageStore:
         """
         if not room_ids:
             return {}
-        result = await session.execute(
-            select(Message.room_id, func.max(Message.seq))
-            .where(Message.room_id.in_(room_ids))
-            .group_by(Message.room_id)
+        query = select(Message.room_id, func.max(Message.seq)).where(
+            Message.room_id.in_(room_ids)
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query.group_by(Message.room_id))
         heads = {room_id: max(int(seq or 0), 0) for room_id, seq in result.all()}
         return {room_id: heads.get(room_id, 0) for room_id in room_ids}
 
@@ -222,7 +235,13 @@ class MessageStore:
         return result.scalar_one_or_none()
 
     async def list_for_room(
-        self, session: AsyncSession, room_id: str, *, after_seq: int, limit: int
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        after_seq: int,
+        limit: int,
+        types: Collection[str] | None = None,
     ) -> list[Message]:
         """Oldest first, from just after `after_seq`. Pass 0 to start.
 
@@ -236,13 +255,16 @@ class MessageStore:
         the same cursor delivers nothing twice. Passing 0 also skips
         reconstructed history, which is numbered below zero — a backfill is
         not something to deliver.
+
+        With `types`, only rows of those types, for a reader that acts on no
+        others (`MessageListener.subscribe`).
         """
-        result = await session.execute(
-            select(Message)
-            .where(Message.room_id == room_id, Message.seq > after_seq)
-            .order_by(Message.seq)
-            .limit(limit)
+        query = select(Message).where(
+            Message.room_id == room_id, Message.seq > after_seq
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query.order_by(Message.seq).limit(limit))
         return list(result.scalars().all())
 
     async def list_timeline(
