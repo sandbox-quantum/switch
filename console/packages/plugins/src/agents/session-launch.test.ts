@@ -111,22 +111,25 @@ describe('sessionLaunchConfig', () => {
     });
   });
 
-  it.each(['cursor', 'antigravity', 'junie'])('runs %s on its model with the instructions', (provider) => {
-    const launch = sessionLaunchConfig({
-      ...BASE,
-      provider,
-      model: 'some-model',
-      advancedConfig: {},
-    });
-    expect(launch).toEqual({
-      model: { id: 'some-model' },
-      agent: undefined,
-      codexConfig: '',
-      skill: '',
-      context: `${SWITCH_SKILL_CONTEXT}\n\nReview pull requests.`,
-      instructions: 'Review pull requests.',
-    });
-  });
+  it.each(['cursor', 'antigravity', 'junie'])(
+    'runs %s on its model with the instructions',
+    (provider) => {
+      const launch = sessionLaunchConfig({
+        ...BASE,
+        provider,
+        model: 'some-model',
+        advancedConfig: {},
+      });
+      expect(launch).toEqual({
+        model: { id: 'some-model' },
+        agent: undefined,
+        codexConfig: '',
+        skill: '',
+        context: `${SWITCH_SKILL_CONTEXT}\n\nReview pull requests.`,
+        instructions: 'Review pull requests.',
+      });
+    }
+  );
 
   it('leaves the model’s option out when no model is chosen', () => {
     expect(

@@ -1,6 +1,12 @@
+import type * as fs from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
+
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof fs>()),
+  realpath: async (path: string) => path,
+}));
 
 vi.mock('node:child_process', () => ({
   spawn: () => {
