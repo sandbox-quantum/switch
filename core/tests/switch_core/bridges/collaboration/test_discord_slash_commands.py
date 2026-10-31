@@ -305,6 +305,14 @@ def test_at_prefix_is_optional_and_never_doubled() -> None:
     assert reassemble_args(spec, {"agent": " @worker ", "alias": "w "}) == expected
 
 
+def test_interrupt_may_name_one_subagent_after_its_target() -> None:
+    spec = COMMANDS_BY_NAME["interrupt"].args_spec
+    assert reassemble_args(spec, {"target": "worker", "child_id": "agent-1"}) == (
+        "@worker agent-1"
+    )
+    assert reassemble_args(spec, {"target": "worker", "child_id": None}) == "@worker"
+
+
 _TWO_OPTIONAL = (
     CommandArg("agent", "An agent", required=False),
     CommandArg("role", "A role for that agent", required=False),

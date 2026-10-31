@@ -116,7 +116,7 @@ class Item(_Model):
     item_id: Id
     turn_id: Id
     revision: Counter
-    kind: Literal["user-message", "assistant-message", "tool-activity"]
+    kind: Literal["user-message", "assistant-message", "tool-activity", "subagent"]
     status: Literal["in-progress", "completed", "failed", "declined"]
     title: str
     text: str
@@ -369,6 +369,8 @@ class RequestAnswer(_Model):
 class TurnInterrupt(_Model):
     type: Literal["turn.interrupt"]
     turn_id: Id
+    # Absent from a bridge built before subagents could be stopped one by one.
+    child_id: Id | None = None
 
 
 class SessionStop(_Model):

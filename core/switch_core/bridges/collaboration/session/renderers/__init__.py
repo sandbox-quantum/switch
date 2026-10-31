@@ -92,7 +92,7 @@ def turn_state(
     unfinished = sum(
         1
         for item in items
-        if item.kind == "tool-activity" and item.status == "in-progress"
+        if item.kind in ("tool-activity", "subagent") and item.status == "in-progress"
     )
     if not unfinished:
         return state

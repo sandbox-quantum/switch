@@ -21,7 +21,9 @@ from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
 
-_ITEM_KINDS = frozenset({"user-message", "assistant-message", "tool-activity"})
+_ITEM_KINDS = frozenset(
+    {"user-message", "assistant-message", "tool-activity", "subagent"}
+)
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,7 @@ def status_state(
     tools = ",".join(
         f"{item.item_id}:{item.revision}"
         for item in view.items
-        if item.kind == "tool-activity"
+        if item.kind in ("tool-activity", "subagent")
     )
     closed = ":closed" if closed_by_platform else ""
     return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"

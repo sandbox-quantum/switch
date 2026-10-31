@@ -204,9 +204,14 @@ export function isHiddenTool(item: Pick<ChatActivityItem, 'title'>): boolean {
   );
 }
 
-/** The tool calls a turn shows. Assistant text is left out: the room message is the copy shown. */
+/** Whether a row is work the agent did: a tool call, or a subagent it started. */
+function isWork(item: Pick<ChatActivityItem, 'kind'>): boolean {
+  return item.kind === 'tool-activity' || item.kind === 'subagent';
+}
+
+/** The tool calls and subagents a turn shows. Assistant text is left out: the room message is the copy shown. */
 export function turnTools(turn: TurnActivity): ChatActivityItem[] {
-  return turn.items.filter((item) => item.kind === 'tool-activity' && !isHiddenTool(item));
+  return turn.items.filter((item) => isWork(item) && !isHiddenTool(item));
 }
 
 /** Whether the turn is running with no visible tool currently running. */
@@ -214,10 +219,7 @@ export function isThinking(turn: TurnActivity): boolean {
   return (
     (turn.status === 'queued' || turn.status === 'running') &&
     !turn.items.some(
-      (item) =>
-        item.kind === 'tool-activity' &&
-        !isHiddenTool(item) &&
-        toolState(item, turn.status) === 'running'
+      (item) => isWork(item) && !isHiddenTool(item) && toolState(item, turn.status) === 'running'
     )
   );
 }

@@ -59,6 +59,9 @@ def item(revision: int, text: str) -> Item:
 
 def test_validates_the_agreed_examples() -> None:
     parse_command(EXAMPLES["platformAnswer"])
+    interrupt = parse_command(EXAMPLES["subagentInterrupt"])
+    assert interrupt.body.type == "turn.interrupt"
+    assert interrupt.body.child_id == "agent-demo"
     parse_host_event(EXAMPLES["hostRequest"])
     parse_snapshot(EXAMPLES["initialSnapshot"])
     for update in EXAMPLES["answerLifecycle"]:
@@ -193,3 +196,20 @@ def test_host_publication_claims_are_rejected() -> None:
     payload["body"]["request"]["audience"] = {"kind": "room", "roomId": "room-demo"}
     with pytest.raises(ValueError):
         parse_host_event(payload)
+
+
+def test_a_subagent_is_an_item_kind() -> None:
+    parsed = Item.model_validate(
+        {
+            "itemId": "child",
+            "turnId": "turn-demo",
+            "revision": 1,
+            "kind": "subagent",
+            "status": "in-progress",
+            "title": "Audit parser",
+            "text": "agent-demo",
+            "attachments": [],
+            "origin": None,
+        }
+    )
+    assert parsed.kind == "subagent"

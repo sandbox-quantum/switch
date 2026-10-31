@@ -113,6 +113,10 @@ _LOG_CUT = "…{left} earlier in this turn, not shown."
 # faster than one column answering whichever question suits the line.
 _TOOL_MARKER = "⌗"
 
+# A subagent is a child agent the turn spawned, not a call, so its lines are told
+# apart by kind as well as by outcome.
+_SUBAGENT_MARKER = "⛓"
+
 # What the agent said, and how much of it. The marker is not one of the outcome
 # glyphs because a sentence has no outcome, and a tick beside one would read as
 # a call that succeeded — which is also why a remark occupies the kind column
@@ -313,9 +317,11 @@ def turn_status(
     lines = [head]
     spent = len(head)
     did = [item for item in items if item.kind == "tool-activity"]
-    for line in _doing(
-        did, turn, escape=escape, budget=budget, tool_detail=tool_detail
-    ):
+    children = [item for item in items if item.kind == "subagent"]
+    for line in [
+        *_doing(did, turn, escape=escape, budget=budget, tool_detail=tool_detail),
+        *_subagent_lines(children, turn, escape=escape, budget=budget),
+    ]:
         if spent + len(line) + 1 > budget:
             break
         lines.append(line)
@@ -377,6 +383,28 @@ def _doing(
     return lines
 
 
+def _subagent_lines(
+    children: list[Item],
+    turn: TurnUpsert,
+    *,
+    escape: Callable[[str], str],
+    budget: int,
+) -> list[str]:
+    """One line per subagent while the turn runs, marked as it finishes.
+
+    Finished ones stay in the list until the turn ends so a reader sees each
+    one land. After that `turn_state` and the log own the account, and the
+    status stops describing children as present-tense work.
+    """
+    if not children or turn.status in TURN_ENDED:
+        return []
+    return [
+        f"{_SUBAGENT_MARKER} {_OUTCOME[child.status]} "
+        f"{_fit(child.title or _LOG_UNTITLED, max(1, budget // 4), escape=escape)}"
+        for child in children
+    ]
+
+
 def in_activity_log(item: Item) -> bool:
     """Whether this item is one of the turn's own lines in the log.
 
@@ -384,7 +412,7 @@ def in_activity_log(item: Item) -> bool:
     a host opens the item before the first token arrives, and a marker with
     nothing after it is a line that tells a reader less than no line at all.
     """
-    if item.kind == "tool-activity":
+    if item.kind in ("tool-activity", "subagent"):
         return True
     return item.kind == "assistant-message" and bool(item.text)
 
@@ -400,7 +428,8 @@ def _log_line(item: Item, *, escape: Callable[[str], str]) -> str:
         said = _fit(" ".join(item.text.split()), _LOG_SAID_TEXT, escape=escape)
         return f"{SAID_MARKER} {said}"
     title = _fit(item.title, _LOG_TITLE, escape=escape) if item.title else _LOG_UNTITLED
-    line = f"{_TOOL_MARKER} {_OUTCOME[item.status]} {title}"
+    marker = _SUBAGENT_MARKER if item.kind == "subagent" else _TOOL_MARKER
+    line = f"{marker} {_OUTCOME[item.status]} {title}"
     if item.text:
         line += f" — {_fit(item.text, _LOG_DETAIL, escape=escape)}"
     return line

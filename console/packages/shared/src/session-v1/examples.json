@@ -119,6 +119,20 @@
       }
     }
   },
+  "subagentInterrupt": {
+    "contractVersion": 1,
+    "commandId": "interrupt-subagent-demo",
+    "sessionId": "session-demo",
+    "epoch": "epoch-demo",
+    "origin": {
+      "surface": "mattermost",
+      "actorId": "actor-demo",
+      "roomId": "room-demo",
+      "threadId": "thread-demo",
+      "messageId": "message-interrupt"
+    },
+    "body": { "type": "turn.interrupt", "turnId": "turn-demo", "childId": "agent-demo" }
+  },
   "answerLifecycle": [
     {
       "contractVersion": 1,

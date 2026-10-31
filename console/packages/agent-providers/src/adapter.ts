@@ -174,6 +174,12 @@ export interface ProviderAdapter {
   startSession(input: ProviderSessionStartInput): Promise<ProviderSession>;
   sendTurn(input: ProviderSendTurnInput): Promise<ProviderTurnStartResult>;
   interruptTurn(sessionId: string): Promise<void>;
+  /**
+   * Stops one running subagent by its `nativeChildId`, leaving the turn
+   * running. Only adapters whose provider can do that implement it; the host
+   * refuses the command for the rest rather than stopping the whole turn.
+   */
+  stopSubagent?(sessionId: string, childId: string): Promise<void>;
   respondToRequest(sessionId: string, requestId: string, decision: ApprovalDecision): Promise<void>;
   respondToUserInput(
     sessionId: string,

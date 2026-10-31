@@ -348,6 +348,15 @@ describe('bindTurns', () => {
     expect(isThinking(turn)).toBe(true);
   });
 
+  it('shows a running subagent as work, so the turn is not thinking', () => {
+    const turn = turnOf(
+      [row('t1', 'child', { kind: 'subagent', status: 'in-progress', title: 'Audit parser' })],
+      'running'
+    );
+    expect(turnTools(turn).map((each) => each.title)).toEqual(['Audit parser']);
+    expect(isThinking(turn)).toBe(false);
+  });
+
   it('thinks between tools and not while a visible tool runs', () => {
     const tool = row('t1', 'tool', { status: 'in-progress' });
     expect(isThinking(turnOf([tool], 'running'))).toBe(false);

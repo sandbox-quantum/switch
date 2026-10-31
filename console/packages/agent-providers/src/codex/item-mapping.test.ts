@@ -50,7 +50,12 @@ describe('mapCodexItem', () => {
       },
       'started'
     );
-    expect(collab).toMatchObject({ type: 'subagent', status: 'in_progress', title: 'spawnAgent' });
+    expect(collab).toMatchObject({
+      type: 'subagent',
+      status: 'in_progress',
+      title: 'spawnAgent',
+      nativeChildId: 'child',
+    });
 
     const activity = mapCodexItem(
       {
@@ -66,6 +71,7 @@ describe('mapCodexItem', () => {
       type: 'subagent',
       status: 'completed',
       title: '/root/read_readme',
+      nativeChildId: 'child',
     });
   });
 
