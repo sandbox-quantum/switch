@@ -4,22 +4,15 @@ import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
-from switch_core.agent_display_name import agent_label_with_identifier
 from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import (
-    ADMIN_MARKER,
     AdminMessageType,
     admin_extra_content,
 )
 from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
 from switch_core.clients.consumer import Consumer
-from switch_core.clients.mentions import (
-    mention_regex,
-    strip_emphasis,
-    unique_mention_tokens,
-)
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_session_store import AgentSessionStore
@@ -31,8 +24,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.events import CommandEvent
-from switch_core.room_wide_mention import is_reserved_mention_name
-from switch_core.transport import InboundMessage, RoomRef
+from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
     from switch_core.room_service import RoomService
@@ -46,11 +38,10 @@ DELETE_CONFIRM_SECONDS = 120.0
 class CommandConsumer(Consumer[SystemActor]):
     """Reads every room for Switch itself, and answers through its SystemActor.
 
-    Two jobs:
-      1. Observe room messages and post heads-up notices when a message tags an
-         agent that is not a member, or a room-role with no live holder.
-      2. Handle the room/info/alias `!` commands (the admin-owned set) and
-         render their results as admin messages.
+    Handles the room/info/alias `!` commands (the admin-owned set) and
+    renders their results as admin messages. The heads-up for a message that
+    tags an agent not in the room, or a role nobody live-holds, is posted by
+    the router once the message commits (`clients/mention_warnings.py`).
 
     Every admin message carries the admin marker so it renders natively per
     bridge and never triggers another member (loop-safe). The system is not an
@@ -104,26 +95,6 @@ class CommandConsumer(Consumer[SystemActor]):
 
     # ── Event hooks ───────────────────────────────────────────────────────────
 
-    async def on_message(self, room: RoomRef, event: InboundMessage) -> None:
-        content = event.content
-        # Never react to admin/system messages — including our own notices —
-        # so the rail can't loop on itself.
-        if ADMIN_MARKER in content:
-            return
-        body = event.body or ""
-        if "@" not in body:
-            return
-
-        meta = await self._resolve_room_meta(room.room_id)
-        if meta is None:
-            return
-
-        thread_id = event.thread_root_id
-        thread_root = thread_id if thread_id is not None else event.event_id
-
-        await self._warn_unreachable_roles(room, event, meta.room_id, thread_root)
-        await self._warn_absent_agents(room, event, meta.room_id, thread_root)
-
     async def on_command(self, room: RoomRef, event: CommandEvent) -> None:
         await dispatch_admin_command(self, room, event)
 
@@ -164,121 +135,7 @@ class CommandConsumer(Consumer[SystemActor]):
             metered=False,
         )
 
-    async def _warn_unreachable_roles(
-        self,
-        room: RoomRef,
-        event: InboundMessage,
-        room_id: str,
-        thread_id: str | None,
-    ) -> None:
-        """Warn when a tagged room-role has no LIVE holder.
-
-        A role with no live lease (unassigned, or a stale lease whose holder's
-        session is gone — shown free by `!roles`) routes to nobody, so the admin
-        posts a heads-up in the triggering message's thread. A role WITH a live
-        holder is not flagged: that holder is addressed and responds.
-        """
-        body = getattr(event, "body", "") or ""
-        if "@" not in body:
-            return
-        unreachable: list[str] = []
-        async with self.session_factory() as session:
-            roles = await self._room_role_store.list_roles(session, room_id)
-            for role in roles:
-                if mention_regex(role.name).search(strip_emphasis(body)) is None:
-                    continue
-                if not await self._room_role_store.has_live_holder(
-                    session, role.id, self._connections.live_connection_ids()
-                ):
-                    unreachable.append(role.name)
-        handle = self._sender_handle(event)
-        for name in unreachable:
-            notice = (
-                f"⚠️ @{handle} no agent currently holds the **{name}** role — "
-                f"your message may go unanswered. Run `!roles` to see "
-                f"availability, or have an agent assume it."
-            )
-            await self.actor.send_admin(
-                room.room_id,
-                notice,
-                message_type=AdminMessageType.UNREACHABLE_ROLE,
-                thread_root_id=thread_id,
-                mentions=[event.sender],
-            )
-
-    async def _warn_absent_agents(
-        self,
-        room: RoomRef,
-        event: InboundMessage,
-        room_id: str,
-        thread_id: str | None,
-    ) -> None:
-        """Warn when a tagged agent is not a member of the room.
-
-        An `@name` that resolves to a registered agent which is not in this room
-        routes to nobody, so the admin posts a heads-up in the triggering
-        message's thread naming the absent agent(s). Tokens that map to a
-        room-role (handled by `_warn_unreachable_roles`), to a current member,
-        to no agent at all (a human user or a typo), or that is a room-wide
-        mention word (`@everyone` pages the room's people) are ignored.
-        """
-        body = getattr(event, "body", "") or ""
-        if "@" not in body:
-            return
-        tokens = unique_mention_tokens(body)
-        if not tokens:
-            return
-        absent: list[str] = []
-        async with self.session_factory() as session:
-            member_ids = set(await self._room_store.get_agent_ids(session, room_id))
-            role_names = {
-                role.name.lower()
-                for role in await self._room_role_store.list_roles(session, room_id)
-            }
-            for token in tokens:
-                if token.lower() in role_names or is_reserved_mention_name(token):
-                    continue
-                agent = await self._agent_store.get_by_name_insensitive(session, token)
-                if agent is None or agent.id in member_ids:
-                    continue
-                absent.append(
-                    agent_label_with_identifier(agent.display_name, agent.name)
-                )
-        if not absent:
-            return
-        names = ", ".join(f"**{label}**" for label in absent)
-        verb = "isn't" if len(absent) == 1 else "aren't"
-        pronoun = "it" if len(absent) == 1 else "them"
-        handle = self._sender_handle(event)
-        notice = (
-            f"⚠️ @{handle} {names} {verb} in this room, so your message won't "
-            f"reach {pronoun}. Add the agent from the room's detail page in the "
-            f"gateway, or have an agent with room-management tools invite it."
-        )
-        await self.actor.send_admin(
-            room.room_id,
-            notice,
-            message_type=AdminMessageType.ABSENT_AGENT,
-            thread_root_id=thread_id,
-            mentions=[event.sender],
-        )
-
     # ── Helpers ────────────────────────────────────────────────────────────────
-
-    def _sender_handle(self, event: InboundMessage) -> str:
-        """The @-handle to tag the message sender with.
-
-        Prefers the bridge-provided `sender_name` (the external username, which
-        the collaboration bridge rewrites into a real @mention on Slack /
-        Mattermost); falls back to the participant id's localpart for a client with no
-        bridge-provided name (paired with `mentions=[event.sender]` so the
-        mention renders as a pill).
-        """
-        content = event.content
-        name = content.get("sender_name")
-        if name:
-            return str(name)
-        return str(event.sender).split(":")[0].lstrip("@")
 
     async def _resolve_room_meta(self, transport_room_id: str) -> RoomMeta | None:
         if transport_room_id in self._room_meta_cache:

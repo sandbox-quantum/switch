@@ -72,8 +72,9 @@ from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
 from switch_core.budgets import BudgetGuard
-from switch_core.clients.actor import AgentActor, ClientConfig
-from switch_core.clients.admin_messages import PLATFORM_MARKER
+from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
+from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
+from switch_core.clients.mention_warnings import MentionWarnings, unmatched_mentions
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import (
     Agent,
@@ -118,6 +119,7 @@ from switch_core.transport.types import (
     InboundMedia,
     InboundMembership,
     InboundMessage,
+    RoomRef,
 )
 
 if TYPE_CHECKING:
@@ -583,14 +585,24 @@ class Routed:
             )
         if self._deadline_in is not None:
             router.flush_groups_after(reads.tenant_id, self._deadline_in)
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]] = []
+        work: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         row = self._row
         for recipient, delivery in plan.deliveries:
             if delivery.after is not None:
-                work.append((recipient, _bind(recipient, delivery.after, row)))
+                work.append(
+                    (recipient.agent.name, _bind(recipient, delivery.after, row))
+                )
         if plan.arrival is not None:
             arrival = plan.arrival
-            work.append((arrival, _bind(arrival, lambda _row: arrival.greet(), row)))
+            work.append(
+                (
+                    arrival.agent.name,
+                    _bind(arrival, lambda _row: arrival.greet(), row),
+                )
+            )
+        warning = router.mention_warning(reads, row)
+        if warning is not None:
+            work.append(("Switch", warning))
         if work:
             router.after_commit(reads.tenant_id, reads.room_id, work)
 
@@ -709,11 +721,11 @@ class _AfterCommit:
         self,
         tenant_id: str,
         room_id: str,
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]],
+        work: list[tuple[str, Callable[[], Awaitable[None]]]],
     ) -> None:
+        """Queue `work`, each piece named by who it posts as."""
         queue = self._queues.setdefault(room_id, deque())
-        for recipient, run in work:
-            queue.append((recipient.agent.name, run))
+        queue.extend(work)
         if room_id not in self._runners:
             self._runners[room_id] = asyncio.get_running_loop().create_task(
                 self._drain(tenant_id, room_id), context=contextvars.Context()
@@ -724,7 +736,7 @@ class _AfterCommit:
         try:
             with tenant_scope(tenant_id), log_context(room_id=room_id):
                 while queue:
-                    agent_name, run = queue.popleft()
+                    poster, run = queue.popleft()
                     try:
                         await run()
                     except asyncio.CancelledError:
@@ -732,9 +744,9 @@ class _AfterCommit:
                     except Exception:
                         metrics().increment(ROUTING_FAILURES, {"stage": "after_commit"})
                         logger.error(
-                            "A reply owed by agent %s in room %s could not be "
+                            "A reply owed by %s in room %s could not be "
                             "posted; the message it answers was delivered",
-                            agent_name,
+                            poster,
                             room_id,
                             exc_info=True,
                         )
@@ -775,6 +787,7 @@ class MessageRouter:
         # The "machine is waking" notices posted for each agent's rooms.
         self._cloud_waking: dict[str, set[tuple[str, int]]] = {}
         self._after = _AfterCommit()
+        self._admin_for: Callable[[str], SystemActor | None] | None = None
         self._timers: set[asyncio.TimerHandle] = set()
         self._flushes: set[asyncio.Task[None]] = set()
 
@@ -1635,9 +1648,57 @@ class MessageRouter:
         self,
         tenant_id: str,
         room_id: str,
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]],
+        work: list[tuple[str, Callable[[], Awaitable[None]]]],
     ) -> None:
         self._after.add(tenant_id, room_id, work)
+
+    def use_admin(self, admin_for: Callable[[str], SystemActor | None]) -> None:
+        """Who posts as Switch in a tenant, for the heads-up a message owes
+        when it tags something that cannot answer. Given once the clients are
+        running; until then no heads-up is posted."""
+        self._admin_for = admin_for
+
+    def mention_warning(
+        self, reads: RoomReads, row: InboundEvent
+    ) -> Callable[[], Awaitable[None]] | None:
+        """The heads-up check `row` owes, or None when it tags no name but the
+        room's agents.
+
+        Deciding the row read the room's agents already, so this costs no read
+        for a message that tags only them, which is most of them. A message
+        that tags anything else (a role, a person, an agent not in the room) is
+        checked once it has committed, on this process. Switch's own messages
+        are never checked, so a heads-up cannot set off another.
+        """
+        if self._admin_for is None or not isinstance(row, InboundMessage):
+            return None
+        if ADMIN_MARKER in row.content or "@" not in (row.body or ""):
+            return None
+        names = [member.agent.name for member in reads.members]
+        names += [member.alias for member in reads.members if member.alias]
+        if not unmatched_mentions(row.body, names):
+            return None
+        admin = self._admin_for(reads.tenant_id)
+        if admin is None:
+            return None
+        services = self.services
+        warnings = MentionWarnings(
+            actor=admin,
+            tenant_id=reads.tenant_id,
+            session_factory=services.session_factory,
+            connections=services.connections,
+            room_store=services.room_store,
+            room_role_store=services.room_role_store,
+            agent_store=services.agent_store,
+        )
+        room = RoomRef(room_id=reads.transport_room_id)
+        member_ids = {member.agent.id for member in reads.members}
+        room_id = reads.room_id
+
+        async def check() -> None:
+            await warnings.check(room, row, room_id, member_ids)
+
+        return check
 
     async def idle(self) -> None:
         """Wait for the replies already owed, and posts already being decided,
