@@ -13,6 +13,7 @@ from switch_core.authz import (
     can,
     can_manage,
     require,
+    require_visibility_change,
     validate_visibility_pair,
 )
 from switch_core.bridges.resource.events import ResourceLoadEntry
@@ -360,10 +361,17 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> ReferenceType:
-        reference_type = await self._reference_types.get(session, type_)
+        reference_type = await self._reference_types.get_for_update(session, type_)
         if reference_type is None:
             raise ValueError(f"Reference type not found: {type_}")
         require(Principal(user_id, is_admin), "write", reference_type)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            reference_type,
+            read_visibility,
+            write_visibility,
+            "reference type",
+        )
         validate_visibility_pair(
             read_visibility
             if read_visibility is not None
@@ -616,10 +624,17 @@ class ResourceService:
         write_visibility: str | None = None,
         value: dict[str, Any] | None = None,
     ) -> Reference:
-        ref = await self._references.get(session, reference_id)
+        ref = await self._references.get_for_update(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "write", ref)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            ref,
+            read_visibility,
+            write_visibility,
+            "reference",
+        )
         # Validate the *resulting* visibility pair (partial updates must not
         # leave a writable-but-unreadable resource).
         validate_visibility_pair(
@@ -893,10 +908,17 @@ class ResourceService:
         write_visibility: str | None = None,
         content: str | None = None,
     ) -> Document:
-        doc = await self._documents.get(session, document_id)
+        doc = await self._documents.get_for_update(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
         require(Principal(user_id, is_admin), "write", doc)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            doc,
+            read_visibility,
+            write_visibility,
+            "document",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else doc.read_visibility,
             write_visibility if write_visibility is not None else doc.write_visibility,
@@ -1257,10 +1279,17 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> Package:
-        pkg = await self._packages.get(session, package_id)
+        pkg = await self._packages.get_for_update(session, package_id)
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "write", pkg)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            pkg,
+            read_visibility,
+            write_visibility,
+            "package",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else pkg.read_visibility,
             write_visibility if write_visibility is not None else pkg.write_visibility,

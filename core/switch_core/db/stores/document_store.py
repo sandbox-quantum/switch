@@ -13,6 +13,19 @@ class DocumentStore:
     async def get(self, session: AsyncSession, document_id: str) -> Document | None:
         return await session.get(Document, document_id)
 
+    async def get_for_update(
+        self, session: AsyncSession, document_id: str
+    ) -> Document | None:
+        """Load the row locked until the transaction ends, for a caller that
+        checks it and then writes it.
+
+        ``populate_existing`` refreshes a copy already in the session, so the
+        check sees the committed row rather than an earlier read of it.
+        """
+        return await session.get(
+            Document, document_id, with_for_update=True, populate_existing=True
+        )
+
     async def get_many(
         self, session: AsyncSession, document_ids: list[str]
     ) -> list[Document]:
