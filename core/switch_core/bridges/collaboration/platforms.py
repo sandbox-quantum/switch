@@ -20,6 +20,10 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostConnectionConfig,
 )
 from switch_core.bridges.collaboration.models import BridgeConnectionConfig
+from switch_core.bridges.collaboration.signal.adapter import (
+    SignalAdapter,
+    SignalConnectionConfig,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -53,6 +57,7 @@ PLATFORMS: tuple[PlatformRegistration, ...] = (
     PlatformRegistration("teams", TeamsAdapter, TeamsConnectionConfig),
     PlatformRegistration("discord", DiscordAdapter, DiscordConnectionConfig),
     PlatformRegistration("telegram", TelegramAdapter, TelegramConnectionConfig),
+    PlatformRegistration("signal", SignalAdapter, SignalConnectionConfig),
 )
 
 
