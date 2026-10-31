@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -352,6 +352,48 @@ class TestRecheck:
         await other.recheck()
         assert not registry.controllers.is_bound(agent_id)
 
+    async def test_with_nothing_changed_it_reads_no_placement(
+        self, harness: Harness, postgres_url: str
+    ) -> None:
+        """Every process re-checks every 30 seconds, and with 10,000 managed
+        agents a read of every placement on each was a large share of what the
+        processes did while nothing happened."""
+        other, registry, _ = _process(postgres_url, harness.session_factory)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+        await other.recheck()
+        assert registry.controllers.is_bound(agent_id)
+        reads = _count_placement_reads(other)
+
+        await other.recheck()
+
+        assert reads == []
+
+    async def test_a_controller_renamed_with_no_signal_is_read(
+        self, harness: Harness, postgres_url: str
+    ) -> None:
+        other, registry, _ = _process(postgres_url, harness.session_factory)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+        await other.recheck()
+
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            await AgentControllerStore().update_details(
+                session,
+                TENANT_ZERO_ID,
+                controller.controller_id,
+                {"name": "workstation"},
+            )
+            await session.commit()
+        await other.recheck()
+
+        binding = registry.controllers.binding(agent_id)
+        assert binding is not None and binding.controller_name == "workstation"
+
     async def test_a_held_controller_is_nudged_only_with_what_it_was_not_told(
         self, harness: Harness
     ) -> None:
@@ -402,3 +444,17 @@ class TestReconcileKeepsNewerLocalChanges:
         assert presence.is_bound("a1")
         presence.reconcile([], agent_ids={"a1"}, since=presence.change_mark())
         assert not presence.is_bound("a1")
+
+
+def _count_placement_reads(signals: ControllerSignals) -> list[str]:
+    """The tenants whose placements `signals` reads in full from now on."""
+    reads: list[str] = []
+    store = signals._definitions
+    real = store.placements
+
+    async def counted(session: Any, tenant_id: str) -> Any:
+        reads.append(tenant_id)
+        return await real(session, tenant_id)
+
+    store.placements = counted  # type: ignore[method-assign]
+    return reads

@@ -916,7 +916,6 @@ class TestPlacementBindsTheAgentInCore:
         await load_bindings(
             session_factory=harness.session_factory,
             definitions=harness.management.service.definitions,
-            controllers=harness.management.service.controllers,
             presence=restarted,
         )
 
