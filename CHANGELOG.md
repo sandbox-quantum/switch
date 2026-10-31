@@ -159,6 +159,15 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The heads-up for tagging an agent that isn't in the room comes from the
+  process that wrote the message, and costs nothing when every name tagged
+  is one of the room's agents.** The admin's consumer, which reads every
+  message in a workspace on one process, checked each message with an `@`:
+  two database sessions and a lookup for every name tagged. Under load that
+  one process fell behind the rest. The check now runs once a message has
+  committed, on whichever process wrote it, and only when the message tags
+  a name that is none of the room's agents (a role, a person, an agent not
+  in the room). The warnings read as before.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
