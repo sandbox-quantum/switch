@@ -49,6 +49,7 @@ export type {
   AcpSignInInput,
 } from './acp/hooks';
 export { antigravityAcp, createAntigravityAdapter } from './antigravity/antigravity-adapter';
+export { clineAcp, createClineAdapter } from './cline/cline-adapter';
 export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export { ChatProjector } from './session-v1/chat-projector';
 export { EventOutbox } from './session-v1/event-outbox';
