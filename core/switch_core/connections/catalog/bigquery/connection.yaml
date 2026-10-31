@@ -1,0 +1,67 @@
+slug: bigquery
+name: BigQuery
+category: Data
+description: Query BigQuery datasets and tables, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Google's refresh tokens survive their use.
+  refresh: reusable
+  oauth:
+    # Google offers no dynamic registration, so each server's operator registers
+    # a Google app (a Web client) and saves it under Connectors in the
+    # dashboard, or names its settings in BIGQUERY_CLIENT_CONFIG_PATH. It is
+    # its own client, apart from Google Workspace's, so the two consent screens
+    # stay independent.
+    registration: static
+    client_settings: BIGQUERY
+    redirect: [core]
+    # Google refuses a made-up code before it compares the redirect URI, so a
+    # client missing Switch's passes the check and fails the first sign-in.
+    unchecked: >-
+      Switch can't check the redirect URI. Connect once to confirm.
+    # Named here rather than discovered, as Google Workspace's are.
+    authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+    token_url: https://oauth2.googleapis.com/token
+    revocation_url: https://oauth2.googleapis.com/revoke
+    # Google hands out a refresh token only for offline access, and again on a
+    # later sign-in only when consent is asked for. The account chooser comes
+    # first, so a browser signed in to another Google account does not pick it
+    # unasked.
+    prompt: consent select_account
+    authorization_params: { access_type: offline }
+  identity:
+    url: https://openidconnect.googleapis.com/v1/userinfo
+    account_id: sub
+    label: email
+# Google's access tokens last an hour, so one handed out never has more than
+# that left.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # The BigQuery API must be enabled in the Google Cloud project that runs
+    # the queries, and the person needs roles/mcp.toolUser with permission to
+    # run jobs (bigquery.jobs.create) and read the tables they query. The
+    # server takes no API keys.
+    - { name: bigquery, url: "https://bigquery.googleapis.com/mcp" }
+access:
+  # Google offers one scope for the server, bigquery, which reads and changes
+  # data, so no sign-in can be narrowed to reading. Both levels name it, and
+  # every connection is granted the write level. What stops a run from changing
+  # data is the person's own IAM roles, and the skill, which has agents use
+  # execute_sql_readonly and ask before execute_sql. The identity scopes
+  # are needed to name the account.
+  read:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/bigquery
+  write:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/bigquery
+# Pass-through tools are required for OAuth entries by connections/loader.py:684;
+# per-tool level filtering is not supported on OAuth connections.
+tools: { mode: pass_through }

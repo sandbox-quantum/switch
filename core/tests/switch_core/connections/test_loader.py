@@ -26,17 +26,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_bigquery_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["bigquery"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -311,6 +314,52 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+def test_the_shipped_bigquery_entry_signs_in_with_its_own_google_client():
+    definition = CATALOG["bigquery"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Google offers no dynamic registration, and the client is apart from
+    # Google Workspace's, so the two consent screens stay independent.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "BIGQUERY"
+    # A refresh token comes only with offline access, and again on a later
+    # sign-in only when consent is asked for.
+    assert oauth.authorization_params == {"access_type": "offline"}
+    assert oauth.prompt == "consent select_account"
+    assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    assert oauth.unchecked is not None and "redirect URI" in oauth.unchecked
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "sub",
+        "email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None and definition.cli is None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("bigquery", "https://bigquery.googleapis.com/mcp")
+    ]
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    access = definition.access
+    assert access is not None and access.write is not None
+    # Google offers one scope for the server, which reads and changes data, so
+    # both levels name it and a sign-in is never labelled read-only.
+    assert access.read.scopes == access.write.scopes
+    assert set(access.write.scopes or []) == {
+        "openid",
+        f"{GOOGLE}userinfo.email",
+        f"{GOOGLE}bigquery",
+    }
 
 
 @pytest.fixture
