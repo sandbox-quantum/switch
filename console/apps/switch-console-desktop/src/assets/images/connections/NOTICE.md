@@ -30,6 +30,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
 | `airtable.svg` | Airtable | Simple Icons 16.33.0, `airtable` | CC0-1.0 | black in light theme, `#18BFFF` in dark theme |
 | `vercel.svg` | Vercel | Simple Icons 16.33.0, `vercel` | CC0-1.0; guidelines https://vercel.com/geist/brands | theme foreground |
 | `canva.svg` | Canva | Canva "Icon logo" from https://www.canva.dev/assets/connect/Canva-logos.zip | Canva Connect brand guidelines (https://www.canva.dev/docs/connect/guidelines/brand/) permit the unmodified icon logo in an integration's UI; gradient ids renamed only | full colour, unmodified |
+| `intercom.svg` | Intercom | Simple Icons 16.33.0, `intercom` | CC0-1.0 ([Simple Icons disclaimer](https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md)); brand guidelines https://www.intercom.com/legal/terms-and-policies | `#0057FF` |
 
 Simple Icons' CC0 dedication covers the drawings; it does not grant any
 trademark rights, which remain with the owners.

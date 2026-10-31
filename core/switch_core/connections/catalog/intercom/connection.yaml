@@ -1,0 +1,46 @@
+slug: intercom
+name: Intercom
+category: Customer support
+description: Search and inspect Intercom conversations and contacts, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Intercom access tokens are refreshed using single-use rotating refresh tokens.
+  refresh: rotating
+  oauth:
+    # Intercom supports RFC 7591 dynamic client registration; Core registers
+    # its client on first connect and stores it in service_oauth_clients.
+    registration: dynamic
+    # Intercom connects through Switch Console in loopback mode on one of the
+    # fixed Console ports registered with the client.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    # The authorization server metadata advertises revocation at /token.
+    revocation_discovered: true
+  identity:
+    # Documented Intercom REST identity endpoint. Note that vendor-hosted MCP
+    # OAuth tokens are currently audience-scoped to the MCP resource and rejected
+    # by api.intercom.io.
+    url: https://api.intercom.io/me
+    account_id: app.id_code
+    label: email
+# Intercom's MCP access tokens live 1 hour (3,600 seconds), measured during
+# token exchange. An agent's copy is bounded by this lifetime cap.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # US-hosted workspaces only. Intercom MCP does not support EU/AU workspaces.
+    - { name: intercom, url: "https://mcp.intercom.com/mcp" }
+access:
+  # Least access: mcp scope covers reading and searching conversations and
+  # contacts. Write access is kept to the verified scope in this v1 release.
+  read:
+    scopes:
+      - mcp
+  write:
+    scopes:
+      - mcp
+tools: { mode: pass_through }
+
