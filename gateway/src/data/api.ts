@@ -1279,6 +1279,56 @@ export async function createOrganizationWorkspace(name: string): Promise<TenantM
   return jsonRequest<TenantMembership>("/organizations/current/workspaces", "POST", { name });
 }
 
+/** What an organization set for a service across its workspaces: on or off,
+ * and whether workspace admins may change it. */
+export interface OrganizationServiceSetting {
+  enabled: boolean;
+  locked: boolean;
+}
+
+/** A catalog service as its organization's admins see it. */
+export interface OrganizationService {
+  slug: string;
+  name: string;
+  /** Null: the organization has no say, and each workspace decides. */
+  setting: OrganizationServiceSetting | null;
+  updated_by_name: string | null;
+  updated_at: string | null;
+  /** Why the server switched it off everywhere, whatever any workspace says; null if it didn't. */
+  server_switched_off: string | null;
+  /** In how many of the organization's workspaces it is on now. */
+  workspaces_on: number;
+  /** Workspaces whose admin set it themselves: an unlocked setting doesn't reach them. */
+  workspaces_set_own: number;
+  /** People across the organization's workspaces with it connected, each once. */
+  connected_members: number;
+}
+
+export interface OrganizationServices {
+  /** How many workspaces the organization has. */
+  workspaces: number;
+  services: OrganizationService[];
+}
+
+export async function fetchOrganizationServices(): Promise<OrganizationServices> {
+  return jsonRequest<OrganizationServices>("/organizations/current/services", "GET");
+}
+
+/** Set a service for every workspace; `warning` says what could not be revoked yet. */
+export async function setOrganizationService(
+  service: string,
+  setting: OrganizationServiceSetting,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/organizations/current/services/${service}`, "PUT", setting);
+}
+
+/** Give up the organization's say in a service. */
+export async function clearOrganizationService(
+  service: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/organizations/current/services/${service}`, "DELETE");
+}
+
 export async function fetchOrganizationMembers(): Promise<OrganizationMember[]> {
   return jsonRequest<OrganizationMember[]>("/organizations/current/members", "GET");
 }
