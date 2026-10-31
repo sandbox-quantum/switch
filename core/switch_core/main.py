@@ -2307,6 +2307,17 @@ def migrate() -> None:
     asyncio.run(_migrate_and_grant(config))
 
 
+def _event_loop_factory() -> Callable[[], asyncio.AbstractEventLoop] | None:
+    """uvloop's event loop where it is installed, which is every platform but
+    Windows, and None (asyncio's own) where it is not. uvloop does the loop's
+    scheduling and its socket reads and writes in C."""
+    try:
+        import uvloop
+    except ImportError:
+        return None
+    return uvloop.new_event_loop
+
+
 def main() -> None:
     config = SwitchConfig()
     running_version = switch_core_version()
@@ -2326,7 +2337,7 @@ def main() -> None:
     else:
         asyncio.run(_check_schema_at_head(config))
 
-    asyncio.run(run(config, process_id))
+    asyncio.run(run(config, process_id), loop_factory=_event_loop_factory())
 
 
 if __name__ == "__main__":

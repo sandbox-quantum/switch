@@ -159,6 +159,13 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The server spends less CPU on its event loop and on finding the agent
+  sending a message.** It now runs on uvloop wherever uvloop is installed,
+  which is every platform but Windows. Finding the actor of the agent
+  sending a message no longer looks through every client's actor, and
+  compiled mention patterns are kept per name. In a CPU profile under
+  message load the event loop's own work was about 15% of a pod's CPU and
+  the actor lookup about 3%.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
