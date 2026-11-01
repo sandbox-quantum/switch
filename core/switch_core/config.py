@@ -366,8 +366,8 @@ class SwitchConfig(BaseSettings):
         "default_tenant"
     )
 
-    # How many workspaces one person may own here. 0 turns `POST /tenants` into
-    # a 403 outright, so this single value is both the cap and the gate.
+    # How many workspaces one person may create here. 0 turns creating one
+    # into a 403 outright, so this single value is both the cap and the gate.
     #
     # It exists because workspace creation is an amplification vector rather
     # than just a row: `all_tenant_ids()` drives a fan-out per tenant at boot

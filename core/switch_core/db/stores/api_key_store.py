@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import Agent, ApiKey
+from switch_core.db.models import Agent, ApiKey, require_tenant_id
 
 
 class ApiKeyStore:
@@ -39,7 +39,12 @@ class ApiKeyStore:
         return row[0], row[1]
 
     async def get_by_user(self, session: AsyncSession, user_id: str) -> list[ApiKey]:
-        result = await session.execute(select(ApiKey).where(ApiKey.user_id == user_id))
+        """`user_id`'s keys in the bound tenant."""
+        result = await session.execute(
+            select(ApiKey).where(
+                ApiKey.tenant_id == require_tenant_id(), ApiKey.user_id == user_id
+            )
+        )
         return list(result.scalars().all())
 
     async def get_by_user_and_type(

@@ -126,7 +126,9 @@ async def get_my_context() -> dict[str, Any]:
         if owner is None:
             raise PermissionError(f"Agent {caller.name}'s owner no longer exists.")
         tenant = await session.get(Tenant, tenant_id)
-        role = await protocol.user_store.tenant_role(session, tenant_id, owner.id)
+        role = await protocol.user_store.effective_tenant_role(
+            session, tenant_id, owner.id
+        )
         members = await session.scalar(select(func.count()).select_from(TenantMember))
         agents = await protocol.agent_store.get_by_owner(session, owner.id)
         usernames_by_bridge: dict[str, list[str]] = {}

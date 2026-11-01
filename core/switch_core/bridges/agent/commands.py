@@ -19,7 +19,6 @@ from switch_core.aliases import (
     check_alias_collisions,
     validate_alias_format,
 )
-from switch_core.authz import Principal, administers_tenant, require_manage
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -50,6 +49,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
+from switch_core.platform_access import administers_on_record
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -520,9 +520,14 @@ async def _manages_room(
         if room is not None and room.owner_id == user_id:
             return True
         user = await session.get(User, user_id)
-        role = await users.tenant_role(session, client.tenant_id, user_id)
-        if user is not None and administers_tenant(
-            is_operator=user.role == "admin", tenant_role=role
+        if user is not None and await administers_on_record(
+            session,
+            client.session_factory,
+            users,
+            user,
+            target_type="room",
+            target_id=room_id,
+            details={"event": "chat_command", "command": "retry"},
         ):
             return True
     return False
@@ -1327,7 +1332,15 @@ async def _may_remove_agent(
     if principal.kind == "user":
         for user_id in principal.user_ids:
             user = await session.get(User, user_id)
-            if user is not None and await host._user_store.administers(session, user):
+            if user is not None and await administers_on_record(
+                session,
+                host.session_factory,
+                host._user_store,
+                user,
+                target_type="agent",
+                target_id=target.id,
+                details={"event": "chat_command", "command": "remove_agent"},
+            ):
                 return True
         return False
     if principal.kind == "agent":
@@ -1399,14 +1412,16 @@ async def _manage_authority(
         user = await host._user_store.get(session, user_id)
         if user is None:
             continue
-        try:
-            require_manage(
-                Principal(user.id, await host._user_store.administers(session, user)),
-                agent.owner_id,
-            )
+        if user.id == agent.owner_id or await administers_on_record(
+            session,
+            host.session_factory,
+            host._user_store,
+            user,
+            target_type="agent",
+            target_id=agent.id,
+            details={"event": "chat_command", "command": "manage_agent"},
+        ):
             return _Authority(user.id, None)
-        except PermissionError:
-            continue
     return _Authority(
         None, "Only the agent's owner or a workspace admin can rename or delete it."
     )
