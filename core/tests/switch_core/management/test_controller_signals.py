@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.controller_presence import Binding
-from switch_core.db.models import TENANT_ZERO_ID
+from switch_core.db.models import TENANT_ZERO_ID, AgentController, SwitchCoreProcess
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_operation_store import (
     AgentControllerOperationStore,
@@ -29,12 +30,14 @@ from switch_core.management.notifier import (
     ControllerNotifier,
 )
 from switch_core.management.signals import ControllerSignals
+from switch_core.process_lease import LEASE_TTL
 from switch_core.signals import SignalBus
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.switch_core.management.harness import (
     Harness,
     add_member,
     build_harness,
+    connect,
     cookies_for,
     enroll_console,
     open_connection,
@@ -394,6 +397,80 @@ class TestRecheck:
         binding = registry.controllers.binding(agent_id)
         assert binding is not None and binding.controller_name == "workstation"
 
+    async def test_with_nothing_changed_it_reads_no_connection(
+        self, harness: Harness, postgres_url: str
+    ) -> None:
+        """Every process re-checks who holds each controller's socket every
+        30 seconds, and with thousands of controllers reading every row, and
+        the rooms of every agent on a controller another process holds, was
+        a few seconds of database time each time."""
+        other, registry, _ = _process(postgres_url, harness.session_factory)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        await other.recheck()
+        assert registry.controllers.holder_elsewhere(controller.controller_id)
+        reads = _count_connection_reads(other)
+
+        await other.recheck()
+
+        assert reads == []
+        assert registry.controllers.holder_elsewhere(controller.controller_id)
+
+    async def test_a_connection_ended_with_no_signal_is_read(
+        self, harness: Harness, postgres_url: str
+    ) -> None:
+        other, registry, _ = _process(postgres_url, harness.session_factory)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        await other.recheck()
+        assert registry.controllers.holder_elsewhere(controller.controller_id)
+        reads = _count_connection_reads(other)
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            await session.execute(
+                update(AgentController)
+                .where(AgentController.id == controller.controller_id)
+                .values(disconnected_at=func.now())
+            )
+            await session.commit()
+
+        await other.recheck()
+
+        assert reads == [TENANT_ZERO_ID]
+        assert registry.controllers.holder_elsewhere(controller.controller_id) is None
+
+    async def test_a_holder_whose_lease_lapsed_is_read_again(
+        self, harness: Harness, postgres_url: str
+    ) -> None:
+        """No connection row changes when the process holding it dies, so
+        which processes hold a lease is compared too."""
+        other, registry, _ = _process(postgres_url, harness.session_factory)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await place_agent(client, controller, name="reviewer")
+            await connect(client, controller)
+        await other.recheck()
+        assert registry.controllers.holder_elsewhere(controller.controller_id)
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(SwitchCoreProcess)
+                .where(SwitchCoreProcess.id == harness.management.lease.process_id)
+                .values(
+                    beat_at=SwitchCoreProcess.beat_at - LEASE_TTL - timedelta(seconds=1)
+                )
+            )
+            await session.commit()
+
+        await other.recheck()
+
+        assert registry.controllers.holder_elsewhere(controller.controller_id) is None
+
     async def test_a_held_controller_is_nudged_only_with_what_it_was_not_told(
         self, harness: Harness
     ) -> None:
@@ -444,6 +521,21 @@ class TestReconcileKeepsNewerLocalChanges:
         assert presence.is_bound("a1")
         presence.reconcile([], agent_ids={"a1"}, since=presence.change_mark())
         assert not presence.is_bound("a1")
+
+
+def _count_connection_reads(signals: ControllerSignals) -> list[str]:
+    """The tenants whose controller connections `signals` reads in full from
+    now on."""
+    reads: list[str] = []
+    store = signals._controllers
+    real = store.connections
+
+    async def counted(session: Any, tenant_id: str) -> Any:
+        reads.append(tenant_id)
+        return await real(session, tenant_id)
+
+    store.connections = counted  # type: ignore[method-assign]
+    return reads
 
 
 def _count_placement_reads(signals: ControllerSignals) -> list[str]:

@@ -237,6 +237,11 @@ version of their own to them without also giving them a release of their own.
   query of its own. It now reads the columns a binding is made of in one
   query per workspace, and only when a fingerprint of the placements has
   changed since its last full read.
+- **The 30-second re-check of who holds each controller's socket no longer
+  reads every controller each time.** It compares a fingerprint of their
+  connections and of the live processes first, and when it reads, reads only
+  the connection columns, where it read every row with its status and
+  platform, and the rooms of every agent on a controller another process held.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
