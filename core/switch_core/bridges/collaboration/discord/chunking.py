@@ -2,10 +2,10 @@
 
 Discord caps a message at 2,000 characters and rejects anything longer with a
 400 — an order of magnitude tighter than Slack, Mattermost, Teams or
-Telegram, and well
-under what an agent writes when it answers a real question. Without splitting,
-the adapter's `HTTPException` handler logs the rejection and returns, so the
-message never reaches the channel and the user is shown nothing at all.
+Telegram, and well under what an agent writes when it answers a real question.
+Without splitting, the adapter's `HTTPException` handler logs the rejection
+and returns, so the message never reaches the channel and the user is shown
+nothing at all.
 """
 
 from __future__ import annotations
@@ -15,22 +15,32 @@ MAX_MESSAGE = 2000
 _FENCE = "```"
 
 
-def _hard_wrap(line: str, budget: int) -> list[str]:
-    """Break one over-long line, preferring a space over cutting a word."""
-    if len(line) <= budget:
-        return [line]
+def _current_len(buf: list[str], language: str | None) -> int:
+    """Return the length of the message if buf were flushed right now."""
+    if not buf:
+        return 0
+    base = sum(len(x) for x in buf) + (len(buf) - 1)
+    if language is not None:
+        base += 1 + len(_FENCE)
+    return base
 
-    pieces: list[str] = []
-    rest = line
-    while len(rest) > budget:
-        cut = rest.rfind(" ", 0, budget + 1)
-        if cut <= 0:
-            cut = budget
-        pieces.append(rest[:cut])
-        rest = rest[cut:].lstrip(" ")
-    if rest:
-        pieces.append(rest)
-    return pieces
+
+def _room_in_buf(buf: list[str], language: str | None, limit: int) -> int:
+    """Return the remaining character capacity in buf for an additional line."""
+    if not buf:
+        overhead = (1 + len(_FENCE)) if language is not None else 0
+        return max(0, limit - overhead)
+    overhead = _current_len(buf, language) + 1
+    return max(0, limit - overhead)
+
+
+def _has_content(buf: list[str], language: str | None) -> bool:
+    """Return True if buf contains actual content beyond an opening fence."""
+    if not buf:
+        return False
+    if language is not None:
+        return len(buf) > 1
+    return True
 
 
 def chunk_message(content: str, limit: int = MAX_MESSAGE) -> list[str]:
@@ -48,17 +58,12 @@ def chunk_message(content: str, limit: int = MAX_MESSAGE) -> list[str]:
     if len(content) <= limit:
         return [content]
 
-    # Leave room for a closing fence on this chunk and a reopening one on the
-    # next, so honouring a code block can never push a chunk over the limit.
-    budget = limit - (2 * len(_FENCE) + 2)
-
     chunks: list[str] = []
     buf: list[str] = []
-    used = 0
     language: str | None = None
 
     def flush() -> None:
-        nonlocal buf, used
+        nonlocal buf
         if not buf:
             return
         body = "\n".join(buf)
@@ -66,29 +71,51 @@ def chunk_message(content: str, limit: int = MAX_MESSAGE) -> list[str]:
             body += f"\n{_FENCE}"
         chunks.append(body)
         buf = []
-        used = 0
         if language is not None:
-            opener = f"{_FENCE}{language}"
-            buf.append(opener)
-            used = len(opener) + 1
+            buf.append(f"{_FENCE}{language}")
+
+    def add_line(line: str) -> None:
+        nonlocal buf
+        rest = line
+        while True:
+            room = _room_in_buf(buf, language, limit)
+            if len(rest) <= room:
+                buf.append(rest)
+                break
+
+            if _has_content(buf, language):
+                flush()
+                continue
+
+            cut = rest.rfind(" ", 0, room + 1)
+            if cut <= 0:
+                cut = room
+            piece = rest[:cut]
+            buf.append(piece)
+            rest = rest[cut:].lstrip(" ")
+            flush()
 
     for raw_line in content.split("\n"):
-        for line in _hard_wrap(raw_line, budget):
-            if used + len(line) + 1 > budget and buf:
-                flush()
-            buf.append(line)
-            used += len(line) + 1
-
-            stripped = line.strip()
-            if stripped.startswith(_FENCE):
-                if language is None:
-                    language = stripped[len(_FENCE) :].strip()
-                else:
+        stripped = raw_line.strip()
+        if stripped.startswith(_FENCE):
+            if language is None:
+                new_lang = stripped[len(_FENCE) :].strip()
+                fence_overhead = len(raw_line) + 1 + len(_FENCE)
+                if buf and _room_in_buf(buf, None, limit) < fence_overhead + 1:
+                    flush()
+                buf.append(raw_line)
+                language = new_lang
+            else:
+                if _current_len(buf, None) + 1 + len(raw_line) <= limit:
+                    buf.append(raw_line)
                     language = None
+                else:
+                    flush()
+                    language = None
+        else:
+            add_line(raw_line)
 
     if buf:
-        # The tail is emitted as-is: an unclosed fence here was unclosed in the
-        # original too, and inventing a terminator would change the content.
         chunks.append("\n".join(buf))
 
     return chunks
