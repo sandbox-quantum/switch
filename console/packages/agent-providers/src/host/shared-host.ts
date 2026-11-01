@@ -1117,7 +1117,13 @@ export async function hostSessionProcess(input: {
       listTimeoutMs: LIST_TIMEOUT_MS,
       callTimeoutMs: CALL_TIMEOUT_MS,
       fetch,
+      cwd: config.start.input.cwd,
     });
+    if (vendors.revokeService) {
+      parent.onRevokeGrant(async (service) => {
+        await vendors?.revokeService?.(service);
+      });
+    }
     clis = await startVendorClis({
       grants,
       ask: parent.ask,

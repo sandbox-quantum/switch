@@ -10,6 +10,11 @@ describe('resolveStdioServerExecutable', () => {
     expect(res).toEqual({ executable: 'node', isScript: false });
   });
 
+  it('permits host process.execPath runtime binary', () => {
+    const res = resolveStdioServerExecutable(process.execPath, dummyVendorDir);
+    expect(res).toEqual({ executable: process.execPath, isScript: false });
+  });
+
   it('rejects shell interpreters', () => {
     expect(() => resolveStdioServerExecutable('bash', dummyVendorDir)).toThrow(
       "Direct invocation of shell interpreter 'bash' is strictly forbidden."

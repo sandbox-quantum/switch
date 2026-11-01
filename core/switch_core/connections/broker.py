@@ -1146,12 +1146,22 @@ class ServiceBroker:
                         []
                         if mcp is None
                         else [
-                            {
-                                "name": server.name,
-                                "url": server.url,
-                                "headers": server.headers
-                                or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
-                            }
+                            (
+                                {
+                                    "transport": "stdio",
+                                    "name": server.name,
+                                    "command": server.command,
+                                    "args": server.args,
+                                    "env": server.env,
+                                }
+                                if getattr(server, "transport", "http") == "stdio"
+                                else {
+                                    "name": server.name,
+                                    "url": server.url,
+                                    "headers": server.headers
+                                    or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
+                                }
+                            )
                             for server in mcp.servers
                         ]
                     ),

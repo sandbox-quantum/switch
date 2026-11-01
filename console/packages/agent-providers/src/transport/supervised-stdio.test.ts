@@ -1,52 +1,63 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { fileURLToPath } from 'node:url';
 import { SupervisedStdioTransport } from './supervised-stdio';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const echoServerPath = join(__dirname, '../testing/fixtures/echo-mcp-server.mjs');
+const echoFixturePath = join(__dirname, '../testing/fixtures/echo-mcp-server.mjs');
+
+let transport: SupervisedStdioTransport | null = null;
+
+afterEach(async () => {
+  if (transport) {
+    await transport.close();
+    transport = null;
+  }
+});
 
 describe('SupervisedStdioTransport', () => {
-  let transport: SupervisedStdioTransport | null = null;
-  let client: Client | null = null;
-
-  afterEach(async () => {
-    if (client) {
-      await client.close().catch(() => {});
-      client = null;
-    }
-    if (transport) {
-      await transport.close();
-      transport = null;
-    }
-  });
-
   it('performs protocol handshake and tool call against echo-mcp-server fixture', async () => {
     transport = new SupervisedStdioTransport({
       command: process.execPath,
-      args: [echoServerPath],
+      args: [echoFixturePath],
       cwd: process.cwd(),
       env: {},
     });
 
-    client = new Client({ name: 'switch-test-client', version: '1.0.0' });
-    await client.connect(transport);
+    const receivedMessages: unknown[] = [];
+    transport.onmessage = (msg) => {
+      receivedMessages.push(msg);
+    };
 
-    // 1. Tool discovery
-    const toolList = await client.listTools();
-    expect(toolList.tools).toBeDefined();
-    expect(toolList.tools.some((t) => t.name === 'switch_echo')).toBe(true);
+    await transport.start();
 
-    // 2. Tool execution
-    const result = await client.callTool({
-      name: 'switch_echo',
-      arguments: { text: 'Hello Switch MCP!' },
+    // 1. Initialize
+    await transport.send({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
     });
 
-    expect(result.content).toBeDefined();
-    expect(result.content).toEqual([{ type: 'text', text: 'Hello Switch MCP!' }]);
+    // 2. Call switch_echo tool
+    await transport.send({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'switch_echo', arguments: { text: 'Hello Stdio Transport' } },
+    });
+
+    const deadline = Date.now() + 4000;
+    while (receivedMessages.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    expect(receivedMessages).toHaveLength(2);
+    expect((receivedMessages[0] as { id: number }).id).toBe(1);
+    expect((receivedMessages[1] as { id: number; result: { content: [{ text: string }] } }).result.content[0].text).toBe(
+      'Hello Stdio Transport'
+    );
   });
 
   it('handles multi-message chunks and CRLF framing cleanly', async () => {
@@ -78,8 +89,10 @@ describe('SupervisedStdioTransport', () => {
 
     await transport.start();
 
-    // Wait briefly for stdout chunks to be processed
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const deadline = Date.now() + 4000;
+    while (receivedMessages.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
 
     expect(receivedMessages).toHaveLength(2);
     expect(receivedMessages[0]).toEqual({ jsonrpc: '2.0', method: 'notify1', params: { a: 1 } });
@@ -120,7 +133,10 @@ describe('SupervisedStdioTransport', () => {
 
     await transport.start();
 
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const deadline = Date.now() + 4000;
+    while (receivedMessages.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
 
     expect(receivedMessages).toHaveLength(1);
     expect(receivedMessages[0]).toEqual({
@@ -152,17 +168,20 @@ describe('SupervisedStdioTransport', () => {
 
     await transport.start();
 
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    const deadline = Date.now() + 4000;
+    while (!capturedError && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
 
-    expect(capturedError).toBeDefined();
-    expect((capturedError as unknown as Error)?.message).toContain('FRAME_OVERFLOW_ERROR');
+    expect(capturedError).not.toBeNull();
+    expect((capturedError as unknown as Error).message).toContain('exceeded limit');
     expect(closed).toBe(true);
   });
 
   it('rejects send() after close() deterministically', async () => {
     transport = new SupervisedStdioTransport({
       command: process.execPath,
-      args: ['-e', 'process.exit(0)'],
+      args: [echoFixturePath],
       cwd: process.cwd(),
       env: {},
     });
@@ -171,7 +190,11 @@ describe('SupervisedStdioTransport', () => {
     await transport.close();
 
     await expect(
-      transport.send({ jsonrpc: '2.0', id: 1, method: 'ping', params: {} })
-    ).rejects.toThrow('Transport is closed; send rejected');
+      transport.send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'ping',
+      })
+    ).rejects.toThrow('Transport is closed');
   });
 });

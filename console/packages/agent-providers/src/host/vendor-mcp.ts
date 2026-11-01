@@ -17,6 +17,7 @@ import type { HostAsk } from './session-channel';
 
 import { SupervisedStdioTransport } from '../transport/supervised-stdio';
 import { ToolCallQueue } from './tool-queue';
+import { resolveStdioServerExecutable } from './stdio-resolver';
 
 /** How long a vendor has to list its tools before the session goes on without them. */
 export const LIST_TIMEOUT_MS = 20_000;
@@ -29,11 +30,72 @@ export type VendorServers = {
   close: () => Promise<void>;
   /** Revoke an active service grant immediately, terminating processes and rejecting queue. */
   revokeService?: (service: string) => Promise<void>;
+  /** Retrieve active child PIDs by service name for health inspection and testing. */
+  getPids?: (service?: string) => number[];
 };
 
 class VendorRefusedToken extends Error {}
 
 type VendorMcpServer = ServiceGrant['mcp_servers'][number];
+
+const PASSED_THROUGH_ENV = [
+  'HTTPS_PROXY',
+  'https_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+  'NO_PROXY',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+];
+
+/**
+ * Sanitizes the host environment before passing to an audited stdio MCP server.
+ * Retains system essentials, network proxy settings, and credential envs.
+ * Strips host session secrets and credentials from inheritance.
+ */
+export function buildSanitizedStdioEnv(
+  hostEnv: NodeJS.ProcessEnv,
+  credentialEnv: Record<string, string>,
+  platform: NodeJS.Platform = process.platform
+): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  const path = hostEnv.PATH ?? hostEnv.Path;
+  if (path) env.PATH = path;
+
+  if (platform === 'win32') {
+    const pathExt = hostEnv.PATHEXT;
+    if (pathExt) env.PATHEXT = pathExt;
+    const systemRoot = hostEnv.SystemRoot ?? hostEnv.SYSTEMROOT;
+    if (systemRoot) env.SystemRoot = systemRoot;
+    const comSpec = hostEnv.ComSpec ?? hostEnv.COMSPEC;
+    if (comSpec) env.COMSPEC = comSpec;
+    const windir = hostEnv.windir ?? hostEnv.WINDIR;
+    if (windir) env.windir = windir;
+    if (hostEnv.TEMP) env.TEMP = hostEnv.TEMP;
+    if (hostEnv.TMP) env.TMP = hostEnv.TMP;
+    if (hostEnv.USERPROFILE) env.USERPROFILE = hostEnv.USERPROFILE;
+  } else {
+    if (hostEnv.HOME) env.HOME = hostEnv.HOME;
+    if (hostEnv.TMPDIR) env.TMPDIR = hostEnv.TMPDIR;
+  }
+
+  for (const name of PASSED_THROUGH_ENV) {
+    const value = hostEnv[name];
+    if (value) env[name] = value;
+  }
+
+  for (const [key, val] of Object.entries(credentialEnv)) {
+    if (val !== undefined && val !== null) {
+      env[key] = val;
+    }
+  }
+
+  return env;
+}
 
 /**
  * A granted vendor's MCP servers, served to this session's CLI on loopback.
@@ -51,10 +113,11 @@ export async function startVendorServers(input: {
   callTimeoutMs: number;
   /** How the vendor is reached: `fetch`, but for tests. */
   fetch: typeof fetch;
+  cwd?: string;
 }): Promise<VendorServers> {
   const specs: Record<string, HttpMcpServerSpec> = {};
   const closers: (() => Promise<void>)[] = [];
-  const stdioServersByService = new Map<string, { close: () => Promise<void>; queue: ToolCallQueue }[]>();
+  const stdioServersByService = new Map<string, StdioVendorServer[]>();
 
   try {
     for (const grant of input.grants) {
@@ -69,7 +132,7 @@ export async function startVendorServers(input: {
           closers.push(() => stdio.close());
 
           const current = stdioServersByService.get(grant.service) ?? [];
-          current.push({ close: () => stdio.close(), queue: stdio.queue });
+          current.push(stdio);
           stdioServersByService.set(grant.service, current);
         } else {
           const urlStr = 'url' in server ? server.url : '';
@@ -106,10 +169,25 @@ export async function startVendorServers(input: {
     );
   };
 
+  const getPids = (service?: string): number[] => {
+    if (service) {
+      const servers = stdioServersByService.get(service) ?? [];
+      return servers.map((s) => s.pid).filter((p): p is number => p !== null);
+    }
+    const pids: number[] = [];
+    for (const servers of stdioServersByService.values()) {
+      for (const s of servers) {
+        if (s.pid !== null) pids.push(s.pid);
+      }
+    }
+    return pids;
+  };
+
   return {
     specs,
     close: async () => void (await Promise.all(closers.map((close) => close()))),
     revokeService,
+    getPids,
   };
 }
 
@@ -240,6 +318,7 @@ class StdioVendorServer {
       redactions: Redactions;
       listTimeoutMs: number;
       callTimeoutMs: number;
+      cwd?: string;
     }
   ) {
     this.queue = new ToolCallQueue({
@@ -258,6 +337,10 @@ class StdioVendorServer {
         await this.close();
       },
     });
+  }
+
+  get pid(): number | null {
+    return this.transport?.pid ?? null;
   }
 
   private async ensureClient(): Promise<Client> {
@@ -282,10 +365,18 @@ class StdioVendorServer {
         }
       }
 
+      // 2. Resolve executable securely (forbid shells, traversals, symlink escapes)
+      const baseDir = this.deps.cwd ?? process.cwd();
+      const resolved = resolveStdioServerExecutable(this.server.command, baseDir);
+
+      // 3. Build sanitized environment (no host secrets leakage)
+      const sanitizedEnv = buildSanitizedStdioEnv(process.env, credentialEnv);
+
       this.transport = new SupervisedStdioTransport({
-        command: this.server.command,
+        command: resolved.executable,
         args: this.server.args,
-        env: { ...process.env, ...credentialEnv } as Record<string, string>,
+        env: sanitizedEnv,
+        cwd: baseDir,
       });
 
       const client = new Client({ name: 'switch-stdio-session', version: '1.0.0' });
@@ -316,6 +407,7 @@ class StdioVendorServer {
   }
 
   async close(): Promise<void> {
+    await this.queue.terminateAll(new Error('Session closed; transport shutting down')).catch(() => {});
     if (this.client) {
       await this.client.close().catch(() => {});
       this.client = null;

@@ -91,7 +91,7 @@ export const serviceGrantSchema = z.object({
     .array(
       z.union([
         z.object({
-          transport: z.literal('http').default('http').optional(),
+          transport: z.literal('http').optional(),
           name: z.string().regex(SLUG),
           url: z.string().url(),
           headers: z
