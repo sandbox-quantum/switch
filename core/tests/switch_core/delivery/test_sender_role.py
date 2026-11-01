@@ -111,3 +111,73 @@ def test_the_role_rides_on_the_message() -> None:
     )
 
     assert event.payload.sender_role == "member"  # type: ignore[union-attr]
+    assert event.payload.sender_owns_agent is False  # type: ignore[union-attr]
+
+
+async def test_sender_owns_agent_detected_accurately() -> None:
+    person = SenderPrincipal("user", "client-1", ["user-olivia"], None)
+    recipient = SimpleNamespace(
+        _addressing=_Addressing(person),
+        agent=SimpleNamespace(owner_id="user-olivia"),
+    )
+    assert (
+        await AgentRecipient._sender_owns_agent(
+            recipient,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            "@olivia:test",
+            {},
+        )
+        is True
+    )
+
+    non_owner_recipient = SimpleNamespace(
+        _addressing=_Addressing(person),
+        agent=SimpleNamespace(owner_id="different-owner-id"),
+    )
+    assert (
+        await AgentRecipient._sender_owns_agent(
+            non_owner_recipient,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            "@olivia:test",
+            {},
+        )
+        is False
+    )
+
+    unowned_recipient = SimpleNamespace(
+        _addressing=_Addressing(person),
+        agent=SimpleNamespace(owner_id=None),
+    )
+    assert (
+        await AgentRecipient._sender_owns_agent(
+            unowned_recipient,  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+            "@olivia:test",
+            {},
+        )
+        is False
+    )
+
+
+def test_sender_owns_agent_rides_on_the_message() -> None:
+    event = message_event(
+        room_id="room-1",
+        bridge_id=None,
+        channel_type="direct",
+        event=InboundMessage(
+            room_id="room-1",
+            event_id="$1",
+            sender="@olivia:test",
+            timestamp=1,
+            body="help me connect Discord",
+            sender_name="olivia",
+        ),
+        addressed=True,
+        sender_name="olivia",
+        body="help me connect Discord",
+        thread_id=None,
+        sender_role="member",
+        sender_owns_agent=True,
+    )
+
+    assert event.payload.sender_owns_agent is True  # type: ignore[union-attr]

@@ -66,4 +66,44 @@ describe('a room command', () => {
     expect(text(fromMember)).toContain('[Switch] Owner (workspace member) addressed you');
     expect(text(event)).toContain('[Switch] Owner addressed you');
   });
+
+  it('parses sender_owns_agent, defaulting to false', () => {
+    const parsedDefault = roomMessageSchema.parse(event);
+    expect(parsedDefault.payload.sender_owns_agent).toBe(false);
+
+    const parsedOwner = roomMessageSchema.parse({
+      ...event,
+      payload: { ...event.payload, sender_owns_agent: true },
+    });
+    expect(parsedOwner.payload.sender_owns_agent).toBe(true);
+  });
+
+  it('sets command delivery to queue by default, or steer when specified', () => {
+    const defaultCommand = roomCommand({
+      agentId: 'agent',
+      sessionId: 'session',
+      epoch: 'epoch',
+      roomId: '!room:example.test',
+      message: roomMessageSchema.parse(event),
+      surface: 'switch-web',
+      attachments: [],
+      preface: null,
+      firstOfConversation: false,
+    });
+    expect(defaultCommand.body).toMatchObject({ delivery: 'queue' });
+
+    const steerCommand = roomCommand({
+      agentId: 'agent',
+      sessionId: 'session',
+      epoch: 'epoch',
+      roomId: '!room:example.test',
+      message: roomMessageSchema.parse(event),
+      surface: 'switch-web',
+      attachments: [],
+      preface: null,
+      firstOfConversation: false,
+      delivery: 'steer',
+    });
+    expect(steerCommand.body).toMatchObject({ delivery: 'steer' });
+  });
 });

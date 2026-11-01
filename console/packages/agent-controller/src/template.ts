@@ -116,7 +116,7 @@ export function buildWatcherTemplate(input: {
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: capabilities.steering ? 'steer' : 'queue',
         approvals: capabilities.approvals,
         questions: capabilities.userInput,
         interrupt: true,
@@ -155,6 +155,10 @@ export function buildWatcherTemplate(input: {
       skill: launch.skill,
       context: launch.context,
       instructions: launch.instructions,
+      ...(input.definition.advanced_config &&
+      (input.definition.advanced_config as Record<string, unknown>).midTurnDelivery === 'queue'
+        ? { midTurnDelivery: 'queue' as const }
+        : {}),
     },
   } satisfies SharedHostConfig);
 }

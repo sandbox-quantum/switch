@@ -11,7 +11,7 @@ export interface BuildSharedHostConfigInput {
     env: Readonly<Record<string, string>>;
     model: ModelSelection | undefined;
   };
-  capabilities: Pick<ProviderCapabilities, 'approvals' | 'userInput'>;
+  capabilities: Pick<ProviderCapabilities, 'approvals' | 'userInput' | 'steering'>;
   execution: {
     credentialsPath: string;
     inheritEnv: readonly string[];
@@ -20,6 +20,7 @@ export interface BuildSharedHostConfigInput {
     skill: string;
     context: string;
     agentDefinition: { name: string; path: string } | undefined;
+    midTurnDelivery?: 'steer' | 'queue';
   };
   ids: { hostId: string; epoch: string; connectionId: string };
 }
@@ -43,7 +44,7 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       connectivity: 'online',
       pendingRequestIds: [],
       capabilities: {
-        input: 'queue',
+        input: input.capabilities.steering ? 'steer' : 'queue',
         approvals: input.capabilities.approvals,
         questions: input.capabilities.userInput,
         interrupt: true,
@@ -72,6 +73,9 @@ export function buildSharedHostConfig(input: BuildSharedHostConfigInput): Shared
       codexConfig: input.execution.codexConfig,
       skill: input.execution.skill,
       context: input.execution.context,
+      ...(input.execution.midTurnDelivery
+        ? { midTurnDelivery: input.execution.midTurnDelivery }
+        : {}),
       ...(input.execution.agentDefinition
         ? { agentDefinition: { ...input.execution.agentDefinition } }
         : {}),

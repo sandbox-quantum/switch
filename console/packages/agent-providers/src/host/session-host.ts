@@ -20,7 +20,12 @@ import type {
 } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import { ProviderConversationUnavailableError } from '../adapter';
-import type { ProviderAdapter, ProviderSessionStartInput, TurnAttachment } from '../adapter';
+import type {
+  ProviderAdapter,
+  ProviderSessionStartInput,
+  ProviderTurnStartResult,
+  TurnAttachment,
+} from '../adapter';
 import type { TokenUsage, TurnOutcome, UserInputAnswers } from '../events';
 import type { ProviderRuntimeEvent } from '../events';
 import { ChatProjector } from '../session-v1/chat-projector';
@@ -592,6 +597,12 @@ export class HostedSession {
     return this.commands.get(turnId)?.origin ?? null;
   }
 
+  /** The turn currently running in this session, if one is running. */
+  get runningTurn(): { turnId: string; origin: Origin | null } | null {
+    if (!this.activeTurn) return null;
+    return { turnId: this.activeTurn, origin: this.originOf(this.activeTurn) };
+  }
+
   /**
    * Apply what Switch recorded for one of this session's approval requests:
    * a person's answer, or the request running out of time. Serialised with
@@ -749,8 +760,10 @@ export class HostedSession {
       );
     if (body.type === 'message.send') {
       if (this.stopped) throw new Error('Session stop has been requested.');
-      if (body.delivery !== 'queue')
-        throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      if (body.delivery !== 'queue') {
+        if (body.delivery !== 'steer' || !this.adapter.capabilities.steering)
+          throw new Error('UNSUPPORTED_CAPABILITY: host currently accepts queued messages.');
+      }
       if (eventBytes(command) > 60 * 1024)
         throw new Error('PAYLOAD_TOO_LARGE: message exceeds the local host limit.');
       if (body.attachments.length && !this.config.stageAttachments)
@@ -825,32 +838,154 @@ export class HostedSession {
     });
     try {
       if (body.type === 'message.send') {
-        const turnId = command.commandId;
-        this.projector.bindTurn(turnId, {
-          commandId: command.commandId,
-          origin: command.origin,
-        });
-        await this.publish({
-          type: 'turn.upsert',
-          turnId,
-          commandId: command.commandId,
-          status: 'queued',
-        });
-        await this.publish({
-          type: 'item.upsert',
-          item: {
-            itemId: `user-${command.commandId}`,
-            turnId,
-            revision: 1,
-            kind: 'user-message',
-            status: 'completed',
-            title: '',
-            text: body.text,
-            attachments: body.attachments,
+        if (body.delivery === 'steer' && this.activeTurn !== null) {
+          const attachments = body.attachments.length
+            ? await this.config.stageAttachments!(body.attachments)
+            : [];
+          if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
+          await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
+          this.dispatched.add(command.commandId);
+
+          let result: ProviderTurnStartResult;
+          try {
+            result = await this.adapter.sendTurn({
+              sessionId: this.config.session.sessionId,
+              turnId: command.commandId,
+              text: body.text,
+              attachments,
+            });
+          } catch (error) {
+            await this.publish({
+              type: 'notice',
+              level: 'warning',
+              code: 'STEERING_FALLBACK',
+              message: `Mid-turn message could not be steered: ${String(error)}. Queued behind running turn.`,
+            });
+            const turnId = command.commandId;
+            this.projector.bindTurn(turnId, {
+              commandId: command.commandId,
+              origin: command.origin,
+            });
+            await this.publish({
+              type: 'turn.upsert',
+              turnId,
+              commandId: command.commandId,
+              status: 'queued',
+            });
+            await this.publish({
+              type: 'item.upsert',
+              item: {
+                itemId: `user-${command.commandId}`,
+                turnId,
+                revision: 1,
+                kind: 'user-message',
+                status: 'completed',
+                title: 'Queued (steering fallback)',
+                text: body.text,
+                attachments: body.attachments,
+                origin: command.origin,
+              },
+            });
+            this.queue.push(command);
+            await this.publish({
+              type: 'command.status',
+              commandId: command.commandId,
+              status: 'applied',
+              code: null,
+              message: null,
+            });
+            return this.status(command.commandId);
+          }
+
+          if (result.steeredInto) {
+            await this.inbox.append({ type: 'finished', commandId: command.commandId });
+            this.finished.add(command.commandId);
+            await this.publish({
+              type: 'item.upsert',
+              item: {
+                itemId: `user-${command.commandId}`,
+                turnId: result.steeredInto,
+                revision: 1,
+                kind: 'user-message',
+                status: 'completed',
+                title: 'Steered into running turn',
+                text: body.text,
+                attachments: body.attachments,
+                origin: command.origin,
+              },
+            });
+            await this.publish({
+              type: 'command.status',
+              commandId: command.commandId,
+              status: 'applied',
+              code: null,
+              message: null,
+            });
+            return this.status(command.commandId);
+          } else {
+            const turnId = command.commandId;
+            this.activeTurn = turnId;
+            this.projector.bindTurn(turnId, {
+              commandId: command.commandId,
+              origin: command.origin,
+            });
+            await this.publish({
+              type: 'turn.upsert',
+              turnId,
+              commandId: command.commandId,
+              status: 'running',
+            });
+            await this.publish({
+              type: 'item.upsert',
+              item: {
+                itemId: `user-${command.commandId}`,
+                turnId,
+                revision: 1,
+                kind: 'user-message',
+                status: 'completed',
+                title: '',
+                text: body.text,
+                attachments: body.attachments,
+                origin: command.origin,
+              },
+            });
+            await this.publish({
+              type: 'command.status',
+              commandId: command.commandId,
+              status: 'applied',
+              code: null,
+              message: null,
+            });
+            return this.status(command.commandId);
+          }
+        } else {
+          const turnId = command.commandId;
+          this.projector.bindTurn(turnId, {
+            commandId: command.commandId,
             origin: command.origin,
-          },
-        });
-        this.queue.push(command);
+          });
+          await this.publish({
+            type: 'turn.upsert',
+            turnId,
+            commandId: command.commandId,
+            status: 'queued',
+          });
+          await this.publish({
+            type: 'item.upsert',
+            item: {
+              itemId: `user-${command.commandId}`,
+              turnId,
+              revision: 1,
+              kind: 'user-message',
+              status: 'completed',
+              title: '',
+              text: body.text,
+              attachments: body.attachments,
+              origin: command.origin,
+            },
+          });
+          this.queue.push(command);
+        }
       } else if (body.type === 'session.compact') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
