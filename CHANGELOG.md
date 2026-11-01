@@ -238,6 +238,9 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **`!list-documents` and `!list-references` answer again.** Since they began
+  listing what a room's packages bring, both failed on the admin client that
+  runs them, and the channel got no answer at all.
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
   reply.** Every running turn's card was redrawn every 5 seconds to tick its
   clock. Slack closes a streamed card after 10 minutes, so on a longer turn
