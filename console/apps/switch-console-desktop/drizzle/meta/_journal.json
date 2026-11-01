@@ -379,6 +379,13 @@
       "when": 1792510951310,
       "tag": "0053_agent_auto_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1793302509244,
+      "tag": "0054_workspace_organizations",
+      "breakpoints": true
     }
   ]
 }

@@ -70,13 +70,16 @@ from sqlalchemy import event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import ORMExecuteState, Session, SessionTransaction
 
-from switch_core.tenant_context import current_tenant_id
+from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 _registered = False
 
 # Where the hook records what it actually stamped on the current transaction,
 # so the drift check below can compare it against what is bound now.
 _STAMPED = "switch_stamped_tenant_id"
+# The same for the organization, which is stamped beside the tenant only when
+# one is bound explicitly (`tenant_context.organization_scope`).
+_STAMPED_ORGANIZATION = "switch_stamped_organization_id"
 
 # Set on the session whenever a statement goes out through the ORM, and read
 # by `TenantCheckedSession.get` to tell "this answer came from the database"
@@ -149,16 +152,22 @@ def _set_tenant_on_begin(
         # to add and no business overwriting it.
         return
     tenant_id = current_tenant_id()
+    organization_id = current_organization_id()
     # Recorded even when it is None, because "this transaction was stamped
     # with nothing" is exactly what the drift check needs to be able to tell
     # apart from "no transaction has begun yet".
     session.info[_STAMPED] = tenant_id
-    if tenant_id is None:
-        return
-    connection.execute(
-        text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
-        {"tenant_id": tenant_id},
-    )
+    session.info[_STAMPED_ORGANIZATION] = organization_id
+    if tenant_id is not None:
+        connection.execute(
+            text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+            {"tenant_id": tenant_id},
+        )
+    if organization_id is not None:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": organization_id},
+        )
 
 
 def _forget_the_stamp(session: Session, transaction: SessionTransaction) -> None:
@@ -173,6 +182,7 @@ def _forget_the_stamp(session: Session, transaction: SessionTransaction) -> None
     """
     if transaction.parent is None:
         session.info.pop(_STAMPED, None)
+        session.info.pop(_STAMPED_ORGANIZATION, None)
 
 
 def _refuse_a_binding_that_came_too_late(state: ORMExecuteState) -> None:
@@ -203,6 +213,15 @@ def _refuse_a_flush_that_drifted(
 def _refuse_drift(session: Session) -> None:
     if _STAMPED not in session.info:
         return
+    stamped_organization = session.info.get(_STAMPED_ORGANIZATION)
+    bound_organization = current_organization_id()
+    if bound_organization != stamped_organization:
+        raise TenantBindingDriftError(
+            f"this session's transaction was opened with organization "
+            f"{stamped_organization!r} and the organization bound now is "
+            f"{bound_organization!r}. Open the session inside the "
+            "organization_scope, or commit this transaction before rebinding."
+        )
     stamped = session.info[_STAMPED]
     bound = current_tenant_id()
     if bound == stamped:
@@ -252,6 +271,44 @@ def _tenant_of(instance: object) -> str | None:
         return None if identifier is None else str(identifier)
     tenant_id = getattr(instance, "tenant_id", None)
     return None if tenant_id is None else str(tenant_id)
+
+
+def _organization_of(instance: object) -> str | None:
+    """The organization `instance` belongs to, if its table is organization-scoped.
+
+    The same cases `db/rls_ddl._organization_column` derives the policy from.
+    `tenants` carries an `organization_id` too but is tenant-scoped, and is
+    left to `_tenant_of`.
+    """
+    table = getattr(type(instance), "__tablename__", None)
+    if table == "organizations":
+        identifier = getattr(instance, "id", None)
+        return None if identifier is None else str(identifier)
+    if table == "tenants":
+        return None
+    organization_id = getattr(instance, "organization_id", None)
+    return None if organization_id is None else str(organization_id)
+
+
+def _refuse_a_row_from_another_organization(instance: object) -> None:
+    """Raise when `instance` belongs to an organization other than the bound one.
+
+    Only an explicitly bound organization can be compared here. A session
+    bound to a workspace alone has its organization derived in the database,
+    which an identity-map hit never reaches, and the honest answer for that
+    case is the same as for nothing bound: no comparison rather than a guess.
+    """
+    organization_id = _organization_of(instance)
+    if organization_id is None:
+        return
+    bound = current_organization_id()
+    if bound is None or bound == organization_id:
+        return
+    raise CrossTenantIdentityMapError(
+        f"Session.get answered from the identity map with a row of "
+        f"organization {organization_id!r} while organization {bound!r} is "
+        "bound. Open a fresh session inside the new binding."
+    )
 
 
 def _refuse_a_row_from_another_tenant(instance: object) -> None:
@@ -331,6 +388,7 @@ class TenantCheckedSession(Session):
         instance = super().get(*args, **kwargs)
         if instance is not None and not self.info[_ISSUED_A_STATEMENT]:
             _refuse_a_row_from_another_tenant(instance)
+            _refuse_a_row_from_another_organization(instance)
         return instance
 
     def get_one(self, *args: Any, **kwargs: Any) -> Any:
@@ -339,6 +397,7 @@ class TenantCheckedSession(Session):
         instance = super().get_one(*args, **kwargs)
         if not self.info[_ISSUED_A_STATEMENT]:
             _refuse_a_row_from_another_tenant(instance)
+            _refuse_a_row_from_another_organization(instance)
         return instance
 
 

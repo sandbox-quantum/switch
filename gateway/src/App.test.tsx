@@ -6,8 +6,22 @@ import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
 
-const acme: TenantMembership = { id: "t1", slug: "acme", name: "Acme", role: "owner" };
-const beta: TenantMembership = { id: "t2", slug: "beta", name: "Beta Co", role: "member" };
+const acme: TenantMembership = {
+  id: "t1",
+  slug: "acme",
+  name: "Acme",
+  role: "owner",
+  organization_role: "org_admin",
+  organization_id: "o1",
+};
+const beta: TenantMembership = {
+  id: "t2",
+  slug: "beta",
+  name: "Beta Co",
+  role: "member",
+  organization_role: "member",
+  organization_id: "o2",
+};
 
 function session(overrides: Partial<Session>): Session {
   return {
@@ -16,6 +30,7 @@ function session(overrides: Partial<Session>): Session {
     tenants: [],
     state: "needs_workspace",
     can_create_workspace: true,
+    can_add_workspace: false,
     invite_email_enabled: false,
     ...overrides,
   };
@@ -78,14 +93,14 @@ describe("AppRoutes", () => {
     mockFetch({ "/auth/session": [200, session({})] });
     renderAt("/");
     expect(await screen.findByText("Welcome to Switch")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create workspace" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create organization" })).toBeTruthy();
   });
 
   it("only offers an invite when workspaces cannot be created", async () => {
     mockFetch({ "/auth/session": [200, session({ can_create_workspace: false })] });
     renderAt("/");
     expect(await screen.findByText(/Ask a workspace admin for an invite link/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Create workspace" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create organization" })).toBeNull();
   });
 
   it("asks someone in several workspaces to choose", async () => {
