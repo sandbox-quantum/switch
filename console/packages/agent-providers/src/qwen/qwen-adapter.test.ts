@@ -241,3 +241,49 @@ it('finds the MCP server of a call, whether its update or its permission request
   expect(server({ toolName: 'read_file', provenance: 'builtin' })).toBeUndefined();
   expect(server({ toolName: 'mcp__' })).toBeUndefined();
 });
+
+it('makes a deferred agent call a subagent from the update that names it', async () => {
+  // The frames Qwen 0.26.5 sent for a delegated task: the call is announced as
+  // `tool_call` before Qwen knows which deferred tool it runs, then named.
+  const adapter = createQwenAdapter();
+  const events: Array<{ type: string; item?: { id: string; type: string; title: string } }> = [];
+  adapter.subscribe((event) => events.push(event as (typeof events)[number]));
+  await adapter.startSession({
+    sessionId: 's',
+    cwd: '/work',
+    runtimeMode: 'full-access',
+    env: { OPENAI_API_KEY: 'synthetic-key' },
+    mcpServers: {},
+    connectorMcpServers: [],
+  });
+  const server = servers.at(-1)!;
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'delegate' });
+  const update = (body: Record<string, unknown>) =>
+    server.notify('session/update', { sessionId: 'native', update: body });
+
+  update({
+    sessionUpdate: 'tool_call',
+    toolCallId: 'call',
+    kind: 'other',
+    title: 'ToolCall',
+    status: 'pending',
+    rawInput: {},
+    _meta: { toolName: 'tool_call', provenance: 'builtin', phase: 'preparing' },
+  });
+  update({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'call',
+    title: 'Read first line of README.md',
+    rawInput: { description: 'Read first line of README.md', prompt: 'Read README.md.' },
+    _meta: { toolName: 'agent', provenance: 'builtin' },
+  });
+
+  await vi.waitFor(() =>
+    expect(events.find((e) => e.type === 'item.updated' && e.item?.id === 'call')).toMatchObject({
+      item: { type: 'subagent', title: 'Read first line of README.md' },
+    })
+  );
+  expect(events.find((e) => e.type === 'item.started' && e.item?.id === 'call')).toMatchObject({
+    item: { type: 'tool_call' },
+  });
+});
