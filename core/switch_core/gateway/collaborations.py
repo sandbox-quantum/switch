@@ -854,10 +854,13 @@ async def claim_bridge_identity(
             status_code=403,
             detail="Only an admin may claim a messaging identity for another user",
         )
-    # Membership, not existence: `users` is deployment-wide, and a claim
-    # names who the account is recognised as inside this tenant.
+    # Standing in this tenant, not existence: `users` is deployment-wide, and
+    # a claim names who the account is recognised as inside this tenant. An
+    # organization's `org_admin` stands in every workspace of it.
     if (
-        await user_store.tenant_role(session, require_tenant_id(), target_user_id)
+        await user_store.effective_tenant_role(
+            session, require_tenant_id(), target_user_id
+        )
         is None
     ):
         raise HTTPException(status_code=404, detail="Switch user not found")

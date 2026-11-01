@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as thirteen functions.
+"""The whole exemption from row-level security, written out as fourteen functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -159,6 +159,16 @@ those are, so each row is read with its own tenant bound. It discloses which
 workspaces a machine, and so its owner, belongs to: what `tenants_of_user`
 already discloses about the same person.
 
+**`tenants_bindable_by_user` is the fourteenth**, and `tenants_of_user`
+widened to the organization above the workspace. An organization's
+`org_admin` administers every workspace in it, and may bind one without
+holding a membership row there, so resolving a request's workspace has to
+read which workspaces those are before any is bound. One function answers
+both halves, so every authenticated request costs one lookup rather than
+two. It discloses which workspaces a person belongs to or administers
+through an organization; the gateway asks it only about the signed-in
+caller.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -251,7 +261,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The thirteen of them. Ordered as the three shapes above: enumeration, then
+# The fourteen of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -275,6 +285,24 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
             "Which tenants a gateway login belongs to. A person is global "
             "(`users` carries no tenant); the membership row is the per-tenant "
             "object, and it is scoped, so a session cannot read its own way in."
+        ),
+    ),
+    TenantLookup(
+        name="tenants_bindable_by_user",
+        arguments=("user_id",),
+        query=(
+            "SELECT tenant_id FROM tenant_members WHERE user_id = p_user_id "
+            "UNION SELECT tenants.id FROM tenants "
+            "JOIN organization_members "
+            "ON organization_members.organization_id = tenants.organization_id "
+            "WHERE organization_members.user_id = p_user_id "
+            "AND organization_members.role = 'org_admin' ORDER BY 1"
+        ),
+        purpose=(
+            "Which tenants a gateway login may bind: those it holds a "
+            "membership row in, and those it administers as its "
+            "organization's `org_admin`. Read before a tenant is bound, for "
+            "the same reason as `tenants_of_user`, and once per request."
         ),
     ),
     TenantLookup(
@@ -472,17 +500,20 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the thirteen names are fixed and known here, so there is nothing
+# at call time: the fourteen names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS`: a fourteenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS`: a fifteenth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
     "tenants_of_user": text(
         "SELECT tenant_id FROM tenants_of_user(:user_id) AS tenant_id"
+    ),
+    "tenants_bindable_by_user": text(
+        "SELECT tenant_id FROM tenants_bindable_by_user(:user_id) AS tenant_id"
     ),
     "tenant_of_api_key": text(
         "SELECT tenant_id FROM tenant_of_api_key(:key_hash) AS tenant_id"
@@ -575,6 +606,14 @@ async def tenants_of_user(
 ) -> list[str]:
     return await _call(
         session_factory, TENANT_LOOKUPS_BY_NAME["tenants_of_user"], user_id
+    )
+
+
+async def tenants_bindable_by_user(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> list[str]:
+    return await _call(
+        session_factory, TENANT_LOOKUPS_BY_NAME["tenants_bindable_by_user"], user_id
     )
 
 
