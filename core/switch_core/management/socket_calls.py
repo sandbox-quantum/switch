@@ -125,12 +125,29 @@ async def answer(
     authenticator: ManagementAuthenticator,
 ) -> dict[str, Any]:
     """Run one call a controller sent on its socket, and return the frame
-    that answers it."""
+    that answers it: every call is answered, a failure with 500 as over
+    HTTP."""
     try:
         call = _parse(message, id_)
     except _Malformed as exc:
         return _result(id_, 400, {"detail": str(exc)})
+    try:
+        return await _run(
+            call, principal=principal, protocol=protocol, authenticator=authenticator
+        )
+    except Exception:
+        logger.exception("A call to %s on a controller's socket failed", call.operation)
+        return _result(id_, 500, {"detail": "Internal Server Error"})
 
+
+async def _run(
+    call: Call,
+    *,
+    principal: ControllerPrincipal,
+    protocol: AgentCore,
+    authenticator: ManagementAuthenticator,
+) -> dict[str, Any]:
+    id_ = call.id
     try:
         controller = await authenticator.current(principal)
     except ControllerAuthError as exc:
@@ -175,10 +192,7 @@ async def answer(
         except Exception as exc:
             status = refusal_status(exc)
             if status is None:
-                logger.exception(
-                    "Operation %s failed on a controller's socket", call.operation
-                )
-                return _result(id_, 500, {"detail": "Internal Server Error"})
+                raise
             return _result(id_, status, {"detail": str(exc)})
         return _result(id_, 200, _BODY.dump_python({"result": result}, mode="json"))
 

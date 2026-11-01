@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -218,3 +218,28 @@ async def test_a_call_that_cannot_be_run_as_sent_is_a_400(
 
     assert answer["data"]["status"] == 400
     assert detail in answer["data"]["body"]["detail"]
+
+
+async def test_a_call_that_fails_is_still_answered() -> None:
+    """With a 500, as the HTTP route answers a failure, so the controller is
+    not left waiting on it until the socket closes."""
+
+    class _Failing:
+        async def current(self, principal: ControllerPrincipal) -> ControllerPrincipal:
+            raise RuntimeError("the database went away")
+
+    answer = await socket_calls.answer(
+        {"agent_id": "a1", "operation": "post_message"},
+        "c-1",
+        principal=ControllerPrincipal(
+            controller_id="c1", owner_id="o1", tenant_id=TENANT_ZERO_ID
+        ),
+        protocol=cast(Any, None),
+        authenticator=cast(Any, _Failing()),
+    )
+
+    assert answer["data"] == {
+        "id": "c-1",
+        "status": 500,
+        "body": {"detail": "Internal Server Error"},
+    }

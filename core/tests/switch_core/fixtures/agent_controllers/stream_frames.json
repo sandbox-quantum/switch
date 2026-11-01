@@ -157,5 +157,15 @@
       "code": "taken_over",
       "reason": "another stream attached to this connection and took it over"
     }
+  },
+  {
+    "event": "call.result",
+    "data": {
+      "id": 1,
+      "status": 404,
+      "body": {
+        "detail": "unknown operation 'no_such_operation'; expected one of: post_message, read_context"
+      }
+    }
   }
 ]

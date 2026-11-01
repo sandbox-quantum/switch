@@ -85,6 +85,17 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **An agent controller can send its agents' operations on its socket.**
+  Every operation a controller's agents call was an HTTP request of its own,
+  parsed, routed and authenticated with the controller's token, though the
+  controller already holds an authenticated WebSocket to the server. The
+  socket now takes them as `call` frames and answers each with a
+  `call.result` frame carrying the status and body the HTTP route
+  (`POST /agents/{id}/ops/{operation}`) would have answered with. A call is
+  authorized as that request is: the controller checked against its row, and
+  the agent's binding to it. The socket's first frame offers calls
+  (`calls.max_in_flight`, 64); a call over that is answered 429
+  `capacity_exceeded` without running, so the controller sends it over HTTP.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -4230,6 +4241,16 @@ tags; see RELEASING.md.
   system is read-only to it. Agents get provider keys from the controller's
   `--env-file`, not its user's own logins. `--agent-users` sets how many agents
   can run (16 by default).
+
+#### Changed
+- **Agents' operations go to Switch on the controller's socket.** Every
+  operation an agent host calls through the relay
+  (`POST /agents/{id}/ops/{operation}`) is sent as a call on the socket the
+  controller already holds, when Switch offers calls, instead of as an HTTP
+  request of its own. Over HTTP as before against a server that does not
+  offer them, while the socket is down, and when as many calls are in flight
+  as Switch takes. A call the socket closes on is answered 502, as a request
+  whose connection drops.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not
