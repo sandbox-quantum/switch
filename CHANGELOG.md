@@ -224,6 +224,9 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Reading an agent's rooms uses an index.** `room_agents` is indexed on
+  `agent_id`; reads by agent scanned the whole table, 2.9 ms each at 10,000
+  agents.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's

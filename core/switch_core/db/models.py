@@ -886,6 +886,9 @@ room_agents = Table(
         name="fk_room_agents_agent",
     ),
     Index("ix_room_agents_tenant_id", "tenant_id"),
+    # The primary key leads with the room; reads of an agent's rooms, and the
+    # foreign key's check when an agent is deleted, go by the agent.
+    Index("ix_room_agents_agent_id", "agent_id"),
 )
 
 room_skills = Table(
