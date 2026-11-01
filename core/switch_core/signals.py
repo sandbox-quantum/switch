@@ -172,6 +172,11 @@ class SignalBus:
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
         self.connected = asyncio.Event()
+        # How many listening connections have been established. What a process
+        # keeps current by signals is current only while this stays the same
+        # and `connected` stays set: a signal sent between two connections
+        # reached neither.
+        self.listens = 0
 
     # ── Registration ──────────────────────────────────────────────────────────
 
@@ -346,6 +351,7 @@ class SignalBus:
                     )
                 await driver.add_listener(SIGNAL_CHANNEL, self._on_notify)
                 try:
+                    self.listens += 1
                     self.connected.set()
                     await self._resync_all()
                     await self._hold_open(driver)

@@ -32,6 +32,14 @@ from switch_core.db.agent_event_notify_ddl import (
     CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
     DROP_AGENT_EVENT_NOTIFY_TRIGGER,
 )
+from switch_core.db.auth_rows_notify_ddl import (
+    CREATE_AGENT_NOTIFY_FUNCTION,
+    CREATE_AGENT_NOTIFY_TRIGGER,
+    CREATE_CONTROLLER_NOTIFY_FUNCTION,
+    CREATE_CONTROLLER_NOTIFY_TRIGGER,
+    DROP_AGENT_NOTIFY_TRIGGER,
+    DROP_CONTROLLER_NOTIFY_TRIGGER,
+)
 from switch_core.db.base import Base
 from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.membership_notify_ddl import (
@@ -3878,6 +3886,28 @@ class AgentController(TenantScoped, Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+# The triggers that signal every process when an agent's row changes, or a
+# controller's owner, credential or revocation does, so each process drops
+# what it kept of them for authorizing controller tokens. As for the triggers
+# above, `create_all` builds them for the tests and real databases get them
+# from a migration. The SQL lives in `db/auth_rows_notify_ddl.py`.
+for _table, _ddls, _drop in (
+    (
+        Agent.__table__,
+        (CREATE_AGENT_NOTIFY_FUNCTION, CREATE_AGENT_NOTIFY_TRIGGER),
+        DROP_AGENT_NOTIFY_TRIGGER,
+    ),
+    (
+        AgentController.__table__,
+        (CREATE_CONTROLLER_NOTIFY_FUNCTION, CREATE_CONTROLLER_NOTIFY_TRIGGER),
+        DROP_CONTROLLER_NOTIFY_TRIGGER,
+    ),
+):
+    for _ddl in _ddls:
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+    event.listen(_table, "before_drop", DDL(_drop).execute_if(dialect="postgresql"))
 
 
 class AgentControllerEnrollmentCode(TenantScoped, Base):
