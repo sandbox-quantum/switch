@@ -50,6 +50,7 @@ baseline (`caught_up_seq`) and the reader currently in the room are stored in
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import time
@@ -974,25 +975,21 @@ class EventBuffer:
         after `after_seq`.
         """
         started = time.perf_counter()
-        query = (
-            select(AgentEventRow, _rooms_dropped_after(agent_id, after_seq))
-            .where(
-                AgentEventRow.agent_id == agent_id,
-                AgentEventRow.seq > after_seq,
-                AgentEventRow.type.not_in(RETIRED_EVENT_TYPES),
-            )
-            .order_by(AgentEventRow.seq)
+        query = _own_events_read(
+            rooms=rooms is not None,
+            notifiable_only=notifiable_only,
+            through=through_seq is not None,
+            limit=limit is not None,
         )
+        parameters: dict[str, Any] = {"agent_id": agent_id, "after_seq": after_seq}
         if rooms is not None:
-            query = query.where(AgentEventRow.room_id.in_(rooms))
-        if notifiable_only:
-            query = query.where(AgentEventRow.notifiable.is_(True))
+            parameters["rooms"] = list(rooms)
         if through_seq is not None:
-            query = query.where(AgentEventRow.seq <= through_seq)
+            parameters["through_seq"] = through_seq
         if limit is not None:
-            query = query.limit(limit)
+            parameters["limit"] = limit
         async with tenant_session(self._session_factory, tenant_id) as session:
-            found = (await session.execute(query)).all()
+            found = (await session.execute(query, parameters)).all()
         # `expire` deletes rows and records what it deleted in one
         # transaction, and the rooms it dropped after `after_seq` are read in
         # the statement that reads the events, so the two are one snapshot: a
@@ -1240,10 +1237,8 @@ class EventBuffer:
         async with tenant_session(self._session_factory, tenant_id) as session:
             rooms = (
                 await session.scalars(
-                    select(AgentEventDrop.room_id).where(
-                        AgentEventDrop.agent_id == agent_id,
-                        AgentEventDrop.dropped_through > after_seq,
-                    )
+                    _ROOMS_DROPPED_AFTER,
+                    {"agent_id": agent_id, "after_seq": after_seq},
                 )
             ).all()
         return tuple(sorted(rooms))
@@ -2518,18 +2513,56 @@ def _window_start(room_id: str, cutoff: datetime) -> Any:
     )
 
 
-def _rooms_dropped_after(agent_id: str, after_seq: int) -> Any:
-    """The rooms in which `expire` deleted own events of the agent numbered
-    after `after_seq`, as an array (NULL for none), to read alongside the
-    agent's events in one statement."""
-    return (
+# `EventBuffer.rooms_dropped_after`, built once: every read that finds no
+# event asks it.
+_ROOMS_DROPPED_AFTER = select(AgentEventDrop.room_id).where(
+    AgentEventDrop.agent_id == bindparam("agent_id"),
+    AgentEventDrop.dropped_through > bindparam("after_seq"),
+)
+
+
+@functools.cache
+def _own_events_read(
+    *, rooms: bool, notifiable_only: bool, through: bool, limit: bool
+) -> Any:
+    """The statement `EventBuffer.read_from` runs for one shape of read, built
+    once per shape (there are sixteen) and run with bind parameters: the
+    agent's own events after `:after_seq`, oldest first, each with the rooms
+    in which `expire` deleted own events of the agent numbered after
+    `:after_seq` (NULL for none), so the two are read in one statement. A
+    stream reads an agent's events for every event it delivers, and building
+    the statement each time cost more than running it.
+
+    Optional parts, by flag: only the rooms in `:rooms`, only notifiable
+    events, none numbered after `:through_seq`, at most `:limit` of them."""
+    dropped = (
         select(func.array_agg(AgentEventDrop.room_id))
         .where(
-            AgentEventDrop.agent_id == agent_id,
-            AgentEventDrop.dropped_through > after_seq,
+            AgentEventDrop.agent_id == bindparam("agent_id"),
+            AgentEventDrop.dropped_through > bindparam("after_seq"),
         )
         .scalar_subquery()
     )
+    query = (
+        select(AgentEventRow, dropped)
+        .where(
+            AgentEventRow.agent_id == bindparam("agent_id"),
+            AgentEventRow.seq > bindparam("after_seq"),
+            AgentEventRow.type.not_in(RETIRED_EVENT_TYPES),
+        )
+        .order_by(AgentEventRow.seq)
+    )
+    if rooms:
+        query = query.where(
+            AgentEventRow.room_id.in_(bindparam("rooms", expanding=True))
+        )
+    if notifiable_only:
+        query = query.where(AgentEventRow.notifiable.is_(True))
+    if through:
+        query = query.where(AgentEventRow.seq <= bindparam("through_seq"))
+    if limit:
+        query = query.limit(bindparam("limit"))
+    return query
 
 
 def _room_head(room_id: str) -> Any:

@@ -240,6 +240,8 @@ version of their own to them without also giving them a release of their own.
 - **A controller's stream waits on three events, where it waited on one per
   agent and two more.** Every attached agent's doorbell now rings the stream's
   one bell.
+- **Reading an agent's own events no longer builds its query each time.**
+  Each shape of the read is built once and run with bind parameters.
 
 #### Fixed
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
