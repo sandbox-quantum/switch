@@ -224,6 +224,9 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Reading an agent's budget standings no longer builds their query each
+  time.** The standings are read twice for every message an agent posts, and
+  building the query cost more than running it; it is now built once.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
