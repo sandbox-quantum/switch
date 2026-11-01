@@ -17,6 +17,7 @@ read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, NamedTuple
 
@@ -94,12 +95,13 @@ from switch_core.gateway.workspace_access import (
     revoke_workspace_access,
 )
 from switch_core.gateway.workspace_creation import (
+    NOTHING_CHANGED,
     create_organization_for,
     create_workspace,
-    directory_refused,
+    directory_failed,
     lock_workspace_allowance,
 )
-from switch_core.organization_directory import DirectoryRefusal, OrganizationDirectory
+from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 
 router = APIRouter()
 
@@ -410,6 +412,38 @@ async def list_organization_members(
     ]
 
 
+# Why a change the directory did not make still took something away.
+_ACCESS_ALREADY_ENDED = (
+    "They keep their place in the organization, but what they held in "
+    "workspaces they reached only as an organization admin has already been "
+    "taken away."
+)
+
+
+async def _ask_directory(
+    change: Callable[..., Awaitable[None]],
+    session: AsyncSession,
+    organization_id: str,
+    *args: str,
+    access_ended: bool,
+) -> None:
+    """Ask the directory to make `change` to a member of `organization_id`,
+    with `args`: after every check that can refuse, under the lock on the
+    organization's admins, and before the write and its commit
+    (`organization_directory.py`). `access_ended` says the person's access
+    through the organization was ended on the way, which a refusal does not
+    give back."""
+    organization = await session.get(Organization, organization_id)
+    if organization is None:
+        raise RuntimeError(f"Organization {organization_id} is not visible here")
+    try:
+        await change(organization, *args)
+    except DirectoryError as error:
+        raise directory_failed(
+            error, _ACCESS_ALREADY_ENDED if access_ended else NOTHING_CHANGED
+        ) from None
+
+
 async def _end_access_through_organization(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -508,8 +542,8 @@ async def update_organization_member_role(
     Refuses to demote the last `org_admin`: nobody else could grant the role
     again. Demoting someone first takes away what they hold in the workspaces
     they were in only as `org_admin` (`_end_access_through_organization`).
-    Once the rules pass, the directory is asked before anything is changed
-    (`organization_directory.py`). Recorded in the organization's audit log.
+    The directory is asked last, once every check has passed
+    (`_ask_directory`). Recorded in the organization's audit log.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -529,16 +563,6 @@ async def update_organization_member_role(
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
         raise last_admin
-    if member.role != req.role:
-        try:
-            await organization_directory.set_role(
-                session,
-                organization_id=organization_id,
-                user_id=user_id,
-                role=req.role,
-            )
-        except DirectoryRefusal as refusal:
-            raise directory_refused(refusal) from None
 
     warning = None
     if demoting:
@@ -571,6 +595,14 @@ async def update_organization_member_role(
             )
 
     if member.role != req.role:
+        await _ask_directory(
+            organization_directory.set_role,
+            session,
+            organization_id,
+            user_id,
+            req.role,
+            access_ended=demoting,
+        )
         await record_organization_audit_event(
             session,
             organization_id=organization_id,
@@ -619,8 +651,8 @@ async def remove_organization_member(
     one workspace at a time. An `org_admin` also stands in workspaces they
     hold no membership row in, and what they hold there is taken away first
     (`_end_access_through_organization`). Refuses the last `org_admin` too.
-    Once the rules pass, the directory is asked before anything is changed
-    (`organization_directory.py`). Recorded in the organization's audit log.
+    The directory is asked last, once every check has passed
+    (`_ask_directory`). Recorded in the organization's audit log.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -651,13 +683,6 @@ async def remove_organization_member(
             status_code=409,
             detail=(f"Remove them from the organization's workspaces first: {names}"),
         )
-    try:
-        await organization_directory.remove(
-            session, organization_id=organization_id, user_id=user_id
-        )
-    except DirectoryRefusal as refusal:
-        raise directory_refused(refusal) from None
-
     warning = None
     if was_admin:
         try:
@@ -684,6 +709,13 @@ async def remove_organization_member(
         raise HTTPException(status_code=404, detail="Not a member of this organization")
     if member.role == ORGANIZATION_ADMIN_ROLE and admins <= 1:
         raise last_admin
+    await _ask_directory(
+        organization_directory.remove,
+        session,
+        organization_id,
+        user_id,
+        access_ended=was_admin,
+    )
     role = member.role
     await session.execute(
         delete(OrganizationMember).where(
