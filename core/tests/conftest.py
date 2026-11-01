@@ -31,7 +31,7 @@ from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.db import encrypted_json
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
-from switch_core.db.models import TENANT_ZERO_ID, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, Organization, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
 from switch_core.keys import Keyring
 from switch_core.messages.notify import MessageListener
@@ -68,11 +68,21 @@ async def _seed_tenant_zero(conn: AsyncConnection) -> None:
     """Insert the one tenant every scoped row's `tenant_id` default points at.
 
     Every scoped table's `tenant_id` FK requires a matching `tenants` row, so
-    this must run right after the schema exists.
+    this must run right after the schema exists. It belongs to an
+    organization of its own, as the migration gives every existing workspace
+    one; the organization reuses the tenant's id.
     """
     await conn.execute(
-        insert(Tenant.__table__).values(
+        insert(Organization.__table__).values(
             id=TENANT_ZERO_ID, slug="default", name="Default"
+        )
+    )
+    await conn.execute(
+        insert(Tenant.__table__).values(
+            id=TENANT_ZERO_ID,
+            slug="default",
+            name="Default",
+            organization_id=TENANT_ZERO_ID,
         )
     )
 
