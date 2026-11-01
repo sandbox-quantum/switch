@@ -523,6 +523,7 @@ class TestWhereTheMetadataIs:
                 "    client_settings: EXAMPLE\n"
                 "    authorization_params:\n"
                 "      access_type: offline\n"
+                "      token_access_type: offline\n"
                 "      include_granted_scopes: 'false'\n",
             ),
         )
@@ -530,6 +531,7 @@ class TestWhereTheMetadataIs:
         await _sign_in(adapter, vendor)
         for authorization in vendor.authorizations:
             assert authorization["access_type"] == "offline"
+            assert authorization["token_access_type"] == "offline"
             assert authorization["include_granted_scopes"] == "false"
             assert authorization["redirect_uri"] == REDIRECT
         plain, _ = _adapter(vendor, CLI_ENTRY)

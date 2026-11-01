@@ -640,6 +640,21 @@ def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     assert oauth is not None and oauth.prompt == "consent select_account"
 
 
+def test_takes_token_access_type_for_a_vendor_that_needs_a_refresh_token(catalog_copy):
+    # Dropbox hands out a refresh token only for offline access.
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n"
+            "    authorization_params: { token_access_type: offline }\n",
+        ),
+    )
+    oauth = load_catalog(catalog_copy)["example"].definition.auth.oauth
+    assert oauth is not None
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+
+
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     _write_example(
         catalog_copy,

@@ -63,7 +63,9 @@ AdapterName = Literal["github", "oauth", "api_key"]
 RedirectMode = Literal["loopback", "core"]
 # Sign-in parameters a vendor may need beyond OAuth's own. The rest of an
 # authorization request is Core's to set.
-AuthorizationParam = Literal["access_type", "include_granted_scopes"]
+AuthorizationParam = Literal[
+    "access_type", "include_granted_scopes", "token_access_type"
+]
 
 
 class OAuthClient(BaseModel):
