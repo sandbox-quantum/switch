@@ -22,6 +22,7 @@ PLACEHOLDERS = {
     "box",
     "canva",
     "vercel",
+    "mongodb",
 }
 
 
