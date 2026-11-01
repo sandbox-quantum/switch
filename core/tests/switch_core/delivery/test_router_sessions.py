@@ -21,6 +21,11 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
+    ClientDeclaration,
+)
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import Agent, Client, Room
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.recipient import AgentRecipient
@@ -207,3 +212,46 @@ class TestWritingAMessage:
 
         assert (scope.taken, scope.peak) == (1, 1)
         assert len(await own_events(session_factory, agents["a3"][0].id)) == 1
+
+
+class TestAfterTheWrite:
+    async def test_a_message_for_a_connected_agent_asks_nothing_more(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A connected agent has nothing to say about a message addressed to
+        it, so nothing asks whether it is still in the room once the message
+        has committed: that is asked only before an agent says or wakes
+        something (`Delivery.checks_membership`)."""
+        process = process_on(session_factory)
+        room = await make_room(session_factory)
+        louisa = await make_person(session_factory, "louisa")
+        await add_member(session_factory, room, louisa)
+        agent, client = await make_agent(session_factory, "member")
+        await add_member(session_factory, room, client, agent=agent)
+        process.connections.open(
+            agent_id=agent.id,
+            connection_id="c1",
+            scope="single",
+            delivery_filter="all",
+            spawn_capable=False,
+            position={OWN_EVENTS: 0},
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
+        )
+        asked: list[str] = []
+        still_member = AgentRecipient.still_member
+
+        async def recording(self: AgentRecipient) -> bool:
+            asked.append(self.agent.id)
+            return await still_member(self)
+
+        monkeypatch.setattr(AgentRecipient, "still_member", recording)
+
+        await process.say(room, "@member can you look at this", sender=louisa)
+        await process.idle()
+
+        assert len(await own_events(session_factory, agent.id)) == 1
+        assert asked == []
+        assert [r["agent_live"] for r in process.telemetry.addressed] == [True]
