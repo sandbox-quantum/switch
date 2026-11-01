@@ -357,7 +357,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     <ServerPage
       width={1000}
       title="Templates"
-      description="Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it describes is created in one go, or nothing is."
+      description="Pick a template, fill in what it asks, and Switch creates the agents and rooms it describes."
       action={
         <Button size="sm" onClick={() => navigate('templateImport', { serverId })}>
           <Upload className="size-4" />
