@@ -157,6 +157,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/organizations/current/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/packages/{package_id}",
       "auth": "session",
       "flags": []
@@ -582,6 +587,36 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/operator/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/audit-events",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/members",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/current/workspaces",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/packages",
       "auth": "session",
       "flags": []
@@ -868,6 +903,11 @@
       ]
     },
     {
+      "route": "PATCH /gateway/organizations/current/members/{user_id}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "PATCH /gateway/packages/{package_id}",
       "auth": "session",
       "flags": []
@@ -1121,6 +1161,16 @@
     },
     {
       "route": "POST /gateway/messaging-apps/{platform}/install",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/current/workspaces",
       "auth": "session",
       "flags": []
     },
