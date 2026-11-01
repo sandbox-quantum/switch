@@ -38,6 +38,7 @@ export const AGENT_ENV_VARS = [
   'CODEX_HOME',
   'CURSOR_API_KEY',
   'DASHSCOPE_API_KEY',
+  'QWENCLOUD_API_KEY',
   'GEMINI_API_KEY',
   'GEMINI_MODEL',
   'GOOGLE_API_KEY',
@@ -139,6 +140,7 @@ const KEYRING_BUS_ENV = ['DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR'];
  * credentials the session is given reach it. Matched without regard to case
  * on Windows.
  */
+
 export function codexKeyringReaderEnvironment(
   sessionEnv: Record<string, string>,
   hostEnv: NodeJS.ProcessEnv,
