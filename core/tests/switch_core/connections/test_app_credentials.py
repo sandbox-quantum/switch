@@ -37,6 +37,7 @@ from tests.switch_core.connections.adapters.test_github import _app_files, _conf
 
 PUBLIC_URL = "https://switch.example.test"
 GOOGLE_VARIABLE = "GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH"
+HUBSPOT_VARIABLE = "HUBSPOT_CLIENT_CONFIG_PATH"
 
 
 def _pem(key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey) -> str:
@@ -140,9 +141,11 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "hubspot": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
+        assert specs["hubspot"].variables == (HUBSPOT_VARIABLE,)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
 
 

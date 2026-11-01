@@ -163,14 +163,19 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """A read-only GET or MCP tool that returns the account id and a label."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+    mcp_tool: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,62}$")
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "ConnectionIdentity":
+        if (self.url is None) == (self.mcp_tool is None):
+            raise ValueError("identity needs exactly one of url or mcp_tool")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
@@ -503,15 +508,26 @@ class LevelAccess(BaseModel):
     def _one_kind(self) -> "LevelAccess":
         if (self.scopes is None) == (self.permissions is None):
             raise ValueError("an access level holds scopes or permissions, not both")
-        if not (self.scopes or self.permissions):
-            raise ValueError("an access level needs at least one scope or permission")
         return self
 
 
 class ConnectionAccess(BaseModel):
+    """Consent levels; unscoped OAuth keeps read and write equally powerful."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    unscoped: bool = False
     read: LevelAccess
     write: LevelAccess | None = None
+
+    @model_validator(mode="after")
+    def _scopes_match_consent(self) -> "ConnectionAccess":
+        levels = [self.read, *([self.write] if self.write is not None else [])]
+        if self.unscoped:
+            if self.write is None or any(level.scopes != [] for level in levels):
+                raise ValueError("unscoped access needs empty read and write scopes")
+        elif any(not (level.scopes or level.permissions) for level in levels):
+            raise ValueError("an access level needs at least one scope or permission")
+        return self
 
 
 class ConnectionTools(BaseModel):
@@ -579,6 +595,8 @@ class ConnectionDefinition(BaseModel):
             self._check_oauth()
         elif self.adapter == "api_key":
             self._check_api_key()
+        if self.access is not None and self.access.unscoped and self.adapter != "oauth":
+            raise ValueError("only an oauth entry can have unscoped access")
         if self.adapter != "api_key":
             if self.auth.api_key is not None:
                 raise ValueError("only the api_key adapter has key fields")
@@ -688,6 +706,12 @@ class ConnectionDefinition(BaseModel):
                 )
         if self.auth.refresh not in (None, "rotating", "reusable"):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
+        if (
+            self.auth.identity is not None
+            and self.auth.identity.mcp_tool is not None
+            and self.mcp is None
+        ):
+            raise ValueError("an MCP identity needs an MCP server")
         if self.token is not None and self.token.kind != "pass_through":
             raise ValueError("the oauth adapter passes the owner's token through")
         if self.token is not None and self.token.max_lifetime is None:
@@ -738,7 +762,7 @@ def _load_skill(slug: str, root: Path) -> dict[str, str]:
                 f"Connection {slug} skill exceeds {MAX_SKILL_BYTES} bytes."
             )
         try:
-            content = raw.decode("utf-8")
+            content = raw.decode("utf-8").replace("\r\n", "\n")
         except UnicodeDecodeError:
             raise CatalogError(
                 f"Connection {slug} skill file is not UTF-8: {relative}"

@@ -5,7 +5,7 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
 session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
-as the first. v1's tables,
+as the first, followed by Airtable and HubSpot. v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -42,8 +42,9 @@ auth:
     #   include_granted_scopes)
     revocation_discovered: true   # or revocation_url: https://…; with neither,
                                   # remove_access: where people remove Switch
-  identity:                   # GET with the token; dotted paths in its JSON
+  identity:                   # GET or read-only MCP tool; dotted JSON paths
     url: https://api.atlassian.com/me
+    # Or: mcp_tool: get_user_details
     account_id: account_id
     label: email
 token: { kind: pass_through, max_lifetime: 28800 }
@@ -53,8 +54,17 @@ mcp:
 access:
   read:  { scopes: [...] }
   write: { scopes: [...] }
+  # For OAuth services with no scopes: both levels have empty scopes, and
+  #   both resolve to write access. HubSpot is the current example.
+  # unscoped: true
 tools: { mode: pass_through } # the vendor's tool list as it is, until classified
 ```
+
+An OAuth entry may use `access.unscoped: true` only when both levels are present
+with empty scope lists; it is granted the write level because the vendor cannot
+distinguish them. Other OAuth entries still need scopes, and keys cannot have
+access levels. An identity can come from an HTTPS endpoint or a read-only MCP
+tool on the configured server.
 
 The loader stays strict and refuses an entry whose fields contradict its
 adapter: a GitHub entry with MCP servers, a pass-through GitHub token, an
@@ -537,6 +547,23 @@ To connect: Settings, Connections in Switch Console, then Airtable. To roll
 back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
+
+## HubSpot
+
+HubSpot's remote MCP server is a static OAuth connector: each operator creates
+an MCP connector app and supplies its client ID and secret. It requires PKCE,
+has no documented dynamic registration, and its authorization metadata
+advertises no scopes. The connector therefore omits the `scope` parameter and
+uses the same explicit unscoped access for both Switch levels. The levels do
+not make the connection read-only: the connected HubSpot user's permissions
+are the authorization boundary. See the [operator setup](../old/hubspot-setup.md).
+
+The OAuth server's MCP token lifetime and identity result paths still need
+verification against a live app; its public documentation names
+`get_user_details` but does not publish the returned JSON shape. The issue
+reports rotating refresh tokens. HubSpot does not advertise an OAuth
+revocation endpoint, so the operator guidance tells people to remove the
+authorization from HubSpot after disconnecting.
 
 ## Google Workspace
 

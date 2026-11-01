@@ -1,0 +1,41 @@
+slug: hubspot
+name: HubSpot
+category: CRM
+description: Read and update contacts, companies and deals in HubSpot, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # The issue reports rotating refresh tokens; this was not live-verified.
+  refresh: rotating
+  oauth:
+    # Each server's operator creates an MCP connector app and saves it in
+    # Connector apps, or names its settings in HUBSPOT_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: HUBSPOT
+    redirect: [core]
+    unchecked: >-
+      Switch cannot confirm the redirect URL until someone completes a sign-in.
+    # HubSpot's MCP auth metadata advertises no revocation endpoint; this UI
+    # location is not live-verified.
+    remove_access: >-
+      Remove the Switch connected app from HubSpot account settings. Until
+      then, Switch stops using the sign-in but HubSpot still recognizes it.
+  identity:
+    # Confirm these unpublished result paths with a live account before merge.
+    mcp_tool: get_user_details
+    account_id: user.id
+    label: user.email
+# HubSpot's general OAuth documentation says 30 minutes; the MCP token lifetime
+# has not been measured, so this cap should be revisited after a live sign-in.
+token: { kind: pass_through, max_lifetime: 1800 }
+mcp:
+  servers:
+    - { name: hubspot, url: "https://mcp.hubspot.com" }
+access:
+  # HubSpot's MCP auth metadata advertises no scopes. HubSpot user permissions
+  # are the actual boundary; Switch cannot make this connection read-only.
+  unscoped: true
+  read: { scopes: [] }
+  write: { scopes: [] }
+tools: { mode: pass_through }

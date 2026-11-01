@@ -85,6 +85,10 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **HubSpot is available as a service connection.** A server operator configures
+  an MCP connector app, and people can connect HubSpot in Switch Console and
+  grant agents access to contacts, companies and deals through HubSpot's tools.
+  The connected user's HubSpot permissions are the access boundary.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -2128,6 +2132,7 @@ version of their own to them without also giving them a release of their own.
   keeps its rooms. Offered on connections to your own bot, not on ones that
   came from installing Switch's app.
 - **Airtable's logo on the Connections grid.**
+- **HubSpot's logo on the Connections grid.**
 - **Admin → Connector apps sets up Airtable.** Its dialog walks Airtable's
   Builder Hub with the redirect URL to copy and the scopes to tick, and asks
   the operator to confirm the integration's support details are set, which no

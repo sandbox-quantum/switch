@@ -25,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_hubspot():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "hubspot",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,48 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "hubspot",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["hubspot"].skill_files
+
+
+def test_the_shipped_hubspot_entry_uses_unscoped_static_mcp_oauth():
+    definition = CATALOG["hubspot"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "HUBSPOT",
+    )
+    assert oauth.redirect == ["core"]
+    assert oauth.remove_access is not None
+    assert definition.auth.refresh == "rotating"
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.mcp_tool, identity.account_id, identity.label) == (
+        "get_user_details",
+        "user.id",
+        "user.email",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        1800,
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("hubspot", "https://mcp.hubspot.com")
+    ]
+    assert definition.access is not None and definition.access.unscoped
+    assert definition.access.read.scopes == []
+    assert definition.access.write is not None
+    assert definition.access.write.scopes == []
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -501,6 +538,41 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_loads_a_crlf_skill_frontmatter(catalog_copy):
+    _write_example(catalog_copy)
+    skill = catalog_copy / "example" / "skill" / "SKILL.md"
+    skill.write_bytes(
+        b"---\r\nname: example\r\ndescription: Work with Example items.\r\n"
+        b"---\r\n\r\nUse the tools.\r\n"
+    )
+
+    assert load_catalog(catalog_copy)["example"].skill_files["SKILL.md"]
+
+
+def test_loads_an_explicit_unscoped_oauth_entry(catalog_copy):
+    unscoped = OAUTH_ENTRY.replace(
+        '  read: { scopes: ["read:items"] }\n'
+        '  write: { scopes: ["read:items", "write:items"] }\n',
+        "  unscoped: true\n  read: { scopes: [] }\n  write: { scopes: [] }\n",
+    )
+    _write_example(catalog_copy, unscoped)
+    access = load_catalog(catalog_copy)["example"].definition.access
+    assert access is not None and access.unscoped
+    assert access.read.scopes == []
+    assert access.write is not None and access.write.scopes == []
+
+
+def test_rejects_empty_oauth_scopes_without_explicit_unscoped_access(catalog_copy):
+    empty_scopes = OAUTH_ENTRY.replace(
+        '  read: { scopes: ["read:items"] }\n'
+        '  write: { scopes: ["read:items", "write:items"] }\n',
+        "  read: { scopes: [] }\n  write: { scopes: [] }\n",
+    )
+    _write_example(catalog_copy, empty_scopes)
+    with pytest.raises(CatalogError, match="needs at least one scope"):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):

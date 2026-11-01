@@ -123,6 +123,22 @@ def test_airtable_is_set_up_by_its_operators_own_client() -> None:
     assert adapter._client.client.client_id == "c"
 
 
+def test_hubspot_is_set_up_by_its_operators_own_client() -> None:
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "hubspot": OAuthClientCredentials("hubspot-client", "SYNTHETIC", None)
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["hubspot"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, StaticClient)
+    assert adapter._client.client.client_id == "hubspot-client"
+
+
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),
