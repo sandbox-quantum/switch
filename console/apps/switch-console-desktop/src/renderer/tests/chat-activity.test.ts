@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindTurns,
+  CANCEL_REPLIES,
   foldTurnEndNotices,
   groupTurns,
   isThinking,
@@ -10,9 +13,11 @@ import {
   type TurnActivity,
   turnTools,
 } from '@renderer/features/chats/activity-join';
+import { turnShown } from '@renderer/features/chats/components/chat-activity-block';
 import {
   type ActivityApi,
   AgentActivities,
+  type AgentActivity,
 } from '@renderer/features/chats/stores/chat-activity-store';
 import {
   type ChatActivityItem,
@@ -25,6 +30,8 @@ import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 const warn = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/utils/logger', () => ({ log: { warn } }));
+// The activity block's imports read the desktop bridge when loaded; `turnShown` needs none of it.
+vi.mock('@renderer/lib/ipc', () => ({ events: { on: vi.fn(() => () => {}) }, rpc: {} }));
 
 let clock = 0;
 function row(
@@ -274,6 +281,104 @@ describe('placeTurns', () => {
       ['q2', turn('t2')],
     ]);
     expect(ids(placeTurns(messages, 'helper', bound))).toEqual({ q1: ['t1'], q2: ['t2'] });
+  });
+
+  it('shows a cancelled turn under its own message, not under the reply it waited for', () => {
+    const messages = [said('q1', null), said('q2', null), said('r1', 'helper'), said('q3', null)];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2', 'cancelled')],
+      ['q3', turn('t3', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({
+      q1: ['t1'],
+      q2: ['t2'],
+      q3: ['t3'],
+    });
+  });
+
+  it('keeps the next turn waiting on the turn before a cancelled one', () => {
+    // The reply to the turn before the cancelled one has come; the next turn
+    // was sent after it, so shows under its own message, not under its reply.
+    const messages = [
+      said('q1', null),
+      said('r1', 'helper'),
+      said('q2', null),
+      said('q3', null),
+      said('r3', 'helper'),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2', 'cancelled')],
+      ['q3', turn('t3')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({
+      q1: ['t1'],
+      q2: ['t2'],
+      q3: ['t3'],
+    });
+  });
+
+  it('does not take what the agent says about a !cancel as the reply a turn waits for', () => {
+    const threaded = (message: ChatMessage, body: string) =>
+      ({ ...message, body, threadRootId: 'cancel' }) as ChatMessage;
+    const messages = [
+      said('q1', null),
+      said('q2', null),
+      said('cancel', null),
+      threaded(said('ack', 'helper'), 'Asked my session to cancel that message.'),
+      threaded(
+        said('answer', 'helper'),
+        'Cancelled before the agent started. The agent will not receive it.'
+      ),
+      said('q3', null),
+      said('r1', 'helper'),
+    ];
+    const bound = new Map([
+      ['q1', turn('t1')],
+      ['q2', turn('t2', 'cancelled')],
+      ['q3', turn('t3', 'running')],
+    ]);
+    expect(ids(placeTurns(messages, 'helper', bound))).toEqual({
+      q1: ['t1'],
+      q2: ['t2'],
+      r1: ['t3'],
+    });
+  });
+
+  it('matches the text posted for a !cancel', () => {
+    const host = readFileSync(
+      join(__dirname, '../../../../../packages/agent-providers/src/host/room-cancel-reply.ts'),
+      'utf8'
+    );
+    const answers = [...host.matchAll(/return\s+(['"])(.*?)\1;/g)].map((each) => each[2]);
+    expect(answers.length).toBeGreaterThan(0);
+    const core = readFileSync(
+      join(__dirname, '../../../../../../core/switch_core/bridges/agent/commands.py'),
+      'utf8'
+    );
+    const ack = core.match(/_CANCEL = ControlTexts\(\s*ack="([^"]*)"/)?.[1];
+    const cantCancel = core
+      .match(/_CANT_CANCEL = \(([^)]*)\)/)?.[1]
+      .match(/"[^"]*"/g)
+      ?.map((part) => part.slice(1, -1))
+      .join('');
+    const notSent = [...core.matchAll(/f"Could not send \{command\}: ([^"]*)"/g)].map(
+      (each) => `Could not send cancel: ${each[1]}`
+    );
+    expect(ack).toBeDefined();
+    expect(cantCancel).toBeDefined();
+    expect(notSent.length).toBe(2);
+    expect(new Set([ack, cantCancel, ...notSent, ...answers])).toEqual(CANCEL_REPLIES);
+  });
+});
+
+describe('turnShown', () => {
+  const activity = { reasoning: new Map() } as unknown as AgentActivity;
+
+  it('shows a cancelled turn that has no reasoning, tools or requests', () => {
+    expect(turnShown(activity, turnOf([], 'cancelled'))).toBe(true);
+    expect(turnShown(activity, turnOf([], 'completed'))).toBe(false);
   });
 });
 

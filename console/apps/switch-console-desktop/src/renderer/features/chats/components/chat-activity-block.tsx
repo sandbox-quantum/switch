@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { CircleSlash } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ComponentProps, type ReactNode, useEffect, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
@@ -12,6 +13,9 @@ import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
 import { ChatApprovalCard } from './chat-approval-card';
 import { ToolRow } from './tool-row';
+
+/** A turn withdrawn before it ran: muted, as nothing failed. */
+const CancelledIcon = () => <CircleSlash aria-hidden className="size-3.5" />;
 
 function ToolRows({
   items,
@@ -138,6 +142,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     isThinking(turn) ||
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
+    turn.status === 'cancelled' ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
   );
@@ -225,6 +230,11 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           {turn.status === 'error' && turn.messageId && (
             <RetryTurn activity={activity} turn={turn} />
           )}
+        </div>
+      )}
+      {turn.status === 'cancelled' && (
+        <div role="status">
+          <WorkLogRow icon={<CancelledIcon />} label="Cancelled" />
         </div>
       )}
       {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}

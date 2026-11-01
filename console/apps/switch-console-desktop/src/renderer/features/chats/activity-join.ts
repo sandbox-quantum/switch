@@ -14,7 +14,7 @@ import { isControlAck } from './stop-rows';
  * requests show with it.
  */
 
-export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+export type TurnStatus = 'queued' | 'running' | 'completed' | 'interrupted' | 'error' | 'cancelled';
 
 export type TurnActivity = {
   sessionId: string;
@@ -164,6 +164,28 @@ export function placeRequests(
 }
 
 /**
+ * What is posted for a `!cancel`: Switch's acknowledgement or refusal
+ * (`_CANCEL` and `Could not send cancel` in
+ * core/switch_core/bridges/agent/commands.py), then the session's answer
+ * (`roomCancelReply` in the host). All are posted as the agent, often in a
+ * thread, and the timeline shows threads inline.
+ */
+export const CANCEL_REPLIES: ReadonlySet<string> = new Set([
+  'Asked my session to cancel that message.',
+  "I can't cancel from here — I have no session connected to this room that could withdraw a queued message.",
+  'Could not send cancel: the room command has no stable message ID.',
+  "Could not send cancel: the agent's controller is not connected to Switch.",
+  'Cancelled before the agent started. The agent will not receive it.',
+  "I couldn't confirm the cancellation; check the activity card.",
+  "The agent has already started on that message, so it can't be cancelled. To stop the agent's current turn, use `!interrupt` with its mention.",
+  'That message was already cancelled.',
+  'Only the person who sent that message can cancel it.',
+  'There is no message with that ID waiting for this agent in this room.',
+  'That message is no longer waiting, so there is nothing to cancel.',
+  "I couldn't cancel that message: the session refused it.",
+]);
+
+/**
  * Where one agent's turns show, by the message each shows under, in message
  * order. A turn shows under the message that started it, unless that message
  * was sent while the agent's previous turn still ran: the turn then runs after
@@ -171,7 +193,9 @@ export function placeRequests(
  * the agent's first message after the previous turn, so a turn that ended
  * without a reply pushes the next turn under its own reply. A turn also shows
  * after the agent's own messages sent before its first step, such as an
- * acknowledgement posted while the session started.
+ * acknowledgement posted while the session started. A cancelled turn never
+ * ran: it shows under its own message, and the next turn waits on the turn
+ * before it. What the agent says about a `!cancel` is not a reply.
  */
 export function placeTurns(
   messages: readonly ChatMessage[],
@@ -180,17 +204,19 @@ export function placeTurns(
 ): Map<string, TurnActivity[]> {
   const placed = new Map<string, TurnActivity[]>();
   let previous: number | null = null;
-  const shown = (each: ChatMessage) => isAgentReply(each, agentId);
+  const shown = (each: ChatMessage) =>
+    isAgentReply(each, agentId) && !CANCEL_REPLIES.has(each.body.trim());
   messages.forEach((message, at) => {
     const turn = bound.get(message.messageId);
     if (!turn) return;
+    const cancelled = turn.status === 'cancelled';
     let anchor = at;
-    if (previous !== null) {
+    if (!cancelled && previous !== null) {
       const after = previous;
       const reply = messages.findIndex((each, index) => index > after && shown(each));
       anchor = Math.max(at, reply === -1 ? previous : reply);
     }
-    const firstStep = firstStepAt(turn);
+    const firstStep = cancelled ? null : firstStepAt(turn);
     for (let next = anchor + 1; firstStep !== null && next < messages.length; next++) {
       const each = messages[next];
       if (bound.has(each.messageId) || Date.parse(each.sentAt) >= firstStep) break;
@@ -198,7 +224,8 @@ export function placeTurns(
     }
     const key = messages[anchor].messageId;
     placed.set(key, [...(placed.get(key) ?? []), turn]);
-    previous = turn.status === 'interrupted' || turn.status === 'error' ? null : anchor;
+    if (!cancelled)
+      previous = turn.status === 'interrupted' || turn.status === 'error' ? null : anchor;
   });
   return placed;
 }
