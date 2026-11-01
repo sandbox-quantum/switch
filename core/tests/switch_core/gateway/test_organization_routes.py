@@ -44,6 +44,7 @@ from switch_core.gateway.auth import create_jwt, decode_jwt
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
+from switch_core.organization_directory import LocalDirectory
 
 _KEYRING = Keyring.parse(
     "test:" + "organization-routes-test-secret-" + "0" * 32, legacy_secret=None
@@ -84,6 +85,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    app.dependency_overrides[gw_deps.get_organization_directory] = lambda: (
+        LocalDirectory()
+    )
     app.dependency_overrides[gw_deps.get_organization_store] = lambda: (
         OrganizationStore()
     )

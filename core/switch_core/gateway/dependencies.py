@@ -31,6 +31,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.organization_directory import OrganizationDirectory
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
@@ -56,6 +57,7 @@ def init_dependencies(
     invitation_store: InvitationStore,
     join_domain_store: JoinDomainStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -81,6 +83,7 @@ def init_dependencies(
     _state["invitation_store"] = invitation_store
     _state["join_domain_store"] = join_domain_store
     _state["organization_store"] = organization_store
+    _state["organization_directory"] = organization_directory
     _state["template_store"] = template_store
     _state["usage_store"] = usage_store
     _state["budget_store"] = budget_store
@@ -210,6 +213,10 @@ def get_join_domain_store() -> JoinDomainStore:
 
 def get_organization_store() -> OrganizationStore:
     return _state["organization_store"]  # type: ignore[no-any-return]
+
+
+def get_organization_directory() -> OrganizationDirectory:
+    return _state["organization_directory"]  # type: ignore[no-any-return]
 
 
 def get_usage_store() -> UsageStore:

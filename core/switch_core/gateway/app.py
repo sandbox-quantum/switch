@@ -78,6 +78,7 @@ from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
 from switch_core.keys import Purpose
+from switch_core.organization_directory import OrganizationDirectory
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
@@ -103,6 +104,7 @@ def create_gateway_app(
     invitation_store: InvitationStore,
     join_domain_store: JoinDomainStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     template_store: TemplateStore,
     usage_store: UsageStore,
     budget_store: BudgetStore,
@@ -131,6 +133,7 @@ def create_gateway_app(
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
         organization_store=organization_store,
+        organization_directory=organization_directory,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
