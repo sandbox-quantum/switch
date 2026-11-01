@@ -516,6 +516,10 @@ class EventBuffer:
         # listener sets it for own events written by other processes. The events
         # themselves are always read from `agent_events`.
         self._notify: dict[str, asyncio.Event] = {}
+        # Events of readers that serve several agents at once (a controller's
+        # stream), set with each of those agents' doorbells, so such a reader
+        # waits on one event rather than one per agent (`listen`).
+        self._bells: dict[str, set[asyncio.Event]] = {}
         # The head of each agent read here, as this process was last told it:
         # by the notification of an own event written anywhere, or by a write
         # of its own. Kept only while the notification listener is listening,
@@ -1025,7 +1029,7 @@ class EventBuffer:
         A wake-up is advisory: callers re-read from their position rather than
         trusting this to deliver anything.
         """
-        notify = self._notify.setdefault(agent_id, asyncio.Event())
+        notify = self.doorbell(agent_id)
         notify.clear()
         try:
             await asyncio.wait_for(notify.wait(), timeout=timeout)
@@ -1040,7 +1044,28 @@ class EventBuffer:
         signal carries no payload, so a spurious or missed wake-up costs
         latency, never correctness.
         """
-        return self._notify.setdefault(agent_id, asyncio.Event())
+        notify = self._notify.get(agent_id)
+        if notify is None:
+            notify = self._notify[agent_id] = asyncio.Event()
+        return notify
+
+    def listen(self, agent_id: str, bell: asyncio.Event) -> None:
+        """Set `bell` whenever the agent's doorbell rings, until
+        `stop_listening`: for a reader serving several agents, which then
+        waits on its one `bell` rather than on a doorbell per agent."""
+        self._bells.setdefault(agent_id, set()).add(bell)
+
+    def stop_listening(self, agent_id: str, bell: asyncio.Event) -> None:
+        bells = self._bells.get(agent_id)
+        if bells is None:
+            return
+        bells.discard(bell)
+        if not bells:
+            del self._bells[agent_id]
+
+    def _served(self, agent_id: str) -> bool:
+        """Whether a reader in this process waits on the agent's doorbell."""
+        return agent_id in self._notify or agent_id in self._bells
 
     def ring(self, agent_id: str, seq: int | None = None) -> None:
         """Set the agent's doorbell in this process, and keep `seq`, the
@@ -1054,13 +1079,17 @@ class EventBuffer:
         head kept, and the next pass reads it.
         """
         notify = self._notify.get(agent_id)
-        if notify is None:
+        bells = self._bells.get(agent_id)
+        if notify is None and bells is None:
             return
         if seq is None or not self._listening:
             self._told_heads.pop(agent_id, None)
         else:
             self._told_heads[agent_id] = max(seq, self._told_heads.get(agent_id, seq))
-        notify.set()
+        if notify is not None:
+            notify.set()
+        for bell in bells or ():
+            bell.set()
 
     def ring_everyone(self) -> None:
         """Set every doorbell in this process, and forget every head kept.
@@ -1072,6 +1101,9 @@ class EventBuffer:
         self._told_epoch += 1
         for notify in self._notify.values():
             notify.set()
+        for bells in self._bells.values():
+            for bell in bells:
+                bell.set()
 
     def listening(self, now_listening: bool) -> None:
         """Told by the notification listener each time it starts or stops
@@ -1134,7 +1166,7 @@ class EventBuffer:
                 self._told_heads.get(agent_id, 0),
             )
             heads[agent_id] = head
-            if keep and agent_id in self._notify:
+            if keep and self._served(agent_id):
                 self._told_heads[agent_id] = head
         return heads
 
@@ -1989,6 +2021,7 @@ class EventBuffer:
         row in `agents` (`ON DELETE CASCADE`).
         """
         self._notify.pop(agent_id, None)
+        self._bells.pop(agent_id, None)
         self._told_heads.pop(agent_id, None)
 
     # ------------------------------------------------------------------

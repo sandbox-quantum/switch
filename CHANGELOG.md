@@ -237,6 +237,9 @@ version of their own to them without also giving them a release of their own.
   for.** The agents' own events are stored together, in two statements and
   one savepoint, where each agent's event took a savepoint, a numbering, an
   insert and a release of its own.
+- **A controller's stream waits on three events, where it waited on one per
+  agent and two more.** Every attached agent's doorbell now rings the stream's
+  one bell.
 
 #### Fixed
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not

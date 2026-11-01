@@ -186,6 +186,9 @@ class _ControllerStream:
             )
         self._tenant: str = self._tenant_id
         self._attached: dict[str, _Attached] = {}
+        # Rung with the doorbell of every attached agent (`EventBuffer.listen`),
+        # so a wait is on this one event rather than on one per agent.
+        self._bell = asyncio.Event()
         # Whether the next pass reads every head from the database rather
         # than taking the heads this process was told (`EventBuffer.heads`):
         # the first pass, and the pass after an idle interval with no wake,
@@ -256,12 +259,11 @@ class _ControllerStream:
                         yield raw
 
                     # Cleared before the pass reads the heads, so an event
-                    # added after that read rings its agent's doorbell again
-                    # and the wait below returns at once. The pass is then the
-                    # only read of the heads, rather than the heads being read
-                    # again after delivering and again before waiting.
-                    for agent_id in self._attached:
-                        self._buffer.doorbell(agent_id).clear()
+                    # added after that read rings the bell again and the wait
+                    # below returns at once. The pass is then the only read of
+                    # the heads, rather than the heads being read again after
+                    # delivering and again before waiting.
+                    self._bell.clear()
                     behind = False
                     for attached, head in await self._due():
                         for raw in await self._deliver(attached, head):
@@ -290,6 +292,7 @@ class _ControllerStream:
                     yield IDLE
         finally:
             for attached in self._attached.values():
+                self._buffer.stop_listening(attached.agent_id, self._bell)
                 if attached.unsubscribe is not None:
                     attached.unsubscribe()
             self._nudges.close()
@@ -336,6 +339,7 @@ class _ControllerStream:
             if agent_id in bound and agent_id not in owed:
                 continue
             attached = self._attached.pop(agent_id)
+            self._buffer.stop_listening(agent_id, self._bell)
             # Bound here again later, it starts at its head: what it missed in
             # between was never this controller's.
             conn.resume_cursors.pop(agent_id, None)
@@ -425,6 +429,7 @@ class _ControllerStream:
             )
             self._subscribe_outcomes(attached)
             self._attached[agent_id] = attached
+            self._buffer.listen(agent_id, self._bell)
             yield frame(
                 "agent.attached",
                 {"agent_id": agent_id, "from_seq": cursor, "rooms": sorted(rooms)},
@@ -583,20 +588,19 @@ class _ControllerStream:
     async def _wait(self) -> bool:
         """Wait for an event, a nudge or a change to the connection. False when
         the idle interval passed with none of them."""
-        bells = [self._buffer.doorbell(agent_id) for agent_id in self._attached]
         self._conn.wake.clear()
-        # A doorbell set now was rung after the pass cleared it, for an event
-        # the pass may not have read. The connection is re-checked after its
-        # wake is cleared, for any change that arrived since the pass began.
+        # A bell set now was rung after the pass cleared it, for an event the
+        # pass may not have read. The connection is re-checked after its wake
+        # is cleared, for any change that arrived since the pass began.
         if (
-            any(bell.is_set() for bell in bells)
+            self._bell.is_set()
             or self._connection_changed()
             or self._nudges.wake.is_set()
         ):
             return True
         waiters = [
             asyncio.ensure_future(event.wait())
-            for event in (*bells, self._conn.wake, self._nudges.wake)
+            for event in (self._bell, self._conn.wake, self._nudges.wake)
         ]
         try:
             done, _ = await asyncio.wait(

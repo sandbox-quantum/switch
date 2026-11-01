@@ -1130,6 +1130,37 @@ async def test_a_delivery_told_its_head_costs_three_statements(
     assert len(statements) == 3, statements
 
 
+async def test_a_wait_watches_one_bell_whatever_the_number_of_agents(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every attached agent's doorbell rings the stream's one bell, so a wait
+    is on three events (the bell, the connection's wake and the nudges'), not
+    one per agent and two more."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 0.05)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        for n in range(5):
+            agent_id = await place_agent(client, controller, name=f"agent-{n}")
+            await add_room(harness.session_factory, agent_id, name=f"room-{n}")
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 6)
+    assert await anext(stream) is controller_routes.IDLE
+    waited: list[object] = []
+    ensure_future = asyncio.ensure_future
+
+    def counting(awaitable: Any) -> Any:
+        waited.append(awaitable)
+        return ensure_future(awaitable)
+
+    monkeypatch.setattr(controller_stream.asyncio, "ensure_future", counting)
+    assert await anext(stream) is controller_routes.IDLE
+    await stream.aclose()
+
+    assert len(waited) == 3
+
+
 class TestToldHeads:
     """What `EventBuffer.heads` takes from the doorbells instead of reading."""
 
