@@ -299,7 +299,9 @@ class AccountDeletion:
         write that could leave an organization without an `org_admin` takes
         (`OrganizationStore.lock_admins`), so `refusal` holds against another
         admin stepping down at the same moment. Every check runs before any
-        row goes."""
+        row goes. Only Switch's rows go: a membership in a directory kept
+        outside Switch (`organization_directory.py`) is the person's beyond
+        Switch, and stays there."""
         organizations: dict[str, str] = {}
         for workspace in workspaces:
             async with tenant_session(self.session_factory, workspace.id) as session:

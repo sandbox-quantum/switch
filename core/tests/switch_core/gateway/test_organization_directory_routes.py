@@ -1,12 +1,14 @@
-"""Every route that changes who is in an organization asks the directory first.
+"""Every route that changes who is in an organization asks the directory.
 
 Against Postgres, through the real routes, with a directory that records what
-it is asked, or refuses. A refusal changes nothing in Switch, and a change the
-rules refuse is never put to the directory.
+it is asked, can't be reached, or refuses. The directory is asked last, once
+Switch's own checks have passed, so a change they refuse is never put to it,
+and a change it does not make leaves Switch's rows as they were.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -26,8 +28,10 @@ from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.organization_directory import (
+    DirectoryError,
     DirectoryOrganization,
     DirectoryRefusal,
+    DirectoryUnavailable,
 )
 from tests.switch_core.gateway.test_organization_routes import (
     _app,
@@ -42,19 +46,22 @@ from tests.switch_core.gateway.test_organization_routes import (
 )
 
 UNREACHABLE = "The organization directory could not be reached."
+NOT_ALLOWED = "The organization's plan allows no more members."
+NOTHING_CHANGED = "Nothing was changed."
 
 
 class _Directory:
-    """Records what it is asked, in order; refuses everything when `refusing`."""
+    """Records what it is asked, in order, and fails every change with
+    `failure` when one is given."""
 
-    def __init__(self, *, refusing: bool) -> None:
-        self.refusing = refusing
+    def __init__(self, failure: DirectoryError | None) -> None:
+        self.failure = failure
         self.asked: list[tuple] = []
 
     def _answer(self, *call: object) -> None:
         self.asked.append(call)
-        if self.refusing:
-            raise DirectoryRefusal(UNREACHABLE)
+        if self.failure is not None:
+            raise self.failure
 
     async def create_organization(
         self, creator: User, name: str
@@ -64,30 +71,34 @@ class _Directory:
             workos_organization_id="org_EXAMPLE", customer_id="customer-example"
         )
 
-    async def join(
-        self, session: AsyncSession, *, organization_id: str, user_id: str, role: str
-    ) -> None:
-        self._answer("join", organization_id, user_id, role)
+    async def discard_organization(self, organization: DirectoryOrganization) -> None:
+        self._answer("discard", organization.workos_organization_id)
+
+    async def join(self, organization: Organization, user_id: str, role: str) -> None:
+        self._answer("join", organization.id, user_id, role)
 
     async def set_role(
-        self, session: AsyncSession, *, organization_id: str, user_id: str, role: str
+        self, organization: Organization, user_id: str, role: str
     ) -> None:
-        self._answer("set_role", organization_id, user_id, role)
+        self._answer("set_role", organization.id, user_id, role)
 
-    async def remove(
-        self, session: AsyncSession, *, organization_id: str, user_id: str
-    ) -> None:
-        self._answer("remove", organization_id, user_id)
+    async def remove(self, organization: Organization, user_id: str) -> None:
+        self._answer("remove", organization.id, user_id)
 
 
 @pytest.fixture
 def directory() -> _Directory:
-    return _Directory(refusing=False)
+    return _Directory(None)
+
+
+@pytest.fixture
+def unavailable() -> _Directory:
+    return _Directory(DirectoryUnavailable(UNREACHABLE))
 
 
 @pytest.fixture
 def refusing() -> _Directory:
-    return _Directory(refusing=True)
+    return _Directory(DirectoryRefusal(NOT_ALLOWED))
 
 
 def _with(
@@ -100,9 +111,9 @@ def _with(
     return app
 
 
-def _refused(response) -> None:
+def _unavailable(response, outcome: str = NOTHING_CHANGED) -> None:
     assert response.status_code == 503, response.text
-    assert response.json()["detail"] == f"{UNREACHABLE} Nothing was changed."
+    assert response.json()["detail"] == f"{UNREACHABLE} {outcome}"
 
 
 async def _organization_of(session_factory, tenant_id: str) -> str:
@@ -124,6 +135,11 @@ async def _outsider(session_factory) -> str:
     return await _user(session_factory, "user")
 
 
+class _FailingLifecycle:
+    async def create_tenant(self, name: str, slug: str, organization_id: str):
+        raise RuntimeError("provisioning failed")
+
+
 class TestCreating:
     async def test_the_directory_records_it_first_and_its_ids_are_kept(
         self, session_factory, directory: _Directory
@@ -143,16 +159,16 @@ class TestCreating:
         assert organization.workos_organization_id == "org_EXAMPLE"
         assert organization.customer_id == "customer-example"
 
-    async def test_a_refusal_creates_nothing_and_counts_nothing(
-        self, session_factory, refusing: _Directory
+    async def test_an_unreachable_directory_creates_nothing_and_counts_nothing(
+        self, session_factory, unavailable: _Directory
     ) -> None:
         ada = await _user(session_factory, "user")
         name = _name("Refused")
 
-        async with _client(_with(session_factory, refusing), ada, None) as client:
+        async with _client(_with(session_factory, unavailable), ada, None) as client:
             response = await client.post("/organizations", json={"name": name})
 
-        _refused(response)
+        _unavailable(response)
         async with session_factory() as session:
             assert (
                 await session.scalar(
@@ -161,6 +177,32 @@ class TestCreating:
                 is None
             )
         assert await _workspaces_created(session_factory, ada) == 0
+
+    async def test_a_refusal_by_its_own_rules_is_409(
+        self, session_factory, refusing: _Directory
+    ) -> None:
+        ada = await _user(session_factory, "user")
+
+        async with _client(_with(session_factory, refusing), ada, None) as client:
+            response = await client.post("/organizations", json={"name": "Acme"})
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == f"{NOT_ALLOWED} {NOTHING_CHANGED}"
+
+    async def test_the_directory_discards_it_when_switch_cannot_create_it(
+        self, session_factory, directory: _Directory
+    ) -> None:
+        ada = await _user(session_factory, "user")
+        app = _with(session_factory, directory)
+        app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: (
+            _FailingLifecycle()
+        )
+
+        async with _client(app, ada, None) as client:
+            with pytest.raises(RuntimeError, match="provisioning failed"):
+                await client.post("/organizations", json={"name": "Acme"})
+
+        assert directory.asked == [("create", ada, "Acme"), ("discard", "org_EXAMPLE")]
 
     async def test_an_unusable_name_is_refused_before_the_directory_is_asked(
         self, session_factory, directory: _Directory
@@ -205,29 +247,29 @@ class TestJoining:
         assert directory.asked == [("join", organization_id, bob, "member")]
         assert await _role(session_factory, tenant_id, bob) == "member"
 
-    async def test_a_refused_join_leaves_the_invitation_unspent(
-        self, session_factory, refusing: _Directory, directory: _Directory
+    async def test_a_failed_join_leaves_the_invitation_unspent(
+        self, session_factory, unavailable: _Directory, directory: _Directory
     ) -> None:
         ada = _name("ada")
         tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
         token = await _invitation(session_factory, tenant_id, ada)
         bob = await _outsider(session_factory)
 
-        async with _client(_with(session_factory, refusing), bob, None) as client:
+        async with _client(_with(session_factory, unavailable), bob, None) as client:
             refused = await client.post("/invitations/accept", json={"token": token})
         async with tenant_session(session_factory, tenant_id) as session:
             membership = await session.get(TenantMember, (tenant_id, bob))
         async with _client(_with(session_factory, directory), bob, None) as client:
             again = await client.post("/invitations/accept", json={"token": token})
 
-        _refused(refused)
+        _unavailable(refused)
         assert membership is None
         assert await _role(session_factory, tenant_id, bob) == "member"
         # The single use was still there to spend.
         assert again.status_code == 200, again.text
 
     async def test_joining_by_domain_joins_the_organization_in_the_directory(
-        self, session_factory, directory: _Directory, refusing: _Directory
+        self, session_factory, directory: _Directory, unavailable: _Directory
     ) -> None:
         ada = _name("ada")
         tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
@@ -238,19 +280,42 @@ class TestJoining:
             await session.commit()
         bob = await _outsider(session_factory)
 
-        async with _client(_with(session_factory, refusing), bob, None) as client:
+        async with _client(_with(session_factory, unavailable), bob, None) as client:
             refused = await client.post(f"/joinable-tenants/{tenant_id}/join")
         async with _client(_with(session_factory, directory), bob, None) as client:
             joined = await client.post(f"/joinable-tenants/{tenant_id}/join")
 
-        _refused(refused)
+        _unavailable(refused)
         assert joined.status_code == 200, joined.text
         organization_id = await _organization_of(session_factory, tenant_id)
         assert directory.asked == [("join", organization_id, bob, "member")]
 
+    async def test_an_org_admin_joining_by_domain_is_not_asked_about(
+        self, session_factory, directory: _Directory
+    ) -> None:
+        """Already in the organization, so joining a workspace of it changes
+        nothing there: the directory is not asked, and can't demote them."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
+        )
+        async with tenant_session(session_factory, tenant_id) as session:
+            await JoinDomainStore().add(
+                session, domain="example.invalid", created_by=ada
+            )
+            await session.delete(await session.get(TenantMember, (tenant_id, bob)))
+            await session.commit()
+
+        async with _client(_with(session_factory, directory), bob, None) as client:
+            joined = await client.post(f"/joinable-tenants/{tenant_id}/join")
+
+        assert joined.status_code == 200, joined.text
+        assert directory.asked == []
+        assert await _role(session_factory, tenant_id, bob) == "org_admin"
+
 
 class TestChangingRoles:
-    async def test_the_directory_is_asked_before_the_role_changes(
+    async def test_the_directory_is_asked_for_a_change_of_role(
         self, session_factory, directory: _Directory
     ) -> None:
         ada, bob = _name("ada"), _name("bob")
@@ -272,9 +337,12 @@ class TestChangingRoles:
         # The second asked for the role bob already had: nothing to ask.
         assert directory.asked == [("set_role", organization_id, bob, "org_admin")]
 
-    async def test_a_refused_demotion_takes_nothing_away(
-        self, session_factory, refusing: _Directory
+    async def test_a_failed_demotion_says_what_was_already_taken_away(
+        self, session_factory, unavailable: _Directory
     ) -> None:
+        """Ending what an admin held through the organization is a check that
+        can refuse (agents they own there), so it runs before the directory
+        is asked, and a directory that then fails doesn't give it back."""
         ada, bob = _name("ada"), _name("bob")
         first = await _workspace(
             session_factory, {ada: ("owner", "org_admin"), bob: ("member", "org_admin")}
@@ -282,15 +350,47 @@ class TestChangingRoles:
         second = await _second_workspace(session_factory, first)
         key = await _personal_key(session_factory, second, bob)
 
-        async with _client(_with(session_factory, refusing), ada, first) as client:
+        async with _client(_with(session_factory, unavailable), ada, first) as client:
             response = await client.patch(
                 f"/organizations/current/members/{bob}", json={"role": "member"}
             )
 
-        _refused(response)
+        _unavailable(
+            response,
+            "They keep their place in the organization, but what they held in "
+            "workspaces they reached only as an organization admin has already "
+            "been taken away.",
+        )
         assert await _role(session_factory, first, bob) == "org_admin"
-        # What bob held where only org_admin let him in is still his.
-        assert await _key_exists(session_factory, key)
+        assert not await _key_exists(session_factory, key)
+
+    async def test_two_admins_demoting_each_other_at_once_ask_once(
+        self, session_factory, directory: _Directory
+    ) -> None:
+        """The lock decides which demotion stands before the directory is
+        asked, so the directory is never asked to demote both."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("owner", "org_admin")}
+        )
+        app = _with(session_factory, directory)
+
+        async with (
+            _client(app, ada, tenant_id) as as_ada,
+            _client(app, bob, tenant_id) as as_bob,
+        ):
+            responses = await asyncio.gather(
+                as_ada.patch(
+                    f"/organizations/current/members/{bob}", json={"role": "member"}
+                ),
+                as_bob.patch(
+                    f"/organizations/current/members/{ada}", json={"role": "member"}
+                ),
+            )
+
+        first, second = sorted(response.status_code for response in responses)
+        assert first == 200 and second in (403, 409)
+        assert [call[0] for call in directory.asked] == ["set_role"]
 
     async def test_demoting_the_last_org_admin_is_refused_before_asking(
         self, session_factory, directory: _Directory
@@ -318,7 +418,7 @@ class TestRemoving:
             await session.commit()
         return ada, bob, tenant_id
 
-    async def test_the_directory_is_asked_before_they_are_removed(
+    async def test_the_directory_is_asked_to_remove_them(
         self, session_factory, directory: _Directory
     ) -> None:
         ada, bob, tenant_id = await self._bob_in_no_workspace(session_factory)
@@ -331,15 +431,17 @@ class TestRemoving:
         assert directory.asked == [("remove", organization_id, bob)]
         assert await _role(session_factory, tenant_id, bob) is None
 
-    async def test_a_refused_removal_keeps_them(
-        self, session_factory, refusing: _Directory
+    async def test_a_failed_removal_keeps_them(
+        self, session_factory, unavailable: _Directory
     ) -> None:
         ada, bob, tenant_id = await self._bob_in_no_workspace(session_factory)
 
-        async with _client(_with(session_factory, refusing), ada, tenant_id) as client:
+        async with _client(
+            _with(session_factory, unavailable), ada, tenant_id
+        ) as client:
             response = await client.delete(f"/organizations/current/members/{bob}")
 
-        _refused(response)
+        _unavailable(response)
         assert await _role(session_factory, tenant_id, bob) == "member"
 
     async def test_someone_still_in_a_workspace_is_refused_before_asking(

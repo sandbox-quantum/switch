@@ -28,6 +28,7 @@ from switch_core.connections.broker import (
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
     Invitation,
+    Organization,
     OrganizationMember,
     Tenant,
     TenantJoinDomain,
@@ -128,10 +129,11 @@ from switch_core.gateway.workspace_access import (
     revoke_workspace_access,
 )
 from switch_core.gateway.workspace_creation import (
+    NOTHING_CHANGED,
     create_organization_for,
-    directory_refused,
+    directory_failed,
 )
-from switch_core.organization_directory import DirectoryRefusal, OrganizationDirectory
+from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -859,30 +861,35 @@ async def accept_invitation(
     return membership
 
 
-async def _join_organization_of(
-    session: AsyncSession,
-    organization_directory: OrganizationDirectory,
-    tenant_id: str,
-    user_id: str,
-) -> None:
-    """Ask the directory to make `user_id` a member of `tenant_id`'s
-    organization, before their workspace membership is written
-    (`organization_directory.py`). A refusal is answered with its reason, and
-    the caller's uncommitted writes (an invitation's use) are rolled back."""
+async def _organization_to_join(
+    session: AsyncSession, tenant_id: str, user_id: str
+) -> Organization | None:
+    """`tenant_id`'s organization, if joining the workspace makes `user_id` a
+    new member of it, for the directory to be asked (`_join_in_directory`)."""
     tenant = await session.get(Tenant, tenant_id)
     if tenant is None:
         raise RuntimeError(f"Workspace {tenant_id} is not visible to this session")
     if tenant.organization_id is None:
+        return None
+    if await session.get(OrganizationMember, (tenant.organization_id, user_id)):
+        return None
+    return await session.get(Organization, tenant.organization_id)
+
+
+async def _join_in_directory(
+    organization_directory: OrganizationDirectory,
+    organization: Organization | None,
+    user_id: str,
+) -> None:
+    """Ask the directory to make `user_id` a member of `organization`, after
+    every write of the join and before its commit (`organization_directory.py`).
+    A refusal is answered with its reason, and the join is rolled back."""
+    if organization is None:
         return
     try:
-        await organization_directory.join(
-            session,
-            organization_id=tenant.organization_id,
-            user_id=user_id,
-            role="member",
-        )
-    except DirectoryRefusal as refusal:
-        raise directory_refused(refusal) from None
+        await organization_directory.join(organization, user_id, "member")
+    except DirectoryError as error:
+        raise directory_failed(error, NOTHING_CHANGED) from None
 
 
 async def _join_through(
@@ -911,9 +918,7 @@ async def _join_through(
                 status_code=403, detail="This invitation has already been used"
             ) from exc
         role = invitation.role
-        await _join_organization_of(
-            session, organization_directory, tenant_id, caller.id
-        )
+        joining = await _organization_to_join(session, tenant_id, caller.id)
         await user_store.add_membership(
             session,
             tenant_id=tenant_id,
@@ -939,6 +944,7 @@ async def _join_through(
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},
         )
+        await _join_in_directory(organization_directory, joining, caller.id)
 
     return await _enter(session, tenant_id, caller, user_store)
 
@@ -1257,9 +1263,7 @@ async def join_tenant_by_domain(
         role = await user_store.tenant_role(session, tenant_id, caller.id)
         if role is None:
             role = "member"
-            await _join_organization_of(
-                session, organization_directory, tenant_id, caller.id
-            )
+            joining = await _organization_to_join(session, tenant_id, caller.id)
             await user_store.add_membership(
                 session,
                 tenant_id=tenant_id,
@@ -1276,6 +1280,7 @@ async def join_tenant_by_domain(
                 target_id=caller.id,
                 details={"role": role, "domain": domain},
             )
+            await _join_in_directory(organization_directory, joining, caller.id)
         membership, user = await _enter(session, tenant_id, caller, user_store)
 
     set_session_cookie(

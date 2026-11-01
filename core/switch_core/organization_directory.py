@@ -2,19 +2,20 @@
 
 Authorization reads Switch's own tables, `organizations` and
 `organization_members`, on every server, so no request waits on anything
-else. The directory is what decides them. Every route that creates an
-organization, adds someone to one or changes or ends their role there asks the
-directory first, then writes Switch's rows:
+else. The directory is what decides them:
 
 - `LocalDirectory`: Switch's tables are the record, so the write to them is
   the whole change and the directory's step is nothing.
-- A directory kept outside Switch makes the change there first, and Switch's
-  rows follow it. If it refuses or can't be reached it raises
-  `DirectoryRefusal`, and the route changes nothing in Switch.
+- A directory kept outside Switch is the record, and Switch's rows follow it.
 
-The rules (the last Org Admin, nobody granting above their own role, removal
-refused while someone is still in a workspace) are checked by the routes
-before they ask, so they hold whichever directory is in use.
+Every route that creates an organization, adds someone to one or changes or
+ends their role there runs every check of its own that can refuse first (the
+last Org Admin, nobody granting above their own role, removal while someone
+is still in a workspace), then asks the directory, then writes and commits.
+A directory that refuses or can't be reached raises `DirectoryError`, and
+Switch's rows are left as they were. A failure after the directory has
+changed (the commit) leaves Switch behind the directory, and it is the
+directory's own record that brings Switch's rows up to date.
 """
 
 from __future__ import annotations
@@ -22,9 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from switch_core.db.models import User
+from switch_core.db.models import Organization, User
 
 
 @dataclass(frozen=True)
@@ -36,40 +35,53 @@ class DirectoryOrganization:
     customer_id: str | None
 
 
-class DirectoryRefusal(Exception):
-    """The directory refused a change or could not be reached. `message` says
-    why, for people to read; nothing was changed in Switch."""
+class DirectoryError(Exception):
+    """The directory did not make a change. `message` says why, for people to
+    read."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
 
 
+class DirectoryUnavailable(DirectoryError):
+    """The directory could not be reached or failed: trying again may work."""
+
+
+class DirectoryRefusal(DirectoryError):
+    """The directory refused the change by its own rules: trying again won't."""
+
+
 class OrganizationDirectory(Protocol):
+    """Implementations work outside Switch's database, over the network, and
+    bound every call: they are handed rows, never a session, and a route may
+    hold locks while it waits on them."""
+
     async def create_organization(
         self, creator: User, name: str
     ) -> DirectoryOrganization:
         """Record a new organization named `name`, with `creator` its
-        `org_admin`, before its row is written."""
+        `org_admin`, before its rows are written."""
         ...
 
-    async def join(
-        self, session: AsyncSession, *, organization_id: str, user_id: str, role: str
-    ) -> None:
-        """Make `user_id` a `role` member of `organization_id`, if not one
-        already. An existing membership keeps its role."""
+    async def discard_organization(self, organization: DirectoryOrganization) -> None:
+        """Undo `create_organization` when Switch could not create the rows
+        that follow it."""
+        ...
+
+    async def join(self, organization: Organization, user_id: str, role: str) -> None:
+        """Make `user_id` a `role` member of `organization`. Only asked for
+        someone who is not a member yet."""
         ...
 
     async def set_role(
-        self, session: AsyncSession, *, organization_id: str, user_id: str, role: str
+        self, organization: Organization, user_id: str, role: str
     ) -> None:
-        """Change a member's role in `organization_id` to `role`."""
+        """Change a member's role in `organization` to `role`."""
         ...
 
-    async def remove(
-        self, session: AsyncSession, *, organization_id: str, user_id: str
-    ) -> None:
-        """End `user_id`'s membership of `organization_id`."""
+    async def remove(self, organization: Organization, user_id: str) -> None:
+        """End `user_id`'s membership of `organization`."""
         ...
 
 
@@ -82,17 +94,16 @@ class LocalDirectory:
     ) -> DirectoryOrganization:
         return DirectoryOrganization(workos_organization_id=None, customer_id=None)
 
-    async def join(
-        self, session: AsyncSession, *, organization_id: str, user_id: str, role: str
-    ) -> None:
+    async def discard_organization(self, organization: DirectoryOrganization) -> None:
+        return None
+
+    async def join(self, organization: Organization, user_id: str, role: str) -> None:
         return None
 
     async def set_role(
-        self, session: AsyncSession, *, organization_id: str, user_id: str, role: str
+        self, organization: Organization, user_id: str, role: str
     ) -> None:
         return None
 
-    async def remove(
-        self, session: AsyncSession, *, organization_id: str, user_id: str
-    ) -> None:
+    async def remove(self, organization: Organization, user_id: str) -> None:
         return None

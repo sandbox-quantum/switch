@@ -49,7 +49,12 @@ from switch_core.gateway.schemas import (
     OrganizationSummary,
     TenantMembershipResponse,
 )
-from switch_core.organization_directory import DirectoryRefusal, OrganizationDirectory
+from switch_core.organization_directory import (
+    DirectoryError,
+    DirectoryOrganization,
+    DirectoryRefusal,
+    OrganizationDirectory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +92,21 @@ def _slugs(name: str) -> list[str]:
     ]
 
 
-def directory_refused(refusal: DirectoryRefusal) -> HTTPException:
-    """The answer when the organization directory refuses a change, or can't
-    be reached: its reason, and that nothing was changed."""
-    logger.warning("The organization directory refused a change: %s", refusal.message)
-    return HTTPException(
-        status_code=503, detail=f"{refusal.message} Nothing was changed."
+def directory_failed(error: DirectoryError, outcome: str) -> HTTPException:
+    """The answer when the organization directory did not make a change: 409
+    when it refused by its own rules, 503 when it could not be reached, with
+    its reason and `outcome`, what that leaves in Switch."""
+    logger.warning(
+        "The organization directory did not make a change: %s", error.message
     )
+    return HTTPException(
+        status_code=409 if isinstance(error, DirectoryRefusal) else 503,
+        detail=f"{error.message} {outcome}",
+    )
+
+
+# `directory_failed`'s outcome for a change that had written nothing yet.
+NOTHING_CHANGED = "Nothing was changed."
 
 
 def _no_free_slug(kind: str, name: str) -> HTTPException:
@@ -217,8 +230,8 @@ async def create_organization_for(
             name,
             workspace_name,
         )
-    except DirectoryRefusal as refusal:
-        raise directory_refused(refusal) from None
+    except DirectoryError as error:
+        raise directory_failed(error, NOTHING_CHANGED) from None
     if allowance is not None:
         allowance.workspaces_created += 1
         await session.commit()
@@ -260,16 +273,56 @@ async def create_organization(
     `workspace_name`. `creator` becomes the organization's `org_admin` and
     the workspace's `owner`, a member there in their own right.
 
-    The directory records it first (`organization_directory.py`); a refusal
-    raises `DirectoryRefusal` before anything is written here. The
-    organization is committed next, because the workspace references it.
-    If the workspace then cannot be created, for any reason, the organization
-    is deleted again, so a failed creation leaves nothing behind.
+    The directory records it first (`organization_directory.py`), since the
+    row keeps what the directory knows it by; a `DirectoryError` there leaves
+    nothing written. If Switch's rows then cannot be created, for any reason,
+    the directory is asked to discard it again.
     """
     # Both names are checked before anything is written.
     workspace_slugs = _slugs(workspace_name)
     organization_slugs = _slugs(name)
     recorded = await organization_directory.create_organization(creator, name)
+    try:
+        return await _create_organization_rows(
+            session_factory,
+            user_store,
+            organization_store,
+            client_lifecycle,
+            creator,
+            recorded,
+            name,
+            organization_slugs,
+            workspace_name,
+            workspace_slugs,
+        )
+    except BaseException:
+        try:
+            await organization_directory.discard_organization(recorded)
+        except Exception:
+            logger.exception(
+                "Could not discard organization %r from the directory after "
+                "creating it in Switch failed; it is left there",
+                name,
+            )
+        raise
+
+
+async def _create_organization_rows(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    organization_store: OrganizationStore,
+    client_lifecycle: ClientLifecycleService,
+    creator: User,
+    recorded: DirectoryOrganization,
+    name: str,
+    organization_slugs: list[str],
+    workspace_name: str,
+    workspace_slugs: list[str],
+) -> tuple[Organization, Tenant]:
+    """The organization's row, its first workspace and its creator's
+    memberships. The organization is committed first, because the workspace
+    references it; if the workspace then cannot be created, the organization
+    is deleted again."""
     organization: Organization | None = None
     for slug in organization_slugs:
         candidate = Organization(
