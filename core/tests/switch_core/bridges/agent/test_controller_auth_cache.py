@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.agent import controller_auth_cache as module
+from switch_core.bridges.agent import held_rows as module
 from switch_core.bridges.agent.auth import ControllerPrincipal
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
 from switch_core.bridges.agent.protocol.controller_presence import (

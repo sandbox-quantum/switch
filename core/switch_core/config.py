@@ -791,6 +791,11 @@ class SwitchConfig(BaseSettings):
     # evicted past it. Every process sees requests for every controller's
     # agents, so it needs room for all the agents controllers run.
     controller_auth_cache_max_agents: int = Field(default=20_000, ge=1)
+    # Bound on what each process keeps of the checks a post makes first (an
+    # agent's membership of a room, and that no budget covers it), the oldest
+    # evicted past it. Kept as the controller-token cache keeps its rows, for
+    # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
+    room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
     # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
     # Read only to refuse a deployment that still turns it on, which would

@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.agent import controller_auth_cache
+from switch_core.bridges.agent import held_rows
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.db.auth_rows_notify_ddl import (
     AGENT_CHANGED_SIGNAL,
@@ -326,7 +326,7 @@ async def test_while_the_bus_listens_a_hit_outlives_the_ttl(
     assert await act_as(mw, controller, agent_id) == (200, None)
     an_hour_on = time.monotonic() + 3600
     monkeypatch.setattr(
-        controller_auth_cache, "time", SimpleNamespace(monotonic=lambda: an_hour_on)
+        held_rows, "time", SimpleNamespace(monotonic=lambda: an_hour_on)
     )
 
     with counting(listening.session_factory) as reads:

@@ -66,6 +66,7 @@ from switch_core.bridges.agent.protocol.types import (
     ToolCallReport,
     ToolSpec,
 )
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
@@ -336,6 +337,9 @@ class AgentCore:
     # Same reason: a minimal test instance gets a client that allows everything
     # rather than one that needs real config to construct.
     trust_client: TrustClient = NullTrustClient()
+    # Same reason: a minimal test instance keeps nothing and reads every
+    # check from the database. The server supplies the process's one cache.
+    room_access: RoomAccessCache = RoomAccessCache(ttl_seconds=0, max_entries=1)
     # Told (tenant_id, agent_id) just before an agent is deleted, while its row
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
@@ -380,9 +384,12 @@ class AgentCore:
         config: SwitchConfig,
         approval_outcomes: ApprovalOutcomes,
         trust_client: TrustClient,
+        room_access: RoomAccessCache | None = None,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self.telemetry = telemetry
+        if room_access is not None:
+            self.room_access = room_access
         self.trust_client = trust_client
         self.approval_outcomes = approval_outcomes
         # Pairs session start with session end. Held here because the handler
@@ -1450,6 +1457,11 @@ class AgentCore:
 
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
+        tenant_id = current_tenant_id()
+        if tenant_id is not None:
+            held = self.room_access.member(tenant_id, agent_id, room_id)
+            if held is not None:
+                return held
         async with self.session_factory() as session:
             return await self._room_member_in(session, agent_id, room_id)
 
@@ -1457,23 +1469,41 @@ class AgentCore:
         """`require_room_member`, and raise `BudgetExceeded` if the agent has
         reached a budget covering it. One session for both, so a post still
         costs one pool checkout."""
+        tenant_id = require_tenant_id()
+        access = self.room_access
+        room = access.member(tenant_id, agent_id, room_id)
+        if room is not None and access.unbudgeted(tenant_id, agent_id):
+            return room
         async with self.session_factory() as session:
-            room = await self._room_member_in(session, agent_id, room_id)
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=agent_id
+            if room is None:
+                room = await self._room_member_in(session, agent_id, room_id)
+            ticket = access.ticket()
+            covered = await self.budget_guard.require_within(
+                session, tenant_id=tenant_id, agent_id=agent_id
             )
+        if not covered:
+            access.put_unbudgeted(tenant_id, agent_id, ticket)
         return room
 
     async def _room_member_in(
         self, session: AsyncSession, agent_id: str, room_id: str
     ) -> RoomDescriptor:
+        tenant_id = current_tenant_id()
+        if tenant_id is not None:
+            held = self.room_access.member(tenant_id, agent_id, room_id)
+            if held is not None:
+                return held
+        ticket = self.room_access.ticket()
         found = await self.room_store.get_with_membership(session, room_id, agent_id)
         if found is None:
             raise ValueError(f"Room not found: {room_id}")
         room, is_member = found
         if not is_member:
             raise PermissionError("Agent is not a member of this room")
-        return _describe_room(room)
+        described = _describe_room(room)
+        if tenant_id is not None:
+            self.room_access.put_member(tenant_id, agent_id, described, ticket)
+        return described
 
     async def list_rooms(
         self, agent_id: str, *, include_archived: bool = False
