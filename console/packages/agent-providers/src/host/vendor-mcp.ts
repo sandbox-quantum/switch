@@ -15,6 +15,9 @@ import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
 import { redactServiceToken, type ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
 
+import { SupervisedStdioTransport } from '../transport/supervised-stdio';
+import { ToolCallQueue } from './tool-queue';
+
 /** How long a vendor has to list its tools before the session goes on without them. */
 export const LIST_TIMEOUT_MS = 20_000;
 /** How long one tool call at a vendor may take. */
@@ -24,6 +27,8 @@ export type VendorServers = {
   /** By MCP server name, as the coding tool is given them. */
   specs: Record<string, HttpMcpServerSpec>;
   close: () => Promise<void>;
+  /** Revoke an active service grant immediately, terminating processes and rejecting queue. */
+  revokeService?: (service: string) => Promise<void>;
 };
 
 class VendorRefusedToken extends Error {}
@@ -33,19 +38,10 @@ type VendorMcpServer = ServiceGrant['mcp_servers'][number];
 /**
  * A granted vendor's MCP servers, served to this session's CLI on loopback.
  *
+ * Supports both remote HTTPS MCP servers and local stdio MCP servers.
  * One loopback server per vendor server, each behind a bearer minted for this
  * run, so a slow or failing vendor is one failed server and the Switch tools
- * keep working. The vendor's token never reaches the CLI: every list and call
- * asks the agent host for it over the pipe, adds it (and each secret field of
- * a key) to this session's redactions, and calls the vendor from here, over
- * HTTPS, with redirects refused. The server's URL and headers are templates
- * of the token, so the address is known only once a token is: it is rendered
- * on every connection and refused unless HTTPS. A 401 asks again, naming the
- * refused token, and retries once.
- *
- * Tools pass through as the vendor lists them, until they are classified by
- * access level. Only text reaches the CLI: anything else a tool answers is
- * replaced by a line saying what was left out.
+ * keep working.
  */
 export async function startVendorServers(input: {
   grants: ServiceGrant[];
@@ -58,17 +54,34 @@ export async function startVendorServers(input: {
 }): Promise<VendorServers> {
   const specs: Record<string, HttpMcpServerSpec> = {};
   const closers: (() => Promise<void>)[] = [];
+  const stdioServersByService = new Map<string, { close: () => Promise<void>; queue: ToolCallQueue }[]>();
+
   try {
     for (const grant of input.grants) {
       for (const server of grant.mcp_servers) {
-        if (new URL(server.url).protocol !== 'https:')
-          throw new Error(`${grant.service}'s MCP server ${server.name} is not served over HTTPS.`);
-        const vendor = new VendorServer(grant.service, server, input);
+        let listTools: () => Promise<ToolDefinition[]>;
+        let callTool: (name: string, args: Record<string, unknown>) => Promise<ToolResult>;
+
+        if ('transport' in server && server.transport === 'stdio') {
+          const stdio = new StdioVendorServer(grant.service, server, input);
+          listTools = () => stdio.listTools();
+          callTool = (name, args) => stdio.callTool(name, args);
+          closers.push(() => stdio.close());
+
+          const current = stdioServersByService.get(grant.service) ?? [];
+          current.push({ close: () => stdio.close(), queue: stdio.queue });
+          stdioServersByService.set(grant.service, current);
+        } else {
+          const urlStr = 'url' in server ? server.url : '';
+          if (new URL(urlStr).protocol !== 'https:')
+            throw new Error(`${grant.service}'s MCP server ${server.name} is not served over HTTPS.`);
+          const vendor = new VendorServer(grant.service, server as { name: string; url: string; headers: Record<string, string> }, input);
+          listTools = () => vendor.listTools();
+          callTool = (name, args) => vendor.callTool(name, args);
+        }
+
         const bearer = randomBytes(32).toString('hex');
-        const served = await serveMcpOverHttp(bearer, {
-          listTools: () => vendor.listTools(),
-          callTool: (name, args) => vendor.callTool(name, args),
-        });
+        const served = await serveMcpOverHttp(bearer, { listTools, callTool });
         closers.push(served.close);
         specs[server.name] = {
           transport: 'http',
@@ -81,13 +94,29 @@ export async function startVendorServers(input: {
     await Promise.all(closers.map((close) => close()));
     throw error;
   }
-  return { specs, close: async () => void (await Promise.all(closers.map((close) => close()))) };
+
+  const revokeService = async (service: string): Promise<void> => {
+    const servers = stdioServersByService.get(service);
+    if (!servers) return;
+    await Promise.all(
+      servers.map(async (s) => {
+        await s.queue.terminateAll(new Error(`Service grant ${service} was revoked`));
+        await s.close();
+      })
+    );
+  };
+
+  return {
+    specs,
+    close: async () => void (await Promise.all(closers.map((close) => close()))),
+    revokeService,
+  };
 }
 
 class VendorServer {
   constructor(
     private readonly service: string,
-    private readonly server: VendorMcpServer,
+    private readonly server: { name: string; url: string; headers: Record<string, string> },
     private readonly deps: {
       ask: (ask: HostAsk) => Promise<unknown>;
       redactions: Redactions;
@@ -193,6 +222,107 @@ class VendorServer {
       throw error;
     } finally {
       await client.close().catch(() => {});
+    }
+  }
+}
+
+class StdioVendorServer {
+  readonly queue: ToolCallQueue;
+  private client: Client | null = null;
+  private transport: SupervisedStdioTransport | null = null;
+  private isConnecting = false;
+
+  constructor(
+    private readonly service: string,
+    private readonly server: { name: string; command: string; args: string[]; env: Record<string, string> | null },
+    private readonly deps: {
+      ask: (ask: HostAsk) => Promise<unknown>;
+      redactions: Redactions;
+      listTimeoutMs: number;
+      callTimeoutMs: number;
+    }
+  ) {
+    this.queue = new ToolCallQueue({
+      executionTimeoutMs: this.deps.callTimeoutMs,
+      cancelGraceMs: 5_000,
+      onCancelRequested: async (id) => {
+        if (this.transport) {
+          await this.transport.send({
+            jsonrpc: '2.0',
+            method: 'notifications/cancelled',
+            params: { requestId: id, reason: 'Tool execution timed out' },
+          });
+        }
+      },
+      onQuarantineProcess: async () => {
+        await this.close();
+      },
+    });
+  }
+
+  private async ensureClient(): Promise<Client> {
+    if (this.client && this.transport?.isRunning) return this.client;
+    if (this.isConnecting) {
+      while (this.isConnecting) await new Promise((r) => setTimeout(r, 20));
+      if (this.client && this.transport?.isRunning) return this.client;
+    }
+    this.isConnecting = true;
+    try {
+      // 1. Resolve credentials/env
+      const answer = serviceTokenAnswerSchema.parse(
+        await this.deps.ask({ type: 'service-token', service: this.service, rejected: null })
+      );
+      let credentialEnv: Record<string, string> = {};
+      if (answer.kind === 'token') {
+        const cred = redactServiceToken(this.deps.redactions, answer.token);
+        if (this.server.env) {
+          credentialEnv = Object.fromEntries(
+            Object.entries(this.server.env).map(([k, template]) => [k, cred.render(template)])
+          );
+        }
+      }
+
+      this.transport = new SupervisedStdioTransport({
+        command: this.server.command,
+        args: this.server.args,
+        env: { ...process.env, ...credentialEnv } as Record<string, string>,
+      });
+
+      const client = new Client({ name: 'switch-stdio-session', version: '1.0.0' });
+      await client.connect(this.transport);
+      this.client = client;
+      return client;
+    } finally {
+      this.isConnecting = false;
+    }
+  }
+
+  async listTools(): Promise<ToolDefinition[]> {
+    const client = await this.ensureClient();
+    const page = await client.listTools();
+    return page.tools.map((t) => ({
+      name: t.name,
+      description: t.description ?? '',
+      inputSchema: t.inputSchema as Record<string, unknown>,
+    }));
+  }
+
+  async callTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+    return this.queue.enqueue(name, async () => {
+      const client = await this.ensureClient();
+      const raw = await client.callTool({ name, arguments: args });
+      return textResult(this.service, raw);
+    });
+  }
+
+  async close(): Promise<void> {
+    if (this.client) {
+      await this.client.close().catch(() => {});
+      this.client = null;
+    }
+    if (this.transport) {
+      await this.transport.close().catch(() => {});
+      this.transport = null;
     }
   }
 }
