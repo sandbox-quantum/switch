@@ -25,10 +25,10 @@ leave all of those out.
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, ValidationError, model_validator
 
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
@@ -41,7 +41,7 @@ MINTED_MAX_LIFETIME = 3600
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
-FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 # A skill describes tasks, tools and limits. How a credential reaches the agent
 # is its host's business, and a skill that names one invites the agent to go
 # looking for it.
@@ -346,16 +346,64 @@ class TokenPolicy(BaseModel):
         return self
 
 
-class McpServer(BaseModel):
-    """One vendor MCP server. `headers` are an api_key entry's, templates of
-    its fields; an OAuth entry's server takes the token as a bearer."""
+ENV_NAME_PATTERN = r"^[A-Z][A-Z0-9_]{0,62}$"
+COMMAND_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,62}$"
+FLAG_PATTERN = r"^(-[A-Za-z]|--[a-z0-9][a-z0-9-]{0,62})$"
+
+
+class HttpMcpServer(BaseModel):
+    """One remote HTTPS vendor MCP server."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    transport: Literal["http"] = Field(default="http")
     name: str = Field(pattern=SLUG_PATTERN)
     url: str = Field(pattern=HTTPS_URL_PATTERN)
     headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] | None = (
         Field(default=None, min_length=1)
     )
+
+
+class StdioMcpServer(BaseModel):
+    """One local stdio vendor MCP server run as a child process."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    transport: Literal["stdio"] = Field(default="stdio")
+    name: str = Field(pattern=SLUG_PATTERN)
+    command: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,62}$")
+    args: list[str] = Field(default_factory=list)
+    env: dict[Annotated[str, Field(pattern=ENV_NAME_PATTERN)], str] | None = Field(
+        default=None, min_length=1
+    )
+
+    @model_validator(mode="after")
+    def _validate_safe_execution(self) -> "StdioMcpServer":
+        # Disallow shell interpreters and command execution wrappers
+        forbidden_commands = {
+            "sh",
+            "bash",
+            "cmd",
+            "cmd.exe",
+            "powershell",
+            "powershell.exe",
+            "pwsh",
+        }
+        if self.command.lower() in forbidden_commands:
+            raise ValueError(f"shell command runner {self.command!r} is strictly forbidden")
+        for arg in self.args:
+            if "\n" in arg or "\r" in arg:
+                raise ValueError("stdio arguments must not contain newline characters")
+        return self
+
+
+McpServer = Annotated[
+    Union[
+        Annotated[HttpMcpServer, Tag("http")],
+        Annotated[StdioMcpServer, Tag("stdio")],
+    ],
+    Discriminator(lambda v: v.get("transport", "http") if isinstance(v, dict) else getattr(v, "transport", "http")),
+]
+
+
 
 
 class ConnectionMcp(BaseModel):
@@ -582,7 +630,9 @@ class ConnectionDefinition(BaseModel):
         if self.adapter != "api_key":
             if self.auth.api_key is not None:
                 raise ValueError("only the api_key adapter has key fields")
-            if self.mcp is not None and any(s.headers for s in self.mcp.servers):
+            if self.mcp is not None and any(
+                isinstance(s, HttpMcpServer) and s.headers for s in self.mcp.servers
+            ):
                 raise ValueError("only an api_key entry's MCP servers name headers")
             if self.cli is not None and self.cli.env is not None:
                 raise ValueError("only an api_key entry's tool takes env templates")
@@ -618,16 +668,25 @@ class ConnectionDefinition(BaseModel):
             return
         if self.mcp is not None:
             for server in self.mcp.servers:
-                if server.headers is None:
-                    raise ValueError(
-                        f"MCP server {server.name} names the headers the key goes in"
+                if isinstance(server, HttpMcpServer):
+                    if server.headers is None:
+                        raise ValueError(
+                            f"MCP server {server.name} names the headers the key goes in"
+                        )
+                    check_templates(
+                        sign_in,
+                        urls=[server.url],
+                        values=list(server.headers.values()),
+                        where=f"MCP server {server.name}",
                     )
-                check_templates(
-                    sign_in,
-                    urls=[server.url],
-                    values=list(server.headers.values()),
-                    where=f"MCP server {server.name}",
-                )
+                elif isinstance(server, StdioMcpServer):
+                    if server.env is not None:
+                        check_templates(
+                            sign_in,
+                            urls=[],
+                            values=list(server.env.values()),
+                            where=f"stdio MCP server {server.name}",
+                        )
         if self.cli is not None:
             if self.cli.env is None:
                 raise ValueError("an api_key entry's tool names env templates")
