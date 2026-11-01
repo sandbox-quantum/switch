@@ -8,6 +8,9 @@ its deletion, and `controller.auth_changed` when a controller's owner,
 credential or revocation changes and when it is deleted, so every process
 drops what it kept of them.
 
+Expand only: a process from before this revision has no handler for either
+signal and skips them, as it does any kind it does not know.
+
 Revision ID: bad5099ef32b
 Revises: b7e1d4c9a2f6
 Create Date: 2026-11-01 00:00:00.000000
@@ -22,6 +25,7 @@ revision: str = "bad5099ef32b"
 down_revision: str | None = "b7e1d4c9a2f6"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 # Copies of the DDL in `db/auth_rows_notify_ddl.py`, written out here so this
 # migration keeps creating the same objects if that module changes.
