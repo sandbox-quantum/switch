@@ -63,6 +63,7 @@ from . import (
     surface_label,
     turn_state,
     unanswerable,
+    withdraw_hint,
 )
 
 _CONSOLE = "Open in Switch Console"
@@ -239,6 +240,12 @@ def turn_summary(
     still going.
     """
     state = turn_state(items, turn, tool_detail=True)
+    # How to withdraw a queued turn rides with the state, ahead of what was
+    # said, because it is the one thing on the message a reader can act on.
+    # Bare: a platform reaching this has no mark for a literal to put on it.
+    hint = _withdraw_line(turn, code=escape)
+    if hint is not None and len(state) + 1 + len(hint) <= limit:
+        state = f"{state}\n{hint}"
     said = [item for item in items if item.kind == "assistant-message"]
     if not said:
         return _truncate(state, limit)
@@ -283,6 +290,10 @@ def turn_status(
     - what it is doing right now, while it is still doing something;
     - how the tool calls went, once there is more than one outcome to report.
 
+    A queued turn the sender can still withdraw has one more, under the state:
+    its id and the command that takes it (`withdraw_hint`). A queued turn has
+    done nothing yet, so in practice it stands where the other two would.
+
     `tool_detail` says whether this platform reports tool activity at all, and
     a platform can decline it. Where the status shares the conversation with
     everything else that is said there, the tool of the moment and a count of
@@ -311,6 +322,11 @@ def turn_status(
 
     lines = [head]
     spent = len(head)
+    literal = markup.literal(escape)
+    hint = _withdraw_line(turn, code=lambda text: markup.code(literal(text)))
+    if hint is not None and spent + len(hint) + 1 <= budget:
+        lines.append(hint)
+        spent += len(hint) + 1
     did = [item for item in items if item.kind == "tool-activity"]
     for line in _doing(
         did, turn, escape=escape, budget=budget, tool_detail=tool_detail
@@ -320,6 +336,18 @@ def turn_status(
         lines.append(line)
         spent += len(line) + 1
     return _mentioned(mention, "\n".join(lines))
+
+
+def _withdraw_line(turn: TurnUpsert, *, code: Callable[[str], str]) -> str | None:
+    """The line under a queued turn's state saying how to withdraw it, or None.
+
+    `code` is how this platform marks a literal, escape included: the turn id
+    is host text, and both it and the command are what a reader copies.
+    """
+    pieces = withdraw_hint(turn)
+    if pieces is None:
+        return None
+    return "".join(code(text) if literal else text for text, literal in pieces)
 
 
 def _doing(

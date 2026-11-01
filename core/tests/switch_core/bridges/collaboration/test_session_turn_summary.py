@@ -153,3 +153,53 @@ def test_nothing_said_and_no_tool_calls_is_still_just_the_state() -> None:
         turn_summary([], turn, escape=_identity, limit=10_000)
         == "Queued. Waiting for the agent to start…"
     )
+
+
+# A turn id as the host mints it for a room message: the id `!cancel` takes.
+QUEUED_ID = "3f2b8c1e-5d4a-5b6c-9e7f-0a1b2c3d4e5f"
+
+
+def _turn_with_id(status: str, turn_id: str) -> TurnUpsert:
+    return TurnUpsert.model_validate(
+        {"type": "turn.upsert", "turnId": turn_id, "status": status, "commandId": None}
+    )
+
+
+def test_a_queued_turn_says_how_its_sender_can_withdraw_it() -> None:
+    """Bare here: a platform with no card of its own has no mark for a literal,
+    and a backtick written in would reach the reader as a backtick."""
+    summary = turn_summary(
+        [], _turn_with_id("queued", QUEUED_ID), escape=_identity, limit=10_000
+    )
+
+    assert summary.splitlines() == [
+        "Queued. Waiting for the agent to start…",
+        f"Turn ID: {QUEUED_ID} — the sender can withdraw it with !cancel, "
+        "the agent's mention and this ID.",
+    ]
+    assert "`" not in summary
+
+
+def test_a_follow_up_the_host_queued_itself_has_no_hint() -> None:
+    turn = _turn_with_id("queued", f"{QUEUED_ID}:followup")
+
+    assert (
+        turn_summary([], turn, escape=_identity, limit=10_000)
+        == "Queued. Waiting for the agent to start…"
+    )
+
+
+def test_the_hint_is_dropped_whole_when_it_does_not_fit() -> None:
+    state = "Queued. Waiting for the agent to start…"
+    turn = _turn_with_id("queued", QUEUED_ID)
+
+    assert turn_summary([], turn, escape=_identity, limit=len(state) + 5) == state
+
+
+def test_a_cancelled_turn_is_just_its_state() -> None:
+    turn = _turn_with_id("cancelled", QUEUED_ID)
+    items = [_tool_call(status="in-progress")]
+
+    summary = turn_summary(items, turn, escape=_identity, limit=10_000)
+
+    assert summary == "Cancelled before the agent started."

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ from switch_core.bridges.agent.protocol.types import (
     CommandPayload,
 )
 from switch_core.clients.admin_messages import AdminMessageType
+from switch_core.clients.mentions import NAME_CHAR, strip_emphasis
 from switch_core.clients.mentions import mention_tokens as _mention_tokens
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
@@ -56,6 +58,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import AddressingResolver
 from switch_core.events import CommandEvent
 from switch_core.platform_access import administers_on_record
+from switch_core.sessions.contract import TURN_ID_PATTERN
 from switch_core.transport import RoomRef
 
 if TYPE_CHECKING:
@@ -132,7 +135,21 @@ async def _addressed_by_required_first_mention(
     tokens = _mention_tokens(args)
     if not tokens:
         return False
-    return await _first_token_is_me(client, tokens[0], room_id)
+    return await _first_token_is_me(client, tokens[0], room_id, roles=True)
+
+
+async def _addressed_by_required_first_named_mention(
+    client: AgentRecipient, args: str, room_id: str
+) -> bool:
+    """Like `_addressed_by_required_first_mention`, but a role addresses no
+    one: only the agent's own name or room alias does. Used by `!cancel`,
+    which withdraws one agent's queued message — a role would ask whoever
+    holds it, which is not who the message was queued with.
+    """
+    tokens = _mention_tokens(args)
+    if not tokens:
+        return False
+    return await _first_token_is_me(client, tokens[0], room_id, roles=False)
 
 
 async def _addressed_everyone(client: AgentRecipient, args: str, room_id: str) -> bool:
@@ -142,13 +159,18 @@ async def _addressed_everyone(client: AgentRecipient, args: str, room_id: str) -
     return True
 
 
-async def _first_token_is_me(client: AgentRecipient, first: str, room_id: str) -> bool:
-    """Whether `@first` names this agent — by name, room alias, or a held role."""
+async def _first_token_is_me(
+    client: AgentRecipient, first: str, room_id: str, *, roles: bool
+) -> bool:
+    """Whether `@first` names this agent — by name, room alias, or (when
+    `roles`) a held role."""
     if client._args_tag_my_name(f"@{first}"):
         return True
     async with client.session_factory() as session:
         if await client._text_tags_my_alias(session, f"@{first}", room_id):
             return True
+        if not roles:
+            return False
         return await client._text_tags_my_role(session, f"@{first}", room_id)
 
 
@@ -176,6 +198,21 @@ async def _check_control_target(
         return
 
     target = tokens[0]
+    if await _is_room_target(host, meta, target):
+        return
+    await _reply(host, room, event, _unknown_target_text(target))
+
+
+async def _is_room_target(host: CommandConsumer, meta: RoomMeta, target: str) -> bool:
+    """Whether `@target` names an agent, alias, or role in the room."""
+    agents, roles = await _room_targets(host, meta)
+    return target.lower() in agents | roles
+
+
+async def _room_targets(
+    host: CommandConsumer, meta: RoomMeta
+) -> tuple[set[str], set[str]]:
+    """The room's agent names and aliases, and its role names, lowercased."""
     async with host.session_factory() as session:
         agent_ids = await host._room_store.get_agent_ids(session, meta.room_id)
         names: list[str] = []
@@ -186,21 +223,77 @@ async def _check_control_target(
         aliases = await host._room_store.list_aliases(session, meta.room_id)
         roles = await host._room_role_store.list_roles(session, meta.room_id)
 
-    target_lc = target.lower()
-    known = (
-        target_lc in {n.lower() for n in names}
-        or target_lc in {a.lower() for a in aliases.values()}
-        or target_lc in {r.name.lower() for r in roles}
-    )
-    if known:
-        return
+    agents = {n.lower() for n in names} | {a.lower() for a in aliases.values()}
+    return agents, {r.name.lower() for r in roles}
 
-    await _reply(
-        host,
-        room,
-        event,
+
+def _unknown_target_text(target: str) -> str:
+    return (
         f"`@{target}` is not an agent or role in this room. Run `!list-agents` "
-        "to see the agents here, or `!roles` for the roles.",
+        "to see the agents here, or `!roles` for the roles."
+    )
+
+
+_MENTION = re.compile(rf"@{NAME_CHAR}+")
+# What a turn ID may come wrapped in when copied off a card or typed by hand:
+# Markdown code, quotes, or the angle brackets of `<turn-id>` in the docs.
+_ID_WRAPPING = "`'\"<>"
+
+
+def parse_cancel_args(args: str) -> str | None:
+    """The turn ID a `!cancel` names, or None when its args do not name one.
+
+    The `@` mentions (the target) are dropped and exactly one token must be
+    left: a turn ID as the activity card shows it, with any backticks, quotes,
+    or angle brackets around it taken off. `current` is refused — a cancel
+    names one queued message, never whatever the session is on.
+    """
+    rest = _MENTION.sub(" ", strip_emphasis(args)).split()
+    if len(rest) != 1:
+        return None
+    token = rest[0].strip(_ID_WRAPPING)
+    if token.lower() == CURRENT or not TURN_ID_PATTERN.fullmatch(token):
+        return None
+    return token.lower()
+
+
+async def _check_cancel_usage(
+    host: CommandConsumer, room: RoomRef, event: CommandEvent, meta: RoomMeta
+) -> None:
+    """Admin-side usage feedback for `!cancel`.
+
+    Like `_check_control_target`, but there is no `-all-agents` form to point
+    to, a role is no target, and the turn ID is checked too. When this
+    answers, no agent is addressed or the agent stays silent
+    (`_decide_cancel`), so a misused `!cancel` gets one reply.
+    """
+    tokens = _mention_tokens(event.args)
+    if not tokens:
+        await _reply(host, room, event, _CANCEL_USAGE)
+        return
+    target = tokens[0]
+    agents, roles = await _room_targets(host, meta)
+    if target.lower() not in agents:
+        text = _cancel_target_text(target, role=target.lower() in roles)
+        await _reply(host, room, event, text)
+        return
+    if parse_cancel_args(event.args) is None:
+        await _reply(host, room, event, _CANCEL_USAGE)
+
+
+_CANCEL_USAGE = (
+    "`!cancel` needs the agent's mention and one turn ID. Type `!cancel`, "
+    "then the agent's mention, then the turn ID from the agent's activity "
+    "card."
+)
+
+
+def _cancel_target_text(target: str, *, role: bool) -> str:
+    # Without the `@`: Teams turns a known name into a mention even in code.
+    what = "a role" if role else "not an agent in this room"
+    return (
+        f"`{target}` is {what}. `!cancel` names the agent the message is queued "
+        "with, by its name or alias. Run `!list-agents` to see the agents here."
     )
 
 
@@ -296,6 +389,7 @@ def room_control_frame(
     surface: str,
     requester_name: str,
     target_message_id: str | None,
+    turn_id: str | None = None,
 ) -> dict[str, object]:
     """The `session_command` frame a room control is relayed as.
 
@@ -303,7 +397,8 @@ def room_control_frame(
     so the session can answer that person once the control has applied.
     `session_id` is None for a controller-backed agent, whose controller
     picks the session from the room. `target_message_id` is the message a
-    `retry` runs again, and None for every other control.
+    `retry` runs again, and None for every other control. `turn_id` is the
+    queued turn a `cancel` withdraws.
     """
     if action == "retry":
         if target_message_id is None:
@@ -312,6 +407,10 @@ def room_control_frame(
             "type": "message.retry",
             "messageId": target_message_id,
         }
+    elif action == "cancel":
+        if turn_id is None:
+            raise ValueError("cancel needs the turn it withdraws")
+        body = {"type": "turn.cancel", "turnId": turn_id}
     else:
         body = _CONTROL_BODIES.get(action)
     if body is None:
@@ -545,8 +644,11 @@ async def _decide_control_command(
     event: CommandEvent,
     command: str,
     texts: ControlTexts,
+    *,
+    turn_id: str | None,
 ) -> ControlDecision:
-    """Shared logic for the session-control commands (reset/compact/interrupt).
+    """Shared logic for the session-control commands
+    (reset/compact/interrupt/cancel).
 
     Resolves the agent's declared capability level for `command` from its
     integration profile, then — for `session_dependent` — checks that a live
@@ -555,7 +657,8 @@ async def _decide_control_command(
     a `command` event for the agent's controller (e.g. Switch Console) to execute.
 
     Everything here is a read; what it decides to say or relay is left to
-    `ControlDecision.answer`.
+    `ControlDecision.answer`. `turn_id` is the queued turn a `cancel`
+    withdraws, and None for every other control.
     """
 
     def say(body: str) -> ControlDecision:
@@ -602,6 +705,7 @@ async def _decide_control_command(
             surface=await _room_surface(client, meta.room_id),
             requester_name=event.user_name,
             target_message_id=target,
+            turn_id=turn_id,
         )
 
         async def relay() -> None:
@@ -616,6 +720,10 @@ async def _decide_control_command(
             )
 
         return ControlDecision(queued=None, answer=relay)
+    # Only a session reached over its controller can withdraw a queued
+    # message; there is no queued-command form of a cancel.
+    if command == "cancel":
+        return say(texts.no_session)
     profile = agent.integration_profile or {}
     level = (profile.get("command_capabilities") or {}).get(command, "unsupported")
 
@@ -681,7 +789,9 @@ async def _dispatch_control_command(
     the room, then queue the command for the agent in a transaction of its
     own. For a command run outside the router; the router stores what is
     queued with the command's row instead (`AgentRecipient.decide_command`)."""
-    decision = await _decide_control_command(client, room, event, command, texts)
+    decision = await _decide_control_command(
+        client, room, event, command, texts, turn_id=None
+    )
     if decision.answer is not None:
         await decision.answer()
     if decision.queued is None:
@@ -739,6 +849,18 @@ _INTERRUPT = ControlTexts(
         "Switch Console, so my operator needs to interrupt it manually."
     ),
 )
+# The session answers in the room with how the cancel went, but not on every
+# path, so the ack promises no result.
+_CANT_CANCEL = (
+    "I can't cancel from here — I have no session connected to this room "
+    "that could withdraw a queued message."
+)
+_CANCEL = ControlTexts(
+    ack="Asked my session to cancel that message.",
+    unsupported=_CANT_CANCEL,
+    no_live_session=_CANT_CANCEL,
+    no_session=_CANT_CANCEL,
+)
 
 
 _RETRY = ControlTexts(
@@ -763,7 +885,9 @@ async def _cmd_retry(
 async def _decide_retry(
     client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> ControlDecision:
-    return await _decide_control_command(client, room, event, "retry", _RETRY)
+    return await _decide_control_command(
+        client, room, event, "retry", _RETRY, turn_id=None
+    )
 
 
 async def _cmd_reset(
@@ -775,7 +899,9 @@ async def _cmd_reset(
 async def _decide_reset(
     client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> ControlDecision:
-    return await _decide_control_command(client, room, event, "reset", _RESET)
+    return await _decide_control_command(
+        client, room, event, "reset", _RESET, turn_id=None
+    )
 
 
 async def _cmd_compact(
@@ -787,7 +913,9 @@ async def _cmd_compact(
 async def _decide_compact(
     client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> ControlDecision:
-    return await _decide_control_command(client, room, event, "compact", _COMPACT)
+    return await _decide_control_command(
+        client, room, event, "compact", _COMPACT, turn_id=None
+    )
 
 
 async def _cmd_interrupt(
@@ -799,7 +927,30 @@ async def _cmd_interrupt(
 async def _decide_interrupt(
     client: AgentRecipient, room: RoomRef, event: CommandEvent
 ) -> ControlDecision:
-    return await _decide_control_command(client, room, event, "interrupt", _INTERRUPT)
+    return await _decide_control_command(
+        client, room, event, "interrupt", _INTERRUPT, turn_id=None
+    )
+
+
+async def _cmd_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    # A cancel is only ever relayed, never queued, so answering is all there is.
+    decision = await _decide_cancel(client, room, event)
+    if decision.answer is not None:
+        await decision.answer()
+
+
+async def _decide_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    turn_id = parse_cancel_args(event.args)
+    if turn_id is None:
+        # Misuse is answered by the admin (`_check_cancel_usage`).
+        return ControlDecision(queued=None, answer=None)
+    return await _decide_control_command(
+        client, room, event, "cancel", _CANCEL, turn_id=turn_id
+    )
 
 
 async def _cmd_list_room_agents(
@@ -2231,6 +2382,27 @@ COMMANDS: list[Command] = [
         _cmd_interrupt,
         decide=_decide_interrupt,
         addressed=_addressed_everyone,
+    ),
+    Command(
+        "cancel",
+        "Withdraw a message of yours that a targeted agent has queued but not "
+        "started on yet. Only the message's sender can cancel it. "
+        "Usage: `!cancel`, then the agent's mention, then the turn ID from "
+        "the agent's activity card.",
+        _cmd_cancel,
+        decide=_decide_cancel,
+        args_spec=(
+            CommandArg("target", "Agent name or alias to ask", required=True),
+            CommandArg(
+                "turn_id",
+                "Turn ID of the queued message, from the activity card",
+                required=True,
+                free_text=True,
+            ),
+        ),
+        # Not a role: the message is queued with one agent, not a role's holder.
+        addressed=_addressed_by_required_first_named_mention,
+        admin_check=_check_cancel_usage,
     ),
     Command(
         "list-agents",

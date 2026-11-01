@@ -985,3 +985,89 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
     pages = [block for block in drawn.blocks if block["type"] == "plan"]
     assert "Running: Grep" not in pages[0]["title"]
     assert pages[1]["title"].endswith("· Running: Grep")
+
+
+# ── A turn withdrawn before it started, and how to withdraw one ──────────────
+
+# A turn id as the host mints it for a room message: the id `!cancel` takes.
+QUEUED_ID = "3f2b8c1e-5d4a-5b6c-9e7f-0a1b2c3d4e5f"
+CANCELLED = "Cancelled before the agent started."
+
+
+def _turn_with_id(status: str, turn_id: str = QUEUED_ID) -> TurnUpsert:
+    return TurnUpsert.model_validate(
+        {"type": "turn.upsert", "turnId": turn_id, "status": status, "commandId": None}
+    )
+
+
+def _session_card(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    """The newest section's session card: the one the heading sits over."""
+    plan = [block for block in blocks if block["type"] == "plan"][-1]
+    card = plan["tasks"][0]
+    assert isinstance(card, dict)
+    assert card["task_id"] == "switch-session"
+    return card
+
+
+def _hint_pieces(card: dict[str, Any]) -> list[tuple[str, bool]]:
+    [section] = card["details"]["elements"]
+    return [
+        (element["text"], element.get("style") == {"code": True})
+        for element in section["elements"]
+    ]
+
+
+async def test_a_cancelled_turn_says_so_and_nothing_about_time_on_slack() -> None:
+    """Every Slack shape a turn's message takes: the plan a post carries, the
+    stream, the bare line and the notification string. None of them says how
+    long it worked, and none counts the step it never got to as unfinished."""
+    items = [_item(itemId="live", status="in-progress", title="Read")]
+    turn = _turn_with_id("cancelled")
+
+    plan = render_activity_plan(items, turn, elapsed_seconds=125)
+    stream = render_activity_stream(items, turn, elapsed_seconds=125)
+
+    assert plan.blocks[0]["title"] == CANCELLED
+    assert plan.text == CANCELLED
+    assert stream.title == CANCELLED
+    assert _state([], turn) == f"_{CANCELLED}_"
+    assert render_activity_text([], turn, elapsed_seconds=125) == CANCELLED
+    assert _session_card(plan.blocks)["status"] == "complete"
+    assert "details" not in _session_card(plan.blocks)
+    assert "details" not in _session_card(stream.blocks)
+
+
+async def test_a_queued_turn_names_its_id_as_code_on_its_session_card() -> None:
+    """On the card, not in the heading: a plan's title is plain text and has no
+    way to mark a literal, and a card's detail is rich text, which can."""
+    for drawn in (
+        render_activity_plan([], _turn_with_id("queued")).blocks,
+        render_activity_stream([], _turn_with_id("queued")).blocks,
+    ):
+        assert _hint_pieces(_session_card(drawn)) == [
+            ("Turn ID: ", False),
+            (QUEUED_ID, True),
+            (" — the sender can withdraw it with ", False),
+            ("!cancel", True),
+            (", the agent's mention and this ID.", False),
+        ]
+        plan = [block for block in drawn if block["type"] == "plan"][-1]
+        assert plan["title"] == "Queued. Waiting for the agent to start…"
+        assert "`" not in json.dumps(drawn)
+
+
+async def test_a_follow_up_the_host_queued_itself_offers_nothing_on_slack() -> None:
+    """Nobody sent it and `!cancel` cannot name it, so the card stays bare."""
+    turn = _turn_with_id("queued", f"{QUEUED_ID}:followup")
+
+    assert "details" not in _session_card(render_activity_plan([], turn).blocks)
+    assert "details" not in _session_card(render_activity_stream([], turn).blocks)
+
+
+async def test_the_hint_goes_from_the_card_once_the_turn_starts() -> None:
+    """Redrawn in place: the section is replaced whole, so leaving it out is
+    what takes it off — a stream cannot remove a block of its own."""
+    turn = _turn_with_id("running")
+
+    assert "details" not in _session_card(render_activity_plan([], turn).blocks)
+    assert "details" not in _session_card(render_activity_stream([], turn).blocks)

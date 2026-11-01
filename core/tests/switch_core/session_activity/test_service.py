@@ -211,6 +211,19 @@ async def test_usage_on_a_turn_that_has_not_ended_is_refused(service):
         )
 
 
+async def test_a_turn_withdrawn_before_it_started_is_recorded_as_cancelled(
+    service, changes
+):
+    await service.report_item(AGENT, SESSION, **_turn("turn-1", 1, "queued"))
+    assert (
+        await service.report_item(AGENT, SESSION, **_turn("turn-1", 2, "cancelled"))
+        is True
+    )
+    [turn] = await service.turn_items(AGENT, SESSION, "turn-1")
+    assert (turn.item_id, turn.revision, turn.status) == ("turn", 2, "cancelled")
+    await changes.expect([("activity", "turn-1"), ("activity", "turn-1")])
+
+
 async def test_a_turns_steps_are_read_in_the_order_first_reported(service):
     for item_id, kind, status in [
         ("turn", "turn", "running"),

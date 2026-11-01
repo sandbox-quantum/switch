@@ -9,9 +9,13 @@ not report tool activity it must not report it here by the side door.
 
 from __future__ import annotations
 
-from switch_core.bridges.collaboration.session.renderers import MARKDOWN
+import pytest
+
+from switch_core.bridges.collaboration.session.renderers import MARKDOWN, Markup
 from switch_core.bridges.collaboration.session.renderers.neutral import turn_status
-from switch_core.sessions.contract import Item
+from switch_core.bridges.collaboration.teams.adapter import _TEAMS_MARKUP
+from switch_core.bridges.collaboration.telegram.adapter import TELEGRAM_HTML
+from switch_core.sessions.contract import Item, TurnUpsert
 
 from .session_fixtures import _item, _turn
 
@@ -118,3 +122,112 @@ def test_a_warning_too_long_for_the_message_is_cut() -> None:
     assert len(lines) == 1
     assert len(lines[0]) <= 10
     assert lines[0].startswith("⚠️")
+
+
+# ── A turn withdrawn before it started, and how to withdraw one ──────────────
+
+# A turn id as the host mints it for a room message: the id `!cancel` takes.
+QUEUED_ID = "3f2b8c1e-5d4a-5b6c-9e7f-0a1b2c3d4e5f"
+_HINT = (
+    "Turn ID: {id} — the sender can withdraw it with {cancel}, "
+    "the agent's mention and this ID."
+)
+
+
+def _turn_with_id(status: str, turn_id: str) -> TurnUpsert:
+    return TurnUpsert.model_validate(
+        {"type": "turn.upsert", "turnId": turn_id, "status": status, "commandId": None}
+    )
+
+
+def _drawn(
+    turn: TurnUpsert,
+    markup: Markup,
+    *,
+    items: list[Item] | None = None,
+    elapsed_seconds: float | None = None,
+    limit: int = 10_000,
+) -> list[str]:
+    return turn_status(
+        items or [],
+        turn,
+        escape=_identity,
+        limit=limit,
+        markup=markup,
+        elapsed_seconds=elapsed_seconds,
+        tool_detail=True,
+    ).splitlines()
+
+
+@pytest.mark.parametrize(
+    ("markup", "head"),
+    [
+        (MARKDOWN, "**Cancelled before the agent started.**"),
+        (TELEGRAM_HTML, "<b>Cancelled before the agent started.</b>"),
+        (_TEAMS_MARKUP, "**Cancelled before the agent started.**"),
+    ],
+    ids=["markdown", "telegram", "teams"],
+)
+def test_a_cancelled_turn_says_so_and_nothing_about_time(
+    markup: Markup, head: str
+) -> None:
+    """It never ran: no "Worked for", no step left open, no hint to withdraw it.
+
+    A caller that measured something passes it anyway — the time between the
+    turn's rows is how long it waited — and the line still says only that.
+    """
+    lines = _drawn(
+        _turn_with_id("cancelled", QUEUED_ID),
+        markup,
+        items=[_call("in-progress")],
+        elapsed_seconds=125,
+    )
+
+    assert lines == [head]
+
+
+@pytest.mark.parametrize(
+    ("markup", "hint"),
+    [
+        (MARKDOWN, _HINT.format(id=f"`{QUEUED_ID}`", cancel="`!cancel`")),
+        (
+            TELEGRAM_HTML,
+            _HINT.format(id=f"<code>{QUEUED_ID}</code>", cancel="<code>!cancel</code>"),
+        ),
+        (_TEAMS_MARKUP, _HINT.format(id=f"**{QUEUED_ID}**", cancel="**!cancel**")),
+    ],
+    ids=["markdown", "telegram", "teams"],
+)
+def test_a_queued_turn_names_its_id_marked_the_way_the_platform_marks_code(
+    markup: Markup, hint: str
+) -> None:
+    """The id and the command are literals to copy, so each platform marks them
+    its own way — a backtick written into the wording would reach Telegram and
+    Teams as a backtick."""
+    lines = _drawn(_turn_with_id("queued", QUEUED_ID), markup)
+
+    assert lines == [markup.bold("Queued. Waiting for the agent to start…"), hint]
+    assert not lines[1].startswith("!")
+    assert "@" not in lines[1]
+
+
+def test_a_follow_up_the_host_queued_itself_offers_nothing_to_withdraw() -> None:
+    """Nobody sent it and `!cancel` cannot name it, so no hint."""
+    lines = _drawn(_turn_with_id("queued", f"{QUEUED_ID}:followup"), MARKDOWN)
+
+    assert lines == ["**Queued. Waiting for the agent to start…**"]
+
+
+def test_the_hint_goes_once_the_turn_starts() -> None:
+    lines = _drawn(_turn_with_id("running", QUEUED_ID), MARKDOWN)
+
+    assert lines == ["**Working…**"]
+
+
+def test_the_hint_is_left_out_rather_than_cut_when_there_is_no_room() -> None:
+    """The state is what has to survive; a half-printed id is one nobody can use."""
+    head = "**Queued. Waiting for the agent to start…**"
+
+    lines = _drawn(_turn_with_id("queued", QUEUED_ID), MARKDOWN, limit=len(head) + 10)
+
+    assert lines == [head]
