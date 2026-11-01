@@ -58,6 +58,10 @@ STATIC = OAUTH_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
+POST_IDENTITY = STATIC.replace(
+    "    method: GET\n",
+    "    method: POST\n    body: { look_up: profile }\n",
+)
 STORE = ServiceConnectionStore()
 REDIRECT = "http://127.0.0.1:43123/callback"
 
@@ -219,6 +223,25 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("1001", "1001")
+
+    async def test_posts_the_body_the_catalog_names(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, POST_IDENTITY)
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
+        method, body = vendor.identity_calls[-1]
+        assert method == "POST"
+        assert json.loads(body) == {"look_up": "profile"}
+
+    async def test_a_post_identity_call_may_send_no_body(self, vendor) -> None:
+        # Dropbox's get_current_account takes no arguments: the POST itself is
+        # the whole request.
+        adapter, _ = _adapter(
+            vendor, POST_IDENTITY.replace("    body: { look_up: profile }\n", "")
+        )
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        assert vendor.identity_calls[-1] == ("POST", b"")
 
     async def test_an_account_without_an_id_is_refused(self, vendor) -> None:
         vendor.account = {"email": "ada@example.test"}

@@ -368,6 +368,8 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # Each identity call's method and body, as the vendor saw them.
+        self.identity_calls: list[tuple[str, bytes]] = []
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -441,9 +443,10 @@ class FakeOAuthServer:
             self.revoked.append(form)
             self.live_refresh.pop(form.get("token", ""), None)
             return httpx.Response(200)
-        if where == IDENTITY_URL and request.method == "GET":
+        if where == IDENTITY_URL and request.method in ("GET", "POST"):
             if self._bearer(request) is None:
                 return _json(401, {"error": "invalid_token"})
+            self.identity_calls.append((request.method, request.content))
             return _json(200, {"account": self.account})
         if where == MCP_URL:
             return self._mcp(request)

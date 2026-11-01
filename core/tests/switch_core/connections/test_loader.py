@@ -175,6 +175,7 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     every = set(definition.access.write.scopes)
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
+    assert definition.auth.identity.method == "GET"
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
 
 
@@ -226,6 +227,7 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     # Never the scope that creates and changes bases, tables and fields.
     assert "schema.bases:write" not in definition.access.write.scopes
     assert definition.auth.identity is not None
+    assert definition.auth.identity.method == "GET"
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
 
@@ -547,6 +549,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -581,12 +584,48 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.auth.oauth.registration == "dynamic"
     assert definition.auth.oauth.redirect == ["loopback", "core"]
     assert definition.auth.identity is not None
+    assert definition.auth.identity.method == "GET"
+    assert definition.auth.identity.body is None
     assert definition.auth.identity.account_id == "account.id"
     assert definition.token is not None
     assert definition.token.kind == "pass_through"
     assert definition.mcp is not None
     assert [server.name for server in definition.mcp.servers] == ["example"]
     assert definition.level_tools("write") == []
+
+
+def test_an_identity_call_may_post(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n",
+            "    method: POST\n    body: { look_up: profile }\n",
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", {"look_up": "profile"})
+
+
+def test_a_post_identity_call_may_send_no_body(catalog_copy):
+    # Dropbox's get_current_account is a POST that takes no arguments, so a
+    # POST with no body is a call, not a mistake.
+    _write_example(catalog_copy, OAUTH_ENTRY.replace("    method: GET\n", "    method: POST\n"))
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", None)
+
+
+def test_rejects_a_body_on_a_get_identity_call(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    method: GET\n",
+            "    method: GET\n    body: { look_up: profile }\n",
+        ),
+    )
+    with pytest.raises(CatalogError, match="only a POST identity call sends a body"):
+        load_catalog(catalog_copy)
 
 
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
@@ -629,7 +668,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",
