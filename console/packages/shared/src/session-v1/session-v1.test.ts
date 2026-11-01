@@ -88,6 +88,24 @@ describe('session-v1 wire contract', () => {
     expect(snapshot.session.pendingRequestIds).toEqual([]);
     expect(snapshot.commandStatuses[0].status).toBe('applied');
   });
+  it('accepts a cancel for a named turn and the cancelled turn it ends in', () => {
+    const cancel = examples.platformCancel;
+    expect(commandSchema.parse(cancel).body).toEqual({
+      type: 'turn.cancel',
+      turnId: 'turn-queued',
+    });
+    expect(parseHostEvent(examples.cancelledTurn).body).toMatchObject({
+      type: 'turn.upsert',
+      status: 'cancelled',
+    });
+    expect(() => commandSchema.parse({ ...cancel, body: { type: 'turn.cancel' } })).toThrow();
+    expect(() =>
+      commandSchema.parse({ ...cancel, body: { type: 'turn.cancel', turnId: '' } })
+    ).toThrow();
+    expect(() =>
+      commandSchema.parse({ ...cancel, body: { ...cancel.body, interrupt: true } })
+    ).toThrow();
+  });
   it('rejects raw data, reasoning items, unsafe counters and oversized host events', () => {
     expect(() =>
       parseHostEvent({ ...examples.hostRequest, raw: { secret: 'must not publish' } })

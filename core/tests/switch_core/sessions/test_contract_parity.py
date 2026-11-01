@@ -23,7 +23,10 @@ from typing import Any
 import pytest
 
 from switch_core.sessions.contract import (
+    TURN_ENDED,
     Item,
+    TurnCancel,
+    TurnUpsert,
     event_bytes,
     parse_command,
     parse_host_event,
@@ -63,6 +66,24 @@ def test_validates_the_agreed_examples() -> None:
     parse_snapshot(EXAMPLES["initialSnapshot"])
     for update in EXAMPLES["answerLifecycle"]:
         parse_server_event(update)
+
+
+def test_accepts_a_cancel_for_a_named_turn_and_the_cancelled_turn() -> None:
+    cancel = EXAMPLES["platformCancel"]
+    body = parse_command(cancel).body
+    assert isinstance(body, TurnCancel)
+    assert body.turn_id == "turn-queued"
+    ended = parse_host_event(EXAMPLES["cancelledTurn"]).body
+    assert isinstance(ended, TurnUpsert)
+    assert ended.status == "cancelled"
+    assert ended.status in TURN_ENDED
+    for wrong in (
+        {"type": "turn.cancel"},
+        {"type": "turn.cancel", "turnId": ""},
+        {**cancel["body"], "interrupt": True},
+    ):
+        with pytest.raises(ValueError):
+            parse_command({**cancel, "body": wrong})
 
 
 def test_rejects_raw_data_reasoning_items_unsafe_counters_and_oversized_events() -> (
