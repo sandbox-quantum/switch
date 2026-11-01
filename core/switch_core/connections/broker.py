@@ -63,6 +63,7 @@ from switch_core.connections.loader import (
     AccessLevel,
     Connection,
     ConnectionDefinition,
+    StdioMcpServer,
     TokenPolicy,
 )
 from switch_core.connections.shielded import finish_shielded
@@ -1154,12 +1155,14 @@ class ServiceBroker:
                                     "args": server.args,
                                     "env": server.env,
                                 }
-                                if getattr(server, "transport", "http") == "stdio"
+                                if isinstance(server, StdioMcpServer)
                                 else {
                                     "name": server.name,
                                     "url": server.url,
                                     "headers": server.headers
-                                    or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
+                                    or {
+                                        "Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"
+                                    },
                                 }
                             )
                             for server in mcp.servers

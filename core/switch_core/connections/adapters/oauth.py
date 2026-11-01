@@ -37,7 +37,11 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
-from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    AccessLevel,
+    ConnectionDefinition,
+    HttpMcpServer,
+)
 
 MAX_METADATA_BYTES = 64 * 1024
 
@@ -181,7 +185,16 @@ class OAuthAdapter:
         self._oauth = oauth
         self._identity = identity
         self._mcp_url = (
-            None if definition.mcp is None else definition.mcp.servers[0].url
+            None
+            if definition.mcp is None
+            else next(
+                (
+                    server.url
+                    for server in definition.mcp.servers
+                    if isinstance(server, HttpMcpServer)
+                ),
+                None,
+            )
         )
         self._client = client
         self._http = http

@@ -289,6 +289,9 @@ describe('a granted vendor’s MCP servers', () => {
       skill: null,
       mcp_servers: [{ name: 'example', url: VENDOR_URL }],
     }).mcp_servers;
+    if (older.transport === 'stdio') {
+      throw new Error('expected an http server grant');
+    }
     expect(older.headers).toEqual(BEARER);
     const vendors = await started([grant('example', [older])], [token(GOOD)], async (url, init) => {
       authorizations.push(new Headers(init?.headers).get('Authorization'));

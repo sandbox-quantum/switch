@@ -141,7 +141,10 @@ describe('Supervised stdio MCP in startVendorServers', () => {
       arguments: { text: 'After revocation' },
     });
     expect(afterRevokeResult.isError).toBe(true);
-    expect(afterRevokeResult.content?.[0]?.text).toContain('Queue closed; transport shutting down');
+    const afterRevokeContent = afterRevokeResult.content as
+      | { type: string; text?: string }[]
+      | undefined;
+    expect(afterRevokeContent?.[0]?.text).toContain('Queue closed; transport shutting down');
 
     await client.close().catch(() => {});
   });

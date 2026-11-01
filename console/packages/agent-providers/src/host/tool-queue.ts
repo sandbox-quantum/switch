@@ -131,14 +131,14 @@ export class ToolCallQueue {
     try {
       const result = await task.run();
       // Handle response settlement race
-      if (task.state === 'RUNNING' || task.state === 'CANCEL_REQUESTED') {
+      if (this.isSettlable(task)) {
         task.state = 'SETTLED';
         this.clearTimers(task);
         task.resolve(result);
       }
       // If QUARANTINED or TERMINATED, resolve/reject was already handled
     } catch (error) {
-      if (task.state === 'RUNNING' || task.state === 'CANCEL_REQUESTED') {
+      if (this.isSettlable(task)) {
         task.state = 'SETTLED';
         this.clearTimers(task);
         task.reject(error instanceof Error ? error : new Error(String(error)));
@@ -150,6 +150,12 @@ export class ToolCallQueue {
       }
       // If task is QUARANTINED or TERMINATED, drain stops completely.
     }
+  }
+
+  // The execution-timeout timer mutates task.state from outside the async
+  // flow, so this reads the live state rather than a control-flow narrowing.
+  private isSettlable(task: ActiveToolTask<unknown>): boolean {
+    return task.state === 'RUNNING' || task.state === 'CANCEL_REQUESTED';
   }
 
   private async handleExecutionTimeout(task: ActiveToolTask<unknown>): Promise<void> {

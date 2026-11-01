@@ -1,5 +1,6 @@
 import pytest
 from pydantic import ValidationError
+
 from switch_core.connections.loader import ConnectionDefinition, StdioMcpServer
 
 

@@ -25,10 +25,18 @@ leave all of those out.
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    ValidationError,
+    model_validator,
+)
 
 CATALOG_ROOT = Path(__file__).parent / "catalog"
 MAX_SKILL_BYTES = 32 * 1024
@@ -388,7 +396,9 @@ class StdioMcpServer(BaseModel):
             "pwsh",
         }
         if self.command.lower() in forbidden_commands:
-            raise ValueError(f"shell command runner {self.command!r} is strictly forbidden")
+            raise ValueError(
+                f"shell command runner {self.command!r} is strictly forbidden"
+            )
         for arg in self.args:
             if "\n" in arg or "\r" in arg:
                 raise ValueError("stdio arguments must not contain newline characters")
@@ -396,14 +406,15 @@ class StdioMcpServer(BaseModel):
 
 
 McpServer = Annotated[
-    Union[
-        Annotated[HttpMcpServer, Tag("http")],
-        Annotated[StdioMcpServer, Tag("stdio")],
-    ],
-    Discriminator(lambda v: v.get("transport", "http") if isinstance(v, dict) else getattr(v, "transport", "http")),
+    Annotated[HttpMcpServer, Tag("http")] | Annotated[StdioMcpServer, Tag("stdio")],
+    Discriminator(
+        lambda v: (
+            v.get("transport", "http")
+            if isinstance(v, dict)
+            else getattr(v, "transport", "http")
+        )
+    ),
 ]
-
-
 
 
 class ConnectionMcp(BaseModel):

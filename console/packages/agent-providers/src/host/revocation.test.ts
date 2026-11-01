@@ -7,7 +7,10 @@ describe('Push IPC Grant Revocation', () => {
   it('receives revoke-grant IPC and terminates queued and active work in <500ms', async () => {
     const port = new EventEmitter() as unknown as ParentPort;
     const sentMessages: unknown[] = [];
-    port.send = (msg: unknown) => sentMessages.push(msg);
+    port.send = (msg: unknown) => {
+      sentMessages.push(msg);
+      return true;
+    };
     port.connected = true;
 
     const channel = connectParent(port);
@@ -35,7 +38,7 @@ describe('Push IPC Grant Revocation', () => {
     const task2Expectation = expect(task2).rejects.toThrow('Service grant mongodb was revoked');
 
     // Simulate parent sending 'revoke-grant' message over IPC
-    port.emit('message', { kind: 'revoke-grant', service: 'mongodb' });
+    (port as unknown as EventEmitter).emit('message', { kind: 'revoke-grant', service: 'mongodb' });
 
     await task1Expectation;
     await task2Expectation;
