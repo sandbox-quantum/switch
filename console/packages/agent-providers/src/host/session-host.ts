@@ -81,6 +81,8 @@ export type HostSessionStart = {
   epochAuthority?: 'server';
   resetEpoch?: () => Promise<string>;
   stageAttachments?: (attachments: Attachment[]) => Promise<TurnAttachment[]>;
+  /** Told of a cancelled message's attachments, which will never be staged. */
+  releaseAttachments?: (attachments: Attachment[]) => void;
   /**
    * Posts to a room as the agent, raising when the post did not land. Absent
    * where the host has no way to reach the agent's rooms.
@@ -132,6 +134,11 @@ export class HostedSession {
   private readonly usage = new Map<string, TokenUsage[]>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
+  /**
+   * Turns whose end is decided in memory while the event saying so may still
+   * be on its way to the journal: the replica learns of it only once written.
+   */
+  private readonly settledTurns = new Map<string, 'cancelled' | 'interrupted'>();
   private readonly questions = new Map<string, PendingQuestion>();
   private readonly listeners = new Set<(event: ServerEvent) => void>();
   /** Recent reasoning, in memory only: never published, journaled or replayed. */
@@ -284,7 +291,11 @@ export class HostedSession {
               code: 'HOST_RESTARTED',
               message: 'The host restarted before confirming the command. It will not resend it.',
             });
-          if (command.body.type === 'message.send' && !host.finished.has(command.commandId))
+          if (
+            command.body.type === 'message.send' &&
+            !host.finished.has(command.commandId) &&
+            !host.cancelled(command.commandId)
+          )
             await host.publish({
               type: 'notice',
               level: 'warning',
@@ -396,6 +407,12 @@ export class HostedSession {
       items: snapshot.items.filter((item) => item.kind === 'assistant-message'),
       turns: snapshot.turns.filter((turn) => turn.status === 'completed'),
     });
+  }
+
+  private cancelled(turnId: string): boolean {
+    return this.replica
+      .snapshot()
+      .turns.some((turn) => turn.turnId === turnId && turn.status === 'cancelled');
   }
 
   /** Start a new provider conversation in place of one that cannot be resumed. */
@@ -936,6 +953,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1135,6 +1153,8 @@ export class HostedSession {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
+      } else if (body.type === 'turn.cancel') {
+        await this.cancelQueued(command);
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
@@ -1168,7 +1188,21 @@ export class HostedSession {
       if (body.type === 'message.send')
         void this.runNext().catch((error: unknown) => this.fail(error));
     } catch (error) {
-      if (body.type === 'session.model.set') await this.fail(error);
+      if (error instanceof CommandRefusal) {
+        await this.publish({
+          type: 'command.status',
+          commandId: command.commandId,
+          status: 'rejected',
+          code: error.code,
+          message: error.message,
+        });
+        return this.status(command.commandId);
+      }
+      // A cancel fails past its refusals only once the message has left the
+      // queue: it is gone, so the cancel cannot read as refused.
+      const withdrawn =
+        body.type === 'turn.cancel' && this.settledTurns.get(body.turnId) === 'cancelled';
+      if (body.type === 'session.model.set' || withdrawn) await this.fail(error);
       if (body.type === 'request.answer') {
         const request = this.snapshot().requests.find((r) => r.requestId === body.requestId);
         if (request?.state === 'submitting')
@@ -1184,8 +1218,11 @@ export class HostedSession {
       await this.publish({
         type: 'command.status',
         commandId: command.commandId,
-        status: this.dispatched.has(command.commandId) ? 'unknown' : 'rejected',
-        code: this.dispatched.has(command.commandId) ? 'OUTCOME_UNKNOWN' : 'PROVIDER_ERROR',
+        status: withdrawn || this.dispatched.has(command.commandId) ? 'unknown' : 'rejected',
+        code:
+          withdrawn || this.dispatched.has(command.commandId)
+            ? 'OUTCOME_UNKNOWN'
+            : 'PROVIDER_ERROR',
         message: String(error),
       });
     }
@@ -1211,18 +1248,67 @@ export class HostedSession {
     return status;
   }
 
+  /**
+   * Takes a queued room message back. Nothing yields until it is off the
+   * queue, so a turn that starts or a session that exits meanwhile finds it
+   * already settled.
+   */
+  private async cancelQueued(command: Command): Promise<void> {
+    if (command.body.type !== 'turn.cancel') return;
+    const { turnId } = command.body;
+    const target = this.commands.get(turnId);
+    if (
+      target?.body.type !== 'message.send' ||
+      target.origin.roomId === null ||
+      target.origin.messageId === null ||
+      target.origin.roomId !== command.origin.roomId
+    )
+      throw new CommandRefusal('TURN_NOT_FOUND', 'No message with that ID is waiting here.');
+    if (target.origin.actorId !== command.origin.actorId)
+      throw new CommandRefusal('NOT_YOUR_MESSAGE', 'Only its sender can cancel a message.');
+    const status = this.replica.snapshot().turns.find((turn) => turn.turnId === turnId)?.status;
+    const settled = this.settledTurns.get(turnId);
+    if (settled === 'cancelled' || status === 'cancelled')
+      throw new CommandRefusal('TURN_ALREADY_CANCELLED', 'That message was already cancelled.');
+    if (settled === 'interrupted')
+      throw new CommandRefusal('TURN_NOT_QUEUED', 'That message is no longer queued.');
+    const index = this.queue.findIndex((queued) => queued.commandId === turnId);
+    if (index !== -1 && status === 'queued') {
+      this.queue.splice(index, 1);
+      this.settledTurns.set(turnId, 'cancelled');
+      await this.publish({
+        type: 'turn.upsert',
+        turnId,
+        commandId: target.commandId,
+        status: 'cancelled',
+      });
+      this.config.releaseAttachments?.(target.body.attachments);
+      return;
+    }
+    // A turn that just ended reads ended a moment before it stops being the active one.
+    if (status === 'completed' || status === 'error' || status === 'interrupted')
+      throw new CommandRefusal('TURN_NOT_QUEUED', 'That message is no longer queued.');
+    if (this.activeTurn === turnId)
+      throw new CommandRefusal('TURN_ALREADY_STARTED', 'The agent has already started on it.');
+    throw new CommandRefusal('TURN_NOT_QUEUED', 'That message is no longer queued.');
+  }
+
   private async runNext(): Promise<void> {
     if (this.activeTurn || this.shuttingDown || this.stopped || this.fault) return;
-    const command = this.queue.shift();
+    let command = this.queue.shift();
+    while (command && this.settledTurns.has(command.commandId)) command = this.queue.shift();
     if (!command || command.body.type !== 'message.send') return;
     this.activeTurn = command.commandId;
     try {
       const attachments = command.body.attachments.length
         ? await this.config.stageAttachments!(command.body.attachments)
         : [];
+      if (this.endedWhileSending(command.commandId)) return;
       if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
       await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
       this.dispatched.add(command.commandId);
+      if (this.endedWhileSending(command.commandId)) return;
+      if (this.shuttingDown || this.stopped || this.fault) throw new Error('HOST_STOPPING');
       await this.adapter.sendTurn({
         sessionId: this.config.session.sessionId,
         turnId: command.commandId,
@@ -1246,6 +1332,16 @@ export class HostedSession {
       this.activeTurn = null;
       void this.runNext().catch((error: unknown) => this.fail(error));
     }
+  }
+
+  /**
+   * Whether a turn being readied for the provider was ended while it waited,
+   * as an exit ends it. It is not sent, and nothing ends it a second time.
+   */
+  private endedWhileSending(turnId: string): boolean {
+    if (!this.settledTurns.has(turnId)) return false;
+    if (this.activeTurn === turnId) this.activeTurn = null;
+    return true;
   }
 
   /**
@@ -1317,6 +1413,15 @@ export class HostedSession {
     )
       return;
     if (event.type === 'session.exited') {
+      // Claimed before the first await: a cancel waiting on its write keeps
+      // its message, and one that arrives later finds the turn already ended.
+      const targets = this.snapshot().turns.filter(
+        (turn) =>
+          (turn.status === 'running' || turn.status === 'queued') &&
+          !this.settledTurns.has(turn.turnId)
+      );
+      for (const turn of targets) this.settledTurns.set(turn.turnId, 'interrupted');
+      this.queue.splice(0);
       for (const request of this.snapshot().requests)
         if (request.state === 'open' || request.state === 'submitting')
           await this.publish({
@@ -1327,10 +1432,19 @@ export class HostedSession {
             commandId: null,
             result: null,
           });
-      for (const turn of this.snapshot().turns)
-        if (turn.status === 'running' || turn.status === 'queued')
-          await this.publish({ ...turn, status: 'interrupted' });
-      this.queue.length = 0;
+      for (const turn of targets) await this.publish({ ...turn, status: 'interrupted' });
+      // A message that joined the queue while those were written ends the same way.
+      const joined = this.queue
+        .splice(0)
+        .filter((queued) => !this.settledTurns.has(queued.commandId));
+      for (const queued of joined) this.settledTurns.set(queued.commandId, 'interrupted');
+      for (const queued of joined)
+        await this.publish({
+          type: 'turn.upsert',
+          turnId: queued.commandId,
+          commandId: queued.commandId,
+          status: 'interrupted',
+        });
       this.activeTurn = null;
       this.questions.clear();
     }
@@ -1593,6 +1707,16 @@ export function recentTurns(
     items += turn.items.length;
   }
   return kept.reverse();
+}
+
+/** A command the host turned down as asked, recorded as rejected with `code`. */
+class CommandRefusal extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+  }
 }
 
 /**
