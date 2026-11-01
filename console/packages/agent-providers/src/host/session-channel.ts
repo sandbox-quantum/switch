@@ -156,6 +156,8 @@ const toChildSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('busyBarrier'), id: z.number().int().nonnegative() }),
   /** Service token values, in every form, that this agent's sessions were handed: scrub them too. */
   z.object({ kind: z.literal('redactions'), values: z.array(z.string()) }),
+  /** Immediately revoke a service grant and terminate its active/queued processes. */
+  z.object({ kind: z.literal('revoke-grant'), service: z.string().min(1) }),
 ]);
 
 const fromChildSchema = z.discriminatedUnion('kind', [
@@ -716,6 +718,8 @@ export type ParentChannel = {
   onBarrier: (handler: () => Promise<BusyState>) => void;
   /** Take the token values the parent shares, including any sent before this was called. */
   onRedactions: (handler: (values: string[]) => void) => void;
+  /** Take immediate push notifications when a service grant is revoked. */
+  onRevokeGrant: (handler: (service: string) => Promise<void> | void) => void;
   /** Stop answering requests, so the parent reads the host as going. */
   close: () => void;
 };
@@ -755,6 +759,7 @@ export function connectParent(port: ParentPort): ParentChannel {
   let handlers: SessionRequestHandlers | null = null;
   let barrier: (() => Promise<BusyState>) | null = null;
   let redactionHandler: ((values: string[]) => void) | null = null;
+  let revokeHandler: ((service: string) => Promise<void> | void) | null = null;
   const sharedEarly: string[] = [];
   let serving = true;
   let nextAsk = 0;
@@ -788,6 +793,14 @@ export function connectParent(port: ParentPort): ParentChannel {
     if (message.kind === 'redactions') {
       if (redactionHandler) redactionHandler(message.values);
       else sharedEarly.push(...message.values);
+      return;
+    }
+    if (message.kind === 'revoke-grant') {
+      if (revokeHandler) {
+        Promise.resolve(revokeHandler(message.service)).catch((err) =>
+          console.error(`Error executing revokeHandler for ${message.service}: ${String(err)}`)
+        );
+      }
       return;
     }
     if (message.kind === 'busyBarrier') {
@@ -839,6 +852,9 @@ export function connectParent(port: ParentPort): ParentChannel {
     onRedactions: (handler) => {
       redactionHandler = handler;
       if (sharedEarly.length) handler(sharedEarly.splice(0));
+    },
+    onRevokeGrant: (handler) => {
+      revokeHandler = handler;
     },
     ask: (ask) => {
       if (!port.connected)
