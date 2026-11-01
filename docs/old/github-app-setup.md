@@ -112,6 +112,18 @@ restart switch-core. It is the same App, so nobody reconnects. Copying is
 refused while the file's `origin` differs from `GATEWAY_PUBLIC_URL`, since a
 saved App is called back at `GATEWAY_PUBLIC_URL`.
 
+## An organization's own GitHub App
+
+With the `organization_connector_apps` flag on (with `service_connections`),
+an organization's admins can save its own under **Organization**,
+**Connectors** in the dashboard, with the same callback, checks and
+encryption as above. Every workspace in that organization then signs in
+through the organization's App instead of the server's; the others keep
+using the server's. If the organization's App stops working, its
+workspaces see GitHub as unavailable, with the reason, rather than falling
+back to the server's. Removing it sends them back to the server's App, and
+people connected through it reconnect once. The flag is off by default.
+
 ## Several replicas
 
 Sign-ins in progress are kept in the database, and a change to the App
