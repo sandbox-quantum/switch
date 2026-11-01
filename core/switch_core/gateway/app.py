@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -111,6 +112,7 @@ def create_gateway_app(
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
+    trust_settings_changed: Callable[[], None] | None = None,
 ) -> FastAPI:
     init_dependencies(
         agent_store=agent_store,
@@ -136,6 +138,7 @@ def create_gateway_app(
         invite_mailer=invite_mailer,
         user_changes=user_changes,
         config=config,
+        trust_settings_changed=trust_settings_changed,
     )
 
     app = FastAPI(title="Switch Gateway API")

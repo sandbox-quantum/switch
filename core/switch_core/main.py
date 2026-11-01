@@ -219,6 +219,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
+from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 
@@ -785,6 +786,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
 
     # ── Switch Trust guardrails ──────────────────────────────────────────────
     trust_client, trust_http = build_trust_client(session_factory, config)
+    trust_signals = TrustSettingsSignals(client=trust_client, bus=signal_bus)
 
     # ── Resource service ─────────────────────────────────────────────────────
     resource_service = ResourceService(
@@ -1231,6 +1233,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         chat_service=chat_service,
         connector_apps=connector_apps,
         config=config,
+        trust_settings_changed=trust_signals.changed,
     )
 
     register_platforms(collab_lifecycle)

@@ -224,6 +224,11 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Checking a message against Switch Trust no longer reads its settings each
+  time.** Each process keeps the settings it read until they change: saving or
+  clearing them in the gateway tells every process, so a change still takes
+  effect on the next message. Settings are read again after 30 seconds at most,
+  for a change whose signal was lost.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's

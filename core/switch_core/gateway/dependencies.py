@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,6 +63,7 @@ def init_dependencies(
     invite_mailer: InviteMailer | None,
     user_changes: LocalUserChanges,
     config: SwitchConfig,
+    trust_settings_changed: Callable[[], None] | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
     _state["room_store"] = room_store
@@ -87,6 +88,7 @@ def init_dependencies(
     _state["invite_mailer"] = invite_mailer
     _state["user_changes"] = user_changes
     _state["config"] = config
+    _state["trust_settings_changed"] = trust_settings_changed
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -223,6 +225,15 @@ def get_user_changes() -> LocalUserChanges:
 
 def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
+
+
+def trust_settings_changed() -> None:
+    """Tell every process the Switch Trust settings changed, once the change
+    has committed (`trust/signals.py`). Nothing is wired to hear it in a route
+    test."""
+    changed = _state.get("trust_settings_changed")
+    if changed is not None:
+        changed()
 
 
 def get_protocol() -> AgentCore:
