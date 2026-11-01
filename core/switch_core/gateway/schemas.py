@@ -1731,3 +1731,109 @@ class SlackTokensChecked(BaseModel):
     workspace_id: str
     workspace_name: str
     bot_name: str
+
+
+# ── Room Schedules ──────────────────────────────────────────────────────────
+
+
+class RoomScheduleCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    message: str = Field(..., min_length=1)
+    target_agent_ids: list[str] = Field(default_factory=list)
+    schedule_type: Literal["one_off", "recurring"] = "recurring"
+    cron_expression: str | None = None
+    cron_expr: str | None = None
+    timezone: str = "UTC"
+    one_off_datetime: datetime | None = None
+    run_at: datetime | None = None
+    missed_run_policy: Literal["run_once", "skip"] = "run_once"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "cron_expr" in data and not data.get("cron_expression"):
+                data["cron_expression"] = data["cron_expr"]
+            if "run_at" in data and not data.get("one_off_datetime"):
+                data["one_off_datetime"] = data["run_at"]
+        return data
+
+
+class RoomScheduleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    message: str | None = Field(default=None, min_length=1)
+    target_agent_ids: list[str] | None = None
+    cron_expression: str | None = None
+    cron_expr: str | None = None
+    timezone: str | None = None
+    one_off_datetime: datetime | None = None
+    run_at: datetime | None = None
+    missed_run_policy: Literal["run_once", "skip"] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "cron_expr" in data and not data.get("cron_expression"):
+                data["cron_expression"] = data["cron_expr"]
+            if "run_at" in data and not data.get("one_off_datetime"):
+                data["one_off_datetime"] = data["run_at"]
+        return data
+
+
+class RoomScheduleResponse(BaseModel):
+    id: str
+    tenant_id: str
+    room_id: str
+    created_by_user_id: str | None = None
+    created_by: str | None = None
+    name: str
+    message: str
+    target_agent_ids: list[str] = Field(default_factory=list)
+    schedule_type: str
+    cron_expression: str | None = None
+    cron_expr: str | None = None
+    timezone: str
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    last_run_error: str | None = None
+    status: str
+    missed_run_policy: str
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_response(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "created_by_user_id" in data and not data.get("created_by"):
+                data["created_by"] = data["created_by_user_id"]
+            if "cron_expression" in data and not data.get("cron_expr"):
+                data["cron_expr"] = data["cron_expression"]
+            if "one_off_datetime" in data and not data.get("run_at"):
+                data["run_at"] = data["one_off_datetime"]
+        elif hasattr(data, "created_by_user_id"):
+            return {
+                "id": data.id,
+                "tenant_id": data.tenant_id,
+                "room_id": data.room_id,
+                "created_by_user_id": data.created_by_user_id,
+                "created_by": data.created_by_user_id,
+                "name": data.name,
+                "message": data.message,
+                "target_agent_ids": list(data.target_agent_ids or []),
+                "schedule_type": data.schedule_type,
+                "cron_expression": data.cron_expression,
+                "cron_expr": data.cron_expression,
+                "timezone": data.timezone,
+                "next_run_at": data.next_run_at,
+                "last_run_at": data.last_run_at,
+                "last_run_status": getattr(data, "last_run_status", None),
+                "last_run_error": getattr(data, "last_run_error", None),
+                "status": data.status,
+                "missed_run_policy": data.missed_run_policy,
+                "created_at": data.created_at,
+                "updated_at": data.updated_at,
+            }
+        return data

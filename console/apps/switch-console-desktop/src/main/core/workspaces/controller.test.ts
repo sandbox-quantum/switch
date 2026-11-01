@@ -135,6 +135,12 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   updateAddressingPolicy: vi.fn(),
   updateAgentIcon: vi.fn(),
   updateRoom: vi.fn(),
+  createRoomSchedule: vi.fn(),
+  deleteRoomSchedule: vi.fn(),
+  listRoomSchedules: vi.fn(),
+  pauseRoomSchedule: vi.fn(),
+  resumeRoomSchedule: vi.fn(),
+  updateRoomSchedule: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   getServer,

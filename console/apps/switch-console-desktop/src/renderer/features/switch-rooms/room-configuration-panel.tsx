@@ -53,6 +53,7 @@ import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
+import { RoomSchedulesSection } from './schedules/room-schedules-section';
 
 /** Query key for one room's own settings — shared so a save can write the
  * server's answer straight back into what the page is reading. */
@@ -504,6 +505,7 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             text across. */}
         <GeneralSection key={room.id} workspaceId={workspaceId} room={room} />
         <ParticipantsSection workspaceId={workspaceId} room={room} />
+        <RoomSchedulesSection workspaceId={workspaceId} room={room} />
         <DeleteRoomSection workspaceId={workspaceId} room={room} />
       </div>
     </div>

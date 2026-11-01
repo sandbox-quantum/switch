@@ -392,6 +392,56 @@ export type UpdateRoomParams = {
 };
 
 /**
+ * A scheduled message rule for a room (mirrors the gateway `RoomScheduleResponse`).
+ */
+export type RemoteRoomSchedule = {
+  id: string;
+  roomId: string;
+  name: string;
+  scheduleType: 'recurring' | 'one_off';
+  cronExpr: string | null;
+  timezone: string;
+  runAt: string | null;
+  message: string;
+  targetAgentIds: string[];
+  status: 'active' | 'paused' | 'completed';
+  missedRunPolicy: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  lastRunError: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CreateRoomScheduleParams = {
+  workspaceId: string;
+  roomId: string;
+  name: string;
+  scheduleType: 'recurring' | 'one_off';
+  cronExpr?: string | null;
+  timezone?: string;
+  runAt?: string | null;
+  message: string;
+  targetAgentIds?: string[];
+  missedRunPolicy?: string;
+};
+
+export type UpdateRoomScheduleParams = {
+  workspaceId: string;
+  roomId: string;
+  scheduleId: string;
+  name?: string;
+  cronExpr?: string | null;
+  timezone?: string;
+  runAt?: string | null;
+  message?: string;
+  targetAgentIds?: string[];
+  missedRunPolicy?: string;
+};
+
+/**
  * A room a specific agent belongs to, with that agent's presence there (mirrors
  * the gateway `AgentRoomMembership`). Drives the "connect to room" picker at
  * session start and the room-focused sidebar grouping.

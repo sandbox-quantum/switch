@@ -84,6 +84,7 @@ import {
   type LinkedIdentity,
   type MessagingAppInstall,
   type MessagingApps,
+  type CreateRoomScheduleParams,
   type RemoteAgentRoom,
   type RemoteAgentSummary,
   type RemoteBridge,
@@ -92,6 +93,7 @@ import {
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
+  type RemoteRoomSchedule,
   type RemoteRoomSummary,
   type RemoveTeamsTeamResult,
   type RetireOutcome,
@@ -102,6 +104,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type UpdateRoomScheduleParams,
   type UpdateTrustSettingsParams,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
@@ -3122,6 +3125,175 @@ export async function createRoom(
   });
   return mapRoomSummary((await res.json()) as RoomSummaryJson);
 }
+
+type RoomScheduleJson = {
+  id: string;
+  room_id: string;
+  name: string;
+  schedule_type: 'recurring' | 'one_off';
+  cron_expr?: string | null;
+  timezone: string;
+  run_at?: string | null;
+  message: string;
+  target_agent_ids?: string[];
+  status: 'active' | 'paused' | 'completed';
+  missed_run_policy: string;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_run_status?: string | null;
+  last_run_error?: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+function mapRoomSchedule(json: RoomScheduleJson): RemoteRoomSchedule {
+  return {
+    id: json.id,
+    roomId: json.room_id,
+    name: json.name,
+    scheduleType: json.schedule_type,
+    cronExpr: json.cron_expr ?? null,
+    timezone: json.timezone,
+    runAt: json.run_at ?? null,
+    message: json.message,
+    targetAgentIds: json.target_agent_ids ?? [],
+    status: json.status,
+    missedRunPolicy: json.missed_run_policy,
+    nextRunAt: json.next_run_at ?? null,
+    lastRunAt: json.last_run_at ?? null,
+    lastRunStatus: json.last_run_status ?? null,
+    lastRunError: json.last_run_error ?? null,
+    createdBy: json.created_by,
+    createdAt: json.created_at,
+    updatedAt: json.updated_at,
+  };
+}
+
+/**
+ * List all scheduled messages for a room (`GET /rooms/{id}/schedules`).
+ */
+export async function listRoomSchedules(
+  server: SwitchServer,
+  roomId: string
+): Promise<RemoteRoomSchedule[]> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/schedules`, {
+    authenticated: true,
+  });
+  const json = (await res.json()) as RoomScheduleJson[];
+  return json.map(mapRoomSchedule);
+}
+
+/**
+ * Create a new scheduled message in a room (`POST /rooms/{id}/schedules`).
+ */
+export async function createRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  input: Omit<CreateRoomScheduleParams, 'workspaceId' | 'roomId'>
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/schedules`, {
+    authenticated: true,
+    method: 'POST',
+    body: {
+      name: input.name,
+      schedule_type: input.scheduleType,
+      cron_expr: input.cronExpr ?? null,
+      timezone: input.timezone ?? 'UTC',
+      run_at: input.runAt ?? null,
+      message: input.message,
+      target_agent_ids: input.targetAgentIds ?? [],
+      missed_run_policy: input.missedRunPolicy ?? 'run_once',
+    },
+  });
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/**
+ * Update an existing room schedule (`PATCH /rooms/{id}/schedules/{scheduleId}`).
+ */
+export async function updateRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string,
+  input: Omit<UpdateRoomScheduleParams, 'workspaceId' | 'roomId' | 'scheduleId'>
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/schedules/${encodeURIComponent(scheduleId)}`,
+    {
+      authenticated: true,
+      method: 'PATCH',
+      body: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.cronExpr !== undefined ? { cron_expr: input.cronExpr } : {}),
+        ...(input.timezone !== undefined ? { timezone: input.timezone } : {}),
+        ...(input.runAt !== undefined ? { run_at: input.runAt } : {}),
+        ...(input.message !== undefined ? { message: input.message } : {}),
+        ...(input.targetAgentIds !== undefined ? { target_agent_ids: input.targetAgentIds } : {}),
+        ...(input.missedRunPolicy !== undefined ? { missed_run_policy: input.missedRunPolicy } : {}),
+      },
+    }
+  );
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/**
+ * Pause a room schedule (`POST /rooms/{id}/schedules/{scheduleId}/pause`).
+ */
+export async function pauseRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/schedules/${encodeURIComponent(scheduleId)}/pause`,
+    {
+      authenticated: true,
+      method: 'POST',
+    }
+  );
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/**
+ * Resume a paused room schedule (`POST /rooms/{id}/schedules/{scheduleId}/resume`).
+ */
+export async function resumeRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<RemoteRoomSchedule> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/schedules/${encodeURIComponent(scheduleId)}/resume`,
+    {
+      authenticated: true,
+      method: 'POST',
+    }
+  );
+  return mapRoomSchedule((await res.json()) as RoomScheduleJson);
+}
+
+/**
+ * Delete a room schedule (`DELETE /rooms/{id}/schedules/{scheduleId}`).
+ */
+export async function deleteRoomSchedule(
+  server: SwitchServer,
+  roomId: string,
+  scheduleId: string
+): Promise<void> {
+  await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/schedules/${encodeURIComponent(scheduleId)}`,
+    {
+      authenticated: true,
+      method: 'DELETE',
+    }
+  );
+}
+
 
 /**
  * The caller's cloud machines, or null when the server offers none: it says
