@@ -200,6 +200,7 @@ from switch_core.observability.pool import (
     pool_stats,
 )
 from switch_core.observability.query import instrument_queries
+from switch_core.organization_directory import LocalDirectory
 from switch_core.outbound import guarded_async_client
 from switch_core.ownership import Ownership
 from switch_core.process_identity import new_process_id
@@ -1250,6 +1251,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
         organization_store=organization_store,
+        organization_directory=LocalDirectory(),
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,

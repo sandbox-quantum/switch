@@ -50,6 +50,7 @@ from switch_core.gateway.schemas import (
     OrganizationSummary,
     TenantMembershipResponse,
 )
+from switch_core.organization_directory import DirectoryRefusal, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,15 @@ def _slugs(name: str) -> list[str]:
     return [base] + [
         f"{base}-{secrets.token_hex(2)}" for _ in range(_SLUG_ATTEMPTS - 1)
     ]
+
+
+def directory_refused(refusal: DirectoryRefusal) -> HTTPException:
+    """The answer when the organization directory refuses a change, or can't
+    be reached: its reason, and that nothing was changed."""
+    logger.warning("The organization directory refused a change: %s", refusal.message)
+    return HTTPException(
+        status_code=503, detail=f"{refusal.message} Nothing was changed."
+    )
 
 
 def _no_free_slug(kind: str, name: str) -> HTTPException:
@@ -169,6 +179,7 @@ async def create_organization_for(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     client_lifecycle: ClientLifecycleService,
     config: SwitchConfig,
     *,
@@ -197,15 +208,19 @@ async def create_organization_for(
         user = allowance = await lock_workspace_allowance(
             session, caller.id, config, new_organization=True
         )
-    organization, tenant = await create_organization(
-        session_factory,
-        user_store,
-        organization_store,
-        client_lifecycle,
-        caller.id,
-        name,
-        workspace_name,
-    )
+    try:
+        organization, tenant = await create_organization(
+            session_factory,
+            user_store,
+            organization_store,
+            organization_directory,
+            client_lifecycle,
+            user,
+            name,
+            workspace_name,
+        )
+    except DirectoryRefusal as refusal:
+        raise directory_refused(refusal) from None
     if allowance is not None:
         allowance.workspaces_created += 1
         await session.commit()
@@ -237,24 +252,35 @@ async def create_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
     organization_store: OrganizationStore,
+    organization_directory: OrganizationDirectory,
     client_lifecycle: ClientLifecycleService,
-    creator_id: str,
+    creator: User,
     name: str,
     workspace_name: str,
 ) -> tuple[Organization, Tenant]:
     """Create an organization named `name` and its first workspace, named
-    `workspace_name`. `creator_id` becomes the organization's `org_admin` and
+    `workspace_name`. `creator` becomes the organization's `org_admin` and
     the workspace's `owner`, a member there in their own right.
 
-    The organization is committed first, because the workspace references it.
+    The directory records it first (`organization_directory.py`); a refusal
+    raises `DirectoryRefusal` before anything is written here. The
+    organization is committed next, because the workspace references it.
     If the workspace then cannot be created, for any reason, the organization
     is deleted again, so a failed creation leaves nothing behind.
     """
     # Both names are checked before anything is written.
     workspace_slugs = _slugs(workspace_name)
+    organization_slugs = _slugs(name)
+    recorded = await organization_directory.create_organization(creator, name)
     organization: Organization | None = None
-    for slug in _slugs(name):
-        candidate = Organization(id=str(uuid.uuid4()), name=name, slug=slug)
+    for slug in organization_slugs:
+        candidate = Organization(
+            id=str(uuid.uuid4()),
+            name=name,
+            slug=slug,
+            workos_organization_id=recorded.workos_organization_id,
+            customer_id=recorded.customer_id,
+        )
         try:
             async with organization_session(session_factory, candidate.id) as session:
                 await organization_store.create(session, candidate)
@@ -291,7 +317,7 @@ async def create_organization(
         session_factory,
         user_store,
         tenant,
-        creator_id,
+        creator.id,
         organization_role=ORGANIZATION_ADMIN_ROLE,
         new_organization=organization,
     )

@@ -82,6 +82,7 @@ from switch_core.gateway.dependencies import (
     get_invitation_store,
     get_invite_mailer,
     get_join_domain_store,
+    get_organization_directory,
     get_organization_store,
     get_protocol,
     get_session,
@@ -126,7 +127,11 @@ from switch_core.gateway.workspace_access import (
     finish_revocation,
     revoke_workspace_access,
 )
-from switch_core.gateway.workspace_creation import create_organization_for
+from switch_core.gateway.workspace_creation import (
+    create_organization_for,
+    directory_refused,
+)
+from switch_core.organization_directory import DirectoryRefusal, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -332,6 +337,9 @@ async def create_tenant(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
@@ -347,6 +355,7 @@ async def create_tenant(
         session_factory,
         user_store,
         organization_store,
+        organization_directory,
         client_lifecycle,
         config,
         name=req.name,
@@ -794,6 +803,9 @@ async def accept_invitation(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Accept an invitation, joining its tenant, and switch the caller's
@@ -833,7 +845,12 @@ async def accept_invitation(
         _require_invitation_usable(invitation, caller.email)
 
         membership, user = await _join_through(
-            session, invitation, caller, user_store, invitation_store
+            session,
+            invitation,
+            caller,
+            user_store,
+            invitation_store,
+            organization_directory,
         )
 
     set_session_cookie(
@@ -842,12 +859,39 @@ async def accept_invitation(
     return membership
 
 
+async def _join_organization_of(
+    session: AsyncSession,
+    organization_directory: OrganizationDirectory,
+    tenant_id: str,
+    user_id: str,
+) -> None:
+    """Ask the directory to make `user_id` a member of `tenant_id`'s
+    organization, before their workspace membership is written
+    (`organization_directory.py`). A refusal is answered with its reason, and
+    the caller's uncommitted writes (an invitation's use) are rolled back."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise RuntimeError(f"Workspace {tenant_id} is not visible to this session")
+    if tenant.organization_id is None:
+        return
+    try:
+        await organization_directory.join(
+            session,
+            organization_id=tenant.organization_id,
+            user_id=user_id,
+            role="member",
+        )
+    except DirectoryRefusal as refusal:
+        raise directory_refused(refusal) from None
+
+
 async def _join_through(
     session: AsyncSession,
     invitation: Invitation,
     caller: AuthenticatedCaller,
     user_store: UserStore,
     invitation_store: InvitationStore,
+    organization_directory: OrganizationDirectory,
 ) -> tuple[TenantMembershipResponse, User]:
     """Make `caller` a member of the invitation's tenant, spending one use,
     select that tenant for them, and commit.
@@ -867,6 +911,9 @@ async def _join_through(
                 status_code=403, detail="This invitation has already been used"
             ) from exc
         role = invitation.role
+        await _join_organization_of(
+            session, organization_directory, tenant_id, caller.id
+        )
         await user_store.add_membership(
             session,
             tenant_id=tenant_id,
@@ -994,6 +1041,9 @@ async def accept_my_invitation(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Accept an invitation addressed to the caller, by id, without its token,
@@ -1017,7 +1067,12 @@ async def accept_my_invitation(
             raise HTTPException(status_code=404, detail="Invitation not found")
         _require_invitation_usable(invitation, caller.email)
         membership, user = await _join_through(
-            session, invitation, caller, user_store, invitation_store
+            session,
+            invitation,
+            caller,
+            user_store,
+            invitation_store,
+            organization_directory,
         )
 
     set_session_cookie(
@@ -1183,6 +1238,9 @@ async def join_tenant_by_domain(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     join_domain_store: Annotated[JoinDomainStore, Depends(get_join_domain_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> TenantMembershipResponse:
     """Join a workspace open to the domain of the caller's address, as a
@@ -1199,6 +1257,9 @@ async def join_tenant_by_domain(
         role = await user_store.tenant_role(session, tenant_id, caller.id)
         if role is None:
             role = "member"
+            await _join_organization_of(
+                session, organization_directory, tenant_id, caller.id
+            )
             await user_store.add_membership(
                 session,
                 tenant_id=tenant_id,

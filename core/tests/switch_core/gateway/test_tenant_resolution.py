@@ -74,6 +74,7 @@ from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.schemas import LoginRequest
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
+from switch_core.organization_directory import LocalDirectory
 from tests.conftest import empty_the_database
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -97,6 +98,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    app.dependency_overrides[gw_deps.get_organization_directory] = lambda: (
+        LocalDirectory()
+    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING, gateway_tenant_choice_enabled=choice_enabled
     )
@@ -134,6 +138,9 @@ def _tenants_app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    app.dependency_overrides[gw_deps.get_organization_directory] = lambda: (
+        LocalDirectory()
+    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
         gateway_cookie_secure=False,
@@ -160,6 +167,9 @@ def _session_app(
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_user_store] = lambda: UserStore()
+    app.dependency_overrides[gw_deps.get_organization_directory] = lambda: (
+        LocalDirectory()
+    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
         gateway_signup_mode=signup_mode,

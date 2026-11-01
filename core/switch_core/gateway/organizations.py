@@ -69,6 +69,7 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_client_lifecycle,
     get_config,
+    get_organization_directory,
     get_organization_store,
     get_protocol,
     get_session,
@@ -95,8 +96,10 @@ from switch_core.gateway.workspace_access import (
 from switch_core.gateway.workspace_creation import (
     create_organization_for,
     create_workspace,
+    directory_refused,
     lock_workspace_allowance,
 )
+from switch_core.organization_directory import DirectoryRefusal, OrganizationDirectory
 
 router = APIRouter()
 
@@ -193,6 +196,9 @@ async def create_organization(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> OrganizationCreateResponse:
@@ -213,6 +219,7 @@ async def create_organization(
         session_factory,
         user_store,
         organization_store,
+        organization_directory,
         client_lifecycle,
         config,
         name=req.name,
@@ -486,6 +493,9 @@ async def update_organization_member_role(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
@@ -498,7 +508,8 @@ async def update_organization_member_role(
     Refuses to demote the last `org_admin`: nobody else could grant the role
     again. Demoting someone first takes away what they hold in the workspaces
     they were in only as `org_admin` (`_end_access_through_organization`).
-    Recorded in the organization's audit log.
+    Once the rules pass, the directory is asked before anything is changed
+    (`organization_directory.py`). Recorded in the organization's audit log.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -518,6 +529,16 @@ async def update_organization_member_role(
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
         raise last_admin
+    if member.role != req.role:
+        try:
+            await organization_directory.set_role(
+                session,
+                organization_id=organization_id,
+                user_id=user_id,
+                role=req.role,
+            )
+        except DirectoryRefusal as refusal:
+            raise directory_refused(refusal) from None
 
     warning = None
     if demoting:
@@ -581,6 +602,9 @@ async def remove_organization_member(
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
@@ -595,7 +619,8 @@ async def remove_organization_member(
     one workspace at a time. An `org_admin` also stands in workspaces they
     hold no membership row in, and what they hold there is taken away first
     (`_end_access_through_organization`). Refuses the last `org_admin` too.
-    Recorded in the organization's audit log.
+    Once the rules pass, the directory is asked before anything is changed
+    (`organization_directory.py`). Recorded in the organization's audit log.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -626,6 +651,12 @@ async def remove_organization_member(
             status_code=409,
             detail=(f"Remove them from the organization's workspaces first: {names}"),
         )
+    try:
+        await organization_directory.remove(
+            session, organization_id=organization_id, user_id=user_id
+        )
+    except DirectoryRefusal as refusal:
+        raise directory_refused(refusal) from None
 
     warning = None
     if was_admin:
