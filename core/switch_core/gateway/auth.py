@@ -14,14 +14,23 @@ from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
-from switch_core.authz import Action, Principal, require
+from switch_core.authz import (
+    ORGANIZATION_ADMIN_ROLE,
+    ORGANIZATION_ADMIN_TENANT_ROLE,
+    Action,
+    Principal,
+    require,
+)
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Room, Tenant, User
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import Organization, Room, Tenant, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
+    all_tenant_ids,
     tenant_of_invitation,
+    tenants_bindable_by_user,
     tenants_inviting_email,
     tenants_of_user,
     tenants_open_to_domain,
@@ -33,6 +42,7 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.gateway.schemas import (
+    OrganizationSummary,
     SessionStateResponse,
     SessionStateUser,
     TenantMembershipResponse,
@@ -42,6 +52,8 @@ from switch_core.logging_context import log_context
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
+
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24
@@ -289,8 +301,8 @@ async def get_authenticated_caller(
     """Like `get_authenticated_user_id`, but with the whole `users` row's worth
     of the caller that routes with no tenant bound actually need.
 
-    Backs `POST /invitations/accept` and `POST /tenants`
-    (`gateway/tenants.py`): the first checks an email-bound invitation against
+    Backs `POST /invitations/accept` (`gateway/tenants.py`) and
+    `POST /organizations` (`gateway/organizations.py`): the first checks an email-bound invitation against
     the caller's *current* address, the second asks whether the caller runs the
     deployment. Both decide before any tenant is bound — the same "no tenant
     chosen yet" shape as `get_authenticated_user_id` — and both read the same
@@ -349,17 +361,255 @@ async def tenants_open_to(
     return await tenants_open_to_domain(session_factory, domain)
 
 
-async def is_tenant_member(
-    session_factory: async_sessionmaker[AsyncSession], user_id: str, tenant_id: str
+async def tenants_bindable_by(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> list[str]:
+    """Every tenant `user_id` may bind: those they are a member of, and those
+    they administer as their organization's `org_admin`. Sorted, each once.
+    One lookup, read on every authenticated request."""
+    return await tenants_bindable_by_user(session_factory, user_id)
+
+
+async def workspaces_in_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    organization_id: str,
+) -> list[Tenant]:
+    """The workspaces of `organization_id` that `user_id` holds a membership
+    row in. Each workspace is read on its own short session, one after
+    another, so the caller holds no other connection while this runs."""
+    found: list[Tenant] = []
+    for tenant_id in await tenants_of_user(session_factory, user_id):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None and tenant.organization_id == organization_id:
+            found.append(tenant)
+    return found
+
+
+async def workspaces_reached_through_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    organization_id: str,
+) -> list[Tenant]:
+    """The workspaces of `organization_id` that `user_id` stands in only as
+    its `org_admin`, holding no membership row there: what they lose on being
+    demoted or removed. Each read on its own short session, as
+    `workspaces_in_organization` does."""
+    members_of = set(await tenants_of_user(session_factory, user_id))
+    found: list[Tenant] = []
+    for tenant_id in await tenants_bindable_by_user(session_factory, user_id):
+        if tenant_id in members_of:
+            continue
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+        if tenant is not None and tenant.organization_id == organization_id:
+            found.append(tenant)
+    return found
+
+
+async def organizations_bindable_by(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[OrganizationSummary]:
+    """The organizations of the workspaces `user_id` may bind, and their role
+    in each, sorted by name.
+
+    One short session per workspace, one after another; the organization's
+    row is read on the first session bound to one of its workspaces, where
+    its policy lets it be read, and skipped on the rest. An organization
+    `user_id` belongs to without being able to bind any of its workspaces is
+    left out: there is nothing in it they could open.
+    """
+    found: dict[str, OrganizationSummary] = {}
+    for tenant_id in await tenants_bindable_by(session_factory, user_id):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            if tenant is None or tenant.organization_id is None:
+                continue
+            if tenant.organization_id in found:
+                continue
+            organization = await session.get(Organization, tenant.organization_id)
+            role = await user_store.organization_role(session, tenant_id, user_id)
+        if organization is None or role is None:
+            logger.warning(
+                "User %s may bind workspace %s, but its organization %s or "
+                "their role there was gone by the time it was read",
+                user_id,
+                tenant_id,
+                tenant.organization_id,
+            )
+            continue
+        found[organization.id] = OrganizationSummary(
+            id=organization.id,
+            slug=organization.slug,
+            name=organization.name,
+            role=role,
+        )
+    return sorted(found.values(), key=lambda row: (row.name, row.id))
+
+
+async def organization_workspaces_bindable_by(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    organization_id: str,
+    *,
+    is_operator: bool,
+) -> list[TenantMembershipResponse]:
+    """The workspaces of `organization_id` that `user_id` may bind, and their
+    role in each: every one for its `org_admin`, their own for a member.
+
+    The platform operator may bind any workspace, and is shown every one of
+    the organization's, as `admin` where they hold no role, the standing
+    `platform_access` gives them. Each candidate is read on its own short
+    session, and only those in the organization are described further.
+    """
+    candidates = (
+        await all_tenant_ids(session_factory)
+        if is_operator
+        else await tenants_bindable_by(session_factory, user_id)
+    )
+    found: list[TenantMembershipResponse] = []
+    for tenant_id in candidates:
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            if tenant is None or tenant.organization_id != organization_id:
+                continue
+            role = await user_store.effective_tenant_role(session, tenant_id, user_id)
+            organization_role = await user_store.organization_role(
+                session, tenant_id, user_id
+            )
+        if role is None and is_operator:
+            role = ORGANIZATION_ADMIN_TENANT_ROLE
+        if role is None:
+            logger.warning(
+                "tenants_bindable_by named tenant %s for user %s, but their "
+                "role there was gone by the time it was read",
+                tenant_id,
+                user_id,
+            )
+            continue
+        found.append(
+            TenantMembershipResponse(
+                id=tenant.id,
+                slug=tenant.slug,
+                name=tenant.name,
+                role=role,
+                organization_role=organization_role,
+                organization_id=tenant.organization_id,
+            )
+        )
+    return found
+
+
+async def _operator_may_enter(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    tenant_id: str,
 ) -> bool:
-    """Whether `user_id` has a membership in `tenant_id`.
+    """Whether `user_id` is the platform operator and `tenant_id` exists: the
+    operator may bind any workspace, on `platform_access`."""
+    async with session_factory() as system_session:
+        user = await user_store.get(system_session, user_id)
+    if user is None or user.role != "admin":
+        return False
+    async with tenant_session(session_factory, tenant_id) as session:
+        return await session.get(Tenant, tenant_id) is not None
+
+
+async def operator_entered_workspace(
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    tenant_claim: str | None,
+    tenants: list[TenantMembershipResponse],
+) -> TenantMembershipResponse | None:
+    """The workspace the platform operator's claim names, when it is none of
+    their own and exists: one they entered on the operator flag alone, which
+    `_resolve_tenant_id` binds. None for anyone else."""
+    if (
+        user.role != "admin"
+        or tenant_claim is None
+        or any(t.id == tenant_claim for t in tenants)
+    ):
+        return None
+    async with tenant_session(session_factory, tenant_claim) as session:
+        tenant = await session.get(Tenant, tenant_claim)
+    if tenant is None:
+        return None
+    return TenantMembershipResponse(
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role="admin",
+        organization_role=None,
+        organization_id=tenant.organization_id,
+    )
+
+
+async def record_operator_entry(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    tenant_id: str,
+) -> None:
+    """Record the operator entering `tenant_id`, when they hold no role that
+    administers it: `platform_access` in the workspace's own audit log, where
+    its admins read it."""
+    async with tenant_session(session_factory, tenant_id) as session:
+        if await user_store.administers_by_role(session, tenant_id, user_id):
+            return
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=user_id,
+            action=AuditAction.PLATFORM_ACCESS,
+            target_type="tenant",
+            target_id=tenant_id,
+            details={"event": "entered"},
+        )
+        await session.commit()
+
+
+async def all_workspaces(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[tuple[Tenant, Organization | None]]:
+    """Every workspace on the server, oldest first, with its organization,
+    each read on its own short session. For the platform operator's list
+    only."""
+    found: list[tuple[Tenant, Organization | None]] = []
+    for tenant_id in await all_tenant_ids(session_factory):
+        async with tenant_session(session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            organization = (
+                await session.get(Organization, tenant.organization_id)
+                if tenant is not None and tenant.organization_id is not None
+                else None
+            )
+        if tenant is not None:
+            found.append((tenant, organization))
+    return found
+
+
+async def may_bind_tenant(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    tenant_id: str,
+) -> bool:
+    """Whether `user_id` may bind `tenant_id`: one of `tenants_bindable_by`,
+    or any workspace for the platform operator.
 
     Backs `POST /tenants/{id}/switch`: the claim it goes on to mint never
     authorises by itself (`_resolve_tenant_id` re-checks it on every request
     regardless), but switching still must not let someone select a tenant
-    they do not belong to.
+    they may not bind.
     """
-    return tenant_id in await tenants_of_user(session_factory, user_id)
+    if tenant_id in await tenants_bindable_by(session_factory, user_id):
+        return True
+    return await _operator_may_enter(session_factory, user_store, user_id, tenant_id)
 
 
 async def _describe_memberships(
@@ -387,22 +637,30 @@ async def _describe_memberships(
     for tenant_id in tenant_ids:
         async with tenant_session(session_factory, tenant_id) as session:
             tenant = await session.get(Tenant, tenant_id)
-            role = await user_store.tenant_role(session, tenant_id, user_id)
+            role = await user_store.effective_tenant_role(session, tenant_id, user_id)
+            organization_role = await user_store.organization_role(
+                session, tenant_id, user_id
+            )
         if tenant is None or role is None:
-            # tenants_of_user just said this tenant has a membership row for
-            # this user; either read failing to confirm it a moment later is
-            # a genuine race (removed between the two calls), not a bug to
-            # paper over by including a tenant we can no longer describe.
+            # tenants_bindable_by just said this user may bind this tenant;
+            # either read failing to confirm it a moment later is a genuine
+            # race (removed between the two calls), not a bug to paper over by
+            # including a tenant we can no longer describe.
             logger.warning(
-                "tenants_of_user named tenant %s for user %s, but it or the "
-                "membership row was gone by the time it was read",
+                "tenants_bindable_by named tenant %s for user %s, but it or the "
+                "role there was gone by the time it was read",
                 tenant_id,
                 user_id,
             )
             continue
         memberships.append(
             TenantMembershipResponse(
-                id=tenant.id, slug=tenant.slug, name=tenant.name, role=role
+                id=tenant.id,
+                slug=tenant.slug,
+                name=tenant.name,
+                role=role,
+                organization_role=organization_role,
+                organization_id=tenant.organization_id,
             )
         )
     return memberships
@@ -424,7 +682,7 @@ async def list_tenant_memberships(
         session_factory,
         user_store,
         user_id,
-        await tenants_of_user(session_factory, user_id),
+        await tenants_bindable_by(session_factory, user_id),
     )
 
 
@@ -443,7 +701,7 @@ async def initial_tenant_claim(
     is checked against current memberships here too, so signing in again is
     still how a session whose workspace was taken away recovers.
     """
-    memberships = await tenants_of_user(session_factory, user.id)
+    memberships = await tenants_bindable_by(session_factory, user.id)
     last = user_store.last_tenant_id(user)
     if last is not None and last in memberships:
         return last
@@ -453,22 +711,28 @@ async def initial_tenant_claim(
 
 
 def workspace_creation_refusal(
-    config: SwitchConfig, *, is_operator: bool, workspaces_created: int
+    config: SwitchConfig,
+    *,
+    is_operator: bool,
+    workspaces_created: int,
+    new_organization: bool,
 ) -> str | None:
     """Why this caller may not create a workspace, or None if they may.
 
-    Operators always may. Otherwise `invite_only` sign-up refuses outright,
-    and every other mode allows `gateway_max_workspaces_per_user` creations
-    over a person's lifetime — each workspace is work for every per-tenant
-    sweep (`docs/old/multi-tenancy-phase2-tenants.md`, §5). Returned as a
-    message rather than raised so `GET /auth/session` can report the same
-    answer `POST /tenants` enforces.
+    Operators always may. Otherwise every mode allows
+    `gateway_max_workspaces_per_user` creations over a person's lifetime —
+    each workspace is work for every per-tenant sweep
+    (`docs/old/multi-tenancy-phase2-tenants.md`, §5) — and `invite_only`
+    sign-up refuses a `new_organization` outright. It decides who comes onto
+    the server, not what an organization's `org_admin` adds to theirs.
+    Returned as a message rather than raised so `GET /auth/session` can report
+    the same answer `POST /organizations` enforces.
     """
     if is_operator:
         return None
-    if config.gateway_signup_mode == "invite_only":
+    if new_organization and config.gateway_signup_mode == "invite_only":
         return (
-            "Creating workspaces is turned off on this server. Ask a "
+            "Creating organizations is turned off on this server. Ask a "
             "workspace admin for an invitation."
         )
     limit = config.gateway_max_workspaces_per_user
@@ -487,19 +751,24 @@ def describe_session_state(
     user: User,
     tenant_claim: str | None,
     tenants: list[TenantMembershipResponse],
+    operator_entered: TenantMembershipResponse | None,
     tenants_isolated: bool,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 
     Follows its order exactly — a claim is honoured only if it names one of
-    `tenants`, and a bad claim is *not* rescued by a sole membership — so a
-    client told "ready" is never refused by the next request, and one told
-    otherwise knows which of `/tenants/{id}/switch`, `POST /tenants` or
-    `/invitations/accept` gets it unstuck.
+    `tenants`, or is the workspace the platform operator entered
+    (`operator_entered`, which `_resolve_tenant_id` binds on
+    `_operator_may_enter`), and a bad claim is *not* rescued by a sole
+    membership — so a client told "ready" is never refused by the next
+    request, and one told otherwise knows which of `/tenants/{id}/switch`,
+    `POST /organizations` or `/invitations/accept` gets it unstuck.
     """
     tenant: TenantMembershipResponse | None = None
     if tenant_claim is not None:
         tenant = next((t for t in tenants if t.id == tenant_claim), None)
+        if tenant is None and operator_entered is not None:
+            tenant = operator_entered if operator_entered.id == tenant_claim else None
     elif len(tenants) == 1:
         tenant = tenants[0]
 
@@ -511,6 +780,15 @@ def describe_session_state(
         state = "needs_workspace"
 
     is_operator = user.role == "admin"
+
+    def refusal(new_organization: bool) -> str | None:
+        return workspace_creation_refusal(
+            config,
+            is_operator=is_operator,
+            workspaces_created=user.workspaces_created,
+            new_organization=new_organization,
+        )
+
     return SessionStateResponse(
         user=SessionStateUser(
             id=user.id, name=user.name, email=user.email, is_operator=is_operator
@@ -519,14 +797,12 @@ def describe_session_state(
         tenants=tenants,
         state=state,
         # A deployment that is not isolating tenants keeps to the one it has,
-        # for operators too: `POST /tenants` would refuse any name.
-        can_create_workspace=tenants_isolated
-        and workspace_creation_refusal(
-            config,
-            is_operator=is_operator,
-            workspaces_created=user.workspaces_created,
-        )
-        is None,
+        # for operators too: creating would refuse any name.
+        can_create_workspace=tenants_isolated and refusal(True) is None,
+        can_add_workspace=tenants_isolated
+        and tenant is not None
+        and tenant.organization_role == ORGANIZATION_ADMIN_ROLE
+        and refusal(False) is None,
         invite_email_enabled=config.invite_email_enabled,
     )
 
@@ -540,6 +816,10 @@ async def _resolve_tenant_id(
 ) -> str:
     """Which tenant a request binds, in the order set out in
     `docs/old/multi-tenancy-phase2-tenants.md`, §4:
+
+    "Membership" below is any tenant the caller may bind
+    (`tenants_bindable_by`): one they hold a membership row in, or one their
+    organization's `org_admin` role covers.
 
     1. A claim naming a tenant the caller belongs to → bind it.
     2. A claim naming a tenant the caller does not belong to → 403
@@ -566,20 +846,25 @@ async def _resolve_tenant_id(
     5. No memberships → 403 `tenant_membership_unresolved`, the one of the
        three the caller genuinely cannot resolve alone.
 
-    `tenants_of_user` is read once and used for every case below it, including
-    the 409's body, so this is one round trip to the exemption regardless of
+    `tenants_bindable_by` is read once and used for every case below it,
+    including the 409's body, so this is the same two lookups regardless of
     which case answers.
 
-    It also stands in for the account check: a `tenant_members` row references
-    its `users` row, so a caller with a membership exists. Only with none is
+    It also stands in for the account check: a `tenant_members` or
+    `organization_members` row references its `users` row, so a caller with a
+    membership exists. Only with none is
     `users` asked, so a deleted account still gets 401 rather than a 403.
     """
-    memberships = await tenants_of_user(session_factory, user_id)
+    memberships = await tenants_bindable_by(session_factory, user_id)
     if not memberships:
         await _require_user_exists(session_factory, user_store, user_id)
 
     if tenant_claim is not None:
         if tenant_claim in memberships:
+            return tenant_claim
+        if await _operator_may_enter(
+            session_factory, user_store, user_id, tenant_claim
+        ):
             return tenant_claim
         logger.warning(
             "Tenant claim %s for user %s names no membership", tenant_claim, user_id
@@ -653,6 +938,28 @@ async def _bound_user(
         if user is None:
             # Deleted between the two reads; rare, and still not a 500.
             raise HTTPException(status_code=401, detail="User not found")
+        request.state.platform_access = (
+            user.role == "admin"
+            and not await user_store.administers_by_role(session, tenant_id, user_id)
+        )
+        if request.state.platform_access and request.method not in _SAFE_METHODS:
+            route = request.scope.get("route")
+            await record_audit_event(
+                session,
+                tenant_id=tenant_id,
+                actor_user_id=user_id,
+                action=AuditAction.PLATFORM_ACCESS,
+                target_type="tenant",
+                target_id=tenant_id,
+                details={
+                    "event": "write",
+                    "method": request.method,
+                    "route": getattr(route, "path", request.url.path),
+                },
+            )
+            # Committed before the route runs, so the attempt is recorded
+            # whether or not the write succeeds.
+            await session.commit()
         yield user
 
 
