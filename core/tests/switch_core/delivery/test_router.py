@@ -49,6 +49,7 @@ from switch_core.db.models import (
     PendingAttachmentGroup,
     Room,
 )
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery import router as router_module
@@ -431,7 +432,9 @@ class TestFailuresStayWithTheAgent:
 
         # The agents' events are stored together first, and when that fails,
         # one at a time, each in a savepoint of its own.
-        monkeypatch.setattr(event_buffer, "_STORE_OWN_EVENTS_SQL", text("SELECT 1 / 0"))
+        monkeypatch.setattr(
+            event_buffer, "_STORE_OWN_EVENTS", RawStatement(text("SELECT 1 / 0"))
+        )
         monkeypatch.setattr(EventBuffer, "_claim", failing_claim)
         registry = MetricsRegistry()
         install(registry)

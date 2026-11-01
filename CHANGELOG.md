@@ -142,6 +142,11 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The statements every message write costs run on asyncpg directly.**
+  Taking the room's lock, reading its head, storing the agents' own events
+  and reading the room's agent members again under the lock go straight to
+  asyncpg on the transaction's connection (`db/raw.py`), as the delivery
+  reads do, rather than through SQLAlchemy's execution.
 - **The two reads behind every delivery run on asyncpg directly.** A
   stream reads an agent's events, and counts its unread messages, for every
   event it delivers, and under load SQLAlchemy's work around each statement

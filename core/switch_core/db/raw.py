@@ -63,6 +63,11 @@ class RawStatement:
         self._statement = statement
         self._compiled: _Compiled | None = None
 
+    @property
+    def sql(self) -> str | None:
+        """The SQL it runs, once it has run."""
+        return self._compiled.sql if self._compiled is not None else None
+
     async def all(
         self, session: AsyncSession, parameters: Mapping[str, Any]
     ) -> list[Any]:

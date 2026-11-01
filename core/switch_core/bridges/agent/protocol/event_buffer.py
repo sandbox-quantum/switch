@@ -482,6 +482,11 @@ _STORE_OWN_EVENTS_SQL = text(
     """
 )
 
+# The two statements above, run by asyncpg directly (`db/raw.py`): every
+# message stores its agents' own events with them.
+_LOCK_HEADS = RawStatement(_LOCK_HEADS_SQL)
+_STORE_OWN_EVENTS = RawStatement(_STORE_OWN_EVENTS_SQL)
+
 
 def session_slots_for(pool_size: int, max_overflow: int) -> int:
     """How many `EventBuffer.one_session` blocks may hold a connection at once:
@@ -671,44 +676,38 @@ class EventBuffer:
             return {}
         savepoint = await session.begin_nested()
         try:
-            heads: dict[str, int] = dict(
-                (
-                    await session.execute(
-                        _LOCK_HEADS_SQL,
-                        {
-                            "agent_ids": [own.agent_id for own in events],
-                            "floor": self.sequence_floor,
-                        },
-                    )
+            heads: dict[str, int] = {
+                agent_id: head
+                for agent_id, head in await _LOCK_HEADS.all(
+                    session,
+                    {
+                        "agent_ids": [own.agent_id for own in events],
+                        "floor": self.sequence_floor,
+                    },
                 )
-                .tuples()
-                .all()
-            )
+            }
             wanted = [own for own in events if own.agent_id in heads]
-            stored: dict[str, int] = dict(
-                (
-                    await session.execute(
-                        _STORE_OWN_EVENTS_SQL,
-                        {
-                            "tenant_id": tenant_id,
-                            "room_id": room_id,
-                            "agent_ids": [own.agent_id for own in wanted],
-                            "client_ids": [own.client_id for own in wanted],
-                            "seqs": [heads[own.agent_id] + 1 for own in wanted],
-                            "room_seqs": [own.room_seq for own in wanted],
-                            "message_keys": [own.message_key for own in wanted],
-                            "types": [own.event.type for own in wanted],
-                            "payloads": [
-                                json.dumps(own.event.model_dump(mode="json"))
-                                for own in wanted
-                            ],
-                            "notifiables": [is_notifiable(own.event) for own in wanted],
-                        },
-                    )
+            stored: dict[str, int] = {
+                agent_id: seq
+                for agent_id, seq in await _STORE_OWN_EVENTS.all(
+                    session,
+                    {
+                        "tenant_id": tenant_id,
+                        "room_id": room_id,
+                        "agent_ids": [own.agent_id for own in wanted],
+                        "client_ids": [own.client_id for own in wanted],
+                        "seqs": [heads[own.agent_id] + 1 for own in wanted],
+                        "room_seqs": [own.room_seq for own in wanted],
+                        "message_keys": [own.message_key for own in wanted],
+                        "types": [own.event.type for own in wanted],
+                        "payloads": [
+                            json.dumps(own.event.model_dump(mode="json"))
+                            for own in wanted
+                        ],
+                        "notifiables": [is_notifiable(own.event) for own in wanted],
+                    },
                 )
-                .tuples()
-                .all()
-            )
+            }
         except Exception:
             await savepoint.rollback()
             logger.warning(

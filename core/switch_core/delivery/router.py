@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-from sqlalchemy import and_, delete, func, literal, select, update
+from sqlalchemy import and_, bindparam, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
@@ -89,6 +89,7 @@ from switch_core.db.models import (
     SwitchCoreProcess,
     room_agents,
 )
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
 from switch_core.db.stores.template_install_store import TemplateInstallStore
@@ -905,15 +906,10 @@ class MessageRouter:
         its members. Read with the room's lock held, when every arrival
         numbered before the row being written has committed."""
         known = {member.client_id for member in reads.members}
-        now = set(
-            (
-                await session.scalars(
-                    select(ClientRoom.client_id)
-                    .join(Agent, Agent.client_id == ClientRoom.client_id)
-                    .where(ClientRoom.room_id == reads.room_id)
-                )
-            ).all()
-        )
+        now = {
+            row.client_id
+            for row in await _AGENT_MEMBERS.all(session, {"room_id": reads.room_id})
+        }
         return bool(now - known)
 
     async def membership_changed(self, change: tuple[str, str, str]) -> None:
@@ -1745,3 +1741,12 @@ def _unwritten(message: Message) -> _Unwritten:
 
 # The time on a row not written yet, which nothing deciding it reads.
 _NOT_STAMPED = datetime.fromtimestamp(0, UTC)
+
+
+# The room's agent members, read again under its lock for every message
+# (`MessageRouter._joined_since`), run by asyncpg directly (`db/raw.py`).
+_AGENT_MEMBERS = RawStatement(
+    select(ClientRoom.client_id)
+    .join(Agent, Agent.client_id == ClientRoom.client_id)
+    .where(ClientRoom.room_id == bindparam("room_id"))
+)
