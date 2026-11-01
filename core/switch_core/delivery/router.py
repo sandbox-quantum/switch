@@ -71,6 +71,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
+from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig
 from switch_core.clients.admin_messages import PLATFORM_MARKER
@@ -1335,16 +1336,51 @@ class MessageRouter:
     ) -> list[tuple[str, int]]:
         """Store every own event decided for `row`, in the order of the
         agents' ids, and return the agents whose events were stored, each with
-        its event's number."""
-        stored: list[tuple[str, int]] = []
+        its event's number.
+
+        Stored together, in two statements whatever the number of agents
+        (`EventBuffer.store_together`). If that fails they are stored one at
+        a time, each in a savepoint of its own, so that one agent's failure
+        costs that agent its event and nothing more."""
+        built: list[tuple[AgentRecipient, OwnEventToStore]] = []
         for recipient, delivery in sorted(
             deliveries, key=lambda decided: decided[0].agent.id
         ):
             if delivery.own_event is None:
                 continue
-            agent_id = recipient.agent.id
             try:
-                own = delivery.own_event(row)
+                decided = delivery.own_event(row)
+            except Exception:
+                self._store_failed(recipient, row, reads)
+                continue
+            built.append(
+                (
+                    recipient,
+                    OwnEventToStore(
+                        agent_id=recipient.agent.id,
+                        client_id=recipient.client_id,
+                        event=decided.event,
+                        room_seq=decided.room_seq,
+                        message_key=decided.message_key,
+                    ),
+                )
+            )
+        together = await self.services.event_buffer.store_together(
+            session,
+            tenant_id=reads.tenant_id,
+            room_id=reads.room_id,
+            events=[own for _, own in built],
+        )
+        if together is not None:
+            return [
+                (own.agent_id, together[own.agent_id])
+                for _, own in built
+                if own.agent_id in together
+            ]
+        stored: list[tuple[str, int]] = []
+        for recipient, own in built:
+            agent_id = own.agent_id
+            try:
                 seq = await self.services.event_buffer.store(
                     session,
                     tenant_id=reads.tenant_id,
@@ -1356,19 +1392,25 @@ class MessageRouter:
                     message_key=own.message_key,
                 )
             except Exception:
-                metrics().increment(ROUTING_FAILURES, {"stage": "store"})
-                logger.error(
-                    "Could not store agent %s's own event for row %s in room %s; "
-                    "the row is written and the agent misses it",
-                    recipient.agent.name,
-                    row.event_id,
-                    reads.room_id,
-                    exc_info=True,
-                )
+                self._store_failed(recipient, row, reads)
                 continue
             if seq is not None:
                 stored.append((agent_id, seq))
         return stored
+
+    @staticmethod
+    def _store_failed(
+        recipient: AgentRecipient, row: InboundEvent, reads: RoomReads
+    ) -> None:
+        metrics().increment(ROUTING_FAILURES, {"stage": "store"})
+        logger.error(
+            "Could not store agent %s's own event for row %s in room %s; "
+            "the row is written and the agent misses it",
+            recipient.agent.name,
+            row.event_id,
+            reads.room_id,
+            exc_info=True,
+        )
 
     async def _step_group(
         self, session: AsyncSession, reads: RoomReads, plan: _Plan, row: InboundEvent

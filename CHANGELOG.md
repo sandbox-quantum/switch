@@ -233,6 +233,10 @@ version of their own to them without also giving them a release of their own.
   seven.** The rooms dropped after the agent's cursor are read with its
   events, and the unread count reads the agent's baseline, the room's window
   and the agent's user id in the statement that counts.
+- **Writing a message no longer costs four statements for each agent it is
+  for.** The agents' own events are stored together, in two statements and
+  one savepoint, where each agent's event took a savepoint, a numbering, an
+  insert and a release of its own.
 
 #### Fixed
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not

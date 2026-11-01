@@ -50,6 +50,7 @@ baseline (`caught_up_seq`) and the reader currently in the room are stored in
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Iterable
@@ -196,6 +197,17 @@ COUNTED_FROM_WINDOW = (
     "counted over the retention window only; you have not caught up on this "
     "room for longer than that"
 )
+
+
+@dataclass(frozen=True)
+class OwnEventToStore:
+    """One agent's own event for `EventBuffer.store_together`."""
+
+    agent_id: str
+    client_id: str
+    event: AgentEvent
+    room_seq: int
+    message_key: str | None
 
 
 class CursorExpiredError(Exception):
@@ -401,6 +413,69 @@ _UNREAD_IN_ROOM_SQL = text(
 ).bindparams(bindparam("throughs", type_=ARRAY(BigInteger)))
 
 
+# Locks the rows in `agent_event_heads` of the agents named by `:agent_ids`
+# (in that order, which callers keep sorted, as `store` asks), giving each
+# agent with no row one numbered from `:floor`, and returns each agent's head.
+# An agent deleted meanwhile is not in `agents`, so it gets no row and is not
+# returned. Updating a row to itself is what takes its lock.
+_LOCK_HEADS_SQL = text(
+    """
+    INSERT INTO agent_event_heads (tenant_id, agent_id, first_seq, last_seq)
+    SELECT a.tenant_id, a.id, CAST(:floor AS bigint), CAST(:floor AS bigint) - 1
+    FROM agents a
+    JOIN unnest(CAST(:agent_ids AS text[])) WITH ORDINALITY AS t(agent_id, n)
+      ON t.agent_id = a.id
+    ORDER BY t.n
+    ON CONFLICT (agent_id) DO UPDATE SET last_seq = agent_event_heads.last_seq
+    RETURNING agent_id, last_seq
+    """
+)
+
+# Inserts one own event per agent, numbered `:seqs` (each the agent's head
+# plus one, read under the lock `_LOCK_HEADS_SQL` took), for each agent that is
+# still a member of the room and has no event from the same source yet
+# (`uq_agent_events_source`), and moves each agent whose event went in to its
+# number. An agent whose event did not go in keeps its head, so no number is
+# taken and left unused. Returns the agents stored and their numbers.
+_STORE_OWN_EVENTS_SQL = text(
+    """
+    WITH wanted AS (
+      SELECT * FROM unnest(
+        CAST(:agent_ids AS text[]),
+        CAST(:client_ids AS text[]),
+        CAST(:seqs AS bigint[]),
+        CAST(:room_seqs AS bigint[]),
+        CAST(:message_keys AS text[]),
+        CAST(:types AS text[]),
+        CAST(:payloads AS text[]),
+        CAST(:notifiables AS boolean[])
+      ) AS w(agent_id, client_id, seq, room_seq, message_key, type, payload,
+             notifiable)
+    ),
+    stored AS (
+      INSERT INTO agent_events (tenant_id, agent_id, seq, room_id, room_seq,
+                                message_key, type, payload, notifiable)
+      SELECT :tenant_id, w.agent_id, w.seq, :room_id, w.room_seq, w.message_key,
+             w.type, CAST(w.payload AS jsonb), w.notifiable
+      FROM wanted w
+      WHERE EXISTS (
+        SELECT 1 FROM client_rooms m
+        WHERE m.client_id = w.client_id AND m.room_id = :room_id
+      )
+      ON CONFLICT (agent_id, message_key, room_id, room_seq, type)
+        WHERE message_key IS NOT NULL DO NOTHING
+      RETURNING agent_id, seq
+    ),
+    moved AS (
+      UPDATE agent_event_heads h SET last_seq = s.seq
+      FROM stored s WHERE h.agent_id = s.agent_id
+      RETURNING h.agent_id
+    )
+    SELECT agent_id, seq FROM stored
+    """
+)
+
+
 def session_slots_for(pool_size: int, max_overflow: int) -> int:
     """How many `EventBuffer.one_session` blocks may hold a connection at once:
     half the pool, so requests still find one when the pod is saturated."""
@@ -557,6 +632,84 @@ class EventBuffer:
             return None
         await savepoint.commit()
         return int(seq)
+
+    async def store_together(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        room_id: str,
+        events: list[OwnEventToStore],
+    ) -> dict[str, int] | None:
+        """`store` for several agents' own events from one room row, in two
+        statements rather than four per agent: one locks the agents' rows in
+        `agent_event_heads`, and one inserts each event and moves its agent's
+        head to it. Returns each stored event's number by agent, or None when
+        the statements failed, with nothing stored and the caller's
+        transaction usable, for the caller to store the events one at a time.
+
+        `events` must be in the order of their agents' ids, one per agent, as
+        `store` asks of a caller storing several. What `store` promises holds
+        for each: membership is read after the agent's row is locked, an event
+        from a source already stored is not stored again, and an event not
+        stored takes no number. The work runs in one savepoint, and a failure
+        in it costs every agent of the row its event until the caller stores
+        them one at a time, so that one agent's failure stays that agent's.
+        """
+        if not events:
+            return {}
+        savepoint = await session.begin_nested()
+        try:
+            heads: dict[str, int] = dict(
+                (
+                    await session.execute(
+                        _LOCK_HEADS_SQL,
+                        {
+                            "agent_ids": [own.agent_id for own in events],
+                            "floor": self.sequence_floor,
+                        },
+                    )
+                )
+                .tuples()
+                .all()
+            )
+            wanted = [own for own in events if own.agent_id in heads]
+            stored: dict[str, int] = dict(
+                (
+                    await session.execute(
+                        _STORE_OWN_EVENTS_SQL,
+                        {
+                            "tenant_id": tenant_id,
+                            "room_id": room_id,
+                            "agent_ids": [own.agent_id for own in wanted],
+                            "client_ids": [own.client_id for own in wanted],
+                            "seqs": [heads[own.agent_id] + 1 for own in wanted],
+                            "room_seqs": [own.room_seq for own in wanted],
+                            "message_keys": [own.message_key for own in wanted],
+                            "types": [own.event.type for own in wanted],
+                            "payloads": [
+                                json.dumps(own.event.model_dump(mode="json"))
+                                for own in wanted
+                            ],
+                            "notifiables": [is_notifiable(own.event) for own in wanted],
+                        },
+                    )
+                )
+                .tuples()
+                .all()
+            )
+        except Exception:
+            await savepoint.rollback()
+            logger.warning(
+                "[EVENT-BUF] storing %d own event(s) together in room %s failed; "
+                "storing them one at a time",
+                len(events),
+                room_id,
+                exc_info=True,
+            )
+            return None
+        await savepoint.commit()
+        return {agent_id: int(seq) for agent_id, seq in stored.items()}
 
     def _claim(self, tenant_id: str, agent_id: str) -> Any:
         """The next number of the agent's own events, taken from its row in
