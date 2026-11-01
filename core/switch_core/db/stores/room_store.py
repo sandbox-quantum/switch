@@ -462,6 +462,23 @@ class RoomStore:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def rooms_of_agents(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> dict[str, set[str]]:
+        """The ids of the rooms each agent is in, archived ones included, for
+        many agents in one query. An agent in no room maps to an empty set."""
+        rooms: dict[str, set[str]] = {agent_id: set() for agent_id in agent_ids}
+        if not rooms:
+            return rooms
+        result = await session.execute(
+            select(room_agents.c.agent_id, room_agents.c.room_id).where(
+                room_agents.c.agent_id.in_(rooms)
+            )
+        )
+        for agent_id, room_id in result.all():
+            rooms[agent_id].add(room_id)
+        return rooms
+
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
             select(room_agents.c.agent_id).where(room_agents.c.room_id == room_id)

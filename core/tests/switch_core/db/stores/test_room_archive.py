@@ -151,3 +151,22 @@ class TestArchivedFilteringInListing:
                 session, agent.id, include_archived=True
             )
             assert {r.id for r in with_archived} == {active.id, archived.id}
+
+
+async def test_rooms_of_agents_reads_many_agents_at_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = RoomStore()
+    async with session_factory() as session:
+        busy = await _make_agent(session, "busy")
+        idle = await _make_agent(session, "idle")
+        active = await _make_room(store, session, "active")
+        archived = await _make_room(store, session, "archived")
+        await store.add_agents(session, active.id, [busy.id])
+        await store.add_agents(session, archived.id, [busy.id])
+        await store.set_archived(session, archived.id, True)
+        await session.commit()
+
+        rooms = await store.rooms_of_agents(session, [busy.id, idle.id])
+
+    assert rooms == {busy.id: {active.id, archived.id}, idle.id: set()}
