@@ -13,7 +13,6 @@ import time
 from typing import Any
 
 import pytest
-from sqlalchemy import event
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -42,6 +41,9 @@ from switch_core.management.notifier import (
     OPERATION_PENDING,
     ControllerNotifier,
 )
+from switch_core.observability.catalogue import DB_QUERY_DURATION
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.observability.query import instrument_queries
 from tests.db_buffer import age_events, say
 from tests.session_counting import CountingSessionFactory
 from tests.switch_core.management.harness import (
@@ -1112,22 +1114,27 @@ async def test_a_delivery_told_its_head_costs_three_statements(
     delivered = asyncio.ensure_future(take(stream, 1))
     await asyncio.sleep(0.2)
     await _ask(harness, agent_id, room_id, "@you")
-    statements: list[str] = []
-    engine = buffer._session_factory.kw["bind"].sync_engine
-
-    def record(_conn: object, _cursor: object, statement: str, *_args: object) -> None:
-        statements.append(statement)
-
-    event.listen(engine, "before_cursor_execute", record)
+    # Counted as the query timing counts them, which sees the statements run
+    # on asyncpg directly (`db/raw.py`) as well as those run through SQLAlchemy.
+    instrument_queries(buffer._session_factory.kw["bind"])
+    registry = MetricsRegistry()
+    install(registry)
     try:
         [(name, data)] = await delivered
     finally:
-        event.remove(engine, "before_cursor_execute", record)
+        uninstall()
     await stream.aclose()
 
     assert name == "agent.event"
     assert data["event"]["missed"] == {"count": 0, "reason": None}
-    assert len(statements) == 3, statements
+    timed = {
+        point.attributes["operation"]: point.count
+        for payload in registry.collect()
+        if payload.name == DB_QUERY_DURATION.name
+        for point in payload.histograms
+    }
+    # The unread count opens with `WITH`, which the timing labels `other`.
+    assert timed == {"tenant_bind": 1, "select": 1, "other": 1}
 
 
 async def test_a_wait_watches_one_bell_whatever_the_number_of_agents(

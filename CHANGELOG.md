@@ -142,6 +142,13 @@ version of their own to them without also giving them a release of their own.
   compares it only when someone signs in.
 
 #### Changed
+- **The two reads behind every delivery run on asyncpg directly.** A
+  stream reads an agent's events, and counts its unread messages, for every
+  event it delivers, and under load SQLAlchemy's work around each statement
+  cost more than Postgres took to run it. `db/raw.py` runs a statement
+  SQLAlchemy compiled once on the session's own asyncpg connection, in its
+  transaction and under its tenant, with SQLAlchemy's type conversions and
+  timed into `db.query.duration` as every other statement is.
 - **Pods start in seconds again with many rooms.** Every process checks at
   startup that each room has its clients, under a lock that lets one
   process at a time through, and read each room on its own to do it. With

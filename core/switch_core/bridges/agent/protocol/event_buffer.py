@@ -64,6 +64,8 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Text,
+    all_,
+    any_,
     bindparam,
     delete,
     func,
@@ -106,6 +108,7 @@ from switch_core.db.models import (
     PendingAttachmentGroup,
     Room,
 )
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import (
     holds_shared_session,
     shared_tenant_session,
@@ -412,6 +415,9 @@ _UNREAD_IN_ROOM_SQL = text(
     LEFT JOIN base b ON true
     """
 ).bindparams(bindparam("throughs", type_=ARRAY(BigInteger)))
+# Run by asyncpg directly (`db/raw.py`): a stream counts an agent's unread
+# messages for every event it delivers.
+_UNREAD_IN_ROOM = RawStatement(_UNREAD_IN_ROOM_SQL)
 
 
 # Locks the rows in `agent_event_heads` of the agents named by `:agent_ids`
@@ -989,7 +995,7 @@ class EventBuffer:
         if limit is not None:
             parameters["limit"] = limit
         async with tenant_session(self._session_factory, tenant_id) as session:
-            found = (await session.execute(query, parameters)).all()
+            found = await query.all(session, parameters)
         # `expire` deletes rows and records what it deleted in one
         # transaction, and the rooms it dropped after `after_seq` are read in
         # the statement that reads the events, so the two are one snapshot: a
@@ -999,12 +1005,11 @@ class EventBuffer:
         # then, and one landing after it is reported too: a spare gap, never a
         # silent one.
         if found:
-            dropped = found[0][1]
+            dropped = found[0].dropped
             if dropped:
                 await self._expired(tenant_id, agent_id, after_seq, dropped)
         else:
             await self.check_cursor(tenant_id, agent_id, after_seq)
-        rows = [row for row, _ in found]
         out = [
             BufferedEvent(
                 seq=row.seq,
@@ -1015,7 +1020,7 @@ class EventBuffer:
                 room_seq=row.room_seq,
                 at=_epoch(row.created_at),
             )
-            for row in rows
+            for row in found
         ]
         self._record_scan(_READ, len(out), started)
         return out
@@ -1975,18 +1980,16 @@ class EventBuffer:
             for room_id, room_throughs in wanted.items():
                 throughs = sorted(room_throughs)
                 started = time.perf_counter()
-                rows = (
-                    await session.execute(
-                        _UNREAD_IN_ROOM_SQL,
-                        {
-                            "room_id": room_id,
-                            "agent_id": agent_id,
-                            "cutoff": cutoff,
-                            "through": throughs[-1],
-                            "throughs": throughs,
-                        },
-                    )
-                ).all()
+                rows = await _UNREAD_IN_ROOM.all(
+                    session,
+                    {
+                        "room_id": room_id,
+                        "agent_id": agent_id,
+                        "cutoff": cutoff,
+                        "through": throughs[-1],
+                        "throughs": throughs,
+                    },
+                )
                 caught_up = rows[0][0] if rows else None
                 if caught_up is None:
                     for through_seq in throughs:
@@ -2524,14 +2527,15 @@ _ROOMS_DROPPED_AFTER = select(AgentEventDrop.room_id).where(
 @functools.cache
 def _own_events_read(
     *, rooms: bool, notifiable_only: bool, through: bool, limit: bool
-) -> Any:
+) -> RawStatement:
     """The statement `EventBuffer.read_from` runs for one shape of read, built
-    once per shape (there are sixteen) and run with bind parameters: the
-    agent's own events after `:after_seq`, oldest first, each with the rooms
-    in which `expire` deleted own events of the agent numbered after
-    `:after_seq` (NULL for none), so the two are read in one statement. A
-    stream reads an agent's events for every event it delivers, and building
-    the statement each time cost more than running it.
+    once per shape (there are sixteen) and run with bind parameters by asyncpg
+    directly (`db/raw.py`): the agent's own events after `:after_seq`, oldest
+    first, each with the rooms in which `expire` deleted own events of the
+    agent numbered after `:after_seq` (NULL for none), so the two are read in
+    one statement. A stream reads an agent's events for every event it
+    delivers, and building the statement each time, or running it through
+    SQLAlchemy's execution, cost more than Postgres takes to run it.
 
     Optional parts, by flag: only the rooms in `:rooms`, only notifiable
     events, none numbered after `:through_seq`, at most `:limit` of them."""
@@ -2542,19 +2546,30 @@ def _own_events_read(
             AgentEventDrop.dropped_through > bindparam("after_seq"),
         )
         .scalar_subquery()
+        .label("dropped")
     )
     query = (
-        select(AgentEventRow, dropped)
+        select(
+            AgentEventRow.seq,
+            AgentEventRow.room_id,
+            AgentEventRow.room_seq,
+            AgentEventRow.payload,
+            AgentEventRow.notifiable,
+            AgentEventRow.created_at,
+            dropped,
+        )
         .where(
             AgentEventRow.agent_id == bindparam("agent_id"),
             AgentEventRow.seq > bindparam("after_seq"),
-            AgentEventRow.type.not_in(RETIRED_EVENT_TYPES),
+            # `NOT IN`, in the form that compiles once.
+            AgentEventRow.type
+            != all_(literal(sorted(RETIRED_EVENT_TYPES), ARRAY(Text))),
         )
         .order_by(AgentEventRow.seq)
     )
     if rooms:
         query = query.where(
-            AgentEventRow.room_id.in_(bindparam("rooms", expanding=True))
+            AgentEventRow.room_id == any_(bindparam("rooms", type_=ARRAY(Text)))
         )
     if notifiable_only:
         query = query.where(AgentEventRow.notifiable.is_(True))
@@ -2562,7 +2577,7 @@ def _own_events_read(
         query = query.where(AgentEventRow.seq <= bindparam("through_seq"))
     if limit:
         query = query.limit(bindparam("limit"))
-    return query
+    return RawStatement(query)
 
 
 def _room_head(room_id: str) -> Any:
