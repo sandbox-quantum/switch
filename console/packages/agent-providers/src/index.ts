@@ -187,3 +187,9 @@ export {
   SupervisedStdioTransport,
   type StdioTransportOptions,
 } from './transport/supervised-stdio';
+
+export {
+  ToolCallQueue,
+  type ToolCallQueueOptions,
+  type TaskState,
+} from './host/tool-queue';
