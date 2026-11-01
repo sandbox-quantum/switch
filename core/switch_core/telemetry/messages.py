@@ -188,6 +188,9 @@ class MessageTelemetry:
         )
         self._failures_in_a_row = 0
         self._all_lookups_resume_at: float | None = None
+        # When each tenant may next be read whole (`_read_tenant`), on the
+        # monotonic clock.
+        self._tenants_read: dict[str, float] = {}
         # Taken off the queue and not yet reported. Not `qsize`, which leaves
         # out the one the worker is cancelled in the middle of.
         self._in_hand = 0
@@ -453,6 +456,98 @@ class MessageTelemetry:
                 misses,
             )
 
+    async def _read_tenant(self, tenant_id: str) -> None:
+        """Read the facts of every open room, the kind of every client and the
+        runtime of every agent of the tenant at once, the first time a lookup
+        of it misses, and again once `_ROOM_TTL_SECONDS` have passed.
+
+        In a workspace of thousands of agents and rooms, a process reports a
+        message about most of them before it reports a second one, so with one
+        lookup each a cache that kept every answer still missed for most
+        messages. A read that fails raises, and the lookup that asked counts
+        it as its own failure; it is tried again once a failed lookup would be.
+        """
+        next_read = self._tenants_read.get(tenant_id)
+        if next_read is not None and time.monotonic() < next_read:
+            return
+        # Not again for as long as a failed lookup waits; a read that succeeds
+        # puts it off for as long as a room is kept, below.
+        self._tenants_read[tenant_id] = time.monotonic() + _LOOKUP_BACKOFF_SECONDS
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            open_room = and_(Room.tenant_id == tenant_id, Room.archived_at.is_(None))
+            rooms = (
+                await session.execute(
+                    select(Room.id, Room.channel_type, CollaborationBridge.type)
+                    .select_from(Room)
+                    .outerjoin(
+                        CollaborationBridge,
+                        and_(
+                            CollaborationBridge.id == Room.bridge_id,
+                            CollaborationBridge.tenant_id == tenant_id,
+                        ),
+                    )
+                    .where(open_room)
+                )
+            ).all()
+            members = (
+                await session.execute(
+                    select(ClientRoom.room_id, Client.type, func.count())
+                    .select_from(ClientRoom)
+                    .join(Client, Client.id == ClientRoom.client_id)
+                    .join(Room, Room.id == ClientRoom.room_id)
+                    .where(
+                        ClientRoom.tenant_id == tenant_id,
+                        Client.tenant_id == tenant_id,
+                        open_room,
+                    )
+                    .group_by(ClientRoom.room_id, Client.type)
+                )
+            ).all()
+            clients = (
+                await session.execute(
+                    select(Client.transport_user_id, Client.type).where(
+                        Client.tenant_id == tenant_id
+                    )
+                )
+            ).all()
+            agents = (
+                await session.execute(
+                    select(
+                        Agent.client_id,
+                        Agent.metadata_["known_agent_type"].astext,
+                    ).where(Agent.tenant_id == tenant_id)
+                )
+            ).all()
+        self._tenants_read[tenant_id] = time.monotonic() + _ROOM_TTL_SECONDS
+        by_room: dict[str, dict[str, int]] = {}
+        for room_id, client_type, count in members:
+            by_room.setdefault(room_id, {})[client_type] = int(count)
+        for room_id, channel_type, platform in rooms:
+            by_type = by_room.get(room_id, {})
+            self._rooms.put(
+                (tenant_id, room_id),
+                _RoomFacts(
+                    bridge_platform=normalise_platform(platform),
+                    channel_type=normalise_channel_type(channel_type),
+                    user_count=by_type.get(HUMAN_CLIENT_TYPE, 0),
+                    agent_count=by_type.get(AGENT_CLIENT_TYPE, 0),
+                ),
+            )
+        for transport_user_id, client_type in clients:
+            self._sender_kinds.put(
+                (tenant_id, transport_user_id),
+                _CLIENT_TYPE_KIND.get(client_type, "unknown"),
+            )
+        for client_id, known_agent_type in agents:
+            self._agent_runtimes.put(
+                (tenant_id, client_id),
+                normalise_known_agent_type(
+                    None
+                    if known_agent_type is None
+                    else {"known_agent_type": known_agent_type}
+                ),
+            )
+
     async def _room_facts(self, tenant_id: str, room_id: str) -> _RoomFacts:
         key = (tenant_id, room_id)
         cached = self._rooms.get(key)
@@ -461,6 +556,14 @@ class MessageTelemetry:
         failure_key = ("room", tenant_id, room_id)
         if not self._may_look_up(failure_key):
             return _UNKNOWN_ROOM
+        try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, f"room {room_id}")
+            return _UNKNOWN_ROOM
+        cached = self._rooms.get(key)
+        if cached is not None:
+            return cached
         try:
             facts = await self._load_room_facts(tenant_id, room_id)
         except Exception:
@@ -521,6 +624,14 @@ class MessageTelemetry:
         if not self._may_look_up(failure_key):
             return "unknown"
         try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, "a message sender")
+            return "unknown"
+        cached = self._sender_kinds.get(key)
+        if cached is not None:
+            return cached
+        try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 client_type = (
                     await session.execute(
@@ -550,6 +661,14 @@ class MessageTelemetry:
         failure_key = ("agent", tenant_id, client_id)
         if not self._may_look_up(failure_key):
             return _UNKNOWN_RUNTIME
+        try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, "an agent's runtime")
+            return _UNKNOWN_RUNTIME
+        cached = self._agent_runtimes.get(key)
+        if cached is not None:
+            return cached
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 result = await session.execute(
