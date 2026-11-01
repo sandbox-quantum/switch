@@ -372,6 +372,13 @@ class ServiceFlows:
             changes={"account_label": exchange.account.label, "warning": warning},
         )
 
+    async def refused(self, flow: ServiceFlow, error: str) -> None:
+        """The browser could not be sent to the vendor: the flow ends with
+        why, for Console to show, rather than waiting until it expires."""
+        await self._flows.advance(
+            flow.stored, expect=("pending",), to="failed", changes={"error": error}
+        )
+
     async def failed(self, flow: StoredFlow, error: str) -> None:
         await self._flows.advance(
             flow, expect=("checking",), to="failed", changes={"error": error}

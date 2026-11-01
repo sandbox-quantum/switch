@@ -11,16 +11,16 @@ service out of all its workspaces. Clearing the setting gives up the
 organization's say.
 
 A change that leaves the service off in a workspace withdraws what it was
-issued there, as a workspace admin's switch does, and must not leave a token
-live behind a lock. A workspace's tokens can only be queued from a session
-bound to it, so one transaction cannot cover the setting and every
-workspace. Instead, every workspace the change would switch off has its
-tokens queued first, each in its own transaction, and if any cannot be, the
-setting is not saved. Then the setting commits. Then each of those
-workspaces is swept again, for a token issued in between, and the vendor
-revocations run; a workspace that fails there is logged and named in the
-warning, and the rest carry on. A queued token the vendor has not revoked
-yet is retried by the periodic tick. Grants are kept.
+issued there, as a workspace admin's switch does. A workspace's tokens can
+only be queued from a session bound to it, so one transaction cannot cover
+the setting and every workspace. The setting commits first, with its audit
+row; then every workspace is visited, a few at a time, and its tokens for a
+service now off there are queued and revoked. A workspace that fails is
+logged and named in the warning, and the rest carry on. Nothing is lost if
+one does, or the process stops part way: the periodic upkeep
+(`connections/maintenance.py`) queues every live token for a service that is
+off in its workspace on each pass, within five minutes, and retries what the
+vendor has not revoked yet. Grants are kept.
 
 `org_admin` only, acting on the bound workspace's organization. Mounted only
 with both `service_connections` and `organization_connector_apps` on, the
@@ -29,7 +29,9 @@ flag the rest of the organization's say in services ships under.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -57,6 +59,7 @@ from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import (
     OrganizationSetting,
+    ServiceSwitch,
     WorkspaceServiceStore,
 )
 from switch_core.gateway.auth import get_current_user, organization_workspaces
@@ -71,6 +74,10 @@ from switch_core.gateway.organizations import require_organization_admin
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/organizations/current/services")
+# Workspaces visited at once by one request: enough that a large
+# organization's page or change does not walk them one by one, few enough to
+# leave the connection pool to everyone else.
+CONCURRENT_WORKSPACES = 4
 SETTINGS = OrganizationServiceStore()
 WORKSPACES = WorkspaceServiceStore()
 
@@ -121,13 +128,13 @@ async def _reach(
     """For each service: in how many of the workspaces it is on, in how many
     their admin set it themselves, and how many people, each once, have it
     connected across them. A workspace's rows are readable only bound to it,
-    so each is read on its own short session, in two queries, after the
-    request's has let its connection go."""
+    so each is read on its own short session, in two queries, a few at a time,
+    after the request's has let its connection go."""
     services = _services()
-    on: dict[str, int] = {}
-    own: dict[str, int] = {}
-    people: dict[str, set[str]] = {}
-    for workspace in workspaces:
+
+    async def visit(
+        workspace: Tenant,
+    ) -> tuple[dict[str, tuple[ServiceSwitch, bool]], list[tuple[str, str]]]:
         async with tenant_session(session_factory, workspace.id) as session:
             switches = await WORKSPACES.switches_under(session, services, settings)
             connected = await session.execute(
@@ -138,8 +145,14 @@ async def _reach(
                 )
                 .distinct()
             )
-            for service, user_id in connected.tuples():
-                people.setdefault(service, set()).add(user_id)
+            return switches, list(connected.tuples())
+
+    on: dict[str, int] = {}
+    own: dict[str, int] = {}
+    people: dict[str, set[str]] = {}
+    for switches, connected in await _each_workspace(workspaces, visit):
+        for service, user_id in connected:
+            people.setdefault(service, set()).add(user_id)
         for service, (switch, set_here) in switches.items():
             if switch.enabled:
                 on[service] = on.get(service, 0) + 1
@@ -148,48 +161,19 @@ async def _reach(
     return on, own, {service: len(users) for service, users in people.items()}
 
 
-async def _queue_where_off(
-    session_factory: async_sessionmaker[AsyncSession],
-    broker: ServiceBroker,
-    workspaces: list[Tenant],
-    service: str,
-    setting: OrganizationSetting | None,
-) -> list[Tenant]:
-    """Before the setting is saved: queue what each workspace `setting` would
-    switch `service` off in was issued for it, each in its own transaction.
-    The workspaces it would switch off. Raises if any cannot be queued, so
-    the caller saves nothing: no lock is put in force with tokens behind it
-    left live."""
-    issued_for_it = (ServiceTokenIssuance.service == service,)
-    off: list[Tenant] = []
-    for workspace in workspaces:
-        try:
-            async with tenant_session(session_factory, workspace.id) as session:
-                (switch, _) = (
-                    await WORKSPACES.switches_under(
-                        session,
-                        [service],
-                        {} if setting is None else {service: setting},
-                    )
-                )[service]
-                if switch.enabled:
-                    continue
-                await broker.queue_revocation(session, *issued_for_it)
-                await session.commit()
-        except Exception:
-            logger.exception(
-                "Could not queue %s's tokens in workspace %s before an "
-                "organization switched it off there; the change is not saved",
-                service,
-                workspace.id,
-            )
-            raise HTTPException(
-                status_code=503,
-                detail=f"Switch couldn't withdraw {_definition_name(service)} from "
-                f"{workspace.name}, so nothing was changed. Try again.",
-            ) from None
-        off.append(workspace)
-    return off
+async def _each_workspace[T](
+    workspaces: list[Tenant], visit: Callable[[Tenant], Awaitable[T]]
+) -> list[T]:
+    """`visit` every workspace, `CONCURRENT_WORKSPACES` at a time, each on
+    sessions of its own: a large organization's are not walked one by one
+    inside one request."""
+    gate = asyncio.Semaphore(CONCURRENT_WORKSPACES)
+
+    async def one(workspace: Tenant) -> T:
+        async with gate:
+            return await visit(workspace)
+
+    return list(await asyncio.gather(*(one(workspace) for workspace in workspaces)))
 
 
 async def _withdraw(
@@ -198,35 +182,48 @@ async def _withdraw(
     workspaces: list[Tenant],
     service: str,
 ) -> str | None:
-    """After the setting has committed: in each workspace it switched
-    `service` off in, queue again what was issued in between, then revoke.
-    A workspace that fails is logged and named; the rest carry on. The
-    warnings, once each, of what could not be taken back yet."""
+    """After the setting has committed: in each workspace where `service` is
+    now off, queue what was issued for it and revoke. A workspace that fails
+    is logged and named; the upkeep finishes it. The warnings, once each, of
+    what could not be taken back yet."""
     issued_for_it = (ServiceTokenIssuance.service == service,)
-    warnings: list[str] = []
-    failed: list[str] = []
-    for workspace in workspaces:
+
+    async def visit(workspace: Tenant) -> tuple[str | None, bool]:
         try:
             async with tenant_session(session_factory, workspace.id) as session:
+                switch = (
+                    await WORKSPACES.switches(session, [service], organizations=True)
+                )[service]
+                if switch.enabled:
+                    await session.commit()
+                    return None, True
                 await broker.queue_revocation(session, *issued_for_it)
                 await session.commit()
-                warning = await broker.revoke_withdrawn(session, issued_for_it)
+                return await broker.revoke_withdrawn(session, issued_for_it), True
         except Exception:
             logger.exception(
-                "Could not finish withdrawing %s in workspace %s after its "
-                "organization switched it off there",
+                "Could not withdraw %s in workspace %s after its organization "
+                "switched it off there; the upkeep finishes it",
                 service,
                 workspace.id,
             )
-            failed.append(workspace.name)
-            continue
+            return None, False
+
+    outcomes = await _each_workspace(workspaces, visit)
+    warnings: list[str] = []
+    for warning, _ in outcomes:
         if warning is not None and warning not in warnings:
             warnings.append(warning)
+    failed = [
+        workspace.name
+        for workspace, (_, done) in zip(workspaces, outcomes, strict=True)
+        if not done
+    ]
     if failed:
         warnings.append(
-            f"Switch couldn't finish withdrawing {_definition_name(service)} in "
-            f"{', '.join(failed)}. What it had queued there is revoked by its "
-            "periodic retry; tokens issued since may stay valid until they expire."
+            f"Switch couldn't withdraw {_definition_name(service)} in "
+            f"{', '.join(failed)} yet. It finishes within five minutes; until "
+            "then, access already given to agents there may keep working."
         )
     return " ".join(warnings) or None
 
@@ -243,19 +240,6 @@ async def _apply(
 ) -> str | None:
     """Put `setting` (None: no say) in force for `service`, withdrawing it
     wherever that switches it off, as the module describes."""
-    # Only switching off, or giving up a setting of on, can leave a workspace
-    # without the service.
-    can_switch_off = (setting is not None and not setting.enabled) or (
-        setting is None and previous is not None and previous.enabled
-    )
-    # The request's connection goes back before the scans open one per workspace.
-    await session.commit()
-    workspaces = (
-        await organization_workspaces(session_factory, user.id, organization_id)
-        if can_switch_off
-        else []
-    )
-    off = await _queue_where_off(session_factory, broker, workspaces, service, setting)
     if setting is None:
         await SETTINGS.clear(session, organization_id, service)
     else:
@@ -284,7 +268,15 @@ async def _apply(
         details=details,
     )
     await session.commit()
-    return await _withdraw(session_factory, broker, off, service)
+    # Only on and locked switches nothing off anywhere: anything else, even
+    # unlocking a setting of on, can leave a workspace whose own switch is
+    # off without it.
+    if setting is not None and setting.enabled and setting.locked:
+        return None
+    workspaces = await organization_workspaces(
+        session_factory, user.id, organization_id
+    )
+    return await _withdraw(session_factory, broker, workspaces, service)
 
 
 @router.get("")

@@ -51,6 +51,7 @@ from switch_core.signals import SignalBus
 from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.connections.adapters.test_github import _config
 from tests.switch_core.connections.test_app_credentials import _rsa_pem
+from tests.switch_core.gateway.test_workspace_services import _issuance
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -330,11 +331,50 @@ class TestRevoking:
             # Made through the server's app, before the organization saved its own.
             before = await broker._revoker(session, GOOGLE, SERVER_CLIENT)
             since = await broker._revoker(session, GOOGLE, "organization-client-id")
+            # From before clients were recorded, and so before organizations'
+            # apps: the server's.
+            legacy = await broker._revoker(session, GOOGLE, None)
             with pytest.raises(ServiceUnavailableError) as gone:
                 await broker._revoker(session, GOOGLE, "replaced-client-id")
         assert before.current_client_id() == SERVER_CLIENT
+        assert legacy.current_client_id() == SERVER_CLIENT
         assert since.current_client_id() == "organization-client-id"
         assert "no longer uses the Google Workspace app" in str(gone.value)
+
+    async def test_an_issued_token_is_revoked_where_the_organizations_app_is_unusable(
+        self, rls_harness: RLSHarness, tmp_path: Path
+    ) -> None:
+        """An issued token is revoked with itself, so the server's adapter
+        will do when no key opens the organization's app: the token does not
+        wait in the queue until someone saves the app again."""
+        organization_id, tenant_id = await _workspace(
+            rls_harness.owner, in_organization=True
+        )
+        assert organization_id is not None
+        retired = Keyring.parse("retired:" + "r" * 40, legacy_secret=None)
+        await _save(rls_harness.owner, organization_id, "lost-client", keyring=retired)
+        async with rls_harness.owner() as session:
+            user = User(name="ada", email=f"{_id('ada')}@example.invalid", role="user")
+            session.add(user)
+            await session.flush()
+            issuance = _issuance(
+                None, user.id, GOOGLE, "ya29.issued", tenant_id=tenant_id
+            )
+            issuance.revoke_requested = True
+            session.add(issuance)
+            await session.commit()
+        broker = await _Server(rls_harness.restricted, tmp_path).start()
+        revoked: list[str] = []
+
+        async def revoke_issued(token: str) -> None:
+            revoked.append(token)
+
+        broker._adapters[GOOGLE].revoke_issued = revoke_issued  # type: ignore[method-assign]
+        async with tenant_session(rls_harness.restricted, tenant_id) as session:
+            remaining = await broker.revoke_pending(session, ())
+
+        assert revoked == ["ya29.issued"]
+        assert remaining is False
 
 
 class TestKept:

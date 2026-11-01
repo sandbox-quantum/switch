@@ -128,7 +128,8 @@ version of their own to them without also giving them a release of their own.
     workspaces. Unlocked, its setting applies where a workspace admin hasn't
     set the service themselves; locked, it applies everywhere and workspace
     admins can't change it. Wherever a change leaves a service off, the
-    tokens issued for it there are revoked. A workspace admin can drop their
+    tokens issued for it there are revoked; any a change could not reach,
+    the periodic token upkeep revokes within five minutes. A workspace admin can drop their
     own switch (`DELETE /gateway/workspace/services/{service}`) to take the
     organization's setting.
 

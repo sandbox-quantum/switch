@@ -1252,7 +1252,11 @@ class ServiceBroker:
                 f"{name} is not set up on this server, so Switch could not "
                 f"revoke the sign-in. Revoke it at {name}."
             )
-        for adapter in (here, server):
+        # A sign-in from before clients were recorded predates organizations'
+        # apps, so it was made through the server's.
+        for adapter in (
+            (here, server) if oauth_client_id is not None else (server, here)
+        ):
             if adapter is not None and (
                 oauth_client_id is None
                 or adapter.current_client_id() in (None, oauth_client_id)
@@ -2197,15 +2201,28 @@ class ServiceBroker:
         )
         await self._store.clear_expired(session, now)
         await self._store.queue_orphaned(session)
+        # And every live token for a service now off in the workspace, by
+        # whichever switch: a change that withdrew a service but could not
+        # finish queueing its tokens (an organization's, across many
+        # workspaces) is finished here.
+        switched_off = await self.workspace_disabled(session)
+        if switched_off:
+            await self._store.queue_revocation(
+                session,
+                ServiceTokenIssuance.revoke_requested.is_(False),
+                ServiceTokenIssuance.service.in_(switched_off),
+            )
         until = now + REVOCATION_CLAIM
         rows = await self._store.claim_revocations(
             session, conditions, now=now, until=until, limit=REVOCATION_BATCH
         )
         claimed = [(row.id, row.service, row.encrypted_token) for row in rows]
         # Once per service, before the revocations run side by side. An
-        # issued token is revoked with itself, so any app's adapter will do.
+        # issued token is revoked with itself, so any app's adapter will do:
+        # the one that applies here, or the server's where that one can't be
+        # used (an organization's app whose secrets no key opens).
         adapters = {
-            service: await self._here(session, service)
+            service: await self._here(session, service) or self._adapters.get(service)
             for service in {service for _, service, _ in claimed}
         }
         await session.commit()

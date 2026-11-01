@@ -279,7 +279,9 @@ def load_saved_app(
     decrypts the row's. Raises `AppLoadError` when it cannot be used."""
     try:
         opened = secrets()
-    except UndecryptableError:
+    except (UndecryptableError, ValueError):
+        # No key opens it, or what it opens is not a payload of secrets:
+        # either way, only entering the secrets again mends it.
         raise UnreadableAppError(UNREADABLE) from None
     values = AppValues(client_id, dict(settings), opened)
     if spec.kind == "github_app":

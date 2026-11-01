@@ -344,6 +344,10 @@ class TestSwitchingOff:
                 _issuance(None, ada.id, "github", "ghs_elsewhere", tenant_id=TENANT_A)
             )
             await session.commit()
+        # On here, so its token is live: switching GitHub off must leave it.
+        assert (
+            await _put(harness, admin, "atlassian", {"enabled": True})
+        ).status_code == 200
 
         response = await _put(harness, admin, "github", {"enabled": False})
 

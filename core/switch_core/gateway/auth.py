@@ -422,15 +422,11 @@ async def organization_workspace_ids(
     admin_id: str,
     organization_id: str,
 ) -> list[str]:
-    """Every workspace of `organization_id`, as its `org_admin` `admin_id`
-    reaches them: an `org_admin` may bind each one. Each read on its own
-    short session, as `workspaces_in_organization` does."""
+    """The ids of `organization_workspaces`."""
     return [
         tenant.id
-        for tenant in await _in_organization(
-            session_factory,
-            await tenants_bindable_by_user(session_factory, admin_id),
-            organization_id,
+        for tenant in await organization_workspaces(
+            session_factory, admin_id, organization_id
         )
     ]
 

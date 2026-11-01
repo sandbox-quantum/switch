@@ -22,6 +22,7 @@ from switch_core.connections.broker import (
     ServiceError,
     organization_locked,
 )
+from switch_core.connections.maintenance import maintain_once
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
@@ -278,6 +279,55 @@ class TestUnlocked:
         # On in the sibling, which never switched it, off here.
         assert organization["github"]["workspaces_on"] == 1
 
+    async def test_unlocking_on_withdraws_where_the_workspace_had_it_off(
+        self, harness: Harness, vendor: FakeVendor, session_factory
+    ) -> None:
+        """Locked on overrode a workspace's own switch of off; unlocked, that
+        switch is in force again, and what was issued under the lock goes."""
+        admin = await _org_admin(session_factory)
+        workspace_admin = await _person(
+            session_factory, "workspace-admin", member_role="admin"
+        )
+        assert (
+            await _call(
+                harness,
+                workspace_admin,
+                "PUT",
+                f"{WORKSPACE}/github",
+                {"enabled": False},
+            )
+        ).status_code == 200
+        await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": True, "locked": True},
+        )
+        ada = await add_member(session_factory, "ada")
+        agent_id, _ = await agent_with_key(session_factory, ada, "builder")
+        github = await _granted(session_factory, ada, agent_id, "github")
+        async with session_factory() as session:
+            session.add(_issuance(github, ada.id, "github", "ghs_here"))
+            await session.commit()
+        async with tenant_session(session_factory, SIBLING) as session:
+            session.add(
+                _issuance(None, ada.id, "github", "ghs_elsewhere", tenant_id=SIBLING)
+            )
+            await session.commit()
+
+        unlocked = await _call(
+            harness,
+            admin,
+            "PUT",
+            f"{ORGANIZATION}/github",
+            {"enabled": True, "locked": False},
+        )
+
+        assert unlocked.status_code == 200, unlocked.text
+        # Off here by the workspace's own switch; on in the sibling.
+        assert vendor.revoked == ["ghs_here"]
+
 
 class TestClearing:
     async def test_clearing_gives_up_the_organizations_say(
@@ -334,10 +384,18 @@ async def _connected_in(session_factory, user: User, tenant_id: str) -> None:
 
 
 class TestWithdrawingSafely:
-    async def test_nothing_is_saved_when_a_workspace_cannot_be_prepared(
-        self, harness: Harness, session_factory, monkeypatch
+    async def test_a_workspace_that_cannot_be_reached_is_finished_by_the_upkeep(
+        self, harness: Harness, vendor: FakeVendor, session_factory, monkeypatch
     ) -> None:
+        """The setting commits first: a workspace whose tokens could not be
+        queued is named, and the next upkeep pass queues and revokes them."""
         admin = await _org_admin(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with tenant_session(session_factory, SIBLING) as session:
+            session.add(
+                _issuance(None, ada.id, "github", "ghs_elsewhere", tenant_id=SIBLING)
+            )
+            await session.commit()
         broker: ServiceBroker = harness.gateway_app.state.service_broker
         queue = broker.queue_revocation
 
@@ -356,10 +414,16 @@ class TestWithdrawingSafely:
         )
         organization = _by_slug(await _call(harness, admin, "GET", ORGANIZATION))
 
-        assert answer.status_code == 503
-        assert "nothing was changed" in answer.json()["detail"]
-        assert organization["github"]["setting"] is None
-        assert await _events(session_factory) == []
+        assert answer.status_code == 200, answer.text
+        assert "Sibling" in answer.json()["warning"]
+        assert organization["github"]["setting"] == {"enabled": False, "locked": True}
+        assert len(await _events(session_factory)) == 1
+        assert vendor.revoked == []
+
+        monkeypatch.undo()
+        await maintain_once(session_factory, broker, prune=False)
+
+        assert vendor.revoked == ["ghs_elsewhere"]
 
     async def test_a_workspace_failing_afterwards_is_named_and_the_rest_carry_on(
         self, harness: Harness, vendor: FakeVendor, session_factory, monkeypatch

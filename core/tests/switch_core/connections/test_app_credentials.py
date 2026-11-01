@@ -19,8 +19,11 @@ from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.app_credentials import (
     SECRET_NAMES,
+    UNREADABLE,
     ConnectorApps,
+    UnreadableAppError,
     install_github_app,
+    load_saved_app,
 )
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -146,6 +149,28 @@ class TestSpecs:
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
+
+
+class TestSavedSecrets:
+    def test_what_opens_to_no_payload_of_secrets_is_unreadable(
+        self, session_factory
+    ) -> None:
+        """A key opens it, but what it opens is not JSON: only entering the
+        secrets again mends it, as when no key opens it."""
+        spec = _apps(session_factory).specs["google-workspace"]
+
+        def not_json() -> dict[str, str]:
+            return json.loads("not json")
+
+        with pytest.raises(UnreadableAppError) as unreadable:
+            load_saved_app(
+                spec,
+                client_id="example-client-id",
+                settings={},
+                secrets=not_json,
+                public_url=PUBLIC_URL,
+            )
+        assert str(unreadable.value) == UNREADABLE
 
 
 class TestPrecedence:

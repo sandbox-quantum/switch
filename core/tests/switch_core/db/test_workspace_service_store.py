@@ -56,8 +56,11 @@ class TestSwitch:
         async with session_factory() as session:
             assert await STORE.on_by_default(session) is False
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is False
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is False
             assert await STORE.disabled_services(
                 session, SERVICES, organizations=False
             ) == set(SERVICES)
@@ -69,8 +72,11 @@ class TestSwitch:
         await _on_by_default(session_factory)
         async with session_factory() as session:
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is True
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is True
             assert (
                 await STORE.disabled_services(session, SERVICES, organizations=False)
                 == set()
@@ -84,12 +90,17 @@ class TestSwitch:
             await STORE.set_enabled(session, "datadog", True, admin)
             await session.commit()
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is True
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is True
             assert (
-                await STORE.is_enabled(session, "atlassian", organizations=False)
-                is False
-            )
+                "atlassian"
+                not in await STORE.disabled_services(
+                    session, ["atlassian"], organizations=False
+                )
+            ) is False
             assert await STORE.disabled_services(
                 session, SERVICES, organizations=False
             ) == {
@@ -100,8 +111,11 @@ class TestSwitch:
             await STORE.set_enabled(session, "datadog", False, admin)
             await session.commit()
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is False
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is False
             assert await STORE.disabled_services(
                 session, SERVICES, organizations=False
             ) == set(SERVICES)
@@ -115,12 +129,17 @@ class TestSwitch:
             await STORE.set_enabled(session, "datadog", False, admin)
             await session.commit()
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is False
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is False
             assert (
-                await STORE.is_enabled(session, "atlassian", organizations=False)
-                is True
-            )
+                "atlassian"
+                not in await STORE.disabled_services(
+                    session, ["atlassian"], organizations=False
+                )
+            ) is True
             assert await STORE.disabled_services(
                 session, SERVICES, organizations=False
             ) == {"datadog"}
@@ -128,8 +147,11 @@ class TestSwitch:
             await STORE.set_enabled(session, "datadog", True, admin)
             await session.commit()
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is True
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is True
             assert (
                 await STORE.disabled_services(session, SERVICES, organizations=False)
                 == set()
@@ -184,8 +206,11 @@ class TestIsolation:
             )
             assert raw.all() == []
             assert (
-                await STORE.is_enabled(session, "datadog", organizations=False) is True
-            )
+                "datadog"
+                not in await STORE.disabled_services(
+                    session, ["datadog"], organizations=False
+                )
+            ) is True
             assert (
                 await STORE.disabled_services(session, SERVICES, organizations=False)
                 == set()

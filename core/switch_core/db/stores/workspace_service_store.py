@@ -178,12 +178,6 @@ class WorkspaceServiceStore:
             if not switch.enabled
         }
 
-    async def is_enabled(
-        self, session: AsyncSession, service: str, *, organizations: bool
-    ) -> bool:
-        switches = await self.switches(session, [service], organizations=organizations)
-        return switches[service].enabled
-
     async def organization_settings(
         self, session: AsyncSession
     ) -> dict[str, OrganizationServiceSetting]:

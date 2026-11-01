@@ -186,11 +186,17 @@ async def authorize(
             raise FlowError(INTERRUPTED)
     except FlowError:
         return _page("Connections", INTERRUPTED, 400)
+    refusal: ServiceError | None
     async with tenant_session(session_factory, flow.tenant_id) as session:
         try:
             definition, adapter = await broker.sign_in(session, service)
-        except ServiceError:
-            return _page("Connections", INTERRUPTED, 400)
+        except ServiceError as error:
+            refusal = error
+        else:
+            refusal = None
+    if refusal is not None:
+        await flows.refused(flow, refusal.message)
+        return _page("Connections", escape(refusal.message), refusal.status_code)
     try:
         url, nonce = await flows.vendor_url(flow, adapter)
     except (FlowError, ServiceAdapterError):
