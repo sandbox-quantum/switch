@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, TypeVar
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import parse_policy
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
 from switch_core.bridges.agent.commands import stop_control_frame
@@ -47,7 +48,7 @@ from switch_core.clients.admin_messages import (
     platform_on_behalf_of,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
-from switch_core.db.models import BridgeMessageMap, Client, ExternalUser
+from switch_core.db.models import Agent, BridgeMessageMap, Client, ExternalUser
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
@@ -58,6 +59,7 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.db.tenant_lookup import tenant_of_room
+from switch_core.invites import InviteRefused, PlatformInviter
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
@@ -1046,6 +1048,7 @@ class CollaborationCore:
                 room_ids = self._channel_to_room.get(msg.channel_id)
                 if room_ids is None:
                     room_ids = await self._create_room_for_channel(
+                        added_by=None,
                         channel_id=msg.channel_id,
                         channel_type=msg.channel_type,
                         agent_name=msg.agent_name,
@@ -1285,6 +1288,7 @@ class CollaborationCore:
                 room_ids = self._channel_to_room.get(cmd.channel_id)
                 if room_ids is None:
                     room_ids = await self._create_room_for_channel(
+                        added_by=None,
                         channel_id=cmd.channel_id,
                         channel_type=cmd.channel_type,
                         agent_name=cmd.agent_name,
@@ -1397,17 +1401,28 @@ class CollaborationCore:
         if existing is not None:
             logger.debug("Room already exist, add %s to channel", join.agent_name)
             room_id, _ = existing
-            await self._room_service.add_agents_to_room(
-                room_id, agent_names=[join.agent_name], added_by_kind="system"
-            )
+            try:
+                await self._room_service.add_agents_to_room(
+                    room_id,
+                    agent_names=[join.agent_name],
+                    invited_by=PlatformInviter(self._bridge_id, join.added_by),
+                )
+            except InviteRefused as refused:
+                await self._tell_invite_refused(join.channel_id, refused)
+                return
+            if join.added_by is None:
+                await self._tell_inviter_unknown(join.channel_id, [agent])
             return
 
-        await self._create_room_for_channel(
+        created = await self._create_room_for_channel(
+            added_by=join.added_by,
             channel_id=join.channel_id,
             channel_type=join.channel_type,
             agent_name=join.agent_name,
             channel_name=join.channel_name,
         )
+        if created is not None and join.added_by is None:
+            await self._tell_inviter_unknown(join.channel_id, [agent])
 
     async def _handle_app_joined_channel(self, join: InboundAppJoin) -> None:
         """The bridge app itself was added to a channel. Auto-create the room
@@ -1421,6 +1436,7 @@ class CollaborationCore:
                 )
                 return
             await self._create_room_for_channel(
+                added_by=None,
                 channel_id=join.channel_id,
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
@@ -1518,10 +1534,14 @@ class CollaborationCore:
         *,
         channel_id: str,
         channel_type: ChannelType,
+        added_by: str | None,
         agent_name: str | None = None,
         sender_name: str | None = None,
         channel_name: str | None = None,
     ) -> tuple[str, str] | None:
+        """`added_by` is the platform's id for whoever brought the agents into
+        the channel, or None when the platform did not say; the agents are
+        judged as that person (`InviteGate`)."""
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
         #  1. Switch is itself provisioning this channel right now — the mapping
@@ -1568,8 +1588,25 @@ class CollaborationCore:
             ),
         )
 
+        inviter = PlatformInviter(self._bridge_id, added_by)
         try:
-            result = await self._room_service.create_room(config)
+            try:
+                result = await self._room_service.create_room(
+                    config, invited_by=inviter
+                )
+            except InviteRefused as refused:
+                # The channel still gets its room; only the agents its adder
+                # may not invite are left out of it.
+                await self._tell_invite_refused(channel_id, refused)
+                agent_ids = [
+                    agent_id
+                    for agent_id in agent_ids
+                    if agent_id not in refused.agent_ids
+                ]
+                config = config.model_copy(update={"agent_ids": agent_ids})
+                result = await self._room_service.create_room(
+                    config, invited_by=inviter
+                )
         except IntegrityError:
             # Backstop: the (bridge_id, external_channel_id) unique index
             # rejected a concurrent duplicate. Adopt the room that won the race.
@@ -1617,6 +1654,47 @@ class CollaborationCore:
             )
 
         return (room.id, room.transport_room_id)
+
+    async def _tell_invite_refused(
+        self, channel_id: str, refused: InviteRefused
+    ) -> None:
+        logger.warning(
+            "Not adding %s to channel %s: %s",
+            ", ".join(refused.agent_names),
+            channel_id,
+            refused,
+        )
+        await self._adapter.admin_message(
+            channel_id,
+            str(refused),
+            message_type=AdminMessageType.AGENT_LIFECYCLE,
+        )
+
+    async def _tell_inviter_unknown(self, channel_id: str, agents: list[Agent]) -> None:
+        """Say so when an agent that only some people may invite was added by
+        someone the platform did not name, so nobody could check them."""
+        restricted = [
+            agent
+            for agent in agents
+            if not parse_policy(agent.addressing_policy).is_open()
+        ]
+        if not restricted:
+            return
+        names = ", ".join(agent.name for agent in restricted)
+        logger.warning(
+            "Added %s to channel %s without checking who may invite it: the "
+            "platform did not say who added it",
+            names,
+            channel_id,
+        )
+        await self._adapter.admin_message(
+            channel_id,
+            f"{names} {'was' if len(restricted) == 1 else 'were'} added here, but "
+            "the platform didn't say by whom, so I couldn't check they're allowed "
+            "to invite it. The agent's owner can remove it or change who it takes "
+            "instructions from.",
+            message_type=AdminMessageType.AGENT_LIFECYCLE,
+        )
 
     async def _resolve_agents_for_channel(
         self, channel_id: str, channel_type: ChannelType
@@ -1968,6 +2046,7 @@ class CollaborationCore:
                 room_ids = self._channel_to_room.get(join.channel_id)
                 if room_ids is None:
                     room_ids = await self._create_room_for_channel(
+                        added_by=None,
                         channel_id=join.channel_id,
                         channel_type=join.channel_type,
                         sender_name=join.external_username,

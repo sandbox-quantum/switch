@@ -240,6 +240,19 @@ unaddressed room chatter and posts a one-shot reply to the sender; commands are
 gated the same way (a command naming the agent draws a reply, a room-wide one is
 declined quietly).
 
+Adding an agent to a room is held to the same policy. Every way in — the
+`!invite-agent` command, the `invite_agent_to_room` and `create_room` tools, a
+room made from a template or a YAML file, the room page in the gateway, and a
+platform user adding the Switch bot to a channel — goes through one check,
+`InviteGate` ([`invites.py`](../core/switch_core/invites.py)), which asks
+`AddressingResolver.judge` the same question message delivery asks: could this
+inviter address this agent? An agent a person could not talk to is refused
+before anything is created, with a message that says why and that its owner can
+invite it. Agents already in a room are not re-judged, so tightening a policy
+never removes anyone. One case cannot be judged: Mattermost and some other
+platforms do not say who added the bot. There the join goes ahead, a restricted
+agent is flagged in the channel, and a warning is logged.
+
 The `owner` flag is a **symbolic subject resolved at delivery time**, not a
 stored id: `external_user_claims` records which Switch users have claimed a
 platform account, and a human sender matches when the agent's owner is among

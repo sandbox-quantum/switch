@@ -416,6 +416,28 @@ class AddressingResolver:
             )
             return AddressingDecision(allowed=False, refusal=ADDRESSING_DENIED_MESSAGE)
 
+        return await self.judge(
+            session,
+            agent=agent,
+            room_id=room_id,
+            group_id=group_id,
+            principal=principal,
+        )
+
+    async def judge(
+        self,
+        session: AsyncSession,
+        *,
+        agent: Agent,
+        room_id: str,
+        group_id: str | None,
+        principal: SenderPrincipal,
+    ) -> AddressingDecision:
+        """What the agent's policy says to a sender already resolved to a
+        principal. `permitted` is this after it has found the principal; a
+        caller that already knows who is acting (an invite, which is judged
+        before any message exists) asks it directly."""
+        policy = parse_policy(agent.addressing_policy)
         if principal.kind == "platform" and principal.on_behalf_of is not None:
             allowed = allows_on_behalf_of(
                 policy,

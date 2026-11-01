@@ -62,11 +62,14 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.tenant_store import TenantStore
+from switch_core.invites import InviteGate
 from switch_core.room_service import RoomService
 from switch_core.tenant_context import current_tenant_id, tenant_scope
+from tests.invites import UNCHECKED
 from tests.ownership import NeverOwned
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -269,6 +272,7 @@ def _service(
     svc._client_lifecycle = clients  # type: ignore[assignment]
     svc._provisioning = matrix  # type: ignore[assignment]
     svc._collab_lifecycle = None  # type: ignore[assignment]
+    svc._invites = InviteGate.build(room_store=store, agent_store=AgentStore())
     return svc
 
 
@@ -673,7 +677,9 @@ class TestBindingsOnTheRoomsOwnTenant:
         )
 
         assert current_tenant_id() is None
-        await svc.add_agents_to_room("room-b", agent_ids=["agent-b"])
+        await svc.add_agents_to_room(
+            "room-b", agent_ids=["agent-b"], invited_by=UNCHECKED
+        )
 
         assert store.tenants_for("add_agents") == [TENANT_B]
         assert store.tenants_for("add_client") == [TENANT_B]

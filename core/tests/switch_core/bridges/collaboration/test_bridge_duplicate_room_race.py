@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundAppJoin
+from switch_core.invites import Inviter
 
 # CHOO-1660: creating a Slack-bridged room provisions a channel; the bot
 # auto-joins it and fires an inbound app-join BEFORE create_room commits the
@@ -23,7 +24,7 @@ def _make_bridge(**overrides: Any) -> CollaborationCore:
         id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
     )
 
-    async def create_room(config: Any) -> SimpleNamespace:
+    async def create_room(config: Any, *, invited_by: Inviter) -> SimpleNamespace:
         created_configs.append(config)
         return SimpleNamespace(room=room)
 
@@ -76,6 +77,7 @@ async def test_provisioning_channel_is_not_re_created() -> None:
 
     result = await CollaborationCore._create_room_for_channel(
         bridge,
+        added_by=None,
         channel_id="C1",
         channel_type="channel_public",
         channel_name="general",
@@ -93,6 +95,7 @@ async def test_provisioning_channel_returns_existing_mapping() -> None:
 
     result = await CollaborationCore._create_room_for_channel(
         bridge,
+        added_by=None,
         channel_id="C1",
         channel_type="channel_public",
     )
@@ -109,6 +112,7 @@ async def test_existing_db_room_is_adopted_not_recreated() -> None:
 
     result = await CollaborationCore._create_room_for_channel(
         bridge,
+        added_by=None,
         channel_id="C1",
         channel_type="channel_public",
     )
@@ -129,7 +133,7 @@ async def test_integrity_error_falls_back_to_existing_room() -> None:
         # committed by the racing winner only by the time the except runs.
         return ("winner-room", "!winner:switch.local") if calls["adopt"] > 1 else None
 
-    async def create_room(config: Any) -> SimpleNamespace:
+    async def create_room(config: Any, *, invited_by: Inviter) -> SimpleNamespace:
         raise IntegrityError("INSERT INTO rooms", {}, Exception("duplicate key"))
 
     bridge = _make_bridge(
@@ -139,6 +143,7 @@ async def test_integrity_error_falls_back_to_existing_room() -> None:
 
     result = await CollaborationCore._create_room_for_channel(
         bridge,
+        added_by=None,
         channel_id="C1",
         channel_type="channel_public",
     )

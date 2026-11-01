@@ -121,6 +121,7 @@ from switch_core.events import (
 from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
+from switch_core.invites import AgentInviter
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
 from switch_core.platform_access import administers_on_record
 from switch_core.room_wide_mention import (
@@ -2940,7 +2941,9 @@ class AgentCore:
                 acting_is_admin=owner_is_admin,
             )
             try:
-                result = await self.room_service.create_room(config)
+                result = await self.room_service.create_room(
+                    config, invited_by=AgentInviter(agent.id)
+                )
             except ValueError as e:
                 raise ValueError(f"Failed to create room: {str(e)}") from e
             except PermissionError as e:
@@ -3014,7 +3017,7 @@ class AgentCore:
                 room_id,
                 agent_names=[agent_name],
                 include_subagents_for=include_for,
-                added_by_kind="agent",
+                invited_by=AgentInviter(agent_id),
             )
         except ValueError as e:
             raise ValueError(f"Failed to invite agent: {str(e)}") from e

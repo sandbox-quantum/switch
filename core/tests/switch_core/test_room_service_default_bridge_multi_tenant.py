@@ -38,6 +38,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.tenant_context import tenant_scope
+from tests.invites import UNCHECKED
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -216,11 +217,11 @@ async def test_create_room_succeeds_for_each_tenants_own_default_bridge(
     # tenant A's own default bridge was never ambiguous on its own.
     with tenant_scope(tenant_a):
         result_a = await svc.create_room(
-            RoomCreateConfig(name="Room A", description="d")
+            RoomCreateConfig(name="Room A", description="d"), invited_by=UNCHECKED
         )
     with tenant_scope(tenant_b):
         result_b = await svc.create_room(
-            RoomCreateConfig(name="Room B", description="d")
+            RoomCreateConfig(name="Room B", description="d"), invited_by=UNCHECKED
         )
 
     assert result_a.room.bridge_id == bridge_a

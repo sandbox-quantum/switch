@@ -24,7 +24,9 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.invites import InviteGate
 from switch_core.keys import Keyring
+from switch_core.room_service import RoomService
 
 _PROFILE = IntegrationProfile(
     connection_model="session_passive",
@@ -189,3 +191,45 @@ class TestRoomRosterAuthz:
         async with session_factory() as session:
             room = await svc._require_room_roster_change(session, admin_agent, room_id)
             assert room.id == room_id
+
+
+def _with_room_service(
+    svc: AgentCore, session_factory: async_sessionmaker[AsyncSession]
+) -> RoomService:
+    room_service = object.__new__(RoomService)
+    room_service._session_factory = session_factory  # type: ignore[assignment]
+    room_service._room_store = RoomStore()  # type: ignore[assignment]
+    room_service._agent_store = AgentStore()  # type: ignore[assignment]
+    room_service._invites = InviteGate.build(
+        room_store=RoomStore(), agent_store=AgentStore()
+    )
+    svc.room_service = room_service  # type: ignore[attr-defined]
+    return room_service
+
+
+class TestInviteRespectsWhoMayTalkToTheAgent:
+    """A member of a room may change its roster, but only with agents that take
+    instructions from them (#805)."""
+
+    async def _setup(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> tuple[AgentCore, str, str, str]:
+        svc = _service(session_factory)
+        _with_room_service(svc, session_factory)
+        victim = await _make_user(session_factory, "victim")
+        attacker = await _make_user(session_factory, "attacker")
+        victim_agent = await _register(svc, "victim-agent", victim)
+        attacker_agent = await _register(svc, "attacker-agent", attacker)
+        room_id = await _make_public_room(
+            session_factory, owner_id=attacker, member_agent_ids=[attacker_agent]
+        )
+        return svc, attacker_agent, victim_agent, room_id
+
+    async def test_an_agent_cannot_invite_one_that_does_not_take_its_instructions(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc, attacker_agent, victim_agent, room_id = await self._setup(session_factory)
+        with pytest.raises(PermissionError, match="doesn't take instructions"):
+            await svc.invite_agent_to_room(attacker_agent, room_id, "victim-agent")
+        async with session_factory() as session:
+            assert await RoomStore().get_agent_ids(session, room_id) == [attacker_agent]
