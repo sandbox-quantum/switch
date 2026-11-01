@@ -25,17 +25,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_azure_devops_datadog_and_google_workspace():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "azure-devops",
         "datadog",
         "github",
         "google-workspace",
@@ -44,6 +46,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["azure-devops"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -225,6 +228,50 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_azure_devops_entry_signs_in_as_the_spec_found_it_must():
+    definition = CATALOG["azure-devops"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "AZURE_DEVOPS"
+    assert oauth.prompt == "consent select_account"
+    assert oauth.remove_access is not None
+    assert "https://myaccount.microsoft.com" in oauth.remove_access
+    assert oauth.unchecked is not None and "admin consent" in oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == (
+        "https://app.vssps.visualstudio.com/_apis/profile/profiles/me",
+        "id",
+        "emailAddress",
+    )
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("azure-devops", "https://mcp.dev.azure.com")
+    ]
+    assert definition.access is not None and definition.access.write is not None
+    scopes = [
+        "499b84ac-1321-427f-aa17-267ca6975798/user_impersonation",
+        "offline_access",
+    ]
+    assert definition.access.read.scopes == scopes
+    assert definition.access.write.scopes == scopes
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
 
 
 @pytest.fixture

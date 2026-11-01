@@ -1,0 +1,58 @@
+slug: azure-devops
+name: Azure DevOps
+category: Project management
+description: Read and update Azure DevOps work items, repos and pipelines, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Microsoft Entra ID issues a new refresh token upon refresh.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a Microsoft Entra ID application and
+    # names its settings in AZURE_DEVOPS_CLIENT_CONFIG_PATH. Entra ID offers no
+    # dynamic client registration. A tenant admin must grant admin consent for
+    # the Azure DevOps delegated permission (user_impersonation).
+    registration: static
+    client_settings: AZURE_DEVOPS
+    # Redirects back to Core's callback (<GATEWAY_PUBLIC_URL>/gateway/service-connections/azure-devops/flows/callback),
+    # configured as a Web redirect URI in the Entra ID app registration.
+    redirect: [core]
+    prompt: consent select_account
+    # Nothing Switch asks Entra ID during the app check shows admin consent
+    # or tenant restriction settings.
+    unchecked: >-
+      Switch can't check admin consent, tenant restrictions, or that the
+      redirect URI matches. Have someone connect once to confirm.
+    # Microsoft Entra ID does not publish a standard RFC 7009 token revocation
+    # endpoint, so sign-ins must be revoked by the user in their Microsoft account.
+    remove_access: >-
+      Remove it in your Microsoft account under App permissions
+      (https://myaccount.microsoft.com). Until then, tokens already issued
+      remain valid until their 60-minute expiry.
+  identity:
+    # Azure DevOps Visual Studio Profile service, checked using the bearer token.
+    url: https://app.vssps.visualstudio.com/_apis/profile/profiles/me
+    account_id: id
+    label: emailAddress
+# Microsoft Entra ID access tokens live 60 minutes (3,600 seconds).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    # The official Azure DevOps remote MCP server. Organization name is
+    # provided in tool call context, allowing agents to work across organizations.
+    - { name: azure-devops, url: "https://mcp.dev.azure.com" }
+access:
+  # Azure DevOps delegates permissions through user_impersonation under the
+  # well-known Azure DevOps Entra application (499b84ac-1321-427f-aa17-267ca6975798).
+  # Entra ID does not separate read and write scopes for Azure DevOps; actions
+  # are bounded by the user's project and organization permissions.
+  read:
+    scopes:
+      - 499b84ac-1321-427f-aa17-267ca6975798/user_impersonation
+      - offline_access
+  write:
+    scopes:
+      - 499b84ac-1321-427f-aa17-267ca6975798/user_impersonation
+      - offline_access
+tools: { mode: pass_through }
