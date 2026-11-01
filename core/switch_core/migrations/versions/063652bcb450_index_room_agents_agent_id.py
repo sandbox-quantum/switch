@@ -17,7 +17,7 @@ where it is not can build the index by hand first, and this becomes a no-op:
 Expand only: a process from before this revision reads the table as it did.
 
 Revision ID: 063652bcb450
-Revises: b7e1d4c9a2f6
+Revises: 9d41b7e2c6a3
 Create Date: 2026-11-01 00:00:00.000000
 
 """
@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "063652bcb450"
-down_revision: str | None = "b7e1d4c9a2f6"
+down_revision: str | None = "9d41b7e2c6a3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
