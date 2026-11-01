@@ -186,6 +186,12 @@ class _ControllerStream:
             )
         self._tenant: str = self._tenant_id
         self._attached: dict[str, _Attached] = {}
+        # Whether the next pass reads every head from the database rather
+        # than taking the heads this process was told (`EventBuffer.heads`):
+        # the first pass, and the pass after an idle interval with no wake,
+        # which is when a notification lost without its connection dropping
+        # is caught.
+        self._fresh_heads = True
 
     async def run(self, opening: dict[str, Any]) -> AsyncGenerator[ControllerFrame]:
         conn = self._conn
@@ -280,6 +286,7 @@ class _ControllerStream:
                     continue
 
                 if not await self._wait():
+                    self._fresh_heads = True
                     yield IDLE
         finally:
             for attached in self._attached.values():
@@ -466,12 +473,17 @@ class _ControllerStream:
     async def _due(self) -> list[tuple[_Attached, int]]:
         """The attached agents a delivery pass has work for, each with its
         head: events past its cursor, or rooms without an unread-count baseline
-        yet. The heads are read in one query, so a pass over a controller's
-        agents, such as the one after each idle interval, costs one read when
-        nothing is new rather than a session per agent."""
+        yet. The heads are the ones this process was told with each event
+        (`EventBuffer.ring`), and those it was not told are read in one query,
+        so a pass woken by an event reads nothing to find it, and a pass over
+        a controller's agents after each idle interval costs one read rather
+        than a session per agent."""
         if not self._attached:
             return []
-        heads = await self._buffer.heads(self._tenant, set(self._attached))
+        heads = await self._buffer.heads(
+            self._tenant, set(self._attached), fresh=self._fresh_heads
+        )
+        self._fresh_heads = False
         return [
             (attached, heads[attached.agent_id])
             for attached in list(self._attached.values())

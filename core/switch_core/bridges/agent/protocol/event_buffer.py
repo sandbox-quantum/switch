@@ -418,6 +418,19 @@ class EventBuffer:
         # listener sets it for own events written by other processes. The events
         # themselves are always read from `agent_events`.
         self._notify: dict[str, asyncio.Event] = {}
+        # The head of each agent read here, as this process was last told it:
+        # by the notification of an own event written anywhere, or by a write
+        # of its own. Kept only while the notification listener is listening,
+        # since a notification sent while it was not is lost, and forgotten
+        # whenever that may have happened. A head only ever rises, so of two
+        # values for one agent the larger is kept. A delivery pass takes its
+        # heads from here and reads the database for an agent with none
+        # (`heads`).
+        self._told_heads: dict[str, int] = {}
+        self._listening = False
+        # Advanced each time the told heads are forgotten, so a head read from
+        # the database before that is not kept after it (`heads`).
+        self._told_epoch = 0
 
     @asynccontextmanager
     async def one_session(self, tenant_id: str) -> AsyncIterator[AsyncSession]:
@@ -685,7 +698,7 @@ class EventBuffer:
             event.type,
             seq,
         )
-        self.ring(agent_id)
+        self.ring(agent_id, seq)
         return seq
 
     async def _store_own_event(
@@ -846,25 +859,44 @@ class EventBuffer:
         """
         return self._notify.setdefault(agent_id, asyncio.Event())
 
-    def ring(self, agent_id: str) -> None:
-        """Set the agent's doorbell in this process.
+    def ring(self, agent_id: str, seq: int | None = None) -> None:
+        """Set the agent's doorbell in this process, and keep `seq`, the
+        number of the own event that rang it, as the agent's head here.
 
-        `enqueue` calls this after inserting an own event, and the notification
-        listener calls it when another process inserts one.
+        `enqueue` and the router call this after inserting an own event, and
+        the notification listener calls it when another process inserts one.
+        An agent's numbers are handed out in commit order (`store`), so the
+        event numbered `seq` has committed after every lower one: once it has,
+        the agent's head is at least `seq`. A ring without a number forgets the
+        head kept, and the next pass reads it.
         """
         notify = self._notify.get(agent_id)
-        if notify is not None:
-            notify.set()
+        if notify is None:
+            return
+        if seq is None or not self._listening:
+            self._told_heads.pop(agent_id, None)
+        else:
+            self._told_heads[agent_id] = max(seq, self._told_heads.get(agent_id, seq))
+        notify.set()
 
     def ring_everyone(self) -> None:
-        """Set every doorbell in this process.
+        """Set every doorbell in this process, and forget every head kept.
 
-        The notification listener calls this each time it starts listening on
-        a Postgres connection, because it may have missed notifications while
-        it was not listening.
+        Called whenever notifications may have been missed, so every reader
+        looks for events it was not told of.
         """
+        self._told_heads.clear()
+        self._told_epoch += 1
         for notify in self._notify.values():
             notify.set()
+
+    def listening(self, now_listening: bool) -> None:
+        """Told by the notification listener each time it starts or stops
+        listening on a Postgres connection. Notifications sent while it was
+        not listening are lost, so the heads kept are forgotten either way,
+        and from the start of listening every reader looks again."""
+        self._listening = now_listening
+        self.ring_everyone()
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
         """The number of the agent's newest own event, or the number just
@@ -879,25 +911,49 @@ class EventBuffer:
                 last = await session.scalar(query)
         return self.sequence_floor - 1 if last is None else last
 
-    async def heads(self, tenant_id: str, agent_ids: set[str]) -> dict[str, int]:
-        """`head` for several agents in one query, for a connection that
-        serves many agents."""
+    async def heads(
+        self, tenant_id: str, agent_ids: set[str], *, fresh: bool = False
+    ) -> dict[str, int]:
+        """`head` for several agents, for a connection that serves many agents.
+
+        An agent's head is the one this process was told (`ring`), when it
+        has one and `fresh` is not asked for. The others are read in one
+        query, and kept as told while the listener goes on listening, since
+        any event numbered after the read rings with its number.
+        """
+        heads: dict[str, int] = {}
+        if not fresh:
+            heads = {
+                agent_id: self._told_heads[agent_id]
+                for agent_id in agent_ids
+                if agent_id in self._told_heads
+            }
+        unknown = agent_ids - heads.keys()
+        if not unknown:
+            return heads
 
         def query(ids: set[str]) -> Any:
             return select(AgentEventHead.agent_id, AgentEventHead.last_seq).where(
                 AgentEventHead.agent_id.in_(ids)
             )
 
+        epoch = self._told_epoch
         async with tenant_session(self._session_factory, tenant_id) as session:
-            found = dict((await session.execute(query(agent_ids))).tuples().all())
-            missing = agent_ids - found.keys()
+            found = dict((await session.execute(query(unknown))).tuples().all())
+            missing = unknown - found.keys()
             if missing:
                 await self._start_numbering(session, missing)
                 found.update((await session.execute(query(missing))).tuples().all())
-        return {
-            agent_id: found.get(agent_id, self.sequence_floor - 1)
-            for agent_id in agent_ids
-        }
+        keep = self._listening and epoch == self._told_epoch
+        for agent_id in unknown:
+            head = max(
+                found.get(agent_id, self.sequence_floor - 1),
+                self._told_heads.get(agent_id, 0),
+            )
+            heads[agent_id] = head
+            if keep and agent_id in self._notify:
+                self._told_heads[agent_id] = head
+        return heads
 
     async def first_seq(self, tenant_id: str, agent_id: str) -> int:
         """The number of the agent's first own event.
@@ -1774,6 +1830,7 @@ class EventBuffer:
         row in `agents` (`ON DELETE CASCADE`).
         """
         self._notify.pop(agent_id, None)
+        self._told_heads.pop(agent_id, None)
 
     # ------------------------------------------------------------------
     # Retention

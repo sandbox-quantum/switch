@@ -223,6 +223,12 @@ version of their own to them without also giving them a release of their own.
   group whose subgroup would move up next to a namesake is refused too, and
   the dashboard now shows why. Names can no longer contain `/` or be blank.
   Existing duplicates are left as they are and can be reached by id.
+- **Delivering an event to an agent behind a controller no longer reads the
+  agent's head first.** The notification of a new agent event already carries
+  its number, and the controller's stream now keeps it as the agent's head, so
+  a delivery costs the agent's own read alone, where it read the heads of all
+  the controller's agents first. The heads are still read after each idle
+  interval, when an agent is attached, and after the listener reconnects.
 
 #### Fixed
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not

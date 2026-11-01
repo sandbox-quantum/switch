@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from typing import Any
 
 import pytest
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
@@ -1018,3 +1019,211 @@ async def test_an_attach_that_fails_part_way_is_done_again_and_told_once(
         "agent.attached",
     ]
     assert name == "agent.event"
+
+
+async def test_a_delivery_told_its_head_reads_only_the_agents_events(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the notification listener listens, an event rings its agent's
+    doorbell with its number, and the pass it wakes takes the agent's head
+    from that rather than reading the heads: the delivery costs the agent's
+    pass alone."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 60.0)
+    buffer = harness.protocol.event_buffer
+    buffer.listening(True)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+    # The stream's first pass reads every head; it then waits for a doorbell.
+    delivered = asyncio.ensure_future(take(stream, 1))
+    await asyncio.sleep(0.2)
+    await _ask(harness, agent_id, room_id, "@you")
+    counting = CountingSessionFactory(buffer._session_factory)
+    monkeypatch.setattr(buffer, "_session_factory", counting)
+
+    [(name, data)] = await delivered
+    await stream.aclose()
+
+    assert name == "agent.event"
+    assert data["event"]["payload"]["body"] == "@you"
+    assert counting.opened == 1
+
+
+async def test_an_event_never_told_is_found_after_the_idle_interval(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A notification can be lost without its connection dropping. The pass
+    after each idle interval reads the heads rather than taking the ones it
+    was told, so the event is sent then."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 0.05)
+    buffer = harness.protocol.event_buffer
+    buffer.listening(True)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+    delivered = asyncio.ensure_future(take(stream, 1, timeout=5))
+    await asyncio.sleep(0.2)
+    # Stored the way `enqueue` stores it, without ringing anything.
+    row = await say(harness.session_factory, room_id, "@you", sender="@ada:test")
+    await buffer._store_own_event(
+        TENANT_ZERO_ID,
+        agent_id,
+        room_id,
+        _message(room_id, "@you", message_id=row.transport_event_id),
+        row.seq,
+        row.transport_event_id,
+    )
+
+    [(name, data)] = await delivered
+    await stream.aclose()
+
+    assert name == "agent.event"
+    assert data["event"]["payload"]["body"] == "@you"
+
+
+class TestToldHeads:
+    """What `EventBuffer.heads` takes from the doorbells instead of reading."""
+
+    @staticmethod
+    async def _agent(harness: Harness) -> str:
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            agent_id = await place_agent(client, controller, name="reviewer")
+        harness.protocol.event_buffer.doorbell(agent_id)
+        return agent_id
+
+    @staticmethod
+    def _counting(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> Any:
+        buffer = harness.protocol.event_buffer
+        counting = CountingSessionFactory(buffer._session_factory)
+        monkeypatch.setattr(buffer, "_session_factory", counting)
+        return counting
+
+    async def test_a_head_told_while_listening_is_not_read(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        buffer.ring(agent_id, 41)
+        counting = self._counting(harness, monkeypatch)
+
+        assert await buffer.heads(TENANT_ZERO_ID, {agent_id}) == {agent_id: 41}
+        assert counting.opened == 0
+
+    async def test_a_lower_number_never_lowers_a_head(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two writers' notifications can arrive in either order."""
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        buffer.ring(agent_id, 41)
+        buffer.ring(agent_id, 40)
+
+        assert await buffer.heads(TENANT_ZERO_ID, {agent_id}) == {agent_id: 41}
+
+    async def test_no_head_is_kept_unless_the_listener_listens(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.ring(agent_id, 41)
+        counting = self._counting(harness, monkeypatch)
+
+        await buffer.heads(TENANT_ZERO_ID, {agent_id})
+        await buffer.heads(TENANT_ZERO_ID, {agent_id})
+
+        assert counting.opened == 2
+
+    async def test_a_ring_without_a_number_forgets_the_head(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        buffer.ring(agent_id, 41)
+        buffer.ring(agent_id)
+        counting = self._counting(harness, monkeypatch)
+
+        await buffer.heads(TENANT_ZERO_ID, {agent_id})
+
+        assert counting.opened == 1
+
+    async def test_a_reconnect_forgets_every_head_told(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Notifications sent while the listener was not listening are lost."""
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        buffer.ring(agent_id, 41)
+        buffer.listening(False)
+        buffer.listening(True)
+        counting = self._counting(harness, monkeypatch)
+
+        await buffer.heads(TENANT_ZERO_ID, {agent_id})
+
+        assert counting.opened == 1
+
+    async def test_a_head_read_is_kept_and_not_read_again(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Any event numbered after the read rings with its number."""
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        counting = self._counting(harness, monkeypatch)
+
+        first = await buffer.heads(TENANT_ZERO_ID, {agent_id})
+        second = await buffer.heads(TENANT_ZERO_ID, {agent_id})
+
+        assert first == second
+        assert counting.opened == 1
+
+    async def test_a_head_read_across_a_reconnect_is_not_kept(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The read may have seen the agent's events before ones whose
+        notifications the reconnect lost."""
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        inner = buffer._session_factory
+
+        def reconnecting() -> Any:
+            buffer.listening(True)
+            return inner()
+
+        monkeypatch.setattr(buffer, "_session_factory", reconnecting)
+        await buffer.heads(TENANT_ZERO_ID, {agent_id})
+        counting = CountingSessionFactory(inner)
+        monkeypatch.setattr(buffer, "_session_factory", counting)
+
+        await buffer.heads(TENANT_ZERO_ID, {agent_id})
+
+        assert counting.opened == 1
+
+    async def test_a_fresh_read_reads_the_heads_told(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent_id = await self._agent(harness)
+        buffer = harness.protocol.event_buffer
+        buffer.listening(True)
+        buffer.ring(agent_id, 41)
+        counting = self._counting(harness, monkeypatch)
+
+        await buffer.heads(TENANT_ZERO_ID, {agent_id}, fresh=True)
+
+        assert counting.opened == 1

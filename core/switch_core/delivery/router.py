@@ -538,7 +538,7 @@ class Routed:
         row: InboundEvent,
         *,
         seq: int,
-        stored: list[str],
+        stored: list[tuple[str, int]],
         deadline_in: float | None,
     ) -> None:
         self._router = router
@@ -571,8 +571,8 @@ class Routed:
 
     def _committed(self) -> None:
         router = self._router
-        for agent_id in self._stored:
-            router.services.event_buffer.ring(agent_id)
+        for agent_id, seq in self._stored:
+            router.services.event_buffer.ring(agent_id, seq)
         reads = self._reads
         if reads is None:
             return
@@ -883,7 +883,7 @@ class MessageRouter:
                 )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
-        stored: list[str] = []
+        stored: list[tuple[str, int]] = []
         if reads is not None:
             if plan.group is not None:
                 deadline_in = await self._step_group(session, reads, plan, row)
@@ -1332,10 +1332,11 @@ class MessageRouter:
         reads: RoomReads,
         deliveries: list[tuple[AgentRecipient, Delivery]],
         row: InboundEvent,
-    ) -> list[str]:
+    ) -> list[tuple[str, int]]:
         """Store every own event decided for `row`, in the order of the
-        agents' ids, and return the agents whose events were stored."""
-        stored: list[str] = []
+        agents' ids, and return the agents whose events were stored, each with
+        its event's number."""
+        stored: list[tuple[str, int]] = []
         for recipient, delivery in sorted(
             deliveries, key=lambda decided: decided[0].agent.id
         ):
@@ -1366,7 +1367,7 @@ class MessageRouter:
                 )
                 continue
             if seq is not None:
-                stored.append(agent_id)
+                stored.append((agent_id, seq))
         return stored
 
     async def _step_group(

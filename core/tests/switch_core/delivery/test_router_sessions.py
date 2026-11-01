@@ -207,3 +207,22 @@ class TestWritingAMessage:
 
         assert (scope.taken, scope.peak) == (1, 1)
         assert len(await own_events(session_factory, agents["a3"][0].id)) == 1
+
+
+class TestTheWritersOwnProcess:
+    async def test_an_addressed_agent_is_told_its_new_head_here(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The process that stores an agent's own event knows its number, so
+        a stream of the agent's in this process takes it as the agent's head
+        rather than reading it (`EventBuffer.ring`)."""
+        process, room, louisa, agents = await _seed(session_factory, names=["member"])
+        agent = agents["member"][0]
+        process.buffer.listening(True)
+        process.buffer.doorbell(agent.id)
+
+        await process.say(room, "@member can you look at this", sender=louisa)
+        await process.idle()
+
+        [event] = await own_events(session_factory, agent.id)
+        assert process.buffer._told_heads == {agent.id: event.seq}
