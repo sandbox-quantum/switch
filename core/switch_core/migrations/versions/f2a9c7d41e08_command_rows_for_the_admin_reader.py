@@ -18,14 +18,14 @@ Expand only: a process from before this revision ignores the field it does not
 read, and reads rooms as it did.
 
 Revision ID: f2a9c7d41e08
-Revises: b7e1d4c9a2f6
+Revises: 9d41b7e2c6a3
 Create Date: 2026-10-31 00:00:00.000000
 """
 
 from alembic import op
 
 revision: str = "f2a9c7d41e08"
-down_revision: str | None = "b7e1d4c9a2f6"
+down_revision: str | None = "9d41b7e2c6a3"
 branch_labels = None
 depends_on = None
 expand_only: bool = True
