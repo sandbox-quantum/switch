@@ -56,7 +56,7 @@ from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 from sqlalchemy import (
     BigInteger,
@@ -332,7 +332,7 @@ def message_key(row: Message) -> str:
     return group[0] if group is not None else row.transport_event_id
 
 
-# `message_key` as a SQL expression over `messages m`, so that `_UNREAD_SQL`
+# `message_key` as a SQL expression over `messages m`, so that `_UNREAD_IN_ROOM_SQL`
 # can count in the database without loading every row.
 _MESSAGE_KEY_SQL = (
     "COALESCE(m.content->'com.switch.attachment_group'->>'id', m.transport_event_id)"
@@ -341,7 +341,7 @@ _MESSAGE_KEY_SQL = (
 # The unread counts of one room at several positions (`:throughs`, each a
 # `messages.seq` in the room), in one statement. A message counts at a
 # position when it is a message, not sent by the agent, not one of its own
-# events, and inside (`:baseline`, position]. Several rows of one message share
+# events, and inside (baseline, position]. Several rows of one message share
 # a key and count once, so each key is reduced to its first qualifying row, and
 # the count at a position is the number of keys whose first row is at or
 # before it. That is the same number as counting the distinct keys of the
@@ -350,17 +350,39 @@ _MESSAGE_KEY_SQL = (
 # of `:throughs`. `firsts` is MATERIALIZED because Postgres otherwise copies it
 # into the per-position count, and under a cached generic plan that reruns the
 # room scan once per position (224 ms instead of 5 ms for 200 positions).
-_UNREAD_SQL = text(
+# The baseline is the larger of the agent's own in the room
+# (`agent_room_reads.caught_up_seq`) and the room's window start (its newest
+# row sent before `:cutoff`); both come back with each position, the agent's
+# own a NULL for a room it has none in, so the caller can tell which reason
+# applies. They, and the agent's own user id, are read in this statement
+# rather than in three of their own.
+_UNREAD_IN_ROOM_SQL = text(
     f"""
-    WITH firsts AS MATERIALIZED (
+    WITH base AS MATERIALIZED (
+      SELECT r.caught_up_seq AS caught_up,
+             coalesce((
+               SELECT m.seq FROM messages m
+               WHERE m.room_id = :room_id AND m.sent_at < :cutoff
+               ORDER BY m.sent_at DESC
+               LIMIT 1
+             ), 0) AS window_start,
+             coalesce((
+               SELECT c.matrix_user_id FROM clients c
+               JOIN agents a ON a.client_id = c.id
+               WHERE a.id = :agent_id
+             ), '') AS me
+      FROM agent_room_reads r
+      WHERE r.agent_id = :agent_id AND r.room_id = :room_id
+    ),
+    firsts AS MATERIALIZED (
       SELECT min(m.seq) AS first_seq
-      FROM messages m
+      FROM messages m, base b
       WHERE m.room_id = :room_id
-        AND m.seq > :baseline
+        AND m.seq > greatest(b.caught_up, b.window_start)
         AND m.seq <= :through
         AND m.seq > 0
         AND m.event_type = 'm.room.message'
-        AND m.sender_id <> :me
+        AND m.sender_id <> b.me
         AND NOT EXISTS (
           SELECT 1 FROM agent_events e
           WHERE e.agent_id = :agent_id
@@ -371,9 +393,10 @@ _UNREAD_SQL = text(
         )
       GROUP BY {_MESSAGE_KEY_SQL}
     )
-    SELECT t.through,
+    SELECT b.caught_up, b.window_start, t.through,
            (SELECT count(*) FROM firsts f WHERE f.first_seq <= t.through)
     FROM unnest(:throughs) AS t(through)
+    LEFT JOIN base b ON true
     """
 ).bindparams(bindparam("throughs", type_=ARRAY(BigInteger)))
 
@@ -795,7 +818,7 @@ class EventBuffer:
         """
         started = time.perf_counter()
         query = (
-            select(AgentEventRow)
+            select(AgentEventRow, _rooms_dropped_after(agent_id, after_seq))
             .where(
                 AgentEventRow.agent_id == agent_id,
                 AgentEventRow.seq > after_seq,
@@ -812,15 +835,22 @@ class EventBuffer:
         if limit is not None:
             query = query.limit(limit)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            rows = (await session.scalars(query)).all()
-        # Checked after the read, not before. `expire` deletes rows and records
-        # what it deleted in one transaction. A deletion that commits before
-        # the read above is recorded by the time of this check, so a reader is
-        # never handed the events after a deleted one as if nothing were
-        # missing. Checked first, a deletion landing between the check and the
-        # read would go unreported. One landing after the read is reported
-        # too, though the rows were read: a spare gap, never a silent one.
-        await self.check_cursor(tenant_id, agent_id, after_seq)
+            found = (await session.execute(query)).all()
+        # `expire` deletes rows and records what it deleted in one
+        # transaction, and the rooms it dropped after `after_seq` are read in
+        # the statement that reads the events, so the two are one snapshot: a
+        # reader is never handed the events after a deleted one as if nothing
+        # were missing. With no event to carry them, they are read after the
+        # read, where a deletion that committed before the read is recorded by
+        # then, and one landing after it is reported too: a spare gap, never a
+        # silent one.
+        if found:
+            dropped = found[0][1]
+            if dropped:
+                await self._expired(tenant_id, agent_id, after_seq, dropped)
+        else:
+            await self.check_cursor(tenant_id, agent_id, after_seq)
+        rows = [row for row, _ in found]
         out = [
             BufferedEvent(
                 seq=row.seq,
@@ -1748,11 +1778,11 @@ class EventBuffer:
         is woken for, up to a few hundred in one batch. Counted one at a time,
         each count read the room's baseline, its retention window and the
         agent's own user id again, then rescanned the same stretch of the
-        room's log. Here the agent's baselines and user id are read once, and
-        each room in the batch costs two statements however many positions are
-        asked of it: its window start, and one scan that counts at all of its
-        positions together (`_UNREAD_SQL`). The counts are the ones `unread`
-        gives for each pair on its own.
+        room's log. Here each room in the batch costs one statement however
+        many positions are asked of it: it reads the agent's baseline in the
+        room, the room's window start and the agent's user id, and counts at
+        all of the room's positions together (`_UNREAD_IN_ROOM_SQL`). The
+        counts are the ones `unread` gives for each pair on its own.
         """
         wanted: dict[str, set[int]] = {}
         for room_id, through_seq in positions:
@@ -1760,56 +1790,32 @@ class EventBuffer:
         if not wanted:
             return {}
         counts: dict[tuple[str, int], Unread] = {}
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            baselines: dict[str, int] = {
-                room_id: seq
-                for room_id, seq in (
+            for room_id, room_throughs in wanted.items():
+                throughs = sorted(room_throughs)
+                started = time.perf_counter()
+                rows = (
                     await session.execute(
-                        select(
-                            AgentRoomRead.room_id, AgentRoomRead.caught_up_seq
-                        ).where(
-                            AgentRoomRead.agent_id == agent_id,
-                            AgentRoomRead.room_id.in_(wanted),
-                        )
+                        _UNREAD_IN_ROOM_SQL,
+                        {
+                            "room_id": room_id,
+                            "agent_id": agent_id,
+                            "cutoff": cutoff,
+                            "through": throughs[-1],
+                            "throughs": throughs,
+                        },
                     )
                 ).all()
-            }
-            for room_id in wanted.keys() - baselines.keys():
-                for through_seq in wanted[room_id]:
-                    counts[(room_id, through_seq)] = Unread(
-                        count=None, reason=NO_BASELINE
-                    )
-            if not baselines:
-                return counts
-            me = await session.scalar(
-                select(Client.transport_user_id)
-                .join(Agent, Agent.client_id == Client.id)
-                .where(Agent.id == agent_id)
-            )
-            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
-            for room_id, baseline in baselines.items():
-                window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
-                reason = None
-                if baseline < window_start:
-                    baseline, reason = window_start, COUNTED_FROM_WINDOW
-                throughs = sorted(wanted[room_id])
-                started = time.perf_counter()
-                at = {
-                    through: count
-                    for through, count in (
-                        await session.execute(
-                            _UNREAD_SQL,
-                            {
-                                "room_id": room_id,
-                                "baseline": baseline,
-                                "through": throughs[-1],
-                                "throughs": throughs,
-                                "me": me or "",
-                                "agent_id": agent_id,
-                            },
+                caught_up = rows[0][0] if rows else None
+                if caught_up is None:
+                    for through_seq in throughs:
+                        counts[(room_id, through_seq)] = Unread(
+                            count=None, reason=NO_BASELINE
                         )
-                    ).all()
-                }
+                    continue
+                reason = COUNTED_FROM_WINDOW if caught_up < rows[0][1] else None
+                at = {through: count for _, _, through, count in rows}
                 # One scan of the room's log, recorded with what it counted at
                 # the furthest position asked, which every other count is part of.
                 self._record_scan(_UNREAD, at[throughs[-1]] or 0, started)
@@ -2238,11 +2244,23 @@ class EventBuffer:
         own events numbered after `after_seq`, naming the rooms they were in
         and the number to resume after."""
         rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
-        if not rooms:
-            return
+        if rooms:
+            await self._expired(tenant_id, agent_id, after_seq, rooms)
+
+    async def _expired(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        after_seq: int,
+        rooms: Iterable[str],
+    ) -> NoReturn:
+        """Raise `CursorExpiredError` for a reader at `after_seq` that missed
+        own events `expire` deleted in `rooms`."""
         oldest = await self.oldest_retained(tenant_id, agent_id)
         resume_after = await self.before_retained(tenant_id, agent_id)
-        raise CursorExpiredError(agent_id, after_seq, oldest, rooms, resume_after)
+        raise CursorExpiredError(
+            agent_id, after_seq, oldest, tuple(sorted(rooms)), resume_after
+        )
 
     async def before_retained(self, tenant_id: str, agent_id: str) -> int:
         """The own-events number just before the agent's oldest one still kept,
@@ -2311,6 +2329,20 @@ def _window_start(room_id: str, cutoff: datetime) -> Any:
         .where(Message.room_id == room_id, Message.sent_at < cutoff)
         .order_by(Message.sent_at.desc())
         .limit(1)
+    )
+
+
+def _rooms_dropped_after(agent_id: str, after_seq: int) -> Any:
+    """The rooms in which `expire` deleted own events of the agent numbered
+    after `after_seq`, as an array (NULL for none), to read alongside the
+    agent's events in one statement."""
+    return (
+        select(func.array_agg(AgentEventDrop.room_id))
+        .where(
+            AgentEventDrop.agent_id == agent_id,
+            AgentEventDrop.dropped_through > after_seq,
+        )
+        .scalar_subquery()
     )
 
 

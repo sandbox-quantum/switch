@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -1089,6 +1090,44 @@ async def test_an_event_never_told_is_found_after_the_idle_interval(
 
     assert name == "agent.event"
     assert data["event"]["payload"]["body"] == "@you"
+
+
+async def test_a_delivery_told_its_head_costs_three_statements(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tenant's binding, the agent's events with the rooms dropped after
+    its cursor, and the unread count with the baseline, window and user id it
+    is counted from: one statement each."""
+    monkeypatch.setattr(controller_routes, "IDLE_INTERVAL_SECONDS", 60.0)
+    buffer = harness.protocol.event_buffer
+    buffer.listening(True)
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        controller = await enroll_console(harness, client, owner)
+        agent_id = await place_agent(client, controller, name="reviewer")
+        room_id = await add_room(harness.session_factory, agent_id)
+        opened = await open_connection(client, controller)
+    stream = await open_stream(harness, controller, opened)
+    await take(stream, 2)
+    delivered = asyncio.ensure_future(take(stream, 1))
+    await asyncio.sleep(0.2)
+    await _ask(harness, agent_id, room_id, "@you")
+    statements: list[str] = []
+    engine = buffer._session_factory.kw["bind"].sync_engine
+
+    def record(_conn: object, _cursor: object, statement: str, *_args: object) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        [(name, data)] = await delivered
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    await stream.aclose()
+
+    assert name == "agent.event"
+    assert data["event"]["missed"] == {"count": 0, "reason": None}
+    assert len(statements) == 3, statements
 
 
 class TestToldHeads:

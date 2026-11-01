@@ -229,6 +229,10 @@ version of their own to them without also giving them a release of their own.
   a delivery costs the agent's own read alone, where it read the heads of all
   the controller's agents first. The heads are still read after each idle
   interval, when an agent is attached, and after the listener reconnects.
+- **Delivering an event to an agent costs three statements, where it cost
+  seven.** The rooms dropped after the agent's cursor are read with its
+  events, and the unread count reads the agent's baseline, the room's window
+  and the agent's user id in the statement that counts.
 
 #### Fixed
 - **The agent HTTP API answers a refused or malformed request with a 4xx, not
