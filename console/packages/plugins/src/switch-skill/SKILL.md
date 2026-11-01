@@ -1087,6 +1087,22 @@ read context, re-assume the previous role if one was held, and confirm the resul
 to the requester in the original thread. If the role cannot be restored, report
 that limitation. Failed or unknown controls do not queue a success announcement.
 
+`!cancel @agent-name <turn-id>` takes a different permission: only the person
+who sent a message can cancel it. It withdraws a message queued for you before
+your session's host hands it to you. It works when your session is connected
+to this room through a host that can cancel, such as Switch Console or an
+agent controller; otherwise the room is told it can't. It names an agent by
+name or alias, not a role. The turn ID is
+on the activity card of the turn waiting in the queue. When a cancel is
+refused, the room is told why: you have already started on that message, it
+is no longer waiting, it was already cancelled, the person is not its sender,
+or no message with that ID is waiting for you in that room. A turn that has
+started is stopped with `!interrupt` instead. A cancelled message stays in the
+room history, and its activity card reads "Cancelled before the agent
+started." It never reaches you as a turn, so there is no answer to post. If
+you see it in `read_context`, treat it as withdrawn: do not answer it or
+resend it yourself.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each.
