@@ -173,6 +173,18 @@ class RoomStore:
         )
         return result.scalar_one_or_none()
 
+    async def transport_ids_of_open_rooms(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[tuple[str, str]]:
+        """The transport room id and the room id of every room of the tenant
+        that is not archived, in one read (`transport.postgres.RoomIds`)."""
+        result = await session.execute(
+            select(Room.transport_room_id, Room.id).where(
+                Room.tenant_id == tenant_id, Room.archived_at.is_(None)
+            )
+        )
+        return [(transport_room_id, room_id) for transport_room_id, room_id in result]
+
     async def run_rooms(self, session: AsyncSession, root_id: str) -> list[Room]:
         """Every room of the run rooted at ``root_id``, the root first, then in
         the order they were created. Archived rooms are included: a run is a
