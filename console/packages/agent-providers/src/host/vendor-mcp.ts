@@ -10,14 +10,13 @@ import {
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import type { HttpMcpServerSpec } from '../adapter';
+import { SupervisedStdioTransport } from '../transport/supervised-stdio';
 import type { Redactions } from './redaction';
 import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
 import { redactServiceToken, type ServiceCredential } from './service-credential';
 import type { HostAsk } from './session-channel';
-
-import { SupervisedStdioTransport } from '../transport/supervised-stdio';
-import { ToolCallQueue } from './tool-queue';
 import { resolveStdioServerExecutable } from './stdio-resolver';
+import { ToolCallQueue } from './tool-queue';
 
 /** How long a vendor has to list its tools before the session goes on without them. */
 export const LIST_TIMEOUT_MS = 20_000;
@@ -137,8 +136,14 @@ export async function startVendorServers(input: {
         } else {
           const urlStr = 'url' in server ? server.url : '';
           if (new URL(urlStr).protocol !== 'https:')
-            throw new Error(`${grant.service}'s MCP server ${server.name} is not served over HTTPS.`);
-          const vendor = new VendorServer(grant.service, server as { name: string; url: string; headers: Record<string, string> }, input);
+            throw new Error(
+              `${grant.service}'s MCP server ${server.name} is not served over HTTPS.`
+            );
+          const vendor = new VendorServer(
+            grant.service,
+            server as { name: string; url: string; headers: Record<string, string> },
+            input
+          );
           listTools = () => vendor.listTools();
           callTool = (name, args) => vendor.callTool(name, args);
         }
@@ -312,7 +317,12 @@ class StdioVendorServer {
 
   constructor(
     private readonly service: string,
-    private readonly server: { name: string; command: string; args: string[]; env: Record<string, string> | null },
+    private readonly server: {
+      name: string;
+      command: string;
+      args: string[];
+      env: Record<string, string> | null;
+    },
     private readonly deps: {
       ask: (ask: HostAsk) => Promise<unknown>;
       redactions: Redactions;
@@ -407,7 +417,9 @@ class StdioVendorServer {
   }
 
   async close(): Promise<void> {
-    await this.queue.terminateAll(new Error('Session closed; transport shutting down')).catch(() => {});
+    await this.queue
+      .terminateAll(new Error('Session closed; transport shutting down'))
+      .catch(() => {});
     if (this.client) {
       await this.client.close().catch(() => {});
       this.client = null;

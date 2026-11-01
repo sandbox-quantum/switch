@@ -1,11 +1,11 @@
 import { JsonRpcError } from '../transport/stdio-json-rpc';
 
-export type TaskState = 
-  | 'QUEUED' 
-  | 'RUNNING' 
-  | 'SETTLED' 
-  | 'CANCEL_REQUESTED' 
-  | 'QUARANTINED' 
+export type TaskState =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'SETTLED'
+  | 'CANCEL_REQUESTED'
+  | 'QUARANTINED'
   | 'TERMINATED';
 
 export interface ActiveToolTask<T> {
@@ -176,7 +176,9 @@ export class ToolCallQueue {
         );
 
         // Reject all waiting queued tasks
-        this.rejectQueuedWork(new JsonRpcError(-32000, 'Process quarantined due to unsettled tool timeout'));
+        this.rejectQueuedWork(
+          new JsonRpcError(-32000, 'Process quarantined due to unsettled tool timeout')
+        );
 
         // Terminate child process tree
         try {
@@ -200,7 +202,10 @@ export class ToolCallQueue {
     this.rejectQueuedWork(reason);
 
     // Handle active operation
-    if (this.activeTask && (this.activeTask.state === 'RUNNING' || this.activeTask.state === 'CANCEL_REQUESTED')) {
+    if (
+      this.activeTask &&
+      (this.activeTask.state === 'RUNNING' || this.activeTask.state === 'CANCEL_REQUESTED')
+    ) {
       const active = this.activeTask;
       active.state = 'TERMINATED';
       this.clearTimers(active);

@@ -40,7 +40,9 @@ export function resolveStdioServerExecutable(
 
   const resolvedVendor = resolve(baseVendorDir);
   if (!resolvedPath.startsWith(resolvedVendor)) {
-    throw new Error(`Executable path '${command}' attempts directory traversal outside vendor root.`);
+    throw new Error(
+      `Executable path '${command}' attempts directory traversal outside vendor root.`
+    );
   }
 
   if (!existsSync(resolvedPath)) {
@@ -51,7 +53,10 @@ export function resolveStdioServerExecutable(
   try {
     const realTarget = realpathSync(resolvedPath);
     const realVendor = realpathSync(resolvedVendor);
-    if (!realTarget.startsWith(realVendor) && realTarget.toLowerCase() !== normalize(process.execPath).toLowerCase()) {
+    if (
+      !realTarget.startsWith(realVendor) &&
+      realTarget.toLowerCase() !== normalize(process.execPath).toLowerCase()
+    ) {
       throw new Error(`Executable path '${command}' resolves via symlink outside vendor root.`);
     }
     const realBaseName = realTarget.split(/[/\\]/).pop()?.toLowerCase();

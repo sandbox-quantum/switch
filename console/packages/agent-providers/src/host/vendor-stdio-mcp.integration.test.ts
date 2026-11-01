@@ -1,8 +1,8 @@
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Redactions } from './redaction';
 import type { ServiceGrant } from './service-access';
 import type { HostAsk } from './session-channel';

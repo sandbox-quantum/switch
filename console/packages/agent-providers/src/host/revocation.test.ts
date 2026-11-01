@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
 import { connectParent, type ParentPort } from './session-channel';
 import { ToolCallQueue } from './tool-queue';
 

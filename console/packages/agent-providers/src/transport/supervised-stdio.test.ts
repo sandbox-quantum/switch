@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
 import { SupervisedStdioTransport } from './supervised-stdio';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -37,7 +37,11 @@ describe('SupervisedStdioTransport', () => {
       jsonrpc: '2.0',
       id: 1,
       method: 'initialize',
-      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } },
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '1.0' },
+      },
     });
 
     // 2. Call switch_echo tool
@@ -55,9 +59,10 @@ describe('SupervisedStdioTransport', () => {
 
     expect(receivedMessages).toHaveLength(2);
     expect((receivedMessages[0] as { id: number }).id).toBe(1);
-    expect((receivedMessages[1] as { id: number; result: { content: [{ text: string }] } }).result.content[0].text).toBe(
-      'Hello Stdio Transport'
-    );
+    expect(
+      (receivedMessages[1] as { id: number; result: { content: [{ text: string }] } }).result
+        .content[0].text
+    ).toBe('Hello Stdio Transport');
   });
 
   it('handles multi-message chunks and CRLF framing cleanly', async () => {

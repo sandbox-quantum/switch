@@ -124,7 +124,9 @@ describe('ToolCallQueue', () => {
 
     // Attach rejection handlers before advancing timers to prevent unhandled rejection events
     const task1Expectation = expect(task1).rejects.toThrow('TOOL_TIMEOUT_AMBIGUOUS_OUTCOME');
-    const task2Expectation = expect(task2).rejects.toThrow('Process quarantined due to unsettled tool timeout');
+    const task2Expectation = expect(task2).rejects.toThrow(
+      'Process quarantined due to unsettled tool timeout'
+    );
 
     // Advance past execution timeout (1000ms) and grace period (500ms)
     await vi.advanceTimersByTimeAsync(1600);

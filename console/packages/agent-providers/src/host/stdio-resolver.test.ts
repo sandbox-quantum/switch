@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
 import { resolveStdioServerExecutable } from './stdio-resolver';
 
 describe('resolveStdioServerExecutable', () => {
@@ -28,8 +28,8 @@ describe('resolveStdioServerExecutable', () => {
   });
 
   it('rejects directory traversal attempts out of vendor dir', () => {
-    expect(() =>
-      resolveStdioServerExecutable('../../etc/passwd', dummyVendorDir)
-    ).toThrow('attempts directory traversal outside vendor root');
+    expect(() => resolveStdioServerExecutable('../../etc/passwd', dummyVendorDir)).toThrow(
+      'attempts directory traversal outside vendor root'
+    );
   });
 });

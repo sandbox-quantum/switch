@@ -1,7 +1,10 @@
-import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
-import { StringDecoder } from 'node:string_decoder';
 import type { ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
+import type {
+  Transport,
+  TransportSendOptions,
+} from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
 import { spawnProvider, stopProvider } from '../provider-process';
 
 export interface StdioTransportOptions {
@@ -114,7 +117,9 @@ export class SupervisedStdioTransport implements Transport {
     });
     stdin.on('error', (err) => this.handleFatalError(new Error(`stdin error: ${err.message}`)));
 
-    this.child.on('error', (err) => this.handleFatalError(new Error(`Child process error: ${err.message}`)));
+    this.child.on('error', (err) =>
+      this.handleFatalError(new Error(`Child process error: ${err.message}`))
+    );
     this.child.on('exit', () => {
       this.isClosed = true;
       this.cleanupResources();
@@ -134,7 +139,9 @@ export class SupervisedStdioTransport implements Transport {
         const remainingBytes = chunk.length - chunkOffset;
         if (this.bufferedBytes + remainingBytes > this.maxFrameBytes) {
           this.handleFatalError(
-            new Error(`FRAME_OVERFLOW_ERROR: Message frame exceeded limit of ${this.maxFrameBytes} bytes`)
+            new Error(
+              `FRAME_OVERFLOW_ERROR: Message frame exceeded limit of ${this.maxFrameBytes} bytes`
+            )
           );
           return;
         }
@@ -147,7 +154,9 @@ export class SupervisedStdioTransport implements Transport {
         const finalSliceBytes = newlineIndex - chunkOffset;
         if (this.bufferedBytes + finalSliceBytes > this.maxFrameBytes) {
           this.handleFatalError(
-            new Error(`FRAME_OVERFLOW_ERROR: Message frame exceeded limit of ${this.maxFrameBytes} bytes`)
+            new Error(
+              `FRAME_OVERFLOW_ERROR: Message frame exceeded limit of ${this.maxFrameBytes} bytes`
+            )
           );
           return;
         }
@@ -165,7 +174,10 @@ export class SupervisedStdioTransport implements Transport {
         chunkOffset = newlineIndex + 1; // Advance past '\n'
 
         // Strip trailing CR (0x0D) if present
-        if (fullMessageBuffer.length > 0 && fullMessageBuffer[fullMessageBuffer.length - 1] === 13) {
+        if (
+          fullMessageBuffer.length > 0 &&
+          fullMessageBuffer[fullMessageBuffer.length - 1] === 13
+        ) {
           fullMessageBuffer = fullMessageBuffer.subarray(0, fullMessageBuffer.length - 1);
         }
 
@@ -177,7 +189,9 @@ export class SupervisedStdioTransport implements Transport {
           const message = JSON.parse(lineText) as JSONRPCMessage;
           this.onmessage?.(message);
         } catch (parseError) {
-          this.onerror?.(new Error(`MALFORMED_JSON_RPC: Could not parse frame: ${String(parseError)}`));
+          this.onerror?.(
+            new Error(`MALFORMED_JSON_RPC: Could not parse frame: ${String(parseError)}`)
+          );
         }
       }
     }
