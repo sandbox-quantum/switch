@@ -8,12 +8,21 @@ It did not, and the two halves each did the conversion: a `!list-agents` reply
 reached Telegram reading `&lt;b&gt;Agents in this room:&lt;/b&gt;`, because the
 second pass escaped the markup the first one had produced. Nothing covered the
 relay path at the time, so nothing caught it.
+
+The other half of the same contract is the adapter side, and it failed too:
+Slack's `admin_message` posted the body as written under a comment promising it
+rendered, so a `!agents-status` reply reached the channel showing its asterisks
+and its link syntax (#676). `test_every_admin_message_override_renders_its_own_body`
+holds every override on disk to that promise.
 """
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
+import switch_core
 from switch_core.bridges.collaboration.collaboration_core import (
     ADMIN_MARKER,
     CollaborationCore,
@@ -24,6 +33,10 @@ from tests.switch_core.bridges.collaboration.outbound_fakes import (
 )
 
 BODY = "**Agents in this room:**\n- **scout** — Claude Code"
+
+_ADAPTERS_ROOT = (
+    Path(switch_core.__file__).resolve().parent / "bridges" / "collaboration"
+)
 
 
 class _RecordingAdapter:
@@ -148,3 +161,68 @@ async def test_an_agent_message_is_still_rendered_by_the_relay() -> None:
     assert adapter.message_calls == [
         "<b>Agents in this room:</b>\n- <b>scout</b> — Claude Code"
     ]
+
+
+def _admin_message_overrides(path: Path) -> list[ast.AsyncFunctionDef]:
+    """Every `admin_message` defined in this adapter module."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "admin_message"
+    ]
+
+
+def _renders_itself(method: ast.AsyncFunctionDef) -> bool:
+    """The override runs the body through `translate_outbound`."""
+    return any(
+        isinstance(call.func, ast.Attribute) and call.func.attr == "translate_outbound"
+        for call in ast.walk(method)
+        if isinstance(call, ast.Call)
+    )
+
+
+def _hands_on_to_the_base(method: ast.AsyncFunctionDef) -> bool:
+    """The override defers to `super().admin_message(…)`, which renders."""
+    return any(
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "admin_message"
+        and isinstance(call.func.value, ast.Call)
+        and isinstance(call.func.value.func, ast.Name)
+        and call.func.value.func.id == "super"
+        for call in ast.walk(method)
+        if isinstance(call, ast.Call)
+    )
+
+
+def test_every_admin_message_override_renders_its_own_body() -> None:
+    """The promise in `admin_message`'s docstring, held to on every override.
+
+    Each override takes Switch Markdown and renders it itself, because callers
+    pass an unrendered body. Slack's override said exactly that in a comment
+    above the call, and posted the body as written anyway: `!agents-status`
+    reached the channel showing its asterisks and its link syntax (#676). A
+    comment cannot enforce itself, so this reads the adapters' source and
+    requires the conversion of every override — a new adapter that forgets it
+    fails here rather than in a customer's channel.
+
+    Rendering in the base implementation, or handing the body to
+    `super().admin_message`, both satisfy the contract.
+    """
+    paths = sorted(_ADAPTERS_ROOT.glob("*/adapter.py"))
+    assert paths, "no adapter modules found — the glob no longer matches"
+
+    overrides = [
+        (path, method) for path in paths for method in _admin_message_overrides(path)
+    ]
+    # Slack, Discord, Mattermost, Teams and Telegram each override it. Pinned so
+    # a rename that stops this test from seeing an override fails loudly instead
+    # of leaving the contract unchecked.
+    assert len(overrides) >= 5
+
+    unrendered = [
+        f"{path.relative_to(_ADAPTERS_ROOT)}:{method.lineno}"
+        for path, method in overrides
+        if not (_renders_itself(method) or _hands_on_to_the_base(method))
+    ]
+    assert unrendered == []

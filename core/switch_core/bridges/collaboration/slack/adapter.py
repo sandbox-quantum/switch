@@ -1829,7 +1829,9 @@ class SlackAdapter(PlatformAdapter):
         # Renders its own body: every caller of `admin_message` passes Switch
         # Markdown, so the conversion belongs here rather than at each of
         # them — one of them forgetting is how a notice reached a chat with
-        # its markup showing.
+        # its markup showing. It was omitted here even so, and a
+        # `!agents-status` reply reached the channel showing its asterisks and
+        # its link syntax (#676).
         # On Slack an admin/system message renders as the Switch app itself —
         # no per-message username/icon override — so it reads as the platform
         # speaking, not an agent. message_type is available for future
@@ -1849,7 +1851,7 @@ class SlackAdapter(PlatformAdapter):
         try:
             result = await self._web_client.chat_postMessage(
                 channel=channel_id,
-                text=self._admin_body(content, drawn),
+                text=self._admin_body(self.translate_outbound(content), drawn),
                 thread_ts=thread_ts,
                 unfurl_links=False,
                 unfurl_media=False,

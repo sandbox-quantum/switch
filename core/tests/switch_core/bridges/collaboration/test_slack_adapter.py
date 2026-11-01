@@ -711,6 +711,58 @@ def test_admin_message_posts_as_app_in_thread() -> None:
     assert "icon_url" not in call
 
 
+def test_admin_message_renders_switch_markdown() -> None:
+    # `admin_message` takes Switch Markdown and renders it itself, as the base
+    # class and every other override do. Slack posted the body as written, so
+    # `!agents-status` reached the channel showing its asterisks and its link
+    # syntax (#676).
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(
+        adapter.admin_message(
+            "C123",
+            "**Agent status in this room:**\n"
+            "- **scout** — live\n"
+            "[Open in Switch Console](https://console.example/session)",
+        )
+    )
+
+    assert fake.calls[0]["text"] == (
+        "*Agent status in this room:*\n"
+        "- *scout* — live\n"
+        "<https://console.example/session|Open in Switch Console>"
+    )
+
+
+def test_admin_message_appends_drawn_text_after_the_conversion() -> None:
+    # `drawn` is the adapter's own spelling, already in mrkdwn, so it joins the
+    # body once the Markdown has been rendered — never through the conversion.
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(adapter.admin_message("C123", "**notice**", drawn="*already mrkdwn*"))
+
+    assert fake.calls[0]["text"] == "*notice*\n*already mrkdwn*"
+
+
+def test_admin_message_cannot_page_the_channel() -> None:
+    # Rendering is what runs the defusal, so an admin body could not page a
+    # channel on Slack's own syntax either — it could not before, because
+    # nothing was rendered at all, and the two arrivals are the same shape.
+    adapter = _adapter()
+    fake = _FakeWebClient()
+    adapter._web_client = fake  # type: ignore[assignment]
+
+    _run(adapter.admin_message("C123", "note <!channel>"))
+
+    text = fake.calls[0]["text"]
+    assert "<!channel>" not in text
+    assert "&lt;!channel&gt;" in text
+
+
 # ── Outbound mention resolution ──────────────────────────────────────────────
 
 
