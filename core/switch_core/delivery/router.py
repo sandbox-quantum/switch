@@ -97,7 +97,11 @@ from switch_core.db.models import (
 from switch_core.db.notify_ddl import MESSAGE_CHANNEL, message_announcement
 from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
+from switch_core.db.stores.room_store import (
+    RoomStore,
+    follow_ups_enabled_in,
+    main_agent_in,
+)
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
@@ -114,6 +118,7 @@ from switch_core.delivery.recipient import (
     command_event,
     file_index,
 )
+from switch_core.events import COMMAND_EVENT_TYPE
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import ROUTING_FAILURES
 from switch_core.observability.metrics import metrics
@@ -141,6 +146,9 @@ if TYPE_CHECKING:
     from switch_core.db.stores.message_store import MessageStore
     from switch_core.transport.port import MessageTransport
 
+
+_ROOM_STORE = RoomStore()
+_SENT_BY_PEOPLE = ("m.room.message", COMMAND_EVENT_TYPE)
 logger = logging.getLogger(__name__)
 
 # How long a multi-file post waits for the rest of its files before it is
@@ -550,8 +558,11 @@ class Routed:
         stored: list[tuple[str, int]],
         deadline_in: float | None,
         announcement: str | None = None,
+        unarchived_for: tuple[str, str, list[str]] | None = None,
     ) -> None:
         self._router = router
+        # (tenant, room, users) whose personal archive the row cleared.
+        self._unarchived_for = unarchived_for
         self._reads = reads
         self._plan = plan
         self._row = row
@@ -584,6 +595,8 @@ class Routed:
 
     def _committed(self) -> None:
         router = self._router
+        if self._unarchived_for is not None and router._on_unarchived is not None:
+            router._on_unarchived(*self._unarchived_for)
         announcer = router.services.announcer
         if self._announcement is not None and announcer is not None:
             announcer.announce(MESSAGE_CHANNEL, self._announcement)
@@ -810,6 +823,7 @@ class MessageRouter:
         self._transports: Callable[[Actor[ClientConfig]], MessageTransport] | None = (
             None
         )
+        self._on_unarchived: Callable[[str, str, list[str]], None] | None = None
         # The identity each agent posts its replies under, one per agent,
         # kept so its transport's room lookups are made once.
         self._posters: dict[str, AgentActor] = {}
@@ -827,6 +841,11 @@ class MessageRouter:
         other client's (`ClientFactory.transport_for`), so they are routed in
         turn. Given by the client factory, which is built with this router."""
         self._transports = transport_for
+
+    def on_unarchived(self, listener: Callable[[str, str, list[str]], None]) -> None:
+        """Call `listener(tenant_id, room_id, user_ids)` after a committed row
+        cleared those people's personal archive of the room."""
+        self._on_unarchived = listener
 
     # ── Writing a row ─────────────────────────────────────────────────────────
 
@@ -935,6 +954,15 @@ class MessageRouter:
                     unwritten,
                     sender_client_id=message.sender_client_id,
                 )
+        # A person who writes in a room they archived has it back in their
+        # lists, from Switch Console or a platform account they claimed.
+        unarchived = (
+            await _ROOM_STORE.unarchive_for_sender(
+                session, room_id, message.sender_client_id
+            )
+            if message.event_type in _SENT_BY_PEOPLE and message.sender_client_id
+            else []
+        )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
         stored: list[tuple[str, int]] = []
@@ -957,6 +985,7 @@ class MessageRouter:
                 if announced_by_writer
                 else None
             ),
+            unarchived_for=(tenant_id, room_id, unarchived) if unarchived else None,
         )
 
     @staticmethod

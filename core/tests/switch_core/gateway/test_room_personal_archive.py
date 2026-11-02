@@ -4,7 +4,8 @@ own lists — against real Postgres.
 Archiving is personal: the caller's room and chat lists flag it, nobody
 else's do, and the room itself (its `archived_at`, its channel) is untouched.
 Only someone who can see the room may archive it, and sending a message in it
-unarchives it for the sender alone.
+(from Switch Console or a platform account they claimed) unarchives it for the
+sender alone.
 """
 
 from __future__ import annotations
@@ -19,7 +20,14 @@ import pytest
 from fastapi import FastAPI, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Client, CollaborationBridge, Room, User
+from switch_core.db.models import (
+    Client,
+    CollaborationBridge,
+    ExternalUser,
+    ExternalUserClaim,
+    Room,
+    User,
+)
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
@@ -29,6 +37,8 @@ from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.rooms import router as rooms_router
+from switch_core.messages.row import message_row, new_event_id
+from tests.routing import router_on
 from tests.switch_core.gateway.conftest import _Harness
 
 
@@ -203,3 +213,101 @@ async def test_a_chat_archived_by_one_member_stays_listed_and_a_send_unarchives_
     assert sent.status_code == 200, sent.text
     assert await _chat_flag(chats, chats.bob, room_id) is False
     assert await _chat_flag(chats, chats.alice, room_id) is True
+
+
+async def _platform_account(
+    chats: _Harness, room_id: str, claimed_by: User | None
+) -> str:
+    """A platform account's client in the room, claimed by `claimed_by` or by nobody."""
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None and room.bridge_id is not None
+        client = Client(
+            transport_user_id=f"@slack-{uuid.uuid4().hex[:8]}:switch.test",
+            display_name="platform person",
+            type="external",
+        )
+        session.add(client)
+        await session.flush()
+        account = ExternalUser(
+            bridge_id=room.bridge_id,
+            external_user_id=f"U{uuid.uuid4().hex[:8]}",
+            external_username="platform person",
+            client_id=client.id,
+        )
+        session.add(account)
+        await session.flush()
+        if claimed_by is not None:
+            session.add(
+                ExternalUserClaim(external_user_id=account.id, user_id=claimed_by.id)
+            )
+        await session.commit()
+        return client.id
+
+
+async def _post_from(
+    chats: _Harness, room_id: str, client_id: str
+) -> list[tuple[str, str, list[str]]]:
+    """Write a platform message from `client_id` as the bridge does; what the
+    router reported unarchived after the commit."""
+    told: list[tuple[str, str, list[str]]] = []
+    router = router_on(chats.factory)
+    router.on_unarchived(lambda *args: told.append(args))
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        routed = await router.store(
+            session,
+            tenant_id=room.tenant_id,
+            room_id=room.id,
+            transport_room_id=room.transport_room_id,
+            message=message_row(
+                room_id=room.id,
+                event_id=new_event_id(),
+                sender_id="@platform:switch.test",
+                sender_client_id=client_id,
+                sender_name="platform person",
+                event_type="m.room.message",
+                content={"msgtype": "m.text", "body": "hello from the platform"},
+                client_txn_id=None,
+            ),
+            attachments=[],
+        )
+        await session.commit()
+    routed.committed()
+    return told
+
+
+async def test_a_message_from_a_claimed_platform_account_unarchives_for_that_person_only(
+    chats: _Harness, rooms: httpx.AsyncClient
+) -> None:
+    room_id = await _bridged_room(chats, owner=chats.bob, visibility="public")
+    for user in (chats.alice, chats.bob):
+        response = await rooms.put(
+            f"/rooms/{room_id}/personal-archive", headers=chats.as_user(user)
+        )
+        assert response.status_code == 204, response.text
+    alices_account = await _platform_account(chats, room_id, claimed_by=chats.alice)
+
+    told = await _post_from(chats, room_id, alices_account)
+
+    assert (await _archived_by(rooms, chats, chats.alice))[room_id] is False
+    assert (await _archived_by(rooms, chats, chats.bob))[room_id] is True
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        assert told == [(room.tenant_id, room_id, [chats.alice.id])]
+
+
+async def test_a_message_from_an_unclaimed_platform_account_unarchives_nothing(
+    chats: _Harness, rooms: httpx.AsyncClient
+) -> None:
+    room_id = await _bridged_room(chats, owner=chats.bob, visibility="public")
+    response = await rooms.put(
+        f"/rooms/{room_id}/personal-archive", headers=chats.as_user(chats.alice)
+    )
+    assert response.status_code == 204, response.text
+    stranger = await _platform_account(chats, room_id, claimed_by=None)
+
+    assert await _post_from(chats, room_id, stranger) == []
+    assert (await _archived_by(rooms, chats, chats.alice))[room_id] is True

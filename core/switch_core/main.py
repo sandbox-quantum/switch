@@ -223,7 +223,7 @@ from switch_core.transport.membership_signals import MembershipSignals
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
-from switch_core.user_changes import LocalUserChanges, SignalUserChanges
+from switch_core.user_changes import ROOM, LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 
 logger = logging.getLogger(__name__)
@@ -1209,6 +1209,13 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     protocol.set_agent_profile_listener(chat_service.agent_changed)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed)
+
+    def unarchived(tenant_id: str, room_id: str, user_ids: list[str]) -> None:
+        for user_id in user_ids:
+            chat_service.viewer_changed(tenant_id, user_id, room_id)
+            user_change_publisher.publish(tenant_id, user_id, ROOM, room_id)
+
+    router.on_unarchived(unarchived)
 
     # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,

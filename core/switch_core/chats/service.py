@@ -1794,7 +1794,6 @@ class ChatService:
             )
             if unarchive:
                 await self._room_store.set_archived(session, room.id, False)
-            await self._room_store.set_archived_by(session, room, user.id, False)
             await session.commit()
         if unarchive:
             self._room_service.room_changed(tenant_id, room.id)

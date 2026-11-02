@@ -4,11 +4,13 @@ from datetime import UTC, datetime
 
 from sqlalchemy import (
     ColumnElement,
+    CompoundSelect,
     delete,
     exists,
     literal,
     or_,
     select,
+    union,
     update,
 )
 from sqlalchemy import func as sa_func
@@ -824,6 +826,31 @@ class RoomStore:
                     RoomArchive.user_id == user_id, RoomArchive.room_id == room.id
                 )
             )
+
+    async def unarchive_for_sender(
+        self, session: AsyncSession, room_id: str, sender_client_id: str
+    ) -> list[str]:
+        """Clear the personal archive of `room_id` for the person behind
+        `sender_client_id`: their Switch Console member client, or a platform
+        account they claimed. Returns the users it was cleared for; none for
+        an agent or an unclaimed platform account."""
+        senders: CompoundSelect[tuple[str | None]] = union(
+            select(Client.user_id).where(
+                Client.id == sender_client_id,
+                Client.type == MEMBER_CLIENT_TYPE,
+                Client.user_id.is_not(None),
+            ),
+            select(ExternalUserClaim.user_id).where(
+                ExternalUserClaim.external_user_id == ExternalUser.id,
+                ExternalUser.client_id == sender_client_id,
+            ),
+        )
+        result = await session.execute(
+            delete(RoomArchive)
+            .where(RoomArchive.room_id == room_id, RoomArchive.user_id.in_(senders))
+            .returning(RoomArchive.user_id)
+        )
+        return list(result.scalars().all())
 
     async def archived_by(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]

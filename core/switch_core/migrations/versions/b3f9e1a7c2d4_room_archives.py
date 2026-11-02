@@ -3,12 +3,15 @@
 Personal: archiving changes nothing for anyone else, nor for the room or its
 bridged channel.
 
+Expand only: it adds a table that a process from before this revision never
+reads or writes.
+
 The row-level-security DDL is a verbatim copy of `switch_core/db/rls_ddl.py`
 as it stood when this migration was written, copied rather than imported for
 the reason `265ed188ad6f` gives.
 
 Revision ID: b3f9e1a7c2d4
-Revises: 9d41b7e2c6a3
+Revises: ad15e53358fe
 Create Date: 2026-11-02 00:00:00.000000
 
 """
@@ -19,9 +22,10 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b3f9e1a7c2d4"
-down_revision: str | Sequence[str] | None = "9d41b7e2c6a3"
+down_revision: str | Sequence[str] | None = "ad15e53358fe"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+expand_only: bool = True
 
 _PREDICATE = '"tenant_id" = (SELECT require_tenant_id())'
 
