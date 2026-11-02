@@ -35,6 +35,11 @@ export interface RoomSummary {
   write_visibility: "public" | "private";
   created_at: string;
   archived: boolean;
+  // What the viewer may do, as the server decides it. `can_write` covers the
+  // room's settings, roles, participants, resources and links; `can_manage`
+  // (owner or workspace admin) covers its access and deleting it.
+  can_write: boolean;
+  can_manage: boolean;
 }
 
 export interface AgentSummary {
@@ -203,11 +208,6 @@ export interface RoomDetail extends RoomSummary {
   // Agent ids configured to receive room_join events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
-  // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, participants, resources and links; `can_manage`
-  // (owner or workspace admin) covers its access and deleting it.
-  can_write: boolean;
-  can_manage: boolean;
 }
 
 export interface CreateRoomInput {
@@ -1535,6 +1535,13 @@ export interface DocumentDetail extends DocumentSummary {
   content: string;
 }
 
+/** A document as seen from a room it is in. */
+export interface RoomDocumentDetail extends DocumentDetail {
+  // Whether the viewer may remove it from the room (delete it if room-scoped,
+  // detach it otherwise): both take write access to the room.
+  can_remove: boolean;
+}
+
 export interface DocumentCreateInput {
   read_visibility: "public" | "private";
   write_visibility: "public" | "private";
@@ -1556,6 +1563,8 @@ export interface DocumentUpdateInput {
 export interface ResourceRoom {
   room_id: string;
   room_name: string;
+  // Whether the viewer may attach to or detach from this room.
+  can_write: boolean;
 }
 
 export interface ResourceDeleteResult {
@@ -1817,8 +1826,8 @@ export async function fetchRoomDocuments(
 export async function fetchRoomDocument(
   roomId: string,
   documentId: string,
-): Promise<DocumentDetail | null> {
-  return fetchJson<DocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
+): Promise<RoomDocumentDetail | null> {
+  return fetchJson<RoomDocumentDetail>(`/rooms/${roomId}/documents/${documentId}`);
 }
 
 export async function attachDocumentToRoom(

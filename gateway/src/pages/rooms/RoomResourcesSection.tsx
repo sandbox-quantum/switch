@@ -9,7 +9,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import SearchablePickerDialog, {
   type PickerOption,
@@ -122,34 +122,12 @@ function RoomReferences({
     error,
     refetch,
   } = useRoomReferences(roomId);
-  const { data: allRefs, loading: allLoading } = useReferences();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [error_, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const attachedIds = useMemo(
     () => new Set((attached ?? []).map((r) => r.id)),
     [attached],
-  );
-
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allRefs ?? [])
-        .filter((r) => !attachedIds.has(r.id))
-        .map((r) => ({
-          id: r.id,
-          primary: (
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Chip
-                label={r.type_display_name ?? `${r.type} (unknown type)`}
-                size="small"
-              />
-              <span>{r.name || r.description}</span>
-            </Stack>
-          ),
-          search: `${r.name} ${r.description} ${r.type} ${r.type_display_name ?? ""}`.toLowerCase(),
-        })),
-    [allRefs, attachedIds],
   );
 
   const handleAttach = async (ids: string[]) => {
@@ -233,29 +211,15 @@ function RoomReferences({
           ))}
         </Stack>
       )}
-      {canWrite && (
-        <>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AddIcon />}
-            onClick={() => setPickerOpen(true)}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Attach reference
-          </Button>
-          <SearchablePickerDialog
-            open={pickerOpen}
-            title="Attach references"
-            searchPlaceholder="Search references…"
-            submitLabel="Attach"
-            options={options}
-            loading={allLoading}
-            onClose={() => setPickerOpen(false)}
+      <AttachControl canWrite={canWrite} label="Attach reference">
+        {(close) => (
+          <ReferencePicker
+            attachedIds={attachedIds}
+            onClose={close}
             onSubmit={handleAttach}
           />
-        </>
-      )}
+        )}
+      </AttachControl>
     </Stack>
   );
 }
@@ -277,26 +241,12 @@ function RoomDocuments({
     error,
     refetch,
   } = useRoomDocuments(roomId);
-  const { data: allDocs, loading: allLoading } = useDocuments();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [error_, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const attachedIds = useMemo(
     () => new Set((attached ?? []).map((d) => d.id)),
     [attached],
-  );
-
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allDocs ?? [])
-        .filter((d) => !attachedIds.has(d.id))
-        .map((d) => ({
-          id: d.id,
-          primary: d.name || d.description,
-          search: `${d.name} ${d.description}`.toLowerCase(),
-        })),
-    [allDocs, attachedIds],
   );
 
   const handleAttach = async (ids: string[]) => {
@@ -423,7 +373,12 @@ function RoomDocuments({
                       size="small"
                       onClick={(e) => {
                         e.stopPropagation();
-                        handleDetach(doc.id);
+                        if (
+                          window.confirm(
+                            `Delete room document “${doc.name || doc.description}”? This cannot be undone.`,
+                          )
+                        )
+                          handleDetach(doc.id);
                       }}
                       disabled={busy}
                       aria-label={`Delete ${doc.name || doc.description}`}
@@ -437,29 +392,15 @@ function RoomDocuments({
           )}
         </Stack>
       )}
-      {canWrite && (
-        <>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AddIcon />}
-            onClick={() => setPickerOpen(true)}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Attach document
-          </Button>
-          <SearchablePickerDialog
-            open={pickerOpen}
-            title="Attach documents"
-            searchPlaceholder="Search documents…"
-            submitLabel="Attach"
-            options={options}
-            loading={allLoading}
-            onClose={() => setPickerOpen(false)}
+      <AttachControl canWrite={canWrite} label="Attach document">
+        {(close) => (
+          <DocumentPicker
+            attachedIds={attachedIds}
+            onClose={close}
             onSubmit={handleAttach}
           />
-        </>
-      )}
+        )}
+      </AttachControl>
     </Stack>
   );
 }
@@ -476,25 +417,10 @@ function RoomPackages({
   refetch: () => void;
 }) {
   const navigate = useNavigate();
-  const { data: allPackages, loading: allLoading } = usePackages();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const attachedIds = useMemo(() => new Set(packages.map((p) => p.id)), [packages]);
-
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allPackages ?? [])
-        .filter((p) => !attachedIds.has(p.id))
-        .map((p) => ({
-          id: p.id,
-          primary: p.name || p.description,
-          secondary: p.description || undefined,
-          search: `${p.name} ${p.description}`.toLowerCase(),
-        })),
-    [allPackages, attachedIds],
-  );
 
   const handleAttach = async (ids: string[]) => {
     setBusy(true);
@@ -570,29 +496,141 @@ function RoomPackages({
           ))}
         </Stack>
       )}
-      {canWrite && (
-        <>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AddIcon />}
-            onClick={() => setPickerOpen(true)}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Attach package
-          </Button>
-          <SearchablePickerDialog
-            open={pickerOpen}
-            title="Attach packages"
-            searchPlaceholder="Search packages…"
-            submitLabel="Attach"
-            options={options}
-            loading={allLoading}
-            onClose={() => setPickerOpen(false)}
+      <AttachControl canWrite={canWrite} label="Attach package">
+        {(close) => (
+          <PackagePicker
+            attachedIds={attachedIds}
+            onClose={close}
             onSubmit={handleAttach}
           />
-        </>
-      )}
+        )}
+      </AttachControl>
     </Stack>
+  );
+}
+
+// The Attach button and its picker, for those who may write to the room. The
+// picker is mounted only while open, so the list it offers loads only when
+// someone attaches.
+function AttachControl({
+  canWrite,
+  label,
+  children,
+}: {
+  canWrite: boolean;
+  label: string;
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!canWrite) return null;
+  return (
+    <>
+      <Button
+        size="small"
+        variant="outlined"
+        startIcon={<AddIcon />}
+        onClick={() => setOpen(true)}
+        sx={{ alignSelf: "flex-start" }}
+      >
+        {label}
+      </Button>
+      {open && children(() => setOpen(false))}
+    </>
+  );
+}
+
+interface PickerProps {
+  attachedIds: Set<string>;
+  onClose: () => void;
+  onSubmit: (ids: string[]) => Promise<void>;
+}
+
+function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
+  const { data, loading } = useReferences();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (data ?? [])
+        .filter((r) => !attachedIds.has(r.id))
+        .map((r) => ({
+          id: r.id,
+          primary: (
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Chip
+                label={r.type_display_name ?? `${r.type} (unknown type)`}
+                size="small"
+              />
+              <span>{r.name || r.description}</span>
+            </Stack>
+          ),
+          search: `${r.name} ${r.description} ${r.type} ${r.type_display_name ?? ""}`.toLowerCase(),
+        })),
+    [data, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach references"
+      searchPlaceholder="Search references…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
+  const { data, loading } = useDocuments();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (data ?? [])
+        .filter((d) => !attachedIds.has(d.id))
+        .map((d) => ({
+          id: d.id,
+          primary: d.name || d.description,
+          search: `${d.name} ${d.description}`.toLowerCase(),
+        })),
+    [data, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach documents"
+      searchPlaceholder="Search documents…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function PackagePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
+  const { data, loading } = usePackages();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (data ?? [])
+        .filter((p) => !attachedIds.has(p.id))
+        .map((p) => ({
+          id: p.id,
+          primary: p.name || p.description,
+          secondary: p.description || undefined,
+          search: `${p.name} ${p.description}`.toLowerCase(),
+        })),
+    [data, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach packages"
+      searchPlaceholder="Search packages…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
   );
 }

@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal, can
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Document, User
 from switch_core.db.stores.agent_store import AgentStore
@@ -29,6 +30,7 @@ from switch_core.gateway.schemas import (
     DocumentSummary,
     DocumentUpdateRequest,
     ResourceRoom,
+    RoomDocumentDetail,
 )
 
 router = APIRouter()
@@ -295,8 +297,16 @@ async def list_rooms_for_document(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    rows = await resource_service.list_rooms_for_document(session, document_id)
-    return [ResourceRoom(room_id=rid, room_name=name) for rid, name in rows]
+    rooms = await resource_service.list_rooms_for_document(session, document_id)
+    principal = Principal(user.id, is_admin)
+    return [
+        ResourceRoom(
+            room_id=room.id,
+            room_name=room.name,
+            can_write=can(principal, "write", room),
+        )
+        for room in rooms
+    ]
 
 
 @router.get("/rooms/{room_id}/documents")
@@ -385,15 +395,23 @@ async def get_room_document(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> DocumentDetail:
+) -> RoomDocumentDetail:
     """Fetch a document by id within the context of a room. Accepts both
     room-scoped documents (read-only) and globally-attached documents. Room
     read access is required and, once granted, implies access to its docs."""
-    await require_room_access(session, room_store, room_id, user, "read", is_admin)
+    room = await require_room_access(
+        session, room_store, room_id, user, "read", is_admin
+    )
     docs = await resource_service.list_room_documents(session, room_id)
     doc = next((d for d in docs if d.id == document_id), None)
     if doc is None:
         raise HTTPException(
             status_code=404, detail=f"Document {document_id} not in room {room_id}"
         )
-    return await _enrich_detail(session, doc, resource_service, user_store, agent_store)
+    detail = await _enrich_detail(
+        session, doc, resource_service, user_store, agent_store
+    )
+    return RoomDocumentDetail(
+        **detail.model_dump(),
+        can_remove=can(Principal(user.id, is_admin), "write", room),
+    )

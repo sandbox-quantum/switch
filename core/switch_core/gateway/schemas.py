@@ -90,6 +90,13 @@ class RoomSummary(BaseModel):
     viewer_is_member: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
+    # What the caller may do with it, so a client offers a change only where
+    # the server would allow it. `can_write` covers its settings, roles,
+    # participants, attached resources and links; `can_manage` (owner or
+    # tenant admin) covers its access, deleting it and taking the platform
+    # channel's name.
+    can_write: bool
+    can_manage: bool
 
 
 class RoomDetail(RoomSummary):
@@ -117,13 +124,6 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
-    # What the caller may do with it, so a client offers a change only where
-    # the server would allow it. `can_write` covers its settings, roles,
-    # participants, attached resources and links; `can_manage` (owner or
-    # tenant admin) covers its access, deleting it and taking the platform
-    # channel's name.
-    can_write: bool
-    can_manage: bool
 
 
 class RoomCreateRequest(BaseModel):
@@ -1401,6 +1401,8 @@ class ReferenceTypeDeleteResponse(BaseModel):
 class ResourceRoom(BaseModel):
     room_id: str
     room_name: str
+    # Whether the caller may attach to or detach from this room.
+    can_write: bool
 
 
 # ── Linked rooms ───────────────────────────────────────────────────────────
@@ -1505,6 +1507,15 @@ class DocumentDetail(BaseModel):
     created_by_agent_id: str | None = None
     created_by_agent_name: str | None = None
     created_at: str
+
+
+class RoomDocumentDetail(DocumentDetail):
+    """A document as seen from a room it is in."""
+
+    # Whether the caller may remove it from the room: delete it if it is
+    # room-scoped, detach it if it is attached. Both take write access to the
+    # room.
+    can_remove: bool
 
 
 class DocumentSummary(BaseModel):

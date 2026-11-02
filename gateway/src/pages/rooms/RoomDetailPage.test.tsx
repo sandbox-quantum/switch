@@ -169,6 +169,16 @@ describe("RoomDetailPage permissions", () => {
     });
   });
 
+  it("loads the platform's users only when someone adds one", async () => {
+    viewAs({ can_write: true, can_manage: false });
+    expect(hooks.useBridgeUsers).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add user" }));
+
+    await screen.findByRole("dialog", { name: "Add users" });
+    expect(hooks.useBridgeUsers).toHaveBeenCalledWith("b1");
+  });
+
   it("offers a reader nothing to change", () => {
     viewAs({ can_write: false, can_manage: false });
 

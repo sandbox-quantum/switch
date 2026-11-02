@@ -709,7 +709,7 @@ class ResourceService:
 
     async def list_rooms_for_reference(
         self, session: AsyncSession, reference_id: str
-    ) -> list[tuple[str, str]]:
+    ) -> list[Room]:
         return await self._references.list_rooms_for_reference(session, reference_id)
 
     # ── Room links (gateway) ──────────────────────────────────────────────
@@ -972,7 +972,7 @@ class ResourceService:
 
     async def list_rooms_for_document(
         self, session: AsyncSession, document_id: str
-    ) -> list[tuple[str, str]]:
+    ) -> list[Room]:
         return await self._documents.list_rooms_for_document(session, document_id)
 
     # ── Room-scoped documents (agent-created via MCP) ─────────────────────
@@ -1349,7 +1349,7 @@ class ResourceService:
 
     async def list_rooms_for_package(
         self, session: AsyncSession, package_id: str
-    ) -> list[tuple[str, str]]:
+    ) -> list[Room]:
         return await self._packages.list_rooms_for_package(session, package_id)
 
     # ── Package membership ────────────────────────────────────────────────

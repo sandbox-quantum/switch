@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as hooks from "../../data/hooks";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
@@ -40,6 +40,16 @@ describe("RoomLinkedRoomsSection", () => {
 
     screen.getByRole("button", { name: "Add linked room" });
     screen.getByRole("button", { name: "Remove link to ops" });
+  });
+
+  it("loads the rooms to link to only when the dialog opens", async () => {
+    render(<RoomLinkedRoomsSection roomId="r1" canWrite />);
+
+    expect(hooks.useRooms).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Add linked room" }));
+
+    await screen.findByRole("dialog");
+    expect(hooks.useRooms).toHaveBeenCalled();
   });
 
   it("lists the links, with nothing to change, to a reader", () => {

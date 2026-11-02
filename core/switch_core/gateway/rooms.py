@@ -10,14 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_templates import plan_template
-from switch_core.authz import (
-    Action,
-    Principal,
-    can,
-    can_manage,
-    require,
-    require_manage,
-)
+from switch_core.authz import Action, Principal, can, require
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
@@ -103,25 +96,22 @@ async def _require_room(
     session: AsyncSession,
     room_store: RoomStore,
     room_id: str,
-    user: User,
+    principal: Principal,
     action: Action,
-    is_admin: bool,
 ) -> Room:
-    """Load a room (404 if missing) and authorize `action` for `user`,
+    """Load a room (404 if missing) and authorize `action` for `principal`,
     raising HTTP 403 if denied."""
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     try:
-        require(
-            Principal(user.id, is_admin),
-            action,
-            room,
-        )
+        require(principal, action, room)
     except PermissionError as e:
         # Whoever takes part in a room may read it, as its listing shows them.
-        if action != "read" or not await room_store.involved_room_ids(
-            session, user.id, [room.id]
+        if (
+            action != "read"
+            or principal.id is None
+            or not await room_store.involved_room_ids(session, principal.id, [room.id])
         ):
             raise HTTPException(status_code=403, detail=str(e)) from e
     return room
@@ -131,9 +121,8 @@ async def _require_room_released(
     session: AsyncSession,
     room_store: RoomStore,
     room_id: str,
-    user: User,
+    principal: Principal,
     action: Action,
-    is_admin: bool,
 ) -> Room:
     """`_require_room`, then end the read's transaction.
 
@@ -144,7 +133,7 @@ async def _require_room_released(
     request that is waiting for one more. The room stays readable after the
     commit (`expire_on_commit=False`).
     """
-    room = await _require_room(session, room_store, room_id, user, action, is_admin)
+    room = await _require_room(session, room_store, room_id, principal, action)
     await session.commit()
     return room
 
@@ -265,7 +254,7 @@ async def _build_room_detail(
             else None
         ),
         can_write=can(principal, "write", room),
-        can_manage=can_manage(principal, room.owner_id),
+        can_manage=can(principal, "delete", room),
     )
 
 
@@ -371,6 +360,7 @@ async def list_rooms(
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
+    principal = Principal(user.id, is_admin)
     summaries = []
     for room in rooms:
         connected_names = sorted(
@@ -407,6 +397,8 @@ async def list_rooms(
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
                 is_console_chat="chat_operation_id" in (room.metadata_ or {}),
+                can_write=can(principal, "write", room),
+                can_manage=can(principal, "delete", room),
             )
         )
 
@@ -884,7 +876,8 @@ async def export_room_yaml(
 ) -> Response:
     """Export a room to YAML in the same surface ``/rooms/from-yaml`` accepts.
     Each section can be dropped via its boolean toggle (default included)."""
-    await _require_room_released(session, room_store, room_id, user, "read", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "read")
     yaml_text = await rooms_yaml.export(
         room_id,
         agents=agents,
@@ -908,7 +901,8 @@ async def get_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    room = await _require_room(session, room_store, room_id, user, "read", is_admin)
+    principal = Principal(user.id, is_admin)
+    room = await _require_room(session, room_store, room_id, principal, "read")
     return await _build_room_detail(
         session,
         room,
@@ -916,7 +910,7 @@ async def get_room(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -933,18 +927,20 @@ async def patch_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
+    principal = Principal(user.id, is_admin)
     target = await _require_room_released(
-        session, room_store, room_id, user, "write", is_admin
+        session, room_store, room_id, principal, "write"
     )
     # Changing a room's access permission (read/write visibility) is reserved
     # for the room's owner and tenant admins — plain write access (which a
     # publicly-writable room grants to everyone) is not enough. Otherwise any
-    # user could re-permission any room and lock out its owner.
-    if req.read_visibility is not None or req.write_visibility is not None:
-        try:
-            require_manage(Principal(user.id, is_admin), target.owner_id)
-        except PermissionError as e:
-            raise HTTPException(status_code=403, detail=str(e)) from e
+    # user could re-permission any room and lock out its owner. It is the rule
+    # for deleting the room, asked the same way so `can_manage` cannot drift.
+    changes_access = req.read_visibility is not None or req.write_visibility is not None
+    if changes_access and not can(principal, "delete", target):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to change this room's access"
+        )
     try:
         await room_service.update_room(
             room_id,
@@ -971,7 +967,7 @@ async def patch_room(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -984,7 +980,8 @@ async def list_room_roles(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "read", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room(session, room_store, room_id, principal, "read")
     return await _list_room_role_details(session, room_id, protocol)
 
 
@@ -998,7 +995,8 @@ async def create_room_role(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
@@ -1027,7 +1025,8 @@ async def patch_room_role(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.edit_role(
             session, room_id, name, req.instructions, req.exclusive
@@ -1048,7 +1047,8 @@ async def delete_room_role(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room(session, room_store, room_id, principal, "write")
     try:
         await protocol.room_role_store.delete_role(session, room_id, name)
         emit_safely(current_telemetry(), "room_role_deleted", {})
@@ -1071,7 +1071,8 @@ async def put_room_group(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
     """Assign the room to a group, or make it standalone (`group_id=null`)."""
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room(session, room_store, room_id, principal, "write")
     try:
         await room_store.set_group(session, room_id, req.group_id)
     except ValueError as e:
@@ -1090,7 +1091,7 @@ async def put_room_group(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1107,7 +1108,8 @@ async def put_protection(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.update_protection_config(room_id, req.protection_config)
     except ValueError:
@@ -1123,7 +1125,7 @@ async def put_protection(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1140,7 +1142,8 @@ async def put_observe(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.update_observe_config(room_id, req.observe_config)
     except ValueError:
@@ -1156,7 +1159,7 @@ async def put_observe(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1173,7 +1176,8 @@ async def post_room_agents(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -1194,7 +1198,7 @@ async def post_room_agents(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1212,7 +1216,8 @@ async def patch_room_agent(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.set_join_event_listeners(
             room_id, {agent_id: req.receives_join_events}
@@ -1229,7 +1234,7 @@ async def patch_room_agent(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1246,7 +1251,8 @@ async def delete_room_agent(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.remove_agents_from_room(room_id, [agent_id])
     except ValueError as e:
@@ -1262,7 +1268,7 @@ async def delete_room_agent(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1279,7 +1285,8 @@ async def post_room_users(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:
@@ -1295,7 +1302,7 @@ async def post_room_users(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1311,7 +1318,8 @@ async def _set_archived(
     user: User,
     is_admin: bool,
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "write")
     try:
         await room_service.set_room_archived(room_id, archived)
     except ValueError:
@@ -1326,7 +1334,7 @@ async def _set_archived(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1345,7 +1353,8 @@ async def sync_room_name(
     """Name the room after its linked channel (`linked_channel_name`), as the
     bridge names its own rooms, so it follows the channel's renames from now
     on. The room's owner or an admin only."""
-    room = await _require_room(session, room_store, room_id, user, "delete", is_admin)
+    principal = Principal(user.id, is_admin)
+    room = await _require_room(session, room_store, room_id, principal, "delete")
     channel_name = (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
     bridge = await bridge_store.get(session, room.bridge_id) if room.bridge_id else None
     if not room.external_channel_id or bridge is None or not channel_name:
@@ -1366,7 +1375,7 @@ async def sync_room_name(
         bridge_store,
         external_user_store,
         protocol,
-        Principal(user.id, is_admin),
+        principal,
     )
 
 
@@ -1438,7 +1447,8 @@ async def delete_room(
     # they keep using.
     retire_channel: Annotated[bool, Query()] = False,
 ) -> RoomDeleteResponse:
-    await _require_room_released(session, room_store, room_id, user, "delete", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "delete")
     try:
         channel = await room_service.delete_room(room_id, retire_channel=retire_channel)
     except ValueError:

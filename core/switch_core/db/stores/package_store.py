@@ -173,13 +173,13 @@ class PackageStore:
 
     async def list_rooms_for_package(
         self, session: AsyncSession, package_id: str
-    ) -> list[tuple[str, str]]:
+    ) -> list[Room]:
         result = await session.execute(
-            select(Room.id, Room.name)
+            select(Room)
             .join(room_packages, Room.id == room_packages.c.room_id)
             .where(room_packages.c.package_id == package_id)
         )
-        return [(rid, name) for rid, name in result.all()]
+        return list(result.scalars().all())
 
     # ── Membership ────────────────────────────────────────────────────────
 

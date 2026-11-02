@@ -205,10 +205,10 @@ class ReferenceStore:
 
     async def list_rooms_for_reference(
         self, session: AsyncSession, reference_id: str
-    ) -> list[tuple[str, str]]:
+    ) -> list[Room]:
         result = await session.execute(
-            select(Room.id, Room.name)
+            select(Room)
             .join(room_references, Room.id == room_references.c.room_id)
             .where(room_references.c.reference_id == reference_id)
         )
-        return [(rid, name) for rid, name in result.all()]
+        return list(result.scalars().all())

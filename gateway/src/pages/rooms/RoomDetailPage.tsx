@@ -717,9 +717,6 @@ function ParticipantsSection({
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
-  const { data: bridgeUsers, loading: bridgeUsersLoading } = useBridgeUsers(
-    room.bridge_id ?? undefined,
-  );
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -804,19 +801,6 @@ function ParticipantsSection({
       }
     },
     [room.id, onChanged],
-  );
-
-  const addableUserOptions = useMemo<PickerOption[]>(
-    () =>
-      (bridgeUsers ?? [])
-        .filter((u) => !room.connected_user_names.includes(u.external_username))
-        .map((u) => ({
-          id: u.external_username,
-          primary: u.external_username,
-          secondary: u.external_user_id,
-          search: `${u.external_username} ${u.external_user_id}`.toLowerCase(),
-        })),
-    [bridgeUsers, room.connected_user_names],
   );
 
   const handleAddUsers = useCallback(
@@ -933,21 +917,59 @@ function ParticipantsSection({
               >
                 Add user
               </Button>
-              <SearchablePickerDialog
-                open={addUserOpen}
-                title="Add users"
-                searchPlaceholder="Search users…"
-                submitLabel="Add"
-                options={addableUserOptions}
-                loading={bridgeUsersLoading}
-                onClose={() => setAddUserOpen(false)}
-                onSubmit={handleAddUsers}
-              />
+              {addUserOpen && (
+                <BridgeUserPicker
+                  bridgeId={room.bridge_id}
+                  connectedNames={room.connected_user_names}
+                  onClose={() => setAddUserOpen(false)}
+                  onSubmit={handleAddUsers}
+                />
+              )}
             </>
           )}
         </Box>
       )}
     </Stack>
+  );
+}
+
+// Mounted only while open, so the platform's user directory loads only when
+// someone adds a user.
+function BridgeUserPicker({
+  bridgeId,
+  connectedNames,
+  onClose,
+  onSubmit,
+}: {
+  bridgeId: string;
+  connectedNames: string[];
+  onClose: () => void;
+  onSubmit: (names: string[]) => Promise<void>;
+}) {
+  const { data: bridgeUsers, loading } = useBridgeUsers(bridgeId);
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (bridgeUsers ?? [])
+        .filter((u) => !connectedNames.includes(u.external_username))
+        .map((u) => ({
+          id: u.external_username,
+          primary: u.external_username,
+          secondary: u.external_user_id,
+          search: `${u.external_username} ${u.external_user_id}`.toLowerCase(),
+        })),
+    [bridgeUsers, connectedNames],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Add users"
+      searchPlaceholder="Search users…"
+      submitLabel="Add"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
   );
 }
 

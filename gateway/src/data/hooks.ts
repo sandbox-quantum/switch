@@ -13,7 +13,6 @@ import {
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
-  type DocumentDetail,
   type DocumentSummary,
   type InboundLinkedRoomDetail,
   type InstallablePlatforms,
@@ -28,6 +27,7 @@ import {
   type ReferenceTypeInfo,
   type ResourceRoom,
   type RoomDetail,
+  type RoomDocumentDetail,
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
@@ -296,7 +296,7 @@ export function useRoomDocuments(
 export function useRoomDocument(
   roomId: string | undefined,
   documentId: string | undefined,
-): UseQueryResult<DocumentDetail> {
+): UseQueryResult<RoomDocumentDetail> {
   const fetcher = useCallback(
     () =>
       roomId && documentId

@@ -172,10 +172,10 @@ class DocumentStore:
 
     async def list_rooms_for_document(
         self, session: AsyncSession, document_id: str
-    ) -> list[tuple[str, str]]:
+    ) -> list[Room]:
         result = await session.execute(
-            select(Room.id, Room.name)
+            select(Room)
             .join(room_documents, Room.id == room_documents.c.room_id)
             .where(room_documents.c.document_id == document_id)
         )
-        return [(rid, name) for rid, name in result.all()]
+        return list(result.scalars().all())

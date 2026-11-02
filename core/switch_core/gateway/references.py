@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal, can
 from switch_core.bridges.resource.registry import ReferenceValue, is_builtin_type
 from switch_core.bridges.resource.service import (
     ReferenceTypeInUseError,
@@ -428,8 +429,16 @@ async def list_rooms_for_reference(
         raise HTTPException(status_code=404, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
-    rows = await resource_service.list_rooms_for_reference(session, reference_id)
-    return [ResourceRoom(room_id=rid, room_name=name) for rid, name in rows]
+    rooms = await resource_service.list_rooms_for_reference(session, reference_id)
+    principal = Principal(user.id, is_admin)
+    return [
+        ResourceRoom(
+            room_id=room.id,
+            room_name=room.name,
+            can_write=can(principal, "write", room),
+        )
+        for room in rooms
+    ]
 
 
 @router.get("/rooms/{room_id}/references")

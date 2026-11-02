@@ -121,30 +121,30 @@ export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
           >
             Add linked room
           </Button>
-          <AddLinkedRoomDialog
-            open={dialogOpen}
-            sourceRoomId={roomId}
-            existingTargetIds={existingTargetIds}
-            onClose={() => setDialogOpen(false)}
-            onCreated={() => {
-              setDialogOpen(false);
-              refetch();
-            }}
-          />
+          {dialogOpen && (
+            <AddLinkedRoomDialog
+              sourceRoomId={roomId}
+              existingTargetIds={existingTargetIds}
+              onClose={() => setDialogOpen(false)}
+              onCreated={() => {
+                setDialogOpen(false);
+                refetch();
+              }}
+            />
+          )}
         </>
       )}
     </Stack>
   );
 }
 
+// Mounted only while open, so the room list loads only when someone links.
 function AddLinkedRoomDialog({
-  open,
   sourceRoomId,
   existingTargetIds,
   onClose,
   onCreated,
 }: {
-  open: boolean;
   sourceRoomId: string;
   existingTargetIds: Set<string>;
   onClose: () => void;
@@ -175,9 +175,6 @@ function AddLinkedRoomDialog({
     setError(null);
     try {
       await attachLinkedRoom(sourceRoomId, selectedId, label.trim());
-      setSearch("");
-      setSelectedId(null);
-      setLabel("");
       onCreated();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add link");
@@ -186,16 +183,8 @@ function AddLinkedRoomDialog({
     }
   };
 
-  const handleClose = () => {
-    setSearch("");
-    setSelectedId(null);
-    setLabel("");
-    setError(null);
-    onClose();
-  };
-
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="sm">
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
       <DialogTitle>Add linked room</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
@@ -248,7 +237,7 @@ function AddLinkedRoomDialog({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={handleClose} disabled={busy}>
+        <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
         <Button
