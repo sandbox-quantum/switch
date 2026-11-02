@@ -39,11 +39,14 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
 export default function OrganizationMembersSection({
   selfId,
   asOperator,
+  onChanged,
 }: {
   selfId: string;
   // The platform operator, who is no admin here, may manage the members only
   // while the organization has no admin left, to make one.
   asOperator: boolean;
+  // Called after each change that went through.
+  onChanged: () => void;
 }) {
   const load = useCallback(() => fetchOrganizationMembers(), []);
   const { data: members, error, errorStatus, loading, refetch } = useLoad(load);
@@ -60,6 +63,7 @@ export default function OrganizationMembersSection({
       try {
         const { warning } = await action();
         setActionWarning(warning);
+        onChanged();
         await refetch();
         // Your own role decides what this page offers you.
         if (userId === selfId) await refresh();
@@ -69,7 +73,7 @@ export default function OrganizationMembersSection({
         setBusy(null);
       }
     },
-    [refetch, refresh, selfId],
+    [onChanged, refetch, refresh, selfId],
   );
 
   const columns = useMemo<GridColDef<MemberRow>[]>(

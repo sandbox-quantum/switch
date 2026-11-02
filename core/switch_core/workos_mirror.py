@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.audit import (
     OrganizationAuditAction,
+    OrganizationIssueKind,
     ServerAuditAction,
     record_organization_audit_event,
     record_server_audit_event,
@@ -66,7 +67,6 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.tenant_lookup import directory_organizations
-from switch_core.organization_issues import DIRECTORY_ORGANIZATION_DELETED
 from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
@@ -242,7 +242,9 @@ class WorkOSMirror:
         if organization_id is None or workos_organization_id is None:
             return
         if kind == "organization.deleted":
-            await self._organization_deleted(fence, organization_id, data)
+            await self._organization_deleted(
+                fence, organization_id, workos_organization_id
+            )
             return
         subject = data.get("user_id")
         if not isinstance(subject, str):
@@ -346,7 +348,7 @@ class WorkOSMirror:
         return complete
 
     async def _organization_deleted(
-        self, fence: Fence, organization_id: str, data: dict[str, Any]
+        self, fence: Fence, organization_id: str, workos_organization_id: str
     ) -> None:
         """Deleting a linked organization in WorkOS removes nobody here: that
         is too much to take away on one event. It is reported for an operator
@@ -354,7 +356,7 @@ class WorkOSMirror:
         logger.error(
             "WorkOS organization %s, which organization %s follows, was deleted; "
             "its members are left as they are",
-            data.get("id"),
+            workos_organization_id,
             organization_id,
         )
         await self._ensure_held(fence)
@@ -370,7 +372,8 @@ class WorkOSMirror:
                 target_id=organization_id,
                 details={
                     "source": FROM_EVENT,
-                    "kind": DIRECTORY_ORGANIZATION_DELETED,
+                    "kind": OrganizationIssueKind.DIRECTORY_ORGANIZATION_DELETED,
+                    "workos_organization_id": workos_organization_id,
                 },
             )
             await session.commit()

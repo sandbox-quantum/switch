@@ -315,7 +315,11 @@ class TestEvents:
                 )
             )
         assert event.action == OrganizationAuditAction.DIRECTORY_CONFLICT
-        assert event.details["kind"] == "directory_organization_deleted"
+        assert event.details == {
+            "source": "directory_event",
+            "kind": "directory_organization_deleted",
+            "workos_organization_id": workos_id,
+        }
 
 
 class TestDailyCheck:

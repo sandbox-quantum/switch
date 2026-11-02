@@ -97,6 +97,18 @@ class OrganizationAuditAction(StrEnum):
     LINKED_TO_DIRECTORY = "organization.linked_to_directory"
 
 
+class OrganizationIssueKind(StrEnum):
+    """What can need an organization admin's attention
+    (`organization_issues.py`). `directory_organization_deleted` is also the
+    `details.kind` of the `DIRECTORY_CONFLICT` that reports it. Mirrored by
+    hand as `OrganizationIssueKind` in the gateway's `data/api.ts`."""
+
+    NO_ORG_ADMIN = "no_org_admin"
+    WORKSPACE_WITHOUT_OWNER = "workspace_without_owner"
+    AGENTS_WITHOUT_ACTING_OWNER = "agents_without_acting_owner"
+    DIRECTORY_ORGANIZATION_DELETED = "directory_organization_deleted"
+
+
 class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"

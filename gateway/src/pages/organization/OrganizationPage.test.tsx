@@ -370,6 +370,31 @@ describe("OrganizationPage", () => {
     expect(screen.getByText(/reviewer, triage/)).toBeTruthy();
   });
 
+  it("checks again after a change to the members", async () => {
+    signedInAs(session("org_admin", true));
+    const routes: Record<string, unknown> = {
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+      ],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+      "DELETE /organizations/current/members/u2": { warning: null },
+    };
+    answer(routes);
+
+    render(<OrganizationPage />);
+    const remove = await screen.findByRole("button", { name: "Remove bob@example.com from the organization" });
+    routes["GET /organizations/current/issues"] = [
+      { kind: "agents_without_acting_owner", workspace_id: "t1", workspace_name: "Acme", agents: ["triage"] },
+    ];
+    fireEvent.click(remove);
+
+    expect(await screen.findByText("One thing needs your attention")).toBeTruthy();
+    expect(screen.getByText(/triage/)).toBeTruthy();
+  });
+
   it("says nothing when nothing needs attention", async () => {
     signedInAs(session("org_admin", true));
     answer({

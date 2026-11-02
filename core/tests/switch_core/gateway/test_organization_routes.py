@@ -1101,7 +1101,8 @@ async def _personal_key(
 
 async def _agent(
     session_factory: async_sessionmaker[AsyncSession], tenant_id: str, owner_id: str
-) -> None:
+) -> str:
+    name = f"agent-{uuid.uuid4().hex[:6]}"
     async with session_factory() as session:
         client = Client(
             tenant_id=tenant_id,
@@ -1124,7 +1125,7 @@ async def _agent(
         session.add(
             Agent(
                 tenant_id=tenant_id,
-                name=f"agent-{uuid.uuid4().hex[:6]}",
+                name=name,
                 description="test agent",
                 agent_type="other",
                 connector_type="claude-code",
@@ -1135,6 +1136,7 @@ async def _agent(
             )
         )
         await session.commit()
+    return name
 
 
 async def _key_exists(
@@ -1359,13 +1361,16 @@ class TestIssues:
     ) -> None:
         """Bob left the workspace and the organization; his agent stayed.
         Ada's own agent, held as the organization's admin with no membership
-        row, is no issue."""
+        row, is no issue, nor is one the platform operator made, who may act
+        in any workspace."""
         ada, bob = _name("ada"), _name("bob")
         tenant_id = await _workspace(
             session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
         )
-        await _agent(session_factory, tenant_id, bob)
+        operator_id = await _operator(session_factory)
+        bobs_agent = await _agent(session_factory, tenant_id, bob)
         await _agent(session_factory, tenant_id, ada)
+        await _agent(session_factory, tenant_id, operator_id)
         organization_id = await _organization_of(session_factory, tenant_id)
         async with tenant_session(session_factory, tenant_id) as session:
             await session.delete(await session.get(TenantMember, (tenant_id, bob)))
@@ -1384,52 +1389,46 @@ class TestIssues:
             if issue["kind"] == "agents_without_acting_owner"
         ]
         assert stranded["workspace_id"] == tenant_id
-        assert len(stranded["agents"]) == 1
+        assert stranded["agents"] == [bobs_agent]
 
-    async def test_a_deleted_workos_organization_until_it_is_linked_again(
+    async def test_a_deleted_workos_organization_until_another_is_linked(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Only a deletion of the WorkOS organization followed now counts,
+        whatever order the audit log has it in."""
         ada = _name("ada")
         tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
         organization_id = await _organization_of(session_factory, tenant_id)
-        async with session_factory() as session:
-            organization = await session.get(Organization, organization_id)
-            assert organization is not None
-            organization.workos_organization_id = _name("org_workos")
-            for action, details in (
-                (OrganizationAuditAction.LINKED_TO_DIRECTORY, {}),
-                (
-                    OrganizationAuditAction.DIRECTORY_CONFLICT,
-                    {"kind": "directory_organization_deleted"},
-                ),
-            ):
-                session.add(
-                    OrganizationAuditEvent(
-                        organization_id=organization_id,
-                        actor_user_id=None,
-                        action=action,
-                        target_type="organization",
-                        target_id=organization_id,
-                        details=details,
-                    )
-                )
+        deleted_id, other_id = _name("org_workos"), _name("org_workos")
+
+        async def follow(workos_organization_id: str) -> None:
+            async with session_factory() as session:
+                organization = await session.get(Organization, organization_id)
+                assert organization is not None
+                organization.workos_organization_id = workos_organization_id
                 await session.commit()
 
-        app = _app(session_factory)
-        async with _client(app, ada, tenant_id) as client:
-            deleted = await client.get("/organizations/current/issues")
-            async with session_factory() as session:
+        async with session_factory() as session:
+            for reported in (deleted_id, other_id):
                 session.add(
                     OrganizationAuditEvent(
                         organization_id=organization_id,
                         actor_user_id=None,
-                        action=OrganizationAuditAction.LINKED_TO_DIRECTORY,
+                        action=OrganizationAuditAction.DIRECTORY_CONFLICT,
                         target_type="organization",
                         target_id=organization_id,
-                        details={},
+                        details={
+                            "kind": "directory_organization_deleted",
+                            "workos_organization_id": reported,
+                        },
                     )
                 )
-                await session.commit()
+            await session.commit()
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            await follow(deleted_id)
+            deleted = await client.get("/organizations/current/issues")
+            await follow(_name("org_workos"))
             relinked = await client.get("/organizations/current/issues")
 
         assert [issue["kind"] for issue in deleted.json()] == [

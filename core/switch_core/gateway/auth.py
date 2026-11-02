@@ -389,6 +389,19 @@ async def _in_organization(
     return found
 
 
+async def tenants_bindable_or_any(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    *,
+    is_operator: bool,
+) -> list[str]:
+    """`tenants_bindable_by`, or every tenant for the platform operator, who
+    may bind any."""
+    if is_operator:
+        return await all_tenant_ids(session_factory)
+    return await tenants_bindable_by(session_factory, user_id)
+
+
 async def workspaces_in_organization(
     session_factory: async_sessionmaker[AsyncSession],
     user_id: str,
@@ -511,10 +524,8 @@ async def organization_workspaces_bindable_by(
     `platform_access` gives them. Each candidate is read on its own short
     session, and only those in the organization are described further.
     """
-    candidates = (
-        await all_tenant_ids(session_factory)
-        if is_operator
-        else await tenants_bindable_by(session_factory, user_id)
+    candidates = await tenants_bindable_or_any(
+        session_factory, user_id, is_operator=is_operator
     )
     found: list[TenantMembershipResponse] = []
     for tenant in await _in_organization(session_factory, candidates, organization_id):

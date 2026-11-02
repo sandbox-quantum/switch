@@ -1362,6 +1362,7 @@ export async function removeOrganizationMember(
   );
 }
 
+// Mirrors `OrganizationIssueKind` in core/switch_core/db/audit.py, by hand.
 export type OrganizationIssueKind =
   | "no_org_admin"
   | "workspace_without_owner"
