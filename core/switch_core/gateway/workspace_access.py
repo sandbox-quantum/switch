@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.connections.broker import ServiceBroker, SignIn
 from switch_core.connections.sign_in_flows import SignInFlows
+from switch_core.db.models import Agent
 from switch_core.db.stores.api_key_store import ApiKeyStore
 
 
@@ -34,13 +36,27 @@ async def revoke_workspace_access(
     api_key_store: ApiKeyStore,
     broker: ServiceBroker,
     sign_in_flows: SignInFlows,
+    keep_agent_keys: bool,
 ) -> RevokedAccess:
     """Remove `user_id`'s keys, service connections and sign-ins under way in
     the bound workspace, in the caller's transaction. Raises `ServiceError`
     when a connection is busy, before anything is removed. The caller
-    commits, then calls `finish_revocation`."""
+    commits, then calls `finish_revocation`.
+
+    `keep_agent_keys` keeps the keys agents they own run on, for a caller
+    that leaves those agents in place rather than refusing while they exist.
+    """
     removed_services = await broker.remove_connections(session, user_id)
     keys = await api_key_store.get_by_user(session, user_id)
+    if keep_agent_keys and keys:
+        in_use = set(
+            await session.scalars(
+                select(Agent.api_key_id).where(
+                    Agent.api_key_id.in_([key.id for key in keys])
+                )
+            )
+        )
+        keys = [key for key in keys if key.id not in in_use]
     for key in keys:
         await api_key_store.delete(session, key.id)
     await sign_in_flows.discard_for_user(session, user_id, None)

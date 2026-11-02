@@ -1470,6 +1470,7 @@ async def remove_member(
             api_key_store=api_key_store,
             broker=broker,
             sign_in_flows=request.app.state.sign_in_flows,
+            keep_agent_keys=False,
         )
     except ServiceError as error:
         return service_refusal(error)

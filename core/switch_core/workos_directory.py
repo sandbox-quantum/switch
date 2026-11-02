@@ -27,6 +27,7 @@ local directory, and that is what a new organization is until then.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -83,7 +84,9 @@ class WorkOSDirectory:
         self._api_key = api_key
         self._api_url = api_url.rstrip("/")
 
-    async def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+    async def _get(
+        self, path: str, params: Mapping[str, str | list[str]]
+    ) -> dict[str, Any]:
         try:
             response = await self._http.get(
                 f"{self._api_url}{path}",
@@ -137,11 +140,17 @@ class WorkOSDirectory:
         """The active memberships of WorkOS user `subject`, one per WorkOS
         organization. Which of those organizations Switch follows is for the
         caller to read from its own rows."""
-        memberships: list[DirectoryMembership] = []
-        for membership in await self._list(
-            "/user_management/organization_memberships",
-            {"user_id": subject, "statuses": "active"},
-        ):
+        return self._read_memberships(
+            await self._list(
+                "/user_management/organization_memberships",
+                {"user_id": subject, "statuses": "active"},
+            )
+        )
+
+    @staticmethod
+    def _read_memberships(items: list[dict[str, Any]]) -> list[DirectoryMembership]:
+        memberships = []
+        for membership in items:
             organization_id = membership.get("organization_id")
             role = membership.get("role")
             slug = role.get("slug") if isinstance(role, dict) else None
@@ -153,6 +162,70 @@ class WorkOSDirectory:
                 )
             )
         return memberships
+
+    async def membership_role(
+        self, subject: str, workos_organization_id: str
+    ) -> str | None:
+        """Switch's role for WorkOS user `subject`'s active membership of
+        `workos_organization_id`, or None if they hold none."""
+        memberships = await self._list(
+            "/user_management/organization_memberships",
+            {
+                "user_id": subject,
+                "organization_id": workos_organization_id,
+                "statuses": "active",
+            },
+        )
+        for membership in self._read_memberships(memberships):
+            if membership.workos_organization_id == workos_organization_id:
+                return membership.role
+        return None
+
+    async def organization_members(self, workos_organization_id: str) -> dict[str, str]:
+        """Switch's role for each WorkOS user with an active membership of
+        `workos_organization_id`, by their WorkOS user id."""
+        members: dict[str, str] = {}
+        for item in await self._list(
+            "/user_management/organization_memberships",
+            {"organization_id": workos_organization_id, "statuses": "active"},
+        ):
+            user_id = item.get("user_id")
+            if not isinstance(user_id, str):
+                raise _unreadable("a membership")
+            [membership] = self._read_memberships([item])
+            members[user_id] = membership.role
+        return members
+
+    async def events(
+        self, types: tuple[str, ...], *, after: str | None, range_start: str
+    ) -> list[dict[str, Any]]:
+        """One page of events of `types`, oldest first: those after event
+        `after`, or from `range_start` (ISO 8601) when there is none yet.
+        Empty once there are no more."""
+        params: dict[str, str | list[str]] = {
+            "events": list(types),
+            "limit": str(_PAGE),
+            "order": "asc",
+        }
+        if after:
+            params["after"] = after
+        else:
+            params["range_start"] = range_start
+        page = await self._get("/events", params)
+        data = page.get("data")
+        if not isinstance(data, list):
+            raise _unreadable("a list of events")
+        events = []
+        for event in data:
+            if (
+                not isinstance(event, dict)
+                or not isinstance(event.get("id"), str)
+                or not isinstance(event.get("event"), str)
+                or not isinstance(event.get("data"), dict)
+            ):
+                raise _unreadable("an event")
+            events.append(event)
+        return events
 
     async def organization(self, workos_organization_id: str) -> dict[str, Any]:
         """The WorkOS organization `workos_organization_id`, for an operator

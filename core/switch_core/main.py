@@ -200,6 +200,7 @@ from switch_core.observability.pool import (
     pool_stats,
 )
 from switch_core.observability.query import instrument_queries
+from switch_core.organization_access import AccessRevocation
 from switch_core.organization_directory import LocalDirectory, OrganizationDirectory
 from switch_core.outbound import guarded_async_client
 from switch_core.ownership import Ownership
@@ -231,6 +232,7 @@ from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 from switch_core.workos_directory import WorkOSDirectory
+from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
 
 logger = logging.getLogger(__name__)
 
@@ -1247,6 +1249,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     await connector_apps.load()
 
     # ── Gateway app ───────────────────────────────────────────────────────────
+    organization_directory = _organization_directory(config, service_http)
     gateway_app = create_gateway_app(
         agent_store=agent_store,
         room_store=room_store,
@@ -1263,7 +1266,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         invitation_store=invitation_store,
         join_domain_store=join_domain_store,
         organization_store=organization_store,
-        organization_directory=_organization_directory(config, service_http),
+        organization_directory=organization_directory,
         template_store=template_store,
         usage_store=usage_store,
         budget_store=budget_store,
@@ -1408,6 +1411,24 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     if config.service_connections_enabled:
         protocol.service_broker = service_broker
     protocol.install_service = install_service
+    if isinstance(organization_directory, WorkOSDirectory):
+        # Checked present with the directory (`_validate_organization_directory`).
+        assert config.gateway_oidc_issuer_url is not None
+        own_workos_mirror(
+            ownership,
+            WorkOSMirror(
+                session_factory,
+                organization_directory,
+                AccessRevocation(
+                    agent_store=agent_store,
+                    api_key_store=api_key_store,
+                    broker=service_broker,
+                    protocol=protocol,
+                    sign_in_flows=gateway_app.state.sign_in_flows,
+                ),
+                config.gateway_oidc_issuer_url,
+            ),
+        )
 
     snapshot_reporter = SnapshotReporter(
         telemetry=telemetry,

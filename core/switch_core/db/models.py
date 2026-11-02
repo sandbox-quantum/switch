@@ -2640,6 +2640,30 @@ class OwnershipLease(Base):
     )
 
 
+class DirectoryEventCursor(Base):
+    """How far the directory mirror has read a directory's events
+    (`workos_mirror.py`). One row per directory (`source`, `"workos"`).
+
+    `after` is the last event applied, null until the first; until then the
+    events are read from `started_at`, when the mirror first ran. Applying
+    an event re-reads the membership it names, so reading one twice changes
+    nothing, and the row needs no fence against a holder taken over.
+
+    Not tenant-scoped: one directory's events reach every organization.
+    """
+
+    __tablename__ = "directory_event_cursors"
+
+    source: Mapped[str] = mapped_column(Text, primary_key=True)
+    after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 # ── Trust settings ───────────────────────────────────────────────────────────
 
 
