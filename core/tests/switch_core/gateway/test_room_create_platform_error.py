@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.models import (
 )
 from switch_core.gateway.rooms import create_room
 from switch_core.gateway.schemas import RoomCreateRequest
+from switch_core.invites import Inviter
 
 _GRAPH_REFUSAL = (
     "create channel 'Switch Test Room' in team team-1 failed (403): "
@@ -34,7 +35,7 @@ class _RaisingRoomService:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    async def create_room(self, config: Any) -> Any:
+    async def create_room(self, config: Any, *, invited_by: Inviter) -> Any:
         raise self._exc
 
 

@@ -102,6 +102,9 @@ you can, once they say yes:
   agents, add people, update or archive it) later; `caller_is_member` in its result
   says whether you are in. The one exception is a direct room, which holds exactly one
   agent.
+  An agent only joins a room if it takes instructions from whoever invites it. When an
+  invite is refused, tell your owner which agent it was and that its owner can invite it
+  or change who it takes instructions from; do not retry.
 - **Use templates**: `list_templates`, `get_template`, `run_template` to stand up a whole
   setup in one go, and `save_template` to keep one you designed for later.
 - **Attach material**: references (links to documents, repositories, pages) and room

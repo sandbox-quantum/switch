@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.models import ChannelCreationUnsupported
 from switch_core.room_service import RoomCreateConfig, RoomService
+from tests.invites import UNCHECKED
 
 # A DM room is a 1:1 "direct" room provisioned outbound onto a bridge (on Slack,
 # a private channel with the one user invited). It must have exactly one agent
@@ -130,6 +132,7 @@ def _dm_service(
     svc = object.__new__(RoomService)
     svc._session_factory = lambda: _FakeSessionCM()  # type: ignore[assignment]
     svc._agent_store = _FakeAgentStore({"a1": "agent.bot"})  # type: ignore[assignment]
+    svc._require_invitable = AsyncMock()  # type: ignore[method-assign]
     svc._collab_lifecycle = _FakeLifecycle({"bridge-1": bridge})  # type: ignore[assignment]
     svc._collab_bridge_store = _FakeBridgeStore(  # type: ignore[assignment]
         channel_creation_enabled=channel_creation_enabled
@@ -141,7 +144,9 @@ async def test_create_dm_room_fails_when_user_unknown_to_bridge() -> None:
     svc, bridge = _dm_service(known_users={})
 
     with pytest.raises(ValueError, match="no user 'ghost' is known"):
-        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["ghost"]))
+        await svc.create_room(
+            _dm_config(agent_ids=["a1"], user_names=["ghost"]), invited_by=UNCHECKED
+        )
 
     # We never tried to create a channel for an unreachable user.
     assert bridge.dm_calls == []
@@ -155,7 +160,9 @@ async def test_create_dm_room_refused_when_operator_withheld_channel_creation() 
     )
 
     with pytest.raises(ChannelCreationUnsupported, match="turned off"):
-        await svc.create_room(_dm_config(agent_ids=["a1"], user_names=["alice"]))
+        await svc.create_room(
+            _dm_config(agent_ids=["a1"], user_names=["alice"]), invited_by=UNCHECKED
+        )
 
     assert bridge.dm_calls == []
 

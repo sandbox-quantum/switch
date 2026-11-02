@@ -19,6 +19,7 @@ import yaml
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_runs import AgentOrigin
 from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.actor import SystemActor
@@ -53,6 +54,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.invites import AgentInviter, Inviter, UserInviter
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
     ExistingPackageById,
@@ -96,6 +98,7 @@ class FakeRoomService:
         #: username → external id, the people a bridge would resolve.
         self.bridge_users: dict[str, str] = {}
         self.bridge_user_lookups: list[tuple[str, list[str]]] = []
+        self.invited_by: list[Inviter] = []
 
     async def resolve_bridge_users(
         self, bridge_id: str, names: list[str]
@@ -103,7 +106,10 @@ class FakeRoomService:
         self.bridge_user_lookups.append((bridge_id, names))
         return {n: self.bridge_users[n] for n in names if n in self.bridge_users}
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        self.invited_by.append(invited_by)
         async with self._sf() as session:
             agent_ids: list[str] = []
             if config.agent_names:
@@ -393,6 +399,44 @@ async def test_provision_basic_with_agents_roles_and_inline_ref(env):
     assert len(result.created_document_ids) == 1
     assert result.role_names == ["manager"]
     assert result.failed_attachments == []
+
+
+@pytest.mark.asyncio
+async def test_a_person_provisioning_a_room_invites_its_agents_as_themselves(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Pilot"
+          description: "d"
+          agents: ["claude-code.alice"]
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].invited_by == [UserInviter(env["user_id"])]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_provisioning_a_room_invites_as_itself_not_its_owner(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Pilot"
+          description: "d"
+          agents: ["claude-code.alice"]
+        """
+    )
+    origin = AgentOrigin(
+        agent_id="agent-1",
+        agent_name="claude-code.bob",
+        owner_id=env["user_id"],
+        owner_name="alice",
+        parent_room_id=None,
+        run_id=None,
+    )
+    await _svc(env).provision(
+        spec, user_id=env["user_id"], is_admin=False, origin=origin
+    )
+    assert env["rooms"].invited_by == [AgentInviter("agent-1")]
 
 
 @pytest.mark.asyncio

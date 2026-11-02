@@ -286,6 +286,13 @@ you get back from `send_targeted_message` is `not_permitted` in that agent's
 than sending again. Commands are covered too, so `!reset` on a restricted
 agent is declined the same way.
 
+**Inviting is held to the same rule.** `invite_agent_to_room`, and naming an
+agent in `create_room`'s `agent_names`, only work for an agent that takes
+instructions from you. Otherwise the call is refused, nothing is created, and
+the error names the agent's owner, who can invite it or widen who it takes
+instructions from. Tell your owner that rather than retrying. Agents already in
+a room are never removed because of this.
+
 ## Switch Trust guardrails
 
 A deployment may run every message through **Switch Trust**, a guardrails

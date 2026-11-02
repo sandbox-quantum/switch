@@ -26,8 +26,10 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway import chats as chats_module
 from switch_core.gateway import rooms as rooms_module
 from switch_core.gateway.schemas import RoomUpdateRequest
+from switch_core.invites import InviteRefused, UserInviter
 from switch_core.room_changes import RoomChanges, people_concerned
 from switch_core.user_changes import ROOM
+from tests.invites import UNCHECKED
 from tests.switch_core.gateway.conftest import (
     _chat_service,
     _FakeActivityListener,
@@ -193,7 +195,9 @@ async def test_an_owner_grant_does_not_make_a_group(chats: _Harness) -> None:
     room_id = await _left_chat(chats, chats.alice)
     [guest] = await _agent_ids(chats, room_id)
     await chats.room_service.remove_agents_from_room(room_id, [guest])
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
 
     assert await _reads(chats, chats.alice, room_id) == 200
     assert await _channel_type(chats, room_id) == "direct"
@@ -543,6 +547,27 @@ async def test_the_bootstrap_owner_is_not_a_person_to_chat_with(
 
 
 # ── Adding and removing agents ───────────────────────────────────────────────
+
+
+async def test_the_shared_invite_gate_is_what_refuses_an_agent_added_to_a_chat(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = await chats.agent("helper", owner=chats.alice)
+    guest = await chats.agent("guest", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, helper, "c1")
+    invited_by: list[object] = []
+
+    async def refuse(room_id: str, **kwargs: object) -> None:
+        invited_by.append(kwargs["invited_by"])
+        raise InviteRefused("guest doesn't take instructions from you", [], [])
+
+    monkeypatch.setattr(chats.room_service, "add_agents_to_room", refuse)
+    refused = await _add_agent(chats, chats.alice.id, room_id, guest)
+    assert refused.status_code == 403
+    assert _code(refused) == "AGENT_NOT_ALLOWED"
+    assert "doesn't take instructions from you" in refused.text
+    assert invited_by == [UserInviter(chats.alice.id)]
+    assert await _agent_ids(chats, room_id) == {helper.id}
 
 
 async def test_adding_an_agent_needs_its_permission_in_this_room(

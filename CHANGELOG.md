@@ -238,6 +238,17 @@ version of their own to them without also giving them a release of their own.
   Existing duplicates are left as they are and can be reached by id.
 
 #### Fixed
+- **Inviting an agent into a room now respects who can talk to it.** An agent
+  set to take instructions only from its owner could still be put in any room
+  by anyone who could run `!invite-agent`, call `invite_agent_to_room`, name it
+  in `create_room`, or add it on the room page, which got around the policy
+  for everything but the messages afterwards. Every one of those now asks the
+  same question message delivery asks, and a refused invite says which agent it
+  was, why, and that its owner can invite it or change who it takes
+  instructions from. Nothing is created when any agent in the request is
+  refused, and agents already in a room stay. A platform that does not report
+  who added the Switch bot (Mattermost) cannot be judged: the agent joins, the
+  channel is told it may not answer everyone, and a warning is logged.
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
   reply.** Every running turn's card was redrawn every 5 seconds to tick its
   clock. Slack closes a streamed card after 10 minutes, so on a longer turn

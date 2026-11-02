@@ -48,6 +48,7 @@ from switch_core.gateway.chats import (
     chat_events,
 )
 from switch_core.session_activity.listener import Change
+from tests.invites import UNCHECKED
 from tests.switch_core.gateway.conftest import _Harness, _Process
 
 
@@ -1051,7 +1052,9 @@ async def test_an_unlisted_chat_is_announced_again_when_an_agent_returns(
         {"roomId": room_id, "reason": "unlisted"},
     )
 
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     name, summary = await events.next()
     assert name == "chat" and summary["roomId"] == room_id
     assert room_id in await _listed(chats, chats.bob)
@@ -1094,7 +1097,9 @@ async def test_an_owner_only_member_loses_access_with_the_last_agent(
 ) -> None:
     agent = await chats.agent("helper", owner=chats.bob)
     room_id = await _left_chat(chats, chats.bob)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     assert room_id in await _listed(chats, chats.bob)
 
     events = _stream(chats, chats.bob, {}, recheck=60.0)
@@ -1428,7 +1433,9 @@ async def test_with_agent_chats_off_owner_grants_are_taken_back(
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     assert await _grants(chats) == 1
 
     chats.service.agent_chats_enabled = False
@@ -1462,7 +1469,9 @@ async def test_with_agent_chats_off_owning_an_agent_joins_nothing(
     chats.service.agent_chats_enabled = False
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
 
     assert await _listed(chats, chats.alice) == {}
     assert await _reads(chats, chats.alice, room_id) == 403
@@ -1476,7 +1485,9 @@ async def test_an_agent_owner_rejoins_a_chat_they_started_when_their_agent_arriv
     room_id = await _left_chat(chats, chats.alice)
     assert await _reads(chats, chats.alice, room_id) == 403
 
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     listed = await _listed(chats, chats.alice)
     assert set(listed) == {room_id}
     assert listed[room_id]["ownsAgent"] is True
@@ -1537,7 +1548,9 @@ async def test_a_room_that_gains_the_owners_agent_is_announced_at_once(
     events = _stream(chats, chats.alice, {}, recheck=60.0)
     assert (await events.next())[0] == "ready"
 
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     name, summary = await events.next()
     assert name == "chat" and summary["roomId"] == room_id
     assert await _reads(chats, chats.alice, room_id) == 200
@@ -1606,7 +1619,7 @@ async def test_losing_the_last_owned_agent_ends_the_owners_access(
     other = await chats.agent("other", owner=chats.alice)
     room_id = await _left_chat(chats, chats.alice)
     await chats.room_service.add_agents_to_room(
-        room_id, agent_ids=[helper.id, other.id]
+        room_id, agent_ids=[helper.id, other.id], invited_by=UNCHECKED
     )
     assert room_id in await _listed(chats, chats.alice)
 
@@ -1634,7 +1647,9 @@ async def test_handing_an_agent_to_someone_else_ends_the_owners_access(
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     assert room_id in await _listed(chats, chats.alice)
 
     async with chats.factory() as session:
@@ -1655,7 +1670,9 @@ async def test_a_deleted_agent_takes_its_owners_access_with_it(
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     room_id = await _left_chat(chats, chats.alice)
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[agent.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[agent.id], invited_by=UNCHECKED
+    )
     assert room_id in await _listed(chats, chats.alice)
 
     async with chats.factory() as session:
@@ -1672,7 +1689,9 @@ async def test_an_owner_who_created_the_chat_keeps_it_when_the_agent_goes(
     helper = await chats.agent("helper", owner=chats.alice)
     other = await chats.agent("other", owner=chats.bob)
     room_id = await chats.new_chat(chats.alice, helper, "c1")
-    await chats.room_service.add_agents_to_room(room_id, agent_ids=[other.id])
+    await chats.room_service.add_agents_to_room(
+        room_id, agent_ids=[other.id], invited_by=UNCHECKED
+    )
     await chats.room_service.remove_agents_from_room(room_id, [helper.id])
 
     assert await _reads(chats, chats.alice, room_id) == 200

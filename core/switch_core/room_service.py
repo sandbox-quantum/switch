@@ -42,6 +42,7 @@ from switch_core.db.stores.room_store import (
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invites import InviteGate, Inviter, actor_kind
 from switch_core.provisioning import Provisioning
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -204,6 +205,7 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+        self._invites = InviteGate.build(room_store=room_store, agent_store=agent_store)
 
     def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
         """Call `listener(tenant_id, room_id, [])` once a room is created,
@@ -534,7 +536,15 @@ class RoomService:
             [(external_channel_id, channel_type)]
         )
 
-    async def create_room(self, config: RoomCreateConfig) -> RoomCreateResult:
+    async def create_room(
+        self, config: RoomCreateConfig, *, invited_by: Inviter
+    ) -> RoomCreateResult:
+        """Create the room, with the agents the config names in it.
+
+        Those agents are invited by `invited_by`, and every one of them has to
+        take instructions from that inviter (`InviteGate`) or nothing is
+        created and `InviteRefused` is raised.
+        """
         await self._validate_attachments(config)
         # Before anything is provisioned: a name refused after the channel and
         # the room exist would leave both behind. Alias collisions need the
@@ -550,6 +560,9 @@ class RoomService:
                 if await session.get(RoomGroup, config.group_id) is None:
                     raise ValueError(f"Room group not found: {config.group_id}")
         agent_ids = await self._resolve_agent_ids(config)
+        await self._require_invitable(
+            invited_by, agent_ids, room_id="", group_id=config.group_id
+        )
         join_event_listeners = await self._resolve_join_event_listeners(config)
         channel_type = config.channel_type
         external_channel_id = config.external_channel_id
@@ -989,11 +1002,18 @@ class RoomService:
         agent_names: list[str] | None = None,
         include_subagents_for: list[str] | None = None,
         join_event_listeners: list[str] | None = None,
-        added_by_kind: Literal["user", "agent", "system"] = "user",
+        *,
+        invited_by: Inviter,
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
     ) -> None:
-        """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+        """Add agents to a room on `invited_by`'s say.
+
+        Each agent not already in the room has to take instructions from the
+        inviter (`InviteGate`), or none is added and `InviteRefused` is raised.
+        An agent already in the room is never judged, so it stays.
+
+        `with_agents` runs in the transaction that records the agents, so what
+        it writes commits with them or not at all."""
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1028,6 +1048,9 @@ class RoomService:
             )
             return
 
+        await self._require_invitable(
+            invited_by, new_agent_ids, room_id=room.id, group_id=room.group_id
+        )
         agent_clients = self._resolve_agent_clients(new_agent_ids)
 
         # One binding for the whole membership change: the two writes below
@@ -1072,9 +1095,24 @@ class RoomService:
             {
                 # Added, not requested.
                 "agent_count": len(new_agent_ids),
-                "added_by_kind": added_by_kind,
+                "added_by_kind": actor_kind(invited_by),
             },
         )
+
+    async def _require_invitable(
+        self,
+        invited_by: Inviter,
+        agent_ids: list[str],
+        *,
+        room_id: str,
+        group_id: str | None,
+    ) -> None:
+        if not agent_ids:
+            return
+        async with self._session_factory() as session:
+            await self._invites.require(
+                session, invited_by, agent_ids, room_id=room_id, group_id=group_id
+            )
 
     async def remove_agents_from_room(
         self,

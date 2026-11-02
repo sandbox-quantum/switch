@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_invite
+from switch_core.invites import ChatSender, InviteRefused
 
 # Matches a live `@<handle>` mention token (same char class Switch re-parses).
 _MENTION = re.compile(r"@[A-Za-z0-9._-]+")
@@ -16,13 +17,18 @@ class _Room(SimpleNamespace):
 
 
 def _build_client(
-    *, registry: dict[str, Any], room_agent_ids: list[str]
+    *,
+    registry: dict[str, Any],
+    room_agent_ids: list[str],
+    refusal: InviteRefused | None = None,
+    invited_by: list[Any] | None = None,
 ) -> tuple[SimpleNamespace, list[str], list[tuple[str, list[str]]]]:
     """A fake admin client capturing replies and add_agents_to_room calls.
 
     `registry` maps a lowercased agent name to its agent record (mirrors the
     case-insensitive `get_by_name_insensitive` lookup).
     """
+    invited_by = invited_by if invited_by is not None else []
     posted: list[str] = []
     added: list[tuple[str, list[str]]] = []
 
@@ -42,8 +48,11 @@ def _build_client(
     async def _get_agent_ids(_session, _room_id):  # type: ignore[no-untyped-def]
         return list(room_agent_ids)
 
-    async def _add_agents_to_room(room_id, agent_names=None, **_kw):  # type: ignore[no-untyped-def]
+    async def _add_agents_to_room(room_id, agent_names=None, **kw):  # type: ignore[no-untyped-def]
+        if refusal is not None:
+            raise refusal
         added.append((room_id, list(agent_names or [])))
+        invited_by.append(kw["invited_by"])
 
     client = SimpleNamespace(
         session_factory=_session_factory,
@@ -57,7 +66,9 @@ def _build_client(
 
 
 def _event(args: str) -> SimpleNamespace:
-    return SimpleNamespace(command="invite-agent", args=args, thread_id=None)
+    return SimpleNamespace(
+        command="invite-agent", args=args, thread_id=None, user_id="@alice:switch.local"
+    )
 
 
 def _agent(
@@ -104,6 +115,39 @@ class TestInviteCommand:
         await _cmd_invite(client, _Room(room_id="!m:x"), _event(""), False)
         assert added == []
         assert "Usage" in posted[0]
+
+
+class TestInviteCommandRespectsWhoMayTalkToTheAgent:
+    async def test_the_invite_is_made_as_the_person_typing(self) -> None:
+        invited_by: list[Any] = []
+        client, _posted, _added = _build_client(
+            registry={"claude-code.alice": _ALICE},
+            room_agent_ids=[],
+            invited_by=invited_by,
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert invited_by == [ChatSender("@alice:switch.local")]
+
+    async def test_a_refused_invite_says_why_instead_of_adding(self) -> None:
+        refusal = InviteRefused(
+            "claude-code.alice doesn't take instructions from you, so it wasn't "
+            "added. Its owner (Alice) can invite it, or can change who it takes "
+            "instructions from.",
+            ["a1"],
+            ["claude-code.alice"],
+        )
+        client, posted, added = _build_client(
+            registry={"claude-code.alice": _ALICE},
+            room_agent_ids=[],
+            refusal=refusal,
+        )
+        await _cmd_invite(
+            client, _Room(room_id="!m:x"), _event("@claude-code.alice"), False
+        )
+        assert added == []
+        assert posted == [str(refusal)]
 
 
 class TestInviteCommandDisplayNames:

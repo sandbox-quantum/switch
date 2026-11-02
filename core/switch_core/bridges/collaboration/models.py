@@ -188,6 +188,10 @@ class InboundAgentJoin(BaseModel):
     channel_type: ChannelType
     agent_name: str
     channel_name: str | None = None
+    # The platform's id for whoever added the agent's bot to the channel, for a
+    # platform that says who. None when it does not (Mattermost's `user_added`
+    # names only the account added) or when the join was found by a sweep.
+    added_by: str | None = None
 
 
 class InboundUserJoin(BaseModel):
