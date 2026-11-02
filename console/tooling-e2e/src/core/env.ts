@@ -142,11 +142,6 @@ export interface HarnessEnv {
    * explore lane its trace, if anywhere.
    */
   outputDir: string | null;
-  /**
-   * How long the explore lane explores, as Bombadil's `--time-limit` takes it
-   * (`90s`, `5m`, `1h`). `SWITCH_E2E_EXPLORE_TIME_LIMIT`, default `5m`.
-   */
-  exploreTimeLimit: string;
   switch: SwitchEnv;
   /** `null` when no Mattermost is configured; scenarios that need one then skip or fail. */
   mattermost: MattermostEnv | null;
@@ -247,9 +242,10 @@ export function strictFrom(
 }
 
 /**
- * The explore lane's time limit. Read on its own as well as by `loadEnv`,
- * because the lane sizes its case's timeout from it before the rest of the
- * configuration is loaded.
+ * How long the explore lane explores, as Bombadil's `--time-limit` takes it
+ * (`90s`, `5m`, `1h`): `SWITCH_E2E_EXPLORE_TIME_LIMIT`, default `5m`. Not part of
+ * `loadEnv`, so a malformed value fails only the explore lane, which reads it
+ * when it collects its cases, to size the exploring case's timeout.
  */
 export function exploreTimeLimitFrom(
   source: Source = process.env,
@@ -325,7 +321,6 @@ export function loadEnv(
     serverLog: get('SWITCH_E2E_SERVER_LOG') ?? null,
     gatewayUiUrl: optionalUrl(get('SWITCH_GATEWAY_UI_URL')),
     outputDir: get('SWITCH_E2E_OUTPUT_DIR') ?? null,
-    exploreTimeLimit: exploreTimeLimitFrom(source, file),
     switch: {
       apiUrl: stripTrailingSlash(required.SWITCH_API_URL as string),
       gatewayAdminEmail: required.SWITCH_GATEWAY_ADMIN_EMAIL as string,

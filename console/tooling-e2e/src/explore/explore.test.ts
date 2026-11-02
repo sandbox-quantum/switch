@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { durationMs, exploreTimeLimitFrom, loadEnv } from '../core/env.ts';
 import { ACTION_GENERATORS, PROPERTIES } from './properties.ts';
 import { describeViolation, summarizeTrace } from './trace.ts';
 
@@ -89,6 +90,28 @@ describe('explore lane', () => {
       },
     };
     expect(describeViolation(violation)).toBe('() => b');
+  });
+
+  it('says an or failed on both sides', () => {
+    const side = (condition: string) => ({ False: { time: 1, condition, snapshots: [] } });
+    expect(describeViolation({ Or: { left: side('() => a'), right: side('() => b') } })).toBe(
+      'neither () => a nor () => b'
+    );
+  });
+
+  it('reads its time limit apart from the other lanes', () => {
+    const malformed = { SWITCH_E2E_EXPLORE_TIME_LIMIT: '1m30s' };
+    const base = {
+      SWITCH_API_URL: 'http://switch.invalid',
+      SWITCH_GATEWAY_ADMIN_EMAIL: 'admin@example.invalid',
+      SWITCH_GATEWAY_ADMIN_PASSWORD: 'placeholder',
+      SWITCH_AGENT_REGISTRATION_TOKEN: 'placeholder',
+      SWITCH_E2E_ENVIRONMENT: 'ephemeral',
+    };
+    expect(() => loadEnv('fast', { ...base, ...malformed }, {})).not.toThrow();
+    expect(() => exploreTimeLimitFrom(malformed, {})).toThrow(/whole number with a unit/);
+    expect(exploreTimeLimitFrom({}, {})).toBe('5m');
+    expect(durationMs('90s')).toBe(90_000);
   });
 
   it('refuses a trace line that is not JSON', () => {

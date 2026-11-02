@@ -98,7 +98,8 @@ export function describeViolation(raw: unknown): string {
     return `${describeViolation(violation.And.left)} and ${describeViolation(violation.And.right)}`;
   }
   if ('Or' in violation) {
-    return `${describeViolation(violation.Or.left)} and ${describeViolation(violation.Or.right)}`;
+    const [left, right] = [violation.Or.left, violation.Or.right].map(describeViolation);
+    return `neither ${left} nor ${right}`;
   }
   if ('Eventually' in violation) {
     const { subformula, reason } = violation.Eventually;

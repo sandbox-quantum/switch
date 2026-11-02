@@ -15,4 +15,4 @@ export const PROPERTIES = [
 ] as const;
 
 /** The spec's other exports: its action generators. */
-export const ACTION_GENERATORS = ['signingIn', 'exploring', 'waiting'] as const;
+export const ACTION_GENERATORS = ['signingIn', 'settling', 'exploring', 'waiting'] as const;

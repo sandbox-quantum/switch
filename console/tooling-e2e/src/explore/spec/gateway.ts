@@ -51,11 +51,11 @@ const ROUTES = [
 
 /**
  * Signing out ends the session the explorer is testing, and signing back in
- * proves nothing the browser lane does not. (Changing the password needs the
- * current one, which random input does not know, so that dialog stays open to
- * it.)
+ * proves nothing the browser lane does not. Change password is the entry next
+ * to it, and the menu shifts while it settles, so a click aimed there can land
+ * on Sign out: the explorer clicks neither.
  */
-const SIGN_OUT = 'Sign out';
+const SESSION_ENDING = ['Sign out', 'Change password'];
 
 const path = extract((state) => state.window.location.pathname);
 
@@ -76,8 +76,10 @@ const signedIn = extract(
 
 /**
  * Whether the last action opened a page: a link, back, forward, reload or a
- * jump. Read loosely because Bombadil hands the action over in its trace shape
- * (snake case, empty fields left out), not the one its types declare.
+ * jump. No action at all is the first state, the page the run starts on. Read
+ * loosely because Bombadil hands the action over in its trace shape (snake
+ * case, empty fields left out), not the one its types declare; the tag is
+ * lowercase there, as `getFingerprint` writes it.
  */
 const openedPage = extract((state) => {
   const action = state.lastAction as unknown;
@@ -86,7 +88,9 @@ const openedPage = extract((state) => {
     Click?: { fingerprint: { tag: string; href?: string } };
     Custom?: { name: string };
   };
-  if (Click !== undefined) return Click.fingerprint.tag === 'a' && Click.fingerprint.href !== undefined;
+  if (Click !== undefined) {
+    return Click.fingerprint.tag === 'a' && Click.fingerprint.href !== undefined;
+  }
   return Custom !== undefined && (Custom.name === 'goTo' || Custom.name === 'signIn');
 });
 
@@ -97,7 +101,7 @@ const openedPage = extract((state) => {
  */
 const accountMenuOpen = extract((state) =>
   Array.from(state.document.querySelectorAll('[role="menu"] [role="menuitem"]')).some(
-    (item) => (item.textContent ?? '').trim() === SIGN_OUT && item.getClientRects().length > 0
+    (item) => (item.textContent ?? '').trim() === 'Sign out' && item.getClientRects().length > 0
   )
 );
 
@@ -107,7 +111,9 @@ const accountMenuOpen = extract((state) =>
  * point: Sign out, below the one aimed at.
  */
 const accountMenuOpening = extract((state) => {
-  const action = state.lastAction as { Click?: { fingerprint: { accessible_name?: string } } } | null;
+  const action = state.lastAction as {
+    Click?: { fingerprint: { accessible_name?: string } };
+  } | null;
   return action?.Click?.fingerprint.accessible_name === 'Account menu';
 });
 
@@ -119,21 +125,27 @@ const errorBanners = extract((state) =>
 
 /**
  * Every `/gateway/` response since the page last loaded that the server
- * failed. Resource timing keeps 250 entries by default, fewer than a long
- * session on one page makes, so the buffer is raised before it is read.
+ * failed, collected by an observer installed with the first read of each page
+ * load. An observer sees every entry, where the resource timing buffer stops
+ * recording once full; `buffered` hands it what loaded before it was installed.
  */
 const serverErrors = extract((state) => {
-  const performance = state.window.performance;
-  performance.setResourceTimingBufferSize(10_000);
-  return performance
-    .getEntriesByType('resource')
-    .filter(
-      (entry): entry is PerformanceResourceTiming =>
-        entry instanceof PerformanceResourceTiming &&
-        new URL(entry.name).pathname.startsWith('/gateway/') &&
-        entry.responseStatus >= 500
-    )
-    .map((entry) => `${entry.responseStatus} ${new URL(entry.name).pathname}`);
+  const page = state.window as Window & { switchExploreServerErrors?: string[] };
+  if (page.switchExploreServerErrors === undefined) {
+    const failed: string[] = [];
+    page.switchExploreServerErrors = failed;
+    // The extractor runs in the page, so these globals are the page's own.
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (!(entry instanceof PerformanceResourceTiming) || entry.responseStatus < 500) {
+          continue;
+        }
+        const path = new URL(entry.name).pathname;
+        if (path.startsWith('/gateway/')) failed.push(`${entry.responseStatus} ${path}`);
+      }
+    }).observe({ type: 'resource', buffered: true });
+  }
+  return [...page.switchExploreServerErrors];
 });
 
 /** The explorer signs in from the login page it starts on. */
@@ -141,21 +153,25 @@ export const signsIn = eventually(() => signedIn.current).within(30, 'seconds');
 
 /**
  * Once signed in, the explorer stays signed in. It cannot sign out (see
- * `SIGN_OUT`), so the login page again means the session was lost.
+ * `SESSION_ENDING`), so the login page again means the session was lost.
  */
 export const staysSignedIn = always(
   now(() => signedIn.current).implies(always(() => !onLoginPage.current))
 );
 
+const noBanner = () => errorBanners.current.length === 0;
+
 /**
  * No page opens with an error banner: MUI renders each as an `alert` with error
  * severity. A banner after a click is how the gateway refuses what random input
  * asked for (removing a member who owns agents, say), and one stays up until
- * dismissed, so only a banner that appears as a page opens counts.
+ * dismissed, so only a banner that appears as a page opens counts: in the
+ * state the page opened in, or the one after, once the explorer has waited for
+ * what the page fetches (see `settling`).
  */
 export const noErrorBanner = always(
-  now(() => errorBanners.current.length === 0).implies(
-    next(now(() => openedPage.current).implies(() => errorBanners.current.length === 0))
+  now(noBanner).implies(
+    next(now(() => openedPage.current).implies(now(noBanner).and(next(noBanner))))
   )
 );
 
@@ -193,21 +209,31 @@ const goTo = registerCustomAction('goTo', async (_document, window, route: strin
 export const signingIn = actions(() => [signIn()]).when(() => onLoginPage.current);
 
 /**
- * Whether a click is safe: never Sign out, none while the account menu is still
- * opening, and while it is open only on the menu's own entries, so a click
- * cannot land on Sign out by accident.
+ * Whether a click is safe: never on `SESSION_ENDING`, and while the account menu is open
+ * only on the menu's own entries, so a click cannot land on Sign out by
+ * accident.
  */
 function safeClick(action: ActionTemplate): boolean {
   if (!isAction(action, 'Click')) return true;
-  if (accountMenuOpening.current) return false;
   const { textContent, accessibleName, role } = action.Click.fingerprint;
-  if (textContent === SIGN_OUT || accessibleName === SIGN_OUT) return false;
+  if (SESSION_ENDING.some((label) => textContent === label || accessibleName === label)) {
+    return false;
+  }
   return !accountMenuOpen.current || role === 'menuitem' || role === 'radio';
 }
 
 const jumps = actions(() =>
   ROUTES.filter((route) => route !== path.current).map((route) => goTo(route))
 );
+
+/**
+ * Whether the explorer should wait a step before acting: a page has just opened
+ * and may still be fetching what it shows (`noErrorBanner` looks at the state
+ * after the wait), or the account menu is still growing into place.
+ */
+const unsettled = () => openedPage.current || accountMenuOpening.current;
+
+export const settling = actions(() => ['Wait']).when(() => signedIn.current && unsettled());
 
 /**
  * Bombadil's default exploration, without signing out, plus a jump to any page
@@ -220,8 +246,7 @@ export const exploring = weighted([
   [50, scroll],
   [10, navigation],
   [5, jumps],
-  [100, actions(() => (accountMenuOpening.current ? ['Wait'] : []))],
-]).when(() => signedIn.current);
+]).when(() => signedIn.current && !unsettled());
 
 /**
  * Neither signed in nor on the login form: the app is loading its session, or

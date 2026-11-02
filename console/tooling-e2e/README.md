@@ -214,8 +214,9 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_KEEP` | no | `1` leaves agents, rooms and channels behind for inspection. |
 | `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
 | `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
-| `SWITCH_GATEWAY_UI_URL` | browser lane | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` sets it. |
-| `SWITCH_E2E_OUTPUT_DIR` | no | Where the browser lane saves screenshots of failed pages. The stack script sets it. |
+| `SWITCH_GATEWAY_UI_URL` | browser and explore lanes | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` and `just e2e-explore` set it. |
+| `SWITCH_E2E_OUTPUT_DIR` | explore lane | Where the browser lane saves screenshots of failed pages, and the explore lane its trace (in `explore/`). The stack script sets it. |
+| `SWITCH_E2E_EXPLORE_TIME_LIMIT` | no | How long the explore lane explores, e.g. `90s`, `5m` (the default), `1h`. Read only by that lane. |
 | `SWITCH_E2E_DRIVER_MODEL` | agentic lane | Exact model id that plays the human, e.g. `claude-sonnet-5`. |
 | `SWITCH_E2E_JUDGE_MODEL` | agentic lane | Exact model id that grades the conversation. |
 | `SWITCH_E2E_AGENTIC_BUDGET_USD` | agentic lane | What one run may spend, driver, judge and agent together. The run stops once it is reached. |
@@ -401,7 +402,8 @@ the browser lane, the server log must stay free of errors for the whole run.
 
 The explorer deletes, archives and renames whatever it finds, so the lane
 refuses to run on anything but an ephemeral stack. It cannot sign out, since
-that would end the session it is testing, and it acts only once signed in.
+that would end the session it is testing, nor click Change password, the entry
+next to Sign out, and it acts only once signed in.
 Everything else is fair game, including deleting things behind a confirmation
 dialog. The lane seeds an agent and two rooms first, so the pages have
 something on them.
