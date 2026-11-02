@@ -204,8 +204,9 @@ version of their own to them without also giving them a release of their own.
   `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`),
   as JSON such as `{"atlassian":"core"}`. A service it does not name comes
   back as before. A service, or a way back, that the catalog does not list
-  stops the server; `core` without `GATEWAY_PUBLIC_URL` is a warning at
-  startup, and that service keeps signing in through Switch Console.
+  stops the server. `core` without `GATEWAY_PUBLIC_URL` is a warning at
+  startup: the service signs in through Switch Console where its entry lists
+  loopback; otherwise it cannot be connected until `GATEWAY_PUBLIC_URL` is set.
   Atlassian now offers both, through Switch Console unless the server names
   `core`; before naming it, each Atlassian site's admin must allow-list the
   callback. Switch registers its own callback with a vendor only where

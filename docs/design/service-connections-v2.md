@@ -223,9 +223,14 @@ catalog allows that it can:
 A deployment names the way back per service in `SERVICE_SIGN_IN_REDIRECT`, JSON
 such as `{"atlassian":"core"}`; a service it does not name comes back the first
 way its entry lists, which for an entry listing both is loopback. A slug not in
-the catalog, or a way its entry does not list, stops the server, and `core` on a
-server without `GATEWAY_PUBLIC_URL` is a warning at startup while the service
-keeps signing in through loopback. Some vendors take Core's callback,
+the catalog, or a way its entry does not list, stops the server as it starts;
+the config itself checks only the slug's shape, so reading it (as a migration
+does) never loads the catalog. `core` on a server without `GATEWAY_PUBLIC_URL`
+is a warning at startup: the service signs in through loopback where its entry
+lists loopback; otherwise it cannot be connected until `GATEWAY_PUBLIC_URL` is
+set. Every replica needs the same value, because they share one registered
+client per service and choice, and replicas that differ keep replacing it.
+Some vendors take Core's callback,
 `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
 only once their admin has allow-listed it (for Atlassian, an admin of each
 site people sign in to), so that comes first; until then the vendor shows its
