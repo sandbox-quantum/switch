@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
@@ -62,6 +63,7 @@ async def test_an_agent_not_in_the_room_says_nothing_there(
     assert await said_by(session_factory, room, client) == []
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_two_processes_sweeping_a_gone_box_close_its_turn_and_say_the_line_once(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -75,8 +77,10 @@ async def test_two_processes_sweeping_a_gone_box_close_its_turn_and_say_the_line
         AgentDefinition,
         AgentSessionActivityItem,
         ApiKey,
+        MachineWorkspace,
     )
     from switch_core.session_activity.maintenance import sweep_once
+    from tests.switch_core.hosted_machine_helpers import seed_machine
 
     killed = datetime(2026, 10, 26, 11, 43, 52, tzinfo=UTC)
     room = await make_room(session_factory)
@@ -102,6 +106,22 @@ async def test_two_processes_sweeping_a_gone_box_close_its_turn_and_say_the_line
             disconnect_reason="heartbeat_lapsed",
         )
         db.add(box)
+        await db.flush()
+        # On a v2 box: the restart sweep reads only controllers on one.
+        machine = await seed_machine(
+            db,
+            owner_id=agent.owner_id,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=1,
+        )
+        machine.backend = "box"
+        workspace = await db.scalar(
+            select(MachineWorkspace).where(MachineWorkspace.machine_id == machine.id)
+        )
+        assert workspace is not None
+        workspace.controller_id = box.id
         await db.flush()
         db.add(
             AgentDefinition(

@@ -44,6 +44,7 @@ def test_a_report_without_them_is_still_accepted() -> None:
     assert "ai_calls_today" not in kept["agents"][0]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -68,6 +69,7 @@ def test_a_gateway_figure_that_cannot_be_one_is_refused(
         StatusReport.model_validate(report)
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize("value", [-1, MAX_GATEWAY_CALLS + 1, "12", 2.5, False])
 def test_an_agent_s_ai_calls_that_cannot_be_a_count_are_refused(value: object) -> None:
     report = fixture("status_request.json")
@@ -83,6 +85,7 @@ def test_the_cap_s_source_is_one_of_two_fixed_values(source: str) -> None:
     assert stored(report)["machine"]["gateway_cap_source"] == source
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize("source", ["admin", "", 1, None.__class__.__name__])
 def test_any_other_cap_source_is_refused(source: object) -> None:
     report = fixture("status_request.json")

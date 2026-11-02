@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from switch_core.db.models import TenantMember, User, require_tenant_id
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_PAUSED,
@@ -47,6 +49,7 @@ async def _pause(app: ControllerApp) -> None:
     )
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_paused_owner_can_neither_start_stop_nor_retry(controller_app):  # noqa: F811
     app = controller_app
     await _pause(app)
@@ -58,6 +61,7 @@ async def test_a_paused_owner_can_neither_start_stop_nor_retry(controller_app): 
     assert (machine.desired_state, machine.stop_reason) == ("stopped", "paused")
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_turned_off_owner_can_neither_start_stop_nor_retry(controller_app):  # noqa: F811
     app = controller_app
     await _turn_off(app)
@@ -67,6 +71,7 @@ async def test_a_turned_off_owner_can_neither_start_stop_nor_retry(controller_ap
         assert refused.json() == {"detail": MACHINE_TURNED_OFF}
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_ensure_is_refused_for_a_turned_off_owner(controller_app):  # noqa: F811
     app = controller_app
     await _turn_off(app)
@@ -86,6 +91,7 @@ async def test_ensure_never_wakes_a_paused_box(controller_app):  # noqa: F811
     assert (machine.desired_state, machine.stop_reason) == ("stopped", "paused")
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_prepare_hands_out_no_code_for_a_blocked_workspace(controller_app):  # noqa: F811
     app = controller_app
     await _turn_off(app)
@@ -120,6 +126,7 @@ class _NoRevoke:
         return None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_code_from_before_a_pause_never_enrols_after_the_resume(
     controller_app,  # noqa: F811
 ):
@@ -153,6 +160,7 @@ async def test_a_code_from_before_a_pause_never_enrols_after_the_resume(
     assert after["enrollment_code"] not in (None, "swce_synthetic-1")
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_owners_summary_shows_a_marked_box_as_stopped_by_its_owner(
     controller_app,  # noqa: F811
 ):

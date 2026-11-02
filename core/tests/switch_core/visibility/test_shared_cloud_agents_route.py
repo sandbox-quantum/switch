@@ -123,6 +123,7 @@ async def test_only_fixed_fields_leave_never_the_boxs_text(harness: Harness) -> 
     assert set(agent) <= AGENT_KEYS
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_paused_person_and_a_turned_off_person_each_see_their_own_reason(
     harness: Harness,
 ) -> None:

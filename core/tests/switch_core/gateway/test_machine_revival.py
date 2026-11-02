@@ -97,6 +97,7 @@ async def _enrolled_machine(harness: Harness, owner: User) -> tuple[str, str]:
     return machine.id, str(enrolled["controller_id"])
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_cleaned_up_machine_comes_back_with_its_id_and_nothing_old(
     harness: Harness,
 ) -> None:

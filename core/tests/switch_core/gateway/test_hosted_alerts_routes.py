@@ -70,6 +70,7 @@ def _report(**overrides: object) -> dict:
     return body
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_report_is_kept_and_decides_its_alerts(harness: Harness) -> None:
     owner = await add_member(harness.session_factory, "ada")
     async with _hosted_app(harness.session_factory, owner) as hosted:
@@ -88,6 +89,7 @@ async def test_a_report_is_kept_and_decides_its_alerts(harness: Harness) -> None
     }
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_bad_report_is_refused_without_echoing_it(harness: Harness) -> None:
     owner = await add_member(harness.session_factory, "grace")
     async with _hosted_app(harness.session_factory, owner) as hosted:
@@ -116,6 +118,7 @@ async def test_a_bad_report_is_refused_without_echoing_it(harness: Harness) -> N
     assert latest_cluster_report() is None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_box_facts_are_kept_and_status_reports_leave_them(
     harness: Harness,
 ) -> None:

@@ -638,6 +638,7 @@ async def test_a_node_type_is_never_sent_as_a_box_size(provisioner_app) -> None:
     assert (await _claim(app))["size"] is None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_v1_machine_is_never_asked_for(provisioner_app) -> None:
     """Criterion 10c, Core's half: a `vm` row is `serve`'s, so V0 never asks
     the provisioner for it, while the `box` row beside it is asked for."""

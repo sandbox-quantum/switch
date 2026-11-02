@@ -45,6 +45,7 @@ def test_a_report_without_them_is_accepted_and_stored_without_them() -> None:
     assert "mem_cached_bytes" not in stored["machine"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize(
     "value",
     [-1, MAX_MEMINFO_BYTES + 1, 1.5, "940496 kB", True],

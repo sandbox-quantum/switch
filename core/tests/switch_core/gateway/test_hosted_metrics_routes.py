@@ -97,6 +97,7 @@ def _names(registry: MetricsRegistry) -> dict[str, list]:
     return out
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_hosted_box_report_leaves_counts_only(
     harness: Harness, registry: MetricsRegistry
 ) -> None:
@@ -160,6 +161,7 @@ async def test_a_laptop_report_is_never_counted(
     assert not [name for name in names if name.startswith("switch.hosted.")]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_since_start_counts_must_be_bounded_ints(harness: Harness) -> None:
     owner = await add_member(harness.session_factory, "lin")
     async with harness.client() as client:
@@ -187,6 +189,7 @@ async def test_since_start_counts_must_be_bounded_ints(harness: Harness) -> None
         assert accepted.status_code == 200, accepted.text
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_operators_evictions_are_counted(
     harness: Harness, registry: MetricsRegistry
 ) -> None:

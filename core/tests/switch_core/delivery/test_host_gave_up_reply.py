@@ -62,6 +62,7 @@ def _connected_managed_agent(
     return fake, reads
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.asyncio
 async def test_a_connected_agent_whose_host_gave_up_tells_the_room() -> None:
     send_message = _Recorder()
@@ -73,6 +74,7 @@ async def test_a_connected_agent_whose_host_gave_up_tells_the_room() -> None:
     assert send_message.calls[0]["body"] == f"@louisa {GAVE_UP}"
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.asyncio
 async def test_any_other_failure_names_no_cure_but_says_the_message_is_kept() -> None:
     send_message = _Recorder()
@@ -88,6 +90,7 @@ async def test_any_other_failure_names_no_cure_but_says_the_message_is_kept() ->
     )
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.asyncio
 async def test_a_connected_agent_whose_host_is_running_gets_no_notice() -> None:
     send_message = _Recorder()

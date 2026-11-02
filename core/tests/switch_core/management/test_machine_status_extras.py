@@ -42,6 +42,7 @@ def test_the_valve_host_counts_are_accepted_and_kept() -> None:
     assert machine["valve_hosts_joined"] == 4
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize("value", [-1, MAX_VALVE_HOSTS + 1, 1.5, "5", True])
 @pytest.mark.parametrize("field", ["valve_hosts", "valve_hosts_joined"])
 def test_a_host_count_that_cannot_be_one_is_refused(field: str, value: object) -> None:
@@ -77,6 +78,7 @@ def test_a_report_without_a_note_reads_none_and_stores_none() -> None:
     assert "memory_note" not in stored(report)["machine"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize(
     "old",
     [
@@ -105,6 +107,7 @@ def test_an_older_controllers_note_is_dropped_and_the_rest_kept(old: object) -> 
     assert machine["sessions_max"] == report["machine"]["sessions_max"]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize("value", [-1, MAX_MEMINFO_BYTES + 1, 1.5, "5368709120", True])
 @pytest.mark.parametrize("field", ["memory_note_box_bytes", "memory_note_shmem_bytes"])
 def test_a_note_figure_that_cannot_be_a_reading_is_refused(

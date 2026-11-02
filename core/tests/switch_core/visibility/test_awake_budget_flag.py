@@ -35,6 +35,7 @@ def _with_flag(app, enabled: bool):  # type: ignore[no-untyped-def]
     return app
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize(("enabled", "status"), [(False, 422), (True, 201)])
 async def test_awake_budgets_follow_the_flag(
     session_factory: async_sessionmaker[AsyncSession], enabled: bool, status: int

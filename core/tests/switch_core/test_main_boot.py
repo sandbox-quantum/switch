@@ -243,7 +243,9 @@ def test_a_startup_failure_exits_non_zero(
         "m._start_hosted_alerts = boom\n"
         "m.main()\n"
     )
-    booted = start_core(["-c", forced], _boot_env(tmp_path, boot_database, port))
+    # The replaced call starts only with hosted agents v2 on, as V0-0's did.
+    env = _boot_env(tmp_path, boot_database, port) | {"HOSTED_BOX_PROVISIONING": "true"}
+    booted = start_core(["-c", forced], env)
     code = _wait_exit(booted)
     log = booted.text()
     assert code == STARTUP_FAILURE, log[-4000:]

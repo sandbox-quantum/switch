@@ -93,6 +93,7 @@ def test_the_operator_bearer_is_accepted() -> None:
     _call(_settings(operator_token=OPERATOR), f"Bearer {OPERATOR}")
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 def test_the_controller_bearer_is_refused_and_named_in_the_log_only(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -108,6 +109,7 @@ def test_the_controller_bearer_is_refused_and_named_in_the_log_only(
     assert not any(s in _all_text(caplog) for s in SECRETS)
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize(
     ("authorization", "reason"),
     [
@@ -397,6 +399,7 @@ def test_a_running_core_warns_once_when_an_overlap_lapses(
 # 10: lock-out, and the right bearer still served from a locked address.
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 def test_repeated_refusals_lock_out_but_the_operator_bearer_is_served(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.clients.admin_messages import PLATFORM_MARKER as _PLATFORM_MARKER
@@ -667,6 +669,7 @@ class TestGateAddressed:
         assert outcome.addressed is False
         assert client.sent == []
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_capped_box_demotes_the_message_and_says_so_once(self) -> None:
         # Visibility V2: like a budget, the agent never starts a turn its gateway would refuse.
         line = "My owner (@ada) has reached today's AI limit, so I can't start on this."

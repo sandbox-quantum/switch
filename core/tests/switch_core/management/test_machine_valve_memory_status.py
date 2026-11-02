@@ -41,6 +41,7 @@ def test_a_report_without_it_is_accepted_and_reads_none() -> None:
     )
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize("value", ["ok", "UNPROTECTED", "", 1, True, ["failing"]])
 def test_any_other_value_is_refused(value: object) -> None:
     report = fixture("status_request.json")

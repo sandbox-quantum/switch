@@ -926,6 +926,7 @@ class TestPlacementBindsTheAgentInCore:
         assert restarted.is_revoked(controller.controller_id)
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 class TestTheRestartNotice:
     """Level 2, 3a: the box's controller tells a room, as its agent, that a
     restart cut a turn off. Core posts its own text under `restart:<turn>`, so
@@ -1104,6 +1105,7 @@ class TestTheRestartNotice:
         assert response.json()["error"]["code"] == "forbidden"
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 class TestNoticeKeysArePlain:
     """Security, 27 Oct: what goes into a sender's key and the audit record is
     plain characters only, for the restart notice's `turn_id` and the reset
@@ -1180,6 +1182,7 @@ class TestNoticeKeysArePlain:
         ]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 class TestRestNotice:
     """The controller has Switch tell a room that background processes the
     agent left running were stopped when it went to rest (B74, criterion m).
@@ -1301,6 +1304,7 @@ class TestRestNotice:
         assert {item["client_txn_id"] for item in sent} == {"rest:wake-1"}
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 class TestTheResetRefusedLine:
     """B71: a `!reset` Switch relayed to a controller without announcing it,
     which the box had no session to take, is answered with Core's own

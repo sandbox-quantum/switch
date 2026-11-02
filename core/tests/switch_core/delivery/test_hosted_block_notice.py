@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from switch_core.clients.admin_messages import AUTO_REPLY_FLAG
 from switch_core.delivery import recipient
 from switch_core.delivery.recipient import (
@@ -101,6 +103,7 @@ async def _gate(client, event, room_id: str = "!room:a"):  # type: ignore[no-unt
     return await AgentRecipient._gate_addressed(client, None, client.agent, event, meta)
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_paused_agents_message_is_dropped_with_one_line(monkeypatch) -> None:
     monkeypatch.setattr(recipient, "_hosted_block_notices", {})
     client = _blocked_client("paused_by_switch")
@@ -113,6 +116,7 @@ async def test_a_paused_agents_message_is_dropped_with_one_line(monkeypatch) -> 
     assert client.calls == []
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_turned_off_agent_never_answers_an_auto_reply(monkeypatch) -> None:
     monkeypatch.setattr(recipient, "_hosted_block_notices", {})
     client = _blocked_client("turned_off_by_admin")

@@ -16,6 +16,7 @@ from switch_core.db.stores.hosted_machine_store import MACHINES_FULL
 from switch_core.db.tenant_lookup import tenants_of_cloud_machine
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.hosted_machines import WORKSPACE_CONNECT_TIMEOUT
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.test_hosted_controller import (  # noqa: F401
@@ -50,6 +51,13 @@ async def test_summary_has_the_contract_shape(controller_app):  # noqa: F811
     app = controller_app
     controller_id, agent_ids = await enrolled(app, agents=1)
     expected = json.loads((FIXTURES / "machine_summary_sleeping.json").read_text())
+    # The v1/v2 switch: with v2 on, the summary also names the backend; with it
+    # off, it is exactly as before v2, without Your cloud's figures.
+    if process_hosted_v2():
+        expected["backend"] = "vm"
+    else:
+        for key in ("room", "awake", "ai_calls_today"):
+            del expected[key]
     await update_machine(
         app.factory,
         app.machine_id,
@@ -94,12 +102,16 @@ async def test_a_machine_that_never_enrolled_reports_no_usage_or_agents(
         summary["controller_id"],
         summary["sleeping"],
     ) == (None, None, None, [], None, False)
-    # Visibility L1: nothing for Your cloud without a controller report.
-    assert (summary["room"], summary["awake"], summary["ai_calls_today"]) == (
-        None,
-        None,
-        None,
-    )
+    # Visibility L1: nothing for Your cloud without a controller report. With
+    # hosted agents v2 off, the summary is as before v2, without those keys.
+    if process_hosted_v2():
+        assert (summary["room"], summary["awake"], summary["ai_calls_today"]) == (
+            None,
+            None,
+            None,
+        )
+    else:
+        assert not {"room", "awake", "ai_calls_today"} & set(summary)
 
 
 async def test_the_summary_lists_the_agents_placed_on_its_controller(
@@ -124,6 +136,7 @@ async def test_the_summary_lists_the_agents_placed_on_its_controller(
     assert summary["heartbeat_at"] is not None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_your_cloud_figures_come_from_this_workspace_s_controller(
     controller_app,  # noqa: F811
 ):
