@@ -1008,6 +1008,12 @@ ROUTES: dict[str, Case] = {
         json={"fields": {"api_key": "matrix", "application_key": "matrix"}},
         why="Your own connection; Datadog signs in, so nobody connects it with a key here.",
     ),
+    "PUT /gateway/service-connections/{service}/paste": put(
+        f"{G}/service-connections/atlassian/paste",
+        anyone(ok=404),
+        json={"method": "token", "fields": {"token": "matrix"}, "choices": {}},
+        why="Your own connection; Atlassian takes nothing pasted in place of its sign-in.",
+    ),
     "DELETE /gateway/service-connections/{service}": delete(
         f"{G}/service-connections/github",
         anyone(ok=404),
