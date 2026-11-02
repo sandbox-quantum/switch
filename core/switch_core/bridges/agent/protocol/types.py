@@ -155,6 +155,11 @@ class ParticipantDescriptor(BaseModel):
     # The agent's room-scoped alias, if any: `@<alias>` addresses it in this
     # room exactly like its real name.
     alias: str | None = None
+    # How the agent's shared session covers this room
+    # (`switch_core.shared_session`): "home" when it is based here, "shared"
+    # when this room shares it from elsewhere, null when the room has the
+    # agent's own session as usual.
+    shared_session: Literal["home", "shared"] | None = None
 
 
 class RoomDetailDescriptor(BaseModel):
@@ -187,6 +192,9 @@ class RoomDetailDescriptor(BaseModel):
     # Per-room agent aliases, keyed by agent name → alias (only agents that
     # have an alias in this room appear).
     aliases: dict[str, str] = {}
+    # Agents whose shared session covers this room, keyed by agent name →
+    # "home" (it is based here) or "shared" (this room shares it).
+    shared_sessions: dict[str, Literal["home", "shared"]] = {}
     # The room's assumable roles, mirroring `list_roles`: each entry carries
     # `name`, `exclusive`, `instructions_preview`, `held_by` (holder objects
     # with presence), and `assumable_by_me`.

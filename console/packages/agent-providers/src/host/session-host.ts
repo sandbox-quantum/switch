@@ -575,11 +575,20 @@ export class HostedSession {
   }
 
   /**
-   * The agent posted to a room, through one of the Switch tools: the running
-   * turn has answered, so the host has nothing to post for it.
+   * The agent posted to a room, through one of the Switch tools. When that is
+   * the room the running turn came from, or the room is not known, the turn
+   * has answered, so the host has nothing to post for it. A post somewhere
+   * else leaves the asking room still waiting.
    */
-  agentPostedToRoom(): void {
-    if (this.activeTurn) this.postedTurns.add(this.activeTurn);
+  agentPostedToRoom(roomId?: string): void {
+    if (!this.activeTurn) return;
+    const origin = this.originOf(this.activeTurn)?.roomId;
+    if (roomId === undefined || !origin || roomId === origin) this.postedTurns.add(this.activeTurn);
+  }
+
+  /** The room the running turn's message came from, if a room message started it. */
+  activeOriginRoom(): string | null {
+    return this.activeTurn ? (this.originOf(this.activeTurn)?.roomId ?? null) : null;
   }
 
   /** A post to the room in the running turn was refused: why, the last one kept. */

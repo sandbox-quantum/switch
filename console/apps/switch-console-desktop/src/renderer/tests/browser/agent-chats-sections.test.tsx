@@ -1,4 +1,5 @@
-import { act } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -155,6 +156,11 @@ afterEach(() => {
   container.remove();
 });
 
+/** Draws `ui` with the query client the app provides; a room's shared-session
+ * menu reads it. */
+const render = (ui: ReactNode) =>
+  root.render(<QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>);
+
 /** The section buttons under the agent's profile, by their labels. */
 const navButtons = () => [
   ...container.querySelectorAll<HTMLButtonElement>('[role="toolbar"][aria-label="Agent"] button'),
@@ -164,7 +170,7 @@ const navItem = (label: string) =>
   navButtons().find((button) => button.getAttribute('aria-label') === label)!;
 
 it("puts Connectors under the agent's profile, before Agent settings, and opens it there", async () => {
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Connectors', 'Agent settings']);
   expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('false');
 
@@ -185,7 +191,7 @@ it("puts Connectors under the agent's profile, before Agent settings, and opens 
 
 it("shows the agent's name and where it runs at the top of its column", async () => {
   await act(async () =>
-    root.render(
+    render(
       <AgentChats
         agent={{
           ...AGENT,
@@ -202,7 +208,7 @@ it("shows the agent's name and where it runs at the top of its column", async ()
 it('calls the machine "This computer" when the agent runs here, keeping its name on hover', async () => {
   machine.thisComputer = true;
   await act(async () =>
-    root.render(
+    render(
       <AgentChats
         agent={{
           ...AGENT,
@@ -224,14 +230,14 @@ it('calls the machine "This computer" when the agent runs here, keeping its name
 });
 
 it('says so when the agent has no machine', async () => {
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(container.textContent).toContain('No machine');
 });
 
 it("leaves Connections out for an agent whose grants aren't yours, keeping service access in settings", async () => {
   grants.data = null;
   navigation.reset({ ...navigation.params(), section: 'connections' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Agent settings']);
   expect(container.querySelector('[data-testid="connections"]')).toBeNull();
 
@@ -243,7 +249,7 @@ it("leaves Connections out for an agent whose grants aren't yours, keeping servi
 
 it('leaves Connections out when the server has service connections off', async () => {
   flags.service_connections = false;
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Agent settings']);
 });
 
@@ -265,7 +271,7 @@ it('opens a room in the right pane as the room view draws it, keeping its row se
   rooms.list = [room('room-1', 'design'), room('room-2', 'launch')];
   rooms.bridges = { 'room-1': 'mattermost', 'room-2': 'mattermost' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
 
   const pane = embeddedRoom()!;
   expect(pane).not.toBeNull();
@@ -291,7 +297,7 @@ it('lets the room go when a section is picked or the page is left', async () => 
   rooms.list = [room('room-1', 'design')];
   rooms.bridges = { 'room-1': 'mattermost' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(roomEmbedSlotStore.slot?.roomId).toBe('room-1');
 
   await act(async () => navItem('Agent settings').click());
@@ -312,7 +318,7 @@ it("opens a room whose platform can't be drawn here on its settings", async () =
   rooms.list = [room('room-1', 'design'), room('room-2', 'agents-only')];
   rooms.bridges = { 'room-1': 'slack' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   expect(embeddedRoom()?.textContent).toBe('Settings of room-1');
 
   await act(async () => roomRow('agents-only').click());
@@ -358,7 +364,7 @@ it('follows the open direct chat into its room when it becomes a group, not an o
       name: 'pm-agent',
       roomId: 'current',
     });
-    await act(async () => root.render(<AgentChats agent={AGENT} />));
+    await act(async () => render(<AgentChats agent={AGENT} />));
     expect(navigate).not.toHaveBeenCalled();
 
     // Someone adds a person: the open chat is now a group.
@@ -432,7 +438,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
       JSON.stringify({ text: 'half a thought', mentions: [] })
     );
     navigation.reset({ serverId: 'server-1', agentId: 'agent-3', name: 'pm-agent' });
-    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
+    await act(async () => render(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
     const row = container.querySelector<HTMLElement>('[aria-label="Open chat New Chat"]');
     expect(row).not.toBeNull();
     await act(async () => row!.click());
@@ -444,7 +450,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
     localStorage.removeItem(chatDraftKey({ ...scope, roomId: 'unsaved-chat:kept-request' }));
     navigation.reset({ serverId: 'server-1', agentId: 'agent-2', name: 'pm-agent' });
     localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!, 'emptied');
-    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
+    await act(async () => render(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
     expect(container.querySelector('[aria-label="Open chat New Chat"]')).toBeNull();
     expect(localStorage.getItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!)).toBeNull();
   } finally {
@@ -514,7 +520,7 @@ it('reopens the created chat whose first send failed, open before a reload, besi
       name: 'pm-agent',
       roomId: 'made',
     });
-    await act(async () => root.render(<AgentChats agent={agent} />));
+    await act(async () => render(<AgentChats agent={agent} />));
     expect(navigation.params().roomId).toBe('made');
     expect(openAgentChat(agent, 'made')?.roomId).toBe('made');
     expect(activeRows()).toEqual(['New Chat']);
@@ -553,7 +559,7 @@ it('reopens the unsent New chat that was open before a reload, not the newest ch
       chatsStore.serverId = 'server-1';
     });
     chatsStore.upsert(directChat('agent-4', 'newest', 'Newest', 5));
-    await act(async () => root.render(<AgentChats agent={agent} />));
+    await act(async () => render(<AgentChats agent={agent} />));
     expect(directChats.unsavedChat(roomId)).toBeDefined();
     expect(navigation.params().roomId).toBe(roomId);
     expect(openAgentChat(agent, roomId)).toBeNull();
@@ -573,7 +579,7 @@ it('reopens the unsent New chat that was open before a reload, not the newest ch
 it('offers a new room or an existing one from the Rooms section, with the agent picked', async () => {
   const { showModal } = await import('@renderer/lib/modal/modal-provider');
   vi.mocked(showModal).mockClear();
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   const add = container.querySelector<HTMLButtonElement>('[aria-label="Add to a room"]')!;
   await act(async () => add.click());
   const items = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];

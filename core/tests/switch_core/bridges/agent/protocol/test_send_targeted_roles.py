@@ -58,6 +58,9 @@ class _FakeRoomStore:
     async def list_aliases(self, _session: Any, _room_id: str) -> dict[str, str]:
         return {}
 
+    async def sharing_agent_ids(self, _session: Any, _room_id: str) -> set[str]:
+        return set()
+
 
 def _participant(
     name: str, ptype: str, status: AgentStatus | None, *, agent_id: str | None = None

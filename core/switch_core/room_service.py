@@ -43,6 +43,7 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
+from switch_core.shared_session import check_join_choice
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
@@ -221,6 +222,12 @@ class RoomService:
                 listener(tenant_id, room_id, [])
             except Exception:
                 logger.exception("Room listener failed for room %s", room_id)
+
+    @property
+    def telemetry(self) -> TelemetryService | None:
+        """Where room changes are reported, for callers that change a room's
+        settings outside this service."""
+        return self._telemetry
 
     def on_room_agents_changed(
         self, listener: Callable[[str, str], Awaitable[None]]
@@ -995,9 +1002,15 @@ class RoomService:
         join_event_listeners: list[str] | None = None,
         added_by_kind: Literal["user", "agent", "system"] = "user",
         with_agents: Callable[[AsyncSession], Awaitable[None]] | None = None,
+        shared: bool | None = None,
     ) -> None:
         """`with_agents` runs in the transaction that records the agents, so
-        what it writes commits with them or not at all."""
+        what it writes commits with them or not at all.
+
+        `shared` chooses whether the room shares each added agent's session
+        (`switch_core.shared_session`); None leaves it to each agent's default.
+        Choosing isolated for a locked agent is refused before anything changes.
+        """
         by_name = agent_ids is None and agent_names is not None
         if by_name:
             assert agent_names is not None
@@ -1021,6 +1034,11 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
             existing = await self._room_store.get_agent_ids(session, room.id)
+            if shared is False:
+                for aid in agent_ids:
+                    agent = await self._agent_store.get(session, aid)
+                    if agent is not None:
+                        check_join_choice(agent, shared)
 
         new_agent_ids = [aid for aid in agent_ids if aid not in existing]
         if not new_agent_ids:
@@ -1046,6 +1064,9 @@ class RoomService:
                     join_event_listeners={
                         aid for aid in new_agent_ids if aid in listeners
                     },
+                    shared=None
+                    if shared is None
+                    else dict.fromkeys(new_agent_ids, shared),
                 )
                 if with_agents is not None:
                     await with_agents(session)

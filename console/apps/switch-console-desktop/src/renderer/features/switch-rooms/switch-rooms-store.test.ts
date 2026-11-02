@@ -62,3 +62,16 @@ it('keeps sidebar association after delivery is detached without reporting a liv
   expect(store.associatedRoomForSession('saved')).toBe('room-b');
   expect(store.roomForSession('saved')).toBeNull();
 });
+
+describe('shared sessions', () => {
+  it('remembers which rooms each session answers from its home room', () => {
+    const store = new SwitchRoomsStore();
+    store.rememberShares({ work: 'lead', ops: 'lead', other: 'second' });
+    expect(store.sharedRoomsForSession('lead')).toEqual(['ops', 'work']);
+    expect(store.sharedRoomsForSession('second')).toEqual(['other']);
+    expect(store.sharerOfRoom('work')).toBe('lead');
+    expect(store.sharerOfRoom('home')).toBeNull();
+    store.rememberShares({});
+    expect(store.sharedRoomsForSession('lead')).toEqual([]);
+  });
+});

@@ -379,6 +379,8 @@ def room_document(
             room["agents"] = [rename(a) for a in room["agents"]]
         if isinstance(room.get("aliases"), dict):
             room["aliases"] = {rename(k): v for k, v in room["aliases"].items()}
+        if isinstance(room.get("sessions"), dict):
+            room["sessions"] = {rename(k): v for k, v in room["sessions"].items()}
         if "kickoff" in room:
             room["kickoff"] = in_text(room["kickoff"])
     if "kickoff" in room_part:

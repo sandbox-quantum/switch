@@ -8,7 +8,7 @@ import {
   SwitchEventStream,
   type SwitchEventStreamDeps,
 } from '@sandboxaq/switch-agent-runtime';
-import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
+import { callOperation, type SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import type { Handoff } from './handoff';
 import { Journal } from './journal';
@@ -34,6 +34,7 @@ import {
   servicesChanged,
 } from './session-services';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import { SharedRooms, sharingFromDetail } from './shared-rooms';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, onConfigReplaced, readWatchFlags } from './watch-flags';
 import {
@@ -660,11 +661,15 @@ export type AgentEventStream = {
   start(): void;
   setSpawnCapable(capable: boolean): void;
   /**
-   * State every session's room. The rooms named back in `refusedRooms` are
-   * ones the agent is not in (deleted, or the agent taken out): their sessions
-   * were left out, and the rest placed.
+   * State every session's room, and (`shares`: session id → rooms) the rooms
+   * each answers from its home room. The rooms named back in `refusedRooms`
+   * are ones whose placement or share was left out (the agent is not in the
+   * room any more, or its settings no longer share it); the rest were placed.
    */
-  replacePlacements(placements: Record<string, string>): Promise<{ refusedRooms: string[] }>;
+  replacePlacements(
+    placements: Record<string, string>,
+    shares?: Record<string, string[]>
+  ): Promise<{ refusedRooms: string[] }>;
 };
 
 /**
@@ -769,6 +774,25 @@ export async function runAgentHost(
       token: credentials.SWITCH_API_TOKEN,
     };
     const placements = await SessionPlacements.open(root, () => assignments.placements());
+    // Which rooms share this agent's session, read from Switch when a message
+    // reaches a room no session attends or one a share covers.
+    const sharedRooms = new SharedRooms(async () => {
+      const answer = await callOperation(
+        {
+          identity,
+          connectionId,
+          selector: {},
+          room: null,
+          mediaDir: root,
+          cwd: root,
+          deadConnection: (operation) => `Switch refused ${operation}: the connection lapsed.`,
+        },
+        'get_agent_detail',
+        { agent_id: identity.agentId }
+      );
+      if (answer.isError) throw new Error(answer.content.map((part) => part.text).join('\n'));
+      return sharingFromDetail(answer.structuredContent);
+    });
     /**
      * This agent's sessions whose host runs here and has not said it is idle:
      * the ones an agent controller restarting now would cut off mid-turn.
@@ -791,7 +815,9 @@ export async function runAgentHost(
       busy: busySessions(),
     });
     unbind.push(
-      placements.onChange((map) => control.report({ placements: map, busy: busySessions() })),
+      placements.onChange((map, shares) =>
+        control.report({ placements: map, shares, busy: busySessions() })
+      ),
       links.onBusy(() => control.report({ busy: busySessions() }))
     );
     let stream: AgentEventStream | null = null;
@@ -804,15 +830,19 @@ export async function runAgentHost(
      */
     const publish = (): Promise<void> => {
       const run = async () => {
-        const answer = await stream?.replacePlacements(placements.snapshot());
-        // Switch or the controller said the agent is not in the room (it is gone,
-        // or the agent was taken out): a refusal naming the room, never a failure
-        // to answer. The session no longer attends it, so it is not stated again.
+        const answer = await stream?.replacePlacements(
+          placements.snapshot(),
+          placements.sharesBySession()
+        );
+        // Switch or the controller left a room out (it is gone, the agent was
+        // taken out, or a share its settings no longer allow): a refusal naming
+        // the room, never a failure to answer. The session no longer attends or
+        // answers for it, so it is not stated again.
         for (const roomId of answer?.refusedRooms ?? []) {
           const lost = await placements.roomLost(roomId);
           if (lost)
             console.warn(
-              `Session ${lost} was placed in room ${roomId}, which this agent is no longer in; it no longer attends it.`
+              `Session ${lost} was placed in, or shared, room ${roomId}, which Switch left out; it no longer answers there.`
             );
         }
       };
@@ -1210,6 +1240,31 @@ export async function runAgentHost(
      * when it was addressed should still get one.
      */
     const admit = async (event: Handoff, spawning: boolean, waiting: boolean): Promise<boolean> => {
+      const home = await sharedRooms.homeFor(event.roomId);
+      const sharer = placements.sharerOf(event.roomId);
+      if (sharer) {
+        // Still shared, and from the room that session is in? A room isolated
+        // since, or a home moved, gets the ordinary treatment below.
+        if (home === null || placements.roomOf(sharer) !== home) {
+          await placements.unshare(event.roomId);
+          publishQuietly();
+          console.warn(
+            `Room ${event.roomId} no longer shares session ${sharer}'s home room, so it is answered on its own.`
+          );
+        }
+      }
+      if (home !== null) {
+        // A room shared again keeps the session it had while isolated until
+        // its next message: that session gives the room up to the home one.
+        const own = placements.placedIn(event.roomId);
+        if (own && own !== placements.placedIn(home)) {
+          await placements.unplace(own);
+          publishQuietly();
+          console.warn(
+            `Room ${event.roomId} shares this agent's session again, so session ${own} no longer answers it; the session in room ${home} does.`
+          );
+        }
+      }
       const placed = placements.sessionIn(event.roomId);
       if (placed) {
         const owner = await sessionConfig(placed);
@@ -1223,12 +1278,27 @@ export async function runAgentHost(
           `Session ${placed} ${owner ? 'was stopped' : 'is not one of this agent’s sessions here'}, so room ${event.roomId} has no session attending it now.`
         );
       }
+      // A room sharing the agent's session is answered from its home room:
+      // by the session there, or by a new one placed there.
+      if (home !== null) {
+        const homeSession = placements.placedIn(home);
+        const owner = homeSession ? await sessionConfig(homeSession) : null;
+        if (homeSession && owner && !(await stopped(homeSession))) {
+          await placements.share(homeSession, event.roomId);
+          publishQuietly();
+          await deliver(owner, event, waiting);
+          return true;
+        }
+      }
       if (!spawning) return false;
       const config = await assignments.assign(
         sharedConfigSchema.parse(JSON.parse(await readFile(join(root, 'config.json'), 'utf8'))),
         event
       );
-      await placements.place(config.session.sessionId, event.roomId);
+      if (home !== null) {
+        await placements.place(config.session.sessionId, home);
+        await placements.share(config.session.sessionId, event.roomId);
+      } else await placements.place(config.session.sessionId, event.roomId);
       publishQuietly();
       if (stream?.announcesSessionStarts) await tellStarting(config, event);
       await deliver(config, event, waiting);
@@ -1491,11 +1561,12 @@ export async function runAgentHost(
               `Session ${sessionId} was stopped; start it before moving a room to it.`
             );
           const before = placements.snapshot();
+          const beforeShares = placements.sharesSnapshot();
           const moved = await placements.place(sessionId, roomId);
           try {
             await publish();
           } catch (error) {
-            await placements.restore(before);
+            await placements.restore(before, beforeShares);
             throw new Error(
               `Switch refused to move room ${roomId} to session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
             );

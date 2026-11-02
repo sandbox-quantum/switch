@@ -9,6 +9,7 @@ import { organizationMembers } from "./organization-members.ts";
 import { organizations } from "./organizations.ts";
 import { roomCapture } from "./room-capture.ts";
 import { roomGroupPaths } from "./room-groups.ts";
+import { sharedSession } from "./shared-session.ts";
 import type { FastScenario } from "./scenario.ts";
 
 /** Every fast-lane scenario. A scenario not listed here does not run. */
@@ -25,4 +26,5 @@ export const FAST_SCENARIOS: readonly FastScenario[] = [
   followUps,
   organizationMembers,
   organizations,
+  sharedSession,
 ];

@@ -40,7 +40,10 @@ export function useRoomHealth(serverId: string | null) {
     );
   }, [serverId, cache]);
   useEffect(() => {
-    if (query.data) switchRoomsStore.rememberRooms(query.data.placements);
+    if (query.data) {
+      switchRoomsStore.rememberRooms(query.data.placements);
+      switchRoomsStore.rememberShares(query.data.shares ?? {});
+    }
   }, [query.data]);
   return query;
 }

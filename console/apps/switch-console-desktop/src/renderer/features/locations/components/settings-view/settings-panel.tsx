@@ -8,6 +8,7 @@ import { CanManageAgentsSettingsSection } from '@renderer/features/locations/com
 import { PermissionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
 import { ProviderSignInSettingsSection } from '@renderer/features/locations/components/settings-view/sections/provider-sign-in-settings-section';
 import { ServiceGrantsSettingsSection } from '@renderer/features/locations/components/settings-view/sections/service-grants-settings-section';
+import { SharedSessionSettingsSection } from '@renderer/features/locations/components/settings-view/sections/shared-session-settings-section';
 import { useLocalAgentTab } from '@renderer/features/locations/hooks/use-local-agent-tab';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import {
@@ -58,6 +59,7 @@ export const SettingsPanel = observer(function SettingsPanel() {
           <ServiceGrantsSettingsSection locationId={locationId} agentId={agentId} />
         )}
       </section>
+      <SharedSessionSettingsSection locationId={locationId} agentId={agentId} />
       <AgentAdvancedSettingsSection locationId={locationId} agentId={agentId} />
     </div>
   );
