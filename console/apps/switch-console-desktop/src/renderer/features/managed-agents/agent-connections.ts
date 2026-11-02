@@ -84,6 +84,15 @@ export function connectionCardStatus(card: AgentConnectionCard): string {
 }
 
 /**
+ * Why the server or the workspace stops the card's service, whatever its
+ * grant; null when neither does, or when the catalog no longer lists it.
+ * The card and its drawer both say it.
+ */
+export function connectionCardBlockedReason(card: AgentConnectionCard): string | null {
+  return card.service === null ? null : serviceBlockedReason(card.service);
+}
+
+/**
  * The card's one line: why the server or the workspace stops the service,
  * even for a grant that is on, which does nothing until that changes; else
  * what the grant lets the agent do; else why it cannot be turned on; else
@@ -91,7 +100,7 @@ export function connectionCardStatus(card: AgentConnectionCard): string {
  */
 export function connectionCardDetail(card: AgentConnectionCard): string {
   const { grant, service } = card;
-  const blocked = service === null ? null : serviceBlockedReason(service);
+  const blocked = connectionCardBlockedReason(card);
   if (blocked !== null) return blocked;
   if (grant) return grant.summary;
   if (service === null) return '';
