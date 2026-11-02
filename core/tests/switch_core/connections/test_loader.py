@@ -47,6 +47,16 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
+def test_microsoft_365_stays_a_placeholder_until_work_iq_auth_is_validated():
+    connection = CATALOG["microsoft-365"]
+
+    assert not connection.definition.enabled
+    assert connection.definition.adapter is None
+    assert connection.definition.auth.oauth is None
+    assert connection.definition.auth.identity is None
+    assert not connection.skill_files
+
+
 GOOGLE = "https://www.googleapis.com/auth/"
 
 
