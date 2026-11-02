@@ -12,7 +12,7 @@ Expand only: a process from before this revision has no handler for either
 signal and skips them, as it does any kind it does not know.
 
 Revision ID: bad5099ef32b
-Revises: 9d41b7e2c6a3
+Revises: f2a9c7d41e08
 Create Date: 2026-11-01 00:00:00.000000
 
 """
@@ -22,7 +22,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "bad5099ef32b"
-down_revision: str | None = "9d41b7e2c6a3"
+down_revision: str | None = "f2a9c7d41e08"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
