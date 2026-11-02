@@ -254,6 +254,7 @@ class World:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=self.public_url,
+            allow_non_expiring_keys=False,
         )
         app = self.harness.gateway_app
         app.state.service_broker = broker

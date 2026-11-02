@@ -93,4 +93,5 @@ def github_broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )

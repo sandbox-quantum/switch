@@ -114,6 +114,7 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=PUBLIC,
+        allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker

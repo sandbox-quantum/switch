@@ -1401,6 +1401,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
         public_url=config.gateway_public_url,
+        allow_non_expiring_keys=config.allow_non_expiring_keys,
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker

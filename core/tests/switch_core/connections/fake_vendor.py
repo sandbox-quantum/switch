@@ -359,6 +359,11 @@ class FakeOAuthServer:
             ],
         }
         self.account: dict[str, Any] = {"id": "acct-1", "email": "ada@example.test"}
+        # Credentials people paste rather than sign in for, each with whether
+        # it may read the account: tokens, sent as a bearer, and pairs of
+        # keys, sent in the example's own headers with the site they are for.
+        self.pasted_tokens: dict[str, bool] = {}
+        self.pasted_keys: dict[tuple[str, str], bool] = {}
 
     def client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
@@ -440,7 +445,11 @@ class FakeOAuthServer:
             return httpx.Response(200)
         if where == self.identity_url and request.method == "GET":
             if self._bearer(request) is None:
-                return _json(401, {"error": "invalid_token"})
+                reads = self._pasted(request)
+                if reads is None:
+                    return _json(401, {"error": "invalid_token"})
+                if not reads:
+                    return _json(403, {"errors": ["Forbidden"]})
             return _json(200, {"account": self.account})
         if where == self.mcp_url:
             return self._mcp(request)
@@ -451,6 +460,21 @@ class FakeOAuthServer:
         if not header.startswith("Bearer "):
             return None
         return self.live_access.get(header.removeprefix("Bearer "))
+
+    def _pasted(self, request: httpx.Request) -> bool | None:
+        """Whether the pasted credential `request` carries may read the
+        account; None where it carries none this site knows."""
+        header = request.headers.get("authorization", "")
+        if header.startswith("Bearer "):
+            return self.pasted_tokens.get(header.removeprefix("Bearer "))
+        if request.headers.get("x-example-site") != self.site:
+            return None
+        return self.pasted_keys.get(
+            (
+                request.headers.get("x-example-api-key", ""),
+                request.headers.get("x-example-app-key", ""),
+            )
+        )
 
     def _client_ok(self, request: httpx.Request, form: dict[str, str]) -> bool:
         """A known client, with its secret where it has one, sent one way
@@ -539,7 +563,7 @@ class FakeOAuthServer:
         return _json(201, answer)
 
     def _mcp(self, request: httpx.Request) -> httpx.Response:
-        if self._bearer(request) is None:
+        if self._bearer(request) is None and self._pasted(request) is None:
             named = f"https://mcp.{self.site}{self.resource_metadata_path}"
             return _json(
                 401,
