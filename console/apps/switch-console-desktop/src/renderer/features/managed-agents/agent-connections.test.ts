@@ -3,6 +3,7 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import type { ServiceGrant } from '@shared/core/switch-servers/service-grants';
 import {
   agentConnectionCards,
+  connectionCardBlockedReason,
   connectionCardDetail,
   connectionCardStatus,
   noConnectorsSetUp,
@@ -187,6 +188,24 @@ describe("an agent's connection cards", () => {
     );
     expect(connectionCardStatus(stopped)).toBe('On');
     expect(connectionCardDetail(stopped)).toBe('Maintenance');
+  });
+
+  it('gives its drawer the reason the card says, and none for a service nothing stops', () => {
+    const [github, stopped, stale, retired] = agentConnectionCards(
+      [
+        service('github', { name: 'GitHub', pass_through: false, workspace_enabled: false }),
+        service('box', { unavailable_reason: 'Maintenance' }),
+        service('google', { status: 'needs_reauthorization' }),
+      ],
+      [grant('github', { access: 'write' }), grant('box'), grant('retired')]
+    ).cards;
+    expect(connectionCardBlockedReason(github)).toBe(connectionCardDetail(github));
+    expect(connectionCardBlockedReason(github)).toBe(
+      'GitHub is not enabled in this workspace. Ask a workspace admin; they switch it on under Connectors.'
+    );
+    expect(connectionCardBlockedReason(stopped)).toBe('Maintenance');
+    expect(connectionCardBlockedReason(stale)).toBeNull();
+    expect(connectionCardBlockedReason(retired)).toBeNull();
   });
 });
 

@@ -24,6 +24,7 @@ import { cn } from '@renderer/utils/utils';
 import {
   type AgentConnectionCard,
   agentConnectionCards,
+  connectionCardBlockedReason,
   connectionCardDetail,
   connectionCardStatus,
   noConnectorsSetUp,
@@ -144,6 +145,7 @@ export function AgentConnectionsTab({
   // Only worth pointing at Connectors when connecting there would offer something here.
   const noneSetUp = services.isSuccess && note !== null && noConnectorsSetUp(services.data);
   const opened = cards.find((card) => card.slug === openSlug) ?? null;
+  const blocked = opened === null ? null : connectionCardBlockedReason(opened);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -233,6 +235,10 @@ export function AgentConnectionsTab({
             </p>
           )}
           {notice && <p className="text-xs text-foreground-muted">{notice}</p>}
+          {/* An on/off service says it under its switch. */}
+          {blocked !== null && opened.kind !== 'on-off' && (
+            <p className="text-sm text-foreground-muted">{blocked}</p>
+          )}
           {opened.kind === 'on-off' && opened.service && (
             <OnOffGrant
               service={opened.service}
@@ -246,6 +252,7 @@ export function AgentConnectionsTab({
           {opened.kind === 'github' && (
             <GitHubDrawerBody
               card={opened}
+              blocked={blocked !== null}
               github={github}
               agentName={label}
               cloud={cloud}
@@ -364,6 +371,7 @@ function ConnectionDrawer({
 
 function GitHubDrawerBody({
   card,
+  blocked,
   github,
   agentName,
   cloud,
@@ -374,6 +382,8 @@ function GitHubDrawerBody({
   onRemove,
 }: {
   card: AgentConnectionCard;
+  /** Whether the server or the workspace stops GitHub: a grant can then only be removed. */
+  blocked: boolean;
   github: Parameters<typeof GitHubGrantForm>[0]['github'];
   agentName: string;
   cloud: boolean;
@@ -392,12 +402,12 @@ function GitHubDrawerBody({
           grant={grant}
           github={github.data}
           busy={busy}
-          onChange={() => onEdit(true)}
+          onChange={blocked ? null : () => onEdit(true)}
           removeNote={cloud ? null : REMOVED_GRANT_NOTE}
           onRemove={onRemove}
         />
       )}
-      {(editing || !grant) && (
+      {!blocked && (editing || !grant) && (
         <GitHubGrantForm
           github={github}
           current={grant}
