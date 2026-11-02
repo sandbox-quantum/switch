@@ -236,6 +236,12 @@ version of their own to them without also giving them a release of their own.
   a moment before, read all of them. Each is now found from an index of the
   running clients by type and by agent. While 10,000 agents were being
   created, these lookups took about 11% of a process's CPU in a profile.
+- **Each database transaction costs the server a little less.** Binding the
+  workspace to a transaction built and compiled the same statement every
+  time; it is now sent to the driver as it is. And timing who holds a pooled
+  connection worked out the borrower's name and a short stack on every
+  checkout; the name is now kept per function, and the stack is written out
+  only for a hold long enough to log.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
