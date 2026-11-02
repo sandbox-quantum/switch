@@ -917,6 +917,65 @@ async def _cmd_follow_ups(
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
 
 
+_TOOL_DETAIL_ON = (
+    "Tool detail is on in this room: an agent's steps show what each tool "
+    "was given and gave back, with secrets masked. Turn it off with "
+    "`!tool-detail off`."
+)
+_TOOL_DETAIL_OFF = (
+    "Tool detail is off in this room: an agent's steps show only what they "
+    "were. The room's owner or a workspace admin can turn it on with "
+    "`!tool-detail on`."
+)
+_TOOL_DETAIL_REFUSED = (
+    "Only the room's owner or a workspace admin can turn tool detail on or off."
+)
+
+
+async def _cmd_tool_detail(
+    client: AgentRecipient,
+    room: RoomRef,
+    event: CommandEvent,
+    _is_direct: bool,
+) -> None:
+    host = cast("CommandConsumer", client)
+    meta = await client._resolve_room_meta(room.room_id)
+    if meta is None:
+        await _reply(client, room, event, "Room not found.")
+        return
+
+    choice = event.args.strip().lower()
+    if choice not in ("", "on", "off"):
+        await _reply(
+            client,
+            room,
+            event,
+            "Usage: `!tool-detail on`, `!tool-detail off`, or `!tool-detail` to "
+            "see which it is.",
+        )
+        return
+
+    async with host.session_factory() as session:
+        if choice:
+            if not await _manages_room(
+                client,
+                session,
+                meta.room_id,
+                event.user_id,
+                "tool_detail",
+                resolver=_command_resolver(host),
+            ):
+                await _reply(client, room, event, _TOOL_DETAIL_REFUSED)
+                return
+            await host._room_store.update_fields(
+                session, meta.room_id, show_tool_detail=choice == "on"
+            )
+            await session.commit()
+        shown = await host._room_store.shows_tool_detail(session, meta.room_id)
+
+    await _reply(client, room, event, _TOOL_DETAIL_ON if shown else _TOOL_DETAIL_OFF)
+
+
 _AUTO_ROUTE_FLAG_OFF = (
     "Automatic routing isn't switched on in Switch, so "
     "`!auto-route` has no effect here. Agents only get messages that mention "
@@ -2459,6 +2518,16 @@ COMMANDS: list[Command] = [
         "list-references",
         "List the room's references.",
         _cmd_list_references,
+        admin_owned=True,
+    ),
+    Command(
+        "tool-detail",
+        "Show or hide what agents' tools were given and gave back in this room, "
+        "with secrets masked. Only the room's owner or a workspace admin can "
+        "change it. Usage: `!tool-detail on`, `!tool-detail off`, or "
+        "`!tool-detail`.",
+        _cmd_tool_detail,
+        args_spec=(CommandArg("state", "on or off", required=False),),
         admin_owned=True,
     ),
     Command(
