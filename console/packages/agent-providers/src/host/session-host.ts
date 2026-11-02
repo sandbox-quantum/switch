@@ -1393,11 +1393,11 @@ export class HostedSession {
  */
 export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
   if (outcome !== 'error') return null;
-  const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
-  const message = `I finished without replying. The turn failed${reason}`;
-  return REQUEST_TOO_LARGE.test(detail ?? '')
-    ? `${message}\n\nUse !reset to start a fresh session, then send your message again.`
-    : message;
+  const hint = REQUEST_TOO_LARGE.test(detail ?? '')
+    ? 'Use !reset to start a fresh session, then send your message again. '
+    : '';
+  const reason = detail?.trim() ? `: ${hint}${cap(detail.trim(), 1000)}` : '.';
+  return `I finished without replying. The turn failed${reason}`;
 }
 
 const REQUEST_TOO_LARGE =
