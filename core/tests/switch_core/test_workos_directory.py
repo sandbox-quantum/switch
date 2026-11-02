@@ -11,10 +11,11 @@ import pytest
 
 from switch_core.organization_directory import (
     DirectoryMembership,
+    DirectoryOrganization,
     DirectoryRefusal,
     DirectoryUnavailable,
 )
-from switch_core.workos_directory import WorkOSDirectory
+from switch_core.workos_directory import WorkOSDirectory, customer_id_of
 
 API = "https://workos.example.test"
 KEY = "sk_test_example"
@@ -83,15 +84,12 @@ def _directory(handler) -> WorkOSDirectory:
 
 
 class TestMembershipsAtSignIn:
-    async def test_one_membership_per_customer_with_the_highest_role(self) -> None:
-        """A customer's own organization and one a product made beneath it
-        name the same customer; an `org_admin` of either is its Org Admin."""
+    async def test_one_membership_per_organization_in_switchs_roles(self) -> None:
+        """Every organization is answered by its WorkOS id, whatever its
+        metadata says: which ones a Switch organization follows is Switch's
+        own record, not anything WorkOS holds."""
         workos = _WorkOS(
-            organizations={
-                "org_root": {"tenant_id": "ten_a"},
-                "org_child": {"tenant_id": "ten_a"},
-                "org_other": {"tenant_id": "ten_b"},
-            },
+            organizations={},
             memberships=[
                 ("org_root", "member"),
                 ("org_child", "org_admin"),
@@ -102,35 +100,27 @@ class TestMembershipsAtSignIn:
         memberships = await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
 
         assert memberships == [
-            DirectoryMembership(customer_id="ten_a", role="org_admin"),
-            DirectoryMembership(customer_id="ten_b", role="member"),
+            DirectoryMembership(workos_organization_id="org_root", role="member"),
+            DirectoryMembership(workos_organization_id="org_child", role="org_admin"),
+            DirectoryMembership(workos_organization_id="org_other", role="member"),
         ]
+        assert all(
+            not request.url.path.startswith("/organizations/")
+            for request in workos.requests
+        )
 
     async def test_every_page_is_read(self) -> None:
         workos = _WorkOS(
-            organizations={f"org_{i}": {"tenant_id": f"ten_{i}"} for i in range(5)},
+            organizations={},
             memberships=[(f"org_{i}", "member") for i in range(5)],
             page=2,
         )
 
         memberships = await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
 
-        assert [membership.customer_id for membership in memberships] == [
-            f"ten_{i}" for i in range(5)
+        assert [membership.workos_organization_id for membership in memberships] == [
+            f"org_{i}" for i in range(5)
         ]
-
-    async def test_an_organization_naming_no_customer_is_skipped(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        workos = _WorkOS(
-            organizations={"org_bare": {}, "org_a": {"tenant_id": "ten_a"}},
-            memberships=[("org_bare", "org_admin"), ("org_a", "member")],
-        )
-
-        memberships = await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
-
-        assert memberships == [DirectoryMembership(customer_id="ten_a", role="member")]
-        assert "org_bare names no customer" in caplog.text
 
     @pytest.mark.parametrize(
         "answer",
@@ -139,6 +129,16 @@ class TestMembershipsAtSignIn:
             httpx.Response(401),
             httpx.Response(200, json={"data": "not a list"}),
             httpx.Response(200, content=json.dumps([1, 2])),
+            httpx.Response(200, content=b"<html>not JSON</html>"),
+            httpx.Response(200, json={"data": [], "list_metadata": "not a dict"}),
+            httpx.Response(200, json={"data": ["not a dict"]}),
+            httpx.Response(
+                200,
+                json={"data": [{"organization_id": "org_a", "role": "org_admin"}]},
+            ),
+            httpx.Response(
+                200, json={"data": [], "list_metadata": {"after": {"not": "text"}}}
+            ),
         ],
     )
     async def test_an_answer_switch_cannot_use_is_unavailable(
@@ -157,27 +157,72 @@ class TestMembershipsAtSignIn:
             await _directory(unreachable).memberships_at_sign_in("user_EXAMPLE")
 
 
-class TestChangesFromSwitch:
-    """Changes made from Switch go through the service that owns the customer
-    record; until that is wired in, they are refused for a customer's
-    organization, and an organization Switch keeps itself stays its own."""
+class TestWhatAnOperatorLinks:
+    async def test_an_organization_is_read_by_its_id(self) -> None:
+        workos = _WorkOS(
+            organizations={"org_a": {"tenant_id": "ten_a"}}, memberships=[]
+        )
 
-    async def test_a_customers_organization_refuses_them(self) -> None:
+        organization = await _directory(workos).organization("org_a")
+
+        assert customer_id_of(organization) == "ten_a"
+
+    async def test_users_are_found_by_address(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/user_management/users"
+            assert request.url.params["email"] == "person@example.test"
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "user_A", "email": "person@example.test"}],
+                    "list_metadata": {"after": None},
+                },
+            )
+
+        users = await _directory(handler).users_with_email("person@example.test")
+
+        assert [user["id"] for user in users] == ["user_A"]
+
+
+class TestChangesFromSwitch:
+    """Changes made from Switch to a linked organization go through the
+    service that owns the customer record; until that is wired in, those that
+    grant are refused, and an organization nobody linked stays Switch's own."""
+
+    async def test_a_linked_organization_refuses_those_that_grant(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
-        customer = SimpleNamespace(customer_id="ten_a")
+        linked = SimpleNamespace(workos_organization_id="org_a")
 
         for change in (
-            directory.join(customer, "u", "member"),  # type: ignore[arg-type]
-            directory.set_role(customer, "u", "org_admin"),  # type: ignore[arg-type]
-            directory.remove(customer, "u"),  # type: ignore[arg-type]
+            directory.join(linked, "u", "member"),  # type: ignore[arg-type]
+            directory.set_role(linked, "u", "org_admin"),  # type: ignore[arg-type]
         ):
             with pytest.raises(DirectoryRefusal):
                 await change
 
+    async def test_a_linked_organization_lets_switch_take_away(self) -> None:
+        """So an Org Admin can end in Switch what WorkOS has ended; a sign-in
+        brings back whatever WorkOS still grants."""
+        directory = _directory(lambda request: httpx.Response(500))
+        linked = SimpleNamespace(workos_organization_id="org_a")
+
+        await directory.set_role(linked, "u", "member")  # type: ignore[arg-type]
+        await directory.remove(linked, "u")  # type: ignore[arg-type]
+
     async def test_an_organization_switch_keeps_itself_needs_nothing(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
-        local = SimpleNamespace(customer_id=None)
+        local = SimpleNamespace(workos_organization_id=None)
 
         await directory.join(local, "u", "member")  # type: ignore[arg-type]
         await directory.set_role(local, "u", "org_admin")  # type: ignore[arg-type]
         await directory.remove(local, "u")  # type: ignore[arg-type]
+
+    async def test_a_new_organization_is_switchs_own_until_linked(self) -> None:
+        directory = _directory(lambda request: httpx.Response(500))
+
+        created = await directory.create_organization(SimpleNamespace(), "Example")  # type: ignore[arg-type]
+
+        assert created == DirectoryOrganization(
+            workos_organization_id=None, customer_id=None
+        )
+        await directory.discard_organization(created)

@@ -15,6 +15,7 @@ import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -232,9 +233,11 @@ async def _bring_in_organizations(
     subject: str,
 ) -> None:
     """Bring the person's organization memberships up to date with a directory
-    kept outside Switch (`organization_mirror.py`). One that can't be reached
-    doesn't stop the sign-in: authorization reads Switch's rows, which stay as
-    they were, and the failure is logged."""
+    kept outside Switch (`organization_mirror.py`). Neither a directory that
+    can't be read nor a failure writing Switch's rows stops the sign-in:
+    authorization reads Switch's rows, each organization's change commits on
+    its own, and an organization left behind is caught up at the next
+    sign-in. Both are logged."""
     try:
         memberships = await organization_directory.memberships_at_sign_in(subject)
     except DirectoryUnavailable as error:
@@ -245,8 +248,16 @@ async def _bring_in_organizations(
             error.message,
         )
         return
-    if memberships is not None:
+    if memberships is None:
+        return
+    try:
         await bring_in_memberships(session_factory, user.id, memberships)
+    except SQLAlchemyError:
+        logger.exception(
+            "Could not bring user %s's organizations up to date at sign-in; "
+            "some of Switch's may be behind the directory",
+            user.id,
+        )
 
 
 @router.get("/auth/oidc/callback", name="oidc_callback")

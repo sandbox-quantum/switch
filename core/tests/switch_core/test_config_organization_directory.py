@@ -9,6 +9,7 @@ OIDC = dict(
     gateway_oidc_client_id="client_example",
     gateway_oidc_client_secret="placeholder",  # gitleaks:allow
     gateway_oidc_scopes="openid email profile",
+    gateway_signup_mode="invite_only",
 )
 
 
@@ -35,4 +36,14 @@ def test_workos_without_the_sign_in_is_refused() -> None:
         _config(
             organization_directory="workos",
             workos_api_key="sk_test_example",  # gitleaks:allow
+        )
+
+
+@pytest.mark.parametrize("mode", ["open", "default_tenant"])
+def test_workos_with_self_service_sign_up_is_refused(mode: str) -> None:
+    with pytest.raises(ValidationError, match="invite_only"):
+        _config(
+            organization_directory="workos",
+            workos_api_key="sk_test_example",  # gitleaks:allow
+            **{**OIDC, "gateway_signup_mode": mode},
         )

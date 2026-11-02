@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import RedirectResponse
@@ -118,7 +119,7 @@ class TestSigningInWithADirectory:
         return _config(
             organization_directory="workos",
             workos_api_key="sk_test_example",
-            gateway_signup_mode="open",
+            gateway_signup_mode="invite_only",
         )
 
     async def test_their_organizations_are_brought_in(
@@ -126,7 +127,7 @@ class TestSigningInWithADirectory:
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        customer = f"ten_{uuid.uuid4().hex[:8]}"
+        linked = f"org_workos_{uuid.uuid4().hex[:8]}"
         organization_id = f"org-{uuid.uuid4().hex[:8]}"
         async with session_factory() as session:
             session.add(
@@ -134,11 +135,11 @@ class TestSigningInWithADirectory:
                     id=organization_id,
                     slug=organization_id,
                     name="Acme",
-                    customer_id=customer,
+                    workos_organization_id=linked,
                 )
             )
             await session.commit()
-        directory = _Directory([DirectoryMembership(customer, "org_admin")])
+        directory = _Directory([DirectoryMembership(linked, "org_admin")])
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
 
         async with session_factory() as session:
@@ -180,6 +181,32 @@ class TestSigningInWithADirectory:
 
         assert response.status_code == 303
         assert "WorkOS answered 500." in caplog.text
+
+    async def test_a_failure_writing_switchs_rows_does_not_stop_the_sign_in(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        async def failing(*_args: object) -> None:
+            raise OperationalError("UPDATE organization_members", {}, Exception())
+
+        monkeypatch.setattr(oidc_routes, "bring_in_memberships", failing)
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(self._TOKEN))
+
+        async with session_factory() as session:
+            response = await oidc_routes.oidc_callback(
+                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                config=self._config(),
+                session=session,
+                session_factory=session_factory,
+                user_store=UserStore(),
+                organization_directory=_Directory([]),  # type: ignore[arg-type]
+            )
+
+        assert response.status_code == 303
+        [record] = [r for r in caplog.records if "may be behind" in r.message]
+        assert record.levelname == "ERROR"
 
     async def test_an_account_with_the_same_email_is_not_joined(
         self,

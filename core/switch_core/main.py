@@ -520,8 +520,8 @@ def _organization_directory(
     """The directory `ORGANIZATION_DIRECTORY` names (`organization_directory.py`)."""
     if config.organization_directory == "local":
         return LocalDirectory()
-    if config.workos_api_key is None:
-        raise RuntimeError("ORGANIZATION_DIRECTORY=workos needs WORKOS_API_KEY")
+    # `_validate_organization_directory` has refused a missing key already.
+    assert config.workos_api_key is not None
     return WorkOSDirectory(http, config.workos_api_key, config.workos_api_url)
 
 
