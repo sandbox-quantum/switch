@@ -25,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_the_completed_entries():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "hubspot",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "hubspot",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["hubspot"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -173,6 +176,61 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_hubspot_entry_connects_as_hubspot_documents():
+    definition = CATALOG["hubspot"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # No dynamic registration: the operator creates an MCP connector in
+    # HubSpot and stores its client.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "HUBSPOT",
+    )
+    # Redirect URLs are matched exactly, port included, so Console's ports
+    # are pinned; endpoints are discovered from the MCP server's metadata.
+    assert oauth.redirect == ["loopback", "core"]
+    assert oauth.loopback_ports is not None and len(oauth.loopback_ports) >= 3
+    assert oauth.authorization_url is None and oauth.token_url is None
+    assert oauth.unchecked is not None
+    # No revocation endpoint is advertised and the documented revoke is not
+    # one Switch can make, so disconnect says where people uninstall Switch.
+    assert oauth.revocation_url is None and not oauth.revocation_discovered
+    assert oauth.remove_access is not None and "Connected Apps" in oauth.remove_access
+    assert definition.auth.refresh == "rotating"
+    # HubSpot documents 30-minute access tokens.
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        1800,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("hubspot", "https://mcp.hubspot.com")
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == (
+        "https://api.hubapi.com/account-info/v3/details"
+    )
+    assert definition.auth.identity.account_id == "portalId"
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == [
+        "account-info.security.read",
+        "crm.objects.contacts.read",
+        "crm.objects.companies.read",
+        "crm.objects.deals.read",
+    ]
+    assert definition.access.write.scopes == [
+        "account-info.security.read",
+        "crm.objects.contacts.read",
+        "crm.objects.contacts.write",
+        "crm.objects.companies.read",
+        "crm.objects.companies.write",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write",
+    ]
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():

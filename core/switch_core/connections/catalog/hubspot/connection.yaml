@@ -1,0 +1,64 @@
+slug: hubspot
+name: HubSpot
+category: CRM
+description: Read and update HubSpot contacts, companies and deals, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # The issue states, and HubSpot's OAuth docs describe, rotating refresh
+  # tokens; not yet measured against a live connector. Confirm at manual QA.
+  refresh: rotating
+  oauth:
+    # HubSpot's MCP server offers no dynamic registration (its metadata has
+    # no registration endpoint): the operator creates an "MCP connector" in
+    # their HubSpot account (Development, MCP Connectors) and stores its
+    # client. Setup: docs/old/hubspot-setup.md.
+    registration: static
+    client_settings: HUBSPOT
+    # HubSpot wants the redirect URL to "match what's configured", with no
+    # documented loopback port variance, so Console's ports are pinned, as
+    # Atlassian's. Endpoints are discovered from the MCP server's metadata.
+    redirect: [loopback, core]
+    loopback_ports: [39241, 39242, 39243, 39244, 39245]
+    # Switch cannot read the connector back: the operator confirms in
+    # HubSpot that its redirect URLs match Switch's exactly, port included.
+    unchecked: The connector's redirect URLs in HubSpot must match Switch's exactly, port included, or every sign-in fails at consent.
+    # No revocation endpoint is advertised and the only documented revoke
+    # (a DELETE naming the token in its path) is not one Switch can make.
+    remove_access: In HubSpot, open Settings, Integrations, Connected Apps and uninstall Switch. Until you do, the sign-in keeps working.
+  identity:
+    # Documented account endpoint; needs the account-info.security.read
+    # scope. It names no display field, so the portal id is also the label.
+    url: https://api.hubapi.com/account-info/v3/details
+    account_id: portalId
+    label: portalId
+# HubSpot documents 30-minute OAuth access tokens; whether MCP-issued
+# tokens differ is not documented. Verify at manual QA.
+token: { kind: pass_through, max_lifetime: 1800 }
+mcp:
+  servers:
+    - { name: hubspot, url: "https://mcp.hubspot.com" }
+access:
+  # HubSpot says an MCP connector's scopes are not defined explicitly - they
+  # follow the server's tools and the permissions granted at install - and
+  # its metadata lists none, so whether consent honours an explicit scope
+  # list is unverified until an operator client exists. This is HubSpot's
+  # documented granular CRM set, the least that covers the issue:
+  # account-info.security.read only so Switch can say whose account it is.
+  read:
+    scopes:
+      - account-info.security.read
+      - crm.objects.contacts.read
+      - crm.objects.companies.read
+      - crm.objects.deals.read
+  write:
+    scopes:
+      - account-info.security.read
+      - crm.objects.contacts.read
+      - crm.objects.contacts.write
+      - crm.objects.companies.read
+      - crm.objects.companies.write
+      - crm.objects.deals.read
+      - crm.objects.deals.write
+tools: { mode: pass_through }
