@@ -5,11 +5,13 @@ WorkOS; `owner` only arranges fixtures and reads results."""
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import select
 
+from switch_core import workos_mirror
 from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     DirectoryEventCursor,
@@ -17,12 +19,25 @@ from switch_core.db.models import (
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    OwnershipLease,
+    ServerAuditEvent,
+    SwitchCoreProcess,
     User,
 )
+from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.organization_directory import DirectoryUnavailable
-from switch_core.workos_mirror import EVENT_TYPES, WorkOSMirror
+from switch_core.ownership import Fence
+from switch_core.workos_directory import EventCursorRejected
+from switch_core.workos_mirror import (
+    EVENT_TYPES,
+    MAX_EVENT_ATTEMPTS,
+    MIRROR_KEY,
+    MIRROR_KIND,
+    TakenOver,
+    WorkOSMirror,
+)
 from tests.conftest import RLSHarness
-from tests.switch_core.test_organization_mirror_apply import _revocation
+from tests.switch_core.test_organization_mirror_apply import _dependencies
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -43,6 +58,7 @@ class _WorkOS:
         self.page = page
         self.asked: list[dict[str, Any]] = []
         self.fail_role_for: str | None = None
+        self.reject_cursor = False
 
     def change(self, subject: str, organization: str, role: str | None) -> None:
         if role is None:
@@ -68,9 +84,11 @@ class _WorkOS:
     ) -> list[dict[str, Any]]:
         assert types == EVENT_TYPES
         self.asked.append({"after": after, "range_start": range_start})
+        if self.reject_cursor:
+            raise EventCursorRejected("WorkOS answered 400 for /events.")
         start = 0
         if after is not None:
-            start = next(i for i, e in enumerate(self.log) if e["id"] == after) + 1
+            start = next(i for i, e in enumerate(self.log) if e.get("id") == after) + 1
         return self.log[start : start + self.page]
 
     async def membership_role(self, subject: str, organization: str) -> str | None:
@@ -139,12 +157,40 @@ async def _roles(owner, organization_id: str) -> dict[str, str]:
         return {user_id: role for user_id, role in rows}
 
 
-def _mirror(rls_harness: RLSHarness, workos: _WorkOS) -> WorkOSMirror:
-    return WorkOSMirror(
+class _Running:
+    """A mirror and the fence it holds, as `ownership.py` would start it."""
+
+    def __init__(self, mirror: WorkOSMirror, fence: Fence) -> None:
+        self.mirror = mirror
+        self.fence = fence
+
+    async def poll_once(self) -> int:
+        return await self.mirror.poll_once(self.fence)
+
+    async def check_once(self) -> None:
+        await self.mirror.check_once(self.fence)
+
+
+async def _mirror(rls_harness: RLSHarness, workos: _WorkOS) -> _Running:
+    process_id = _id("process")
+    async with rls_harness.owner() as session:
+        session.add(SwitchCoreProcess(id=process_id))
+        await session.flush()
+        session.add(
+            OwnershipLease(
+                kind=MIRROR_KIND, key=MIRROR_KEY, process_id=process_id, token=1
+            )
+        )
+        await session.commit()
+    mirror = WorkOSMirror(
         rls_harness.restricted,
         workos,  # type: ignore[arg-type]
-        _revocation(rls_harness.restricted),
+        _dependencies(rls_harness.restricted),
+        OwnershipLeaseStore(),
         ISSUER,
+    )
+    return _Running(
+        mirror, Fence(kind=MIRROR_KIND, key=MIRROR_KEY, process_id=process_id, token=1)
     )
 
 
@@ -156,7 +202,7 @@ class TestEvents:
         organization_id, workos_id = await _linked(owner)
         ada = await _person(owner, "user_ADA")
         workos = _WorkOS(page=1)
-        mirror = _mirror(rls_harness, workos)
+        mirror = await _mirror(rls_harness, workos)
 
         assert await mirror.poll_once() == 0
         workos.change("user_ADA", workos_id, "member")
@@ -180,7 +226,7 @@ class TestEvents:
         organization_id, workos_id = await _linked(owner)
         await _person(owner, "user_ADA")
         workos = _WorkOS()
-        mirror = _mirror(rls_harness, workos)
+        mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
         workos.change("user_ADA", workos_id, "member")
         workos.change("user_ADA", workos_id, None)
@@ -198,7 +244,7 @@ class TestEvents:
         await _member(owner, organization_id, bea, "org_admin")
         workos = _WorkOS()
         workos.memberships[("user_ADA", workos_id)] = "member"
-        mirror = _mirror(rls_harness, workos)
+        mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
         workos.change("user_ADA", workos_id, None)
 
@@ -213,7 +259,7 @@ class TestEvents:
         organization_id, workos_id = await _linked(owner)
         await _person(owner, "user_ADA")
         workos = _WorkOS()
-        mirror = _mirror(rls_harness, workos)
+        mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
         workos.change("user_ADA", _id("org_elsewhere"), "org_admin")
         workos.change("user_NOBODY", workos_id, "org_admin")
@@ -229,7 +275,7 @@ class TestEvents:
         organization_id, workos_id = await _linked(owner)
         ada = await _person(owner, "user_ADA")
         workos = _WorkOS()
-        mirror = _mirror(rls_harness, workos)
+        mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
         workos.change("user_ADA", workos_id, "member")
         workos.fail_role_for = "user_ADA"
@@ -249,7 +295,7 @@ class TestEvents:
         ada = await _person(owner, "user_ADA")
         await _member(owner, organization_id, ada, "org_admin")
         workos = _WorkOS()
-        mirror = _mirror(rls_harness, workos)
+        mirror = await _mirror(rls_harness, workos)
         await mirror.poll_once()
         workos.log.append(
             {
@@ -298,7 +344,7 @@ class TestDailyCheck:
             ("user_STRANGER", workos_id): "member",
         }
 
-        await _mirror(rls_harness, workos).check_once()
+        await (await _mirror(rls_harness, workos)).check_once()
 
         assert await _roles(owner, organization_id) == {
             ada: "member",
@@ -307,3 +353,147 @@ class TestDailyCheck:
             eve: "org_admin",
         }
         assert f"User {dee} is in organization" in caplog.text
+
+
+class TestRecovering:
+    async def test_an_event_failing_every_time_is_passed_over_and_its_organization_rechecked(
+        self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        ada = await _person(owner, "user_ADA")
+        bea = await _person(owner, "user_BEA")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.change("user_ADA", workos_id, "member")
+        workos.change("user_BEA", workos_id, "member")
+        workos.fail_role_for = "user_ADA"
+
+        for _ in range(MAX_EVENT_ATTEMPTS - 1):
+            with pytest.raises(DirectoryUnavailable):
+                await mirror.poll_once()
+        assert await mirror.poll_once() == 2
+
+        assert await _roles(owner, organization_id) == {bea: "member"}
+        assert "failed 5 times; passed over" in caplog.text
+        workos.fail_role_for = None
+        await mirror.poll_once()
+        assert await _roles(owner, organization_id) == {ada: "member", bea: "member"}
+
+    async def test_an_event_switch_cannot_read_is_passed_over(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        ada = await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.log.append({"event": "organization_membership.created"})
+        workos.log.append(
+            {"id": "event_bad", "event": "organization_membership.updated"}
+        )
+        workos.change("user_ADA", workos_id, "member")
+
+        await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {ada: "member"}
+
+    async def test_an_empty_pass_moves_the_start_forward(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        async with owner() as session:
+            cursor = await session.get(DirectoryEventCursor, "workos")
+            assert cursor is not None
+            cursor.started_at = datetime.now(UTC) - timedelta(days=60)
+            await session.commit()
+
+        await mirror.poll_once()
+
+        async with owner() as session:
+            cursor = await session.get(DirectoryEventCursor, "workos")
+        assert cursor is not None
+        assert cursor.started_at > datetime.now(UTC) - timedelta(minutes=10)
+
+    async def test_a_refused_cursor_starts_again_from_now_and_checks_everything(
+        self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        ada = await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.memberships[("user_ADA", workos_id)] = "org_admin"
+        workos.reject_cursor = True
+
+        assert await mirror.poll_once() == 0
+        workos.reject_cursor = False
+        await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {ada: "org_admin"}
+        assert "starting again from now" in caplog.text
+        async with owner() as session:
+            [event] = await session.scalars(select(ServerAuditEvent))
+        assert event.action == "directory.events_restarted"
+
+
+class TestOneHolder:
+    async def test_a_mirror_taken_over_writes_nothing_more(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        await _person(owner, "user_ADA")
+        workos = _WorkOS()
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.poll_once()
+        workos.change("user_ADA", workos_id, "member")
+        async with owner() as session:
+            lease = await session.get(OwnershipLease, (MIRROR_KIND, MIRROR_KEY))
+            assert lease is not None
+            lease.token = 2
+            await session.commit()
+
+        with pytest.raises(TakenOver):
+            await mirror.poll_once()
+
+        assert await _roles(owner, organization_id) == {}
+        async with owner() as session:
+            cursor = await session.get(DirectoryEventCursor, "workos")
+        assert cursor is not None and cursor.after is None
+
+
+class TestDailyCheckFailures:
+    async def test_one_member_failing_does_not_stop_the_rest(
+        self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        owner = rls_harness.owner
+        organization_id, workos_id = await _linked(owner)
+        ada = await _person(owner, "user_ADA")
+        bea = await _person(owner, "user_BEA")
+        workos = _WorkOS()
+        workos.memberships = {
+            ("user_ADA", workos_id): "member",
+            ("user_BEA", workos_id): "member",
+        }
+        real = workos_mirror.apply_from_directory
+
+        async def failing_for_ada(*args, **kwargs):
+            if kwargs["user_id"] == ada:
+                raise RuntimeError("database went away")
+            return await real(*args, **kwargs)
+
+        monkeypatch.setattr(workos_mirror, "apply_from_directory", failing_for_ada)
+        mirror = await _mirror(rls_harness, workos)
+        await mirror.check_once()
+        assert await _roles(owner, organization_id) == {bea: "member"}
+
+        monkeypatch.setattr(workos_mirror, "apply_from_directory", real)
+        await mirror.poll_once()
+        assert await _roles(owner, organization_id) == {ada: "member", bea: "member"}

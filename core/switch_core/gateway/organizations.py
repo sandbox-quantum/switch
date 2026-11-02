@@ -479,7 +479,6 @@ async def _end_access_through_organization(
         reached=reached,
         actor_id=actor_id,
         details={"reason": reason},
-        keep_agent_keys=False,
     )
 
 

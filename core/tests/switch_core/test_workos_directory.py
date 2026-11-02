@@ -15,7 +15,11 @@ from switch_core.organization_directory import (
     DirectoryRefusal,
     DirectoryUnavailable,
 )
-from switch_core.workos_directory import WorkOSDirectory, customer_id_of
+from switch_core.workos_directory import (
+    EventCursorRejected,
+    WorkOSDirectory,
+    customer_id_of,
+)
 
 API = "https://workos.example.test"
 KEY = "sk_test_example"
@@ -267,15 +271,44 @@ class TestWhatTheMirrorReads:
         assert seen[1].url.params["after"] == "event_1"
         assert "range_start" not in seen[1].url.params
 
-    async def test_an_event_switch_cannot_read_is_unavailable(self) -> None:
+    async def test_a_page_switch_cannot_read_is_unavailable(self) -> None:
         directory = _directory(
-            lambda request: httpx.Response(200, json={"data": [{"id": "event_1"}]})
+            lambda request: httpx.Response(200, json={"data": ["not an event"]})
         )
 
         with pytest.raises(DirectoryUnavailable):
             await directory.events(
                 ("organization.deleted",), after=None, range_start="x"
             )
+
+    async def test_an_event_is_handed_back_as_sent_for_the_caller_to_judge(
+        self,
+    ) -> None:
+        directory = _directory(
+            lambda request: httpx.Response(200, json={"data": [{"id": "event_1"}]})
+        )
+
+        assert await directory.events(
+            ("organization.deleted",), after=None, range_start="x"
+        ) == [{"id": "event_1"}]
+
+    @pytest.mark.parametrize("status", [400, 404, 422])
+    async def test_a_refused_cursor_says_so(self, status: int) -> None:
+        directory = _directory(lambda request: httpx.Response(status))
+
+        with pytest.raises(EventCursorRejected):
+            await directory.events(
+                ("organization.deleted",), after="event_old", range_start="x"
+            )
+
+    async def test_other_refusals_are_not_the_cursor(self) -> None:
+        directory = _directory(lambda request: httpx.Response(401))
+
+        with pytest.raises(DirectoryUnavailable) as refused:
+            await directory.events(
+                ("organization.deleted",), after="event_1", range_start="x"
+            )
+        assert not isinstance(refused.value, EventCursorRejected)
 
     async def test_one_membership_is_read_as_it_is_now(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

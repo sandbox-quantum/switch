@@ -67,6 +67,13 @@ every linked organization's members with WorkOS and applies the difference,
 which catches up anything from before it ran or missed since. It keeps its
 place in the database, so a restart resumes where it stopped.
 
+A change that fails to apply is tried again on the next pass, up to five
+times. It is then passed over, and that organization is checked in full on
+every pass until the check succeeds, so one stuck change doesn't hold up the
+rest. If WorkOS no longer has the events from where the mirror stopped (it
+keeps 90 days), the mirror starts again from now, records that in the
+server's audit log, and checks every linked organization in full.
+
 For each person it matches (by the WorkOS user their account signs in as):
 
 - **Added or made `org_admin` in WorkOS:** added, or made Org Admin, as at
@@ -85,8 +92,10 @@ recorded in the organization's audit log as "WorkOS change broke a Switch
 rule", naming what:
 
 - the organization's last Org Admin was removed or demoted;
-- agents the person owns were left in place, still running on their keys,
-  owned by someone who can no longer act there, for an admin to delete;
+- agents the person owns were left in place, owned by someone who can no
+  longer act there, for an admin to delete. Each agent keeps its own key,
+  which acts as the agent, never as the person; every key of the person's
+  own goes;
 - a workspace was left with no owner (its organization's Org Admins still
   administer it).
 

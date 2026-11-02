@@ -74,6 +74,19 @@ def switch_role(workos_role: str) -> str:
     )
 
 
+class WorkOSRefused(DirectoryUnavailable):
+    """WorkOS answered, with something other than 200."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class EventCursorRejected(DirectoryUnavailable):
+    """WorkOS refused where the events were asked from: an event id or a
+    start time it no longer keeps."""
+
+
 def _unreadable(what: str) -> DirectoryUnavailable:
     return DirectoryUnavailable(f"WorkOS answered with {what} Switch cannot read.")
 
@@ -99,8 +112,9 @@ class WorkOSDirectory:
                 f"WorkOS could not be reached ({type(error).__name__})."
             ) from error
         if response.status_code != 200:
-            raise DirectoryUnavailable(
-                f"WorkOS answered {response.status_code} for {path}."
+            raise WorkOSRefused(
+                f"WorkOS answered {response.status_code} for {path}.",
+                response.status_code,
             )
         try:
             body = response.json()
@@ -201,7 +215,10 @@ class WorkOSDirectory:
     ) -> list[dict[str, Any]]:
         """One page of events of `types`, oldest first: those after event
         `after`, or from `range_start` (ISO 8601) when there is none yet.
-        Empty once there are no more."""
+        Empty once there are no more. Each event is returned as WorkOS sent
+        it, for the caller to skip one it can't read rather than lose the
+        page. Raises `EventCursorRejected` when WorkOS refuses `after` or
+        `range_start`."""
         params: dict[str, str | list[str]] = {
             "events": list(types),
             "limit": str(_PAGE),
@@ -211,21 +228,18 @@ class WorkOSDirectory:
             params["after"] = after
         else:
             params["range_start"] = range_start
-        page = await self._get("/events", params)
+        try:
+            page = await self._get("/events", params)
+        except WorkOSRefused as error:
+            if error.status_code in (400, 404, 422):
+                raise EventCursorRejected(error.message) from error
+            raise
         data = page.get("data")
-        if not isinstance(data, list):
+        if not isinstance(data, list) or not all(
+            isinstance(event, dict) for event in data
+        ):
             raise _unreadable("a list of events")
-        events = []
-        for event in data:
-            if (
-                not isinstance(event, dict)
-                or not isinstance(event.get("id"), str)
-                or not isinstance(event.get("event"), str)
-                or not isinstance(event.get("data"), dict)
-            ):
-                raise _unreadable("an event")
-            events.append(event)
-        return events
+        return data
 
     async def organization(self, workos_organization_id: str) -> dict[str, Any]:
         """The WorkOS organization `workos_organization_id`, for an operator
