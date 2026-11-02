@@ -137,6 +137,8 @@ class InboundMessage(BaseModel):
     # it today; a platform that cannot tell an app from a person leaves this
     # False and its cards accept the answer.
     sender_is_app: bool = False
+    # Platform edit time in microseconds; absent for a new message.
+    edit_revision: int | None = None
 
 
 class InboundCommand(BaseModel):

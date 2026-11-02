@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import { roomCommand, roomMessageSchema } from './room-prompt';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
 import { HostedSession, type RoomReply, unpostedReply } from './session-host';
 
@@ -1771,4 +1772,55 @@ describe('retrying a room message', () => {
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
+});
+
+it('applies a room message edit before dispatching the queued turn', async () => {
+  const { host, adapter, emit } = await start('claude');
+  await host.command(message('busy'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  const queued = roomCommand({
+    agentId: 'agent',
+    sessionId: 'session',
+    epoch: 'epoch',
+    roomId: 'room',
+    message: roomMessageSchema.parse({
+      type: 'message',
+      payload: {
+        sender: 'alice',
+        sender_name: 'Alice',
+        message_id: 'original',
+        body: 'old request',
+      },
+    }),
+    surface: 'switch-web',
+    attachments: [],
+    preface: 'Keep this context.',
+    firstOfConversation: false,
+  });
+  await host.command(queued);
+  await host.amendRoomMessage(queued.commandId, 123456, 'edit-1', 'corrected request');
+  // The accepted command remains an idempotent receipt, not the amended prompt.
+  await expect(host.command(structuredClone(queued))).resolves.toMatchObject({ status: 'applied' });
+  expect(adapter.sendTurn).toHaveBeenCalledOnce();
+  expect(
+    host.snapshot().items.find((item) => item.itemId === `user-${queued.commandId}`)
+  ).toMatchObject({ revision: 2, text: expect.stringContaining('corrected request') });
+
+  emit({ type: 'turn.completed', turnId: 'busy', outcome: 'completed', usage: [] });
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(adapter.sendTurn).mock.calls[1]?.[0]).toMatchObject({
+    turnId: queued.commandId,
+    text: expect.stringContaining('corrected request'),
+  });
+  const sent = vi.mocked(adapter.sendTurn).mock.calls[1]![0].text;
+  expect(sent).toContain('Keep this context.');
+  expect(sent).not.toContain('old request');
+  emit({ type: 'turn.completed', turnId: queued.commandId, outcome: 'completed', usage: [] });
+  await until(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === queued.commandId)?.status).toBe(
+      'completed'
+    )
+  );
+  await host.barrier();
+  expect(adapter.sendTurn).toHaveBeenCalledTimes(2);
 });

@@ -1121,3 +1121,7 @@ Every Switch tool you call in normal operation, one line each.
 - `attach_reference_to_room` — attach an existing Reference to a room.
 - `link_rooms` — add a directed pointer between two rooms.
 - `unlink_rooms` — remove one.
+
+### Corrections to queued room messages
+
+Slack and Mattermost message edits can update a turn while it is still queued. Once the host takes the turn, an edit does not steer or restart it. Room history retains the original message; this feature does not rewrite `read_context` results. Restarted hosts retain the amended transcript but follow the existing rule of interrupting queued turns rather than automatically resending them.
