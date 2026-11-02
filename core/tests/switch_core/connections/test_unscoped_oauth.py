@@ -161,3 +161,19 @@ def test_consent_does_not_mistake_empty_scopes_for_read_only(
             flows.consent(exchange)
     else:
         assert flows.consent(exchange) == expected
+
+
+@pytest.mark.parametrize("adapter", [None, "github", "api_key"])
+def test_unscoped_access_is_only_valid_for_oauth(adapter):
+    body = {
+        "slug": "example",
+        "name": "Example",
+        "category": "Example",
+        "description": "Example service.",
+        "enabled": False,
+        "adapter": adapter,
+        "auth": {"type": adapter or "oauth"},
+        "access": {"unscoped": True, "read": {"scopes": []}, "write": {"scopes": []}},
+    }
+    with pytest.raises(ValidationError):
+        ConnectionDefinition.model_validate(body)

@@ -1075,7 +1075,7 @@ def test_asana_uses_static_mcp_oauth_with_full_unscoped_consent():
 
 
 def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
-    path = catalog_copy / "asana" / "skill" / "SKILL.md"
-    original = path.read_text()
-    path.write_bytes(original.replace("\n", "\r\n").encode())
-    assert load_catalog(catalog_copy)["asana"].skill_files["SKILL.md"] == original
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()

@@ -28,7 +28,12 @@ mcp:
     - { name: asana, url: "https://mcp.asana.com/v2/mcp" }
 access:
   # MCP authorizes every available tool within the user's existing permissions.
-  # There is no vendor-enforced read-only consent; no scope parameter is sent.
+  # Asana's MCP tools reference says MCP apps do not use permission scopes.
+  # Its integration guide allows scope=default or omitting scope, rather than
+  # granular read-only consent (documentation checked 2026-11-02):
+  # https://developers.asana.com/docs/mcp-tools-reference
+  # https://developers.asana.com/docs/integrating-with-asanas-mcp-server
+  # Successful unscoped consent is always Write; no scope parameter is sent.
   unscoped: true
   read: { scopes: [] }
   write: { scopes: [] }

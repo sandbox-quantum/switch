@@ -51,6 +51,7 @@ MAX_METADATA_BYTES = 64 * 1024
 # names): in the form body, or as HTTP Basic.
 ClientAuthentication = Literal["client_secret_post", "client_secret_basic"]
 
+
 _IDENTITY_DIAGNOSTICS: ContextVar[bool] = ContextVar(
     "mcp_identity_diagnostics", default=False
 )
@@ -586,6 +587,26 @@ class OAuthAdapter:
                     httpx_client_factory=_mcp_http_client,
                 )
                 async with Client(transport, timeout=15, init_timeout=15) as client:
+                    tools = await client.list_tools()
+                    matches = [
+                        tool for tool in tools if tool.name == self._identity.mcp_tool
+                    ]
+                    if len(matches) != 1:
+                        raise ValueError("identity must name exactly one tool")
+                    tool = matches[0]
+                    schema = tool.inputSchema
+                    if (
+                        tool.annotations is None
+                        or tool.annotations.readOnlyHint is not True
+                        or schema.get("type") != "object"
+                        or schema.get("required")
+                        or any(
+                            key in schema for key in ("allOf", "anyOf", "oneOf", "$ref")
+                        )
+                    ):
+                        raise ValueError(
+                            "identity tool must be read-only and accept empty arguments"
+                        )
                     result = await client.call_tool_mcp(self._identity.mcp_tool, {})
             if (
                 result.isError

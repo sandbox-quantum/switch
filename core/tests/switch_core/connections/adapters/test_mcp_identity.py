@@ -51,7 +51,7 @@ async def test_mcp_identity_protocol(monkeypatch, shape):
     if shape != "missing-label":
         payload["data"]["name"] = "Example account"
 
-    @server.tool
+    @server.tool(annotations={"readOnlyHint": True})
     def get_user() -> ToolResult:
         if shape == "text":
             return ToolResult(
@@ -84,7 +84,7 @@ async def test_mcp_identity_protocol(monkeypatch, shape):
 async def test_mcp_identity_rejects_unusable_results(monkeypatch, shape, caplog):
     server = FastMCP("identity-test")
 
-    @server.tool
+    @server.tool(annotations={"readOnlyHint": True})
     def get_user() -> ToolResult:
         if shape == "tool-error":
             raise ToolError("Vendor refused identity")
@@ -222,3 +222,107 @@ def test_identity_diagnostic_filter_does_not_affect_other_contexts(caplog):
     assert "example-bearer-value" not in caplog.text
     assert "application diagnostic" in caplog.text
     assert "outside identity diagnostic" in caplog.text
+
+
+@pytest.mark.parametrize("readonly,has_argument", [(False, False), (True, True)])
+async def test_identity_refuses_mutating_or_parameterized_tools(
+    monkeypatch, readonly, has_argument
+):
+    server = FastMCP("unsafe-identity")
+    called = []
+
+    if has_argument:
+
+        @server.tool(annotations={"readOnlyHint": readonly})
+        def get_user(account: str) -> dict:
+            called.append(account)
+            return {"data": {"gid": "example-account"}}
+    else:
+
+        @server.tool(annotations={"readOnlyHint": readonly})
+        def get_user() -> dict:
+            called.append(True)
+            return {"data": {"gid": "example-account"}}
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ServiceAdapterError, match="could not identify"):
+            await _adapter(http).identify("example-bearer-value")
+    assert called == []
+
+
+@pytest.mark.parametrize("count", [0, 1, 2])
+async def test_identity_never_selects_the_first_account_from_an_array(
+    monkeypatch, count
+):
+    server = FastMCP("ambiguous-identity")
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def get_user() -> ToolResult:
+        accounts = [{"data": {"gid": "example-account"}} for _ in range(count)]
+        return ToolResult(content=[TextContent(type="text", text=json.dumps(accounts))])
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ServiceAdapterError):
+            await _adapter(http).identify("example-bearer-value")
+
+
+@pytest.mark.parametrize("account_id", [None, "", [], ["a", "b"], {}, True])
+async def test_identity_requires_one_scalar_account_id(monkeypatch, account_id):
+    server = FastMCP("missing-identity")
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def get_user() -> ToolResult:
+        return ToolResult(content=[], structured_content={"data": {"gid": account_id}})
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(ServiceAdapterError):
+            await _adapter(http).identify("example-bearer-value")
+
+
+async def test_existing_rest_identity_keeps_its_get_and_account_mapping():
+    requests = []
+
+    def response(request):
+        requests.append(request)
+        return httpx.Response(200, json={"id": "example-account", "label": "Example"})
+
+    entry = yaml.safe_load(OAUTH_ENTRY)
+    entry["auth"]["identity"] = {
+        "url": "https://identity.example.test/me",
+        "account_id": "id",
+        "label": "label",
+    }
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as http:
+        adapter = OAuthAdapter(
+            ConnectionDefinition.model_validate(entry),
+            StaticClient(
+                OAuthClientCredentials("example-client", None, authentication=None)
+            ),
+            http,
+        )
+        result = await adapter.identify("example-bearer-value")
+    assert (result.account_id, result.label) == ("example-account", "Example")
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert str(requests[0].url) == "https://identity.example.test/me"
+
+
+async def test_optional_identity_selector_is_never_supplied(monkeypatch):
+    server = FastMCP("current-account-identity")
+    calls = []
+
+    @server.tool(annotations={"readOnlyHint": True})
+    def get_user(user: str = "me") -> ToolResult:
+        calls.append(user)
+        return ToolResult(
+            content=[], structured_content={"data": {"gid": "current-account"}}
+        )
+
+    monkeypatch.setattr(oauth, "StreamableHttpTransport", lambda *a, **kw: server)
+    async with httpx.AsyncClient() as http:
+        result = await _adapter(http).identify("example-bearer-value")
+    assert result.account_id == "current-account"
+    assert calls == ["me"]

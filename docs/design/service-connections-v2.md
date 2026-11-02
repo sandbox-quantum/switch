@@ -426,6 +426,28 @@ Then:
 - Say in the entry's comments what the vendor needs turned on (Datadog's MCP
   access) and anything measured rather than documented (a token's lifetime).
 
+## Shared OAuth catalog opt-ins
+
+`auth.identity.mcp_tool` names a read-only MCP identity tool called without
+arguments, instead of an authenticated JSON GET `url`. Exactly one source is
+required. Core validates the advertised tool is read-only with no arguments
+before calling it. The configured `account_id` must resolve to one nonempty
+string or integer in the JSON object. Missing ids, arrays and multiple-account
+results fail sign-in; no first-account selection is performed. Calls are
+bounded to 15 seconds and 64 KiB, refuse redirects and sanitize vendor errors
+and identity-transport diagnostics. Other entries keep their REST identity.
+
+`access.unscoped: true` is only for vendors that advertise and document no
+OAuth scopes. The catalog entry must cite that evidence in a YAML comment.
+Both Read and Write scope lists must be empty; it is valid only for the
+OAuth adapter. Authorization omits `scope`, and consent always records Write,
+never Read. This does not enforce read-only tools. Entries without the opt-in
+still require nonempty scopes. Enforcing a narrower level with listed tools
+is outside this change.
+
+Neither feature enables a connector. Each connector supplies its own verified
+identity mapping, evidence comments, skill, tests and live acceptance.
+
 ## Atlassian
 
 Built from a sign-in run against a test Atlassian Cloud site with default MCP
@@ -583,22 +605,12 @@ it as unavailable, with its reason, and the next token request fails.
 
 ## Asana
 
-Asana uses the official v2 MCP server with a static MCP OAuth app. See
-[operator setup](../old/asana-setup.md). MCP-app tokens cannot call Asana REST;
-the host resolves identity through `get_user` over MCP. An identity entry specifies
-either its HTTPS JSON GET `url` or an MCP `mcp_tool`, never both. The selected tool
-receives no arguments and must return JSON with the configured account ID and
-label paths. Calls have a bounded timeout and failures hide vendor payloads.
-
-Asana MCP offers no granular read/write scopes. `access.unscoped: true` explicitly
-requires empty scope lists at both levels; authorization omits `scope` and successful
-consent is recorded as write access. Grants are on or off, reaching all available
-tools within the owner's existing Asana permissions. This does not enforce read-only
-access. Other OAuth entries still require nonempty scopes.
-
-The documented access-token lifetime is one hour. Refresh and vendor revocation use
-the generic OAuth adapter. Credentials stay with Core and the session host. Disable
-`asana` through `DISABLED_SERVICES` or remove its operator app to make it unavailable.
+Asana uses its official v2 MCP server with an operator-registered MCP OAuth
+app. See [operator setup](../old/asana-setup.md). It depends on the separately
+reviewed shared OAuth opt-ins above: `get_user` is called without arguments
+for the current account and `access.unscoped` honestly records Write consent.
+The catalog comments cite the absence of MCP scopes. Tokens stay in Core and
+the session host. The one-hour token lifetime is documented, not measured.
 
 ## Not yet
 

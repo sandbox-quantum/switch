@@ -662,12 +662,9 @@ class ConnectionDefinition(BaseModel):
     def _check_oauth(self) -> None:
         if self.auth.type != "oauth":
             raise ValueError("the oauth adapter signs in with OAuth")
-        if (
-            self.auth.identity is not None
-            and self.auth.identity.mcp_tool is not None
-            and self.mcp is None
-        ):
-            raise ValueError("MCP identity needs an MCP server")
+        identity = self.auth.identity
+        if identity is not None and identity.mcp_tool is not None and self.mcp is None:
+            raise ValueError("an MCP identity needs an MCP server")
         if self.mcp is not None and self.cli is not None:
             raise ValueError(
                 "an oauth entry's tools are its MCP servers or its command-line "
