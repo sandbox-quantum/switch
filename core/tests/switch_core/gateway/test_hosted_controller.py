@@ -927,6 +927,38 @@ async def test_observation_rejects_unknown_fields_and_codes(controller_app):
     assert missing.status_code == 404
 
 
+@pytest.mark.parametrize("desired", ["retained", "deleted"])
+async def test_a_stop_report_never_moves_a_retained_or_deleted_desired_state(
+    controller_app, desired
+):
+    """L52: the box scaler scales a retained or deleted box to 0 and reports
+    `stopping`, then `stopped`. Those reports set the observed state only:
+    what Core wants for the machine, its retention and its stop reason stay
+    exactly as they were."""
+    app = controller_app
+    retain_until = (
+        datetime.now(UTC) + timedelta(days=7) if desired == "retained" else None
+    )
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="ready",
+        desired_state=desired,
+        stop_reason=None,
+        retain_until=retain_until,
+        revision=2,
+    )
+    for observed in ("stopping", "stopped"):
+        item = await observe(app.client, app.machine_id, state=observed, revision=2)
+        assert item["state"] == observed
+        assert item["desired_state"] == desired
+    saved = await machine_of(app.factory, app.machine_id)
+    assert saved.desired_state == desired
+    assert saved.stop_reason is None
+    assert saved.revision == 2
+    assert (saved.retain_until is None) == (retain_until is None)
+
+
 async def test_stale_observation_is_ignored_unless_it_carries_an_error(
     controller_app,
 ):
