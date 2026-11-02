@@ -366,6 +366,25 @@ version of their own to them without also giving them a release of their own.
   once. A server that does not name Atlassian registers what it did before.
   Starting a sign-in also answers `callback_url`: the server's callback when
   the browser comes back through it, null otherwise.
+- **Datadog connects again, by signing in at your Datadog site.** People pick
+  their Datadog site (US1, US3, US5, EU1, AP1, AP2 or UK1) and sign in to
+  Datadog, where its consent page's Full access connects for reading and
+  writing and Limited access for reading. Switch registers its own client at
+  each site people use, so nothing is set up on the server. Agents granted
+  Datadog get the owner's access token, which lives an hour and is renewed by
+  Switch, and call the MCP server at the connection's site. Sign-ins come back
+  to Switch Console; a server may name `core` for datadog in
+  `SERVICE_SIGN_IN_REDIRECT` once an admin of each Datadog organization has
+  allow-listed the server's callback under MCP OAuth Redirect URLs in
+  Organization Settings. Datadog cannot revoke a sign-in for Switch, so
+  disconnecting says to remove it in Datadog under Personal Settings,
+  Authorized Apps. The account is the Datadog user signed in to, named by
+  their email. A Datadog connection made with keys reads as needing to be
+  connected again and is never used; disconnecting it forgets the keys, which
+  only Datadog can revoke. `GET /gateway/service-connections` answers
+  `sign_in_choices`, what a sign-in asks people to pick first, and a
+  connection made in a way its service no longer offers reads
+  `needs_reauthorization`.
 
 #### Changed
 - **Removing a member hands what they own to an admin.** Their rooms,
@@ -2794,6 +2813,13 @@ version of their own to them without also giving them a release of their own.
   spinner and says that if the service shows an error, an admin must
   allow-list that URL there. A server that does not send `callback_url` is
   read as one whose sign-ins come back to Console.
+- **The Connect dialog asks for your Datadog site before you sign in.** For a
+  service whose sign-in takes a choice first, the dialog shows a picker for
+  it above the Connect button, which stays off until you pick; connecting
+  again starts on the site you connected at. The connector's page names the
+  site beside the account you are connected as. A server that does not send
+  `sign_in_choices` is read as one whose sign-ins take no choice, and a
+  sign-in that takes none is started as before.
 - **Codex sessions can use an API key kept in the OS keyring.** With
   `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
   Codex keeps its login in the keyring, where a session's own Codex home cannot
