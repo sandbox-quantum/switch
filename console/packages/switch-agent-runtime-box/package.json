@@ -10,7 +10,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/sandbox-quantum/switch.git",
-    "directory": "console/packages/switch-agent-runtime"
+    "directory": "console/packages/switch-agent-runtime-box"
   },
   "type": "module",
   "sideEffects": false,
