@@ -18,6 +18,8 @@ export function offersAddAgent(entry: ConnectionCatalogEntry): boolean {
 
 /** What the Add agent search says an added agent gets, for a service with no choice to make. */
 export function addAgentIntro(entry: ConnectionCatalogEntry): string {
+  if ((entry.grant_access_levels?.length ?? 0) > 0)
+    return `An agent you add gets read-only access to ${entry.name}. You can change it to read and write from the agent's Connectors.`;
   return `An agent you add acts as you at ${entry.name}, with what your connection allows.`;
 }
 

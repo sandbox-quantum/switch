@@ -7,6 +7,7 @@ import {
   REMOVED_GRANT_NOTE,
 } from '@renderer/features/locations/components/settings-view/sections/service-grants';
 import {
+  AccessLevelGrant,
   GitHubGrantForm,
   GrantCard,
   OnOffGrant,
@@ -241,6 +242,16 @@ export function AgentConnectionsTab({
               busy={change.isPending}
               onTurnOn={() => set(opened.slug, null, {})}
               onTurnOff={() => remove(opened.slug)}
+            />
+          )}
+          {opened.kind === 'levels' && opened.service && (
+            <AccessLevelGrant
+              service={opened.service}
+              grant={opened.grant}
+              agentName={label}
+              busy={change.isPending}
+              onSave={(access) => set(opened.slug, access, {})}
+              onRemove={() => remove(opened.slug)}
             />
           )}
           {opened.kind === 'github' && (

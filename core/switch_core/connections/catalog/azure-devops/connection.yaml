@@ -25,28 +25,27 @@ auth:
       Switch can't check admin consent, tenant restrictions, or that the
       redirect URI matches. Have someone connect once to confirm.
     # Microsoft Entra ID does not publish a standard RFC 7009 token revocation
-    # endpoint, so sign-ins must be revoked by the user in their Microsoft account.
+    # endpoint, so sign-ins must be removed by the user in their Microsoft account.
     remove_access: >-
       Remove it in your Microsoft account under App permissions
-      (https://myaccount.microsoft.com). Until then, tokens already issued
-      remain valid until their 60-minute expiry.
+      (https://myaccount.microsoft.com). Existing access tokens are not revoked
+      immediately; their expiry is controlled by Entra ID and tenant policy.
   identity:
     # Azure DevOps Visual Studio Profile service, checked using the bearer token.
     url: https://app.vssps.visualstudio.com/_apis/profile/profiles/me
     account_id: id
     label: emailAddress
-# Microsoft Entra ID access tokens live 60 minutes (3,600 seconds).
+# Entra's default token lifetime varies from 60 to 90 minutes; Switch caps the
+# lifetime handed to agents at one hour.
 token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
-    # The official Azure DevOps remote MCP server. Organization name is
-    # provided in tool call context, allowing agents to work across organizations.
-    - { name: azure-devops, url: "https://mcp.dev.azure.com" }
+    # Omitting the organization requires it in each tool call. Azure DevOps
+    # enforces read-only grants when this header is set by the session host.
+    - { name: azure-devops, url: "https://mcp.dev.azure.com/", read_only_header: X-MCP-Readonly }
 access:
-  # Azure DevOps delegates permissions through user_impersonation under the
-  # well-known Azure DevOps Entra application (499b84ac-1321-427f-aa17-267ca6975798).
-  # Entra ID does not separate read and write scopes for Azure DevOps; actions
-  # are bounded by the user's project and organization permissions.
+  # Azure DevOps uses the same user_impersonation scope for both levels;
+  # read-only access is enforced by the MCP server header above.
   read:
     scopes:
       - 499b84ac-1321-427f-aa17-267ca6975798/user_impersonation

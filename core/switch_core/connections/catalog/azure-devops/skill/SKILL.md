@@ -15,10 +15,13 @@ there is nothing to set up or renew.
   Azure DevOps, and every work item, comment, pull request, branch or pipeline
   run you create or change shows there as done by them.
 - **Organization and project context.** The remote server provides access
-  across your owner's accessible Azure DevOps organizations. When invoking tools,
-  pass the target organization and project name in the tool call arguments. If
-  the user did not specify which organization or project to use, ask them
-  before proceeding.
+  across your owner's accessible Azure DevOps organizations. Use
+  `core_list_orgs` to find available organizations, and ask the user to choose
+  one when the target is unclear. Pass the selected organization and project
+  name in tool call arguments.
+- **Read-only grants.** Azure DevOps enforces read-only access for read-level
+  grants. If a write is refused or unavailable, explain that the grant does not
+  permit it; never try to bypass the restriction.
 - **Permissions match your owner's role.** What you can do is bounded by your
   owner's permissions in the organization and project (such as Reader or
   Contributor). If an operation is refused, tell the user you lack permission
@@ -26,8 +29,6 @@ there is nothing to set up or renew.
 - When a tool is refused, tell the user what you could not do. If Switch says
   the grant was removed or the connection must be reconnected, your owner has
   to do that.
-- Never print, log or store credentials.
-
 ## Finding things
 
 - Use work item queries or search tools to locate work items (bugs, tasks, user

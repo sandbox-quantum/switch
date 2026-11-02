@@ -71,11 +71,13 @@ export const connectionCatalogEntrySchema = z.object({
    * server that predates the codes, where only the reason is shown.
    */
   unavailable_code: z.enum(UNAVAILABLE_CODES).nullable(),
-  /**
-   * Whether a grant hands the agent the owner's own token: on or off, at the
-   * connection's level. False for GitHub, whose grant names repositories.
-   */
+  /** Whether the agent receives the owner's own token for this service. */
   pass_through: z.boolean(),
+  /** Grant levels when the vendor enforces a read-only MCP mode; otherwise null or absent. */
+  grant_access_levels: z
+    .array(z.enum(['read', 'write']))
+    .nullable()
+    .optional(),
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: z.number().nullable(),
   /**
@@ -107,6 +109,7 @@ export const connectionCatalogSchema = z.object({
         unavailable_reason: true,
         unavailable_code: true,
         pass_through: true,
+        grant_access_levels: true,
         token_lifetime: true,
         loopback_ports: true,
         key: true,
@@ -134,6 +137,10 @@ export const serviceConnectionsSchema = z.object({
       // Absent from a Switch that predates them.
       unavailable_code: z.string().nullable().default(null),
       pass_through: z.boolean().default(false),
+      grant_access_levels: z
+        .array(z.enum(['read', 'write']))
+        .nullable()
+        .optional(),
       token_lifetime: z.number().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),

@@ -417,3 +417,75 @@ it('says a key service is used with the owner’s key, and nothing of tokens exp
   expect(el.textContent).not.toContain('token');
   expect(el.textContent).not.toContain('expires');
 });
+
+it('lets an agent choose read-write for a vendor-enforced connector', async () => {
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [],
+    addressing_open: false,
+  });
+  workspaces.getServiceConnections.mockResolvedValue([
+    onOff('connected', {
+      slug: 'azure-devops',
+      name: 'Azure DevOps',
+      grant_access_levels: ['read', 'write'],
+    }),
+  ]);
+  const el = await render();
+
+  await vi.waitFor(() => expect(button(el, 'Grant access')).toBeDefined());
+  const write = el.querySelector<HTMLInputElement>(
+    'input[type="radio"][name="azure-devops-access"][value="write"]'
+  );
+  expect(write).not.toBeNull();
+  await act(async () => write!.click());
+  await act(async () => button(el, 'Grant access')!.click());
+  await vi.waitFor(() =>
+    expect(workspaces.setServiceGrant).toHaveBeenCalledWith({
+      workspaceId: 'workspace',
+      agentId: 'agent',
+      service: 'azure-devops',
+      access: 'write',
+      resources: {},
+    })
+  );
+});
+
+it('lets an agent change a vendor-enforced connector to read-only', async () => {
+  workspaces.getServiceGrants.mockResolvedValue({
+    grants: [
+      {
+        service: 'azure-devops',
+        name: 'Azure DevOps',
+        access: 'write',
+        resources: {},
+        summary: 'helper can read and write Azure DevOps.',
+      },
+    ],
+    addressing_open: false,
+  });
+  workspaces.getServiceConnections.mockResolvedValue([
+    onOff('connected', {
+      slug: 'azure-devops',
+      name: 'Azure DevOps',
+      grant_access_levels: ['read', 'write'],
+    }),
+  ]);
+  const el = await render();
+
+  await vi.waitFor(() => expect(button(el, 'Save access')).toBeDefined());
+  const read = el.querySelector<HTMLInputElement>(
+    'input[type="radio"][name="azure-devops-access"][value="read"]'
+  );
+  expect(read).not.toBeNull();
+  await act(async () => read!.click());
+  await act(async () => button(el, 'Save access')!.click());
+  await vi.waitFor(() =>
+    expect(workspaces.setServiceGrant).toHaveBeenLastCalledWith({
+      workspaceId: 'workspace',
+      agentId: 'agent',
+      service: 'azure-devops',
+      access: 'read',
+      resources: {},
+    })
+  );
+});
