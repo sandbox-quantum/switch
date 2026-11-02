@@ -182,6 +182,19 @@ version of their own to them without also giving them a release of their own.
   them, and to roll back, first downgrade the database to the revision before
   `238c68b7306e` (`alembic downgrade 238c68b7306e-1`), then start the older
   release.
+- **Messages no longer queue for the database's NOTIFY lock.** Postgres
+  lets one transaction that sends a `NOTIFY` commit at a time, and the
+  triggers on `messages` and `agent_events` sent one from every message's
+  transaction, so the whole deployment stopped near 300 messages a second
+  however many pods or vCPUs it had. The router now writes without them and
+  announces its rows once they have committed, through one announcer per
+  process that sends everything queued since its last send in a single
+  transaction (`announcer.py`). Same channels and payloads, so pods of the
+  previous release and this one hear each other during a rolling update; the
+  migration is expand only. A reader re-checks its rooms, and the agent
+  event listener forgets the heads it was told, every 20 to 30 seconds, so an
+  announcement lost with a process that died right after its commit costs a
+  delay, not a message. Signals go through the same announcer.
 - **The statements every message write costs run on asyncpg directly.**
   Taking the room's lock, reading its head, storing the agents' own events
   and reading the room's agent members again under the lock go straight to

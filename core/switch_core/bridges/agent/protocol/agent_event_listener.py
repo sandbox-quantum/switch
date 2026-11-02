@@ -17,6 +17,13 @@ connection is down are lost, so each time it starts or stops listening every
 head this process was told is forgotten, and when it starts every stream is
 woken to look for events it may have missed (`EventBuffer.listening`).
 
+The router announces the events it stores after its commit rather than from
+inside it (`announcer.py`), so an announcement can also be lost to a process
+that died between the two, with this connection never dropping. Every
+heartbeat therefore forgets the heads this process was told
+(`EventBuffer.forget_told_heads`), and a lost announcement costs at most one
+heartbeat and one pass.
+
 Connection handling follows `MessageListener`: a dedicated connection outside
 the pool, a periodic heartbeat query, and reconnects with a capped backoff.
 """
@@ -113,6 +120,7 @@ class AgentEventListener:
                         await driver.execute(
                             "SELECT 1", timeout=HEARTBEAT_TIMEOUT_SECONDS
                         )
+                        self._buffer.forget_told_heads()
                 finally:
                     self.connected.clear()
                     self._buffer.listening(False)

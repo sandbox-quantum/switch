@@ -12,17 +12,19 @@ own: the holder of a controller's socket may be any process, and the database
 is the one path that reaches it wherever it is.
 
 Publishing is batched. A transaction that sends a `NOTIFY` takes a lock that
-every other notifying transaction waits on as it commits, so signals raised
-together go out in one statement rather than one transaction each. Payloads
-are ids and small fields only: `NOTIFY` is not subject to row-level security,
-and any session listening on the channel can read what is sent.
+every other notifying transaction waits on as it commits, so signals go out
+through the process's `Announcer`, with everything else it announces, in one
+transaction per batch rather than one each. Payloads are ids and small fields
+only: `NOTIFY` is not subject to row-level security, and any session listening
+on the channel can read what is sent.
 
 Reconnecting resyncs. Signals sent while the listening connection was down
 were never queued, so every registered resync runs once the connection is back,
 and each re-reads what its clients are owed.
 
 Nothing here is allowed to lose a change for good. A batch that fails to send
-is kept and sent again, as the controller connection ledger keeps its writes.
+is kept and sent again (`Announcer`), as the controller connection ledger keeps
+its writes.
 And because a signal can still be missed (its sender died between the commit
 and the send, or a receiver was busy restarting), every family also registers
 a periodic re-check that compares what this process holds with the database.
@@ -44,7 +46,7 @@ import logging
 from collections.abc import Awaitable, Callable, Hashable
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import text
+from switch_core.announcer import MAX_PAYLOAD_BYTES, Announcer
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -60,18 +62,8 @@ HEARTBEAT_TIMEOUT_SECONDS = 60.0
 RECONNECT_BACKOFF_BASE = 1.0
 RECONNECT_BACKOFF_CAP = 15.0
 
-# Postgres refuses a payload of 8000 bytes or more. Ours are a few dozen.
-MAX_PAYLOAD_BYTES = 7999
-
-# How long a batch that failed to send, or a key whose re-read failed, waits
-# before it is tried again.
+# How long a key whose re-read failed waits before it is tried again.
 RETRY_SECONDS = 2.0
-
-# How many unsent signals are kept while the database refuses them. Past this
-# the oldest are dropped and logged: by then the database has been unreachable
-# for a long while, and the periodic re-checks bring every process back in
-# line once it returns, so holding more would only cost memory.
-MAX_UNSENT = 10_000
 
 # How often every family's re-check runs, so that a signal missed for any
 # reason costs at most this long rather than lasting until a restart.
@@ -81,10 +73,6 @@ SignalHandler = Callable[[dict[str, Any]], None]
 Resync = Callable[[], Awaitable[None]]
 Recheck = Callable[[], Awaitable[None]]
 EngineFactory = Callable[[], "AsyncEngine"]
-
-_NOTIFY_MANY = text(
-    "SELECT pg_notify(:channel, payload) FROM unnest(CAST(:payloads AS text[])) AS payload"
-)
 
 
 class PendingWork[K: Hashable]:
@@ -155,8 +143,14 @@ class SignalBus:
         session_factory: async_sessionmaker[AsyncSession],
         engine_factory: EngineFactory,
         process_id: str,
+        announcer: Announcer | None = None,
     ) -> None:
         self._session_factory = session_factory
+        # The process's announcer, so signals go out in the same transactions
+        # as everything else it announces; one of its own when none is given,
+        # started and stopped with the bus.
+        self._announcer = announcer or Announcer(session_factory)
+        self._owns_announcer = announcer is None
         # Signals carry the sender's process id, and a process skips its own:
         # whoever publishes has already acted on the change locally.
         self.process_id = process_id
@@ -166,8 +160,6 @@ class SignalBus:
         self._resyncs: list[Resync] = []
         self._rechecks: list[Recheck] = []
         self._work: list[PendingWork[Any]] = []
-        self._outbox: list[str] = []
-        self._has_outbox = asyncio.Event()
         self._inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
@@ -228,65 +220,11 @@ class SignalBus:
             raise ValueError(
                 f"Signal {kind!r} is too large to send ({len(payload)} bytes)"
             )
-        self._outbox.append(payload)
-        self._has_outbox.set()
+        self._announcer.announce(SIGNAL_CHANNEL, payload)
 
     @property
     def unsent(self) -> int:
-        return len(self._outbox)
-
-    async def _send_forever(self) -> None:
-        while self._running:
-            await self._has_outbox.wait()
-            self._has_outbox.clear()
-            batch, self._outbox = self._outbox, []
-            if not batch:
-                continue
-            # Set once the batch's transaction has committed, which is when
-            # Postgres sends it: what fails after that (closing the session)
-            # did not stop it going, and keeping it would send it twice.
-            committed = False
-            try:
-                async with self._session_factory() as session:
-                    await session.execute(
-                        _NOTIFY_MANY, {"channel": SIGNAL_CHANNEL, "payloads": batch}
-                    )
-                    await session.commit()
-                    committed = True
-            except asyncio.CancelledError:
-                if not committed:
-                    self._outbox = batch + self._outbox
-                raise
-            except Exception:
-                if committed:
-                    logger.warning(
-                        "Sent %d signal(s), then closing the session failed",
-                        len(batch),
-                        exc_info=True,
-                    )
-                    continue
-                # The receivers' listening connections did not drop, so none
-                # of them will resync: a batch dropped here would be lost
-                # until the next re-check. Kept ahead of anything published
-                # since, so a process still receives one sender's signals in
-                # the order they were raised.
-                self._outbox = batch + self._outbox
-                if len(self._outbox) > MAX_UNSENT:
-                    dropped = len(self._outbox) - MAX_UNSENT
-                    self._outbox = self._outbox[dropped:]
-                    logger.error(
-                        "Dropped the %d oldest unsent signal(s); the periodic "
-                        "re-checks repair what they announced",
-                        dropped,
-                    )
-                logger.error(
-                    "Could not send %d signal(s); kept and retried in %.0fs",
-                    len(self._outbox),
-                    RETRY_SECONDS,
-                    exc_info=True,
-                )
-                await asyncio.sleep(RETRY_SECONDS)
-                self._has_outbox.set()
+        return self._announcer.unsent
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -294,10 +232,11 @@ class SignalBus:
         if self._running:
             raise RuntimeError("SignalBus is already started")
         self._running = True
+        if self._owns_announcer:
+            await self._announcer.start()
         self._tasks = [
             asyncio.create_task(self._listen_forever(), name="signal-listener"),
             asyncio.create_task(self._dispatch_forever(), name="signal-dispatch"),
-            asyncio.create_task(self._send_forever(), name="signal-sender"),
             asyncio.create_task(self._recheck_forever(), name="signal-recheck"),
         ]
         self._tasks += [
@@ -313,6 +252,8 @@ class SignalBus:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         self._tasks = []
+        if self._owns_announcer:
+            await self._announcer.stop()
         self.connected.clear()
 
     # ── The listening connection ──────────────────────────────────────────────

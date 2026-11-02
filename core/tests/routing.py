@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import insert, select
 
+from switch_core.announcer import Announcer
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import (
     EventBuffer,
@@ -197,10 +198,13 @@ def router_on(
     connections: AgentConnectionRegistry | None = None,
     telemetry: RecordedTelemetry | None = None,
     conversation: ConversationSettings | None = None,
+    announcer: Announcer | None = None,
 ) -> MessageRouter:
     """A router on the test database with real stores. A test that has no
     agent in its rooms can write through it with nothing else set up.
-    Following the conversation is off unless `conversation` turns it on."""
+    Following the conversation is off unless `conversation` turns it on.
+    With `announcer`, it announces its rows after their commits, as the
+    server's does; without, the triggers announce them."""
     return MessageRouter(
         services=RecipientServices(
             session_factory=session_factory,
@@ -222,6 +226,7 @@ def router_on(
             message_telemetry=telemetry  # type: ignore[arg-type]
             if telemetry is not None
             else RecordedTelemetry(),
+            announcer=announcer,
         ),
         message_store=MessageStore(),
         client_store=ClientStore(),
@@ -244,6 +249,7 @@ def process_on(
     rooms: RoomAnnouncements | None = None,
     connections: AgentConnectionRegistry | None = None,
     conversation: ConversationSettings | None = None,
+    announcer: Announcer | None = None,
 ) -> Process:
     """A process's routing on the test database: real stores, its own
     registry and buffer, telemetry that records. A test of presence across
@@ -262,6 +268,7 @@ def process_on(
         connections=connections,
         telemetry=telemetry,
         conversation=conversation,
+        announcer=announcer,
     )
     invites = InviteBus()
     factory = ClientFactory(

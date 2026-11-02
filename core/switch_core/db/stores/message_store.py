@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.notify_ddl import SET_WRITER_ANNOUNCES
 from switch_core.db.raw import RawStatement
 
 
@@ -26,6 +27,8 @@ class MessageStore:
         session: AsyncSession,
         message: Message,
         attachments: list[MessageAttachment],
+        *,
+        announced_by_writer: bool = False,
     ) -> Message:
         """Persist a message and its files as one unit.
 
@@ -33,8 +36,15 @@ class MessageStore:
         they were sent in.
 
         The caller must not have set `seq`; this assigns it.
+
+        With `announced_by_writer`, the triggers on `messages` and
+        `agent_events` send nothing for the rest of the transaction, and the
+        caller announces every row of either table it writes in it once it
+        has committed (`WRITER_ANNOUNCES_SETTING` in `db/notify_ddl.py`).
         """
-        message.seq = await self._next_seq(session, message.room_id)
+        message.seq = await self._next_seq(
+            session, message.room_id, announced_by_writer=announced_by_writer
+        )
         session.add(message)
         await session.flush()
         for position, attachment in enumerate(attachments):
@@ -49,6 +59,8 @@ class MessageStore:
         session: AsyncSession,
         message: Message,
         attachments: list[MessageAttachment],
+        *,
+        announced_by_writer: bool = False,
     ) -> bool:
         """`create`, unless a message with the same `transport_event_id` is
         already stored, in which case nothing is written. Returns whether the
@@ -58,8 +70,12 @@ class MessageStore:
         twice writes once. The check runs under the room's lock, which every
         writer to the room holds to commit, so an earlier write of the same
         message has either committed and is found, or has not started.
+
+        `announced_by_writer` as for `create`.
         """
-        message.seq = await self._next_seq(session, message.room_id)
+        message.seq = await self._next_seq(
+            session, message.room_id, announced_by_writer=announced_by_writer
+        )
         if await self.get_by_transport_event_id(session, message.transport_event_id):
             return False
         session.add(message)
@@ -129,7 +145,9 @@ class MessageStore:
         )
         return min(int(result.scalar_one()), 0) - 1
 
-    async def _next_seq(self, session: AsyncSession, room_id: str) -> int:
+    async def _next_seq(
+        self, session: AsyncSession, room_id: str, *, announced_by_writer: bool = False
+    ) -> int:
         """The next position in this room, allocated in commit order.
 
         One above the room's highest, so live positions run 1, 2, 3 with no
@@ -158,8 +176,12 @@ class MessageStore:
 
         The cost is per-room serialisation of a single INSERT. Rooms do not
         contend with each other.
+
+        A writer that announces its own rows sets that up in the same
+        statement as the lock, so it costs no round trip of its own.
         """
-        await _LOCK_ROOM.all(session, {"room_id": room_id})
+        lock = _LOCK_ROOM_ANNOUNCED_BY_WRITER if announced_by_writer else _LOCK_ROOM
+        await lock.all(session, {"room_id": room_id})
         head = await _ROOM_HEAD.all(session, {"room_id": room_id})
         return int(head[0].head) + 1
 
@@ -210,26 +232,30 @@ class MessageStore:
         return {room_id: heads.get(room_id, 0) for room_id in room_ids}
 
     async def rooms_past(
-        self, session: AsyncSession, cursors: dict[str, int]
+        self,
+        session: AsyncSession,
+        cursors: dict[str, int],
+        *,
+        types: Collection[str] | None = None,
     ) -> set[str]:
         """Of the rooms in `cursors`, the ones with a row after their cursor,
-        in one query whose result is only those rooms."""
+        in one query whose result is only those rooms. With `types`, a row
+        of one of those types."""
         if not cursors:
             return set()
         position = values(
             column("room_id", Text), column("seq", BigInteger), name="position"
         ).data(list(cursors.items()))
-        result = await session.execute(
-            select(Message.room_id)
-            .join(
-                position,
-                and_(
-                    Message.room_id == position.c.room_id,
-                    Message.seq > position.c.seq,
-                ),
-            )
-            .distinct()
+        query = select(Message.room_id).join(
+            position,
+            and_(
+                Message.room_id == position.c.room_id,
+                Message.seq > position.c.seq,
+            ),
         )
+        if types is not None:
+            query = query.where(Message.event_type.in_(list(types)))
+        result = await session.execute(query.distinct())
         return set(result.scalars().all())
 
     async def get_by_transport_event_id(
@@ -389,6 +415,9 @@ class MessageStore:
 # (`db/raw.py`): every message an agent or a person sends takes the room's
 # lock and reads its head.
 _LOCK_ROOM = RawStatement(text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"))
+_LOCK_ROOM_ANNOUNCED_BY_WRITER = RawStatement(
+    text(f"SELECT pg_advisory_xact_lock(hashtext(:room_id)), {SET_WRITER_ANNOUNCES}")
+)
 _ROOM_HEAD = RawStatement(
     select(func.coalesce(func.max(Message.seq), 0).label("head")).where(
         Message.room_id == bindparam("room_id")

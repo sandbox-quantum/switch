@@ -41,6 +41,7 @@ Writing needs nothing of the kind: any process may write as any client.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -173,6 +174,10 @@ MEMBERSHIP_EVENT_TYPE = "m.room.member"
 # How long a consumer that is told to stop may take to finish the row in hand,
 # before what is left of it is cancelled.
 STOP_GRACE_SECONDS = 5.0
+
+# How often a reader asks which of its rooms have a row past where it read
+# (`PostgresTransport._recheck_forever`).
+RECHECK_SECONDS = 30.0
 
 
 class RoomIds:
@@ -417,6 +422,7 @@ class PostgresTransport:
         self._receiving_event.set()
         try:
             delivery = asyncio.create_task(self._deliver_forever())
+            recheck = asyncio.create_task(self._recheck_forever())
             try:
                 async with self._reading_rooms:
                     rooms = await self.joined_rooms()
@@ -433,6 +439,9 @@ class PostgresTransport:
                     await self._watch_joined(rooms)
                 await self._closed.wait()
             finally:
+                recheck.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await recheck
                 await self._finish(delivery)
         finally:
             self._receiving = False
@@ -446,6 +455,46 @@ class PostgresTransport:
             self._unwatch_all()
             self._progress = None
             self._recorded.clear()
+
+    async def _recheck_forever(self) -> None:
+        """Every `RECHECK_SECONDS`, wake the rooms with a row past where this
+        client read, found in one query.
+
+        The process that writes a room's row announces it after its commit
+        (`announcer.py`), and one that died between the two announced
+        nothing: without this, the row would wait for the room's next one.
+        A wake costs a read from the cursor, so a room woken for a row its
+        announcement was about to bring reads it a moment early.
+        """
+        with no_tenant():
+            while not self._stopping:
+                await asyncio.sleep(RECHECK_SECONDS)
+                cursors = {
+                    room_id: cursor
+                    for room_id, cursor in self._cursors.items()
+                    if room_id in self._watching
+                }
+                if not cursors:
+                    continue
+                try:
+                    async with tenant_session(
+                        self._session_factory, self.tenant_id
+                    ) as session:
+                        moved = await self._message_store.rooms_past(
+                            session, cursors, types=self._row_types
+                        )
+                except Exception:
+                    logger.warning(
+                        "Client %s could not check its rooms for rows it was "
+                        "not told of; trying again in %.0fs",
+                        self.user_id,
+                        RECHECK_SECONDS,
+                        exc_info=True,
+                    )
+                    continue
+                for room_id in moved:
+                    if room_id in self._watching:
+                        self._mark_pending(room_id)
 
     async def _finish(self, delivery: asyncio.Task[None]) -> None:
         """End the delivery loop after the row in hand, or cancel it once

@@ -906,6 +906,78 @@ class TestReceiving:
         # the internal one the listener announces.
         assert event.room_id == room
 
+    async def test_a_row_nobody_announced_is_found_by_the_recheck(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The process that writes a row announces it after its commit, and
+        one that died between the two announced nothing: the reader asks
+        which of its rooms moved past where it read."""
+        monkeypatch.setattr(postgres_module, "RECHECK_SECONDS", 0.05)
+        transport, _, received, room, _ = await self._receiving(session_factory)
+
+        sent = await transport.send_message(
+            room, "never announced", sender_name="agent one", metered=True
+        )
+        async with asyncio.timeout(10):
+            while not received.events:
+                await asyncio.sleep(0.01)
+
+        assert [event.event_id for event in received.events] == [sent.event_id]  # type: ignore[attr-defined]
+
+    async def test_a_reader_of_some_types_is_rechecked_for_those_only(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Switch's own reader's cursor moves only with command rows, so the
+        rows of every other type past it must not wake it at every check."""
+        monkeypatch.setattr(postgres_module, "RECHECK_SECONDS", 0.02)
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+        received = _Received()
+        reader = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            listener=_FakeListener(),
+        )
+        reader.register_handlers(received.handlers())
+        await reader.join_room(room)
+        task = asyncio.create_task(
+            reader.receive_forever(
+                FromHead(MessageStore()),
+                row_types=frozenset({"com.switch.command"}),
+            )
+        )
+        self._tasks.append((task, reader))
+        await _watched_room(reader)
+        woken: list[str] = []
+        mark = reader._mark_pending
+
+        def counting(room_id: str) -> None:
+            woken.append(room_id)
+            mark(room_id)
+
+        reader._mark_pending = counting  # type: ignore[method-assign]
+
+        await reader.send_message(room, "chat", sender_name="a", metered=True)
+        await asyncio.sleep(0.2)
+        assert woken == []
+
+        sent = await reader.send_event(
+            room,
+            "com.switch.command",
+            {"command": "help", "args": "", "user_id": user_id, "user_name": "a"},
+        )
+        async with asyncio.timeout(10):
+            while not received.events:
+                await asyncio.sleep(0.01)
+
+        assert [event.event_id for event in received.events] == [sent.event_id]  # type: ignore[attr-defined]
+
     async def test_a_reader_of_some_types_is_handed_only_those(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

@@ -98,6 +98,7 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.announcer import Announcer
     from switch_core.bridges.agent.protocol.agent_connections import (
         AgentConnectionRegistry,
     )
@@ -198,6 +199,10 @@ class RecipientServices:
     connections: AgentConnectionRegistry
     frontend_base_url: str | None
     message_telemetry: MessageTelemetry
+    # The process's announcer, through which the router announces the rows it
+    # writes once they have committed (`announcer.py`). Without one, the
+    # triggers announce them from inside the transaction, as they did.
+    announcer: Announcer | None = None
 
 
 class SwitchNotices(Protocol):

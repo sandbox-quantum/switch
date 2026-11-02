@@ -77,6 +77,10 @@ from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
 from switch_core.clients.mention_warnings import MentionWarnings, unmatched_mentions
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.db.agent_event_notify_ddl import (
+    AGENT_EVENT_CHANNEL,
+    agent_event_announcement,
+)
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
@@ -90,6 +94,7 @@ from switch_core.db.models import (
     SwitchCoreProcess,
     room_agents,
 )
+from switch_core.db.notify_ddl import MESSAGE_CHANNEL, message_announcement
 from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
@@ -544,6 +549,7 @@ class Routed:
         seq: int,
         stored: list[tuple[str, int]],
         deadline_in: float | None,
+        announcement: str | None = None,
     ) -> None:
         self._router = router
         self._reads = reads
@@ -553,6 +559,9 @@ class Routed:
         self.seq = seq
         self._stored = stored
         self._deadline_in = deadline_in
+        # What the trigger would have announced for the row, when the writer
+        # announces it and its own events itself once it has committed.
+        self._announcement = announcement
 
     def committed(self) -> None:
         """Wake the agents the row is for, and leave the replies it owes to
@@ -575,6 +584,13 @@ class Routed:
 
     def _committed(self) -> None:
         router = self._router
+        announcer = router.services.announcer
+        if self._announcement is not None and announcer is not None:
+            announcer.announce(MESSAGE_CHANNEL, self._announcement)
+            for agent_id, seq in self._stored:
+                announcer.announce(
+                    AGENT_EVENT_CHANNEL, agent_event_announcement(agent_id, seq)
+                )
         for agent_id, seq in self._stored:
             router.services.event_buffer.ring(agent_id, seq)
         reads = self._reads
@@ -880,10 +896,22 @@ class MessageRouter:
             plan = await self._decide(
                 session, reads, unwritten, sender_client_id=message.sender_client_id
             )
+        # With an announcer, the row and its own events are announced once the
+        # caller has committed (`Routed.committed`), in a batch, rather than by
+        # the triggers from inside this transaction (`announcer.py`).
+        announced_by_writer = self.services.announcer is not None
         if not unless_stored:
-            await self._messages.create(session, message, attachments)
+            await self._messages.create(
+                session,
+                message,
+                attachments,
+                announced_by_writer=announced_by_writer,
+            )
         elif not await self._messages.create_unless_stored(
-            session, message, attachments
+            session,
+            message,
+            attachments,
+            announced_by_writer=announced_by_writer,
         ):
             return None
         if reads is not None and await self._joined_since(session, reads):
@@ -922,6 +950,13 @@ class MessageRouter:
             seq=message.seq,
             stored=stored,
             deadline_in=deadline_in,
+            announcement=(
+                message_announcement(
+                    room_id, message.seq, message.id, message.event_type
+                )
+                if announced_by_writer
+                else None
+            ),
         )
 
     @staticmethod

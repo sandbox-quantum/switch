@@ -1106,6 +1106,18 @@ class EventBuffer:
             for bell in bells:
                 bell.set()
 
+    def forget_told_heads(self) -> None:
+        """Forget every head this process was told, without waking anyone.
+
+        A head kept as told stands until a ring raises it, which holds only
+        while every new event is announced. The router announces its events
+        after its commit (`announcer.py`), and a process that died between
+        the two announced nothing; so the listener calls this on a timer, and
+        the next pass of any stream reads those heads from the table.
+        """
+        self._told_heads.clear()
+        self._told_epoch += 1
+
     def listening(self, now_listening: bool) -> None:
         """Told by the notification listener each time it starts or stops
         listening on a Postgres connection. Notifications sent while it was

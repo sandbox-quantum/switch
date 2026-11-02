@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
     HEARTBEAT_TTL_SECONDS,
@@ -672,12 +673,17 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     session_activity_listener = AgentSessionActivityListener(
         lambda: create_unpooled_engine(config)
     )
+    # Every `NOTIFY` this process sends from its own code, after the commits
+    # they announce, one transaction per batch (`announcer.py`): the router's
+    # messages and own events, and the signals below.
+    announcer = Announcer(session_factory)
     # Signals between switch-core processes (see `signals.py`): the same
     # arrangement again, carrying "who should look" rather than a room's rows.
     signal_bus = SignalBus(
         session_factory,
         lambda: create_unpooled_engine(config),
         process_id=process_id,
+        announcer=announcer,
     )
     # This process's row in `switch_core_processes`, claimed before anything
     # can record a connection against it and held until the process drains.
@@ -865,6 +871,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
             connections=connections,
             frontend_base_url=config.dashboard_base_url,
             message_telemetry=message_telemetry,
+            announcer=announcer,
         ),
         message_store=message_store,
         client_store=client_store,
@@ -1451,6 +1458,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 if telemetry.enabled
                 else None
             )
+            await announcer.start()
             await message_listener.start()
             await session_activity_listener.start()
             await agent_event_listener.start()
@@ -1485,6 +1493,9 @@ async def run(config: SwitchConfig, process_id: str) -> None:
                 await session_activity_listener.stop()
                 await agent_event_listener.stop()
                 await signal_bus.stop()
+                # Last of them: what the router and the bus handed it is sent,
+                # for a few seconds at most, before the pool closes.
+                await announcer.stop()
                 # Before the operational flush, and bounded: the whole
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
