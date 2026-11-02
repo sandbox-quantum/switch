@@ -177,7 +177,7 @@ const Cards = observer(function Cards({
           title="Connect Slack"
           description="Add Slack to your Switch workspace."
           footer={
-            <Button onClick={() => showConnect({ serverId, onClosed: retry })}>
+            <Button onClick={() => showConnect({ serverId, platform: 'slack', onClosed: retry })}>
               Connect Slack
             </Button>
           }
