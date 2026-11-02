@@ -242,6 +242,14 @@ version of their own to them without also giving them a release of their own.
   connection worked out the borrower's name and a short stack on every
   checkout; the name is now kept per function, and the stack is written out
   only for a hold long enough to log.
+- **Usage analytics read the database far less per message in a large
+  workspace.** With usage reporting on, each message looked up its room's
+  platform and member counts, its sender and the agent's runtime, each kept
+  for five minutes in caches of at most 10,000 entries. Quiet rooms missed
+  every time, and with thousands of agents the caches evicted what they were
+  about to be asked again. A room's facts are now kept for fifteen minutes,
+  a sender and an agent's runtime, which do not change, for an hour, and up
+  to 50,000 of each.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
@@ -331,6 +339,10 @@ version of their own to them without also giving them a release of their own.
   room in the meantime from saying anything there, and a connected agent has
   nothing to say about a message addressed to it, so the read is now made only
   before a refusal or an offline notice is posted, or a machine woken.
+- **Message telemetry reads a workspace's rooms, clients and agents at once.**
+  The first lookup that misses reads all of them, where each room, sender and
+  agent was read on its own, so in a large workspace most messages no longer
+  cost a lookup.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
