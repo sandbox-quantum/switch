@@ -72,6 +72,14 @@ SWITCH_BUDDY = "switch_buddy"
 # turning it on before the rollout finishes is not protected.
 GROUP_CHATS = "group_chats"
 
+# switch-buddy's chat on a bridge: Console offers to move the buddy's welcome
+# to a private channel with the person on their team's chat app (a chat
+# created with `bridgeId`, resumed with `resumeOnly`). Like group chats, turn
+# it on only after every switch-core process runs a release that has it: an
+# upgraded process refuses those requests while it is off, but an older one
+# ignores the fields and makes an internal chat instead.
+BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -84,5 +92,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,
+        BUDDY_SLACK_HANDOFF,
     }
 )

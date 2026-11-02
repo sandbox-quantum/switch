@@ -178,12 +178,14 @@ class ChatService:
         media_max_bytes: int,
         agent_chats_enabled: bool,
         group_chats_enabled: bool,
+        buddy_slack_handoff_enabled: bool,
         connections: AgentConnectionRegistry,
     ) -> None:
         self.session_factory = session_factory
         self._connections = connections
         self.agent_chats_enabled = agent_chats_enabled
         self.group_chats_enabled = group_chats_enabled
+        self.buddy_slack_handoff_enabled = buddy_slack_handoff_enabled
         self.listener = listener
         self.activity_listener = activity_listener
         self._activity_store = AgentSessionActivityStore()
@@ -1392,6 +1394,12 @@ class ChatService:
         """
         member_user_ids = sorted(set(member_user_ids) - {user.id})
         direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
+        if bridge_id is not None and not self.buddy_slack_handoff_enabled:
+            raise ChatError(
+                409,
+                "BUDDY_SLACK_HANDOFF_OFF",
+                "Chats on a bridge are not turned on for this server.",
+            )
         if bridge_id is not None and not direct:
             raise ChatError(
                 422,

@@ -302,6 +302,7 @@ def _chat_service(
         media_max_bytes=1024,
         agent_chats_enabled=True,
         group_chats_enabled=True,
+        buddy_slack_handoff_enabled=True,
         connections=connections,
     )
     room_service.on_room_agents_changed(service.sync_room)

@@ -1,4 +1,5 @@
 import type { ChatSummary } from '@shared/core/chats/chats';
+import type { FeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 
 export type BuddySetupStep =
@@ -9,6 +10,11 @@ export type BuddySetupStep =
   | { kind: 'resuming' }
   | { kind: 'create'; bridge: RemoteBridge }
   | { kind: 'done'; chat: ChatSummary };
+
+/** Whether to show the setup cards: only when the server says so, since an older one would turn their resume into an internal chat. */
+export function buddySetupCardsEnabled(flags: Partial<FeatureFlags> | null | undefined): boolean {
+  return flags?.buddy_slack_handoff === true;
+}
 
 /** A hand-off resumed on one Slack connection: its chat, null for none started, or failed. */
 export type BuddyResume = ChatSummary | null | 'failed';

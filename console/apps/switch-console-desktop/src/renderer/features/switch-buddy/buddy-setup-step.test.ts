@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
-import { buddySetupStep } from './buddy-setup-step';
+import { buddySetupCardsEnabled, buddySetupStep } from './buddy-setup-step';
 
 const slack = { id: 'b-1', type: 'slack', status: 'active' } as RemoteBridge;
 const slack2 = { id: 'b-2', type: 'slack', status: 'active' } as RemoteBridge;
@@ -10,6 +10,15 @@ const linked2 = { bridgeId: 'b-2' } as LinkedIdentity;
 const handedOff = { roomId: 'r-2', channelType: 'direct', bridgeType: 'slack' } as ChatSummary;
 
 const base = { bridges: [], identities: [], resumes: {}, failed: false };
+
+describe('buddySetupCardsEnabled', () => {
+  it('is on only when the server turns the flag on', () => {
+    expect(buddySetupCardsEnabled(undefined)).toBe(false);
+    expect(buddySetupCardsEnabled({})).toBe(false);
+    expect(buddySetupCardsEnabled({ buddy_slack_handoff: false })).toBe(false);
+    expect(buddySetupCardsEnabled({ buddy_slack_handoff: true })).toBe(true);
+  });
+});
 
 describe('buddySetupStep', () => {
   it('waits for the reads, and says unknown when one failed, never not connected', () => {

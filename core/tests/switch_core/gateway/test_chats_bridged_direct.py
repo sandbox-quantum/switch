@@ -231,6 +231,22 @@ async def test_an_unlinked_caller_is_told_to_link_their_account(
     assert core.dm_calls == []
 
 
+async def test_a_bridged_chat_is_refused_while_the_flag_is_off(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    chats.service.buddy_slack_handoff_enabled = False
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 409
+    assert _code(response) == "BUDDY_SLACK_HANDOFF_OFF"
+    assert core.dm_calls == []
+    async with chats.factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Room)) == 0
+
+
 async def test_a_bridged_chat_has_one_agent(chats: _Harness) -> None:
     one = await chats.agent("one", owner=chats.alice)
     two = await chats.agent("two", owner=chats.alice)

@@ -12,6 +12,7 @@ import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
 import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-cards';
+import { buddySetupCardsEnabled } from '@renderer/features/switch-buddy/buddy-setup-step';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -184,6 +185,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
   const thisComputer = useRunsOnThisComputer(agent);
+  const setupCards = buddySetupCardsEnabled(useFeatureFlags(serverId));
   const shownRoom = openAgentRoom(agent, params.room, section);
   // The unsaved chat open before a reload is kept, but not in memory yet: it opens again.
   const restoring =
@@ -332,7 +334,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               serverId={serverId}
               roomId={roomId}
               afterMessages={
-                isBuddy(agent) ? (
+                isBuddy(agent) && setupCards ? (
                   <BuddySetupCards
                     serverId={serverId}
                     workspaceId={workspaceId}

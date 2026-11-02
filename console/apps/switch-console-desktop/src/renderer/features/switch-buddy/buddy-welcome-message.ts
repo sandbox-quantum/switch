@@ -39,7 +39,7 @@ export function buddyWelcomeMessage({
     '- 🏠 Set up rooms where your team and agents work together',
     '- 💬 Answer anything about Switch',
     '',
-    'Pick where your team chats below to get started.',
+    'Tell me which app your team uses, and I’ll walk you through connecting it.',
   ].join('\n');
 }
 
