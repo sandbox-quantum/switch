@@ -1623,6 +1623,27 @@ async def test_v2_off_a_box_already_retained_is_stopped_and_kept(
         assert machine.retain_until is None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_v2_on_a_retained_box_is_left_retained(controller_app):
+    """QA: with v2 on, the listing never touches a retained box's retention:
+    it stays `retained`, with its `retain_until`, as before the switch."""
+    app = controller_app
+    until = datetime.now(UTC) + timedelta(days=7)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="retained",
+        stop_reason=None,
+        retain_until=until,
+    )
+    await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert (machine.desired_state, machine.stop_reason) == ("retained", None)
+    assert machine.retain_until == until
+
+
 async def test_v2_off_a_box_marked_for_deletion_is_left_as_it_is(
     controller_app, v2_off
 ):
