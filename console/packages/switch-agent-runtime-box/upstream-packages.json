@@ -1,12 +1,7 @@
 {
   "comment": "Git blob ids of every file in the four upstream agent packages at upstream main 473c2e64b. The desktop app and v1 machines build from these packages, so they must stay byte for byte upstream; hosted agents v2's versions live in the -box packages. Regenerate only when re-syncing with upstream: git ls-tree -r <commit> console/packages/{agent-controller,agent-providers,switch-agent-runtime,shared}.",
   "upstream": "473c2e64bfdc29f4c6ea8c1916541c992c6017d1",
-  "packages": [
-    "agent-controller",
-    "agent-providers",
-    "switch-agent-runtime",
-    "shared"
-  ],
+  "packages": ["agent-controller", "agent-providers", "switch-agent-runtime", "shared"],
   "files": {
     "agent-controller/README.md": "d0799e7b31bad6e8c2ae3572f58e1478f67946e5",
     "agent-controller/install.sh": "7966f8551091cd4122a09a542549daeda4a4dcde",

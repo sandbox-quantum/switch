@@ -22,7 +22,15 @@ const manifest = JSON.parse(readFileSync(join(here, '..', 'upstream-packages.jso
 const packagesDir = join(here, '..', '..');
 
 /** Build outputs and installs, which git never tracks in these packages. */
-const UNTRACKED_DIRS = new Set(['node_modules', 'dist', 'out', 'dist-bench', 'dist-package', '.turbo', 'coverage']);
+const UNTRACKED_DIRS = new Set([
+  'node_modules',
+  'dist',
+  'out',
+  'dist-bench',
+  'dist-package',
+  '.turbo',
+  'coverage',
+]);
 const UNTRACKED_FILES = (name: string) => name === '.DS_Store' || name.endsWith('.tsbuildinfo');
 
 /** A file's git blob id: sha1 of `blob <size>\0` and its bytes. */
@@ -46,7 +54,12 @@ function filesUnder(dir: string): string[] {
 
 describe(`upstream's agent packages are exactly upstream ${manifest.upstream.slice(0, 9)}`, () => {
   it('lists the four packages the desktop app and v1 machines build from', () => {
-    expect(manifest.packages).toEqual(['agent-controller', 'agent-providers', 'switch-agent-runtime', 'shared']);
+    expect(manifest.packages).toEqual([
+      'agent-controller',
+      'agent-providers',
+      'switch-agent-runtime',
+      'shared',
+    ]);
   });
 
   for (const pkg of manifest.packages) {
@@ -57,7 +70,9 @@ describe(`upstream's agent packages are exactly upstream ${manifest.upstream.sli
           blobId(path),
         ])
       );
-      const expected = Object.entries(manifest.files).filter(([path]) => path.startsWith(`${pkg}/`));
+      const expected = Object.entries(manifest.files).filter(([path]) =>
+        path.startsWith(`${pkg}/`)
+      );
       const missing = expected.filter(([path]) => !actual.has(path)).map(([path]) => path);
       const changed = expected
         .filter(([path, blob]) => actual.has(path) && actual.get(path) !== blob)
@@ -96,9 +111,9 @@ function workspaceManifests(): { dir: string; json: Record<string, unknown> }[] 
 function dependencies(json: Record<string, unknown>): Record<string, string> {
   return Object.assign(
     {},
-    ...(['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const).map(
-      (key) => (json[key] ?? {}) as Record<string, string>
-    )
+    ...(
+      ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'] as const
+    ).map((key) => (json[key] ?? {}) as Record<string, string>)
   );
 }
 
