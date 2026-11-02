@@ -5,7 +5,7 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
 session on generic parts, with Atlassian (Jira), Google Workspace and Datadog
-as the first. v1's tables,
+as the first, followed by Airtable, HubSpot and BigQuery. v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -603,6 +603,32 @@ To roll back: add `google-workspace` to `DISABLED_SERVICES`, set the entry's
 `GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH`). Each lists
 it as unavailable, with its reason, and the next token request fails.
 
+## BigQuery
+
+BigQuery uses its own static Google OAuth client by default
+(`BIGQUERY_CLIENT_CONFIG_PATH` or Connector apps); an operator may intentionally
+use the same Google client as Google Workspace. The MCP server is
+`https://bigquery.googleapis.com/mcp`. Google supports one BigQuery MCP scope,
+`https://www.googleapis.com/auth/bigquery`, which can view and manage data.
+Both access levels request that scope, plus OpenID/email for account identity.
+OAuth scopes therefore do not distinguish read from write.
+
+The catalog uses `tools.mode: listed` to enforce the distinction in Switch:
+the read level includes `list_dataset_ids`, `get_dataset_info`,
+`list_table_ids`, `get_table_info`, and `execute_sql_readonly`; the write level
+adds only `execute_sql`. Google documents `execute_sql` as the only
+non-read-only MCP tool. IAM roles `roles/mcp.toolUser`, `roles/bigquery.jobUser`
+and `roles/bigquery.dataViewer` provide the Google-side boundary as well.
+The OAuth identity comes from Google's OpenID userinfo endpoint, and the
+refresh token is reusable. The token lifetime cap is one hour; the BigQuery
+MCP token's actual lifetime has not been measured live.
+
+Queries can incur costs even with a read-only grant. BigQuery's MCP server
+cancels queries after three minutes and limits returned results to 3,000 rows.
+`LIMIT` does not limit bytes scanned; agents should inspect table metadata,
+select only needed columns and filter partitioned tables. See the
+[operator setup guide](../old/bigquery-setup.md).
+
 ## Not yet
 
 - Shared workspace connections, and a per-workspace OAuth client: every
@@ -612,8 +638,8 @@ it as unavailable, with its reason, and the next token request fails.
 - `grants.changed` on the agent and controller streams: a grant change reaches
   a running session within half a minute, by the host reading the grants
   again, not at once.
-- Tool classification by level, and read-only grants narrower than the
-  connection.
+- Per-user dynamic tool classification and read-only grants narrower than the
+  connection; BigQuery's fixed read/write tool lists are a catalog allowlist.
 - Tool-list prefetch and per-user call limits; each call now opens its own MCP
   session at the vendor.
 - Connecting Atlassian from the web dashboard, and a server setting that moves

@@ -1,0 +1,54 @@
+slug: bigquery
+name: BigQuery
+category: Analytics
+description: Explore and query BigQuery datasets, read-only by default.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Google refresh tokens can be reused; the access token lifetime is capped
+  # at one hour. The BigQuery MCP token lifetime has not been measured live.
+  refresh: reusable
+  oauth:
+    # Keep BigQuery consent/config separate from Google Workspace by default.
+    # An operator may intentionally use the same Google OAuth client for both.
+    registration: static
+    client_settings: BIGQUERY
+    redirect: [core]
+    revocation_url: https://oauth2.googleapis.com/revoke
+    prompt: consent select_account
+    authorization_params: { access_type: offline }
+    unchecked: >-
+      Switch cannot confirm the redirect URI until someone completes a
+      sign-in.
+  identity:
+    url: https://openidconnect.googleapis.com/v1/userinfo
+    account_id: sub
+    label: email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - { name: bigquery, url: "https://bigquery.googleapis.com/mcp" }
+access:
+  # BigQuery's MCP server has one OAuth scope. Switch enforces the read-only
+  # grant by withholding execute_sql; IAM roles are an additional boundary.
+  read:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/bigquery
+  write:
+    scopes:
+      - openid
+      - https://www.googleapis.com/auth/userinfo.email
+      - https://www.googleapis.com/auth/bigquery
+tools:
+  mode: listed
+  read:
+    - list_dataset_ids
+    - get_dataset_info
+    - list_table_ids
+    - get_table_info
+    - execute_sql_readonly
+  write:
+    - execute_sql

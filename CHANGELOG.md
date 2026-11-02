@@ -113,6 +113,11 @@ version of their own to them without also giving them a release of their own.
   switch-core pods as written, so they can run on a node group of their own,
   such as one kept for load tests. Both are empty by default, which places the
   pods as before.
+- **BigQuery is a service connection.** A person connects a Google account,
+  then can grant agents read-only dataset inspection and queries by default,
+  or add the write-capable SQL tool explicitly. Switch filters the vendor's
+  tools by grant level; the BigQuery OAuth scope alone cannot make the grant
+  read-only.
 - **The `[CONN]` log lines say when a client fell back to the event stream.**
   `/events` takes optional `fallback` and `fallback_close_code` parameters,
   and the `[CONN] opened` and `[CONN] reattached` lines end with
