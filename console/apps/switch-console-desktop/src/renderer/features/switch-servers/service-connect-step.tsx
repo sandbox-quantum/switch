@@ -1,10 +1,12 @@
 import { ExternalLink } from 'lucide-react';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   allowListHint,
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  initialSignInChoices,
+  signInChoicesReady,
 } from '@renderer/features/connectors/connect-flow';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useCloseGuard } from '@renderer/lib/modal/use-close-guard';
@@ -15,6 +17,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@renderer/lib/ui/select';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
@@ -23,7 +32,9 @@ import type { ServiceCalls } from './service-calls';
  * Connecting a service through Switch's generic sign-in: the browser signs in
  * at the vendor, this Console takes the result back, and Switch keeps the
  * account as soon as it has it. The dialog follows the sign-in and shows the
- * account connected, or why it was not. GitHub has its own step.
+ * account connected, or why it was not. A service whose sign-in asks for a
+ * choice first (a vendor's site) is picked above the button, and the sign-in
+ * starts only once each is. GitHub has its own step.
  */
 export function ServiceConnectStep({
   calls,
@@ -46,6 +57,9 @@ export function ServiceConnectStep({
   const { connected, flowId, flow, busy, warning, error } = state;
   const closable = canCloseConnectFlow(state);
   const hint = allowListHint(state, connection.name);
+  const [picked, setPicked] = useState(() => initialSignInChoices(connection));
+  const choices = signInChoicesReady(connection.sign_in_choices, picked);
+  const offersConnect = !connected || error !== null;
   useCloseGuard(!closable);
   // Callers build their calls as they render; polling follows the flow, not them.
   const callsRef = useRef(calls);
@@ -86,10 +100,10 @@ export function ServiceConnectStep({
     };
   }, [service, flowId, connection.name]);
   const fallback = `Could not update the ${connection.name} connection.`;
-  const start = async () => {
+  const start = async (startWith: Record<string, string>) => {
     dispatch({ type: 'act' });
     try {
-      const started = await calls.startSignIn(service);
+      const started = await calls.startSignIn(service, startWith);
       dispatch({ type: 'started', flowId: started.id, callbackUrl: started.callbackUrl });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -157,6 +171,39 @@ export function ServiceConnectStep({
                 {connection.name}.
               </p>
             )}
+            {offersConnect &&
+              connection.sign_in_choices?.map((field) => {
+                const id = `service-sign-in-${service}-${field.name}`;
+                const value = picked[field.name] ?? '';
+                return (
+                  <div key={field.name} className="space-y-1">
+                    <label htmlFor={id} className="block text-sm font-medium">
+                      {field.label}
+                    </label>
+                    <Select
+                      value={value || null}
+                      disabled={busy}
+                      onValueChange={(next) =>
+                        setPicked((current) => ({ ...current, [field.name]: next ?? '' }))
+                      }
+                    >
+                      <SelectTrigger id={id} aria-label={field.label} className="w-full">
+                        <SelectValue placeholder={`Choose a ${field.label.toLowerCase()}`}>
+                          {value || undefined}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(field.choices ?? []).map((choice) => (
+                          <SelectItem key={choice} value={choice}>
+                            {choice}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {field.help && <p className="text-xs text-foreground-muted">{field.help}</p>}
+                  </div>
+                );
+              })}
           </>
         )}
         {connection.unavailable_reason && (
@@ -188,8 +235,13 @@ export function ServiceConnectStep({
                 Disconnect
               </Button>
             )}
-            {(!connected || error) && (
-              <Button disabled={busy || !connection.connectable} onClick={() => void start()}>
+            {offersConnect && (
+              <Button
+                disabled={busy || !connection.connectable || choices === null}
+                onClick={() => {
+                  if (choices !== null) void start(choices);
+                }}
+              >
                 Connect {connection.name} <ExternalLink className="size-4" />
               </Button>
             )}

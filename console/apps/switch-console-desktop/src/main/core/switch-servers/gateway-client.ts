@@ -3794,7 +3794,9 @@ export async function getConnectionCatalog(
     token_lifetime: entry.token_lifetime,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
+    sign_in_choices: entry.sign_in_choices,
     external_identity: entry.external_identity,
+    choices: entry.choices,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
   }));
@@ -3818,7 +3820,9 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         token_lifetime: null,
         loopback_ports: null,
         key: null,
+        sign_in_choices: null,
         external_identity: null,
+        choices: null,
         consent: null,
         workspace_enabled: null,
       }))
@@ -4137,20 +4141,30 @@ const serviceFlows = (service: string) =>
  * the browser. That is normally the server's own address; an older server that
  * still keeps its dashboard on a host of its own may name that host instead, so
  * either is accepted, over HTTPS.
+ *
+ * `choices` are what the person picked before signing in (a vendor's site),
+ * sent only where there are some: a server from before choices refuses a start
+ * that names them.
  */
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: {
+    port: number;
+    state: string;
+    completion_secret: string;
+    choices: Record<string, string>;
+  }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');
+  const { choices, ...start } = input;
   const value = serviceFlowStartSchema.parse(
     await (
       await gatewayFetch(server, serviceFlows(service), {
         authenticated: true,
         method: 'POST',
-        body: input,
+        body: Object.keys(choices).length > 0 ? { ...start, choices } : start,
       })
     ).json()
   );

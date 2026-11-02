@@ -31,9 +31,14 @@ const active = new Map<string, { secret: string; close: () => void; refused: str
 const key = (server: SwitchServer, service: string, id: string) =>
   JSON.stringify([server.id, service, id]);
 
+/**
+ * Start signing in to `service` with what the person picked first (a vendor's
+ * site; none for a service that asks for nothing), and open the browser.
+ */
 export async function startServiceBrowserFlow(
   server: SwitchServer,
   service: string,
+  choices: Record<string, string>,
   open: (url: string) => Promise<void>
 ): Promise<ServiceSignInStarted> {
   const state = randomBytes(32).toString('base64url');
@@ -80,6 +85,7 @@ export async function startServiceBrowserFlow(
       port: listener.port,
       state,
       completion_secret: secret,
+      choices,
     });
     started = true;
     try {

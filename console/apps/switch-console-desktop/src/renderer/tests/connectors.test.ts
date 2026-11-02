@@ -5,6 +5,8 @@ import {
   canCloseConnectFlow,
   connectFlowReducer,
   initialConnectFlow,
+  initialSignInChoices,
+  signInChoicesReady,
 } from '@renderer/features/connectors/connect-flow';
 import {
   type ConnectorViewer,
@@ -75,7 +77,9 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     token_lifetime: 3600,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: true,
     ...overrides,
@@ -412,6 +416,33 @@ describe('the profile', () => {
     ).toBe('Connected with Key · example.test');
   });
 
+  it('names the site a sign-in was made at beside the account', () => {
+    expect(
+      connectedAsLine(
+        entry({
+          status: 'connected',
+          external_identity: 'ada@example.test',
+          choices: { site: 'datadoghq.eu' },
+          consent: 'read',
+        })
+      )
+    ).toBe('Connected as ada@example.test · datadoghq.eu · Read');
+    expect(
+      connectedAsLine(
+        entry({
+          status: 'needs_reauthorization',
+          external_identity: 'ada@example.test',
+          choices: { site: 'us5.datadoghq.com' },
+        })
+      )
+    ).toBe('Connected as ada@example.test · us5.datadoghq.com');
+    expect(
+      connectedAsLine(
+        entry({ status: 'connected', external_identity: 'ada', choices: {}, consent: 'write' })
+      )
+    ).toBe('Connected as ada · Read and write');
+  });
+
   it('claims no access level for a key, and says what agents can do with one', () => {
     const key = entry({
       status: 'connected',
@@ -744,6 +775,51 @@ describe('the sign-in flow', () => {
       warning: 'Access stays a while.',
     });
     expect(canCloseConnectFlow(after)).toBe(true);
+  });
+});
+
+describe('what a sign-in asks the person to pick first', () => {
+  const SITES = ['datadoghq.com', 'datadoghq.eu', 'us5.datadoghq.com'];
+  const site = { name: 'site', label: 'Datadog site', secret: false, help: null, choices: SITES };
+
+  it('starts on nothing picked, so the sign-in waits for a site', () => {
+    const datadog = entry({ slug: 'datadog', name: 'Datadog', sign_in_choices: [site] });
+    const picked = initialSignInChoices(datadog);
+    expect(picked).toEqual({});
+    expect(signInChoicesReady(datadog.sign_in_choices, picked)).toBeNull();
+  });
+
+  it('starts on the site the person connected at, to connect again there', () => {
+    const datadog = entry({
+      status: 'needs_reauthorization',
+      sign_in_choices: [site],
+      choices: { site: 'datadoghq.eu' },
+    });
+    const picked = initialSignInChoices(datadog);
+    expect(picked).toEqual({ site: 'datadoghq.eu' });
+    expect(signInChoicesReady(datadog.sign_in_choices, picked)).toEqual({ site: 'datadoghq.eu' });
+  });
+
+  it('forgets a site the service no longer offers', () => {
+    expect(
+      initialSignInChoices(entry({ sign_in_choices: [site], choices: { site: 'ddog-gov.com' } }))
+    ).toEqual({});
+  });
+
+  it('starts once each is picked from its list, with that and nothing else', () => {
+    expect(signInChoicesReady([site], { site: 'us5.datadoghq.com' })).toEqual({
+      site: 'us5.datadoghq.com',
+    });
+    expect(signInChoicesReady([site], { site: '' })).toBeNull();
+    expect(signInChoicesReady([site], { site: 'elsewhere.test' })).toBeNull();
+    expect(signInChoicesReady([site], { site: 'datadoghq.com', region: 'eu' })).toEqual({
+      site: 'datadoghq.com',
+    });
+  });
+
+  it('asks nothing of a service whose sign-in takes no choice', () => {
+    expect(initialSignInChoices(entry())).toEqual({});
+    expect(signInChoicesReady(null, {})).toEqual({});
   });
 });
 

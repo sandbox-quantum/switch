@@ -1,3 +1,7 @@
+import type {
+  ConnectionCatalogEntry,
+  ServiceKeyField,
+} from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceFlow } from '@shared/core/switch-servers/service-connection';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
@@ -107,6 +111,41 @@ export function allowListHint(
     text: `If ${name} shows an error, an admin must allow-list this URL at ${name}.`,
     url: state.callbackUrl,
   };
+}
+
+/**
+ * What the dialog's pickers start on, for a service whose sign-in asks for a
+ * choice first (a vendor's site): the person's connection's own, where the
+ * service still offers it, so connecting again goes back to the same site;
+ * otherwise nothing is picked.
+ */
+export function initialSignInChoices(
+  connection: Pick<ConnectionCatalogEntry, 'sign_in_choices' | 'choices'>
+): Record<string, string> {
+  const picked: Record<string, string> = {};
+  for (const field of connection.sign_in_choices ?? []) {
+    const value = connection.choices?.[field.name];
+    if (value !== undefined && field.choices?.includes(value)) picked[field.name] = value;
+  }
+  return picked;
+}
+
+/**
+ * What a sign-in starts with: one value from each field's list, or null while
+ * any is not picked, which keeps the dialog from starting it. Empty for a
+ * service that asks for nothing.
+ */
+export function signInChoicesReady(
+  fields: ServiceKeyField[] | null,
+  picked: Record<string, string>
+): Record<string, string> | null {
+  const ready: Record<string, string> = {};
+  for (const field of fields ?? []) {
+    const value = picked[field.name];
+    if (value === undefined || !field.choices?.includes(value)) return null;
+    ready[field.name] = value;
+  }
+  return ready;
 }
 
 /**
