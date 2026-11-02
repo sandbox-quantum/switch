@@ -1,0 +1,33 @@
+slug: grafana
+name: Grafana
+category: Observability
+description: Query Grafana Cloud dashboards, metrics and logs, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [39141, 39142, 39143, 39144, 39145]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://grafana.com/api/user
+    account_id: id
+    label: email
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: grafana
+      url: "https://mcp.grafana.com/mcp"
+access:
+  read:
+    scopes:
+      - "dashboards:read"
+  write:
+    scopes:
+      - "dashboards:read"
+      - "dashboards:write"
+tools: { mode: pass_through }
