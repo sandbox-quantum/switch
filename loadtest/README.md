@@ -24,6 +24,10 @@ At each step in `--steps`, the harness brings that many agents online and then r
 - `steady`: messages at `--rate` per second, spread over the rooms, each posted by a member of the room. Receivers record the time from send to arrival, and a share of them (`--read-fraction`, 10% by default) follow a delivery with a `read_context` call, as a runtime catching up would.
 - `burst`: the steady traffic plus `--burst-size` messages packed into `--burst-window` seconds, every `--burst-every` seconds. `--hot-room` sends all the spikes to one room, to measure the per-room lock.
 
+### Keeping the agents between runs
+
+Seeding 10,000 agents and tearing them down take about 12 of a run's 22 minutes. With `--keep`, a run leaves its agents and rooms in place, revokes only its controllers, and writes `runs/<run id>/keep.json` (ids only: the agents have no key of their own, and a controller's credential is never written down). A later run with `--reuse <that run id>` makes fresh controllers and places the same agents on them instead of seeding; it needs the same `--seed`, `--steps`, `--rooms` and `--room-size`, which it checks. Add `--keep` again to pass them on; a run without it, or `--cleanup <the first run id>`, removes them. Both need `--controllers`.
+
 To compare one pod with two, run the same command, with the same `--seed`, once against each replica count. The replica count is changed in napoleon, not by this harness.
 
 `--rates 10,15,20,25` sweeps the message rate in one run: after the scenarios at each step, the same agents stay connected for one steady window of `--rate-duration` seconds (90 by default) at each rate, named `steady15@300` and so on. After each window the harness waits up to `--drain` seconds for that window's deliveries to arrive, so a backlog does not spill into the next rate, and it stops stepping after the first rate that breaks: a delivery lost, p99 over 20 s, or more than 20 errors. Agents are created, connected and measured idle once, so a five-rate sweep takes about 15 minutes instead of about 40 as separate runs:

@@ -168,6 +168,43 @@ async def seed_managed(
     (`controllers.ManagedAgent`), since placing needs the controller online.
     Records each id in `state` as it is made."""
     sem = asyncio.Semaphore(concurrency)
+    made = await create_controllers(admin, run_id, n_controllers, state, sem)
+    agents: list[SeededAgent | None] = [None] * n_agents
+
+    async def agent(i: int) -> None:
+        name = f"{prefix(run_id)}a{i:04d}"
+        async with sem:
+            r = await admin.call(
+                "POST",
+                "/management/agents",
+                json={
+                    "name": name,
+                    "description": f"load test {run_id}, removed when the run ends",
+                    "controller_id": None,
+                    "desired_state": "running",
+                    "definition": {"provider": "claude"},
+                },
+            )
+        if r.status_code != 201:
+            raise _fail(f"creating managed agent {name}", r)
+        agents[i] = SeededAgent(i, r.json()["agent_id"], name, "")
+        state["agents"].append(agents[i].id)
+
+    await asyncio.gather(*(agent(i) for i in range(n_agents)))
+    seeded = [a for a in agents if a is not None]
+    rooms = await create_rooms(admin, run_id, seeded, membership, state, sem)
+    return seeded, rooms, made
+
+
+async def create_controllers(
+    admin: Admin,
+    run_id: str,
+    n_controllers: int,
+    state: dict,
+    sem: asyncio.Semaphore,
+) -> list[SeededController]:
+    """Create the run's controllers, named after it. A run that reuses another
+    run's agents makes its own, since a controller's credential is never kept."""
     controllers: list[SeededController | None] = [None] * n_controllers
 
     async def controller(k: int) -> None:
@@ -195,32 +232,7 @@ async def seed_managed(
         state.setdefault("controllers", []).append(b["controller_id"])
 
     await asyncio.gather(*(controller(k) for k in range(n_controllers)))
-
-    agents: list[SeededAgent | None] = [None] * n_agents
-
-    async def agent(i: int) -> None:
-        name = f"{prefix(run_id)}a{i:04d}"
-        async with sem:
-            r = await admin.call(
-                "POST",
-                "/management/agents",
-                json={
-                    "name": name,
-                    "description": f"load test {run_id}, removed when the run ends",
-                    "controller_id": None,
-                    "desired_state": "running",
-                    "definition": {"provider": "claude"},
-                },
-            )
-        if r.status_code != 201:
-            raise _fail(f"creating managed agent {name}", r)
-        agents[i] = SeededAgent(i, r.json()["agent_id"], name, "")
-        state["agents"].append(agents[i].id)
-
-    await asyncio.gather(*(agent(i) for i in range(n_agents)))
-    seeded = [a for a in agents if a is not None]
-    rooms = await create_rooms(admin, run_id, seeded, membership, state, sem)
-    return seeded, rooms, [c for c in controllers if c is not None]
+    return [c for c in controllers if c is not None]
 
 
 async def create_rooms(
@@ -316,6 +328,33 @@ async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
     done["left_agents"] = len(await _agents(admin, pre))
     done["left_rooms"] = len(await _rooms(admin, pre))
     done["left_keys"] = len(await _keys(admin, pre, label))
+    done["left_controllers"] = len(await _controllers(admin, pre))
+    return done
+
+
+async def revoke_controllers(admin: Admin, run_id: str, log=print) -> dict[str, int]:
+    """Revoke the run's controllers and nothing else: what a kept run removes,
+    so the agents and rooms it leaves carry no credential with them."""
+    pre = prefix(run_id)
+    done = {"controllers_revoked": 0, "errors": 0}
+    sem = asyncio.Semaphore(8)
+
+    async def one(controller_id: str) -> None:
+        path = f"/management/controllers/{controller_id}"
+        async with sem:
+            try:
+                r = await admin.call("DELETE", path)
+            except httpx.HTTPError as exc:
+                log(f"  DELETE {path}: {type(exc).__name__}")
+                done["errors"] += 1
+                return
+        if r.status_code in (200, 204, 404):
+            done["controllers_revoked"] += r.status_code != 404
+        else:
+            log(f"  DELETE {path}: HTTP {r.status_code} {r.text[:120]}")
+            done["errors"] += 1
+
+    await asyncio.gather(*(one(c["id"]) for c in await _controllers(admin, pre)))
     done["left_controllers"] = len(await _controllers(admin, pre))
     return done
 

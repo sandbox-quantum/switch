@@ -9,7 +9,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from run import broken, parse_args, plan, rate_phase  # noqa: E402
+from run import (  # noqa: E402
+    broken,
+    kept_record,
+    parse_args,
+    plan,
+    rate_phase,
+    take_over,
+)
+from seed import SeededAgent  # noqa: E402
 
 
 def _args(*extra: str):
@@ -71,3 +79,82 @@ def test_a_rate_name_reads_as_rate_at_agents():
 )
 def test_a_window_is_broken_when_deliveries_are_lost_slow_or_failing(summary, why):
     assert broken(summary) == why
+
+
+def test_keeping_or_reusing_needs_controllers():
+    for flag in (["--keep"], ["--reuse", "20261102t104605w1"]):
+        with pytest.raises(SystemExit):
+            parse_args(["--namespace", "switch-dev-abel", "--steps", "10", *flag])
+    a = parse_args(
+        [
+            "--namespace",
+            "switch-dev-abel",
+            "--steps",
+            "10",
+            "--controllers",
+            "2",
+            "--keep",
+        ]
+    )
+    assert a.keep
+
+
+def _kept(a, membership, n=10):
+    seeded = [SeededAgent(i, f"agent-{i}", f"load-r1-a{i:04d}", "") for i in range(n)]
+    return kept_record("r1", "r1", seeded, ["room-0", "room-1"], membership, a)
+
+
+def test_a_kept_run_records_ids_and_no_credential():
+    a = parse_args(
+        [
+            "--namespace",
+            "switch-dev-abel",
+            "--steps",
+            "10",
+            "--controllers",
+            "2",
+            "--keep",
+        ]
+    )
+    membership, _ = plan(a)
+    record = _kept(a, membership)
+
+    assert record["names_from"] == "r1"
+    assert set(record["agents"][0]) == {"index", "id", "name"}
+    assert "credential" not in str(record) and "key" not in record
+
+
+def test_a_later_run_takes_the_agents_over_only_with_the_same_rooms():
+    a = parse_args(
+        [
+            "--namespace",
+            "switch-dev-abel",
+            "--steps",
+            "10",
+            "--controllers",
+            "2",
+            "--keep",
+        ]
+    )
+    membership, _ = plan(a)
+    record = _kept(a, membership)
+
+    taken = take_over(record, membership, 10)
+    assert [s.id for s in taken] == [f"agent-{i}" for i in range(10)]
+
+    other = parse_args(
+        [
+            "--namespace",
+            "switch-dev-abel",
+            "--steps",
+            "10",
+            "--controllers",
+            "2",
+            "--seed",
+            "2",
+        ]
+    )
+    with pytest.raises(RuntimeError, match="rooms differ"):
+        take_over(record, plan(other)[0], 10)
+    with pytest.raises(RuntimeError, match="kept 10 agents"):
+        take_over(record, membership, 12)

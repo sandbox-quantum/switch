@@ -41,7 +41,16 @@ from agents import Agent, Stats, play  # noqa: E402
 from controllers import FakeController, ManagedAgent  # noqa: E402
 from kube import Kube, PortForward, Refused, Sampler, guard_target  # noqa: E402
 from report import phase_summary, render  # noqa: E402
-from seed import Admin, RequestIds, seed, seed_managed, teardown  # noqa: E402
+from seed import (  # noqa: E402
+    Admin,
+    RequestIds,
+    SeededAgent,
+    create_controllers,
+    revoke_controllers,
+    seed,
+    seed_managed,
+    teardown,
+)
 from workload import (  # noqa: E402
     SCENARIOS,
     build_membership,
@@ -159,6 +168,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="wait out the retry_after_s of an open refused as busy, as clients "
         "with the open gate's change do",
     )
+    w.add_argument(
+        "--calls",
+        choices=["message", "ops", "socket"],
+        default="message",
+        help="how a controller's agents post and read: on the message route, as "
+        "operations over HTTP the way the real controller relays them, or as "
+        "operations on the controller's socket",
+    )
     w.add_argument("--seed", type=int, default=1)
     o = ap.add_argument_group("run")
     o.add_argument("--run-id", help="default: UTC time, e.g. 20261026t153000")
@@ -179,6 +196,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="RUN_ID",
         help="remove a run's leftovers ('*' for every load run) and exit",
     )
+    o.add_argument(
+        "--keep",
+        action="store_true",
+        help="leave the agents and rooms for a later run's --reuse; only the "
+        "controllers are revoked",
+    )
+    o.add_argument(
+        "--reuse",
+        metavar="RUN_ID",
+        help="use the agents and rooms a --keep run left instead of seeding; "
+        "same --seed, --steps, --rooms and --room-size as that run",
+    )
     a = ap.parse_args(argv)
     a.scenarios = [s.strip() for s in a.scenarios.split(",") if s.strip()]
     for s in a.scenarios:
@@ -193,7 +222,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     a.rooms = a.rooms or max(1, max(a.steps) // 2)
     if a.controllers < 0 or a.controllers > max(a.steps):
         ap.error("--controllers must be between 0 and the largest step")
+    if (a.keep or a.reuse) and not a.controllers:
+        # Agents of their own carry an API key each, which is not kept.
+        ap.error("--keep and --reuse need agents behind --controllers")
     return a
+
+
+def kept_record(
+    run_id: str,
+    names_from: str,
+    seeded: list[SeededAgent],
+    room_ids: list[str],
+    membership: list[list[int]],
+    a: argparse.Namespace,
+) -> dict:
+    """What a later run needs to take over the agents and rooms: ids only.
+    No credential: the agents have none of their own, and the controllers,
+    which do, are revoked."""
+    return {
+        "kept_by": run_id,
+        "names_from": names_from,
+        "seed": a.seed,
+        "agents": [{"index": s.index, "id": s.id, "name": s.name} for s in seeded],
+        "rooms": room_ids,
+        "membership_fingerprint": fingerprint(membership),
+    }
+
+
+def take_over(
+    kept: dict, membership: list[list[int]], n_agents: int
+) -> list[SeededAgent]:
+    """The kept agents, once the plan is shown to put them in the same rooms."""
+    if kept["membership_fingerprint"] != fingerprint(membership):
+        raise RuntimeError(
+            f"the plan's rooms differ from {kept['kept_by']}'s: use its --seed, "
+            "--steps, --rooms and --room-size"
+        )
+    if len(kept["agents"]) < n_agents:
+        raise RuntimeError(f"{kept['kept_by']} kept {len(kept['agents'])} agents")
+    return [SeededAgent(x["index"], x["id"], x["name"], "") for x in kept["agents"]]
 
 
 def plan(a: argparse.Namespace) -> tuple[list[list[int]], dict[str, list]]:
@@ -373,6 +440,10 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         "membership_fingerprint": fingerprint(membership),
         "started": datetime.now(UTC).isoformat(timespec="seconds"),
         "args": {k: v for k, v in vars(a).items() if k not in ("cleanup",)},
+        "reused": a.reuse,
+        # Set at the end: a run asked to keep that never finished seeding
+        # tears everything down instead.
+        "kept": False,
         "pods": [],
     }
     (out / "config.json").write_text(json.dumps(meta, indent=1, default=str))
@@ -457,38 +528,63 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         )
 
     code = 0
+    # Whose name prefix the agents and rooms carry: this run's, or that of the
+    # run that seeded them, when they are reused.
+    names_from = run_id
+    seeded = []
+    room_ids = []
+    taken_over = False
     try:
         await admin.login(*kube.admin_login())
         t = time.monotonic()
-        if a.controllers:
+        if a.reuse:
+            kept = json.loads((RUNS / a.reuse / "keep.json").read_text())
+            seeded = take_over(kept, membership, max(a.steps))
+            room_ids = kept["rooms"]
+            names_from = kept["names_from"]
+            meta["names_from"] = names_from
+            made = await create_controllers(
+                admin, run_id, a.controllers, state, asyncio.Semaphore(8)
+            )
+            taken_over = True
+            print(
+                f"reusing {len(seeded)} agents and {len(room_ids)} rooms kept by "
+                f"{a.reuse}; {len(made)} new controllers in "
+                f"{time.monotonic() - t:.1f}s",
+                flush=True,
+            )
+        elif a.controllers:
             seeded, room_ids, made = await seed_managed(
                 admin, run_id, max(a.steps), a.controllers, membership, state
             )
-            for c in made:
-                base = bases[c.index % len(bases)]
-                controllers.append(
-                    FakeController(
-                        c.index,
-                        c.id,
-                        c.name,
-                        c.credential,
-                        base,
-                        clients[base],
-                        ids,
-                        stats,
-                        honor_busy=a.honor_busy,
-                    )
-                )
+            taken_over = True
         else:
             seeded, room_ids = await seed(
                 admin, a.api_url, run_id, max(a.steps), membership, state
             )
-        print(
-            f"seeded {len(seeded)} agents, {len(room_ids)} rooms"
-            + (f", {len(controllers)} controllers" if controllers else "")
-            + f" in {time.monotonic() - t:.1f}s",
-            flush=True,
-        )
+            made = []
+        for c in made:
+            base = bases[c.index % len(bases)]
+            controllers.append(
+                FakeController(
+                    c.index,
+                    c.id,
+                    c.name,
+                    c.credential,
+                    base,
+                    clients[base],
+                    ids,
+                    stats,
+                    honor_busy=a.honor_busy,
+                )
+            )
+        if not a.reuse:
+            print(
+                f"seeded {len(seeded)} agents, {len(room_ids)} rooms"
+                + (f", {len(controllers)} controllers" if controllers else "")
+                + f" in {time.monotonic() - t:.1f}s",
+                flush=True,
+            )
         rooms_of: dict[int, list[str]] = {}
         for j, members in enumerate(membership):
             for m in members:
@@ -508,6 +604,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                         a.seed,
                         owner,
                         admin,
+                        calls=a.calls,
                     )
                 )
                 continue
@@ -597,18 +694,37 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         await asyncio.gather(*(x.stop() for x in agents), return_exceptions=True)
         await asyncio.gather(*(c.stop() for c in controllers), return_exceptions=True)
         try:
-            td = await teardown(admin, run_id)
-            print(f"teardown: {json.dumps(td)}", flush=True)
-            if (
-                td["left_agents"]
-                or td["left_rooms"]
-                or td["left_keys"]
-                or td.get("left_controllers")
-                or td["errors"]
-            ):
-                code = code or 1
+            if a.keep and taken_over:
+                meta["kept"] = True
+                td = await revoke_controllers(admin, run_id)
+                record = kept_record(
+                    run_id, names_from, seeded, room_ids, membership, a
+                )
+                (out / "keep.json").write_text(json.dumps(record, indent=1))
+                print(
+                    f"kept {len(seeded)} agents and {len(room_ids)} rooms for "
+                    f"--reuse {run_id}; teardown: {json.dumps(td)}",
+                    flush=True,
+                )
+                if td["left_controllers"] or td["errors"]:
+                    code = code or 1
+            else:
+                td = await teardown(admin, run_id)
+                if names_from != run_id:
+                    seeded_td = await teardown(admin, names_from)
+                    td = {k: td.get(k, 0) + seeded_td.get(k, 0) for k in td | seeded_td}
+                print(f"teardown: {json.dumps(td)}", flush=True)
+                if (
+                    td["left_agents"]
+                    or td["left_rooms"]
+                    or td["left_keys"]
+                    or td.get("left_controllers")
+                    or td["errors"]
+                ):
+                    code = code or 1
         except Exception as exc:  # noqa: BLE001
-            print(f"teardown failed ({exc}); run: --cleanup {run_id}", flush=True)
+            also = f" and --cleanup {names_from}" if names_from != run_id else ""
+            print(f"teardown failed ({exc}); run: --cleanup {run_id}{also}", flush=True)
             code = 1
         await admin.close()
         await asyncio.gather(

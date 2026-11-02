@@ -182,6 +182,14 @@ def render(meta: dict, phases: list[dict], teardown: dict | None) -> str:
             "",
             "## Teardown",
             "",
+        ]
+        if meta.get("kept"):
+            lines.append(
+                f"Kept the agents and rooms for --reuse {meta['run_id']}; revoked "
+                f"{teardown.get('controllers_revoked')} controllers, errors {teardown.get('errors')}."
+            )
+            return "\n".join(lines) + "\n"
+        lines += [
             f"Agents deleted {teardown.get('agents_deleted')}, rooms archived {teardown.get('rooms_archived')}, "
             f"keys deleted {teardown.get('keys_deleted')}, errors {teardown.get('errors')}. "
             f"Left behind: {teardown.get('left_agents')} agents, {teardown.get('left_rooms')} active rooms, "
