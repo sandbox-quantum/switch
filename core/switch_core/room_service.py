@@ -1697,12 +1697,26 @@ class RoomService:
                 ", ".join(failures),
             )
 
-    async def reconcile_room(self, room: Room) -> None:
+    async def reconcile_room(self, room: Room, user_names: list[str] | None) -> None:
         """Put the room's agent and system clients in it where they are missing.
 
         For a caller repairing one room whose creation may have stopped after
-        the room row committed and before its clients joined.
+        the room row committed and before its clients joined. A room on a
+        bridge also gets the bridge client and the actors of `user_names`,
+        ahead of the agents as in `create_room`.
         """
+        if room.bridge_id is not None and room.external_channel_id is not None:
+            collaboration_core = self._collab_lifecycle.get(room.bridge_id)
+            if collaboration_core is None:
+                raise ValueError(f"Bridge not running: {room.bridge_id}")
+            await self._provisioning.invite_to_room(
+                room.transport_room_id,
+                collaboration_core._workspace_consumer_transport_user_id,
+            )
+            if user_names:
+                await collaboration_core.ensure_users_in_room(
+                    room.id, room.transport_room_id, user_names
+                )
         await self._reconcile_one_room(room)
 
     async def _reconcile_one_room(self, room: Room) -> None:

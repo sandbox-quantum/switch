@@ -35,13 +35,21 @@ describe('buddySetupStep', () => {
     });
   });
 
-  it('is done once a Slack direct chat with the buddy exists', () => {
-    expect(buddySetupStep({ ...base, chats: [slackChat], failed: true })).toEqual({
-      kind: 'done',
-      roomId: 'r-1',
+  it('confirms, not assumes, a Slack direct chat with the buddy', () => {
+    expect(buddySetupStep({ ...base, bridges: [slack], chats: [slackChat] })).toEqual({
+      kind: 'confirm',
+      bridge: slack,
     });
+    expect(buddySetupStep({ ...base, bridges: [slack], chats: [slackChat], failed: true })).toEqual(
+      { kind: 'unknown' }
+    );
     expect(
-      buddySetupStep({ ...base, chats: [{ ...slackChat, agents: [] }] as ChatSummary[] }).kind
-    ).toBe('connect');
+      buddySetupStep({
+        ...base,
+        bridges: [slack],
+        identities: [linked],
+        chats: [{ ...slackChat, agents: [] }] as ChatSummary[],
+      }).kind
+    ).toBe('create');
   });
 });

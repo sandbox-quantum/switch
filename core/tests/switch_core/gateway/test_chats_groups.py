@@ -919,23 +919,10 @@ def _second_process(chats: _Harness) -> ChatService:
 
 
 async def test_one_create_on_two_processes_makes_one_room(
-    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+    chats: _Harness,
 ) -> None:
     agent = await chats.agent("helper", owner=chats.alice)
     other = _second_process(chats)
-    both_looked = asyncio.Barrier(2)
-    for service in (chats.service, other):
-        look = service._room_of_operation
-
-        async def look_then_wait(
-            session: AsyncSession, operation_id: str, look=look
-        ) -> Room | None:
-            found = await look(session, operation_id)
-            if found is None:
-                await both_looked.wait()
-            return found
-
-        monkeypatch.setattr(service, "_room_of_operation", look_then_wait)
 
     def create(service: ChatService) -> Any:
         return service.create_chat(

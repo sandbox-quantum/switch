@@ -14,7 +14,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { buddySetupStep } from './buddy-setup-step';
-import { BUDDY_CHAT_NAME, continueBuddyInSlack } from './open-buddy';
+import { BUDDY_CHAT_NAME, buddyHandoffRequestId, continueBuddyInSlack } from './open-buddy';
 
 /**
  * The setup cards under the greeting in the buddy's Welcome chat: pick Slack,
@@ -74,7 +74,15 @@ const Cards = observer(function Cards({
     ids.refresh();
   };
 
-  const doneRoomId = step.kind === 'done' ? step.roomId : null;
+  const confirmBridgeId = step.kind === 'confirm' ? step.bridge.id : null;
+  const confirmQuery = useQuery({
+    queryKey: ['buddy-handoff', buddyHandoffRequestId(agentId, confirmBridgeId ?? '')],
+    queryFn: () => continueBuddyInSlack(serverId, { agentId }, confirmBridgeId as string),
+    enabled: confirmBridgeId !== null,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const doneRoomId = confirmBridgeId ? (confirmQuery.data?.roomId ?? null) : null;
   const roomQuery = useQuery({
     queryKey: ['buddy-handoff-room', workspaceId, doneRoomId],
     queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId, roomId: doneRoomId as string }),
@@ -92,7 +100,8 @@ const Cards = observer(function Cards({
     setCreating(true);
     setCreateError(null);
     try {
-      await continueBuddyInSlack(serverId, { agentId }, bridge.id);
+      const chat = await continueBuddyInSlack(serverId, { agentId }, bridge.id);
+      queryClient.setQueryData(['buddy-handoff', buddyHandoffRequestId(agentId, bridge.id)], chat);
       await queryClient.invalidateQueries({ queryKey: ['buddy-handoff-chats', serverId] });
     } catch (cause) {
       setCreateError(failureText(cause, 'Switch did not answer.'));
@@ -103,7 +112,7 @@ const Cards = observer(function Cards({
 
   const slackIcon = <BridgeIcon bridgeType="slack" className="size-4" />;
   const pastChoice =
-    picked || step.kind === 'link' || step.kind === 'create' || step.kind === 'done';
+    picked || step.kind === 'link' || step.kind === 'create' || step.kind === 'confirm';
 
   return (
     <div className="mt-4 flex flex-col gap-2" data-testid="buddy-setup-cards">
@@ -190,7 +199,34 @@ const Cards = observer(function Cards({
         </Alert>
       )}
 
-      {step.kind === 'done' && (
+      {step.kind === 'confirm' && confirmQuery.isPending && (
+        <Alert>
+          <Spinner size="sm" />
+          <AlertTitle>Finishing setup…</AlertTitle>
+        </Alert>
+      )}
+
+      {step.kind === 'confirm' && confirmQuery.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Couldn’t finish moving to Slack</AlertTitle>
+          <AlertDescription>
+            {failureText(confirmQuery.error, 'Switch did not answer.')}
+          </AlertDescription>
+          <AlertAction>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={confirmQuery.isFetching}
+              onClick={() => void confirmQuery.refetch()}
+            >
+              {confirmQuery.isFetching && <Spinner size="sm" />}
+              Try again
+            </Button>
+          </AlertAction>
+        </Alert>
+      )}
+
+      {doneRoomId && (
         <Alert>
           {slackIcon}
           <AlertTitle>Continued in Slack</AlertTitle>

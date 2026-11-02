@@ -7,11 +7,13 @@ export type BuddySetupStep =
   | { kind: 'connect' }
   | { kind: 'link'; bridge: RemoteBridge }
   | { kind: 'create'; bridge: RemoteBridge }
-  | { kind: 'done'; roomId: string };
+  | { kind: 'confirm'; bridge: RemoteBridge };
 
 /**
  * Where the person is in moving their buddy to Slack, from live reads. A read
  * not in yet is `loading`; one that failed is `unknown`, never "not connected".
+ * A Slack chat with the buddy is `confirm`, not done: the server lists it
+ * before its hand-off has finished, so the hand-off is resumed to know.
  */
 export function buddySetupStep({
   agentId,
@@ -32,11 +34,11 @@ export function buddySetupStep({
       chat.bridgeType === 'slack' &&
       chat.agents.some((agent) => agent.id === agentId)
   );
-  if (handedOff) return { kind: 'done', roomId: handedOff.roomId };
   if (failed) return { kind: 'unknown' };
   if (!bridges || !chats) return { kind: 'loading' };
   const slack = bridges.find((bridge) => bridge.type === 'slack' && bridge.status === 'active');
   if (!slack) return { kind: 'connect' };
+  if (handedOff) return { kind: 'confirm', bridge: slack };
   if (!identities) return { kind: 'loading' };
   if (!identities.some((identity) => identity.bridgeId === slack.id))
     return { kind: 'link', bridge: slack };

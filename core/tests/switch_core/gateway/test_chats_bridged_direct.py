@@ -3,10 +3,14 @@ on that bridge, between the caller's own linked account and the agent."""
 
 from __future__ import annotations
 
+import asyncio
+import copy
+import weakref
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 
 from switch_core.db.models import (
     Agent,
@@ -17,6 +21,7 @@ from switch_core.db.models import (
     Room,
     User,
 )
+from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.conftest import _Harness
 from tests.switch_core.gateway.test_chats_routes import _code
 
@@ -28,6 +33,7 @@ class _FakeCore:
         self._workspace_consumer_transport_user_id = transport_user_id
         self._known = known
         self.dm_calls: list[dict[str, str]] = []
+        self.users_added: list[list[str]] = []
 
         async def create_dm_channel(
             *, agent_name: str, user_name: str, user_external_id: str
@@ -39,6 +45,8 @@ class _FakeCore:
                     "user_external_id": user_external_id,
                 }
             )
+            # Yields, so a concurrent attempt can run while the channel is made.
+            await asyncio.sleep(0.05)
             return f"C-DM-{len(self.dm_calls)}"
 
         async def ensure_channel_subscriptions(channels: Any) -> None:
@@ -63,8 +71,10 @@ class _FakeCore:
     def add_room_mapping(self, *args: Any) -> None:
         return None
 
-    async def ensure_users_in_room(self, *args: Any) -> None:
-        return None
+    async def ensure_users_in_room(
+        self, room_id: str, transport_room_id: str, user_names: list[str]
+    ) -> None:
+        self.users_added.append(user_names)
 
 
 class _FakeCollabLifecycle:
@@ -225,3 +235,91 @@ async def test_a_bridged_chat_has_one_agent(chats: _Harness) -> None:
     assert response.status_code == 422
     assert _code(response) == "BRIDGED_CHAT_NEEDS_ONE_AGENT"
     assert core.dm_calls == []
+
+
+async def _create_on(
+    chats: _Harness, service: Any, agent: Agent, bridge_id: str
+) -> Room:
+    with tenant_scope(TENANT):
+        return await service.create_chat(
+            TENANT,
+            chats.alice,
+            agent_ids=[agent.id],
+            member_user_ids=[],
+            name=None,
+            request_id="c1",
+            greeting=None,
+            kind=None,
+            bridge_id=bridge_id,
+        )
+
+
+async def test_two_processes_racing_one_request_open_one_channel(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    other = copy.copy(chats.service)
+    other._locks = weakref.WeakValueDictionary()
+
+    first, second = await asyncio.gather(
+        _create_on(chats, chats.service, agent, bridge_id),
+        _create_on(chats, other, agent, bridge_id),
+    )
+
+    assert first.id == second.id
+    assert len(core.dm_calls) == 1
+
+
+async def test_a_retry_after_a_failed_join_finishes_the_same_chat(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    make_lasting = chats.service._make_lasting
+    failures = [RuntimeError("join failed")]
+
+    async def failing_make_lasting(*args: Any) -> None:
+        if failures:
+            raise failures.pop()
+        await make_lasting(*args)
+
+    monkeypatch.setattr(chats.service, "_make_lasting", failing_make_lasting)
+
+    with pytest.raises(RuntimeError, match="join failed"):
+        await _create_on(chats, chats.service, agent, bridge_id)
+    room = await _create_on(chats, chats.service, agent, bridge_id)
+    again = await _create(chats, [agent], bridge_id)
+
+    assert again.status_code == 200, again.text
+    assert again.json()["chat"]["roomId"] == room.id
+    assert len(core.dm_calls) == 1
+
+
+async def test_a_retry_after_a_failed_bridge_invite_puts_the_bridge_in(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    provisioning = chats.room_service._provisioning
+    invite = provisioning.invite_to_room
+    bridge_invites: list[str] = []
+    failures = [RuntimeError("invite failed")]
+
+    async def failing_invite(room_id: str, user_id: str) -> None:
+        if user_id == "@slack-bot:switch.test":
+            if failures:
+                raise failures.pop()
+            bridge_invites.append(room_id)
+        await invite(room_id, user_id)
+
+    monkeypatch.setattr(provisioning, "invite_to_room", failing_invite)
+
+    with pytest.raises(RuntimeError, match="invite failed"):
+        await _create_on(chats, chats.service, agent, bridge_id)
+    assert core.users_added == []
+    room = await _create_on(chats, chats.service, agent, bridge_id)
+
+    assert bridge_invites == [room.transport_room_id]
+    assert core.users_added == [["alice.s"]]
+    assert len(core.dm_calls) == 1

@@ -24,7 +24,8 @@ import logging
 import re
 import uuid
 import weakref
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
@@ -42,7 +43,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
@@ -1483,59 +1483,50 @@ class ChatService:
                                 session, tenant_id, user, operation.room_id
                             )
                             return room
-                operation_id = self._operation_id(tenant_id, user.id, request_id)
-                found = await self._room_of_operation(session, operation_id)
-            if found is None:
-                names = ", ".join(
-                    [agent.name for agent in agents]
-                    + [member.name for member in members]
-                )
-                try:
-                    # shortcut: a crash or lost Slack response after the channel exists but before the room is saved leaves an orphan channel and a retry makes a second one; add adoption if this shows up.
-                    created = await self._room_service.create_room(
-                        RoomCreateConfig(
-                            name=name or "New Chat",
-                            description=(
-                                f"Switch Console chat with {names}"
-                                if names
-                                else "Switch Console chat"
-                            ),
-                            agent_ids=[agent.id for agent in agents],
-                            channel_type="direct" if direct else "channel_private",
-                            internal_only=bridge_id is None,
-                            bridge_id=bridge_id,
-                            user_names=user_names,
-                            created_by=user.id,
-                            owner_id=user.id,
-                            read_visibility="private",
-                            write_visibility="private",
-                            acting_user_id=user.id,
-                            created_by_kind="user",
-                            chat_operation_id=operation_id,
-                            agent_greeting=(
-                                {"agent_id": agents[0].id, "body": greeting}
-                                if greeting is not None
-                                else None
-                            ),
-                        )
+            operation_id = self._operation_id(tenant_id, user.id, request_id)
+            async with self._provisioning_one_at_a_time(operation_id):
+                async with tenant_session(self.session_factory, tenant_id) as session:
+                    found = await self._room_of_operation(session, operation_id)
+                if found is None:
+                    names = ", ".join(
+                        [agent.name for agent in agents]
+                        + [member.name for member in members]
                     )
-                except ValueError as exc:
-                    raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
-                except IntegrityError:
-                    # The same request made the room first, on another process.
-                    async with tenant_session(
-                        self.session_factory, tenant_id
-                    ) as session:
-                        found = await self._room_of_operation(session, operation_id)
-                    if found is None:
-                        raise
-                    room = found
-                    await self._room_service.reconcile_room(room)
-                else:
+                    try:
+                        # shortcut: a crash or lost Slack response after the channel exists but before the room is saved leaves an orphan channel and a retry makes a second one; add adoption if this shows up.
+                        created = await self._room_service.create_room(
+                            RoomCreateConfig(
+                                name=name or "New Chat",
+                                description=(
+                                    f"Switch Console chat with {names}"
+                                    if names
+                                    else "Switch Console chat"
+                                ),
+                                agent_ids=[agent.id for agent in agents],
+                                channel_type="direct" if direct else "channel_private",
+                                internal_only=bridge_id is None,
+                                bridge_id=bridge_id,
+                                user_names=user_names,
+                                created_by=user.id,
+                                owner_id=user.id,
+                                read_visibility="private",
+                                write_visibility="private",
+                                acting_user_id=user.id,
+                                created_by_kind="user",
+                                chat_operation_id=operation_id,
+                                agent_greeting=(
+                                    {"agent_id": agents[0].id, "body": greeting}
+                                    if greeting is not None
+                                    else None
+                                ),
+                            )
+                        )
+                    except ValueError as exc:
+                        raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
                     room = created.room
-            else:
-                room = found
-                await self._room_service.reconcile_room(room)
+                else:
+                    room = found
+                    await self._room_service.reconcile_room(room, user_names)
             for joiner in [user, *members]:
                 client = await self.member_actor(tenant_id, joiner)
                 await self._join(tenant_id, room, client)
@@ -1558,6 +1549,21 @@ class ChatService:
         if len(agents) == 1:
             self._start_session(agents[0].id, room.id)
         return room
+
+    @asynccontextmanager
+    async def _provisioning_one_at_a_time(
+        self, operation_id: str
+    ) -> AsyncIterator[None]:
+        """At most one attempt at an operation's room at once, across every
+        server process: a session-level advisory lock, released with the
+        connection if the process dies."""
+        key = func.hashtext(f"chat-create:{operation_id}")
+        async with self.session_factory() as session:
+            await session.execute(select(func.pg_advisory_lock(key)))
+            try:
+                yield
+            finally:
+                await session.execute(select(func.pg_advisory_unlock(key)))
 
     @staticmethod
     async def _linked_username(
