@@ -1,6 +1,7 @@
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { offerAccountLinkAfterConnect } from '@renderer/features/switch-servers/offer-account-link';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
@@ -9,9 +10,9 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { reportOpenAttempt } from '@renderer/lib/open-external';
-import { Alert, AlertAction, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { cn } from '@renderer/utils/utils';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { type BuddyResume, buddyResumeBridges, buddySetupStep } from './buddy-setup-step';
 import {
@@ -118,122 +119,220 @@ const Cards = observer(function Cards({
     }
   };
 
-  const slackIcon = <BridgeIcon bridgeType="slack" className="size-4" />;
   const pastChoice =
     picked || (step.kind !== 'loading' && step.kind !== 'unknown' && step.kind !== 'connect');
 
   return (
-    <div className="mt-4 flex flex-col gap-2" data-testid="buddy-setup-cards">
-      <Alert>
-        <AlertTitle>Where does your team chat?</AlertTitle>
-        <AlertDescription>Using something else? Just tell me below.</AlertDescription>
-        <AlertAction>
-          <Button
-            size="sm"
-            variant={pastChoice ? 'default' : 'outline'}
-            onClick={() => setPicked(true)}
+    <div className="@container mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">
+      <div className="font-semibold">Where does your team chat?</div>
+      <div className="grid grid-cols-2 gap-3 @lg:grid-cols-4">
+        <button
+          type="button"
+          aria-pressed={pastChoice}
+          onClick={() => setPicked(true)}
+          className={cn(
+            'flex flex-col items-start gap-3 rounded-lg border bg-background p-3 text-left transition-colors hover:bg-background-1 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+            pastChoice && 'border-foreground/40 shadow-sm ring-1 ring-foreground/20'
+          )}
+        >
+          <BridgeIcon bridgeType="slack" size={28} />
+          <TileText name="Slack" subtitle="Channels & DMs" />
+        </button>
+        {COMING_SOON.map((app) => (
+          <button
+            key={app.bridgeType}
+            type="button"
+            aria-disabled="true"
+            title="Coming soon"
+            className="flex cursor-not-allowed flex-col items-start gap-3 rounded-lg border bg-background p-3 text-left opacity-50"
           >
-            {slackIcon}
-            Slack
-          </Button>
-        </AlertAction>
-      </Alert>
+            <BridgeIcon bridgeType={app.bridgeType} size={28} />
+            <TileText name={app.name} subtitle={app.subtitle} />
+            <span className="text-xs text-foreground-muted">Coming soon</span>
+          </button>
+        ))}
+      </div>
 
       {pastChoice && step.kind === 'loading' && (
-        <Alert>
+        <StatusRow>
           <Spinner size="sm" />
-          <AlertTitle>Checking Slack…</AlertTitle>
-        </Alert>
+          Checking Slack…
+        </StatusRow>
       )}
 
       {pastChoice && step.kind === 'unknown' && (
-        <Alert variant="destructive">
-          <AlertTitle>Couldn’t check Slack</AlertTitle>
-          <AlertDescription>Switch did not answer.</AlertDescription>
-          <AlertAction>
-            <Button size="sm" variant="outline" onClick={retry}>
-              Retry
-            </Button>
-          </AlertAction>
-        </Alert>
+        <StatusRow className="border-border-destructive text-foreground-destructive">
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold">Couldn’t check Slack</div>
+            <div>Switch did not answer.</div>
+          </div>
+          <Button size="sm" variant="outline" onClick={retry}>
+            Retry
+          </Button>
+        </StatusRow>
       )}
 
       {pastChoice && step.kind === 'connect' && (
-        <Alert>
-          <AlertTitle>Connect Slack</AlertTitle>
-          <AlertDescription>Add Slack to your Switch workspace.</AlertDescription>
-          <AlertAction>
-            <Button size="sm" onClick={() => showConnect({ serverId, onClosed: retry })}>
+        <SlackCard
+          title="Connect Slack"
+          description="Add Slack to your Switch workspace."
+          footer={
+            <Button onClick={() => showConnect({ serverId, onClosed: retry })}>
               Connect Slack
             </Button>
-          </AlertAction>
-        </Alert>
+          }
+        />
       )}
 
       {step.kind === 'link' && (
-        <Alert>
-          <AlertTitle>Link your Slack account</AlertTitle>
-          <AlertDescription>So I recognise you in {step.bridge.displayName}.</AlertDescription>
-          <AlertAction>
-            <Button
-              size="sm"
-              onClick={() =>
-                offerAccountLinkAfterConnect(workspaceId, {
-                  bridgeId: step.bridge.id,
-                  displayName: step.bridge.displayName,
-                  directorySearchSupported: step.bridge.directorySearchSupported,
-                })
-              }
-            >
-              Link account
-            </Button>
-          </AlertAction>
-        </Alert>
+        <>
+          <div className="flex items-center gap-2 text-sm text-foreground-success">
+            <CheckCircle2 className="size-4" />
+            Slack connected
+          </div>
+          <SlackCard
+            title="Link your Slack account"
+            description={`So I recognise you in ${step.bridge.displayName}.`}
+            footer={
+              <Button
+                onClick={() =>
+                  offerAccountLinkAfterConnect(workspaceId, {
+                    bridgeId: step.bridge.id,
+                    displayName: step.bridge.displayName,
+                    directorySearchSupported: step.bridge.directorySearchSupported,
+                  })
+                }
+              >
+                Link account
+              </Button>
+            }
+          />
+        </>
       )}
 
       {step.kind === 'create' && (
-        <Alert variant={createError ? 'destructive' : 'default'}>
-          <AlertTitle>Continue in Slack</AlertTitle>
-          <AlertDescription>
-            {createError ??
-              `This creates a private Slack channel with you and switch-buddy in ${step.bridge.displayName}.`}
-          </AlertDescription>
-          <AlertAction>
-            <Button size="sm" disabled={creating} onClick={() => void create(step.bridge)}>
-              {creating && <Spinner size="sm" />}
-              {createError ? 'Try again' : 'Create channel and continue'}
-            </Button>
-          </AlertAction>
-        </Alert>
+        <>
+          <div className="flex items-center gap-2 rounded-lg bg-background-success px-3 py-2 text-sm text-foreground-success">
+            <CheckCircle2 className="size-4 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="font-semibold">Slack ready</span> — Slack connected · account linked
+            </span>
+            <BridgeIcon bridgeType="slack" size={16} />
+          </div>
+          <SlackCard
+            title="Continue in a private Slack channel"
+            description="I’ll create a private channel just for us and continue there."
+            error={createError}
+            footer={
+              <Button disabled={creating} onClick={() => void create(step.bridge)}>
+                {creating ? (
+                  <>
+                    <Spinner size="sm" />
+                    Creating channel…
+                  </>
+                ) : createError ? (
+                  'Try again'
+                ) : (
+                  <>
+                    Create channel and continue
+                    <ArrowRight />
+                  </>
+                )}
+              </Button>
+            }
+          />
+        </>
       )}
 
       {step.kind === 'resuming' && (
-        <Alert>
+        <StatusRow>
           <Spinner size="sm" />
-          <AlertTitle>Finishing setup…</AlertTitle>
-        </Alert>
+          Finishing setup…
+        </StatusRow>
       )}
 
       {doneRoomId && (
-        <Alert>
-          {slackIcon}
-          <AlertTitle>Continued in Slack</AlertTitle>
-          <AlertDescription>
-            {channelUrl
-              ? 'Our chat goes on there.'
-              : roomQuery.isPending
-                ? 'Looking up the Slack channel…'
-                : 'Couldn’t get a link to the Slack channel. Find it in Slack.'}
-          </AlertDescription>
-          {channelUrl && (
-            <AlertAction>
+        <>
+          <StatusRow>
+            <CheckCircle2 className="size-4 shrink-0 text-foreground-success" />
+            <span className="min-w-0 flex-1 truncate text-foreground-success">
+              {roomQuery.data?.linkedChannelName ?? 'Private Slack channel'} ready
+            </span>
+            {channelUrl ? (
               <Button size="sm" onClick={() => openSlack(channelUrl)}>
                 Open Slack
+                <ArrowRight />
               </Button>
-            </AlertAction>
-          )}
-        </Alert>
+            ) : (
+              <span className="text-foreground-muted">
+                {roomQuery.isPending
+                  ? 'Looking up the Slack channel…'
+                  : 'Couldn’t get a link to the Slack channel. Find it in Slack.'}
+              </span>
+            )}
+          </StatusRow>
+          <div className="self-start rounded-full border bg-background-1 px-3 py-1 text-sm text-foreground-muted">
+            💡 <span className="font-semibold text-foreground">Private channel</span> — only you and
+            buddy can see it. Just reply, no @ needed.
+          </div>
+        </>
       )}
     </div>
   );
 });
+
+const COMING_SOON = [
+  { bridgeType: 'teams', name: 'Microsoft Teams', subtitle: 'Teams & chats' },
+  { bridgeType: 'discord', name: 'Discord', subtitle: 'Servers & channels' },
+  { bridgeType: 'telegram', name: 'Telegram', subtitle: 'Groups & chats' },
+];
+
+function TileText({ name, subtitle }: { name: string; subtitle: string }) {
+  return (
+    <div>
+      <div className="font-semibold">{name}</div>
+      <div className="text-sm text-foreground-muted">{subtitle}</div>
+    </div>
+  );
+}
+
+function StatusRow({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm',
+        className
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SlackCard({
+  title,
+  description,
+  error,
+  footer,
+}: {
+  title: string;
+  description: string;
+  error?: string | null;
+  footer: ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border bg-background">
+      <div className="flex items-start gap-3 p-4">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border">
+          <BridgeIcon bridgeType="slack" size={20} />
+        </div>
+        <div className="min-w-0">
+          <div className="font-semibold">{title}</div>
+          <div className="text-sm text-foreground-muted">{description}</div>
+          {error && <div className="mt-1 text-sm text-foreground-destructive">{error}</div>}
+        </div>
+      </div>
+      <div className="border-t bg-background-1 px-4 py-3">{footer}</div>
+    </div>
+  );
+}
