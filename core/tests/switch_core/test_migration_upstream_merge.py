@@ -23,6 +23,8 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from switch_core.db.schema_version import record_expand_only
+
 _CORE = Path(__file__).resolve().parents[2]
 _MIGRATION_DB = "migration_upstream_merge"
 _HEAD = "4e634b519462"
@@ -133,7 +135,11 @@ def _upgrade(revision: str, ran: list[str] | None = None) -> Any:
             return steps
 
         with EnvironmentContext(config, script, fn=step) as environment:
-            environment.configure(connection=connection)
+            # As `migrations/env.py` runs it, so a revision the hook can't
+            # record fails here too.
+            environment.configure(
+                connection=connection, on_version_apply=[record_expand_only]
+            )
             with environment.begin_transaction():
                 environment.run_migrations()
 
@@ -179,6 +185,18 @@ def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
     merge = script.get_revision(_HEAD)
     assert merge is not None
     assert set(merge._all_down_revisions) == {"9d41b7e2c6a3", _OURS_AFTER_TEST_SERVER}
+
+
+def test_only_a_revision_with_one_parent_is_marked_expand_only() -> None:
+    """`record_expand_only` records a revision with its one parent, so a merge
+    marked `expand_only` would fail every real upgrade through it."""
+    marked_merges = [
+        script.revision
+        for script in _script().walk_revisions()
+        if getattr(script.module, "expand_only", False)
+        and len(script._all_down_revisions) != 1
+    ]
+    assert marked_merges == []
 
 
 async def test_a_fresh_database_upgrades_to_the_head(postgres_url: str) -> None:
