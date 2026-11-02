@@ -2433,19 +2433,25 @@ export async function fetchUnconfirmedLinks(
 }
 
 /**
- * Stop trusting a messaging app's older links until each owner confirms theirs
- * (`POST /collaborations/{id}/identities/require-confirmation`). Admin only.
- * Each becomes a link waiting for its code and stops counting at once. Returns
- * how many moved.
+ * Stop trusting these older links on a messaging app until each owner confirms
+ * theirs (`POST /collaborations/{id}/identities/require-confirmation`). Admin
+ * only. Only the links named move — the ones the admin was shown, not any that
+ * appeared since — and each becomes a link waiting for its code, counting for
+ * nothing at once. Returns how many moved.
  */
 export async function requireLinkConfirmation(
   server: SwitchServer,
-  bridgeId: string
+  bridgeId: string,
+  links: readonly Pick<UnconfirmedLink, 'id' | 'userId'>[]
 ): Promise<number> {
   const res = await gatewayFetch(
     server,
     `/collaborations/${encodeURIComponent(bridgeId)}/identities/require-confirmation`,
-    { authenticated: true, method: 'POST' }
+    {
+      authenticated: true,
+      method: 'POST',
+      body: { links: links.map((link) => ({ id: link.id, user_id: link.userId })) },
+    }
   );
   return ((await res.json()) as { moved: number }).moved;
 }

@@ -421,6 +421,16 @@ class UserStore:
         result = await session.execute(select(User))
         return list(result.scalars().all())
 
+    async def get_many(
+        self, session: AsyncSession, user_ids: Collection[str]
+    ) -> list[User]:
+        """The users with these ids, in one query; ids with no user are left
+        out."""
+        if not user_ids:
+            return []
+        result = await session.execute(select(User).where(User.id.in_(user_ids)))
+        return list(result.scalars().all())
+
     async def add_membership(
         self,
         session: AsyncSession,

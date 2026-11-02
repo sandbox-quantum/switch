@@ -352,9 +352,15 @@ describe('linking a messaging account', () => {
     requireLinkConfirmationOnServer.mockResolvedValue({ kind: 'required', moved: 2 });
 
     await expect(
-      workspacesController.requireLinkConfirmation({ workspaceId: 'ws', bridgeId: 'b1' })
+      workspacesController.requireLinkConfirmation({
+        workspaceId: 'ws',
+        bridgeId: 'b1',
+        links: [{ id: 'eu-1', userId: 'u-1' }],
+      })
     ).resolves.toEqual({ kind: 'required', moved: 2 });
-    expect(requireLinkConfirmationOnServer).toHaveBeenCalledWith(expect.anything(), 'b1');
+    expect(requireLinkConfirmationOnServer).toHaveBeenCalledWith(expect.anything(), 'b1', [
+      { id: 'eu-1', userId: 'u-1' },
+    ]);
   });
 
   it('reports a refused claim as a failure', async () => {

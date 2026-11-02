@@ -357,15 +357,6 @@ def _close_loop(loop: asyncio.AbstractEventLoop) -> None:
 _WEBHOOK_STAND_IN_PREFIX = "webhook:"
 
 
-def _webhook_stand_in_name(props: dict[str, Any]) -> str:
-    """What a webhook's posts are shown as: the name it posts under, marked as
-    a webhook so nobody reading the room takes it for a person."""
-    name = str(
-        props.get("override_username") or props.get("webhook_display_name") or ""
-    )
-    return f"{name} (webhook)" if name.strip() else "webhook"
-
-
 class MattermostAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Mattermost"
     channel_on_delete = "archived"
@@ -2813,24 +2804,26 @@ class MattermostAdapter(PlatformAdapter):
             raise RuntimeError("Cannot handle posted event: adapter not started")
 
         ws_loop = asyncio.get_event_loop()
+        try:
+            user = await ws_loop.run_in_executor(
+                None, self._admin_driver.users.get_user, user_id
+            )
+            username: str = user.get("username", user_id)
+        except Exception:
+            logger.exception("Failed to resolve Mattermost user %s", user_id)
+            username = user_id
         props = post.get("props") or {}
         if str(props.get("from_webhook", "")).lower() == "true":
             # An incoming webhook's post (or a custom slash command's reply)
             # carries the user id of whoever set the integration up, though
             # anyone holding its URL may have sent it. It is the integration
             # talking, not that person, so it goes under a stand-in of its own
-            # that no link and no owner rule can match (CHOO-3881).
+            # that no link and no owner rule can match (CHOO-3881). One per
+            # person, named after them, since every webhook they set up posts
+            # under their id and the name a post gives itself is the sender's
+            # to choose.
             user_id = f"{_WEBHOOK_STAND_IN_PREFIX}{user_id}"
-            username = _webhook_stand_in_name(props)
-        else:
-            try:
-                user = await ws_loop.run_in_executor(
-                    None, self._admin_driver.users.get_user, user_id
-                )
-                username = user.get("username", user_id)
-            except Exception:
-                logger.exception("Failed to resolve Mattermost user %s", user_id)
-                username = user_id
+            username = f"{username}'s webhook"
 
         channel_type = self._to_channel_type(mm_channel_type)
         stripped = message.strip()
@@ -3033,6 +3026,29 @@ class MattermostAdapter(PlatformAdapter):
                 "This stands for a Mattermost webhook, which anyone holding "
                 "its URL can post through."
             )
+        return None
+
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        reason = self.unlinkable_account_reason(external_user_id)
+        if reason is not None:
+            return reason
+        driver = self._admin_driver
+        if driver is None:
+            raise RuntimeError(
+                "The Mattermost bridge is not started, so it cannot be asked"
+            )
+        try:
+            user = await asyncio.to_thread(driver.users.get_user, external_user_id)
+        except ResourceNotFound as e:
+            raise LookupError(
+                f"No Mattermost account {external_user_id} exists on this server"
+            ) from e
+        except sync_requests.RequestException as e:
+            raise RuntimeError(
+                f"Could not ask Mattermost about account {external_user_id}: {e}"
+            ) from e
+        if user.get("is_bot"):
+            return "This is a Mattermost bot's account, which whoever runs it posts as."
         return None
 
     async def account_id_for_session(self, token: str) -> str:

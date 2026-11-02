@@ -2491,15 +2491,21 @@ describe('older links an admin can require confirming', () => {
     await expect(fetchUnconfirmedLinks(SERVER, 'b1')).rejects.toMatchObject({ status: 403 });
   });
 
-  it('requires confirming them, and says how many moved', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ moved: 3 }) as never);
+  it('requires confirming the links named, and says how many moved', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ moved: 1 }) as never);
 
-    await expect(requireLinkConfirmation(SERVER, 'b1')).resolves.toBe(3);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { method: string }];
+    await expect(
+      requireLinkConfirmation(SERVER, 'b1', [{ id: 'eu-1', userId: 'u-1' }])
+    ).resolves.toBe(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { method: string; body: string },
+    ];
     expect(url).toBe(
       'https://switch.example.com/gateway/collaborations/b1/identities/require-confirmation'
     );
     expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ links: [{ id: 'eu-1', user_id: 'u-1' }] });
   });
 });
 

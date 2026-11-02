@@ -112,9 +112,14 @@ describe('requiring confirmation for older links', () => {
     await act(async () => button(el, 'Require confirmation')!.click());
     await settle();
 
+    // Exactly the links listed: the admin agreed to these people.
     expect(requireLinkConfirmation).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
       bridgeId: 'b-acme',
+      links: [
+        { id: 'eu-1', userId: 'u1' },
+        { id: 'eu-2', userId: 'u2' },
+      ],
     });
     expect(toast).toHaveBeenCalledWith({ title: '2 links now need confirming' });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: myIdentitiesQueryKey('ws-1') });

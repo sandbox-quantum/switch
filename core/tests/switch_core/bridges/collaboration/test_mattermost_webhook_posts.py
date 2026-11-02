@@ -96,7 +96,8 @@ def test_a_webhook_post_goes_under_a_stand_in_not_its_creator() -> None:
     [message] = received
     assert isinstance(message, InboundMessage)
     assert message.sender_id == f"webhook:{_CREATOR}"
-    assert message.sender_name == "ci (webhook)"
+    # Named after the person who set it up, not the name the post claims.
+    assert message.sender_name == "ada's webhook"
 
 
 def test_a_command_from_a_webhook_is_not_the_creators() -> None:
@@ -108,7 +109,7 @@ def test_a_command_from_a_webhook_is_not_the_creators() -> None:
     assert isinstance(command, InboundCommand)
     assert command.command == "unlink-account"
     assert command.sender_id == f"webhook:{_CREATOR}"
-    assert command.sender_name == "webhook"
+    assert command.sender_name == "ada's webhook"
 
 
 def test_the_stand_in_cannot_be_linked() -> None:

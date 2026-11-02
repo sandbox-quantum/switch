@@ -1097,9 +1097,11 @@ export const workspacesController = createRPCController({
   requireLinkConfirmation: (params: {
     workspaceId: string;
     bridgeId: string;
+    /** The links the admin was shown; only these move. */
+    links: Pick<UnconfirmedLink, 'id' | 'userId'>[];
   }): Promise<RequireLinkConfirmationResult> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
-      requireLinkConfirmationOnServer(server, params.bridgeId)
+      requireLinkConfirmationOnServer(server, params.bridgeId, params.links)
     ),
 
   /** Withdraw the signed-in user's confirmation waiting on a code. A link that

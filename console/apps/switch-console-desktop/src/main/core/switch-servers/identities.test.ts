@@ -292,10 +292,12 @@ describe('cancelLinkRequestOnServer', () => {
 });
 
 describe('requireLinkConfirmationOnServer', () => {
+  const SHOWN = [{ id: 'eu-1', userId: 'u-1' }];
+
   it('says how many links now wait for their code', async () => {
     fetchMock.mockResolvedValue(response(200, { moved: 2 }));
 
-    await expect(requireLinkConfirmationOnServer(SERVER, 'b1')).resolves.toEqual({
+    await expect(requireLinkConfirmationOnServer(SERVER, 'b1', SHOWN)).resolves.toEqual({
       kind: 'required',
       moved: 2,
     });
@@ -304,7 +306,7 @@ describe('requireLinkConfirmationOnServer', () => {
   it('passes on the server’s reason when the caller is not an admin', async () => {
     fetchMock.mockResolvedValue(response(403, { detail: 'Workspace admin access required' }));
 
-    await expect(requireLinkConfirmationOnServer(SERVER, 'b1')).resolves.toEqual({
+    await expect(requireLinkConfirmationOnServer(SERVER, 'b1', SHOWN)).resolves.toEqual({
       kind: 'refused',
       message: 'Workspace admin access required',
     });
@@ -313,7 +315,7 @@ describe('requireLinkConfirmationOnServer', () => {
   it('passes on the server’s reason when the app is gone', async () => {
     fetchMock.mockResolvedValue(response(404, { detail: 'Bridge not found' }));
 
-    await expect(requireLinkConfirmationOnServer(SERVER, 'b1')).resolves.toEqual({
+    await expect(requireLinkConfirmationOnServer(SERVER, 'b1', SHOWN)).resolves.toEqual({
       kind: 'refused',
       message: 'Bridge not found',
     });
