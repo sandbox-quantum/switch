@@ -391,6 +391,17 @@ class SwitchConfig(BaseSettings):
     organization_directory: Literal["local", "workos"] = "local"
     workos_api_key: str | None = None
     workos_api_url: str = "https://api.workos.com"
+    # Changes made from Switch to a linked organization's members, sent to
+    # the service every product in the WorkOS environment changes them
+    # through (`members_service.py`), with the admin's own WorkOS access
+    # token. All three or none; unset, Switch takes nothing to WorkOS,
+    # refuses what grants, and what it takes away lasts only until WorkOS is
+    # read again. `WORKOS_CLIENT_ID` is the AuthKit application Switch signs
+    # admins in to for that token, and `WORKOS_REDIRECT_URL` its callback
+    # (`.../gateway/auth/workos/callback`), registered on that application.
+    members_service_url: str | None = None
+    workos_client_id: str | None = None
+    workos_redirect_url: str | None = None
 
     # Outbound mail for invitations addressed to an e-mail. Setting the host
     # turns it on; any SMTP relay works. Unset, an addressed invitation is
@@ -1481,6 +1492,11 @@ class SwitchConfig(BaseSettings):
     @model_validator(mode="after")
     def _validate_organization_directory(self) -> "SwitchConfig":
         if self.organization_directory != "workos":
+            if self.members_service_url:
+                raise ValueError(
+                    "MEMBERS_SERVICE_URL is for ORGANIZATION_DIRECTORY=workos: "
+                    "under the local directory there is nobody to send changes to."
+                )
             return self
         if not self.workos_api_key:
             raise ValueError(
@@ -1499,6 +1515,18 @@ class SwitchConfig(BaseSettings):
                 "until organizations can be created in WorkOS from Switch, a "
                 "customer's organization is linked by an operator "
                 "(switch-link-workos), not created by whoever signs up."
+            )
+        changes = (
+            self.members_service_url,
+            self.workos_client_id,
+            self.workos_redirect_url,
+        )
+        if 0 < sum(1 for value in changes if value) < len(changes):
+            raise ValueError(
+                "MEMBERS_SERVICE_URL, WORKOS_CLIENT_ID and WORKOS_REDIRECT_URL "
+                "are set together: changes to a linked organization's members "
+                "go to the members service with a token from that AuthKit "
+                "application."
             )
         return self
 

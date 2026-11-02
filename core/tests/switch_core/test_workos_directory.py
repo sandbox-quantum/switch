@@ -9,11 +9,14 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
+    DirectorySignInRequired,
     DirectoryUnavailable,
+    MemberChange,
 )
 from switch_core.workos_directory import (
     EventCursorRejected,
@@ -81,9 +84,17 @@ class _WorkOS:
         return httpx.Response(404)
 
 
+ISSUER = "https://sign-in.example.test"
+NO_CHANGE = MemberChange(access_token=None, subject=None)
+
+
 def _directory(handler) -> WorkOSDirectory:
     return WorkOSDirectory(
-        httpx.AsyncClient(transport=httpx.MockTransport(handler)), KEY, API
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        KEY,
+        API,
+        ISSUER,
+        None,
     )
 
 
@@ -189,9 +200,9 @@ class TestWhatAnOperatorLinks:
 
 
 class TestChangesFromSwitch:
-    """Changes made from Switch to a linked organization go through the
-    service that owns the customer record; until that is wired in, those that
-    grant are refused, and an organization nobody linked stays Switch's own."""
+    """Without a members service, changes from Switch to a linked
+    organization that grant are refused, and an organization nobody linked
+    stays Switch's own."""
 
     async def test_a_linked_organization_refuses_those_that_grant(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
@@ -199,7 +210,7 @@ class TestChangesFromSwitch:
 
         for change in (
             directory.join(linked, "u", "member"),  # type: ignore[arg-type]
-            directory.set_role(linked, "u", "org_admin"),  # type: ignore[arg-type]
+            directory.set_role(linked, "u", "org_admin", NO_CHANGE),  # type: ignore[arg-type]
         ):
             with pytest.raises(DirectoryRefusal):
                 await change
@@ -210,8 +221,8 @@ class TestChangesFromSwitch:
         directory = _directory(lambda request: httpx.Response(500))
         linked = SimpleNamespace(workos_organization_id="org_a")
 
-        await directory.set_role(linked, "u", "member")  # type: ignore[arg-type]
-        await directory.remove(linked, "u")  # type: ignore[arg-type]
+        await directory.set_role(linked, "u", "member", NO_CHANGE)  # type: ignore[arg-type]
+        await directory.remove(linked, "u", NO_CHANGE)  # type: ignore[arg-type]
 
     def test_it_keeps_the_members_of_a_linked_organization_only(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
@@ -228,8 +239,8 @@ class TestChangesFromSwitch:
         local = SimpleNamespace(workos_organization_id=None)
 
         await directory.join(local, "u", "member")  # type: ignore[arg-type]
-        await directory.set_role(local, "u", "org_admin")  # type: ignore[arg-type]
-        await directory.remove(local, "u")  # type: ignore[arg-type]
+        await directory.set_role(local, "u", "org_admin", NO_CHANGE)  # type: ignore[arg-type]
+        await directory.remove(local, "u", NO_CHANGE)  # type: ignore[arg-type]
 
     async def test_a_new_organization_is_switchs_own_until_linked(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
@@ -240,6 +251,127 @@ class TestChangesFromSwitch:
             workos_organization_id=None, customer_id=None
         )
         await directory.discard_organization(created)
+
+
+def _with_members(handler) -> WorkOSDirectory:
+    """A directory whose members service is answered by `handler`; WorkOS
+    itself fails, being asked nothing."""
+    return WorkOSDirectory(
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(500))
+        ),
+        KEY,
+        API,
+        ISSUER,
+        MembersService(
+            httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            "https://members.example.test",
+        ),
+    )
+
+
+def _members_service(listed: dict[str, str], changes: list[tuple[str, str, object]]):
+    """Lists `listed` (WorkOS user -> membership id) and records each change
+    as (method, membership id, body)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": membership,
+                            "user_id": subject,
+                            "role": {"slug": "viewer"},
+                        }
+                        for subject, membership in listed.items()
+                    ],
+                    "total": len(listed),
+                },
+            )
+        body = json.loads(request.content) if request.content else None
+        changes.append((request.method, request.url.path.rsplit("/", 1)[1], body))
+        return httpx.Response(200, json={})
+
+    return handler
+
+
+LINKED = SimpleNamespace(workos_organization_id="org_a")
+WITH_TOKEN = MemberChange(access_token="admin-token", subject="user_bob")
+
+
+class TestChangesThroughTheMembersService:
+    def test_a_change_to_a_linked_organization_needs_the_admins_token(self) -> None:
+        directory = _with_members(lambda request: httpx.Response(500))
+
+        with pytest.raises(DirectorySignInRequired):
+            directory.check_can_change(LINKED, None)  # type: ignore[arg-type]
+        directory.check_can_change(LINKED, "admin-token")  # type: ignore[arg-type]
+        directory.check_can_change(
+            SimpleNamespace(workos_organization_id=None),  # type: ignore[arg-type]
+            None,
+        )
+        assert directory.sends_changes_for(LINKED)  # type: ignore[arg-type]
+
+    def test_without_the_service_nothing_needs_a_token(self) -> None:
+        directory = _directory(lambda request: httpx.Response(500))
+
+        directory.check_can_change(LINKED, None)  # type: ignore[arg-type]
+        assert not directory.sends_changes_for(LINKED)  # type: ignore[arg-type]
+
+    async def test_org_admin_is_org_admin_and_member_is_viewer(self) -> None:
+        changes: list[tuple[str, str, object]] = []
+        directory = _with_members(_members_service({"user_bob": "om_bob"}, changes))
+
+        await directory.set_role(LINKED, "bob", "org_admin", WITH_TOKEN)  # type: ignore[arg-type]
+        await directory.set_role(LINKED, "bob", "member", WITH_TOKEN)  # type: ignore[arg-type]
+
+        assert changes == [
+            ("PATCH", "om_bob", {"role": "org_admin"}),
+            ("PATCH", "om_bob", {"role": "viewer"}),
+        ]
+
+    async def test_a_removal_removes_their_membership(self) -> None:
+        changes: list[tuple[str, str, object]] = []
+        directory = _with_members(_members_service({"user_bob": "om_bob"}, changes))
+
+        await directory.remove(LINKED, "bob", WITH_TOKEN)  # type: ignore[arg-type]
+
+        assert changes == [("DELETE", "om_bob", None)]
+
+    async def test_taking_away_what_workos_has_ended_needs_nothing(self) -> None:
+        changes: list[tuple[str, str, object]] = []
+        directory = _with_members(_members_service({}, changes))
+
+        await directory.set_role(LINKED, "bob", "member", WITH_TOKEN)  # type: ignore[arg-type]
+        await directory.remove(LINKED, "bob", WITH_TOKEN)  # type: ignore[arg-type]
+
+        assert changes == []
+
+    async def test_someone_workos_does_not_list_cannot_be_made_org_admin(
+        self,
+    ) -> None:
+        directory = _with_members(_members_service({}, []))
+
+        with pytest.raises(DirectoryRefusal, match="add them there first"):
+            await directory.set_role(LINKED, "bob", "org_admin", WITH_TOKEN)  # type: ignore[arg-type]
+
+    async def test_someone_with_no_workos_identity_is_refused(self) -> None:
+        directory = _with_members(_members_service({}, []))
+
+        with pytest.raises(DirectoryRefusal, match="no WorkOS identity"):
+            await directory.remove(
+                LINKED,  # type: ignore[arg-type]
+                "bob",
+                MemberChange(access_token="admin-token", subject=None),
+            )
+
+    async def test_adding_someone_is_still_refused(self) -> None:
+        directory = _with_members(_members_service({}, []))
+
+        with pytest.raises(DirectoryRefusal):
+            await directory.join(LINKED, "bob", "member")  # type: ignore[arg-type]
 
 
 class TestWhatTheMirrorReads:

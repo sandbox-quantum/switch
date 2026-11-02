@@ -10,13 +10,15 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DataTable from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import {
   type OrganizationMember,
   type OrganizationRole,
   fetchOrganizationMembers,
+  needsOrganizationSignIn,
+  organizationSignInUrl,
   removeOrganizationMember,
   updateOrganizationRole,
 } from "../../data/api";
@@ -30,6 +32,28 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
   member: "Member",
 };
 
+/** A change kept across the sign-in to the organization's WorkOS account it
+ * waited on, made again once, on coming back. */
+type MemberChange = { userId: string; role: OrganizationRole } | { userId: string; remove: true };
+const PENDING_CHANGE_KEY = "switch.pendingOrganizationMemberChange";
+
+function make(change: MemberChange): Promise<{ warning: string | null }> {
+  return "remove" in change
+    ? removeOrganizationMember(change.userId)
+    : updateOrganizationRole(change.userId, change.role);
+}
+
+function takePendingChange(): MemberChange | null {
+  const kept = window.sessionStorage.getItem(PENDING_CHANGE_KEY);
+  window.sessionStorage.removeItem(PENDING_CHANGE_KEY);
+  if (kept === null) return null;
+  try {
+    return JSON.parse(kept) as MemberChange;
+  } catch {
+    return null;
+  }
+}
+
 /** Everyone in the organization, across its workspaces, and their role in it.
  * The server refuses demoting or removing the last organization admin, and
  * removing someone still in one of its workspaces, naming them; its message
@@ -40,6 +64,7 @@ export default function OrganizationMembersSection({
   selfId,
   asOperator,
   fromDirectory,
+  directoryTakesChanges,
   onChanged,
 }: {
   selfId: string;
@@ -50,6 +75,10 @@ export default function OrganizationMembersSection({
   // made Org Admin here, and what is taken away here comes back while those
   // settings still grant it.
   fromDirectory: boolean;
+  // Changes made here are made in those account settings too, so they last
+  // and Org Admin can be given here; the admin may first be sent to sign in
+  // there, and the change is made on coming back.
+  directoryTakesChanges: boolean;
   // Called after each change that went through.
   onChanged: () => void;
 }) {
@@ -61,25 +90,41 @@ export default function OrganizationMembersSection({
   const { refresh } = useAuth();
 
   const act = useCallback(
-    async (userId: string, action: () => Promise<{ warning: string | null }>) => {
-      setBusy(userId);
+    async (change: MemberChange, replayed = false) => {
+      setBusy(change.userId);
       setActionError(null);
       setActionWarning(null);
       try {
-        const { warning } = await action();
+        const { warning } = await make(change);
         setActionWarning(warning);
         onChanged();
         await refetch();
         // Your own role decides what this page offers you.
-        if (userId === selfId) await refresh();
+        if (change.userId === selfId) await refresh();
       } catch (err) {
+        // Once only: a change made again after the sign-in that still asks
+        // for one is shown as the failure it is, not sent round again. The
+        // operator is no member there and has nothing to sign in as.
+        if (needsOrganizationSignIn(err) && !replayed && !asOperator) {
+          window.sessionStorage.setItem(PENDING_CHANGE_KEY, JSON.stringify(change));
+          window.location.href = organizationSignInUrl(window.location.pathname);
+          return;
+        }
         setActionError(err instanceof Error ? err.message : "The change failed");
       } finally {
         setBusy(null);
       }
     },
-    [onChanged, refetch, refresh, selfId],
+    [asOperator, onChanged, refetch, refresh, selfId],
   );
+
+  const replayed = useRef(false);
+  useEffect(() => {
+    if (replayed.current) return;
+    replayed.current = true;
+    const pending = takePendingChange();
+    if (pending !== null) void act(pending, true);
+  }, [act]);
 
   const columns = useMemo<GridColDef<MemberRow>[]>(
     () => [
@@ -101,9 +146,7 @@ export default function OrganizationMembersSection({
             value={row.role}
             disabled={busy !== null}
             onChange={(e) =>
-              act(row.user_id, () =>
-                updateOrganizationRole(row.user_id, e.target.value as OrganizationRole),
-              )
+              act({ userId: row.user_id, role: e.target.value as OrganizationRole })
             }
             aria-label={`Organization role for ${row.email}`}
             sx={{ fontSize: "0.875rem" }}
@@ -112,7 +155,12 @@ export default function OrganizationMembersSection({
               <MenuItem
                 key={role}
                 value={role}
-                disabled={fromDirectory && role === "org_admin" && row.role !== "org_admin"}
+                disabled={
+                  fromDirectory &&
+                  !directoryTakesChanges &&
+                  role === "org_admin" &&
+                  row.role !== "org_admin"
+                }
               >
                 {ROLE_LABELS[role]}
               </MenuItem>
@@ -138,7 +186,7 @@ export default function OrganizationMembersSection({
                 <IconButton
                   size="small"
                   disabled={busy !== null}
-                  onClick={() => act(row.user_id, () => removeOrganizationMember(row.user_id))}
+                  onClick={() => act({ userId: row.user_id, remove: true })}
                   aria-label={`Remove ${row.email} from the organization`}
                 >
                   <DeleteOutline fontSize="small" />
@@ -148,7 +196,7 @@ export default function OrganizationMembersSection({
           ),
       },
     ],
-    [act, busy, fromDirectory, selfId],
+    [act, busy, directoryTakesChanges, fromDirectory, selfId],
   );
   // The operator restores an admin and nothing more: removing a member is
   // refused to them, so there is nothing to offer.
@@ -178,7 +226,15 @@ export default function OrganizationMembersSection({
               "members an admin; the change is recorded in its audit log, marked as yours."}
         </Alert>
       )}
-      {fromDirectory && !asOperator && (
+      {fromDirectory && directoryTakesChanges && !asOperator && (
+        <Alert severity="info">
+          This organization's members, and who is its admin, come from your organization's
+          account settings. Changes you make here are made there too; you may be asked to
+          confirm your sign-in there first. New people can't be added from here yet: add them
+          there.
+        </Alert>
+      )}
+      {fromDirectory && !directoryTakesChanges && !asOperator && (
         <Alert severity="info">
           This organization's members, and who is its admin, come from your organization's
           account settings. Add people and make someone an organization admin there; the change

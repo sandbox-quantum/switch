@@ -221,8 +221,13 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
     engine = create_engine_from_config(config)
     try:
         async with guarded_async_client(config.outbound_policy) as http:
+            # Linking reads WorkOS and changes nobody's membership there.
             directory = WorkOSDirectory(
-                http, config.workos_api_key, config.workos_api_url
+                http,
+                config.workos_api_key,
+                config.workos_api_url,
+                config.gateway_oidc_issuer_url,
+                None,
             )
             session_factory = create_session_factory(engine)
             try:
