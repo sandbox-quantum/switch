@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
+  boxBackends,
   machineFor,
   machineIdOf,
   machineRunLocation,
@@ -94,49 +95,71 @@ describe('the run locations a server with agent management offers', () => {
 });
 
 describe("a shared-cloud user's box", () => {
-  const box = machine({
-    id: 'pod',
-    name: 'Test user A',
-    osVersion: '4.19.0-gvisor',
-  });
+  // Whatever system it runs (gVisor or not), only Core's backend makes a machine a box.
+  const box = machine({ id: 'pod', name: 'Test user A' });
   const laptop = machine({ id: 'laptop', kind: 'console', local: { kind: 'this-computer' } });
-  const second = machine({ id: 'second-laptop', osVersion: '25.6.0', os: 'macos' });
+  const second = machine({ id: 'second-laptop', os: 'macos' });
+  // What Core reports for each enrolled cloud machine: only `pod` is a box.
+  const core = boxBackends([{ controller_id: 'pod', backend: 'box' }]);
+  const none = boxBackends([]);
 
-  it('is recognised by the gVisor kernel its controller reports, needing no Core change', () => {
-    expect(hasSharedCloudBox([box], true)).toBe(true);
-    expect(hasSharedCloudBox([second], true)).toBe(false);
-    expect(hasSharedCloudBox([{ ...laptop, osVersion: '4.19.0-gvisor' }], true)).toBe(false);
-    // Registered as a hosted machine for the idle stop, its controller is
-    // kind `ec2` (cloud), and it is still the person's box.
+  it("is recognised only by Core's backend, never by a guess (switch plan)", () => {
+    expect(hasSharedCloudBox([box], true, core)).toBe(true);
+    expect(hasSharedCloudBox([second], true, core)).toBe(false);
+    // No backend from Core (an older Core, or someone's own controller under gVisor): not a box.
+    expect(hasSharedCloudBox([box], true, none)).toBe(false);
+    // Core says it's a v1 VM: never a box, whatever its kernel.
+    expect(
+      hasSharedCloudBox([box], true, boxBackends([{ controller_id: 'pod', backend: 'vm' }]))
+    ).toBe(false);
+    // A local machine is never a box, even if a backend were claimed for it.
+    expect(
+      hasSharedCloudBox([laptop], true, boxBackends([{ controller_id: 'laptop', backend: 'box' }]))
+    ).toBe(false);
+    // Registered as a hosted machine for the idle stop, its controller is kind `ec2` (cloud), still the box.
     const hosted = { ...box, kind: 'ec2', cloud: true };
-    expect(hasSharedCloudBox([hosted], true)).toBe(true);
-    expect(sharedCloudMachine([hosted], new Set([hosted.id]))).toBe(hosted);
-    expect([...sharedCloudBoxIds([box, second, laptop], true)]).toEqual([box.id]);
-    expect(sharedCloudBoxIds(undefined, true).size).toBe(0);
-    // Never from the gVisor hint alone: only on a server offering hosted agents.
-    expect(sharedCloudBoxIds([box, second, laptop], false).size).toBe(0);
+    expect(hasSharedCloudBox([hosted], true, core)).toBe(true);
+    expect(sharedCloudMachine([hosted], new Set([hosted.id]), core)).toBe(hosted);
+    expect([...sharedCloudBoxIds([box, second, laptop], true, core)]).toEqual([box.id]);
+    expect(sharedCloudBoxIds(undefined, true, core).size).toBe(0);
   });
 
-  it('is never a box without hosted_agents: everything reads as today (states, Run location, buddy copy)', () => {
+  it('is never a box without hosted_v2: everything reads as upstream (states, Run location, buddy copy)', () => {
     const hosted = { ...box, kind: 'ec2', cloud: true };
-    expect(hasSharedCloudBox([box, hosted, laptop], false)).toBe(false);
-    expect(sharedCloudBoxIds([box, hosted], false).size).toBe(0);
+    expect(hasSharedCloudBox([box, hosted, laptop], false, core)).toBe(false);
+    expect(sharedCloudBoxIds([box, hosted], false, core).size).toBe(0);
+  });
+
+  it('leaves out machines with no controller yet, or no backend', () => {
+    expect(
+      boxBackends([{ controller_id: null, backend: 'box' }, { controller_id: 'pod' }]).size
+    ).toBe(0);
   });
 
   it("is first where the user's agents already run, whatever its system reports", () => {
     const plain = machine({ id: 'plain-box' });
-    expect(sharedCloudMachine([laptop, plain, second], new Set(['plain-box']))?.id).toBe(
+    expect(sharedCloudMachine([laptop, plain, second], new Set(['plain-box']), none)?.id).toBe(
       'plain-box'
     );
-    expect(sharedCloudMachine([laptop, box, second], new Set(['pod', 'second-laptop']))).toBeNull();
-    expect(sharedCloudMachine([laptop, { ...box, state: 'offline' }], new Set(['pod']))).toBeNull();
-    expect(sharedCloudMachine([laptop], new Set(['laptop']))).toBeNull();
+    expect(
+      sharedCloudMachine([laptop, box, second], new Set(['pod', 'second-laptop']), core)
+    ).toBeNull();
+    expect(
+      sharedCloudMachine([laptop, { ...box, state: 'offline' }], new Set(['pod']), core)
+    ).toBeNull();
+    expect(sharedCloudMachine([laptop], new Set(['laptop']), core)).toBeNull();
   });
 
-  it('falls back to the one gVisor machine only for someone with no agents yet', () => {
-    expect(sharedCloudMachine([laptop, box, second], new Set())?.id).toBe('pod');
-    expect(sharedCloudMachine([box, { ...box, id: 'pod-2' }], new Set())).toBeNull();
-    expect(sharedCloudMachine([laptop, second], new Set())).toBeNull();
+  it('falls back to the one machine Core says is a box only for someone with no agents yet', () => {
+    expect(sharedCloudMachine([laptop, box, second], new Set(), core)?.id).toBe('pod');
+    const two = boxBackends([
+      { controller_id: 'pod', backend: 'box' },
+      { controller_id: 'pod-2', backend: 'box' },
+    ]);
+    expect(sharedCloudMachine([box, { ...box, id: 'pod-2' }], new Set(), two)).toBeNull();
+    expect(sharedCloudMachine([laptop, second], new Set(), core)).toBeNull();
+    // With no backend from Core, there is no fallback.
+    expect(sharedCloudMachine([laptop, box, second], new Set(), none)).toBeNull();
   });
 
   it('is listed as Switch cloud, with the cloud tag and icon', () => {
@@ -145,19 +168,19 @@ describe("a shared-cloud user's box", () => {
   });
   it('U17-b: picks the box, never an online laptop with no agents', () => {
     const otherLaptop = machine({ id: 'other-laptop', kind: 'console', os: 'macos' });
-    expect(sharedCloudMachine([box, otherLaptop], new Set(['pod']))?.id).toBe('pod');
+    expect(sharedCloudMachine([box, otherLaptop], new Set(['pod']), core)?.id).toBe('pod');
   });
 
   it('U17-f: names the box as offline, and picks nothing else', () => {
     const offline = { ...box, state: 'offline' as const };
-    expect(sharedCloudMachine([offline, second], new Set(['pod']))).toBeNull();
-    expect(offlineSharedCloudMachine([offline, second], new Set(['pod']))?.id).toBe('pod');
-    expect(offlineSharedCloudMachine([box, second], new Set(['pod']))).toBeNull();
+    expect(sharedCloudMachine([offline, second], new Set(['pod']), core)).toBeNull();
+    expect(offlineSharedCloudMachine([offline, second], new Set(['pod']), core)?.id).toBe('pod');
+    expect(offlineSharedCloudMachine([box, second], new Set(['pod']), core)).toBeNull();
   });
 
   it('U17-g: an older server that sends no system version still uses where agents run', () => {
     const noVersion = machine({ id: 'old-box' });
-    expect(sharedCloudMachine([laptop, noVersion], new Set(['old-box']))?.id).toBe('old-box');
-    expect(sharedCloudMachine([laptop, noVersion], new Set())).toBeNull();
+    expect(sharedCloudMachine([laptop, noVersion], new Set(['old-box']), none)?.id).toBe('old-box');
+    expect(sharedCloudMachine([laptop, noVersion], new Set(), none)).toBeNull();
   });
 });

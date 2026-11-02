@@ -81,6 +81,7 @@ import {
   machineLabel,
   machineRunLocation,
   machineRunLocations,
+  boxBackends,
   hasSharedCloudBox,
   offlineSharedCloudMachine,
   SHARED_CLOUD_LABEL,
@@ -179,11 +180,14 @@ export const NewAgentForm = observer(function NewAgentForm({
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
   // Someone on the shared cloud has a box among their machines (see
-  // `hasSharedCloudBox`), on a server that offers hosted agents, so it needs no
-  // change to Core. They are never offered
+  // `hasSharedCloudBox`): only where Core says hosted agents v2 is on
+  // (`hosted_v2`) and Core's `backend` says the machine is a box. Off, the form
+  // is as upstream. They are never offered
   // a cloud machine of their own: claiming one would start a separate machine,
   // at a real cost, for agents that already have somewhere to run.
-  const onSharedCloud = hasSharedCloudBox(serverMachines, serverFlags['hosted_agents']);
+  const v2CloudMachines = useCloudMachines(serverFlags['hosted_v2'] ? selectedServerId : null);
+  const backends = boxBackends(v2CloudMachines.data);
+  const onSharedCloud = hasSharedCloudBox(serverMachines, serverFlags['hosted_v2'], backends);
   const cloudOffered = !!selectedServer && serverFlags['hosted_agents'] && !onSharedCloud;
   const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
   const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
@@ -206,11 +210,11 @@ export const NewAgentForm = observer(function NewAgentForm({
   );
   const sharedBox =
     onSharedCloud && serverMachines && !ownAgents.isLoading
-      ? sharedCloudMachine(serverMachines, agentMachineIds)
+      ? sharedCloudMachine(serverMachines, agentMachineIds, backends)
       : null;
   const offlineBox =
     onSharedCloud && serverMachines && !ownAgents.isLoading
-      ? offlineSharedCloudMachine(serverMachines, agentMachineIds)
+      ? offlineSharedCloudMachine(serverMachines, agentMachineIds, backends)
       : null;
   const pickedSharedBox = useRef(false);
   useEffect(() => {

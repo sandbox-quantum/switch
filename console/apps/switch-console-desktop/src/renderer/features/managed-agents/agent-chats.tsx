@@ -39,7 +39,7 @@ import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
 import { useManagedAgentActions } from './use-managed-agent-actions';
-import { useRunsOnThisComputer } from './use-managed-agents';
+import { useOnSharedCloudBox, useRunsOnThisComputer } from './use-managed-agents';
 
 /**
  * The sections the agent's page offers, and the one showing: `chosen` from
@@ -184,6 +184,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
   const thisComputer = useRunsOnThisComputer(agent);
+  // Hosted agents v2 only: on a box, where Core says v2 is on (switch plan).
+  const onSharedBox = useOnSharedCloudBox(agent);
   // Visibility V2: Restart agent in the Status panel is turning it off and on again, as Your Agents does (B48).
   const { busy: restarting, setDesiredState } = useManagedAgentActions(agent);
   const restart = async () => {
@@ -240,8 +242,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           selected={section}
           onSelect={(chosen) => setParams({ section: chosen })}
         />
-        {/* Why it stopped (visibility V2): on a Switch cloud machine only, as the cards are. */}
-        {agent.stopReason && agent.machine && isCloudMachine(agent.machine) && (
+        {/* Why it stopped (visibility V2): on a v2 box only, as the cards are. */}
+        {onSharedBox && agent.stopReason && agent.machine && isCloudMachine(agent.machine) && (
           <AgentStatusPanel
             reason={agent.stopReason}
             now={new Date()}

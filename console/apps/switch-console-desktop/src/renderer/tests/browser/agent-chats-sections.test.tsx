@@ -12,7 +12,7 @@ const rooms = vi.hoisted(() => ({
   list: [] as RemoteAgentRoom[],
   bridges: {} as Record<string, string>,
 }));
-const machine = vi.hoisted(() => ({ thisComputer: false }));
+const machine = vi.hoisted(() => ({ thisComputer: false, onSharedBox: false }));
 
 /** Stands in for the app's navigation: the agent column picks a section by setting params. */
 const navigation = vi.hoisted(() => {
@@ -72,6 +72,7 @@ vi.mock('@renderer/features/switch-rooms/room-configuration-panel', () => ({
 vi.mock('@renderer/features/managed-agents/use-managed-agents', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useRunsOnThisComputer: () => machine.thisComputer,
+  useOnSharedCloudBox: () => machine.onSharedBox,
 }));
 vi.mock('@renderer/features/managed-agents/agent-connections-tab', () => ({
   useAgentServiceGrants: () => grants,
@@ -149,6 +150,7 @@ beforeEach(() => {
   rooms.list = [];
   rooms.bridges = {};
   machine.thisComputer = false;
+  machine.onSharedBox = false;
   navigation.reset({ serverId: 'server-1', agentId: 'agent-1', name: 'pm-agent' });
   container = document.createElement('div');
   container.style.width = '1100px';
@@ -597,4 +599,23 @@ it('offers a new room or an existing one from the Rooms section, with the agent 
     switchAgentId: 'agent-1',
     agentName: 'pm-agent',
   });
+});
+
+// The v1/v2 switch: the Status panel shows only on a v2 box (hosted_v2 on, Core's backend `box`).
+const STOPPED_ON_CLOUD: ManagedAgentView = {
+  ...AGENT,
+  machine: { id: 'machine-1', name: 'Switch cloud', kind: 'ec2', state: 'online' },
+  stopReason: { code: 'login_needed', since: '2026-11-02T08:00:00Z', resetAt: null },
+};
+
+it('shows the Status panel for a stopped agent on a v2 box', async () => {
+  machine.onSharedBox = true;
+  await act(async () => show(<AgentChats agent={STOPPED_ON_CLOUD} />));
+  expect(container.querySelector('section[aria-label="Status"]')).not.toBeNull();
+});
+
+it('leaves the Status panel out when the agent is not on a v2 box (hosted_v2 off, or a v1 machine)', async () => {
+  machine.onSharedBox = false;
+  await act(async () => show(<AgentChats agent={STOPPED_ON_CLOUD} />));
+  expect(container.querySelector('section[aria-label="Status"]')).toBeNull();
 });

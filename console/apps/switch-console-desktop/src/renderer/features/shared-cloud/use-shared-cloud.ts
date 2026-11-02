@@ -24,11 +24,12 @@ function userKey(serverId: string | null): string | null {
  * agents rest and wake on their own.
  */
 export function useSharedCloudAgents(serverId: string | null) {
-  const offered = useFeatureFlags(serverId).hosted_agents;
+  // Hosted agents v2 only (`hosted_v2`): off, nothing is asked and the page is as upstream.
+  const offered = useFeatureFlags(serverId).hosted_v2;
   return useQuery({
     queryKey: [SHARED_CLOUD_AGENTS_KEY, serverId, userKey(serverId)],
     queryFn: () => rpc.switchServers.sharedCloudAgents(serverId!),
-    // Only on a server that offers hosted agents: elsewhere nothing is asked.
+    // Only on a server running hosted agents v2: elsewhere nothing is asked.
     enabled: serverId !== null && offered && !signedOut(serverId),
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
@@ -37,7 +38,7 @@ export function useSharedCloudAgents(serverId: string | null) {
 
 /** The admin's view of the shared cloud, or null when it is not offered or not theirs. */
 export function useSharedCloudOverview(serverId: string | null) {
-  const offered = useFeatureFlags(serverId).hosted_agents;
+  const offered = useFeatureFlags(serverId).hosted_v2;
   return useQuery({
     queryKey: [SHARED_CLOUD_OVERVIEW_KEY, serverId, userKey(serverId)],
     queryFn: () => rpc.switchServers.sharedCloudOverview(serverId!),

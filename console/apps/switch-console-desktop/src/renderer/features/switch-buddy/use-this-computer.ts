@@ -1,16 +1,16 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
-import { hasSharedCloudBox } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
+import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
+import {
+  boxBackends,
+  hasSharedCloudBox,
+} from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { useFeatureFlags, useFeatureFlagsKnown } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import {
-  providerCheckFailed,
-  setUpThisComputer,
-  type ThisComputerSetup,
-} from './this-computer-setup';
+import { openingSetup, setUpThisComputer, type ThisComputerSetup } from './this-computer-setup';
 
 /**
  * This computer as a machine of the workspace, for the buddy to run on.
@@ -47,24 +47,34 @@ function setUp(serverId: string, workspaceId: string, allowEnrol: boolean) {
  * reports once it does.
  *
  * The buddy always runs on the person's own computer, whatever server they
- * chose. Opening a page only reads: a computer that is not yet a machine of
- * the workspace is made one by `allow`, when the person chooses to (B38). It
- * is never enrolled just because a page opened.
+ * chose. With hosted agents v2 on (`hosted_v2`), opening a page only reads: a
+ * computer that is not yet a machine of the workspace is made one by `allow`,
+ * when the person chooses to (B38). With it off, it is enrolled as soon as the
+ * workspace is known, exactly as upstream does. Nothing happens until the
+ * server's flags are known, so a v2 server never enrols on a first guess.
  */
 export function useThisComputer(serverId: string, workspaceId: string) {
-  const hostedAgents = useFeatureFlags(serverId).hosted_agents;
+  // The shared-cloud wording only where Core says hosted agents v2 is on, on a box it names.
+  const hostedV2 = useFeatureFlags(serverId).hosted_v2;
+  const flagsKnown = useFeatureFlagsKnown(serverId);
+  const cloudMachines = useCloudMachines(hostedV2 ? serverId : null);
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
   /** Null until the first read comes back. */
   const [setup, setSetup] = useState<ThisComputerSetup | null>(null);
 
   useEffect(() => {
+    // B38 (ask first) only with hosted agents v2 on; off, enrol straight away, as upstream.
+    const opening = openingSetup(flagsKnown, hostedV2);
+    if (opening === 'wait') return;
     let cancelled = false;
     void (async () => {
       try {
-        const found = await setUp(serverId, workspaceId, false);
+        const found = await setUp(serverId, workspaceId, opening === 'enrol');
         if (cancelled) return;
         setSetup(found);
+        if (found === 'enrolled' && opening === 'enrol')
+          await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
         // Not enrolled: Console's own look at the providers, so the page can
         // say what is signed in without enrolling anything.
         if (found === 'needs-permission') void rpc.embeddedController.precheckProviders();
@@ -76,7 +86,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     return () => {
       cancelled = true;
     };
-  }, [serverId, workspaceId]);
+  }, [serverId, workspaceId, flagsKnown, hostedV2, queryClient]);
 
   /**
    * The person's yes: makes this computer a machine of the workspace. When it
@@ -117,10 +127,7 @@ export function useThisComputer(serverId: string, workspaceId: string) {
   // the page goes by until this computer's controller reports.
   const early = useQuery({
     queryKey: ['provider-precheck'],
-    queryFn: async () => ({
-      providers: await rpc.embeddedController.precheckedProviders(),
-      failed: await rpc.embeddedController.precheckFailed(),
-    }),
+    queryFn: () => rpc.embeddedController.precheckedProviders(),
     enabled: !reported,
     refetchInterval: 1_000,
   });
@@ -130,15 +137,10 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     !setupError && setup === 'needs-permission'
       ? { kind: 'needs-permission' }
       : thisComputerState(setupError, machines.data);
-  const earlyProviders =
-    !reported && early.data?.providers && early.data.providers.length > 0
-      ? early.data.providers
-      : null;
-  /** Console's own check failed and this computer hasn't reported: nothing more is coming to wait for. */
-  const checkFailed = providerCheckFailed(early.data, reported);
+  const earlyProviders = !reported && early.data && early.data.length > 0 ? early.data : null;
   /** The person's agents run on a shared-cloud box: what the ask says about the rest. */
-  const sharedCloud = hasSharedCloudBox(machines.data, hostedAgents);
-  return { state, recheck, earlyProviders, checkFailed, allow, sharedCloud };
+  const sharedCloud = hasSharedCloudBox(machines.data, hostedV2, boxBackends(cloudMachines.data));
+  return { state, recheck, earlyProviders, allow, sharedCloud };
 }
 
 /**

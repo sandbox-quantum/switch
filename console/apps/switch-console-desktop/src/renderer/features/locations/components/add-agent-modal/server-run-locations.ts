@@ -106,63 +106,86 @@ export function machineFor(runLocation: string, machines: OwnedMachine[]): Owned
 /** What a shared-cloud user's box is called here: prod's name for a cloud machine. */
 export const SHARED_CLOUD_LABEL = 'Switch cloud';
 
+/** Each enrolled cloud machine's backend as Core reports it (`vm` or `box`), by its controller id. */
+export type BoxBackends = ReadonlyMap<string, 'vm' | 'box'>;
+
 /**
- * Whether a machine is a box on the shared cloud. Boxes run under gVisor, and
- * their controller reports gVisor's kernel as its system version
- * (`4.19.0-gvisor`), which no laptop or server does. It is what the server
- * already says about every machine, so recognising a box needs no change to
- * Core. A proper machine kind replaces this at Level 3.
+ * The backends Core reports for the owner's cloud machines, keyed by the
+ * controller each enrolled as. Core sends `backend` only with hosted agents
+ * v2 on; a machine with none, or not enrolled yet, is left out, and so is
+ * never a box.
  */
-function isSharedCloudBox(machine: OwnedMachine): boolean {
-  // Not `!cloud`: a box registered as a hosted machine for the idle stop has
-  // its controller re-kinded `ec2`, as Core does for any cloud enrolment, and
-  // is still the person's box. gVisor's kernel is what tells a box apart.
-  return machine.local == null && (machine.osVersion ?? '').toLowerCase().includes('gvisor');
+export function boxBackends(
+  cloudMachines:
+    | readonly { controller_id: string | null; backend?: 'vm' | 'box' }[]
+    | null
+    | undefined
+): BoxBackends {
+  const backends = new Map<string, 'vm' | 'box'>();
+  for (const machine of cloudMachines ?? []) {
+    if (machine.controller_id && machine.backend)
+      backends.set(machine.controller_id, machine.backend);
+  }
+  return backends;
+}
+
+/**
+ * Whether a machine is a box on the shared cloud: only when Core says so, by
+ * its cloud machine's `backend` (switch plan: Core's answer, never a guess).
+ * A machine Core says nothing about is not a box, whatever it runs on.
+ */
+function isSharedCloudBox(machine: OwnedMachine, backends: BoxBackends): boolean {
+  return machine.local == null && backends.get(machine.id) === 'box';
 }
 
 /**
  * The ids of the shared-cloud boxes among the owner's machines; empty while
- * they aren't known, and always empty unless the server offers hosted agents
- * (`hosted_agents`). The gVisor kernel alone is only a hint: someone running
- * their own controller under gVisor must never get the shared-cloud screens.
+ * they aren't known, and always empty unless the server runs hosted agents
+ * v2 (`hosted_v2`, passed as `offered`).
  */
 export function sharedCloudBoxIds(
   machines: OwnedMachine[] | null | undefined,
-  offered: boolean
+  offered: boolean,
+  backends: BoxBackends
 ): Set<string> {
   if (!offered) return new Set();
-  return new Set((machines ?? []).filter(isSharedCloudBox).map((machine) => machine.id));
+  return new Set(
+    (machines ?? [])
+      .filter((machine) => isSharedCloudBox(machine, backends))
+      .map((machine) => machine.id)
+  );
 }
 
-/** Whether the owner has a shared-cloud box, on a server offering hosted agents. */
+/** Whether the owner has a shared-cloud box, on a server running hosted agents v2. */
 export function hasSharedCloudBox(
   machines: OwnedMachine[] | null | undefined,
-  offered: boolean
+  offered: boolean,
+  backends: BoxBackends
 ): boolean {
-  return sharedCloudBoxIds(machines, offered).size > 0;
+  return sharedCloudBoxIds(machines, offered, backends).size > 0;
 }
 
 /**
  * Where a shared-cloud user's new agent goes, by two signals in turn:
  *
  * 1. the one machine their agents already run on, when they have agents;
- * 2. for someone with no agents yet, their one machine reporting gVisor.
+ * 2. for someone with no agents yet, their one machine Core says is a box.
  *
  * Either way the machine must be online and be neither this computer, an SSH
  * host nor a v2 cloud machine. Null otherwise, so the form asks rather than
  * guesses: their agents spread over several machines, the box offline, or
- * more than one gVisor machine. The gVisor string is only a hint, so it
- * never overrides where the user's agents actually run.
+ * more than one box.
  */
 export function sharedCloudMachine(
   machines: OwnedMachine[],
   /** The machines the user's agents are placed on. */
-  agentMachineIds: ReadonlySet<string>
+  agentMachineIds: ReadonlySet<string>,
+  backends: BoxBackends
 ): OwnedMachine | null {
   const eligible = (machine: OwnedMachine | undefined) =>
     !!machine &&
     machine.local == null &&
-    (!machine.cloud || isSharedCloudBox(machine)) &&
+    (!machine.cloud || isSharedCloudBox(machine, backends)) &&
     machine.state === 'online';
   if (agentMachineIds.size > 0) {
     if (agentMachineIds.size !== 1) return null;
@@ -170,7 +193,7 @@ export function sharedCloudMachine(
     const machine = machines.find((candidate) => candidate.id === id);
     return eligible(machine) ? machine! : null;
   }
-  const boxes = machines.filter((machine) => isSharedCloudBox(machine));
+  const boxes = machines.filter((machine) => isSharedCloudBox(machine, backends));
   return boxes.length === 1 && eligible(boxes[0]) ? boxes[0]! : null;
 }
 
@@ -182,7 +205,8 @@ export function sharedCloudMachine(
  */
 export function offlineSharedCloudMachine(
   machines: OwnedMachine[],
-  agentMachineIds: ReadonlySet<string>
+  agentMachineIds: ReadonlySet<string>,
+  backends: BoxBackends
 ): OwnedMachine | null {
   if (agentMachineIds.size !== 1) return null;
   const [id] = agentMachineIds;
@@ -190,7 +214,7 @@ export function offlineSharedCloudMachine(
   if (
     !machine ||
     machine.local != null ||
-    (machine.cloud && !isSharedCloudBox(machine)) ||
+    (machine.cloud && !isSharedCloudBox(machine, backends)) ||
     machine.state === 'online'
   )
     return null;

@@ -58,7 +58,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   const exit = useWizardExit();
   const [settingUp, setSettingUp] = useState(false);
   const thisComputer = useThisComputer(serverId, workspaceId);
-  const { state: computer, earlyProviders, checkFailed, allow, sharedCloud } = thisComputer;
+  const { state: computer, earlyProviders, allow, sharedCloud } = thisComputer;
   const askFirst = computer.kind === 'needs-permission';
   // What this computer's controller reports, or until it does, what Console
   // found checking the providers as onboarding opened.
@@ -169,8 +169,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           </Button>
         ) : (
           <StartChoices
-            checking={computer.kind !== 'failed' && !checked && !checkFailed}
-            checkFailed={checkFailed && !checked}
+            checking={computer.kind !== 'failed' && !checked}
             ready={ready}
             starting={starting}
             ask={askFirst ? { adding, sharedCloud } : null}

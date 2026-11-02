@@ -8,7 +8,6 @@ import {
   useCloudMachineFor,
   useCloudMachines,
 } from '@renderer/features/cloud-agents/use-cloud-agents';
-import { sharedCloudBoxIds } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
@@ -20,7 +19,6 @@ import {
   useMachineLabel,
   useManagedAgents,
   useOnSharedCloudBox,
-  useOwnedMachines,
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { SharedCloudAgentState } from '@renderer/features/shared-cloud/shared-cloud-agent-state';
@@ -94,12 +92,9 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
   // changes the shared machines force: no cloud machine of your own to add,
   // and an agent that is resting or waking says so.
   const shared = useSharedCloudAgents(serverId);
-  const onSharedCloud = Array.isArray(shared.data);
   const sharedById = new Map((shared.data ?? []).map((entry) => [entry.agent_id, entry]));
-  const boxIds = sharedCloudBoxIds(
-    useOwnedMachines(serverId).data,
-    useFeatureFlags(serverId).hosted_agents
-  );
+  // Hosted agents v2 only (`hosted_v2`), and only a machine Core's `backend` says is a box.
+  const v2 = useFeatureFlags(serverId).hosted_v2;
 
   return (
     <ServerPage
@@ -117,7 +112,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
             // A shared-cloud box is the person's own cloud, never a machine to
             // manage: it shows as "Your cloud", with its figures and Repair but
             // no machine controls. On the shared cloud every row is the box.
-            box={onSharedCloud || (!!machine.controller_id && boxIds.has(machine.controller_id))}
+            box={v2 && machine.backend === 'box'}
           />
         ))}
       {shared.error && (

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -42,7 +43,9 @@ export function useCloudMachines(serverId: string | null) {
  * shared cloud this is the person's box, which is how an idle stop is seen.
  */
 export function useCloudMachineFor(agent: ManagedAgentView): CloudMachine | null {
-  const machines = useCloudMachines(agent.serverId);
+  // Hosted agents v2 only: off, an agent's card or row asks for no cloud machines, as upstream.
+  const v2 = useFeatureFlags(agent.serverId).hosted_v2;
+  const machines = useCloudMachines(v2 ? agent.serverId : null);
   const controllerId = agent.machine?.id;
   if (!controllerId) return null;
   return machines.data?.find((machine) => machine.controller_id === controllerId) ?? null;

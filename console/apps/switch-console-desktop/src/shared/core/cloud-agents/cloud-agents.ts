@@ -41,6 +41,9 @@ export const cloudMachineSchema = z.object({
   memory: machineCapacitySchema,
   agents: z.array(z.string()),
   controller_id: z.string().nullable(),
+  // `vm` (v1, an EC2 machine) or `box` (v2, a shared-cloud box), sent by Core only with
+  // hosted agents v2 on. Absent otherwise; a value out of shape reads as absent.
+  backend: z.enum(['vm', 'box']).optional().catch(undefined),
   // V3b: after the owner repaired the box, the providers whose AI login this
   // Console is asked to seal again (names only). Absent from an older server;
   // a value out of shape reads as absent rather than failing the machine list.

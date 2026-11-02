@@ -65,8 +65,6 @@ export const RelativeTime: React.FC<RelativeTimeProps> = ({ value, className, co
     );
   }
 
-  // The suffix already says "ago" (or "in"), so `ago` adds nothing here:
-  // adding it again read "54 seconds agoago".
   const label = formatDistanceToNowStrict(date, { addSuffix: true });
   return (
     <time className={className} dateTime={date.toISOString()}>

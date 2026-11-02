@@ -21,6 +21,9 @@ const mocks = vi.hoisted(() => ({
   readLocalProviderSignIn: vi.fn(),
   logInfo: vi.fn(),
 }));
+// The v1/v2 switch: the repair and its notes are hosted agents v2 only.
+const hosted = vi.hoisted(() => ({ v2: true }));
+vi.mock('@main/core/shared-cloud/hosted-v2', () => ({ hostedV2On: async () => hosted.v2 }));
 
 vi.mock('electron', () => ({ app: { getPath: () => userData } }));
 vi.mock('@main/core/agent-migration/agent-migration', () => ({ agentMigrationService: {} }));
@@ -140,6 +143,7 @@ function boxAsks(machineId: string, controllerId: string, providers = ['codex'])
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hosted.v2 = true;
   mocks.giveMachineLogin.mockResolvedValue({ operationId: 'op-1', revision: 1 });
   mocks.repairController.mockResolvedValue(undefined);
 });
@@ -369,5 +373,42 @@ describe('the re-seal after a repair', () => {
       })
     ).toEqual({ copied: [], asked: [] });
     expect(mocks.fetchManagementControllers).not.toHaveBeenCalled();
+  });
+});
+
+describe('with hosted_v2 off (the v1/v2 switch)', () => {
+  it('refuses a repair before calling Core', async () => {
+    hosted.v2 = false;
+    await expect(
+      managedAgentsController.repairCloud({
+        serverId: 'server-1',
+        machineId: 'm',
+        controllerId: 'c',
+      })
+    ).rejects.toThrow();
+    expect(mocks.listCloudMachines).not.toHaveBeenCalled();
+    expect(mocks.repairController).not.toHaveBeenCalled();
+  });
+
+  it('copies and asks nothing after a repair, without reading the machine', async () => {
+    hosted.v2 = false;
+    expect(
+      await managedAgentsController.resealAfterRepair({ serverId: 'server-1', machineId: 'm' })
+    ).toEqual({ copied: [], asked: [] });
+    expect(mocks.listCloudMachines).not.toHaveBeenCalled();
+  });
+
+  it('gives the login as upstream does, and writes no note of where it came from', async () => {
+    hosted.v2 = false;
+    mocks.fetchManagementControllers.mockResolvedValue([ctl('v1-ctl')]);
+    mocks.readLocalProviderSignIn.mockResolvedValue(codexAuth('acct-v1'));
+    await managedAgentsController.giveMachineLogin({
+      serverId: 'server-1',
+      machineId: 'v1-ctl',
+      provider: 'codex',
+      login: { source: 'this-computer' },
+    });
+    expect(mocks.giveMachineLogin).toHaveBeenCalledTimes(1);
+    expect(await managedAgentsController.loginSources({ controllerId: 'v1-ctl' })).toEqual({});
   });
 });

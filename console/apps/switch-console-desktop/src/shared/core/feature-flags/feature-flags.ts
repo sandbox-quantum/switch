@@ -13,6 +13,9 @@ export const CONSOLE_FEATURE_FLAGS = [
   'ecosystem.show_owners',
   'switch_cloud',
   'hosted_agents',
+  // Hosted agents v2 (shared-cloud boxes): Core's single answer, `hosted_v2`. Off, or
+  // absent from an older server, means Console shows v1 hosted exactly as upstream.
+  'hosted_v2',
   'agent_management',
   'service_connections',
   'agent_chats',

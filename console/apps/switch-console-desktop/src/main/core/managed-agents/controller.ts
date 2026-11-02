@@ -11,6 +11,7 @@ import { app } from 'electron';
 import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
+import { hostedV2On } from '@main/core/shared-cloud/hosted-v2';
 import { MOCK_BOX, sharedCloudMock } from '@main/core/shared-cloud/shared-cloud-client';
 import {
   AgentManagementUnavailableError,
@@ -85,7 +86,6 @@ async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
       cloud: false,
       workspacesDir: null,
       os: 'linux',
-      osVersion: '4.19.0-gvisor',
       local: null,
     },
   ];
@@ -233,15 +233,19 @@ export const managedAgentsController = createRPCController({
         })
       );
       // V3b: remember only which kind of login this was, for a repair's re-seal. A note that can't be
-      // written costs a later ask, never the login just given.
-      await repairNotes
-        .setSource(
-          controller.id,
-          params.provider,
-          sourceRecordFor(params.provider, params.login, login)
-        )
-        .then(() => repairNotes.prune(liveControllerIds(controllers), Date.now(), RESEAL_WINDOW_MS))
-        .catch(() => {});
+      // written costs a later ask, never the login just given. Hosted agents v2 only: off, nothing is
+      // written, as upstream.
+      if (await hostedV2On(server))
+        await repairNotes
+          .setSource(
+            controller.id,
+            params.provider,
+            sourceRecordFor(params.provider, params.login, login)
+          )
+          .then(() =>
+            repairNotes.prune(liveControllerIds(controllers), Date.now(), RESEAL_WINDOW_MS)
+          )
+          .catch(() => {});
       return { operationId };
     }),
 
@@ -257,6 +261,8 @@ export const managedAgentsController = createRPCController({
     controllerId: string;
   }): Promise<void> =>
     withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      // Hosted agents v2 only: off, there is no box to repair.
+      if (!(await hostedV2On(server))) throw new Error(repairRefusal(404, null));
       // The press is tied to its machine (security): the owner's own summary must name this
       // controller for this machine, or a mismatch could copy one machine's login kind to another.
       const machine = (await listCloudMachines(server).catch(() => null))?.find(
@@ -320,6 +326,8 @@ export const managedAgentsController = createRPCController({
    */
   resealAfterRepair: (params: { serverId: string; machineId: string }): Promise<ResealResult> =>
     withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      // Hosted agents v2 only: off, nothing is copied or asked.
+      if (!(await hostedV2On(server))) return { copied: [], asked: [] };
       const machine = (await listCloudMachines(server))?.find(
         (candidate) => candidate.machine_id === params.machineId
       );

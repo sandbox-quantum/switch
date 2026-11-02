@@ -92,16 +92,16 @@ export function CloudMachineCard({
           )}
         </div>
       )}
-      {cloud.resting ? (
+      {/* Your cloud's figures and Repair (hosted agents v2): only on a v2 box, so a v1
+          cloud machine's card stays as upstream. */}
+      {!box ? null : cloud.resting ? (
         <div className="mt-2 text-xs text-foreground-muted">
           <span className="font-medium text-foreground">{cloud.heading}</span> · {cloud.line}
         </div>
       ) : (
         (cloud.room || cloud.awake || cloud.aiCalls) && (
           <div className="mt-2 max-w-[360px] space-y-1">
-            <p className="text-xs font-medium">
-              {box ? cloud.heading : `Your cloud: ${cloud.heading}`}
-            </p>
+            <p className="text-xs font-medium">{cloud.heading}</p>
             {cloud.room && (
               <>
                 <Progress value={cloud.room.usedPercent} aria-label="Room to work" />
@@ -119,7 +119,7 @@ export function CloudMachineCard({
           </div>
         )
       )}
-      <RepairCloud machine={machine} serverId={serverId} />
+      {box && <RepairCloud machine={machine} serverId={serverId} />}
       {shown.problem && (
         <p role="alert" className="mt-2 text-xs text-destructive">
           {shown.problem}

@@ -1,6 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { sharedCloudBoxIds } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
+import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
+import {
+  boxBackends,
+  sharedCloudBoxIds,
+} from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { serverAvailability } from '@renderer/features/switch-servers/server-availability';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -154,8 +158,13 @@ export function useOwnedMachines(serverId: string) {
  */
 export function useOnSharedCloudBox(agent: ManagedAgentView): boolean {
   const machines = useOwnedMachines(agent.serverId);
-  const offered = useFeatureFlags(agent.serverId).hosted_agents;
-  return agent.machine !== null && sharedCloudBoxIds(machines.data, offered).has(agent.machine.id);
+  // Only where Core says hosted agents v2 is on, and its backend says box; off, as upstream.
+  const v2 = useFeatureFlags(agent.serverId).hosted_v2;
+  const cloudMachines = useCloudMachines(v2 ? agent.serverId : null);
+  return (
+    agent.machine !== null &&
+    sharedCloudBoxIds(machines.data, v2, boxBackends(cloudMachines.data)).has(agent.machine.id)
+  );
 }
 
 /** Whether the agent's machine is this computer, as its owner's machine list says. */

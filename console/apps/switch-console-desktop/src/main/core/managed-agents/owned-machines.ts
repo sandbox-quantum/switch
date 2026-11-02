@@ -54,7 +54,6 @@ export function ownedMachines(
         cloud: isCloudMachine(controller),
         workspacesDir: controller.workspacesDir,
         os: controller.os,
-        osVersion: controller.osVersion,
         local:
           controller.id === local.thisComputer
             ? { kind: 'this-computer' }

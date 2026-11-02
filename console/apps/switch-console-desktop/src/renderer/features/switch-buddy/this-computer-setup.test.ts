@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  providerCheckFailed,
-  setUpThisComputer,
-  type ThisComputerApi,
-} from './this-computer-setup';
+import { openingSetup, setUpThisComputer, type ThisComputerApi } from './this-computer-setup';
 
 function api(overview: Awaited<ReturnType<ThisComputerApi['getOverview']>>) {
   return {
@@ -53,15 +49,18 @@ describe('setting this computer up for switch-buddy', () => {
   });
 });
 
-// B38 follow-up: a failed provider check left Meet switch-buddy on "Checking
-// AI providers…" with no Not now.
-describe('a failed provider check', () => {
-  it('stops the wait only when the check failed with nothing found and nothing reported', () => {
-    expect(providerCheckFailed({ providers: [], failed: true }, false)).toBe(true);
-    expect(providerCheckFailed({ providers: null, failed: true }, false)).toBe(true);
-    expect(providerCheckFailed({ providers: [], failed: false }, false)).toBe(false); // still checking
-    expect(providerCheckFailed(undefined, false)).toBe(false); // not read yet
-    expect(providerCheckFailed({ providers: [], failed: true }, true)).toBe(false); // the controller reported
-    expect(providerCheckFailed({ providers: [{}], failed: true }, false)).toBe(false); // what it found counts
+// The v1/v2 switch: B38's ask-first opening only with hosted agents v2 on.
+describe('openingSetup', () => {
+  it("waits until the server's flags are known, so a v2 server never enrols on a first guess", () => {
+    expect(openingSetup(false, false)).toBe('wait');
+    expect(openingSetup(false, true)).toBe('wait');
+  });
+
+  it('only reads, asking before enrolling, with hosted_v2 on (B38)', () => {
+    expect(openingSetup(true, true)).toBe('read');
+  });
+
+  it('enrols straight away with hosted_v2 off, exactly as upstream', () => {
+    expect(openingSetup(true, false)).toBe('enrol');
   });
 });

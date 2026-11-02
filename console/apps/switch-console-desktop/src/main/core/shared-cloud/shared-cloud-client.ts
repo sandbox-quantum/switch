@@ -1,9 +1,9 @@
-import { app } from 'electron';
 import {
   fetchManagedAgents,
   GatewayError,
   gatewayFetch,
 } from '@main/core/switch-servers/gateway-client';
+import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import {
   type SharedCloudAgent,
   sharedCloudAgentsResponseSchema,
@@ -11,23 +11,10 @@ import {
   sharedCloudOverviewSchema,
 } from '@shared/core/shared-cloud/shared-cloud';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { hostedV2On } from './hosted-v2';
+import { type MockMode, sharedCloudMock } from './mock-mode';
 
-type MockMode = 'workspace_admin' | 'operator' | 'unreachable';
-
-/**
- * Sample data for building the v3 screens before the server has the
- * endpoints. Only in a development run, and only when asked for with
- * `SWITCH_CONSOLE_V3_MOCK`: `1` (or `operator`) for a Switch operator,
- * `unreachable` for figures the server can't read, and `workspace_admin` for
- * the parked workspace-admin view. A packaged build never shows it.
- */
-export function sharedCloudMock(): MockMode | null {
-  if (app.isPackaged) return null;
-  const asked = process.env.SWITCH_CONSOLE_V3_MOCK;
-  if (asked === '1' || asked === 'operator') return 'operator';
-  if (asked === 'workspace_admin' || asked === 'unreachable') return asked;
-  return null;
-}
+export { type MockMode, sharedCloudMock } from './mock-mode';
 
 function isNotFound(error: unknown): boolean {
   return error instanceof GatewayError && error.kind === 'http' && error.status === 404;
@@ -42,6 +29,8 @@ export async function listSharedCloudAgents(
   server: SwitchServer
 ): Promise<SharedCloudAgent[] | null> {
   if (sharedCloudMock()) return mockAgents(server);
+  // Hosted agents v2 only: off, nothing is asked of `/shared-cloud/*` (upstream has none).
+  if (!(await hostedV2On(server))) return null;
   let response: Response;
   try {
     response = await gatewayFetch(server, '/shared-cloud/agents', { authenticated: true });
@@ -64,6 +53,7 @@ export async function fetchSharedCloudOverview(
   const mock = sharedCloudMock();
   // Checked like a real answer, so the mock can't drift from the shape.
   if (mock) return sharedCloudOverviewSchema.parse(mockOverview(mock));
+  if (!(await hostedV2On(server))) return null;
   let response: Response;
   try {
     response = await gatewayFetch(server, '/shared-cloud/overview', { authenticated: true });
@@ -240,6 +230,34 @@ export const MOCK_BOX = {
   kind: 'daemon',
   state: 'online' as const,
 };
+
+/**
+ * The mock box as the owner's cloud machine list shows it: Core's `backend: "box"`
+ * is what makes it a box, as for a real one (dev only, with the mock on).
+ */
+export function mockCloudMachine(): CloudMachine {
+  return {
+    machine_id: 'mock-shared-cloud-machine',
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    revision: 1,
+    instance_type: null,
+    error: null,
+    error_code: null,
+    retain_until: null,
+    heartbeat_at: null,
+    disk: null,
+    memory: null,
+    agents: [],
+    controller_id: MOCK_BOX.id,
+    backend: 'box',
+    room: { used_bytes: 2 * 1024 ** 3, total_bytes: 8 * 1024 ** 3 },
+    awake: { running: 1, max: 4 },
+    ai_calls_today: null,
+  };
+}
 
 /** Refuses anything that would change the server while the mock is on. */
 export function refuseWhileMocked(what: string): void {

@@ -38,15 +38,12 @@ export async function setUpThisComputer(
 }
 
 /**
- * Whether Console's own check of the providers failed with nothing found, while
- * this computer's controller hasn't reported either: the page stops showing
- * "Checking…" and still offers Not now (B38 follow-up). Providers it did find
- * still count, so a check that failed part-way is used as far as it got.
+ * What opening a page does about this computer, by the server's flags:
+ * `wait` until they are known (so a v2 server never enrols on a first guess);
+ * with hosted agents v2 on, `read` only and ask before enrolling (B38); with it
+ * off, `enrol` straight away, exactly as upstream does.
  */
-export function providerCheckFailed(
-  early: { providers: unknown[] | null; failed: boolean } | undefined,
-  reported: boolean
-): boolean {
-  if (reported || !early) return false;
-  return early.failed && !(early.providers && early.providers.length > 0);
+export function openingSetup(flagsKnown: boolean, hostedV2: boolean): 'wait' | 'read' | 'enrol' {
+  if (!flagsKnown) return 'wait';
+  return hostedV2 ? 'read' : 'enrol';
 }
