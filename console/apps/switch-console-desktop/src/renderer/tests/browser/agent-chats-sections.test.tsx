@@ -1,5 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, type ReactNode } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -12,7 +11,7 @@ const rooms = vi.hoisted(() => ({
   list: [] as RemoteAgentRoom[],
   bridges: {} as Record<string, string>,
 }));
-const machine = vi.hoisted(() => ({ thisComputer: false, onSharedBox: false }));
+const machine = vi.hoisted(() => ({ thisComputer: false }));
 
 /** Stands in for the app's navigation: the agent column picks a section by setting params. */
 const navigation = vi.hoisted(() => {
@@ -72,7 +71,6 @@ vi.mock('@renderer/features/switch-rooms/room-configuration-panel', () => ({
 vi.mock('@renderer/features/managed-agents/use-managed-agents', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useRunsOnThisComputer: () => machine.thisComputer,
-  useOnSharedCloudBox: () => machine.onSharedBox,
 }));
 vi.mock('@renderer/features/managed-agents/agent-connections-tab', () => ({
   useAgentServiceGrants: () => grants,
@@ -138,19 +136,12 @@ const AGENT: ManagedAgentView = {
 let container: HTMLDivElement;
 let root: Root;
 
-/** Renders inside a query client, as the app does: the Status panel's Restart (V2) uses one. */
-function show(element: ReactNode): void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  root.render(<QueryClientProvider client={client}>{element}</QueryClientProvider>);
-}
-
 beforeEach(() => {
   flags.service_connections = true;
   grants.data = { grants: [], addressing_open: false };
   rooms.list = [];
   rooms.bridges = {};
   machine.thisComputer = false;
-  machine.onSharedBox = false;
   navigation.reset({ serverId: 'server-1', agentId: 'agent-1', name: 'pm-agent' });
   container = document.createElement('div');
   container.style.width = '1100px';
@@ -173,7 +164,7 @@ const navItem = (label: string) =>
   navButtons().find((button) => button.getAttribute('aria-label') === label)!;
 
 it("puts Connectors under the agent's profile, before Agent settings, and opens it there", async () => {
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Connectors', 'Agent settings']);
   expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('false');
 
@@ -194,7 +185,7 @@ it("puts Connectors under the agent's profile, before Agent settings, and opens 
 
 it("shows the agent's name and where it runs at the top of its column", async () => {
   await act(async () =>
-    show(
+    root.render(
       <AgentChats
         agent={{
           ...AGENT,
@@ -211,7 +202,7 @@ it("shows the agent's name and where it runs at the top of its column", async ()
 it('calls the machine "This computer" when the agent runs here, keeping its name on hover', async () => {
   machine.thisComputer = true;
   await act(async () =>
-    show(
+    root.render(
       <AgentChats
         agent={{
           ...AGENT,
@@ -233,14 +224,14 @@ it('calls the machine "This computer" when the agent runs here, keeping its name
 });
 
 it('says so when the agent has no machine', async () => {
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(container.textContent).toContain('No machine');
 });
 
 it("leaves Connections out for an agent whose grants aren't yours, keeping service access in settings", async () => {
   grants.data = null;
   navigation.reset({ ...navigation.params(), section: 'connections' });
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Agent settings']);
   expect(container.querySelector('[data-testid="connections"]')).toBeNull();
 
@@ -252,7 +243,7 @@ it("leaves Connections out for an agent whose grants aren't yours, keeping servi
 
 it('leaves Connections out when the server has service connections off', async () => {
   flags.service_connections = false;
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Agent settings']);
 });
 
@@ -274,7 +265,7 @@ it('opens a room in the right pane as the room view draws it, keeping its row se
   rooms.list = [room('room-1', 'design'), room('room-2', 'launch')];
   rooms.bridges = { 'room-1': 'mattermost', 'room-2': 'mattermost' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
 
   const pane = embeddedRoom()!;
   expect(pane).not.toBeNull();
@@ -300,7 +291,7 @@ it('lets the room go when a section is picked or the page is left', async () => 
   rooms.list = [room('room-1', 'design')];
   rooms.bridges = { 'room-1': 'mattermost' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(roomEmbedSlotStore.slot?.roomId).toBe('room-1');
 
   await act(async () => navItem('Agent settings').click());
@@ -321,7 +312,7 @@ it("opens a room whose platform can't be drawn here on its settings", async () =
   rooms.list = [room('room-1', 'design'), room('room-2', 'agents-only')];
   rooms.bridges = { 'room-1': 'slack' };
   navigation.reset({ ...navigation.params(), room: 'room-1' });
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(embeddedRoom()?.textContent).toBe('Settings of room-1');
 
   await act(async () => roomRow('agents-only').click());
@@ -367,7 +358,7 @@ it('follows the open direct chat into its room when it becomes a group, not an o
       name: 'pm-agent',
       roomId: 'current',
     });
-    await act(async () => show(<AgentChats agent={AGENT} />));
+    await act(async () => root.render(<AgentChats agent={AGENT} />));
     expect(navigate).not.toHaveBeenCalled();
 
     // Someone adds a person: the open chat is now a group.
@@ -441,7 +432,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
       JSON.stringify({ text: 'half a thought', mentions: [] })
     );
     navigation.reset({ serverId: 'server-1', agentId: 'agent-3', name: 'pm-agent' });
-    await act(async () => show(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
+    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
     const row = container.querySelector<HTMLElement>('[aria-label="Open chat New Chat"]');
     expect(row).not.toBeNull();
     await act(async () => row!.click());
@@ -453,7 +444,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
     localStorage.removeItem(chatDraftKey({ ...scope, roomId: 'unsaved-chat:kept-request' }));
     navigation.reset({ serverId: 'server-1', agentId: 'agent-2', name: 'pm-agent' });
     localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!, 'emptied');
-    await act(async () => show(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
+    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
     expect(container.querySelector('[aria-label="Open chat New Chat"]')).toBeNull();
     expect(localStorage.getItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!)).toBeNull();
   } finally {
@@ -523,7 +514,7 @@ it('reopens the created chat whose first send failed, open before a reload, besi
       name: 'pm-agent',
       roomId: 'made',
     });
-    await act(async () => show(<AgentChats agent={agent} />));
+    await act(async () => root.render(<AgentChats agent={agent} />));
     expect(navigation.params().roomId).toBe('made');
     expect(openAgentChat(agent, 'made')?.roomId).toBe('made');
     expect(activeRows()).toEqual(['New Chat']);
@@ -562,7 +553,7 @@ it('reopens the unsent New chat that was open before a reload, not the newest ch
       chatsStore.serverId = 'server-1';
     });
     chatsStore.upsert(directChat('agent-4', 'newest', 'Newest', 5));
-    await act(async () => show(<AgentChats agent={agent} />));
+    await act(async () => root.render(<AgentChats agent={agent} />));
     expect(directChats.unsavedChat(roomId)).toBeDefined();
     expect(navigation.params().roomId).toBe(roomId);
     expect(openAgentChat(agent, roomId)).toBeNull();
@@ -582,7 +573,7 @@ it('reopens the unsent New chat that was open before a reload, not the newest ch
 it('offers a new room or an existing one from the Rooms section, with the agent picked', async () => {
   const { showModal } = await import('@renderer/lib/modal/modal-provider');
   vi.mocked(showModal).mockClear();
-  await act(async () => show(<AgentChats agent={AGENT} />));
+  await act(async () => root.render(<AgentChats agent={AGENT} />));
   const add = container.querySelector<HTMLButtonElement>('[aria-label="Add to a room"]')!;
   await act(async () => add.click());
   const items = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
@@ -599,23 +590,4 @@ it('offers a new room or an existing one from the Rooms section, with the agent 
     switchAgentId: 'agent-1',
     agentName: 'pm-agent',
   });
-});
-
-// The v1/v2 switch: the Status panel shows only on a v2 box (hosted_v2 on, Core's backend `box`).
-const STOPPED_ON_CLOUD: ManagedAgentView = {
-  ...AGENT,
-  machine: { id: 'machine-1', name: 'Switch cloud', kind: 'ec2', state: 'online' },
-  stopReason: { code: 'login_needed', since: '2026-11-02T08:00:00Z', resetAt: null },
-};
-
-it('shows the Status panel for a stopped agent on a v2 box', async () => {
-  machine.onSharedBox = true;
-  await act(async () => show(<AgentChats agent={STOPPED_ON_CLOUD} />));
-  expect(container.querySelector('section[aria-label="Status"]')).not.toBeNull();
-});
-
-it('leaves the Status panel out when the agent is not on a v2 box (hosted_v2 off, or a v1 machine)', async () => {
-  machine.onSharedBox = false;
-  await act(async () => show(<AgentChats agent={STOPPED_ON_CLOUD} />));
-  expect(container.querySelector('section[aria-label="Status"]')).toBeNull();
 });

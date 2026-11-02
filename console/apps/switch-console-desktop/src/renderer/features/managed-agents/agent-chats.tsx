@@ -34,12 +34,11 @@ import {
   shownAgentRoom,
   shownAgentSection,
 } from './agent-sections';
-import { AgentStatusPanel } from './agent-status-panel';
+import { AgentStatus } from './agent-status';
 import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
-import { useManagedAgentActions } from './use-managed-agent-actions';
-import { useOnSharedCloudBox, useRunsOnThisComputer } from './use-managed-agents';
+import { useRunsOnThisComputer } from './use-managed-agents';
 
 /**
  * The sections the agent's page offers, and the one showing: `chosen` from
@@ -184,14 +183,6 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
   const thisComputer = useRunsOnThisComputer(agent);
-  // Hosted agents v2 only: on a box, where Core says v2 is on (switch plan).
-  const onSharedBox = useOnSharedCloudBox(agent);
-  // Visibility V2: Restart agent in the Status panel is turning it off and on again, as Your Agents does (B48).
-  const { busy: restarting, setDesiredState } = useManagedAgentActions(agent);
-  const restart = async () => {
-    await setDesiredState('stopped');
-    await setDesiredState('running');
-  };
   const shownRoom = openAgentRoom(agent, params.room, section);
   // The unsaved chat open before a reload is kept, but not in memory yet: it opens again.
   const restoring =
@@ -242,15 +233,8 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           selected={section}
           onSelect={(chosen) => setParams({ section: chosen })}
         />
-        {/* Why it stopped (visibility V2): on a v2 box only, as the cards are. */}
-        {onSharedBox && agent.stopReason && agent.machine && isCloudMachine(agent.machine) && (
-          <AgentStatusPanel
-            reason={agent.stopReason}
-            now={new Date()}
-            onRestart={() => void restart()}
-            restarting={restarting}
-          />
-        )}
+        {/* Why it stopped (visibility V2): hosted agents v2 only, on a v2 box, as the cards are. */}
+        <AgentStatus agent={agent} />
         <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
           {ownServer && chatsStore.listError && (
             <div
