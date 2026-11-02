@@ -96,6 +96,16 @@ version of their own to them without also giving them a release of their own.
   the agent's binding to it. The socket's first frame offers calls
   (`calls.max_in_flight`, 64); a call over that is answered 429
   `capacity_exceeded` without running, so the controller sends it over HTTP.
+- **A room can show what each tool call was given and gave back.** A room's
+  owner or a workspace admin can switch on tool detail for the room
+  (`PATCH /rooms/{id}` with `tool_detail`); it is off in every room until they
+  do. While it is on, a tool call's card in Slack can be expanded to a
+  redacted preview of its input and output, and Mattermost's and Discord's
+  activity view show the same preview on the call's line. Teams and Telegram
+  show none. The server keeps a preview only while the room's switch is on as
+  the call is reported, and serves none while it is off, including previews it
+  kept earlier, so a session host can never publish one into a room that has
+  it off. Messages already posted are not edited when the switch goes off.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
@@ -2343,6 +2353,16 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Each tool call's activity row carries a redacted preview of its input and
+  output,** for Switch to show in a room that has tool detail on. Secrets are
+  masked by the patterns Switch Console's log uses, the password in a
+  connection string, the exact tokens the session holds, and the credentials
+  the host gives the agent and its MCP servers; a long output's kept head and
+  tail are masked separately, with the line each cut ran through dropped and a
+  private key split by a cut masked to it. The preview is at most 2,000
+  characters, 500 of them for the input, with a note at each cut. A server that
+  predates the field refuses the row, which is sent again without it. The
+  session's own events, journal and snapshot still carry no tool output.
 - **Replace a messaging app's token without disconnecting it.** When a bot
   token is rotated or leaked, a workspace admin can paste the new one from the
   connection's menu on the server page. The connection restarts with it and
@@ -4756,6 +4776,16 @@ published on its own.
 ### [Unreleased]
 
 #### Added
+- **Each tool call's activity row carries a redacted preview of its input and
+  output,** for Switch to show in a room that has tool detail on. Secrets are
+  masked by the patterns Switch Console's log uses, the password in a
+  connection string, the exact tokens the session holds, and the credentials
+  the host gives the agent and its MCP servers; a long output's kept head and
+  tail are masked separately, with the line each cut ran through dropped and a
+  private key split by a cut masked to it. The preview is at most 2,000
+  characters, 500 of them for the input, with a note at each cut. A server that
+  predates the field refuses the row, which is sent again without it. The
+  session's own events, journal and snapshot still carry no tool output.
 - Serves the session-side half of service grants: granted skills in each
   session, the GitHub credential helper and `gh` wrapper, and scrubbing of
   issued tokens, as Switch Console does.
