@@ -7,8 +7,11 @@ import {
   type RemoteAgentRoom,
   type RemoteRoomSummary,
   type RetireOutcome,
+  type RoomVisibility,
 } from '@shared/core/switch-servers/switch-servers';
+import { administersWorkspace } from '@shared/core/workspaces/workspaces';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
+import { type RoomPermissions, roomPermissionsFor } from './room-permissions';
 import { serverAvailability } from './server-availability';
 import { switchServersStore } from './switch-servers-store';
 
@@ -231,20 +234,32 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * Whether the signed-in user may delete a room: they own it, or they are an
-   * admin on the server hosting its workspace.
+   * What the signed-in user may do with a room, by the gateway's own rules:
+   * its owner and the workspace's admins manage it — delete it, change who may
+   * see it, name it after its channel — and anyone may also write to a room
+   * whose write access is public.
    *
-   * This mirrors the gateway's own rule so the action is not offered where it
-   * would only be refused. It is not the check that protects anything — the
-   * server's is — and where ownership is unknown the answer is no, since
-   * showing a delete that fails is worse than not showing one.
+   * This mirrors the server so actions are not offered where they would only be
+   * refused. It is not the check that protects anything — the server's is — and
+   * where the viewer is unknown the answer is no, since showing an action that
+   * fails is worse than not showing one.
    */
-  canDeleteRoom(workspaceId: string, room: RemoteRoomSummary): boolean {
+  roomPermissions(
+    workspaceId: string,
+    room: { ownerId: string | null; writeVisibility?: RoomVisibility }
+  ): RoomPermissions {
     const serverId = workspacesStore.serverIdFor(workspaceId);
-    if (!serverId) return false;
-    const user = switchServersStore.statusFor(serverId)?.user ?? null;
-    if (!user) return false;
-    return room.ownerId === user.id || user.role === 'admin';
+    const user = serverId ? (switchServersStore.statusFor(serverId)?.user ?? null) : null;
+    const workspace = workspacesStore.workspaces.find((each) => each.id === workspaceId) ?? null;
+    return roomPermissionsFor(room, {
+      userId: user?.id ?? null,
+      isAdmin: user?.role === 'admin' || (workspace !== null && administersWorkspace(workspace)),
+    });
+  }
+
+  /** Whether the signed-in user may delete a room (see `roomPermissions`). */
+  canDeleteRoom(workspaceId: string, room: RemoteRoomSummary): boolean {
+    return this.roomPermissions(workspaceId, room).canManage;
   }
 
   /**
