@@ -7,8 +7,11 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import aiohttp
 import discord
 import pytest
+from mattermostdriver.exceptions import ResourceNotFound
+from slack_sdk.errors import SlackApiError
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -57,6 +60,12 @@ class _SlackClient:
         self._users = users
 
     async def users_info(self, *, user: str) -> dict[str, object]:
+        if user == "U0DOWN":
+            raise aiohttp.ClientConnectionError("connection reset")
+        if user not in self._users:
+            raise SlackApiError(
+                "user_not_found", {"ok": False, "error": "user_not_found"}
+            )
         return {"user": self._users[user]}
 
 
@@ -85,6 +94,16 @@ def test_a_slack_person_is_linkable_when_asked() -> None:
     assert _run(adapter.account_unlinkable_reason("U0ADA")) is None
 
 
+def test_a_slack_account_slack_does_not_know_is_not_found() -> None:
+    with pytest.raises(LookupError):
+        _run(_slack({}).account_unlinkable_reason("U0TYPO"))
+
+
+def test_slack_out_of_reach_is_a_runtime_error() -> None:
+    with pytest.raises(RuntimeError):
+        _run(_slack({}).account_unlinkable_reason("U0DOWN"))
+
+
 def test_a_slack_bot_id_is_refused_without_asking() -> None:
     adapter = _slack({})
     assert _run(adapter.account_unlinkable_reason("B0123ABCD")) is not None
@@ -95,6 +114,8 @@ class _MattermostUsers:
         self._users = users
 
     def get_user(self, user_id: str) -> dict[str, object]:
+        if user_id not in self._users:
+            raise ResourceNotFound("Unable to find the user.")
         return self._users[user_id]
 
 
@@ -111,6 +132,11 @@ def _mattermost(users: dict[str, dict[str, object]]) -> MattermostAdapter:
 def test_a_mattermost_bot_is_refused() -> None:
     adapter = _mattermost({"bot1": {"id": "bot1", "is_bot": True}})
     assert _run(adapter.account_unlinkable_reason("bot1")) is not None
+
+
+def test_a_mattermost_account_the_server_does_not_know_is_not_found() -> None:
+    with pytest.raises(LookupError):
+        _run(_mattermost({}).account_unlinkable_reason("typo"))
 
 
 def test_a_mattermost_person_is_linkable_when_asked() -> None:

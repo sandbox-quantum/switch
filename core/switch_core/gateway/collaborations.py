@@ -1065,6 +1065,8 @@ async def _unlinkable_reason(
         )
     try:
         return await adapter.account_unlinkable_reason(external_user_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -1194,7 +1196,11 @@ async def _drop_older_link(
     claim = await external_user_store.get_claim(session, external_user.id, user_id)
     if claim is None or claim.verified_at is not None:
         return False
-    await external_user_store.release(session, external_user, user_id)
+    try:
+        await external_user_store.release(session, external_user, user_id)
+    except NoSuchLink:
+        # Unlinked another way since it was read, which is the outcome wanted.
+        return False
     await record_audit_event(
         session,
         tenant_id=external_user.tenant_id,
@@ -1260,6 +1266,25 @@ async def verify_identity_with_session(
         raise HTTPException(
             status_code=403,
             detail="That session token belongs to a different account",
+        )
+    # A session proves who holds the account, not that one person does: a
+    # bot's token is as good a proof as a person's, and its account is one
+    # whoever runs it posts as. Such a link can never count, so it goes.
+    unlinkable = await _unlinkable_reason(
+        collab_lifecycle, bridge_id, external_user.external_user_id
+    )
+    if unlinkable is not None:
+        try:
+            await external_user_store.cancel_link_request(
+                session, external_user, caller_id
+            )
+        except NoSuchLink:
+            pass
+        else:
+            await session.commit()
+        raise HTTPException(
+            status_code=409,
+            detail=f"This account cannot be linked to anyone. {unlinkable}",
         )
 
     request = await external_user_store.lock_link_request(

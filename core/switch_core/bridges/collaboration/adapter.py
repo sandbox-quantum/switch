@@ -902,7 +902,8 @@ class PlatformAdapter(ABC):
         A bot or an integration's account is one whoever runs it posts as, so
         linking it would recognise all of them as one Switch user. Some
         platforms say so in the id (`unlinkable_account_reason`); others only
-        when asked. Raise `RuntimeError` when the platform cannot be asked.
+        when asked. Raise `LookupError` when the platform has no such account,
+        and `RuntimeError` when it cannot be asked.
         """
         return self.unlinkable_account_reason(external_user_id)
 

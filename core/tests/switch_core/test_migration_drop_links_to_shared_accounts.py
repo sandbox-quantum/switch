@@ -66,7 +66,7 @@ _ACCOUNTS = [
 ]
 
 
-async def test_only_claims_on_shared_accounts_are_deleted(postgres_url: str) -> None:
+async def test_only_links_to_shared_accounts_are_deleted(postgres_url: str) -> None:
     admin = create_async_engine(postgres_url, isolation_level="AUTOCOMMIT")
     async with admin.connect() as connection:
         await connection.execute(text(f'DROP DATABASE IF EXISTS "{_MIGRATION_DB}"'))
@@ -79,8 +79,9 @@ async def test_only_claims_on_shared_accounts_are_deleted(postgres_url: str) -> 
         async with engine.begin() as connection:
             await connection.execute(
                 text(
-                    "INSERT INTO users (id, name, email, role) "
-                    "VALUES ('u1', 'ada', 'ada@example.invalid', 'user')"
+                    "INSERT INTO users (id, name, email, role) VALUES "
+                    "('u1', 'ada', 'ada@example.invalid', 'user'), "
+                    "('u2', 'bob', 'bob@example.invalid', 'user')"
                 )
             )
             for index, (bridge_type, external_id, _keep) in enumerate(_ACCOUNTS):
@@ -124,21 +125,37 @@ async def test_only_claims_on_shared_accounts_are_deleted(postgres_url: str) -> 
                     ),
                     params,
                 )
+                # And a link to it waiting for its code, as an admin's
+                # "require confirmation" leaves one.
+                await connection.execute(
+                    text(
+                        "INSERT INTO external_user_link_requests (tenant_id, "
+                        "external_user_id, user_id) VALUES (:t, 'e' || :i, 'u2')"
+                    ),
+                    params,
+                )
 
         async with engine.begin() as connection:
             await connection.run_sync(_migrate(_MIGRATION_UNDER_TEST))
 
         async with engine.begin() as connection:
-            kept = set(
+            claims = set(
                 (
                     await connection.execute(
                         text("SELECT external_user_id FROM external_user_claims")
                     )
                 ).scalars()
             )
-        assert kept == {
-            f"e{index}" for index, (_t, _e, keep) in enumerate(_ACCOUNTS) if keep
-        }
+            requests = set(
+                (
+                    await connection.execute(
+                        text("SELECT external_user_id FROM external_user_link_requests")
+                    )
+                ).scalars()
+            )
+        kept = {f"e{index}" for index, (_t, _e, keep) in enumerate(_ACCOUNTS) if keep}
+        assert claims == kept
+        assert requests == kept
     finally:
         await engine.dispose()
         async with admin.connect() as connection:

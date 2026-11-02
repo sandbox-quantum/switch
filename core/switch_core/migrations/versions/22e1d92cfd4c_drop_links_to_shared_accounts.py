@@ -6,7 +6,10 @@ that from now on cannot be linked to anyone: Telegram's stand-ins for anonymous
 group admins, for posts made as a channel and for its own service account, and
 Slack's app and bot ids. Each recognises everyone posting as that account as
 the claimant, and none could ever be confirmed, so this revision deletes them
-rather than leave them counting.
+rather than leave them counting. It deletes any link to one of them still
+waiting for its code as well (an admin's "require confirmation" makes one of
+an older link): none of those could be confirmed either, and a code issued
+for one before this revision would otherwise go on working until it expired.
 
 The ids are copied from the adapters as they stood (the Telegram and Slack
 `unlinkable_account_reason`), not imported, so a later edit to an adapter
@@ -34,23 +37,33 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
 
-PURGE_SHARED_ACCOUNT_CLAIMS = """
-DELETE FROM external_user_claims AS claim
-USING external_users AS account, collaboration_bridges AS bridge
-WHERE claim.external_user_id = account.id
-  AND account.bridge_id = bridge.id
-  AND claim.verified_at IS NULL
-  AND (
-    (bridge.type = 'telegram'
-     AND account.external_user_id IN ('1087968824', '136817688', '777000'))
-    OR (bridge.type = 'slack'
-        AND (account.external_user_id = 'USLACKBOT'
-             OR account.external_user_id ~ '^B[A-Z0-9]+$'))
-  )
+# The accounts many people post as, by the id alone.
+SHARED_ACCOUNTS = """
+SELECT account.id
+FROM external_users AS account
+JOIN collaboration_bridges AS bridge ON bridge.id = account.bridge_id
+WHERE (bridge.type = 'telegram'
+       AND account.external_user_id IN ('1087968824', '136817688', '777000'))
+   OR (bridge.type = 'slack'
+       AND (account.external_user_id = 'USLACKBOT'
+            OR account.external_user_id ~ '^B[A-Z0-9]+$'))
+"""
+
+# Requests first, the order a confirmation takes the two tables in.
+PURGE_SHARED_ACCOUNT_REQUESTS = f"""
+DELETE FROM external_user_link_requests
+WHERE external_user_id IN ({SHARED_ACCOUNTS})
+"""
+
+PURGE_SHARED_ACCOUNT_CLAIMS = f"""
+DELETE FROM external_user_claims
+WHERE verified_at IS NULL
+  AND external_user_id IN ({SHARED_ACCOUNTS})
 """
 
 
 def upgrade() -> None:
+    op.execute(PURGE_SHARED_ACCOUNT_REQUESTS)
     op.execute(PURGE_SHARED_ACCOUNT_CLAIMS)
 
 

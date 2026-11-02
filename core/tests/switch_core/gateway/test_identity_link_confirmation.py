@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -30,10 +31,15 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
-from switch_core.db.stores.external_user_store import CodeNotAccepted, ExternalUserStore
+from switch_core.db.stores.external_user_store import (
+    CodeNotAccepted,
+    ExternalUserStore,
+    NoSuchLink,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth_routes import my_identities, my_pending_identities
 from switch_core.gateway.collaborations import (
+    _drop_older_link,
     cancel_identity_link_request,
     claim_bridge_identity,
     issue_identity_link_code,
@@ -51,6 +57,7 @@ from switch_core.gateway.schemas import (
 
 _STORE = ExternalUserStore()
 _STAND_IN = "stand-in"
+_NOBODY = "U-nobody"
 
 
 class _Adapter:
@@ -63,6 +70,8 @@ class _Adapter:
         self._meanwhile = meanwhile
 
     async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        if external_user_id == _NOBODY:
+            raise LookupError("No such account")
         return "Many people post as it." if external_user_id == _STAND_IN else None
 
     async def account_id_for_session(self, _token: str) -> str:
@@ -251,6 +260,14 @@ class TestClaimWaitsForTheAccount:
             (c.user_id, c.verified)
             for c in again.claimed_by  # type: ignore[attr-defined]
         ] == [(world.ada.id, True)]
+
+    async def test_an_account_the_platform_has_never_heard_of_is_a_404(
+        self, world: _World
+    ) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _claim(world, world.ada, external_user_id=_NOBODY)
+
+        assert refused.value.status_code == 404
 
     async def test_a_console_from_before_confirmation_is_told_to_update(
         self, world: _World
@@ -508,6 +525,43 @@ class TestVerifyingWithASession:
 
         assert refused.value.status_code == 409
         assert await _claim_of(world, world.ada) is None
+
+    async def test_a_bots_own_session_cannot_confirm_a_link_to_it(
+        self, world: _World
+    ) -> None:
+        # A session proves who holds the account, not that one person does:
+        # a bot's token would otherwise confirm a link to the bot.
+        async with world.session_factory() as session:
+            stand_in = await _STORE.get_by_external_id(
+                session, world.bridge_id, _STAND_IN
+            )
+            assert stand_in is not None
+            await _STORE.request_link(
+                session, stand_in, world.ada.id, requested_by_user_id=world.bob.id
+            )
+            await session.commit()
+
+        async with world.session_factory() as session:
+            with pytest.raises(HTTPException) as refused:
+                await verify_identity_with_session(
+                    world.bridge_id,
+                    stand_in.id,
+                    VerifyIdentitySessionRequest(token="bot-token"),
+                    session,
+                    _STORE,
+                    UserStore(),
+                    _Lifecycle(_Adapter(_STAND_IN)),  # type: ignore[arg-type]
+                    world.ada,
+                )
+
+        assert refused.value.status_code == 409
+        async with world.session_factory() as session:
+            assert await _STORE.claimant_ids(session, stand_in.id) == []
+            # It could never be confirmed, so it does not wait.
+            assert (
+                await _STORE.get_link_request(session, stand_in.id, world.ada.id)
+                is None
+            )
 
     async def test_there_must_be_a_link_waiting(self, world: _World) -> None:
         with pytest.raises(HTTPException) as refused:
@@ -902,3 +956,26 @@ class TestRequiringConfirmationForOlderLinks:
         assert event is not None
         assert event.actor_user_id == world.bob.id
         assert event.details == {"moved": 1}
+
+
+class _ReleasedMeanwhile:
+    """A store whose claim was unlinked between being read and released."""
+
+    async def get_claim(self, *_args: object) -> object:
+        return SimpleNamespace(verified_at=None)
+
+    async def release(self, *_args: object) -> object:
+        raise NoSuchLink("gone")
+
+
+async def test_an_older_link_unlinked_meanwhile_is_not_an_error() -> None:
+    assert (
+        await _drop_older_link(
+            object(),  # type: ignore[arg-type]
+            _ReleasedMeanwhile(),  # type: ignore[arg-type]
+            SimpleNamespace(id="ext-1", tenant_id="t"),  # type: ignore[arg-type]
+            "u-1",
+            "b-1",
+        )
+        is False
+    )

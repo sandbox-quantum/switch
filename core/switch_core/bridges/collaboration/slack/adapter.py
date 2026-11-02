@@ -1842,8 +1842,16 @@ class SlackAdapter(PlatformAdapter):
         try:
             result = await self._web_client.users_info(user=external_user_id)
         except SlackApiError as e:
+            if e.response.get("error") == "user_not_found":
+                raise LookupError(
+                    f"No Slack account {external_user_id} exists on this workspace"
+                ) from e
             raise RuntimeError(
                 f"Could not ask Slack about account {external_user_id}: {e}"
+            ) from e
+        except (aiohttp.ClientError, TimeoutError) as e:
+            raise RuntimeError(
+                f"Could not reach Slack to ask about account {external_user_id}: {e}"
             ) from e
         user = result["user"]
         return _SLACK_BOT_ACCOUNT if user.get("is_bot") else None

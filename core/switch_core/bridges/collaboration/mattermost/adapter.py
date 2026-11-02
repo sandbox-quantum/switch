@@ -3039,7 +3039,11 @@ class MattermostAdapter(PlatformAdapter):
             )
         try:
             user = await asyncio.to_thread(driver.users.get_user, external_user_id)
-        except Exception as e:
+        except ResourceNotFound as e:
+            raise LookupError(
+                f"No Mattermost account {external_user_id} exists on this server"
+            ) from e
+        except sync_requests.RequestException as e:
             raise RuntimeError(
                 f"Could not ask Mattermost about account {external_user_id}: {e}"
             ) from e
