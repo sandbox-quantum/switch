@@ -207,9 +207,10 @@ export type ServiceTokenAnswer = z.infer<typeof serviceTokenAnswerSchema>;
  * A token as this machine holds it, both times on this machine's clock:
  * `expiresAt` when the vendor stops taking it, and `useUntil` when Switch
  * must be asked again (at most an hour after the issue, so its checks run
- * at least hourly whatever the vendor's lifetime). `grantRevision` is the
- * grant's revision it was issued under, or null from a Switch from before it,
- * whose tokens are kept until `useUntil`.
+ * at least hourly whatever the vendor's lifetime). A credential its owner
+ * pasted has no expiry Switch knows, so it is held as expiring at
+ * `useUntil`. `grantRevision` is the grant's revision it was issued under, or
+ * null from a Switch from before it, whose tokens are kept until `useUntil`.
  */
 export type IssuedServiceToken = {
   token: string;
@@ -221,9 +222,11 @@ export type ServiceRefusal = { code: string; message: string; retryable: boolean
 
 const issuedSchema = z.object({
   token: z.string(),
-  expires_at: z.string(),
+  // Null, with `expires_in`, for a credential its owner pasted, which its
+  // vendor ends on a date Switch is not told; `use_until` then comes with it.
+  expires_at: z.string().nullable(),
   // Additive in contract §5; absent from a Switch that predates them.
-  expires_in: z.number().int().nonnegative().optional(),
+  expires_in: z.number().int().nonnegative().nullable().optional(),
   use_until: z.string().optional(),
   grant_revision: z.number().int().optional(),
 });
@@ -267,23 +270,30 @@ export async function issueServiceToken(
     };
   }
   const issued = issuedSchema.safeParse(await response.json().catch(() => null));
-  const expiresAt = issued.success ? Date.parse(issued.data.expires_at) : Number.NaN;
+  const notOne = new Error(
+    `Switch answered a ${service} token request with something that is not one.`
+  );
+  if (!issued.success || !validServiceToken(issued.data.token)) throw notOne;
+  if (issued.data.expires_at === null) {
+    const useUntil = Date.parse(issued.data.use_until ?? '');
+    if (!Number.isFinite(useUntil)) throw notOne;
+    const localUseUntil = onLocalClock(useUntil, response);
+    return {
+      token: issued.data.token,
+      expiresAt: localUseUntil,
+      useUntil: localUseUntil,
+      grantRevision: issued.data.grant_revision ?? null,
+    };
+  }
+  const expiresAt = Date.parse(issued.data.expires_at);
   const useUntil =
-    issued.success && issued.data.use_until !== undefined
-      ? Date.parse(issued.data.use_until)
-      : expiresAt;
-  if (
-    !issued.success ||
-    !validServiceToken(issued.data.token) ||
-    !Number.isFinite(expiresAt) ||
-    !Number.isFinite(useUntil) ||
-    useUntil > expiresAt
-  )
-    throw new Error(`Switch answered a ${service} token request with something that is not one.`);
+    issued.data.use_until !== undefined ? Date.parse(issued.data.use_until) : expiresAt;
+  if (!Number.isFinite(expiresAt) || !Number.isFinite(useUntil) || useUntil > expiresAt)
+    throw notOne;
   // Timed from when the answer arrived, by Switch's own count, so this
   // machine's clock is never compared with Switch's.
   const localExpiry =
-    issued.data.expires_in !== undefined
+    typeof issued.data.expires_in === 'number'
       ? Date.now() + issued.data.expires_in * 1000 - 1000
       : onLocalClock(expiresAt, response);
   return {
