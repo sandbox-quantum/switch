@@ -135,6 +135,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--rate-duration", type=float, default=90.0, help="seconds measured per rate"
     )
     w.add_argument(
+        "--rates-after",
+        metavar="FILE",
+        help="before the first rate, wait with the agents connected until FILE "
+        "exists, so workers started one after another step their rates together",
+    )
+    w.add_argument(
         "--drain",
         type=float,
         default=60.0,
@@ -709,6 +715,14 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 if stop.is_set():
                     break
                 await measure(f"{sc}@{step}", sc, step, a.duration)
+            if a.rates and a.rates_after and not stop.is_set():
+                stats.phase = sampler.phase = f"wait@{step}"
+                print(f"  waiting for {a.rates_after} before the rates", flush=True)
+                while not Path(a.rates_after).exists():
+                    if await wait(stop, 0.5):
+                        break
+                now = datetime.now(UTC).isoformat(timespec="seconds")
+                print(f"  rates start {now}", flush=True)
             for r in a.rates:
                 if stop.is_set():
                     break
