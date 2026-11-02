@@ -290,6 +290,10 @@ async def _ask_for_waiting_boxes(
         )
 
 
+# What the v2-off listing brings to `stopped`: a running box, and a retained one.
+_V2_OFF_STOPS = ("running", "retained")
+
+
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
@@ -309,16 +313,24 @@ async def machines(
     v2 = process_hosted_v2()
     if not v2:
         # The v1/v2 switch: with v2 off, no v2 box runs. Each is stopped as
-        # asleep, its data kept, so a message wakes it once v2 is on again.
+        # asleep, its data kept, so a message wakes it once v2 is on again. A
+        # box already retained is brought back to stopped too, its retention
+        # dropped: the box scaler scales a box down only for `stopped`, and
+        # nothing expires while v2 is off. A box already marked for deletion
+        # is left as it is.
         for candidate in candidates:
-            if candidate.backend != "box" or candidate.desired_state != "running":
+            if (
+                candidate.backend != "box"
+                or candidate.desired_state not in _V2_OFF_STOPS
+            ):
                 continue
             machine = await store.locked(session, candidate.id)
             if (
                 machine is not None
                 and machine.backend == "box"
-                and machine.desired_state == "running"
+                and machine.desired_state in _V2_OFF_STOPS
             ):
+                machine.retain_until = None
                 store.stop(machine, "idle", now)
                 logger.info(
                     "Cloud machine %s: a v2 box, stopped while hosted agents v2 is off.",

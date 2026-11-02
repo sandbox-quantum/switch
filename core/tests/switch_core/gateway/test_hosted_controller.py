@@ -1600,6 +1600,45 @@ async def test_v2_off_an_agentless_box_is_stopped_and_never_retained(
         assert machine.retain_until is None
 
 
+async def test_v2_off_a_box_already_retained_is_stopped_and_kept(
+    controller_app, v2_off
+):
+    """QA's gap: a box retained before the switch went off is brought back to
+    stopped (the box scaler scales down only `stopped`), its retention dropped
+    so nothing expires while v2 is off."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="retained",
+        stop_reason=None,
+        retain_until=datetime.now(UTC) + timedelta(days=7),
+    )
+    for _ in range(2):  # and on the next pass too
+        await listed(app.client, app.machine_id)
+        machine = await machine_of(app.factory, app.machine_id)
+        assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
+        assert machine.retain_until is None
+
+
+async def test_v2_off_a_box_marked_for_deletion_is_left_as_it_is(
+    controller_app, v2_off
+):
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="deleted",
+    )
+    await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert machine.desired_state == "deleted"
+
+
 async def test_v2_off_leaves_a_v1_machine_running(controller_app, v2_off):
     app = controller_app
     await update_machine(
