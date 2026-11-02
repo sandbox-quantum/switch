@@ -1333,7 +1333,9 @@ describe('GitHub connection transport', () => {
         token_lifetime: null,
         loopback_ports: null,
         key: null,
+        sign_in_choices: null,
         external_identity: 'ada-gh',
+        choices: null,
         consent: 'write',
         // A server without the workspace switch: no workspace layer.
         workspace_enabled: null,
@@ -1382,6 +1384,38 @@ describe('GitHub connection transport', () => {
       // A newer server's code this Console doesn't know: its reason is shown as it is.
       ['example', null, entry.unavailable_reason],
       ['jira', null, null],
+    ]);
+  });
+  it('reads what a sign-in asks the person to pick first, and the site they connected at', async () => {
+    const site = {
+      name: 'site',
+      label: 'Datadog site',
+      secret: false,
+      help: null,
+      choices: ['datadoghq.com', 'datadoghq.eu'],
+    };
+    const entry = {
+      slug: 'datadog',
+      name: 'Datadog',
+      category: 'Observability',
+      description: 'Metrics.',
+      enabled: true,
+      auth_type: 'oauth',
+      connectable: true,
+      unavailable_reason: null,
+      status: 'active',
+      sign_in_choices: [site],
+      method: 'oauth',
+      choices: { site: 'datadoghq.eu' },
+    };
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ connections: [entry] })));
+    expect(await getConnectionCatalog(SERVER)).toEqual([
+      expect.objectContaining({
+        slug: 'datadog',
+        status: 'connected',
+        sign_in_choices: [site],
+        choices: { site: 'datadoghq.eu' },
+      }),
     ]);
   });
   it('reads why a service can be granted for reading only', async () => {
@@ -1437,7 +1471,9 @@ describe('GitHub connection transport', () => {
         token_lifetime: null,
         loopback_ports: null,
         key: null,
+        sign_in_choices: null,
         external_identity: null,
+        choices: null,
         consent: null,
         workspace_enabled: null,
       },
@@ -1752,7 +1788,8 @@ describe('GitHub connection transport', () => {
 
 describe('a service sign-in', () => {
   const state = 'a'.repeat(43);
-  const input = { port: 12345, state, completion_secret: 'b'.repeat(43) };
+  const start = { port: 12345, state, completion_secret: 'b'.repeat(43) };
+  const input = { ...start, choices: {} };
   const flows = 'https://switch.example.com/gateway/service-connections/example/flows';
   // An older server that still keeps its dashboard on a host of its own.
   const SPLIT = {
@@ -1783,10 +1820,30 @@ describe('a service sign-in', () => {
     ).toEqual({ warning: null, consent: 'write', account: 'ada@example.test' });
     const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
     expect(calls.map(([url]) => url)).toEqual([flows, `${flows}/${state}/complete`]);
+    // A service that asks for nothing first is started without choices, as a
+    // server from before them takes it.
     expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([
-      input,
+      start,
       { code: 'SYNTHETIC-CODE', completion_secret: 'b'.repeat(43) },
     ]);
+  });
+
+  it('sends what the person picked before signing in', async () => {
+    answer({
+      id: state,
+      mode: 'loopback',
+      url: vendor({ state, redirect_uri: 'http://127.0.0.1:12345/switch-services/callback' }),
+    });
+    await startServiceConnection(SERVER, 'example', {
+      ...start,
+      choices: { site: 'datadoghq.eu' },
+    });
+    const [url, init] = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit];
+    expect(url).toBe(flows);
+    expect(JSON.parse(init.body as string)).toEqual({
+      ...start,
+      choices: { site: 'datadoghq.eu' },
+    });
   });
 
   it('hands on the vendor’s refusal on the service’s own route', async () => {

@@ -61,6 +61,8 @@ function entry(slug: string, overrides: Partial<ConnectionCatalogEntry>): Connec
     external_identity: null,
     consent: null,
     read_only_reason: null,
+    sign_in_choices: null,
+    choices: null,
     workspace_enabled: null,
     ...overrides,
   };

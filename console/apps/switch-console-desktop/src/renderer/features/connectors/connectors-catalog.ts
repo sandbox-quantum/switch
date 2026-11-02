@@ -117,7 +117,9 @@ export function profileConnectAction(
 
 /**
  * The profile header's line about the connection; null when there is none.
- * A key's line names no access level: Switch can't read what a key allows.
+ * A sign-in made at a site the person picked names it beside the account, as
+ * the same email can be an account at several. A key's line names no access
+ * level: Switch can't read what a key allows.
  */
 export function connectedAsLine(entry: ConnectionCatalogEntry): string | null {
   if (entry.status === 'not_connected' || entry.status === 'coming_soon') return null;
@@ -137,7 +139,8 @@ export function connectedAsLine(entry: ConnectionCatalogEntry): string | null {
       : entry.external_identity
         ? `Connected as ${entry.external_identity}`
         : 'Connected';
-  return access ? `${who} · ${access}` : who;
+  const picked = entry.auth_type === 'api_key' ? [] : Object.values(entry.choices ?? {});
+  return [who, ...picked, ...(access ? [access] : [])].join(' · ');
 }
 
 /** What agents can do with a key, for the profile's side column; null for a sign-in. */
