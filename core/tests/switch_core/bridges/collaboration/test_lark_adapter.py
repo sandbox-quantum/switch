@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.lark.adapter import (
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
+    InboundMessageDelete,
 )
 from switch_core.bridges.collaboration.platforms import PLATFORMS
 
@@ -399,4 +400,91 @@ async def test_group_creation_and_member_addition_use_lark_chat_apis() -> None:
     add_members = calls[-1]
     assert add_members.url.path == "/open-apis/im/v1/chats/oc_new/members"
     assert json.loads(add_members.content)["id_list"] == ["ou_mina", "ou_missing"]
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+
+
+@pytest.mark.asyncio
+async def test_message_recall_triggers_delete_callback() -> None:
+    """Test that im.message.recalled_v1 events call on_delete callback."""
+    adapter = LarkAdapter(config=_config())
+    deletes: list[InboundMessageDelete] = []
+
+    async def on_delete(delete: InboundMessageDelete) -> None:
+        deletes.append(delete)
+
+    adapter._on_delete = on_delete
+
+    # Simulate a message recall event from Lark
+    await adapter.dispatch_event(
+        envelope_type="im.message.recalled_v1",
+        payload={
+            "event": {
+                "message": {
+                    "chat_id": "oc_test_chat",
+                    "message_id": "om_deleted_message",
+                    "root_id": "om_thread_root",
+                }
+            }
+        },
+    )
+
+    assert len(deletes) == 1
+    assert deletes[0].channel_id == "oc_test_chat"
+    assert deletes[0].message_ref == "om_deleted_message"
+    assert deletes[0].root_id == "om_thread_root"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_deleted_message_triggers_delete_callback() -> None:
+    """Test that im.message.deleted_v1 events call on_delete callback."""
+    adapter = LarkAdapter(config=_config())
+    deletes: list[InboundMessageDelete] = []
+
+    async def on_delete(delete: InboundMessageDelete) -> None:
+        deletes.append(delete)
+
+    adapter._on_delete = on_delete
+
+    # Simulate a message deleted event from Lark
+    await adapter.dispatch_event(
+        envelope_type="im.message.deleted_v1",
+        payload={
+            "event": {
+                "message": {
+                    "chat_id": "oc_test_chat",
+                    "message_id": "om_deleted_msg",
+                }
+            }
+        },
+    )
+
+    assert len(deletes) == 1
+    assert deletes[0].channel_id == "oc_test_chat"
+    assert deletes[0].message_ref == "om_deleted_msg"
+    assert deletes[0].root_id is None  # No thread for this message
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_delete_callback_not_called_without_handler() -> None:
+    """Test that delete events are handled gracefully when no callback is set."""
+    adapter = LarkAdapter(config=_config())
+    # Don't set adapter._on_delete
+
+    # Should not crash when callback is not set
+    await adapter.dispatch_event(
+        envelope_type="im.message.recalled_v1",
+        payload={
+            "event": {
+                "message": {
+                    "chat_id": "oc_test_chat",
+                    "message_id": "om_deleted_message",
+                }
+            }
+        },
+    )
     await adapter.stop()

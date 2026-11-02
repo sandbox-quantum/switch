@@ -36,6 +36,8 @@ from switch_core.bridges.collaboration.models import (
     InboundAppJoin,
     InboundCommand,
     InboundMessage,
+    InboundMessageDelete,
+    InboundMessageEdit,
     InboundUserJoin,
 )
 
@@ -396,9 +398,19 @@ class LarkAdapter(PlatformAdapter):
     ) -> None:
         event = payload.get("event") or {}
         if envelope_type in {"im.message.recalled_v1", "im.message.deleted_v1"}:
-            # Lark can notify recalls, but the common bridge does not have a
-            # reversible mapping for every message type. Visible refusal is
-            # documented until recall callbacks are available here.
+            # Handle message deletion/recall
+            message = event.get("message") or {}
+            chat_id = message.get("chat_id")
+            message_id = message.get("message_id")
+            if chat_id and message_id and self._on_delete is not None:
+                root_id = message.get("root_id") or message.get("parent_id")
+                await self._on_delete(
+                    InboundMessageDelete(
+                        channel_id=str(chat_id),
+                        message_ref=str(message_id),
+                        root_id=str(root_id) if root_id else None,
+                    )
+                )
             return
         if envelope_type not in {"im.message.receive_v1", "event_callback"}:
             return

@@ -62,9 +62,10 @@ ciphertext because CBC itself does not provide authentication.
   Lark. Outbound files are limited to 20 MiB, and inbound files use Switch's
   configured attachment limit. Larger files are refused with a visible
   attachment failure. Other attachment types are described in the message text.
-- Switch edits and deletes are mirrored to Lark. Lark-side edits and recalls
-  are not imported yet; recall events are acknowledged and ignored because the
-  common bridge does not currently expose inbound edit and delete callbacks.
+- Switch edits and deletes are mirrored to Lark. Lark-side message recalls and
+  deletions are imported and reflected in Switch rooms. Lark-side message edits
+  are not currently signaled by Lark's webhook API; if Lark adds edit event
+  notifications in the future, the adapter is ready to handle them.
 - Approval and question cards are rendered using Switch's text fallback, with
   the request handle and answer format shown in the message. Reply in the room
   using that format. Lark card action callbacks are not supported on
