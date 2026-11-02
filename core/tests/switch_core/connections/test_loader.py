@@ -1046,3 +1046,10 @@ def test_rejects_an_oauth_entry_with_key_headers(catalog_copy):
     )
     with pytest.raises(CatalogError, match="only an api_key entry"):
         load_catalog(catalog_copy)
+
+
+def test_skill_frontmatter_accepts_windows_line_endings(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    path.write_bytes(raw.replace(b"\n", b"\r\n"))
+    assert load_catalog(catalog_copy)["github"].skill_files["SKILL.md"] == raw.decode()
