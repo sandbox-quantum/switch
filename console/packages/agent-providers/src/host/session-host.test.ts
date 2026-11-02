@@ -1365,6 +1365,22 @@ it('tells the room once, in its thread, that a turn failed without posting', asy
   expect(await roomReplyRecords(root)).toHaveLength(1);
 });
 
+it('tells the room to !reset when the provider refused the turn for size', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('turn', 'thread'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  const error = 'API Error: 400 The message size (30296644 bytes) exceeds 30.000MB limit.';
+  emit({ type: 'turn.completed', turnId: 'turn', outcome: 'error', message: error, usage: [] });
+  await until(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: `I finished without replying. The turn failed: ${error}\n\nUse !reset to start a fresh session, then send your message again.`,
+  });
+  await host.shutdown();
+});
+
 it('leaves a room turn alone when the agent posted to the room during it', async () => {
   const reply = vi.fn(async (_reply: RoomReply) => {});
   const { host, emit, adapter } = await startReplying(reply);

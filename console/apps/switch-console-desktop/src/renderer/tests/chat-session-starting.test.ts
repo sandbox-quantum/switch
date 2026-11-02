@@ -92,6 +92,15 @@ describe('turn-end notices', () => {
       reason: null,
     });
     expect(read('I finished without replying.')).toEqual({ outcome: 'completed', reason: null });
+    expect(
+      read(
+        'I finished without replying. The turn failed: exceeds 30.000MB limit.\n\nUse !reset to start a fresh session, then send your message again.'
+      )
+    ).toEqual({
+      outcome: 'failed',
+      reason:
+        'exceeds 30.000MB limit.\n\nUse !reset to start a fresh session, then send your message again.',
+    });
   });
 
   it('leaves other messages alone', () => {
