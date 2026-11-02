@@ -115,7 +115,6 @@ _MM_SOCKET_CLOSE_TIMEOUT_SECONDS = 2.0
 # directory dialog, the setup scripts), and connecting is a log-in and two
 # reads, so it is normally under a second.
 _CONNECT_WAIT_SECONDS = 15.0
-
 # Posts handed from the sockets to Switch's loop and not yet handed in, at most;
 # a post arriving past it is fetched once the backlog drains.
 _HANDOFF_LIMIT = 1000
@@ -2459,6 +2458,7 @@ class MattermostAdapter(PlatformAdapter):
                 try:
                     driver.init_websocket(_handler)
                 except Exception as e:
+                    # The exception's type only: its text can quote what was sent.
                     reason = type(e).__name__
                     backoff_next = min(backoff * 2, 30)
                 else:
@@ -2470,12 +2470,11 @@ class MattermostAdapter(PlatformAdapter):
                 if stopped.is_set():
                     break
                 reopened += 1
-                # Posts sent while a socket is closed are not fetched later, so a
-                # reopen is worth seeing in the logs. The error's type only, never
-                # its text.
+                # Posts sent while a socket is closed are fetched on the reopen,
+                # so a reopen is worth seeing in the logs.
                 logger.warning(
-                    "Mattermost socket for %s disconnected (%s); reopening in %ds, "
-                    "reopen %d",
+                    "Mattermost socket for %s disconnected (%s); reopening in "
+                    "%ds, reopen %d",
                     name,
                     reason,
                     backoff,

@@ -236,7 +236,8 @@ def mount_gateway_routes(gateway_app: FastAPI) -> None:
 
     The one place they are mounted: `Management.install` calls it, and so does
     the end-to-end surface snapshot (`scripts/e2e_surface.py`), which is how a
-    route added here reaches the coverage gate.
+    route added here reaches the coverage gate. Each answers only in a workspace
+    agent management serves (`require_management_workspace`).
     """
     gateway_app.include_router(
         gateway_router,

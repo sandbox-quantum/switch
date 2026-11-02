@@ -197,7 +197,9 @@ def _wire(monkeypatch, tmp_path, tenants_json: str | None):
         hosted_wait_limit_minutes=10,  # visibility V2's wait limit, sent in every status answer
     )
     assert (
-        wiring.create_management(config, object(), object(), object(), object())
+        wiring.create_management(
+            config, object(), object(), object(), object(), object()
+        )
         == "built"
     )  # type: ignore[arg-type]
     return captured
@@ -276,7 +278,7 @@ def test_the_cloud_machine_list_never_narrows_agent_management(monkeypatch, tmp_
         hosted_controller_config_path=str(file),
         hosted_wait_limit_minutes=10,  # visibility V2's wait limit, sent in every status answer
     )
-    wiring.create_management(config, object(), object(), object(), object())  # type: ignore[arg-type]
+    wiring.create_management(config, object(), object(), object(), object(), object())  # type: ignore[arg-type]
     assert captured["workspace_allowed"]("t2")
 
 
