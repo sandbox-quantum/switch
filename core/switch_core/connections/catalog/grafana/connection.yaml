@@ -1,0 +1,56 @@
+slug: grafana
+name: Grafana
+category: Observability
+description: Query Grafana Cloud dashboards, metrics, logs, traces and alerts, as you. Needs Grafana Assistant on the stack, and each person who connects counts as an Assistant user for billing.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Grafana's server is OAuth 2.1 with PKCE S256, so refresh-token rotation
+  # is expected; the token endpoint's answers were not measured against a
+  # live stack. Confirm at manual QA.
+  refresh: rotating
+  oauth:
+    # Grafana Cloud MCP registers clients itself (RFC 7591), as its docs say
+    # most clients need: Core registers one on first connect, discovered from
+    # the MCP server's metadata with the authorization and token endpoints.
+    registration: dynamic
+    # Grafana matches a pre-registered https redirect exactly but accepts a
+    # loopback redirect on any port (RFC 8252), so no ports are pinned.
+    redirect: [loopback, core]
+    # The authorization-server metadata names no revocation endpoint and no
+    # revoke API is documented, so a disconnect cannot revoke at Grafana.
+    remove_access: In your Grafana stack, open Assistant Settings, Connectors, MCP clients and revoke the connection under Your connections. Until you do, the sign-in stays authorized for up to 30 days.
+  identity:
+    # Live (401 without a token) but undocumented, so its claims are the
+    # OIDC-standard guesses: sub always, email very likely. Verify at manual
+    # QA; without an email the account id is shown instead.
+    url: https://mcp.grafana.com/mcp/userinfo
+    account_id: sub
+    label: email
+# Grafana documents access tokens of 1 hour, refreshed without the user for
+# 30 days; not yet measured. An agent's copy may outlive its grant by up to
+# an hour; agents still ask again hourly.
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  # One server signs in per stack: consent asks for the Grafana Cloud stack
+  # unless its address is sent in the X-Grafana-URL header. Self-hosted
+  # Grafana is out of scope.
+  servers:
+    - { name: grafana, url: "https://mcp.grafana.com/mcp" }
+access:
+  # grafana:read alone is truly read-only: dashboards, alerts, incidents and
+  # queries to read-only data sources (Prometheus, Loki, Tempo, Pyroscope).
+  read:
+    scopes:
+      - grafana:read
+  # grafana:query runs raw SQL as written and can change data where the data
+  # source's own credentials allow it, so it sits at the write level, as
+  # does grafana:write (create, change and delete resources; Grafana says it
+  # includes read and query, and all three are asked for explicitly).
+  write:
+    scopes:
+      - grafana:read
+      - grafana:query
+      - grafana:write
+tools: { mode: pass_through }

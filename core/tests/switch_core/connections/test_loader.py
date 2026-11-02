@@ -25,12 +25,13 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_grafana():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
+        "grafana",
         "google-workspace",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
@@ -39,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "grafana",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["grafana"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -173,6 +176,49 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert not any(":rovo:" in scope or ":twg" in scope for scope in every)
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.atlassian.com/me"
+
+
+def test_the_shipped_grafana_entry_connects_as_grafana_documents_and_serves():
+    definition = CATALOG["grafana"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Grafana Cloud MCP registers clients itself (RFC 7591), discovered from
+    # https://mcp.grafana.com/.well-known/oauth-authorization-server/mcp.
+    assert (definition.adapter, oauth.registration) == ("oauth", "dynamic")
+    # Grafana matches a loopback redirect on any port (RFC 8252), so no
+    # ports are pinned; Core's own callback is offered where one is public.
+    assert oauth.redirect == ["loopback", "core"]
+    assert oauth.loopback_ports is None
+    # The metadata names no revocation endpoint and none is documented, so a
+    # disconnect tells the person where to revoke it themselves.
+    assert oauth.revocation_url is None and not oauth.revocation_discovered
+    assert oauth.remove_access is not None and "MCP clients" in oauth.remove_access
+    # OAuth 2.1 with PKCE S256; refresh-token rotation is expected.
+    assert definition.auth.refresh == "rotating"
+    # Grafana documents access tokens of 1 hour, refreshed for 30 days.
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("grafana", "https://mcp.grafana.com/mcp")
+    ]
+    # A live endpoint the authorization server's metadata does not name:
+    # OIDC-standard claims, with the account id as the label's fallback.
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://mcp.grafana.com/mcp/userinfo"
+    assert definition.auth.identity.account_id == "sub"
+    assert definition.access is not None and definition.access.write is not None
+    # grafana:query runs raw SQL as written and can change data, so only
+    # grafana:read is read-only, and write asks for all three explicitly.
+    assert definition.access.read.scopes == ["grafana:read"]
+    assert definition.access.write.scopes == [
+        "grafana:read",
+        "grafana:query",
+        "grafana:write",
+    ]
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
