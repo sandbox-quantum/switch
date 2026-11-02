@@ -142,7 +142,11 @@ describe('DetachedRuntime', () => {
       clearTakenOver: false,
     });
     const written = join(dir, 'data', 'watchers', 'agent-1', 'supervisor-marker.txt');
-    for (let attempt = 0; attempt < 100 && !existsSync(written); attempt++)
+    for (
+      let attempt = 0;
+      attempt < 100 && !(existsSync(written) && readFileSync(written, 'utf8') !== '');
+      attempt++
+    )
       await new Promise((resolve) => setTimeout(resolve, 50));
     expect(readFileSync(written, 'utf8')).toBe(markers.markerFor('agent-1'));
     // The controller's own environment carries no marker, so nothing it starts
@@ -191,7 +195,11 @@ describe('DetachedRuntime', () => {
       clearTakenOver: false,
     });
     const written = join(dir, 'data', 'watchers', 'agent-1', 'supervisor-marker.txt');
-    for (let attempt = 0; attempt < 100 && !existsSync(written); attempt++)
+    for (
+      let attempt = 0;
+      attempt < 100 && !(existsSync(written) && readFileSync(written, 'utf8') !== '');
+      attempt++
+    )
       await new Promise((resolve) => setTimeout(resolve, 50));
     expect(readFileSync(written, 'utf8')).toBe('none');
   });
