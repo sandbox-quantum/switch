@@ -19,14 +19,12 @@ from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
-    OidcIdentity,
     Organization,
     Tenant,
     User,
@@ -56,10 +54,13 @@ router = APIRouter()
 
 _PENDING_KEY = "workos_organization_sign_in"
 _TOKEN_KEY = "workos_organization_token"
-# A change is started only with a token that outlasts it.
-_TOKEN_MARGIN_SECONDS = 60
-# A dashboard path, and nothing that could leave it.
-_RETURN_TO = re.compile(r"^/[A-Za-z0-9/_.-]*$")
+# A change is started only with a token that outlasts it: a demotion or a
+# removal ends workspace access, one workspace at a time, before the members
+# service is called.
+_TOKEN_MARGIN_SECONDS = 120
+# A dashboard path, and nothing that could leave it: no `//`, which a browser
+# reads as another host.
+_RETURN_TO = re.compile(r"^/(?!/)[A-Za-z0-9/_.-]*$")
 
 
 def _sign_in(request: Request) -> WorkOSOrganizationSignIn:
@@ -72,18 +73,21 @@ def _sign_in(request: Request) -> WorkOSOrganizationSignIn:
     return sign_in
 
 
-async def _subject_of(
-    session: AsyncSession, organization_directory: OrganizationDirectory, user: User
+async def directory_subject(
+    session: AsyncSession,
+    user_store: UserStore,
+    organization_directory: OrganizationDirectory,
+    user_id: str,
 ) -> str | None:
+    """The directory's id for `user_id`: their subject under its
+    `identity_issuer`, or None where it has none or they have no identity
+    there. What the admin's token must be issued to, and what a change to
+    someone's membership names them by."""
     if organization_directory.identity_issuer is None:
         return None
-    subject: str | None = await session.scalar(
-        select(OidcIdentity.sub).where(
-            OidcIdentity.user_id == user.id,
-            OidcIdentity.iss == organization_directory.identity_issuer,
-        )
+    return await user_store.oidc_subject(
+        session, user_id, organization_directory.identity_issuer
     )
-    return subject
 
 
 @router.get("/auth/workos/organization")
@@ -146,6 +150,7 @@ async def finish_organization_sign_in(
     code: str,
     state: str,
     session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     organization_directory: Annotated[
         OrganizationDirectory, Depends(get_organization_directory)
@@ -177,7 +182,9 @@ async def finish_organization_sign_in(
     except DirectoryUnavailable as error:
         logger.warning("WorkOS organization sign-in failed: %s", error.message)
         raise HTTPException(status_code=503, detail=error.message) from error
-    if token.subject != await _subject_of(session, organization_directory, user):
+    if token.subject != await directory_subject(
+        session, user_store, organization_directory, user.id
+    ):
         logger.warning(
             "User %s signed in to WorkOS as %s, which is not the WorkOS user "
             "their account signs in as; the token is dropped",

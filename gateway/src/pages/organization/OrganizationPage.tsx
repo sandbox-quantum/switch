@@ -48,6 +48,7 @@ export default function OrganizationPage() {
         {(isAdmin || session.user.is_operator) && (
           <OrganizationMembersSection
             selfId={session.user.id}
+            organizationId={tenant.organization_id}
             asOperator={!isAdmin}
             fromDirectory={organization?.members_from_directory === true}
             directoryTakesChanges={organization?.directory_takes_changes === true}

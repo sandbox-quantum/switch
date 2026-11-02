@@ -28,6 +28,7 @@ from switch_core.db.stores.invitation_store import InvitationStore
 from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.organization_directory import (
+    NO_DIRECTORY_CHANGE,
     DirectoryError,
     DirectoryOrganization,
     DirectoryRefusal,
@@ -61,10 +62,14 @@ class _Directory:
         self.failure = failure
         self.asked: list[tuple] = []
 
-    def check_can_change(
-        self, organization: Organization, access_token: str | None
-    ) -> None:
-        return None
+    async def prepare_change(
+        self,
+        organization: Organization,
+        subject: str | None,
+        role: str | None,
+        access_token: str | None,
+    ) -> MemberChange:
+        return NO_DIRECTORY_CHANGE
 
     def sends_changes_for(self, organization: Organization) -> bool:
         return True
