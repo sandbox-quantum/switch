@@ -18,7 +18,9 @@ how its tools reach a session: the vendor's MCP servers (``mcp``), or the
 vendor's command-line tool, run by the session host (``cli``). An ``api_key``
 entry names the fields a person pastes and the call that checks them
 (``auth.api_key``), and how the session host puts them into each MCP request's
-headers or each CLI run's environment, by template. Placeholder entries may
+headers or each CLI run's environment, by template. An ``oauth`` entry may also
+take a credential the person pastes in place of signing in (``auth.paste``): a
+token, or keys, each with the MCP headers it goes in. Placeholder entries may
 leave all of those out.
 """
 
@@ -58,6 +60,10 @@ AccessLevel = Literal["read", "write"]
 # How a person connected a service: signed in (`oauth`), or pasted a token
 # (`token`) or keys (`keys`).
 ConnectionMethod = Literal["oauth", "token", "keys"]
+PasteMethodName = Literal["token", "keys"]
+# Who ends a pasted credential: its vendor, on the date it was made to end
+# (`vendor`), or nobody until it is revoked at the vendor (`never`).
+PasteExpiry = Literal["vendor", "never"]
 
 
 AdapterName = Literal["github", "oauth", "api_key"]
@@ -382,6 +388,81 @@ def check_templates(
                 raise ValueError(f"{where} names an unknown field {name!r}")
 
 
+class PasteMethod(BaseModel):
+    """A way to connect an OAuth entry's service by pasting a credential the
+    person made at the vendor, in place of signing in (`auth.paste`).
+
+    `name` is how the connection records it was made: `token` or `keys`.
+    `fields` are what the person pastes, each secret and typed freely; what
+    they pick (a site) is the entry's own `auth.oauth.choices`, shared with
+    its sign-in. `headers` are the MCP request headers the credential goes in,
+    templates of the fields and the choices; the entry's identity call is made
+    with them too. `expires`: `vendor` for a credential its vendor ends on the
+    date it was made to end, which Switch neither asks for nor stores;
+    `never` for one that works until someone revokes it at the vendor, which
+    a server offers only where it allows such keys (`ALLOW_NON_EXPIRING_KEYS`).
+
+    `alias`, for a one-field method, is a pattern anchored at the start of the
+    pasted value whose one group, itself starting there, is the part the
+    vendor shows people (a token's public portion): it names the connection
+    where the vendor will not say whose the credential is. `help_url` is where
+    the person makes one.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    name: PasteMethodName
+    label: str = Field(min_length=1, max_length=64)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    headers: dict[Annotated[str, Field(pattern=HEADER_NAME_PATTERN)], str] = Field(
+        min_length=1, max_length=8
+    )
+    expires: PasteExpiry
+    alias: str | None = Field(default=None, min_length=3, max_length=200)
+    help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "PasteMethod":
+        names = [field.name for field in self.fields]
+        if len(set(names)) != len(names):
+            raise ValueError(f"paste method {self.name}: two fields share a name")
+        if not all(field.secret for field in self.fields):
+            raise ValueError(
+                f"paste method {self.name}'s fields are what is pasted, each a "
+                "secret; what is picked is the entry's auth.oauth.choices"
+            )
+        if self.alias is not None:
+            if len(self.fields) != 1:
+                raise ValueError(
+                    f"paste method {self.name}'s alias names a one-field credential"
+                )
+            try:
+                pattern = re.compile(self.alias)
+            except re.error as error:
+                raise ValueError(
+                    f"paste method {self.name}'s alias is not a pattern: {error}"
+                ) from None
+            if not self.alias.startswith("^(") or pattern.groups != 1:
+                raise ValueError(
+                    f"paste method {self.name}'s alias starts ^( and has one group: "
+                    "the public part, at the start of the value"
+                )
+        return self
+
+    def field_names(self) -> set[str]:
+        return {field.name for field in self.fields}
+
+    def alias_of(self, values: Mapping[str, str]) -> str | None:
+        """The public part of a pasted one-field credential, where `alias`
+        finds one shorter than the value; None otherwise."""
+        if self.alias is None:
+            return None
+        value = values[self.fields[0].name]
+        match = re.match(self.alias, value)
+        if match is None or match.start(1) != 0 or not match.group(1):
+            return None
+        return match.group(1) if match.end(1) < len(value) else None
+
+
 class ConnectionAuth(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     type: Literal["oauth", "api_key"]
@@ -392,6 +473,11 @@ class ConnectionAuth(BaseModel):
     oauth: OAuthClient | None = None
     identity: ConnectionIdentity | None = None
     api_key: ApiKeySignIn | None = None
+    # Credentials an oauth entry takes pasted, in place of a sign-in.
+    paste: list[PasteMethod] = Field(default_factory=list, max_length=2)
+
+    def paste_method(self, name: str) -> PasteMethod | None:
+        return next((method for method in self.paste if method.name == name), None)
 
 
 class TokenPolicy(BaseModel):
@@ -404,7 +490,10 @@ class TokenPolicy(BaseModel):
     out may stay valid at the vendor; one valid for longer is refused. It is
     null for a credential that never expires (a pasted key): Switch could
     neither take such a credential back nor wait for it to lapse, so it is
-    never handed to an agent.
+    never handed to an agent. For an OAuth entry it bounds the sign-in's
+    access token only: a credential pasted in place of the sign-in
+    (`auth.paste`) ends when its vendor ends it, and is handed out for an
+    hour at a time.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -699,6 +788,10 @@ class ConnectionDefinition(BaseModel):
                 raise ValueError("only an api_key entry's MCP servers name headers")
             if self.cli is not None and self.cli.env is not None:
                 raise ValueError("only an api_key entry's tool takes env templates")
+        if self.adapter != "oauth" and self.auth.paste:
+            raise ValueError(
+                "only an oauth entry takes a pasted credential in place of its sign-in"
+            )
         return self
 
     def _check_api_key(self) -> None:
@@ -815,6 +908,49 @@ class ConnectionDefinition(BaseModel):
         ):
             raise ValueError("an oauth entry's levels name OAuth scopes")
         self._check_oauth_templates()
+        self._check_paste()
+
+    def _check_paste(self) -> None:
+        """A pasted credential is checked at, and goes to, the entry's MCP
+        servers, in headers naming only its own fields and the choices."""
+        methods = self.auth.paste
+        if not methods:
+            return
+        names = [method.name for method in methods]
+        if len(set(names)) != len(names):
+            raise ValueError("two paste methods share a name")
+        if self.mcp is None:
+            raise ValueError(
+                "a pasted credential is checked at and used through the entry's "
+                "MCP servers, and this entry has none"
+            )
+        oauth = self.auth.oauth
+        choices = set() if oauth is None else {field.name for field in oauth.choices}
+        for method in methods:
+            shared = sorted(method.field_names() & choices)
+            if shared:
+                raise ValueError(
+                    f"paste method {method.name} names a field after a choice: "
+                    f"{', '.join(shared)}"
+                )
+            check_templates(
+                fields=method.field_names() | choices,
+                choices=choices,
+                urls=[],
+                values=list(method.headers.values()),
+                where=f"paste method {method.name}'s headers",
+            )
+            named = {
+                name
+                for value in method.headers.values()
+                for name in template_fields(value)
+            }
+            unused = sorted(method.field_names() - named)
+            if unused:
+                raise ValueError(
+                    f"paste method {method.name} asks for fields no header "
+                    f"carries: {', '.join(unused)}"
+                )
 
     def _check_oauth_templates(self) -> None:
         """An OAuth entry's URLs name only its choices, and only as `{name}`."""
