@@ -226,3 +226,102 @@ class TestChangesFromSwitch:
             workos_organization_id=None, customer_id=None
         )
         await directory.discard_organization(created)
+
+
+class TestWhatTheMirrorReads:
+    async def test_events_are_asked_for_by_type_from_the_cursor_oldest_first(
+        self,
+    ) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "event_1",
+                            "event": "organization_membership.created",
+                            "data": {"user_id": "user_A", "organization_id": "org_a"},
+                        }
+                    ],
+                    "list_metadata": {"after": None},
+                },
+            )
+
+        directory = _directory(handler)
+        types = ("organization_membership.created", "organization.deleted")
+
+        first = await directory.events(
+            types, after=None, range_start="2026-11-02T00:00:00+00:00"
+        )
+        await directory.events(types, after="event_1", range_start="unused")
+
+        assert [event["id"] for event in first] == ["event_1"]
+        assert seen[0].url.path == "/events"
+        assert seen[0].url.params.get_list("events") == list(types)
+        assert seen[0].url.params["order"] == "asc"
+        assert seen[0].url.params["range_start"] == "2026-11-02T00:00:00+00:00"
+        assert "after" not in seen[0].url.params
+        assert seen[1].url.params["after"] == "event_1"
+        assert "range_start" not in seen[1].url.params
+
+    async def test_an_event_switch_cannot_read_is_unavailable(self) -> None:
+        directory = _directory(
+            lambda request: httpx.Response(200, json={"data": [{"id": "event_1"}]})
+        )
+
+        with pytest.raises(DirectoryUnavailable):
+            await directory.events(
+                ("organization.deleted",), after=None, range_start="x"
+            )
+
+    async def test_one_membership_is_read_as_it_is_now(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.params["user_id"] == "user_A"
+            assert request.url.params["organization_id"] == "org_a"
+            assert request.url.params["statuses"] == "active"
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"organization_id": "org_a", "role": {"slug": "org_admin"}}
+                    ]
+                },
+            )
+
+        assert (
+            await _directory(handler).membership_role("user_A", "org_a") == "org_admin"
+        )
+
+    async def test_no_membership_is_none(self) -> None:
+        directory = _directory(lambda request: httpx.Response(200, json={"data": []}))
+
+        assert await directory.membership_role("user_A", "org_a") is None
+
+    async def test_an_organizations_members_are_read_by_user(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.params["organization_id"] == "org_a"
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "user_id": "user_A",
+                            "organization_id": "org_a",
+                            "role": {"slug": "org_admin"},
+                        },
+                        {
+                            "user_id": "user_B",
+                            "organization_id": "org_a",
+                            "role": {"slug": "editor"},
+                        },
+                    ]
+                },
+            )
+
+        assert await _directory(handler).organization_members("org_a") == {
+            "user_A": "org_admin",
+            "user_B": "member",
+        }

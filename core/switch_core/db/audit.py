@@ -70,9 +70,16 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
-    # Brought in from a directory kept outside Switch when they signed in.
-    MEMBER_ADDED_AT_SIGN_IN = "organization.member_added_at_sign_in"
-    MEMBER_PROMOTED_AT_SIGN_IN = "organization.member_promoted_at_sign_in"
+    # Changes made in a directory kept outside Switch, brought in at sign-in,
+    # from its events or by the daily check (`details.source`).
+    MEMBER_ADDED_FROM_DIRECTORY = "organization.member_added_from_directory"
+    MEMBER_PROMOTED_FROM_DIRECTORY = "organization.member_promoted_from_directory"
+    MEMBER_DEMOTED_FROM_DIRECTORY = "organization.member_demoted_from_directory"
+    MEMBER_REMOVED_FROM_DIRECTORY = "organization.member_removed_from_directory"
+    # A change brought in from the directory broke a rule Switch keeps itself
+    # (the last Org Admin, agents left with an owner who can't act); applied
+    # anyway, and recorded for the organization's admins (`details.kind`).
+    DIRECTORY_CONFLICT = "organization.directory_conflict"
     # An operator made the organization follow one in the directory.
     LINKED_TO_DIRECTORY = "organization.linked_to_directory"
 

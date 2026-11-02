@@ -35,12 +35,9 @@ from switch_core.connections.broker import (
     ServiceError,
     get_service_broker,
 )
-from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.audit import (
-    AuditAction,
     OrganizationAuditAction,
     list_organization_audit_events,
-    record_audit_event,
     record_organization_audit_event,
 )
 from switch_core.db.models import (
@@ -50,7 +47,6 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
-from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
@@ -90,16 +86,17 @@ from switch_core.gateway.schemas import (
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.workspace_access import (
-    finish_revocation,
-    revoke_workspace_access,
-)
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
     create_organization_for,
     create_workspace,
     directory_failed,
     lock_workspace_allowance,
+)
+from switch_core.organization_access import (
+    AccessRevocation,
+    end_access_through_organization,
+    workspaces_where_they_own_agents,
 )
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 
@@ -451,69 +448,39 @@ async def _end_access_through_organization(
     organization_id: str,
     actor_id: str,
     reason: str,
-    agent_store: AgentStore,
-    api_key_store: ApiKeyStore,
-    broker: ServiceBroker,
-    protocol: AgentCore,
-    sign_in_flows: SignInFlows,
+    revocation: AccessRevocation,
 ) -> str | None:
     """Take away what `user_id` holds in the workspaces they stand in only as
-    the organization's `org_admin`, before they stop being one.
+    the organization's `org_admin`, before they stop being one
+    (`organization_access.end_access_through_organization`).
 
     Refuses, 409 naming the workspaces, while they own agents in any of them,
-    as removing a workspace member does. Otherwise removes their keys,
-    service connections and sign-ins under way in each, one workspace at a
-    time, each recorded in that workspace's audit log. Raises `ServiceError`
-    when a connection is busy. Returns a warning naming what could not be
-    revoked at a vendor, or None.
+    as removing a workspace member does.
     """
     reached = await workspaces_reached_through_organization(
         session_factory, user_id, organization_id
     )
-    with_agents = []
-    for tenant in reached:
-        async with tenant_session(session_factory, tenant.id) as session:
-            if await agent_store.get_by_owner(session, user_id):
-                with_agents.append(tenant.name)
+    with_agents = await workspaces_where_they_own_agents(
+        session_factory, revocation.agent_store, user_id, reached
+    )
     if with_agents:
         raise HTTPException(
             status_code=409,
             detail=(
                 "They own agents in workspaces they're in only as an "
                 "organization admin. Delete those agents first: "
-                f"{', '.join(sorted(with_agents))}"
+                f"{', '.join(sorted(tenant.name for tenant in with_agents))}"
             ),
         )
-    warnings = []
-    for tenant in reached:
-        async with tenant_session(session_factory, tenant.id) as session:
-            revoked = await revoke_workspace_access(
-                session,
-                user_id,
-                api_key_store=api_key_store,
-                broker=broker,
-                sign_in_flows=sign_in_flows,
-            )
-            await record_audit_event(
-                session,
-                tenant_id=tenant.id,
-                actor_user_id=actor_id,
-                action=AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
-                target_type="user",
-                target_id=user_id,
-                details={
-                    "reason": reason,
-                    "api_keys_deleted": len(revoked.key_hashes),
-                    "service_connections_deleted": len(revoked.removed_services),
-                },
-            )
-            await session.commit()
-            warning = await finish_revocation(
-                session, user_id, revoked, protocol=protocol, broker=broker
-            )
-        if warning:
-            warnings.append(f"{tenant.name}: {warning}")
-    return " ".join(warnings) or None
+    return await end_access_through_organization(
+        session_factory,
+        revocation,
+        user_id=user_id,
+        reached=reached,
+        actor_id=actor_id,
+        details={"reason": reason},
+        keep_agent_keys=False,
+    )
 
 
 @router.patch("/organizations/current/members/{user_id}", response_model=None)
@@ -576,11 +543,13 @@ async def update_organization_member_role(
                 organization_id=organization_id,
                 actor_id=user.id,
                 reason="demoted",
-                agent_store=agent_store,
-                api_key_store=api_key_store,
-                broker=broker,
-                protocol=protocol,
-                sign_in_flows=request.app.state.sign_in_flows,
+                revocation=AccessRevocation(
+                    agent_store=agent_store,
+                    api_key_store=api_key_store,
+                    broker=broker,
+                    protocol=protocol,
+                    sign_in_flows=request.app.state.sign_in_flows,
+                ),
             )
         except ServiceError as error:
             return service_refusal(error)
@@ -692,11 +661,13 @@ async def remove_organization_member(
                 organization_id=organization_id,
                 actor_id=user.id,
                 reason="removed",
-                agent_store=agent_store,
-                api_key_store=api_key_store,
-                broker=broker,
-                protocol=protocol,
-                sign_in_flows=request.app.state.sign_in_flows,
+                revocation=AccessRevocation(
+                    agent_store=agent_store,
+                    api_key_store=api_key_store,
+                    broker=broker,
+                    protocol=protocol,
+                    sign_in_flows=request.app.state.sign_in_flows,
+                ),
             )
         except ServiceError as error:
             return service_refusal(error)

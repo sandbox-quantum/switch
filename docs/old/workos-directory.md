@@ -55,19 +55,53 @@ linked organization:
 
 Both are recorded in the organization's audit log. If WorkOS cannot be read,
 or Switch's rows cannot be written, the sign-in goes ahead with Switch's rows
-as they were, and the failure is logged.
+as they were, and the failure is logged. A sign-in never takes anything away;
+the mirror does.
+
+## The mirror
+
+One switch-core process follows WorkOS's Events API, every 30 seconds, for
+changes to a linked organization's memberships, and applies them. It starts
+from when it first runs; once a day, and whenever it starts, it also compares
+every linked organization's members with WorkOS and applies the difference,
+which catches up anything from before it ran or missed since. It keeps its
+place in the database, so a restart resumes where it stopped.
+
+For each person it matches (by the WorkOS user their account signs in as):
+
+- **Added or made `org_admin` in WorkOS:** added, or made Org Admin, as at
+  sign-in.
+- **No longer `org_admin`:** made a Member. What they held in workspaces they
+  stood in only as Org Admin (personal API keys, service connections,
+  sign-ins under way) is removed.
+- **Removed:** removed from the organization and from each of its workspaces,
+  with their personal API keys, service connections and sign-ins under way
+  there.
+
+Each change is recorded in the organization's audit log, and each workspace
+change in that workspace's. WorkOS is the record, so a change is applied even
+when it breaks a rule Switch otherwise keeps. It is then logged at `error` and
+recorded in the organization's audit log as "WorkOS change broke a Switch
+rule", naming what:
+
+- the organization's last Org Admin was removed or demoted;
+- agents the person owns were left in place, still running on their keys,
+  owned by someone who can no longer act there, for an admin to delete;
+- a workspace was left with no owner (its organization's Org Admins still
+  administer it).
+
+Someone WorkOS lists who has never signed in to Switch is added when they
+first do. A member with no WorkOS identity (an account nobody linked) can't be
+compared, and is logged and left. Deleting a linked organization in WorkOS
+removes nobody: it is logged and recorded for an operator to deal with.
 
 ## Not done yet
 
-- **Removals and demotions are not applied.** If someone is removed from the
-  linked WorkOS organization, or is no longer its `org_admin`, Switch keeps
-  their membership and role, and with them their access. Each sign-in by that
-  person logs it at `error`. Until this is built, an Org Admin ends such
-  access in Switch as well, from the organization's Members page: removing a
-  member and taking Org Admin away are allowed on a linked organization, and
-  change only Switch. Whatever WorkOS still grants comes back at the person's
-  next sign-in.
 - **Granting from Switch is refused** for a linked organization: adding a
   member (from the dashboard or by invitation) or making one Org Admin. Make
-  those changes in WorkOS.
+  those changes in WorkOS. Removing a member or taking Org Admin away from
+  Switch is allowed and changes only Switch; whatever WorkOS still grants
+  comes back at the next sign-in or check.
+- The organization's admins see conflicts only in its audit log, not yet as a
+  notice on the dashboard.
 - A new organization created on the server is Switch's own until it is linked.

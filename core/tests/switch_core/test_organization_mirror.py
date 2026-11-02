@@ -92,7 +92,7 @@ async def _added(session_factory, organization_id: str) -> list[OrganizationAudi
     return await _recorded(
         session_factory,
         organization_id,
-        OrganizationAuditAction.MEMBER_ADDED_AT_SIGN_IN,
+        OrganizationAuditAction.MEMBER_ADDED_FROM_DIRECTORY,
     )
 
 
@@ -116,7 +116,7 @@ class TestBringingInMemberships:
         [event] = await _added(session_factory, organization_id)
         assert event.actor_user_id is None
         assert event.target_id == ada
-        assert event.details == {"role": "org_admin"}
+        assert event.details == {"source": "sign_in", "role": "org_admin"}
 
     async def test_only_the_linked_organization_counts(
         self, rls_harness: RLSHarness
@@ -165,12 +165,16 @@ class TestBringingInMemberships:
         [event] = await _recorded(
             session_factory,
             organization_id,
-            OrganizationAuditAction.MEMBER_PROMOTED_AT_SIGN_IN,
+            OrganizationAuditAction.MEMBER_PROMOTED_FROM_DIRECTORY,
         )
         assert event.target_id == ada
-        assert event.details == {"from_role": "member", "role": "org_admin"}
+        assert event.details == {
+            "source": "sign_in",
+            "from_role": "member",
+            "role": "org_admin",
+        }
 
-    async def test_a_demotion_is_left_and_logged_as_an_error(
+    async def test_a_demotion_is_left_for_the_mirror_and_logged(
         self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Taking a role away takes away what it reached, which is not a
@@ -187,10 +191,10 @@ class TestBringingInMemberships:
 
         assert await _role(session_factory, organization_id, ada) == "org_admin"
         assert await _added(session_factory, organization_id) == []
-        [record] = [r for r in caplog.records if "keeps their role" in r.message]
-        assert record.levelname == "ERROR"
+        [record] = [r for r in caplog.records if "mirror applies it" in r.message]
+        assert record.levelname == "WARNING"
 
-    async def test_a_membership_no_longer_listed_is_left_and_logged_as_an_error(
+    async def test_a_membership_no_longer_listed_is_left_for_the_mirror(
         self, rls_harness: RLSHarness, caplog: pytest.LogCaptureFixture
     ) -> None:
         session_factory, restricted = rls_harness.owner, rls_harness.restricted
@@ -201,5 +205,5 @@ class TestBringingInMemberships:
         await bring_in_memberships(restricted, ada, [])
 
         assert await _role(session_factory, organization_id, ada) == "org_admin"
-        [record] = [r for r in caplog.records if "no longer lists them" in r.message]
-        assert record.levelname == "ERROR"
+        [record] = [r for r in caplog.records if "mirror applies it" in r.message]
+        assert record.levelname == "WARNING"
