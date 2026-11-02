@@ -366,6 +366,11 @@ version of their own to them without also giving them a release of their own.
   kept its own, and the first one a process misses reads every open room of
   the workspace at once, so with many agents behind a load balancer most sends
   no longer start with a read of the room.
+- **Checking a message against Switch Trust no longer reads its settings each
+  time.** Each process keeps the settings it read until they change: saving or
+  clearing them in the gateway tells every process, so a change still takes
+  effect on the next message. Settings are read again after 30 seconds at most,
+  for a change whose signal was lost.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
