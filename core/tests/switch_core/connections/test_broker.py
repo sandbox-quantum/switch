@@ -2062,3 +2062,74 @@ class TestReplacedClient:
         assert (await standing(broker, connection.service)).client_replaced(
             connection
         ) is False
+
+
+class TestWithdrawnMethod:
+    """A connection made in a way its entry no longer offers (a token pasted
+    for a service people now sign in to) must be made again, and nothing it
+    holds is used meanwhile."""
+
+    async def _made_by(
+        self, session_factory: async_sessionmaker[AsyncSession], world: World
+    ) -> None:
+        async with session_factory() as session:
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == world.owner.id)
+                .values(method="token")
+            )
+            await session.commit()
+
+    async def test_reads_as_needing_reconnecting_and_is_refused(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory, expires_in=60)
+        await self._made_by(session_factory, world)
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert broker.method_withdrawn(connection) is True
+        assert (
+            broker.connection_status(
+                await standing(broker, connection.service), connection
+            )
+            == "needs_reauthorization"
+        )
+
+        refused = await _refused(broker, session_factory, world.agent.id)
+
+        assert refused.code == CONNECTOR_REVOKED
+        assert refused.message == (
+            "GitHub was connected in a way this server no longer offers. The "
+            "agent's owner must reconnect GitHub from Connectors in Switch Console."
+        )
+        with pytest.raises(ServiceError) as caught:
+            async with session_factory() as session:
+                await broker.connection_access_token(session, world.owner.id, "github")
+        assert caught.value.message == (
+            "GitHub was connected in a way this server no longer offers. "
+            "Reconnect GitHub from Connectors in Switch Console."
+        )
+        assert vendor.refreshes == 0 and vendor.issued == []
+        # Nothing is recorded: the entry may offer that way again.
+        connection = await _connection(session_factory, world.owner.id)
+        assert connection is not None
+        assert (connection.status, connection.error_code) == ("active", None)
+
+    async def test_a_new_grant_on_it_is_refused(
+        self, broker, session_factory, vendor
+    ) -> None:
+        world = await _world(session_factory)
+        await self._made_by(session_factory, world)
+        async with session_factory() as session:
+            with pytest.raises(ServiceError) as caught:
+                await broker.check_grant_terms(
+                    session,
+                    owner_id=world.owner.id,
+                    service="github",
+                    access="read",
+                    repositories=[],
+                )
+        assert (caught.value.status_code, caught.value.message) == (
+            409,
+            "Reconnect GitHub in Switch Console, under Connectors, first.",
+        )

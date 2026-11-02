@@ -335,6 +335,10 @@ def _through_replaced_client(name: str) -> str:
     return f"{name} was connected through an app Switch no longer uses."
 
 
+def _through_withdrawn_method(name: str) -> str:
+    return f"{name} was connected in a way this server no longer offers."
+
+
 @dataclass(frozen=True)
 class Principal:
     """Who asks: a controller acting as the agent, or the agent's own key."""
@@ -1241,6 +1245,8 @@ class ServiceBroker:
                 )
             if _client_replaced(connection, adapter):
                 raise await self._replaced_client(session, owner_id, service)
+            if self.method_withdrawn(connection):
+                raise _MustReconnect(_through_withdrawn_method(name))
             secret = self._secret(connection)
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
@@ -1522,19 +1528,28 @@ class ServiceBroker:
             source=choice.source,
         )
 
+    def method_withdrawn(self, connection: ServiceConnection) -> bool:
+        """Whether `connection` was made in a way its catalog entry no longer
+        offers (keys pasted for a service people now sign in to), so it must
+        be made again. Its row stays as it is: nothing it holds is used."""
+        entry = self._catalog.get(connection.service)
+        return entry is not None and connection.method not in entry.definition.methods()
+
     def connection_status(
         self, standing: ServiceStanding, connection: ServiceConnection | None
     ) -> str:
         """A connection's status as people and agents act on it, where its
         service stands as `standing`: "not_connected", "active",
         "needs_reauthorization" or "error". One made through a client its
-        service no longer uses, or granted other scopes than this server now
-        asks for, needs reconnecting before anyone uses it and finds out,
-        though its row stays active until a token is asked for."""
+        service no longer uses, in a way its service no longer offers, or
+        granted other scopes than this server now asks for, needs reconnecting
+        before anyone uses it and finds out, though its row stays active."""
         if connection is None:
             return "not_connected"
         if connection.status == "active" and (
-            standing.client_replaced(connection) or self.scopes_changed(connection)
+            standing.client_replaced(connection)
+            or self.method_withdrawn(connection)
+            or self.scopes_changed(connection)
         ):
             return "needs_reauthorization"
         return connection.status
@@ -1685,7 +1700,11 @@ class ServiceBroker:
                 f"Connect {name} in Switch Console, under Connectors, first.",
                 retryable=False,
             )
-        if connection.status != "active" or _scopes_changed(connection, entry):
+        if (
+            connection.status != "active"
+            or self.method_withdrawn(connection)
+            or _scopes_changed(connection, entry)
+        ):
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
