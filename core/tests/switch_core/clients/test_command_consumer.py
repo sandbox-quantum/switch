@@ -8,6 +8,7 @@ from switch_core.bridges.agent.commands import dispatch_admin_command
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import ADMIN_MARKER, AdminMessageType
 from switch_core.clients.command_consumer import CommandConsumer
+from switch_core.clients.mention_warnings import MentionWarnings, unmatched_mentions
 from switch_core.events import CommandEvent
 from switch_core.transport import InboundMessage, RoomRef
 
@@ -57,7 +58,7 @@ def _admin_client(
     roles: list[SimpleNamespace] | None = None,
     live_role_ids: set[str] | None = None,
 ) -> tuple[SimpleNamespace, list[dict[str, object]]]:
-    """Fake CommandConsumer surface for the warning methods.
+    """Fake MentionWarnings surface for the warning methods.
 
     `members`: agent ids in the room. `agents_by_name`: registered agents keyed
     by lowercased name (the case-insensitive resolver). `roles`: defined room
@@ -110,6 +111,7 @@ def _admin_client(
     actor.send_admin = lambda *a, **k: SystemActor.send_admin(actor, *a, **k)
     client = SimpleNamespace(
         actor=actor,
+        tenant_id="tenant-1",
         session_factory=_session_factory,
         _connections=_no_connections(),
         _room_store=SimpleNamespace(get_agent_ids=_get_agent_ids),
@@ -119,7 +121,7 @@ def _admin_client(
         ),
         _agent_store=SimpleNamespace(get_by_name_insensitive=_get_by_name_insensitive),
     )
-    client._sender_handle = lambda event: CommandConsumer._sender_handle(client, event)
+    client._sender_handle = lambda event: MentionWarnings._sender_handle(client, event)
     return client, sent
 
 
@@ -129,12 +131,32 @@ def _marker_type(entry: dict[str, object]) -> object:
     return extra[ADMIN_MARKER]["type"]  # type: ignore[index]
 
 
+class TestUnmatchedMentions:
+    def test_a_name_of_the_rooms_agents_is_matched_without_case(self) -> None:
+        assert (
+            unmatched_mentions("@Reviewer and @helper, look", ["reviewer", "helper"])
+            == []
+        )
+
+    def test_any_other_name_is_unmatched_once(self) -> None:
+        assert unmatched_mentions("@web-searcher @alice @web-searcher", ["helper"]) == [
+            "web-searcher",
+            "alice",
+        ]
+
+    def test_a_room_wide_mention_word_is_not_a_name(self) -> None:
+        assert unmatched_mentions("@everyone @here hello", []) == []
+
+    def test_no_tags_no_names(self) -> None:
+        assert unmatched_mentions("nobody tagged", []) == []
+
+
 class TestAdminUnreachableRoleWarning:
     async def test_warns_when_no_live_holder(self) -> None:
         roles = [SimpleNamespace(id="r-mgr", name="manager")]
         client, sent = _admin_client(roles=roles, live_role_ids=set())
         event = _event("@manager please review")
-        await CommandConsumer._warn_unreachable_roles(
+        await MentionWarnings._warn_unreachable_roles(
             client, _room(), event, "room-1", None
         )
         assert len(sent) == 1
@@ -145,7 +167,7 @@ class TestAdminUnreachableRoleWarning:
         roles = [SimpleNamespace(id="r-mgr", name="manager")]
         client, sent = _admin_client(roles=roles, live_role_ids=set())
         event = _event("@manager review?", sender_name="bob")
-        await CommandConsumer._warn_unreachable_roles(
+        await MentionWarnings._warn_unreachable_roles(
             client, _room(), event, "room-1", None
         )
         assert "@bob" in sent[0]["body"]
@@ -155,7 +177,7 @@ class TestAdminUnreachableRoleWarning:
         roles = [SimpleNamespace(id="r-mgr", name="manager")]
         client, sent = _admin_client(roles=roles, live_role_ids=set())
         event = _event("@manager please review")
-        await CommandConsumer._warn_unreachable_roles(
+        await MentionWarnings._warn_unreachable_roles(
             client, _room(), event, "room-1", "thread-42"
         )
         assert sent[0]["thread_root_id"] == "thread-42"
@@ -164,7 +186,7 @@ class TestAdminUnreachableRoleWarning:
         roles = [SimpleNamespace(id="r-mgr", name="manager")]
         client, sent = _admin_client(roles=roles, live_role_ids={"r-mgr"})
         event = _event("@manager status?")
-        await CommandConsumer._warn_unreachable_roles(
+        await MentionWarnings._warn_unreachable_roles(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -173,7 +195,7 @@ class TestAdminUnreachableRoleWarning:
         roles = [SimpleNamespace(id="r-mgr", name="manager")]
         client, sent = _admin_client(roles=roles, live_role_ids=set())
         event = _event("just chatting, no tags")
-        await CommandConsumer._warn_unreachable_roles(
+        await MentionWarnings._warn_unreachable_roles(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -182,7 +204,7 @@ class TestAdminUnreachableRoleWarning:
         roles = [SimpleNamespace(id="r-lead", name="lead")]
         client, sent = _admin_client(roles=roles, live_role_ids=set())
         event = _event("@lead-dev ping")
-        await CommandConsumer._warn_unreachable_roles(
+        await MentionWarnings._warn_unreachable_roles(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -197,7 +219,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher can you look this up?")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert len(sent) == 1
@@ -213,7 +235,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher ping", sender_name="carol")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert "@carol" in sent[0]["body"]
@@ -227,7 +249,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher ping")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", "thread-42"
         )
         assert sent[0]["thread_root_id"] == "thread-42"
@@ -240,7 +262,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(members={"a-web"}, agents_by_name=agents)
         event = _event("@web-searcher status?")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -249,7 +271,7 @@ class TestAdminAbsentAgentWarning:
         # A human user or a typo resolves to no agent — stay silent.
         client, sent = _admin_client(agents_by_name={})
         event = _event("@dave what do you think?")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -262,7 +284,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@cc-bug-fixing-2 please run")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -276,7 +298,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@everyone the deploy is at five")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -286,7 +308,7 @@ class TestAdminAbsentAgentWarning:
         roles = [SimpleNamespace(id="r-mgr", name="manager")]
         client, sent = _admin_client(agents_by_name={}, roles=roles)
         event = _event("@manager please review")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert sent == []
@@ -302,7 +324,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@web-searcher @doc-expert can you pair up?")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert len(sent) == 1
@@ -320,7 +342,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@switchdev can you look this up?")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert "**Switch Dev (`switchdev`)**" in sent[0]["body"]
@@ -331,7 +353,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@switchdev ping")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert "**switchdev**" in sent[0]["body"]
@@ -345,7 +367,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@switchdev ping", sender_name="carol")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         body = sent[0]["body"]
@@ -363,7 +385,7 @@ class TestAdminAbsentAgentWarning:
         }
         client, sent = _admin_client(agents_by_name=agents)
         event = _event("@switchdev ping")
-        await CommandConsumer._warn_absent_agents(
+        await MentionWarnings._warn_absent_agents(
             client, _room(), event, "room-1", None
         )
         assert "](https://example.invalid)" not in sent[0]["body"]

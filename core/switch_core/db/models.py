@@ -32,6 +32,14 @@ from switch_core.db.agent_event_notify_ddl import (
     CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
     DROP_AGENT_EVENT_NOTIFY_TRIGGER,
 )
+from switch_core.db.auth_rows_notify_ddl import (
+    CREATE_AGENT_NOTIFY_FUNCTION,
+    CREATE_AGENT_NOTIFY_TRIGGER,
+    CREATE_CONTROLLER_NOTIFY_FUNCTION,
+    CREATE_CONTROLLER_NOTIFY_TRIGGER,
+    DROP_AGENT_NOTIFY_TRIGGER,
+    DROP_CONTROLLER_NOTIFY_TRIGGER,
+)
 from switch_core.db.base import Base
 from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.membership_notify_ddl import (
@@ -45,6 +53,17 @@ from switch_core.db.notify_ddl import (
     DROP_NOTIFY_TRIGGER,
 )
 from switch_core.db.rls_ddl import attach_row_level_security
+from switch_core.db.room_access_notify_ddl import (
+    CREATE_BUDGETS_NOTIFY_FUNCTION,
+    CREATE_BUDGETS_NOTIFY_TRIGGER,
+    CREATE_ROOM_AGENT_NOTIFY_FUNCTION,
+    CREATE_ROOM_AGENT_NOTIFY_TRIGGER,
+    CREATE_ROOM_NOTIFY_FUNCTION,
+    CREATE_ROOM_NOTIFY_TRIGGER,
+    DROP_BUDGETS_NOTIFY_TRIGGER,
+    DROP_ROOM_AGENT_NOTIFY_TRIGGER,
+    DROP_ROOM_NOTIFY_TRIGGER,
+)
 from switch_core.db.session_activity_notify_ddl import (
     CREATE_ACTIVITY_TRIGGER,
     CREATE_APPROVAL_INSERT_TRIGGER,
@@ -1044,6 +1063,9 @@ room_agents = Table(
         name="fk_room_agents_agent",
     ),
     Index("ix_room_agents_tenant_id", "tenant_id"),
+    # The primary key leads with the room; reads of an agent's rooms, and the
+    # foreign key's check when an agent is deleted, go by the agent.
+    Index("ix_room_agents_agent_id", "agent_id"),
 )
 
 room_skills = Table(
@@ -2611,6 +2633,14 @@ class Message(TenantScoped, Base):
         # across every room. The index above leads on the room, so it cannot
         # serve that and each pass would scan the whole table.
         Index("ix_messages_tenant_sent_at", "tenant_id", "sent_at"),
+        # The rows Switch's own reader acts on (`CommandConsumer.ROW_TYPES`),
+        # so it reads just those however far behind its cursor is.
+        Index(
+            "ix_messages_room_commands",
+            "room_id",
+            "seq",
+            postgresql_where=text("event_type = 'com.switch.command'"),
+        ),
         Index(
             "ix_messages_thread_root",
             "room_id",
@@ -4038,6 +4068,28 @@ class AgentController(TenantScoped, Base):
     )
 
 
+# The triggers that signal every process when an agent's row changes, or a
+# controller's owner, credential or revocation does, so each process drops
+# what it kept of them for authorizing controller tokens. As for the triggers
+# above, `create_all` builds them for the tests and real databases get them
+# from a migration. The SQL lives in `db/auth_rows_notify_ddl.py`.
+for _table, _ddls, _drop in (
+    (
+        Agent.__table__,
+        (CREATE_AGENT_NOTIFY_FUNCTION, CREATE_AGENT_NOTIFY_TRIGGER),
+        DROP_AGENT_NOTIFY_TRIGGER,
+    ),
+    (
+        AgentController.__table__,
+        (CREATE_CONTROLLER_NOTIFY_FUNCTION, CREATE_CONTROLLER_NOTIFY_TRIGGER),
+        DROP_CONTROLLER_NOTIFY_TRIGGER,
+    ),
+):
+    for _ddl in _ddls:
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+    event.listen(_table, "before_drop", DDL(_drop).execute_if(dialect="postgresql"))
+
+
 class AgentControllerEnrollmentCode(TenantScoped, Base):
     """A one-time code a headless controller enrolls with.
 
@@ -4634,3 +4686,30 @@ attach_row_level_security(Base.metadata)
 # `create_all` built without them is not the schema the server runs against.
 # After the tables, not before — see `db/tenant_lookup.py`.
 attach_tenant_lookups(Base.metadata)
+
+
+# The triggers that signal every process when an agent joins or leaves a room,
+# a room's descriptor changes or a tenant's budgets do, so each process drops
+# what it kept of them for the checks every post makes. As for the triggers
+# above, `create_all` builds them for the tests and real databases get them
+# from a migration. The SQL lives in `db/room_access_notify_ddl.py`.
+for _table, _ddls, _drop in (
+    (
+        room_agents,
+        (CREATE_ROOM_AGENT_NOTIFY_FUNCTION, CREATE_ROOM_AGENT_NOTIFY_TRIGGER),
+        DROP_ROOM_AGENT_NOTIFY_TRIGGER,
+    ),
+    (
+        Room.__table__,
+        (CREATE_ROOM_NOTIFY_FUNCTION, CREATE_ROOM_NOTIFY_TRIGGER),
+        DROP_ROOM_NOTIFY_TRIGGER,
+    ),
+    (
+        UsageBudget.__table__,
+        (CREATE_BUDGETS_NOTIFY_FUNCTION, CREATE_BUDGETS_NOTIFY_TRIGGER),
+        DROP_BUDGETS_NOTIFY_TRIGGER,
+    ),
+):
+    for _ddl in _ddls:
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+    event.listen(_table, "before_drop", DDL(_drop).execute_if(dialect="postgresql"))
