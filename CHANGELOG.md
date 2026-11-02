@@ -371,6 +371,9 @@ version of their own to them without also giving them a release of their own.
   clearing them in the gateway tells every process, so a change still takes
   effect on the next message. Settings are read again after 30 seconds at most,
   for a change whose signal was lost.
+- **Reading an agent's budget standings no longer builds their query each
+  time.** The standings are read twice for every message an agent posts, and
+  building the query cost more than running it; it is now built once.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
