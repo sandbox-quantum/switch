@@ -1393,12 +1393,17 @@ const AddAgentPanel = observer(function AddAgentPanel({
   const members = new Set(room.agentIds);
   const remoteAgents = useWorkspaceAgents(workspaceId);
   const serverId = workspacesStore.serverIdFor(workspaceId);
+  const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
   return (
     <AddParticipantPanel
       noun="agent"
       footer={null}
       searchPlaceholder="Search agents…"
-      allInText="Every agent on this server is already in this room."
+      allInText={
+        (remoteAgents.data ?? []).length === 0
+          ? 'There are no agents on this server yet.'
+          : 'Every agent on this server is already in this room.'
+      }
       loading={remoteAgents.isPending}
       loadError={
         remoteAgents.isError ? failureText(remoteAgents.error, 'Could not list the agents.') : null
@@ -1412,7 +1417,8 @@ const AddAgentPanel = observer(function AddAgentPanel({
             <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={22} />
           ),
           detail: [
-            localAgentFor(agent.id, workspaceId)
+            localAgentFor(agent.id, workspaceId) ||
+            (viewerId !== null && agent.ownerId === viewerId)
               ? 'yours'
               : agent.ownerName
                 ? `${agent.ownerName}’s`
