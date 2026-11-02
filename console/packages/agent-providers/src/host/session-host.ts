@@ -960,6 +960,7 @@ export class HostedSession {
         throw new Error('Session is not ready.');
     } else if (
       body.type !== 'turn.interrupt' &&
+      body.type !== 'turn.cancel' &&
       body.type !== 'session.stop' &&
       body.type !== 'session.reset' &&
       body.type !== 'session.compact' &&
@@ -1159,6 +1160,24 @@ export class HostedSession {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);
         await this.adapter.interruptTurn(session.sessionId);
+      } else if (body.type === 'turn.cancel') {
+        // Found and taken out of the queue with nothing awaited in between, as
+        // `runNext` takes the next one, so a turn is started or cancelled, never
+        // both. The provider is never told: it has not seen the message.
+        const at = this.queue.findIndex((queued) => queued.commandId === body.turnId);
+        if (at === -1)
+          throw new Error(
+            body.turnId === this.activeTurn
+              ? 'TURN_STARTED: the agent has already started on this message.'
+              : 'NOT_QUEUED: no message waiting for the agent has this turn.'
+          );
+        this.queue.splice(at, 1);
+        await this.publish({
+          type: 'turn.upsert',
+          turnId: body.turnId,
+          commandId: body.turnId,
+          status: 'cancelled',
+        });
       } else if (body.type === 'session.stop') {
         await this.inbox.append({ type: 'dispatched', commandId: command.commandId });
         this.dispatched.add(command.commandId);

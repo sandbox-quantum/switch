@@ -1183,6 +1183,11 @@ is meant to start the conversation fresh, so do not read back its history. A
 compaction there still queues the follow-up.
 Failed or unknown controls do not queue a success announcement.
 
+`!cancel @you <id>` takes a message that is still waiting in your queue out of
+it before you start on it. Only the person who sent the message can, and you are
+never handed it, so do not answer it or ask about it. A message you have started
+on cannot be cancelled; that is `!interrupt`.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each.

@@ -13,6 +13,7 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
+  cancelRefusal,
   retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
@@ -524,8 +525,9 @@ export async function runSharedHost(
           null
         );
     };
-    // Retry new optional fields independently: a server may predate either
-    // usage or child progress. Preserve the tool row and its terminal status.
+    // Retry new optional fields independently: a server may predate usage,
+    // child progress or the `cancelled` status. Preserve the tool row and its
+    // terminal status.
     const sendCompatible = async (item: Report): Promise<void> => {
       let report = item;
       for (;;) {
@@ -551,6 +553,13 @@ export async function runSharedHost(
               `Switch does not accept subagent metadata; reporting ${row.item_id} as tool activity.`
             );
             report = { kind: 'activity', row };
+          } else if (report.row.kind === 'turn' && report.row.status === 'cancelled') {
+            // A server that predates `cancelled` knows `interrupted` ends a
+            // turn, so the card stops saying the message is waiting.
+            console.warn(
+              `Switch does not know cancelled turns, so turn ${report.row.turn_id} is shown as interrupted: ${error.message}`
+            );
+            report = { kind: 'activity', row: { ...report.row, status: 'interrupted' } };
           } else throw error;
         }
       }
@@ -856,9 +865,10 @@ export async function runSharedHost(
               `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
             )
           );
-      // A retry asked for from a room that cannot run is answered there, where it was asked.
+      // A retry or a cancel asked for from a room that cannot run is answered
+      // there, where it was asked.
       if (
-        command.body.type === 'message.retry' &&
+        (command.body.type === 'message.retry' || command.body.type === 'turn.cancel') &&
         status?.status === 'rejected' &&
         !repeated &&
         parentChannel &&
@@ -870,11 +880,14 @@ export async function runSharedHost(
             type: 'room-reply',
             roomId: command.origin.roomId,
             threadId: command.origin.threadId,
-            body: retryRefusal(status.message),
+            body:
+              command.body.type === 'turn.cancel'
+                ? cancelRefusal(status.message)
+                : retryRefusal(status.message),
           })
           .catch((error: unknown) =>
             console.warn(
-              `Could not tell room ${command.origin.roomId} that its retry was refused: ${String(error)}`
+              `Could not tell room ${command.origin.roomId} that its ${command.body.type} was refused: ${String(error)}`
             )
           );
       // A fresh conversation starts with the instructions this host was given,

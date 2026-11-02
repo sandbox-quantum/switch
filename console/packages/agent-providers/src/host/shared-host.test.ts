@@ -1076,6 +1076,75 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
   }
 }, 20000);
 
+it('shows a cancelled turn as interrupted to a server that predates cancelling', async () => {
+  const host = await start({ rooms: true });
+  const turnRows = (status: string) =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { kind: string }).kind === 'turn' &&
+        (c.body as { status: string }).status === status
+    );
+  try {
+    host.switchCore.state.refusesCancelled = true;
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'First') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'Second') });
+    await until(() => expect(turnRows('queued')).toHaveLength(2));
+    const waiting = (turnRows('queued')[1]!.body as { turn_id: string }).turn_id;
+
+    const cancelled = await host.parent.ask({
+      type: 'command',
+      command: relayed('current', 'cancel-second', { type: 'turn.cancel', turnId: waiting }),
+      requesterName: null,
+    });
+    expect(cancelled).toMatchObject({ ok: true, value: { status: 'applied' } });
+    await until(() => expect(turnRows('interrupted')).toHaveLength(1));
+    expect(turnRows('cancelled')).toHaveLength(1);
+    expect(turnRows('interrupted')[0]!.body).toMatchObject({ turn_id: waiting });
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
+it('says in the room why a cancel asked for there was refused', async () => {
+  const host = await start({ rooms: true });
+  const replies = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type === 'room-reply'
+    );
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'work on it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const cancel: Command = {
+      ...relayed('current', 'cancel-started', {
+        type: 'turn.cancel',
+        turnId: host.turns[0]!.turnId,
+      }),
+      origin: {
+        actorId: '@person:test',
+        surface: 'switch-web',
+        roomId: 'room',
+        threadId: 'thread',
+        messageId: 'cancel-command',
+      },
+    };
+    expect(
+      await host.parent.ask({ type: 'command', command: cancel, requesterName: null })
+    ).toMatchObject({ ok: true, value: { status: 'rejected' } });
+    await until(() => expect(replies()).toHaveLength(1));
+    expect(replies()[0]!.ask).toMatchObject({
+      type: 'room-reply',
+      roomId: 'room',
+      threadId: 'thread',
+    });
+    expect(String(replies()[0]!.ask.body)).toContain('`!interrupt`');
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {

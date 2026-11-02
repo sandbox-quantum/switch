@@ -101,7 +101,8 @@ export type HostBody =
   | {
       type: 'turn.upsert';
       turnId: Id;
-      status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error';
+      /** `cancelled`: taken out of the queue before the agent started on it. */
+      status: 'queued' | 'running' | 'completed' | 'interrupted' | 'error' | 'cancelled';
       commandId: Id | null;
     }
   | { type: 'item.upsert'; item: Item }
@@ -145,6 +146,8 @@ export type CommandBody =
       answer: { kind: 'approval'; optionId: Id } | { kind: 'questions'; answers: Answer[] };
     }
   | { type: 'turn.interrupt'; turnId: Id }
+  /** Take a queued turn out of the queue before the agent starts on it; a started one is refused. */
+  | { type: 'turn.cancel'; turnId: Id }
   | { type: 'session.stop' }
   | { type: 'session.reset' }
   | { type: 'session.compact' }

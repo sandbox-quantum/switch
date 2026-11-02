@@ -36,6 +36,15 @@ export function roomControlRefusal(action: 'reset' | 'compact', reason: string |
   return `I couldn't ${action} my session: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
 
+/** What the room is told when the session could not cancel a queued message. */
+export function cancelRefusal(reason: string | null): string {
+  if (reason?.includes('TURN_STARTED'))
+    return "I've already started on that message, so it can't be cancelled. Use `!interrupt` to stop me.";
+  if (reason?.includes('NOT_QUEUED'))
+    return "That message isn't waiting for me any more: I've finished it, or it was cancelled.";
+  return `I couldn't cancel that message: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
+}
+
 /** What the room is told when the session could not run a message's turn again. */
 export function retryRefusal(reason: string | null): string {
   if (reason?.includes('SESSION_BUSY'))
