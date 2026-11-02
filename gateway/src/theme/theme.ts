@@ -72,6 +72,18 @@ const focusRing = {
   },
 } as const;
 
+/**
+ * Switches off the modifier MUI's Popper adds to copy popper.js's placement
+ * into React state. The Popper re-positions after every render, and that copy
+ * then queues an update even when the placement has not changed. Typing into
+ * an open Autocomplete faster than the browser yields to React's scheduler
+ * (a paste-by-key tool, a scanner, fuzzed input) piles one up per keystroke,
+ * and the 51st trips React's "Maximum update depth exceeded" (#185). popper.js
+ * still positions the popup, and no Autocomplete reads the placement. A module
+ * constant because the Popper rebuilds itself whenever `modifiers` changes.
+ */
+const AUTOCOMPLETE_POPPER_MODIFIERS = [{ name: "onUpdate", enabled: false }];
+
 export const APP_THEME = () =>
   createTheme({
     cssVariables: { colorSchemeSelector: "data-mui-color-scheme" },
@@ -119,6 +131,9 @@ export const APP_THEME = () =>
           // Numbers in tables and metrics line up.
           ".tabular": { fontVariantNumeric: "tabular-nums" },
         },
+      },
+      MuiAutocomplete: {
+        defaultProps: { slotProps: { popper: { modifiers: AUTOCOMPLETE_POPPER_MODIFIERS } } },
       },
       MuiAccordion: {
         styleOverrides: { root: { backgroundColor: "inherit", backgroundImage: "none" } },
