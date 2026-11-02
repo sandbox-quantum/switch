@@ -4,10 +4,18 @@ import {
   HostUnreachableError,
 } from '@shared/core/remote-hosts/reachability';
 import { HostReachabilityService, probeDelayFor } from './host-reachability-service';
+import {
+  deletePersistedReachability,
+  listPersistedReachability,
+  listSshHostsInUse,
+  savePersistedReachability,
+} from './reachability-store';
 
 vi.mock('./reachability-store', () => ({
   listPersistedReachability: vi.fn(async () => []),
+  listSshHostsInUse: vi.fn(async () => new Set<string>()),
   savePersistedReachability: vi.fn(async () => {}),
+  deletePersistedReachability: vi.fn(async () => {}),
   hydrate: (record: unknown) => ({
     ...(record as object),
     nextProbeAt: null,
@@ -191,5 +199,45 @@ describe('HostReachabilityService', () => {
     await settle();
 
     expect(probe).toHaveBeenCalledWith('vm');
+  });
+
+  it('prunes saved records for hosts nothing uses and never probes them', async () => {
+    const record = {
+      status: 'unreachable' as const,
+      lastError: 'Connection lost before handshake',
+      lastCheckedAt: null,
+      lastReachableAt: null,
+      consecutiveFailures: 6,
+    };
+    vi.mocked(listPersistedReachability).mockResolvedValueOnce([
+      { ...record, sshHost: 'example-gone' },
+      { ...record, sshHost: 'example-used' },
+    ]);
+    vi.mocked(listSshHostsInUse).mockResolvedValueOnce(new Set(['example-used']));
+    const { service: svc, timers } = makeService(async () => {});
+
+    await svc.initialize();
+
+    expect(deletePersistedReachability).toHaveBeenCalledExactlyOnceWith('example-gone');
+    expect(svc.getAll().map((r) => r.sshHost)).toEqual(['example-used']);
+    expect(timers).toHaveLength(1);
+  });
+
+  it('forgets a host so an in-flight probe neither re-saves nor reschedules it', async () => {
+    let fail!: (error: Error) => void;
+    const { service: svc, timers } = makeService(
+      () => new Promise<void>((_resolve, reject) => (fail = reject))
+    );
+
+    const probing = svc.checkNow('example-gone');
+    await svc.forget('example-gone');
+    fail(new Error('Connection lost before handshake'));
+    await probing;
+    await settle();
+
+    expect(deletePersistedReachability).toHaveBeenCalledWith('example-gone');
+    expect(savePersistedReachability).not.toHaveBeenCalled();
+    expect(timers).toHaveLength(0);
+    expect(svc.getAll()).toEqual([]);
   });
 });

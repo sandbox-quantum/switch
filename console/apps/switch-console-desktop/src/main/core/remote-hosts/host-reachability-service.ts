@@ -8,8 +8,10 @@ import {
 } from '@shared/core/remote-hosts/reachability';
 import type { SshConnectionEvent } from '@shared/core/ssh/sshEvents';
 import {
+  deletePersistedReachability,
   hydrate,
   listPersistedReachability,
+  listSshHostsInUse,
   savePersistedReachability,
   type PersistedHostReachability,
 } from './reachability-store';
@@ -91,13 +93,24 @@ export class HostReachabilityService extends EventEmitter {
   /**
    * Load persisted state so the app boots knowing which hosts were down. Hosts
    * that were unreachable at shutdown get a probe scheduled rather than being
-   * hammered by every consumer at once on startup.
+   * hammered by every consumer at once on startup. Records for hosts nothing
+   * uses any more are deleted instead, so a forgotten host is never dialled.
    */
   async initialize(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
-    const persisted = await listPersistedReachability();
+    const [persisted, inUse] = await Promise.all([
+      listPersistedReachability(),
+      listSshHostsInUse(),
+    ]);
     for (const record of persisted) {
+      if (!inUse.has(record.sshHost)) {
+        await deletePersistedReachability(record.sshHost);
+        this.deps.log.info('HostReachabilityService: pruned reachability of unused host', {
+          sshHost: record.sshHost,
+        });
+        continue;
+      }
       const reachability = hydrate(record);
       this.hosts.set(record.sshHost, { reachability });
       if (isHostBlocked(reachability) && reachability.status !== 'suspended') {
@@ -164,7 +177,9 @@ export class HostReachabilityService extends EventEmitter {
       lastError: message,
       consecutiveFailures: entry.reachability.consecutiveFailures + 1,
     }).then(() => {
-      if (status === 'unreachable') this.scheduleProbe(sshHost);
+      if (status === 'unreachable' && this.hosts.get(sshHost) === entry) {
+        this.scheduleProbe(sshHost);
+      }
     });
   }
 
@@ -182,12 +197,14 @@ export class HostReachabilityService extends EventEmitter {
       this.setProbing(sshHost, true);
       try {
         await this.deps.probe(sshHost);
+        if (this.hosts.get(sshHost) !== entry) return entry.reachability;
         return await this.transition(sshHost, {
           status: 'reachable',
           lastError: null,
           consecutiveFailures: 0,
         });
       } catch (error) {
+        if (this.hosts.get(sshHost) !== entry) return entry.reachability;
         const message = error instanceof Error ? error.message : String(error);
         const status: HostReachabilityStatus = this.deps.isAuthError(error)
           ? 'suspended'
@@ -195,13 +212,15 @@ export class HostReachabilityService extends EventEmitter {
         const next = await this.transition(sshHost, {
           status,
           lastError: message,
-          consecutiveFailures: this.entry(sshHost).reachability.consecutiveFailures + 1,
+          consecutiveFailures: entry.reachability.consecutiveFailures + 1,
         });
-        if (status === 'unreachable') this.scheduleProbe(sshHost);
+        if (status === 'unreachable' && this.hosts.get(sshHost) === entry) {
+          this.scheduleProbe(sshHost);
+        }
         return next;
       } finally {
-        this.entry(sshHost).inFlight = undefined;
-        this.setProbing(sshHost, false);
+        entry.inFlight = undefined;
+        if (this.hosts.get(sshHost) === entry) this.setProbing(sshHost, false);
       }
     })();
 
@@ -237,6 +256,17 @@ export class HostReachabilityService extends EventEmitter {
     for (const [sshHost, entry] of this.hosts) {
       if (isHostBlocked(entry.reachability)) void this.checkNow(sshHost);
     }
+  }
+
+  /**
+   * Stop tracking a host nothing uses any more: cancel its probe and delete its
+   * persisted record. A probe already in flight settles without saving it back.
+   */
+  async forget(sshHost: string): Promise<void> {
+    const entry = this.hosts.get(sshHost);
+    if (entry) this.cancelProbe(entry);
+    this.hosts.delete(sshHost);
+    await deletePersistedReachability(sshHost);
   }
 
   /** Stop all timers (app shutdown / tests). */
