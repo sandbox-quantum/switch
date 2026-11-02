@@ -25,7 +25,12 @@ from switch_core.connections.broker import (
     effective_tools,
     get_service_broker,
 )
-from switch_core.connections.loader import CATALOG, AccessLevel, ConnectionDefinition
+from switch_core.connections.loader import (
+    CATALOG,
+    AccessLevel,
+    ApiKeyField,
+    ConnectionDefinition,
+)
 from switch_core.db.models import (
     Agent,
     ServiceConnection,
@@ -156,6 +161,10 @@ async def list_service_connections(
                 # What a person pastes to connect a service connected with a
                 # key, and where they make one; null for any other.
                 "key": _key_form(definition),
+                # What a person picks before signing in, for an OAuth entry
+                # that asks (a vendor's site), each from its fixed list; null
+                # for any other.
+                "sign_in_choices": _sign_in_choices(definition),
                 "status": broker.connection_status(standing, connection),
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
@@ -209,23 +218,31 @@ async def list_service_agents(
     ]
 
 
+def _field(field: ApiKeyField) -> dict[str, Any]:
+    return {
+        "name": field.name,
+        "label": field.label,
+        "secret": field.secret,
+        "help": field.help,
+        "choices": field.choices,
+    }
+
+
 def _key_form(definition: ConnectionDefinition) -> dict[str, Any] | None:
     sign_in = definition.auth.api_key
     if definition.adapter != "api_key" or sign_in is None:
         return None
     return {
-        "fields": [
-            {
-                "name": field.name,
-                "label": field.label,
-                "secret": field.secret,
-                "help": field.help,
-                "choices": field.choices,
-            }
-            for field in sign_in.fields
-        ],
+        "fields": [_field(field) for field in sign_in.fields],
         "help_url": sign_in.help_url,
     }
+
+
+def _sign_in_choices(definition: ConnectionDefinition) -> list[dict[str, Any]] | None:
+    oauth = definition.auth.oauth
+    if definition.adapter != "oauth" or oauth is None or not oauth.choices:
+        return None
+    return [_field(field) for field in oauth.choices]
 
 
 class KeyBody(BaseModel):
