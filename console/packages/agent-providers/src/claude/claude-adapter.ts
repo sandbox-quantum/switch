@@ -387,18 +387,26 @@ function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): stri
  *
  * The connector plugin Switch used to ship would add a second Switch server with
  * its own connection; it is kept off for installs that still have it.
+ *
+ * Connector MCP tools are excluded: they require user approval (unless in
+ * full-access mode) and must not be pre-allowed in session settings.
  */
 function sessionSettings(
-  mcpServers: Record<string, McpServerConfig>
+  mcpServers: Record<string, McpServerConfig>,
+  connectorMcpServers: readonly string[] = []
 ): { settings: Record<string, unknown> } | Record<string, never> {
-  const names = Object.keys(mcpServers);
-  if (names.length === 0) return {};
+  const connectorSet = new Set(connectorMcpServers);
+  const names = Object.keys(mcpServers).filter((name) => !connectorSet.has(name));
+  const hasSwitch = Boolean(mcpServers.switch);
+  if (names.length === 0 && !hasSwitch) return {};
   return {
     settings: {
-      ...(mcpServers.switch
+      ...(hasSwitch
         ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
         : {}),
-      permissions: { allow: names.map((name) => `mcp__${name}`) },
+      ...(names.length > 0
+        ? { permissions: { allow: names.map((name) => `mcp__${name}`) } }
+        : {}),
     },
   };
 }
@@ -489,7 +497,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       permissionMode,
       strictMcpConfig: false,
-      ...sessionSettings(mcpServers),
+      ...sessionSettings(mcpServers, input.connectorMcpServers),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
