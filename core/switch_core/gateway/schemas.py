@@ -25,6 +25,7 @@ from switch_core.db.models import (
     MAX_BUDGET_PERIOD_HOURS,
     UsageMetric,
 )
+from switch_core.organization_issues import IssueKind
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -1073,6 +1074,17 @@ class CurrentOrganizationResponse(BaseModel):
     slug: str
     name: str
     role: str | None
+
+
+class OrganizationIssueDetail(BaseModel):
+    """Something in the organization that needs an admin's attention now
+    (`organization_issues.py`): its kind, the workspace it is in (None for
+    the organization's own), and the agents it names, if any."""
+
+    kind: IssueKind
+    workspace_id: str | None
+    workspace_name: str | None
+    agents: list[str]
 
 
 class OrganizationAuditEventDetail(BaseModel):

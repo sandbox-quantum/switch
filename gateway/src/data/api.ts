@@ -1362,6 +1362,27 @@ export async function removeOrganizationMember(
   );
 }
 
+export type OrganizationIssueKind =
+  | "no_org_admin"
+  | "workspace_without_owner"
+  | "agents_without_acting_owner"
+  | "directory_organization_deleted";
+
+/** Something in the organization that needs an admin's attention now. Read
+ * from how things stand, so it is gone once fixed. */
+export interface OrganizationIssue {
+  kind: OrganizationIssueKind;
+  // Null for an issue of the organization's own.
+  workspace_id: string | null;
+  workspace_name: string | null;
+  agents: string[];
+}
+
+/** Its admins only, and the platform operator while it has none. */
+export async function fetchOrganizationIssues(): Promise<OrganizationIssue[]> {
+  return jsonRequest<OrganizationIssue[]>("/organizations/current/issues", "GET");
+}
+
 export const ORGANIZATION_AUDIT_PAGE = 50;
 
 /** One page of the organization's audit log, newest first: the most recent
