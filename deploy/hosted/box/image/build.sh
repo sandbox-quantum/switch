@@ -7,6 +7,9 @@
 #   <tag>                  the local tag for the result, e.g. 2026-11-02, required
 #   CONTROLLER_TGZ_SHA256  optional: the expected sha256 of the controller package. Set: a different package is refused.
 #   PUSH_REPO              optional: a registry repository to push to, e.g. <registry>/<repo>. Not set: nothing is pushed.
+#   BUILT_FROM             optional, <controller.tgz> mode only: the full commit id the package was packed from (40 hex),
+#                          written to the switch.built-from label. Needs CONTROLLER_TGZ_SHA256 too. --from-source refuses it,
+#                          because there the checkout's own commit is always the label.
 #
 # The box runs the box copy of the controller, @switch-console/agent-controller-box, never the upstream
 # console/packages/agent-controller that Switch Console and the v1 controller release use. --from-source packs it
@@ -34,6 +37,7 @@ trap 'rm -rf "$work" ./controller.tgz' EXIT
 commit=none
 
 if [ "$src" = --from-source ]; then
+  [ -z "${BUILT_FROM:-}" ] || { echo "BUILT_FROM is for <controller.tgz> mode only; --from-source labels the checkout's commit" >&2; exit 2; }
   console=$(cd ../../../../console && pwd)
   [ -z "$(git -C "$console" status --porcelain)" ] || { echo "the checkout has uncommitted changes" >&2; exit 2; }
   commit=$(git -C "$console" rev-parse HEAD)
@@ -47,6 +51,11 @@ if [ "$src" = --from-source ]; then
   tgz=$console/packages/agent-controller-box/dist-package/switch-agent-controller-$version.tgz
 else
   tgz=$src
+  if [ -n "${BUILT_FROM:-}" ]; then
+    printf '%s' "$BUILT_FROM" | grep -qE '^[0-9a-f]{40}$' || { echo "BUILT_FROM must be a full 40-character commit id" >&2; exit 2; }
+    [ -n "${CONTROLLER_TGZ_SHA256:-}" ] || { echo "BUILT_FROM needs CONTROLLER_TGZ_SHA256, so the label names a known package" >&2; exit 2; }
+    commit=$BUILT_FROM
+  fi
 fi
 [ -f "$tgz" ] || { echo "no such file: $tgz" >&2; exit 2; }
 
