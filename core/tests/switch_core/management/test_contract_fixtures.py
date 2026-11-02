@@ -422,7 +422,7 @@ class TestStreamFrames:
                     thread_id=None,
                     surface="slack",
                     requester_name="Ada",
-                    target_message_id=None,
+                    target=None,
                 ),
             )
             provoked += await take(stream, 1)
