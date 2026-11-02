@@ -90,6 +90,14 @@ class GoogleChatConnectionConfig(BridgeConnectionConfig):
         default=None,
         description="Optional mapping from numeric Google Chat slash command IDs to Switch command names.",
     )
+    api_base_url: str | None = Field(
+        default=None,
+        description="Optional base URL override for Google Chat API (for local simulators/testing).",
+    )
+    pubsub_base_url: str | None = Field(
+        default=None,
+        description="Optional base URL override for Cloud Pub/Sub API (for local simulators/testing).",
+    )
 
     @field_validator("service_account_json")
     @classmethod
@@ -138,7 +146,13 @@ class GoogleChatAdapter(PlatformAdapter):
             user_client_secret=config.user_client_secret,
             user_refresh_token=config.user_refresh_token,
         )
-        self.client = GoogleChatClient(self.auth_manager)
+        client_kwargs: dict[str, Any] = {}
+        if config.api_base_url:
+            client_kwargs["chat_api_base"] = config.api_base_url
+        if config.pubsub_base_url:
+            client_kwargs["pubsub_api_base"] = config.pubsub_base_url
+
+        self.client = GoogleChatClient(self.auth_manager, **client_kwargs)
         self.workspace_events_mgr = WorkspaceEventsManager(
             self.client,
             config.topic_id,
@@ -165,8 +179,14 @@ class GoogleChatAdapter(PlatformAdapter):
         )
         auth.validate_service_account_structure()
 
+        client_kwargs: dict[str, Any] = {}
+        if config.api_base_url:
+            client_kwargs["chat_api_base"] = config.api_base_url
+        if config.pubsub_base_url:
+            client_kwargs["pubsub_api_base"] = config.pubsub_base_url
+
         async with httpx.AsyncClient(timeout=30.0) as http_client:
-            client = GoogleChatClient(auth, http_client=http_client)
+            client = GoogleChatClient(auth, http_client=http_client, **client_kwargs)
             # 1. Verify token minting
             await auth.get_service_account_token()
 

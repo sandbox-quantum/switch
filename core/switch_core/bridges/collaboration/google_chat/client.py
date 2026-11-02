@@ -43,10 +43,16 @@ class GoogleChatClient:
         auth_manager: GoogleAuthManager,
         *,
         http_client: httpx.AsyncClient | None = None,
+        chat_api_base: str = CHAT_API_BASE,
+        pubsub_api_base: str = PUBSUB_API_BASE,
+        workspace_events_api_base: str = WORKSPACE_EVENTS_API_BASE,
     ) -> None:
         self.auth_manager = auth_manager
         self._http_client = http_client or httpx.AsyncClient(timeout=30.0)
         self._owns_http_client = http_client is None
+        self.chat_api_base = chat_api_base.rstrip("/")
+        self.pubsub_api_base = pubsub_api_base.rstrip("/")
+        self.workspace_events_api_base = workspace_events_api_base.rstrip("/")
 
     async def aclose(self) -> None:
         if self._owns_http_client:
@@ -106,7 +112,7 @@ class GoogleChatClient:
     ) -> dict[str, Any]:
         """Fetch subscription metadata to verify existence and access."""
         sub_path = self._normalize_subscription_path(project_id, subscription_id)
-        url = f"{PUBSUB_API_BASE}/{sub_path}"
+        url = f"{self.pubsub_api_base}/{sub_path}"
         resp = await self._request("GET", url)
         if resp.status_code != 200:
             err = _format_google_error(resp)
@@ -127,7 +133,7 @@ class GoogleChatClient:
     ) -> list[dict[str, Any]]:
         """Pull messages from Cloud Pub/Sub subscription."""
         sub_path = self._normalize_subscription_path(project_id, subscription_id)
-        url = f"{PUBSUB_API_BASE}/{sub_path}:pull"
+        url = f"{self.pubsub_api_base}/{sub_path}:pull"
         data = {"maxMessages": max_messages}
         resp = await self._request("POST", url, json_data=data)
         if resp.status_code != 200:
@@ -148,7 +154,7 @@ class GoogleChatClient:
         if not ack_ids:
             return
         sub_path = self._normalize_subscription_path(project_id, subscription_id)
-        url = f"{PUBSUB_API_BASE}/{sub_path}:acknowledge"
+        url = f"{self.pubsub_api_base}/{sub_path}:acknowledge"
         resp = await self._request("POST", url, json_data={"ackIds": ack_ids})
         if resp.status_code != 200:
             err = _format_google_error(resp)
@@ -167,7 +173,7 @@ class GoogleChatClient:
         if not ack_ids:
             return
         sub_path = self._normalize_subscription_path(project_id, subscription_id)
-        url = f"{PUBSUB_API_BASE}/{sub_path}:modifyAckDeadline"
+        url = f"{self.pubsub_api_base}/{sub_path}:modifyAckDeadline"
         data = {
             "ackIds": ack_ids,
             "ackDeadlineSeconds": ack_deadline_seconds,
@@ -195,7 +201,7 @@ class GoogleChatClient:
     ) -> dict[str, Any]:
         """Post a message or card to a Google Chat space."""
         space_name = self._normalize_space_name(space_id)
-        url = f"{CHAT_API_BASE}/{space_name}/messages"
+        url = f"{self.chat_api_base}/{space_name}/messages"
         params: dict[str, Any] = {}
         if thread_name:
             params["messageReplyOption"] = message_reply_option
@@ -219,7 +225,7 @@ class GoogleChatClient:
 
     async def get_message(self, message_name: str) -> dict[str, Any]:
         """Get a message resource by name (spaces/{space}/messages/{msg})."""
-        url = f"{CHAT_API_BASE}/{message_name}"
+        url = f"{self.chat_api_base}/{message_name}"
         resp = await self._request("GET", url)
         if resp.status_code != 200:
             err = _format_google_error(resp)
@@ -237,7 +243,7 @@ class GoogleChatClient:
         update_mask: str | None = None,
     ) -> dict[str, Any]:
         """Update an existing message or card in Google Chat."""
-        url = f"{CHAT_API_BASE}/{message_name}"
+        url = f"{self.chat_api_base}/{message_name}"
         masks: list[str] = []
         body: dict[str, Any] = {}
         if text is not None:
@@ -265,7 +271,7 @@ class GoogleChatClient:
 
     async def delete_message(self, message_name: str) -> None:
         """Delete a message posted by the bot in Google Chat."""
-        url = f"{CHAT_API_BASE}/{message_name}"
+        url = f"{self.chat_api_base}/{message_name}"
         resp = await self._request("DELETE", url)
         if resp.status_code not in (200, 204):
             err = _format_google_error(resp)
@@ -279,7 +285,7 @@ class GoogleChatClient:
         max_bytes: int = 20 * 1024 * 1024,
     ) -> bytes:
         """Download native Google Chat media attachment while enforcing byte ceiling."""
-        url = f"{CHAT_API_BASE}/media/{resource_name}?alt=media"
+        url = f"{self.chat_api_base}/media/{resource_name}?alt=media"
         token = await self.auth_manager.get_service_account_token()
         headers = {"Authorization": f"Bearer {token}"}
 
@@ -312,7 +318,7 @@ class GoogleChatClient:
     async def get_space(self, space_id: str) -> dict[str, Any]:
         """Fetch space details."""
         space_name = self._normalize_space_name(space_id)
-        url = f"{CHAT_API_BASE}/{space_name}"
+        url = f"{self.chat_api_base}/{space_name}"
         resp = await self._request("GET", url)
         if resp.status_code != 200:
             err = _format_google_error(resp)
@@ -323,7 +329,7 @@ class GoogleChatClient:
 
     async def list_spaces(self) -> list[dict[str, Any]]:
         """List spaces the bot is a member of."""
-        url = f"{CHAT_API_BASE}/spaces"
+        url = f"{self.chat_api_base}/spaces"
         resp = await self._request("GET", url)
         if resp.status_code != 200:
             err = _format_google_error(resp)
@@ -336,7 +342,7 @@ class GoogleChatClient:
     ) -> None:
         """Remove membership (leave a space)."""
         space_name = self._normalize_space_name(space_id)
-        url = f"{CHAT_API_BASE}/{space_name}/members/{member_name}"
+        url = f"{self.chat_api_base}/{space_name}/members/{member_name}"
         resp = await self._request("DELETE", url)
         if resp.status_code not in (200, 204):
             err = _format_google_error(resp)
@@ -356,7 +362,7 @@ class GoogleChatClient:
         """Create a Google Workspace Events space subscription for chat events."""
         space_name = self._normalize_space_name(space_id)
         target_resource = f"//chat.googleapis.com/{space_name}"
-        url = f"{WORKSPACE_EVENTS_API_BASE}/subscriptions"
+        url = f"{self.workspace_events_api_base}/subscriptions"
         event_types = [
             "google.workspace.chat.message.v1.created",
             "google.workspace.chat.membership.v1.created",
@@ -385,7 +391,7 @@ class GoogleChatClient:
         ttl_seconds: int = 14400,
     ) -> dict[str, Any]:
         """Renew a Google Workspace Events subscription TTL before expiration."""
-        url = f"{WORKSPACE_EVENTS_API_BASE}/{subscription_name}"
+        url = f"{self.workspace_events_api_base}/{subscription_name}"
         body = {"ttl": f"{ttl_seconds}s"}
         resp = await self._request(
             "PATCH",
@@ -405,7 +411,7 @@ class GoogleChatClient:
         self, subscription_name: str
     ) -> None:
         """Delete a Workspace Events subscription."""
-        url = f"{WORKSPACE_EVENTS_API_BASE}/{subscription_name}"
+        url = f"{self.workspace_events_api_base}/{subscription_name}"
         resp = await self._request("DELETE", url, use_user_oauth=True)
         if resp.status_code not in (200, 204):
             err = _format_google_error(resp)
