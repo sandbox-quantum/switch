@@ -1,0 +1,934 @@
+from __future__ import annotations
+
+import base64
+import json
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from switch_core.bridges.collaboration.adapter import (
+    RequestCard,
+    RequestReference,
+    TurnActivity,
+)
+from switch_core.bridges.collaboration.google_chat.adapter import (
+    GoogleChatAdapter,
+    GoogleChatConnectionConfig,
+)
+from switch_core.bridges.collaboration.google_chat.formatting import (
+    markdown_to_google_chat,
+    split_message_chunks,
+)
+from switch_core.bridges.collaboration.models import (
+    BridgeCredentialError,
+    BridgeOperationError,
+    ChannelCreationUnsupported,
+    InboundCommand,
+    InboundInteraction,
+    InboundMessage,
+    OutboundAttachment,
+)
+from switch_core.sessions.contract import (
+    ApprovalContent,
+    ApprovalOption,
+    Question,
+    QuestionsContent,
+    SnapshotRequest,
+    TurnUpsert,
+)
+
+# Generate a fast RSA key for testing
+_TEST_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+_TEST_PEM_KEY = _TEST_RSA_KEY.private_bytes(
+    encoding=serialization.Encoding.PEM,
+    format=serialization.PrivateFormat.PKCS8,
+    encryption_algorithm=serialization.NoEncryption(),
+).decode("utf-8")
+
+TEST_PROJECT_ID = "test-project-123"
+TEST_SUBSCRIPTION_ID = "switch-chat-sub"
+TEST_TOPIC_ID = "switch-chat-topic"
+TEST_CLIENT_EMAIL = "switch-chat-bot@test-project-123.iam.gserviceaccount.com"
+
+TEST_SERVICE_ACCOUNT_JSON = json.dumps(
+    {
+        "type": "service_account",
+        "project_id": TEST_PROJECT_ID,
+        "private_key_id": "key-id-abc-123",
+        "private_key": _TEST_PEM_KEY,
+        "client_email": TEST_CLIENT_EMAIL,
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+)
+
+
+def _make_config(**kwargs: Any) -> GoogleChatConnectionConfig:
+    data = {
+        "service_account_json": TEST_SERVICE_ACCOUNT_JSON,
+        "project_id": TEST_PROJECT_ID,
+        "subscription_id": TEST_SUBSCRIPTION_ID,
+        "topic_id": TEST_TOPIC_ID,
+        "slash_command_map": {"1": "invite-agent"},
+    }
+    data.update(kwargs)
+    return GoogleChatConnectionConfig(**data)
+
+
+# ── 1. Configuration & verify_credentials ────────────────────────────────────
+
+
+class TestGoogleChatConfigurationAndCredentials:
+    def test_valid_config_parses_cleanly(self) -> None:
+        cfg = _make_config()
+        assert cfg.project_id == TEST_PROJECT_ID
+        assert cfg.subscription_id == TEST_SUBSCRIPTION_ID
+        assert cfg.service_account_dict["client_email"] == TEST_CLIENT_EMAIL
+
+    def test_invalid_service_account_json_rejected(self) -> None:
+        with pytest.raises(ValueError, match="service_account_json is not valid JSON"):
+            _make_config(service_account_json="not-json")
+
+        with pytest.raises(ValueError, match="missing required 'client_email'"):
+            bad_sa = json.dumps({"type": "service_account", "private_key": "abc"})
+            _make_config(service_account_json=bad_sa)
+
+        with pytest.raises(ValueError, match="missing required 'private_key'"):
+            bad_sa = json.dumps({"type": "service_account", "client_email": "a@b.com"})
+            _make_config(service_account_json=bad_sa)
+
+    @pytest.mark.asyncio
+    async def test_verify_credentials_success(self) -> None:
+        cfg = _make_config()
+        with (
+            patch(
+                "switch_core.bridges.collaboration.google_chat.auth.GoogleAuthManager.get_service_account_token",
+                new=AsyncMock(return_value="fake-token"),
+            ),
+            patch(
+                "switch_core.bridges.collaboration.google_chat.client.GoogleChatClient.get_subscription",
+                new=AsyncMock(
+                    return_value={
+                        "name": f"projects/{TEST_PROJECT_ID}/subscriptions/{TEST_SUBSCRIPTION_ID}"
+                    }
+                ),
+            ),
+            patch(
+                "switch_core.bridges.collaboration.google_chat.client.GoogleChatClient.list_spaces",
+                new=AsyncMock(return_value=[]),
+            ),
+        ):
+            # Should succeed with no exception
+            await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+
+    @pytest.mark.asyncio
+    async def test_verify_credentials_fails_on_missing_subscription(self) -> None:
+        cfg = _make_config()
+        with (
+            patch(
+                "switch_core.bridges.collaboration.google_chat.auth.GoogleAuthManager.get_service_account_token",
+                new=AsyncMock(return_value="fake-token"),
+            ),
+            patch(
+                "switch_core.bridges.collaboration.google_chat.client.GoogleChatClient.get_subscription",
+                new=AsyncMock(
+                    side_effect=BridgeCredentialError(
+                        "Pub/Sub subscription not found or inaccessible"
+                    )
+                ),
+            ),
+        ):
+            with pytest.raises(
+                BridgeCredentialError, match="Pub/Sub subscription not found"
+            ):
+                await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+
+    @pytest.mark.asyncio
+    async def test_verify_credentials_fails_on_disabled_chat_api(self) -> None:
+        cfg = _make_config()
+        with (
+            patch(
+                "switch_core.bridges.collaboration.google_chat.auth.GoogleAuthManager.get_service_account_token",
+                new=AsyncMock(return_value="fake-token"),
+            ),
+            patch(
+                "switch_core.bridges.collaboration.google_chat.client.GoogleChatClient.get_subscription",
+                new=AsyncMock(return_value={}),
+            ),
+            patch(
+                "switch_core.bridges.collaboration.google_chat.client.GoogleChatClient.list_spaces",
+                new=AsyncMock(
+                    side_effect=BridgeOperationError(
+                        "Google Chat API has not been used in project"
+                    )
+                ),
+            ),
+        ):
+            with pytest.raises(
+                BridgeCredentialError, match="Google Chat API check failed"
+            ):
+                await GoogleChatAdapter.verify_credentials(cfg.model_dump())
+
+    def test_classify_failure(self) -> None:
+        assert (
+            GoogleChatAdapter.classify_failure(BridgeCredentialError("bad"))
+            == "auth_failed"
+        )
+        assert (
+            GoogleChatAdapter.classify_failure(httpx.ConnectError("refused"))
+            == "network"
+        )
+        assert (
+            GoogleChatAdapter.classify_failure(BridgeOperationError("api error"))
+            == "platform_error"
+        )
+        assert GoogleChatAdapter.classify_failure(RuntimeError("other")) is None
+
+
+# ── 2. Inbound Event Consumer (Pub/Sub + Workspace Events) ───────────────────
+
+
+class TestGoogleChatInboundConsumer:
+    @pytest.mark.asyncio
+    async def test_added_to_space_dispatches_app_join_and_subscribes(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        app_joined_event: Any = None
+
+        async def on_app_joined(join: Any) -> None:
+            nonlocal app_joined_event
+            app_joined_event = join
+
+        adapter.consumer.set_callbacks(on_app_joined=on_app_joined)
+        adapter.workspace_events_mgr.ensure_space_subscription = AsyncMock()
+
+        payload = {
+            "type": "ADDED_TO_SPACE",
+            "space": {
+                "name": "spaces/AAAABBBB",
+                "type": "SPACE",
+                "displayName": "Engineering",
+            },
+        }
+
+        success = await adapter.consumer._handle_interaction_event(payload, "evt-1")
+        assert success is True
+        assert app_joined_event is not None
+        assert app_joined_event.channel_id == "spaces/AAAABBBB"
+        assert app_joined_event.channel_name == "Engineering"
+        adapter.workspace_events_mgr.ensure_space_subscription.assert_called_once_with(
+            "spaces/AAAABBBB"
+        )
+
+    @pytest.mark.asyncio
+    async def test_mention_message_dispatches_inbound_message(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        inbound_msg: InboundMessage | None = None
+
+        async def on_message(msg: InboundMessage) -> None:
+            nonlocal inbound_msg
+            inbound_msg = msg
+
+        adapter.consumer.set_callbacks(on_message=on_message)
+
+        payload = {
+            "type": "MESSAGE",
+            "space": {
+                "name": "spaces/SPACE1",
+                "type": "SPACE",
+                "displayName": "General",
+            },
+            "message": {
+                "name": "spaces/SPACE1/messages/MSG100",
+                "text": "@SwitchBot hello assistant",
+                "argumentText": " hello assistant",
+                "sender": {
+                    "name": "users/USER123",
+                    "displayName": "Alice",
+                    "type": "HUMAN",
+                },
+                "thread": {
+                    "name": "spaces/SPACE1/threads/THREAD555",
+                },
+                "annotations": [
+                    {
+                        "type": "USER_MENTION",
+                        "userMention": {
+                            "user": {
+                                "name": "users/app",
+                                "displayName": "SwitchBot",
+                                "type": "BOT",
+                            }
+                        },
+                    }
+                ],
+            },
+        }
+
+        success = await adapter.consumer._handle_interaction_event(payload, "evt-2")
+        assert success is True
+        assert inbound_msg is not None
+        assert inbound_msg.channel_id == "spaces/SPACE1"
+        assert inbound_msg.content == "hello assistant"
+        assert inbound_msg.sender_name == "Alice"
+        assert inbound_msg.message_ref == "spaces/SPACE1/messages/MSG100"
+        assert inbound_msg.root_id == "spaces/SPACE1/threads/THREAD555"
+        assert inbound_msg.self_mention_token == "bot"
+
+    @pytest.mark.asyncio
+    async def test_bot_own_messages_ignored(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        called = False
+
+        async def on_message(msg: InboundMessage) -> None:
+            nonlocal called
+            called = True
+
+        adapter.consumer.set_callbacks(on_message=on_message)
+
+        payload = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/SPACE1"},
+            "message": {
+                "name": "spaces/SPACE1/messages/MSG101",
+                "text": "echo from bot",
+                "sender": {"name": "users/app", "type": "BOT"},
+            },
+        }
+
+        success = await adapter.consumer._handle_interaction_event(payload, "evt-3")
+        assert success is True
+        assert called is False
+
+    @pytest.mark.asyncio
+    async def test_command_parsing_exclamation(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        cmd_event: InboundCommand | None = None
+
+        async def on_command(cmd: InboundCommand) -> None:
+            nonlocal cmd_event
+            cmd_event = cmd
+
+        adapter.consumer.set_callbacks(on_command=on_command)
+
+        payload = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/SPACE1"},
+            "message": {
+                "name": "spaces/SPACE1/messages/MSG102",
+                "text": "!help me please",
+                "sender": {"name": "users/U1", "displayName": "Bob", "type": "HUMAN"},
+            },
+        }
+
+        await adapter.consumer._handle_chat_message_event(
+            payload, "spaces/SPACE1", "channel_public", "General", "e4"
+        )
+        assert cmd_event is not None
+        assert cmd_event.command == "help"
+        assert cmd_event.args == "me please"
+
+    @pytest.mark.asyncio
+    async def test_numeric_slash_command_mapping(self) -> None:
+        adapter = GoogleChatAdapter(
+            _make_config(slash_command_map={"1": "invite-agent"})
+        )
+        cmd_event: InboundCommand | None = None
+
+        async def on_command(cmd: InboundCommand) -> None:
+            nonlocal cmd_event
+            cmd_event = cmd
+
+        adapter.consumer.set_callbacks(on_command=on_command)
+
+        payload = {
+            "type": "SLASH_COMMAND",
+            "space": {"name": "spaces/SPACE1"},
+            "user": {"name": "users/U1", "displayName": "Bob"},
+            "message": {"text": "/invite-agent scout"},
+            "appCommandPayload": {"appCommandMetadata": {"appCommandId": 1}},
+        }
+
+        await adapter.consumer._handle_slash_command(
+            payload, "spaces/SPACE1", "channel_public", "General"
+        )
+        assert cmd_event is not None
+        assert cmd_event.command == "invite-agent"
+        assert cmd_event.args == "/invite-agent scout"
+
+
+# ── 3. Deduplication (Interaction Event vs Workspace CloudEvent) ─────────────
+
+
+class TestGoogleChatDeduplication:
+    @pytest.mark.asyncio
+    async def test_duplicate_message_processed_only_once(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        message_count = 0
+
+        async def on_message(msg: InboundMessage) -> None:
+            nonlocal message_count
+            message_count += 1
+
+        adapter.consumer.set_callbacks(on_message=on_message)
+
+        # 1. Delivery via Chat App Interaction Event (@mention)
+        interaction_payload = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/SHARED_MSG_001",
+                "text": "@SwitchBot hello world",
+                "argumentText": " hello world",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+            },
+        }
+        await adapter.consumer._handle_interaction_event(
+            interaction_payload, "evt-interact-1"
+        )
+        assert message_count == 1
+
+        # 2. Delivery of the SAME message via Google Workspace Events CloudEvent
+        cloud_event_payload = {
+            "specversion": "1.0",
+            "id": "ce-unique-999",
+            "type": "google.workspace.chat.message.v1.created",
+            "data": {
+                "space": {"name": "spaces/S1"},
+                "message": {
+                    "name": "spaces/S1/messages/SHARED_MSG_001",
+                    "text": "@SwitchBot hello world",
+                    "sender": {
+                        "name": "users/U1",
+                        "displayName": "Alice",
+                        "type": "HUMAN",
+                    },
+                },
+            },
+        }
+        await adapter.consumer._handle_cloud_event(
+            cloud_event_payload, {}, "ce-unique-999"
+        )
+
+        # Second delivery should be deduplicated and dropped!
+        assert message_count == 1
+
+
+# ── 4. Pub/Sub Ack-After-Write, No-Ack on Failure & Lease Safety ─────────────
+
+
+class TestGoogleChatPubSubAckAndLeaseSafety:
+    @pytest.mark.asyncio
+    async def test_ack_after_write_succeeds(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.acknowledge_pubsub_messages = AsyncMock()
+
+        called = False
+
+        async def on_message(msg: InboundMessage) -> None:
+            nonlocal called
+            called = True
+
+        adapter.consumer.set_callbacks(on_message=on_message)
+
+        body = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/M1",
+                "text": "test",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+            },
+        }
+        raw_b64 = base64.b64encode(json.dumps(body).encode()).decode()
+        msg_item = {"data": raw_b64, "messageId": "msg-id-1"}
+
+        await adapter.consumer._process_single_pubsub_message("ack-123", msg_item)
+
+        assert called is True
+        adapter.client.acknowledge_pubsub_messages.assert_called_once_with(
+            TEST_PROJECT_ID,
+            TEST_SUBSCRIPTION_ID,
+            ["ack-123"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_ack_when_room_write_fails(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.acknowledge_pubsub_messages = AsyncMock()
+
+        async def on_message_fail(msg: InboundMessage) -> None:
+            raise RuntimeError("Database transport down!")
+
+        adapter.consumer.set_callbacks(on_message=on_message_fail)
+
+        body = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/M2",
+                "text": "test",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+            },
+        }
+        raw_b64 = base64.b64encode(json.dumps(body).encode()).decode()
+        msg_item = {"data": raw_b64, "messageId": "msg-id-2"}
+
+        await adapter.consumer._process_single_pubsub_message("ack-456", msg_item)
+
+        # Acknowledge MUST NOT be called so message can be redelivered!
+        adapter.client.acknowledge_pubsub_messages.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keeps_quiet_unless_listening_lease_safety(self) -> None:
+        cfg = _make_config()
+        adapter = GoogleChatAdapter(cfg)
+        adapter.consumer.start = MagicMock()
+        adapter.workspace_events_mgr.start = MagicMock()
+
+        # Quiet pod (listening = False)
+        adapter.set_listening(False)
+        await adapter.start(
+            on_message=AsyncMock(),
+            on_command=AsyncMock(),
+            on_agent_joined=AsyncMock(),
+            on_user_joined=AsyncMock(),
+            on_app_joined=AsyncMock(),
+        )
+        adapter.consumer.start.assert_not_called()
+        adapter.workspace_events_mgr.start.assert_not_called()
+
+        # Active pod (listening = True)
+        adapter.set_listening(True)
+        await adapter.start(
+            on_message=AsyncMock(),
+            on_command=AsyncMock(),
+            on_agent_joined=AsyncMock(),
+            on_user_joined=AsyncMock(),
+            on_app_joined=AsyncMock(),
+        )
+        adapter.consumer.start.assert_called_once()
+        adapter.workspace_events_mgr.start.assert_called_once()
+
+        await adapter.stop()
+
+
+# ── 5. Attachments Inbound & Outbound ─────────────────────────────────────────
+
+
+class TestGoogleChatAttachments:
+    @pytest.mark.asyncio
+    async def test_native_inbound_attachment_download(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.download_media = AsyncMock(return_value=b"file content bytes")
+
+        received_msg: InboundMessage | None = None
+
+        async def on_message(msg: InboundMessage) -> None:
+            nonlocal received_msg
+            received_msg = msg
+
+        adapter.consumer.set_callbacks(on_message=on_message)
+
+        payload = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/ATT_MSG",
+                "text": "here is a file",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+                "attachment": [
+                    {
+                        "contentName": "report.pdf",
+                        "contentType": "application/pdf",
+                        "attachmentDataRef": {
+                            "resourceName": "spaces/S1/messages/ATT_MSG/attachments/1"
+                        },
+                    }
+                ],
+            },
+        }
+
+        await adapter.consumer._handle_interaction_event(payload, "evt-att-1")
+        assert received_msg is not None
+        assert len(received_msg.attachments) == 1
+        assert received_msg.attachments[0].filename == "report.pdf"
+        assert received_msg.attachments[0].data == b"file content bytes"
+
+    @pytest.mark.asyncio
+    async def test_oversized_inbound_attachment_refusal(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.consumer.max_attachment_bytes = 1000
+        adapter.client.download_media = AsyncMock(
+            side_effect=ValueError("Attachment exceeds maximum allowed size")
+        )
+
+        received_msg: InboundMessage | None = None
+
+        async def on_message(msg: InboundMessage) -> None:
+            nonlocal received_msg
+            received_msg = msg
+
+        adapter.consumer.set_callbacks(on_message=on_message)
+
+        payload = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/BIG_MSG",
+                "text": "huge file",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+                "attachment": [
+                    {
+                        "contentName": "huge.zip",
+                        "contentType": "application/zip",
+                        "attachmentDataRef": {
+                            "resourceName": "spaces/S1/messages/BIG_MSG/attachments/1"
+                        },
+                    }
+                ],
+            },
+        }
+
+        await adapter.consumer._handle_interaction_event(payload, "evt-att-2")
+        assert received_msg is not None
+        assert len(received_msg.attachments) == 0
+        assert len(received_msg.attachment_failures) == 1
+        assert received_msg.attachment_failures[0].filename == "huge.zip"
+        assert "exceeds maximum" in received_msg.attachment_failures[0].reason
+
+    @pytest.mark.asyncio
+    async def test_outbound_attachment_fallback(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.create_message = AsyncMock(
+            return_value={"name": "spaces/S1/messages/OUT_1"}
+        )
+
+        out_att = OutboundAttachment(
+            filename="analysis.csv",
+            mimetype="text/csv",
+            data=b"a,b,c\n1,2,3",
+        )
+
+        ref = await adapter.send_message(
+            channel_id="spaces/S1",
+            sender_name="Scout",
+            content="Here are the results",
+            attachments=[out_att],
+        )
+
+        assert ref == "spaces/S1/messages/OUT_1"
+        call_args = adapter.client.create_message.call_args[1]
+        text_sent = call_args["text"]
+        assert "*Scout*: Here are the results" in text_sent
+        assert "*Attachments:*" in text_sent
+        assert "`analysis.csv`" in text_sent
+
+
+# ── 6. Formatting, Threading & Message Splitting ─────────────────────────────
+
+
+class TestGoogleChatFormattingAndThreading:
+    def test_markdown_to_google_chat(self) -> None:
+        md = "This is **bold**, this is ~~strike~~, and [Google](https://google.com). Code: `inline` and ```\nblock\n```"
+        converted = markdown_to_google_chat(md)
+        assert "*bold*" in converted
+        assert "~strike~" in converted
+        assert "<https://google.com|Google>" in converted
+        assert "`inline`" in converted
+        assert "```\nblock\n```" in converted
+
+    def test_split_long_messages_preserves_code_fences(self) -> None:
+        long_code = "```python\n" + ("x = 1\n" * 500) + "```"
+        chunks = split_message_chunks(long_code, max_bytes=1000)
+        assert len(chunks) > 1
+        # Each chunk should end or close code blocks appropriately
+        for chunk in chunks:
+            assert len(chunk.encode("utf-8")) <= 1200
+            # Ensure balanced ``` fences
+            assert chunk.count("```") % 2 == 0
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_threading_parameters(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.create_message = AsyncMock(
+            return_value={"name": "spaces/S1/messages/REPLY_1"}
+        )
+
+        await adapter.send_message(
+            channel_id="spaces/S1",
+            sender_name="Scout",
+            content="Replying to thread",
+            thread_root_id="spaces/S1/threads/T123",
+        )
+
+        adapter.client.create_message.assert_called_once_with(
+            space_id="spaces/S1",
+            text="*Scout*: Replying to thread",
+            thread_name="spaces/S1/threads/T123",
+        )
+
+    @pytest.mark.asyncio
+    async def test_channel_creation_unsupported(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        with pytest.raises(ChannelCreationUnsupported):
+            await adapter.create_channel("new-space", "topic")
+
+
+# ── 7. Cards v2 Approvals & Interactions ─────────────────────────────────────
+
+
+class TestGoogleChatCardsV2AndInteractions:
+    @pytest.mark.asyncio
+    async def test_post_rich_turn_activity_and_request_card(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.create_message = AsyncMock(
+            return_value={"name": "spaces/S1/messages/CARD_1"}
+        )
+
+        turn = TurnUpsert(
+            type="turn.upsert", turn_id="turn-1", status="running", command_id=None
+        )
+        activity = TurnActivity(items=[], turn=turn, elapsed_seconds=12.5)
+
+        ref = await adapter.post_rich("spaces/S1", "Scout", activity)
+        assert ref == "spaces/S1/messages/CARD_1"
+        call_kwargs = adapter.client.create_message.call_args[1]
+        cards = call_kwargs["cards_v2"]
+        assert len(cards) == 1
+        assert cards[0]["card"]["header"]["title"] == "Agent Scout"
+
+        # Approval Card
+        req = SnapshotRequest(
+            request_id="req-1",
+            turn_id="turn-1",
+            revision=1,
+            state="open",
+            content=ApprovalContent(
+                kind="approval",
+                title="Run shell command?",
+                detail="rm -rf /tmp/test",
+                options=[
+                    ApprovalOption(
+                        option_id="opt-allow", label="Allow", decision="accept"
+                    ),
+                    ApprovalOption(
+                        option_id="opt-deny", label="Deny", decision="decline"
+                    ),
+                ],
+            ),
+            expires_at=None,
+            result=None,
+            decided_by=None,
+        )
+        card = RequestCard(
+            request=req, reference=RequestReference(token="tok-secret", handle="a1")
+        )
+        ref2 = await adapter.post_rich("spaces/S1", "Scout", card)
+        assert ref2 == "spaces/S1/messages/CARD_1"
+
+    @pytest.mark.asyncio
+    async def test_card_clicked_interaction_and_replay_protection(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.patch_message = AsyncMock(return_value={})
+
+        interactions: list[InboundInteraction] = []
+
+        async def on_interaction(inter: InboundInteraction) -> None:
+            interactions.append(inter)
+
+        adapter.consumer.set_callbacks(on_interaction=on_interaction)
+
+        payload = {
+            "type": "CARD_CLICKED",
+            "space": {"name": "spaces/S1"},
+            "user": {"name": "users/U1", "displayName": "Alice"},
+            "message": {
+                "name": "spaces/S1/messages/CARD_MSG",
+                "cardsV2": [
+                    {"cardId": "req-1", "card": {"header": {"title": "Request"}}}
+                ],
+            },
+            "action": {
+                "parameters": [
+                    {"key": "token", "value": "token-xyz-1"},
+                    {"key": "action_id", "value": "switch:request-option:1"},
+                ]
+            },
+        }
+
+        # 1. First click: dispatches interaction and patches card
+        success = await adapter.consumer._handle_interaction_event(
+            payload, "evt-card-1"
+        )
+        assert success is True
+        assert len(interactions) == 1
+        assert interactions[0].value == "token-xyz-1"
+        assert interactions[0].action_id == "switch:request-option:1"
+        adapter.client.patch_message.assert_called_once()
+
+        # 2. Duplicate / replay click: ignored
+        success2 = await adapter.consumer._handle_interaction_event(
+            payload, "evt-card-2"
+        )
+        assert success2 is True
+        assert len(interactions) == 1  # No second dispatch!
+
+    @pytest.mark.asyncio
+    async def test_free_text_question_fallback(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.create_message = AsyncMock(
+            return_value={"name": "spaces/S1/messages/CARD_Q"}
+        )
+
+        req = SnapshotRequest(
+            request_id="req-q1",
+            turn_id="turn-1",
+            revision=1,
+            state="open",
+            content=QuestionsContent(
+                kind="questions",
+                title="Input Needed",
+                questions=[
+                    Question(
+                        question_id="q1",
+                        title="Database Host",
+                        prompt="Please provide the database host address:",
+                        options=[],
+                        multi_select=False,
+                        allow_custom_answer=True,
+                    )
+                ],
+            ),
+            expires_at=None,
+            result=None,
+            decided_by=None,
+        )
+        card = RequestCard(
+            request=req, reference=RequestReference(token="tok-q", handle="qhandle")
+        )
+        await adapter.post_rich("spaces/S1", "Scout", card)
+
+        call_kwargs = adapter.client.create_message.call_args[1]
+        sections = call_kwargs["cards_v2"][0]["card"]["sections"]
+        widgets = sections[0]["widgets"]
+        text_paragraphs = [
+            w["textParagraph"]["text"] for w in widgets if "textParagraph" in w
+        ]
+        assert any(
+            "Free-text answer: Please reply in this thread with `qhandle <your answer>`"
+            in t
+            for t in text_paragraphs
+        )
+
+
+# ── 8. Workspace Events Subscriptions Lifecycle ──────────────────────────────
+
+
+class TestGoogleChatWorkspaceEventsLifecycle:
+    @pytest.mark.asyncio
+    async def test_subscription_creation_and_proactive_renewal(self) -> None:
+        cfg = _make_config(
+            user_client_id="user-cid",
+            user_client_secret="user-sec",
+            user_refresh_token="user-ref",
+        )
+        adapter = GoogleChatAdapter(cfg)
+        adapter.client.create_workspace_events_subscription = AsyncMock(
+            return_value={
+                "name": "subscriptions/sub-12345",
+                "expireTime": "2026-11-02T16:00:00Z",
+            }
+        )
+        adapter.client.patch_workspace_events_subscription_ttl = AsyncMock(
+            return_value={
+                "name": "subscriptions/sub-12345",
+                "expireTime": "2026-11-02T20:00:00Z",
+            }
+        )
+
+        # 1. Ensure space subscription
+        await adapter.workspace_events_mgr.ensure_space_subscription("spaces/SPACE_XYZ")
+        assert "spaces/SPACE_XYZ" in adapter.workspace_events_mgr.active_subscriptions
+        adapter.client.create_workspace_events_subscription.assert_called_once_with(
+            "spaces/SPACE_XYZ",
+            TEST_TOPIC_ID,
+            include_resource=True,
+        )
+
+        # 2. Proactive renewal: artificially set expires_at close to now
+        sub = adapter.workspace_events_mgr.active_subscriptions["spaces/SPACE_XYZ"]
+        sub.expires_at = 100.0  # Expiring soon relative to current time
+        await adapter.workspace_events_mgr.renew_expiring_subscriptions()
+        adapter.client.patch_workspace_events_subscription_ttl.assert_called_once_with(
+            "subscriptions/sub-12345",
+            ttl_seconds=14400,
+        )
+
+
+# ── 9. Multi-Pod Lease Handoff Simulation ────────────────────────────────────
+
+
+class TestGoogleChatMultiPodLeaseHandoff:
+    @pytest.mark.asyncio
+    async def test_lease_handoff_between_pods_no_duplicates(self) -> None:
+        cfg = _make_config()
+        pod_a = GoogleChatAdapter(cfg)
+        pod_b = GoogleChatAdapter(cfg)
+
+        dispatched_messages: list[str] = []
+
+        async def record_message(msg: InboundMessage) -> None:
+            dispatched_messages.append(msg.message_ref)
+
+        pod_a.consumer.set_callbacks(on_message=record_message)
+        pod_b.consumer.set_callbacks(on_message=record_message)
+
+        # Pod A holds the lease initially
+        pod_a.set_listening(True)
+        pod_b.set_listening(False)
+
+        await pod_a.start(
+            record_message, AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock()
+        )
+        await pod_b.start(
+            record_message, AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock()
+        )
+
+        # Pod A receives and processes a message
+        payload = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/M_HANDOFF_1",
+                "text": "first turn",
+                "sender": {"name": "users/U1", "displayName": "Alice", "type": "HUMAN"},
+            },
+        }
+        await pod_a.consumer._handle_interaction_event(payload, "evt-h1")
+        assert dispatched_messages == ["spaces/S1/messages/M_HANDOFF_1"]
+
+        # Handoff: Pod A loses lease and stops, Pod B acquires lease and starts listening
+        await pod_a.stop()
+        pod_b.set_listening(True)
+        pod_b.consumer.start()
+
+        # New message arrives at Pod B
+        payload2 = {
+            "type": "MESSAGE",
+            "space": {"name": "spaces/S1"},
+            "message": {
+                "name": "spaces/S1/messages/M_HANDOFF_2",
+                "text": "second turn",
+                "sender": {"name": "users/U2", "displayName": "Bob", "type": "HUMAN"},
+            },
+        }
+        await pod_b.consumer._handle_interaction_event(payload2, "evt-h2")
+        assert dispatched_messages == [
+            "spaces/S1/messages/M_HANDOFF_1",
+            "spaces/S1/messages/M_HANDOFF_2",
+        ]
+
+        await pod_b.stop()
