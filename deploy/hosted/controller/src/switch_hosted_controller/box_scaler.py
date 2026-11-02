@@ -161,12 +161,14 @@ def decide(desired: str, replicas: int, ready: int) -> tuple[str | None, str]:
         if replicas == 0:
             return "scale_up", "provisioning"
         return None, "running" if ready >= 1 else "provisioning"
-    if desired == STOPPED:
-        if replicas >= 1:
-            return "scale_down", "stopping"
-        return None, "stopped" if ready == 0 else "stopping"
-    # retained or deleted: user-deletion powers are out of scope for the proof.
-    return None, "provisioning" if replicas else "stopped"
+    # Stopped, retained (an agentless box kept for its retention days) and
+    # deleted all mean the box is not wanted running: it is scaled to 0 and
+    # reported as stopped, its disk kept. This loop never deletes anything
+    # (the Kube it is given can only scale): what happens to a retained or
+    # deleted box's disk is not its decision.
+    if replicas >= 1:
+        return "scale_down", "stopping"
+    return None, "stopped" if ready == 0 else "stopping"
 
 
 START_LIMIT_S = 180.0

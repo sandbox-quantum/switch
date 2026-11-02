@@ -69,11 +69,37 @@ def test_unmapped_and_invalid_machines_are_left_alone():
     assert kube.calls == [] and core.seen == []
 
 
-def test_retained_and_deleted_never_scale_or_delete():
-    for d in ("retained", "deleted"):
-        kube, core = FakeKube(1, 1), FakeCore([m(d)])
+def test_decide_scales_retained_and_deleted_to_zero_like_stopped():
+    for desired in ("retained", "deleted"):
+        assert decide(desired, 1, 1) == ("scale_down", "stopping")
+        assert decide(desired, 1, 0) == ("scale_down", "stopping")
+        assert decide(desired, 0, 1) == (None, "stopping")
+        assert decide(desired, 0, 0) == (None, "stopped")
+
+
+def test_retained_and_deleted_boxes_are_scaled_down_and_never_deleted():
+    # L52: a retained (agentless) or deleted box that is still up was left
+    # running and reported as provisioning. It is scaled to 0 now, as a stopped
+    # one is, and the scaler has no way to delete anything: FakeKube, like the
+    # Kube it stands for, can only read and set replicas.
+    for desired in ("retained", "deleted"):
+        kube, core = FakeKube(1, 1), FakeCore([m(desired)])
+        reconcile_once(core, kube, BOXES)
+        assert kube.calls == [("agents-user-b", 0)]
+        assert core.seen == [(M, "stopping", 3)]
+        # The next pass sees it down: nothing more is done, and it reads stopped.
+        kube.ready = 0
+        reconcile_once(core, kube, BOXES)
+        assert kube.calls == [("agents-user-b", 0)]
+        assert core.seen[-1] == (M, "stopped", 3)
+
+
+def test_retained_and_deleted_boxes_already_down_are_left_alone():
+    for desired in ("retained", "deleted"):
+        kube, core = FakeKube(0, 0), FakeCore([m(desired)])
         reconcile_once(core, kube, BOXES)
         assert kube.calls == []
+        assert core.seen == [(M, "stopped", 3)]
 
 
 def test_run_survives_a_failing_pass():
