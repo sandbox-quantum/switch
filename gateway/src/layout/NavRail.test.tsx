@@ -5,7 +5,11 @@ import { useAuth } from "../data/AuthContext";
 import NavRail from "./NavRail";
 
 vi.mock("../data/AuthContext", () => ({ useAuth: vi.fn() }));
-vi.mock("../data/hooks", () => ({ useCurrentTenant: () => ({ data: null }) }));
+const hostedV2 = vi.hoisted(() => ({ value: true as boolean | null }));
+vi.mock("../data/hooks", () => ({
+  useCurrentTenant: () => ({ data: null }),
+  useHostedV2: () => hostedV2.value,
+}));
 vi.mock("../data/management", () => ({ fetchManagementAvailable: async () => false }));
 
 function renderAs(flags: { isOperator: boolean; isHostedOperator: boolean }) {
@@ -24,7 +28,10 @@ function renderAs(flags: { isOperator: boolean; isHostedOperator: boolean }) {
 }
 
 describe("the nav rail's Hosted entry", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    hostedV2.value = true;
+  });
 
   it("shows for someone on the operator list", () => {
     renderAs({ isOperator: false, isHostedOperator: true });
@@ -39,6 +46,18 @@ describe("the nav rail's Hosted entry", () => {
 
   it("doesn't show for anyone else", () => {
     renderAs({ isOperator: false, isHostedOperator: false });
+    expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
+  });
+
+  it("doesn't show, even for the operator list, while hosted agents v2 is off", () => {
+    hostedV2.value = false;
+    renderAs({ isOperator: false, isHostedOperator: true });
+    expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
+  });
+
+  it("doesn't show while the switch is still being read", () => {
+    hostedV2.value = null;
+    renderAs({ isOperator: false, isHostedOperator: true });
     expect(screen.queryByRole("link", { name: /Hosted/ })).toBeNull();
   });
 });

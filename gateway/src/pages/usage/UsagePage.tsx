@@ -30,7 +30,13 @@ import {
   type UsageTotal,
   deleteBudget,
 } from "../../data/api";
-import { useBudgets, useCurrentTenant, useHostedUsage, useUsage } from "../../data/hooks";
+import {
+  useBudgets,
+  useCurrentTenant,
+  useHostedUsage,
+  useHostedV2,
+  useUsage,
+} from "../../data/hooks";
 import { formatDateTime } from "../../theme/hootFormat";
 import BudgetDialog from "./BudgetDialog";
 import {
@@ -68,18 +74,29 @@ export default function UsagePage() {
 }
 
 function WorkspaceUsage({ tenant }: { tenant: CurrentTenant }) {
+  // Hosted agents' rows and the daily AI cap are v2's: shown only when Core says it's on.
+  const hostedV2 = useHostedV2() === true;
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, gap: 3 }}>
       <Typography variant="h5">Usage · {tenant.name}</Typography>
-      <BudgetsSection tenantId={tenant.id} />
-      <HostedUsageSection tenantId={tenant.id} />
+      <BudgetsSection tenantId={tenant.id} hostedV2={hostedV2} />
+      {hostedV2 && <HostedUsageSection tenantId={tenant.id} />}
       <UsageSection tenantId={tenant.id} />
     </Box>
   );
 }
 
-function BudgetsSection({ tenantId }: { tenantId: string }) {
-  const { data: budgets, loading, error, refetch } = useBudgets(tenantId);
+function BudgetsSection({ tenantId, hostedV2 }: { tenantId: string; hostedV2: boolean }) {
+  const { data: allBudgets, loading, error, refetch } = useBudgets(tenantId);
+  const budgets = useMemo(
+    // Daily-AI-cap and awake-time budgets are hosted agents v2's: with it off,
+    // ones made while it was on aren't shown.
+    () =>
+      allBudgets?.filter(
+        (b) => hostedV2 || (b.metric !== "hosted_ai_calls" && b.metric !== "awake_minutes"),
+      ) ?? null,
+    [allBudgets, hostedV2],
+  );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Budget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Budget | null>(null);

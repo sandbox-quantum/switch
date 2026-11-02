@@ -39,7 +39,10 @@ interface Props {
 export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved }: Props) {
   const { data: agents } = useAgents();
   const { data: flags } = useFeatureFlags();
-  const metrics = budgetMetrics(flags?.hosted_awake_budgets === true);
+  const metrics = budgetMetrics(
+    flags?.hosted_awake_budgets === true,
+    flags?.hosted_v2 === true,
+  );
   const [agentId, setAgentId] = useState(WHOLE_WORKSPACE);
   const [metric, setMetric] = useState<UsageMetric>("output_tokens");
   const [model, setModel] = useState("");

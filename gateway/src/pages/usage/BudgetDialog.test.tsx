@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import BudgetDialog from "./BudgetDialog";
 
-function serve(flags: Record<string, boolean> = {}) {
+/** Core's flags default to hosted agents v2 on, as the daily-cap tests need. */
+function serve(overrides: Record<string, boolean> = {}) {
+  const flags: Record<string, boolean> = { hosted_v2: true, ...overrides };
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith("/feature-flags"))
       return new Response(
@@ -43,6 +45,26 @@ describe("adding a budget on hosted metrics", () => {
     const list = await screen.findByRole("listbox");
     expect(within(list).queryByRole("option", { name: "Awake minutes" })).toBeNull();
     expect(within(list).getByRole("option", { name: "Daily AI calls per person" })).toBeTruthy();
+  });
+
+  it("never offers the daily AI cap while hosted agents v2 is off", async () => {
+    const fetchMock = serve({ hosted_v2: false });
+    renderDialog();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.mouseDown(screen.getByLabelText("Metric"));
+    const list = await screen.findByRole("listbox");
+    expect(within(list).getByRole("option", { name: "Output tokens" })).toBeTruthy();
+    expect(within(list).queryByRole("option", { name: "Daily AI calls per person" })).toBeNull();
+  });
+
+  it("never offers awake minutes while hosted agents v2 is off, even with its flag on", async () => {
+    const fetchMock = serve({ hosted_v2: false, hosted_awake_budgets: true });
+    renderDialog();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.mouseDown(screen.getByLabelText("Metric"));
+    const list = await screen.findByRole("listbox");
+    expect(within(list).getByRole("option", { name: "Output tokens" })).toBeTruthy();
+    expect(within(list).queryByRole("option", { name: "Awake minutes" })).toBeNull();
   });
 
   it("offers awake minutes when the flag is on", async () => {

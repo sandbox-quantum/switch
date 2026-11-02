@@ -33,7 +33,7 @@ import { memo, useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router";
 import type { ComponentType, MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
-import { useCurrentTenant } from "../data/hooks";
+import { useCurrentTenant, useHostedV2 } from "../data/hooks";
 import { fetchManagementAvailable } from "../data/management";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
 import ChangePasswordDialog from "./ChangePasswordDialog";
@@ -158,6 +158,8 @@ export default memo(function NavRail() {
   };
 
   const { data: tenant } = useCurrentTenant();
+  // The Hosted menu item is hosted agents v2's: shown only when Core says v2 is on.
+  const hostedV2 = useHostedV2() === true;
   const [managementAvailable, setManagementAvailable] = useState(false);
 
   useEffect(() => {
@@ -180,7 +182,7 @@ export default memo(function NavRail() {
     ...(managementAvailable ? MANAGEMENT_ITEMS : []),
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
-    ...(isHostedOperator ? HOSTED_ITEMS : []),
+    ...(isHostedOperator && hostedV2 ? HOSTED_ITEMS : []),
   ];
   const current = session?.tenant ?? null;
   const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);

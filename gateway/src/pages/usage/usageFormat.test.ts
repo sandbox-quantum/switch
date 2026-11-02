@@ -27,9 +27,18 @@ describe("the daily AI cap (visibility L1b)", () => {
 
 describe("hosted metrics", () => {
   it("offer awake minutes only while the server's flag is on, and AI calls only as the daily cap", () => {
-    expect(budgetMetrics(false)).not.toContain("awake_minutes");
-    expect(budgetMetrics(true)).toContain("awake_minutes");
-    expect(budgetMetrics(false)).toContain("hosted_ai_calls");
+    expect(budgetMetrics(false, true)).not.toContain("awake_minutes");
+    expect(budgetMetrics(true, true)).toContain("awake_minutes");
+    expect(budgetMetrics(false, true)).toContain("hosted_ai_calls");
+  });
+
+  it("never offer the daily AI cap while hosted agents v2 is off", () => {
+    expect(budgetMetrics(false, false)).not.toContain("hosted_ai_calls");
+    expect(budgetMetrics(true, false)).not.toContain("hosted_ai_calls");
+  });
+
+  it("never offer awake minutes while hosted agents v2 is off, even with its own flag on", () => {
+    expect(budgetMetrics(true, false)).not.toContain("awake_minutes");
     expect(budgetMetricLabel("hosted_ai_calls")).toBe("Daily AI calls per person");
     expect(metricLabel("hosted_ai_calls")).toBe("AI calls");
     expect(metricLabel("awake_minutes")).toBe("Awake minutes");

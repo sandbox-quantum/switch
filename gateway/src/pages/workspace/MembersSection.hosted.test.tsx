@@ -29,11 +29,22 @@ const hostedPeople = {
   ],
 };
 
-/** Answers the members route, and the hosted route with `hostedStatus`. */
-function serve(hostedStatus = 200, person?: Record<string, unknown>) {
+/** Answers the members route, the hosted route with `hostedStatus`, and Core's
+ * feature flags with `hosted_v2` as `hostedV2` (null: the flags can't be read). */
+function serve(
+  hostedStatus = 200,
+  person?: Record<string, unknown>,
+  hostedV2: boolean | null = true,
+) {
   const answer = person ? { people: [person], switchable: true } : hostedPeople;
   const fetchMock = vi.fn(async (url: string) => {
     if (url.endsWith("/members")) return new Response(JSON.stringify(members), { status: 200 });
+    if (url.endsWith("/feature-flags"))
+      return hostedV2 === null
+        ? new Response(JSON.stringify({ detail: "no" }), { status: 500 })
+        : new Response(JSON.stringify({ flags: [{ key: "hosted_v2", enabled: hostedV2 }] }), {
+            status: 200,
+          });
     if (url.endsWith("/hosted-people"))
       return hostedStatus === 200
         ? new Response(JSON.stringify(answer), { status: 200 })
@@ -112,26 +123,57 @@ describe("loadHosted", () => {
 
   it("returns nothing, asking nothing, for a member", async () => {
     const fetchMock = serve();
-    expect(await loadHosted("t1", false)).toBeNull();
+    expect(await loadHosted("t1", false, true)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns nothing, asking nothing, for an admin while hosted agents v2 is off", async () => {
+    const fetchMock = serve();
+    expect(await loadHosted("t1", true, false)).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("returns the people for an admin", async () => {
     serve();
-    expect(await loadHosted("t1", true)).toEqual(hostedPeople);
+    expect(await loadHosted("t1", true, true)).toEqual(hostedPeople);
   });
 
   it("shows the members as before when the server has no hosted view or refuses", async () => {
     for (const status of [403, 404, 503]) {
       serve(status);
-      expect(await loadHosted("t1", true)).toBeNull();
+      expect(await loadHosted("t1", true, true)).toBeNull();
     }
   });
 
   it("passes any other failure on", async () => {
     serve(500);
-    await expect(loadHosted("t1", true)).rejects.toThrow();
+    await expect(loadHosted("t1", true, true)).rejects.toThrow();
   });
+});
+
+describe("the Members page with hosted agents v2 off", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+  const LINE =
+    "Owners and admins can change roles, remove people, and turn hosted agents on or off for each person. Every change is recorded.";
+
+  for (const [what, hostedV2] of [
+    ["off", false],
+    ["unreadable", null],
+  ] as const) {
+    it(`shows an admin the members as upstream, with no hosted columns, when the flag is ${what}`, async () => {
+      const fetchMock = serve(200, undefined, hostedV2);
+      render(<MembersSection tenantId="t1" selfId="u2" canAdmin isOwner={false} />);
+      expect(await screen.findByText("Sam Example")).toBeTruthy();
+      await waitFor(() => expect(asked(fetchMock, "/feature-flags")).toBe(true));
+      expect(asked(fetchMock, "/hosted-people")).toBe(false);
+      expect(screen.queryByText("Hosted agents")).toBeNull();
+      expect(screen.queryByText(LINE)).toBeNull();
+      expect(screen.queryByText(HOSTED_LIST_FAILED)).toBeNull();
+    });
+  }
 });
 
 describe("boxLabel", () => {
@@ -175,11 +217,16 @@ describe("the switch, end to end on the page (QA)", () => {
     vi.unstubAllGlobals();
   });
 
-  /** Members, hosted people with Sam on, and the PUT answering `putStatus`. */
+  /** Members, hosted agents v2 on, hosted people with Sam on, and the PUT
+   * answering `putStatus`. */
   function serveFlow(putStatus: number) {
     let hostedState: "on" | "off" = "on";
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/members")) return new Response(JSON.stringify(members), { status: 200 });
+      if (url.endsWith("/feature-flags"))
+        return new Response(JSON.stringify({ flags: [{ key: "hosted_v2", enabled: true }] }), {
+          status: 200,
+        });
       if (url.endsWith("/hosted-people"))
         return new Response(
           JSON.stringify({ people: [{ ...hostedPeople.people[0], hosted: hostedState }], switchable: true }),

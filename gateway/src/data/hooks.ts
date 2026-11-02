@@ -417,6 +417,20 @@ export function useFeatureFlags(): UseQueryResult<Record<string, boolean>> {
   return useQuery(fetchFeatureFlags);
 }
 
+/** Whether this server runs hosted agents v2, as Core says in its `hosted_v2`
+ * feature flag (the v1/v2 switch). Null while it's being read. False when the
+ * flag is off, missing or can't be read, so the hosted v2 screens stay hidden
+ * unless Core says otherwise. */
+export function useHostedV2(): boolean | null {
+  const fetcher = useCallback(
+    () => fetchFeatureFlags().catch((): Record<string, boolean> => ({})),
+    [],
+  );
+  const { data, loading } = useQuery(fetcher);
+  if (loading && data === null) return null;
+  return data?.hosted_v2 === true;
+}
+
 export function useBudgets(tenantId: string): UseQueryResult<Budget[]> {
   const fetcher = useCallback(() => fetchBudgets(tenantId), [tenantId]);
   return useQuery(fetcher);

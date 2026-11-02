@@ -29,6 +29,7 @@ import {
   setHostedEnabled,
   updateMemberRole,
 } from "../../data/api";
+import { useHostedV2 } from "../../data/hooks";
 import { formatDate, titleCase } from "../../theme/hootFormat";
 import HostedSwitchDialog from "./HostedSwitchDialog";
 import { useLoad } from "./useLoad";
@@ -85,14 +86,16 @@ export function personSwitch(
 export const HOSTED_LIST_FAILED =
   "Couldn't load hosted agents for this workspace. Reload the page to try again.";
 
-/** The hosted columns for admins: null when not an admin, or when the server
- * has no hosted view (404, or 503 before it's set up), so the page shows the
- * members as before. Members never ask for it (spec A1). */
+/** The hosted columns for admins: null when not an admin, when hosted agents
+ * v2 is off (Core's `hosted_v2` flag), or when the server has no hosted view
+ * (404, or 503 before it's set up), so the page shows the members as before.
+ * Members never ask for it (spec A1), and nobody does while v2 is off. */
 export async function loadHosted(
   tenantId: string,
   canAdmin: boolean,
+  hostedV2: boolean,
 ): Promise<HostedPeople | null> {
-  if (!canAdmin) return null;
+  if (!canAdmin || !hostedV2) return null;
   try {
     const hosted = await fetchHostedPeople(tenantId);
     // An answer that isn't a hosted list (a server without hosted agents
@@ -122,7 +125,11 @@ interface Props {
 export default function MembersSection({ tenantId, selfId, canAdmin, isOwner }: Props) {
   const load = useCallback(() => fetchMembers(tenantId), [tenantId]);
   const { data: members, error, loading, refetch } = useLoad(load);
-  const loadHostedPeople = useCallback(() => loadHosted(tenantId, canAdmin), [tenantId, canAdmin]);
+  const hostedV2 = useHostedV2() === true;
+  const loadHostedPeople = useCallback(
+    () => loadHosted(tenantId, canAdmin, hostedV2),
+    [tenantId, canAdmin, hostedV2],
+  );
   const {
     data: hosted,
     error: hostedError,

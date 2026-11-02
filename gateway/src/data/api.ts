@@ -2257,11 +2257,13 @@ export const USAGE_METRICS: UsageMetric[] = [
  * `hosted_ai_calls` only as the daily AI cap per person (visibility L1b): every
  * agent, per day, and enforced by each box's gateway, never by Core.
  */
-export function budgetMetrics(awakeBudgets: boolean): UsageMetric[] {
+export function budgetMetrics(awakeBudgets: boolean, hostedV2: boolean): UsageMetric[] {
   return [
     ...USAGE_METRICS,
-    ...(awakeBudgets ? (["awake_minutes"] as UsageMetric[]) : []),
-    "hosted_ai_calls",
+    // Awake-time budgets and the daily AI cap (L1b) are hosted agents v2's:
+    // offered only while it's on, and awake time also needs its own flag.
+    ...(awakeBudgets && hostedV2 ? (["awake_minutes"] as UsageMetric[]) : []),
+    ...(hostedV2 ? (["hosted_ai_calls"] as UsageMetric[]) : []),
   ];
 }
 
