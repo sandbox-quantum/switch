@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.models import (
     BridgeCredentialError,
+    BridgeOperationError,
     InboundCommand,
     InboundMessage,
 )
@@ -416,6 +417,75 @@ async def test_people_are_added_by_user_id_and_those_refused_are_named(
     )
 
     assert left_out == ["99"]
+
+
+def _members(request: httpx.Request) -> httpx.Response:
+    hidden = {"delivery_email": None, "is_active": True}
+    return _ok(
+        members=[
+            {"user_id": 8, "full_name": "Org Owner", "is_bot": False, **hidden},
+            {
+                "user_id": PERSON_ID,
+                "full_name": "Test Person",
+                "is_bot": False,
+                **hidden,
+            },
+            {"user_id": 11, "full_name": "Test Bot", "is_bot": True, **hidden},
+            {
+                "user_id": 12,
+                "full_name": "Test Leaver",
+                "is_bot": False,
+                "delivery_email": None,
+                "is_active": False,
+            },
+        ]
+    )
+
+
+async def test_people_are_found_by_part_of_their_name_as_relayed(
+    server: Zulip,
+) -> None:
+    server.on("GET", "/api/v1/users", _members)
+    adapter, _ = await _started(server)
+
+    found = await adapter.search_directory_users("test p")
+
+    assert [(user.external_user_id, user.username, user.email) for user in found] == [
+        (str(PERSON_ID), "Test Person", None)
+    ]
+
+
+async def test_bots_and_deactivated_people_are_not_offered(server: Zulip) -> None:
+    server.on("GET", "/api/v1/users", _members)
+    adapter, _ = await _started(server)
+
+    found = await adapter.search_directory_users("test")
+
+    assert [user.display_name for user in found] == ["Test Person"]
+
+
+async def test_an_empty_search_asks_zulip_nothing(server: Zulip) -> None:
+    adapter, _ = await _started(server)
+
+    assert await adapter.search_directory_users("  ") == []
+    assert server.sent("GET", "/api/v1/users") == []
+
+
+async def test_a_directory_zulip_refuses_is_reported_in_its_words(
+    server: Zulip,
+) -> None:
+    server.on(
+        "GET",
+        "/api/v1/users",
+        lambda r: httpx.Response(
+            400,
+            json={"result": "error", "code": "BAD_REQUEST", "msg": "Not allowed"},
+        ),
+    )
+    adapter, _ = await _started(server)
+
+    with pytest.raises(BridgeOperationError, match="Not allowed"):
+        await adapter.search_directory_users("test")
 
 
 # ── Files ────────────────────────────────────────────────────────────────────
