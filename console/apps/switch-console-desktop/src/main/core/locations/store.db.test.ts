@@ -2,7 +2,7 @@ import { openFixture } from '@tooling/utils/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppDb } from '@main/db/client';
 import { agents, locations } from '@main/db/schema';
-import { deleteLocationIfUnused, getLocationById } from './store';
+import { deleteLocationIfUnused, deleteUnusedLocations, getLocationById } from './store';
 
 const mocks = vi.hoisted(() => ({ db: undefined as AppDb | undefined }));
 
@@ -40,6 +40,12 @@ describe('deleteLocationIfUnused', () => {
 
   it('keeps a location another agent still uses', async () => {
     await deleteLocationIfUnused('shared');
+    expect(await getLocationById('shared')).toBeDefined();
+  });
+
+  it('deletes every agentless location at once and keeps the ones in use', async () => {
+    await deleteUnusedLocations();
+    expect(await getLocationById('empty')).toBeUndefined();
     expect(await getLocationById('shared')).toBeDefined();
   });
 });

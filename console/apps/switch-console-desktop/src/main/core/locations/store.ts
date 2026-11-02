@@ -75,3 +75,14 @@ export async function deleteLocationIfUnused(locationId: string): Promise<void> 
       )
     );
 }
+
+/** Delete every location row no agent uses. Never touches the directories themselves. */
+export async function deleteUnusedLocations(): Promise<void> {
+  await db
+    .delete(locations)
+    .where(
+      notExists(
+        db.select({ id: agents.id }).from(agents).where(eq(agents.locationId, locations.id))
+      )
+    );
+}
