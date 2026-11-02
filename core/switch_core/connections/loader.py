@@ -842,6 +842,12 @@ class ConnectionDefinition(BaseModel):
                     fields=choices, choices=choices, urls=[url], values=[], where=where
                 )
 
+    def methods(self) -> list[ConnectionMethod]:
+        """The ways a person connects the service: pasted keys for an api_key
+        entry, a sign-in for any other. A connection made another way, which
+        the entry offered once, must be made again."""
+        return ["keys"] if self.adapter == "api_key" else ["oauth"]
+
     def level_tools(self, access: AccessLevel) -> list[str]:
         """Every tool a grant at `access` may be given. None are named while
         the vendor's tools pass through."""
