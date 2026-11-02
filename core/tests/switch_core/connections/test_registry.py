@@ -43,6 +43,7 @@ from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
 from tests.switch_core.connections.standing import availability, connectable, standing
 from tests.switch_core.connections.test_loader import (
+    API_KEY_ENTRY,
     CLI_ENTRY,
     OAUTH_ENTRY,
     _write_example,
@@ -89,11 +90,15 @@ def test_github_without_the_app_is_left_not_set_up() -> None:
     assert "github" not in adapters
 
 
-def test_a_key_service_needs_nothing_set_up_on_the_server() -> None:
+def test_a_key_service_needs_nothing_set_up_on_the_server(tmp_path: Path) -> None:
     adapters = build_adapters(
-        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+        _catalog(tmp_path, API_KEY_ENTRY),
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=REG,
     )
-    assert isinstance(adapters["datadog"], ApiKeyAdapter)
+    assert isinstance(adapters["example"], ApiKeyAdapter)
 
 
 def test_atlassian_needs_no_settings_and_registers_its_ports_and_scopes() -> None:
@@ -152,6 +157,42 @@ def test_atlassian_registers_cores_callback_only_where_the_server_names_it() -> 
         f"{public}/gateway/service-connections/atlassian/flows/callback",
     ]
     assert mode({"atlassian": "core"}) == "core"
+
+
+def test_datadog_needs_no_settings_and_registers_its_ports_and_scope() -> None:
+    adapter = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )["datadog"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request == {
+        "redirect_uris": [
+            f"http://127.0.0.1:{port}/switch-services/callback"
+            for port in (39241, 39242, 39243, 39244, 39245)
+        ],
+        "scope": "mcp_all",
+    }
+
+
+def test_datadog_registers_cores_callback_only_where_the_server_names_it() -> None:
+    public = "https://switch.example.com"
+    adapter = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={},
+        http=HTTP,
+        registration=replace(REG, public_url=public, redirects={"datadog": "core"}),
+    )["datadog"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, RegisteredClient)
+    assert adapter._client._request["redirect_uris"][-1] == (
+        f"{public}/gateway/service-connections/datadog/flows/callback"
+    )
+    flows = ServiceFlows(
+        public, {"datadog": "core"}, SignInFlows(async_sessionmaker(), TEST_KEYRING)
+    )
+    assert flows.mode(CATALOG["datadog"].definition) == "core"
 
 
 def test_airtable_is_set_up_by_its_operators_own_client() -> None:
@@ -358,20 +399,20 @@ async def test_a_service_with_no_app_to_set_up_is_just_not_set_up(
 async def test_a_key_that_never_expires_is_neither_connected_nor_granted(
     tmp_path: Path, session_factory
 ) -> None:
-    catalog = _catalog(tmp_path, STATIC)
+    catalog = _catalog(tmp_path, API_KEY_ENTRY)
     adapters = build_adapters(
         catalog, github_app=None, oauth_clients={}, http=HTTP, registration=REG
     )
     broker = _broker(catalog, session_factory, adapters, None)
-    datadog = (await standing(broker, "datadog")).unavailable
-    assert datadog is not None
-    assert (datadog.code, datadog.reason) == (
+    example = (await standing(broker, "example")).unavailable
+    assert example is not None
+    assert (example.code, example.reason) == (
         "key_never_expires",
-        "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+        "Example keys do not expire and only Example can revoke them, so Switch "
         "does not hand them to agents.",
     )
-    assert await connectable(broker, "datadog") is False
-    assert (await standing(broker, "datadog")).server_setup_needed is False
+    assert await connectable(broker, "example") is False
+    assert (await standing(broker, "example")).server_setup_needed is False
 
 
 async def test_a_replaced_adapter_is_used_at_once(
@@ -472,6 +513,16 @@ class TestDisabledServices:
 
     def test_empty_by_default(self) -> None:
         assert _config().disabled_services == {}
+
+    def test_names_datadog_as_atlassian(self) -> None:
+        config = _config(
+            service_sign_in_redirect={"datadog": "core", "atlassian": "loopback"},
+            gateway_public_url="https://switch.example.com",
+        )
+        assert config.service_sign_in_redirect == {
+            "datadog": "core",
+            "atlassian": "loopback",
+        }
 
     def test_read_from_the_environment_as_json(self, monkeypatch) -> None:
         monkeypatch.setenv("DISABLED_SERVICES", '{"jira": "Not here."}')

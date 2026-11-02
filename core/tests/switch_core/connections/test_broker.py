@@ -63,6 +63,7 @@ from tests.switch_core.connections.standing import (
     standing,
 )
 from tests.switch_core.connections.test_loader import (
+    API_KEY_ENTRY,
     CLI_ENTRY,
     OAUTH_ENTRY,
     _write_example,
@@ -1505,6 +1506,20 @@ class Gated:
         self.world = world
 
 
+def _write_telemetry(root: Path) -> None:
+    """`telemetry`, a service connected with a key that never expires."""
+    directory = root / "telemetry"
+    (directory / "skill").mkdir(parents=True)
+    (directory / "connection.yaml").write_text(
+        API_KEY_ENTRY.replace("slug: example", "slug: telemetry")
+        .replace("name: Example", "name: Telemetry")
+        .replace("    - name: example\n", "    - name: telemetry\n")
+    )
+    (directory / "skill" / "SKILL.md").write_text(
+        "---\nname: telemetry\ndescription: Query telemetry.\n---\n\nUse the tools.\n"
+    )
+
+
 async def _gated(
     session_factory: async_sessionmaker[AsyncSession],
     root: Path,
@@ -1516,10 +1531,12 @@ async def _gated(
     example = FakeVendor()
     example.pass_through = True
     example.revocable = False
+    pass_through_catalog(root)
+    _write_telemetry(root)
     broker = ServiceBroker(
         session_factory=session_factory,
         keyring=TEST_KEYRING,
-        catalog=pass_through_catalog(root),
+        catalog=load_catalog(root),
         adapters={"github": github, "example": example},
         organization_apps=None,
         disabled=disabled or {},
@@ -1616,7 +1633,7 @@ NEW_EXAMPLE_SIGN_IN = {
     "expires_at": time.time() + 3600,
     "refresh_token": "owner_refresh_new",
 }
-DATADOG_KEY = {"api_key": "k", "application_key": "a", "site": "datadoghq.eu"}
+TELEMETRY_KEY = {"api_key": "k", "region": "eu.example.test"}
 
 
 async def _connect_github(g: Gated, session_factory) -> None:
@@ -1641,14 +1658,14 @@ async def _connect_key(g: Gated, session_factory) -> None:
         await g.broker.connect(
             session,
             user_id=g.world.owner.id,
-            service="datadog",
+            service="telemetry",
             consent="write",
             granted_scopes=[],
-            account_id="dd-org",
-            external_identity="Key · datadoghq.eu",
-            secret=ConnectionSecret(dict(DATADOG_KEY)),
+            account_id="acct-1",
+            external_identity="Telemetry key · eu.example.test",
+            secret=ConnectionSecret(dict(TELEMETRY_KEY)),
             oauth_client_id=None,
-            method="oauth",
+            method="keys",
             choices={},
         )
 
@@ -1778,15 +1795,15 @@ class TestWorkspaceSwitch:
         self, session_factory, tmp_path, enabled
     ) -> None:
         g = await _gated(session_factory, tmp_path / "c", gate=True)
-        await _switch(session_factory, "datadog", enabled, g.world.owner.id)
+        await _switch(session_factory, "telemetry", enabled, g.world.owner.id)
         with pytest.raises(ServiceError) as caught:
             await _connect_key(g, session_factory)
         assert (caught.value.status_code, caught.value.code) == (403, "forbidden")
         assert caught.value.message == (
-            "Datadog keys do not expire and only Datadog can revoke them, so "
+            "Telemetry keys do not expire and only Telemetry can revoke them, so "
             "Switch does not hand them to agents."
         )
-        assert "datadog" not in {
+        assert "telemetry" not in {
             service for service, _, _ in await _all_connections(session_factory)
         }
 

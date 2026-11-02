@@ -1004,9 +1004,9 @@ ROUTES: dict[str, Case] = {
     ),
     "PUT /gateway/service-connections/{service}/key": put(
         f"{G}/service-connections/datadog/key",
-        anyone(ok=403),
+        anyone(ok=404),
         json={"fields": {"api_key": "matrix", "application_key": "matrix"}},
-        why="Your own connection; refused for anyone, Datadog keys never being handed to agents.",
+        why="Your own connection; Datadog signs in, so nobody connects it with a key here.",
     ),
     "DELETE /gateway/service-connections/{service}": delete(
         f"{G}/service-connections/github",
