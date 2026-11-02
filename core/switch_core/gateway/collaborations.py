@@ -881,10 +881,13 @@ async def claim_bridge_identity(
     target_user_id = _require_self_or_admin(
         user, is_admin, payload.user_id, "claim a messaging identity"
     )
-    # Membership, not existence: `users` is deployment-wide, and a claim
-    # names who the account is recognised as inside this tenant.
+    # Standing in this tenant, not existence: `users` is deployment-wide, and
+    # a claim names who the account is recognised as inside this tenant. An
+    # organization's `org_admin` stands in every workspace of it.
     if (
-        await user_store.tenant_role(session, require_tenant_id(), target_user_id)
+        await user_store.effective_tenant_role(
+            session, require_tenant_id(), target_user_id
+        )
         is None
     ):
         raise HTTPException(status_code=404, detail="Switch user not found")

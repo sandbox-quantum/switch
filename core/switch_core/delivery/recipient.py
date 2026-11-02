@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 from sqlalchemy import select
 
 from switch_core.attachments import parse_attachment_group
+from switch_core.authz import ORGANIZATION_ADMIN_TENANT_ROLE, TENANT_ADMIN_ROLES
 from switch_core.bridges.agent.commands import (
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
@@ -68,6 +69,7 @@ from switch_core.clients.mentions import (
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.models import Agent, CloudMachine, TenantMember
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.standing import organization_admin_of
 from switch_core.db.stores.hosted_machine_store import owner_stopped
 from switch_core.delivery.addressing import (
     ADDRESSING_DENIED_MESSAGE,
@@ -96,6 +98,7 @@ from switch_core.transport import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from switch_core.announcer import Announcer
     from switch_core.bridges.agent.protocol.agent_connections import (
         AgentConnectionRegistry,
     )
@@ -162,11 +165,18 @@ class Delivery:
     `named` says whether a rule named the agent (its name, its alias here, a
     role it holds, a direct room), before its addressing policy and budget
     were applied: the router asks whether a message named anybody at all.
+
+    `checks_membership` says that `after` asks whether the agent is still a
+    member of the room itself, right before it would say or wake anything
+    (`AgentRecipient.still_member`), so the router does not ask before running
+    it. A message addressed to a connected agent leaves only a report to make,
+    and asking first was a read for every agent a message was for.
     """
 
     own_event: Callable[[InboundEvent], OwnEvent] | None
     after: Callable[[InboundEvent], Awaitable[None]] | None
     named: bool = False
+    checks_membership: bool = False
 
 
 NOTHING = Delivery(own_event=None, after=None)
@@ -189,6 +199,10 @@ class RecipientServices:
     connections: AgentConnectionRegistry
     frontend_base_url: str | None
     message_telemetry: MessageTelemetry
+    # The process's announcer, through which the router announces the rows it
+    # writes once they have committed (`announcer.py`). Without one, the
+    # triggers announce them from inside the transaction, as they did.
+    announcer: Announcer | None = None
 
 
 class SwitchNotices(Protocol):
@@ -542,6 +556,20 @@ class AgentRecipient:
         """
         return self.agent
 
+    async def _still_here(self, row: InboundEvent) -> bool:
+        """`still_member`, saying in the log that what the row left the agent
+        to say is not said when it is not."""
+        if await self.still_member():
+            return True
+        logger.info(
+            "Agent %s was taken out of room %s after row %s was decided; "
+            "what the row left it to say is not said",
+            self.agent.name,
+            self._meta.room_id,
+            row.event_id,
+        )
+        return False
+
     async def still_member(self) -> bool:
         """Whether the agent is a member of the room now, read when the work
         a row left it (`Delivery.after`, `greet`) is about to run.
@@ -622,6 +650,7 @@ class AgentRecipient:
             own_event=own_event if addressed else None,
             after=after if addressed or refusal is not None else None,
             named=named,
+            checks_membership=True,
         )
 
     async def decide_follow_up(
@@ -723,15 +752,25 @@ class AgentRecipient:
         its own that is closed before anything is posted: posting is a write
         of its own, and holding a connection across it is how a pool slot
         ends up idle in a transaction.
+
+        Whether the agent is still a member of the room is asked only before
+        something would be said or a machine woken, since a connected agent
+        leaves nothing to say (`Delivery.checks_membership`).
         """
         meta = self._meta
         agent_live = False
         unavailable: str | None = None
+        member = False
         if addressed and not self._triggered_by_auto_reply(event):
             async with self.session_factory() as session:
                 agent = await self._fresh_agent(session)
                 agent_live = await self._is_available(session, agent, meta.room_id)
-                if not agent_live:
+            if not agent_live:
+                # The reply may wake the agent's cloud machine.
+                if not await self._still_here(event):
+                    return
+                member = True
+                async with self.session_factory() as session:
                     unavailable = await self._reply_when_unavailable_here(
                         session, agent, meta, self._sender_handle(event)
                     )
@@ -741,6 +780,10 @@ class AgentRecipient:
                 meta, event, agent_live=agent_live, has_attachment=False
             )
 
+        if refusal is None and unavailable is None:
+            return
+        if not member and not await self._still_here(event):
+            return
         if refusal is not None:
             await self._post_auto_reply(
                 self._room.room_id, event, refusal, reply_thread_root
@@ -1748,17 +1791,25 @@ class AgentRecipient:
         principal = await self._addressing.resolve_sender(session, sender, content)
         if principal is None or principal.kind != "user" or not principal.user_ids:
             return None
+        tenant_id = self.tenant_id
         roles = set(
             await session.scalars(
                 select(TenantMember.role).where(
-                    TenantMember.user_id.in_(principal.user_ids)
+                    TenantMember.tenant_id == tenant_id,
+                    TenantMember.user_id.in_(principal.user_ids),
                 )
             )
         )
-        for role in ("owner", "admin", "member"):
+        for role in TENANT_ADMIN_ROLES:
             if role in roles:
                 return role
-        return None
+        # An organization's admin administers the workspace without a
+        # membership row, and is told to agents as an admin, as the workspace's
+        # own pages show them.
+        for user_id in principal.user_ids:
+            if await session.scalar(select(organization_admin_of(tenant_id, user_id))):
+                return ORGANIZATION_ADMIN_TENANT_ROLE
+        return "member" if "member" in roles else None
 
     def _sender_handle(self, event: InboundMessage) -> str:
         """The @-handle to tag the message sender with.

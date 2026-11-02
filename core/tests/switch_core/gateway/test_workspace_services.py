@@ -181,10 +181,9 @@ class TestWhoMayCall:
             ("admin", "user", 200),
             ("owner", "user", 200),
             ("member", "admin", 200),
-            # The gateway binds only a workspace the caller belongs to, the
-            # operator included: the operator bit lifts a member, it does not
-            # reach into a workspace from outside.
-            (None, "admin", 403),
+            # The operator may enter any workspace, on `platform_access`,
+            # which the workspace's audit log records.
+            (None, "admin", 200),
         ],
         ids=["member", "admin", "owner", "operator-as-member", "operator-not-a-member"],
     )

@@ -66,6 +66,7 @@ from switch_core.bridges.agent.protocol.types import (
     ToolCallReport,
     ToolSpec,
 )
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentIdentityConflict,
@@ -122,6 +123,7 @@ from switch_core.events import (
     ToolCallReport as RoomToolCallReport,
 )
 from switch_core.messages.recorded_types import MEMBERSHIP_EVENT_TYPE
+from switch_core.platform_access import administers_on_record
 from switch_core.room_wide_mention import (
     ROOM_WIDE_TARGET,
     is_reserved_mention_name,
@@ -146,6 +148,8 @@ from switch_core.trust.client import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
@@ -336,6 +340,9 @@ class AgentCore:
     # Same reason: a minimal test instance gets a client that allows everything
     # rather than one that needs real config to construct.
     trust_client: TrustClient = NullTrustClient()
+    # Same reason: a minimal test instance keeps nothing and reads every
+    # check from the database. The server supplies the process's one cache.
+    room_access: RoomAccessCache = RoomAccessCache(ttl_seconds=0, max_entries=1)
     # Told (tenant_id, agent_id) just before an agent is deleted, while its row
     # still exists. Set by the process wiring when something outside Core keeps
     # state about agents that a cascade alone would drop without telling anyone.
@@ -380,9 +387,12 @@ class AgentCore:
         config: SwitchConfig,
         approval_outcomes: ApprovalOutcomes,
         trust_client: TrustClient,
+        room_access: RoomAccessCache | None = None,
         telemetry: TelemetryService | None = None,
     ) -> None:
         self.telemetry = telemetry
+        if room_access is not None:
+            self.room_access = room_access
         self.trust_client = trust_client
         self.approval_outcomes = approval_outcomes
         # Pairs session start with session end. Held here because the handler
@@ -700,7 +710,7 @@ class AgentCore:
 
         await session.commit()
         self.client_lifecycle.start_client(client_record)
-        self.client_lifecycle.announce(client_record.tenant_id)
+        self.client_lifecycle.announce(client_record.tenant_id, [client_record.id])
         return agent.id
 
     async def _reregister_agent(
@@ -1100,9 +1110,9 @@ class AgentCore:
             # the next message that already matched its old name.
             if isinstance(actor, AgentActor):
                 actor.set_agent(agent)
-        # Every other process re-reads the tenant's clients, so its copy of the
+        # Every other process re-reads the agent's client, so its copy of the
         # agent and the bridges it holds take the new name too.
-        self.client_lifecycle.announce(tenant_id)
+        self.client_lifecycle.announce(tenant_id, [agent.client_id])
         if self._agent_rename_listener is not None:
             await self._agent_rename_listener(tenant_id, agent_id, old_name)
         await self._agent_profile_changed(agent_id)
@@ -1404,7 +1414,7 @@ class AgentCore:
             # its client must not stay stopped here.
             self.client_lifecycle.deletion_failed(client_id)
             raise
-        self.client_lifecycle.announce(tenant_id)
+        self.client_lifecycle.announce(tenant_id, [client_id])
         self.api_key_cache.invalidate_agent(resolved_id)
         # Its connections end with it, here and in whichever process holds
         # one: their rows went with its row. After its key is dropped, so a
@@ -1450,30 +1460,62 @@ class AgentCore:
 
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
-        async with self.session_factory() as session:
+        tenant_id = current_tenant_id()
+        if tenant_id is not None:
+            held = self.room_access.member(tenant_id, agent_id, room_id)
+            if held is not None:
+                return held
+        async with self._bound_session() as session:
             return await self._room_member_in(session, agent_id, room_id)
+
+    def _bound_session(self) -> AbstractAsyncContextManager[AsyncSession]:
+        """A session for the bound tenant: the one a `shared_tenant_session`
+        block lends this task, if it is inside one, so a caller can put
+        several reads in one transaction."""
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            return self.session_factory()
+        return tenant_session(self.session_factory, tenant_id)
 
     async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """`require_room_member`, and raise `BudgetExceeded` if the agent has
         reached a budget covering it. One session for both, so a post still
         costs one pool checkout."""
+        tenant_id = require_tenant_id()
+        access = self.room_access
+        room = access.member(tenant_id, agent_id, room_id)
+        if room is not None and access.unbudgeted(tenant_id, agent_id):
+            return room
         async with self.session_factory() as session:
-            room = await self._room_member_in(session, agent_id, room_id)
-            await self.budget_guard.require_within(
-                session, tenant_id=require_tenant_id(), agent_id=agent_id
+            if room is None:
+                room = await self._room_member_in(session, agent_id, room_id)
+            ticket = access.ticket()
+            covered = await self.budget_guard.require_within(
+                session, tenant_id=tenant_id, agent_id=agent_id
             )
+        if not covered:
+            access.put_unbudgeted(tenant_id, agent_id, ticket)
         return room
 
     async def _room_member_in(
         self, session: AsyncSession, agent_id: str, room_id: str
     ) -> RoomDescriptor:
+        tenant_id = current_tenant_id()
+        if tenant_id is not None:
+            held = self.room_access.member(tenant_id, agent_id, room_id)
+            if held is not None:
+                return held
+        ticket = self.room_access.ticket()
         found = await self.room_store.get_with_membership(session, room_id, agent_id)
         if found is None:
             raise ValueError(f"Room not found: {room_id}")
         room, is_member = found
         if not is_member:
             raise PermissionError("Agent is not a member of this room")
-        return _describe_room(room)
+        described = _describe_room(room)
+        if tenant_id is not None:
+            self.room_access.put_member(tenant_id, agent_id, described, ticket)
+        return described
 
     async def list_rooms(
         self, agent_id: str, *, include_archived: bool = False
@@ -2593,7 +2635,7 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         limit = max(1, min(limit, HISTORY_MAX_LIMIT))
 
-        async with self.session_factory() as session:
+        async with self._bound_session() as session:
             # One more than asked for. Whether that row exists is precisely the
             # question `truncated` answers, so there is nothing to estimate and
             # no reason to be conservative about it.
@@ -3137,8 +3179,14 @@ class AgentCore:
         owner_is_admin = False
         if agent.owner_id is not None:
             owner = await session.get(User, agent.owner_id)
-            owner_is_admin = owner is not None and await self.user_store.administers(
-                session, owner
+            owner_is_admin = owner is not None and await administers_on_record(
+                session,
+                self.session_factory,
+                self.user_store,
+                owner,
+                target_type="agent",
+                target_id=agent.id,
+                details={"event": "agent_acting"},
             )
         return agent, agent.owner_id, owner_is_admin
 

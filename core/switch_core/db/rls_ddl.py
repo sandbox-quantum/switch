@@ -91,6 +91,22 @@ merely happens to have a column called `tenant_id` without the constraint is
 not tied to a tenant, and a policy comparing it would reject every row the
 table holds.
 
+**Organizations are the second boundary, and they hang off the first.** An
+organization owns workspaces, and a few tables belong to the organization
+rather than to any one workspace: `organizations` itself (compared on `id`,
+as `tenants` is) and every table whose `organization_id` foreign key targets
+`organizations.id`. Their policy has the same shape over
+`require_organization_id()`, which answers from the bound workspace when one
+is bound — the organization `tenants.organization_id` names for it — and from
+`app.organization_id` only when no workspace is. So a workspace-bound session
+sees its own organization's rows and no other's with nothing new to bind, and
+binding an organization that is not the workspace's own is refused rather
+than quietly widened. The function reads `tenants` under that table's own
+policy, so it is not an exemption: it can only ever see the bound workspace's
+row. A table is organization-scoped only when it is not tenant-scoped:
+`tenants.organization_id` points at `organizations` too, and `tenants` stays
+on its own boundary.
+
 **Where the SQL lives.** Same house pattern as `notify_ddl.py`: this module's
 DDL is attached to `Base.metadata` (`db/models.py`) so `create_all` builds it
 and every test exercises the same policies the server would run in
@@ -106,6 +122,8 @@ from sqlalchemy import DDL, MetaData, Table, event
 
 REQUIRE_TENANT_FUNCTION_NAME = "require_tenant_id"
 POLICY_NAME = "tenant_isolation"
+REQUIRE_ORGANIZATION_FUNCTION_NAME = "require_organization_id"
+ORGANIZATION_POLICY_NAME = "organization_isolation"
 
 # The whole exemption from tenancy, written out. Everything else in
 # `Base.metadata` is scoped, so this list is the only place a table can be
@@ -221,23 +239,77 @@ DROP_REQUIRE_TENANT_FUNCTION = (
     f"DROP FUNCTION IF EXISTS {REQUIRE_TENANT_FUNCTION_NAME}()"
 )
 
+CREATE_REQUIRE_ORGANIZATION_FUNCTION = f"""
+CREATE OR REPLACE FUNCTION {REQUIRE_ORGANIZATION_FUNCTION_NAME}() RETURNS text
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    bound_tenant text := current_setting('app.tenant_id', true);
+    bound_organization text := current_setting('app.organization_id', true);
+    tenant_organization text;
+BEGIN
+    IF bound_tenant IS NOT NULL AND btrim(bound_tenant) <> '' THEN
+        SELECT organization_id INTO tenant_organization
+            FROM tenants WHERE id = bound_tenant;
+        IF tenant_organization IS NULL THEN
+            RAISE EXCEPTION 'the workspace bound to this session belongs to no organization'
+                USING ERRCODE = '{_TENANT_NOT_SET_SQLSTATE}';
+        END IF;
+        IF bound_organization IS NOT NULL AND btrim(bound_organization) <> ''
+                AND bound_organization <> tenant_organization THEN
+            RAISE EXCEPTION 'app.organization_id is not the bound workspace''s organization'
+                USING ERRCODE = '{_TENANT_NOT_SET_SQLSTATE}';
+        END IF;
+        RETURN tenant_organization;
+    END IF;
+    IF bound_organization IS NULL OR btrim(bound_organization) = '' THEN
+        RAISE EXCEPTION 'neither app.organization_id nor app.tenant_id is set on this session'
+            USING ERRCODE = '{_TENANT_NOT_SET_SQLSTATE}';
+    END IF;
+    RETURN bound_organization;
+END;
+$$
+"""
+
+DROP_REQUIRE_ORGANIZATION_FUNCTION = (
+    f"DROP FUNCTION IF EXISTS {REQUIRE_ORGANIZATION_FUNCTION_NAME}()"
+)
+
 
 def enable_rls_ddl(table_name: str) -> str:
     return f'ALTER TABLE "{table_name}" ENABLE ROW LEVEL SECURITY'
 
 
 def create_policy_ddl(table_name: str, tenant_column: str) -> str:
-    predicate = f'"{tenant_column}" = (SELECT {REQUIRE_TENANT_FUNCTION_NAME}())'
-    return (
-        f'CREATE POLICY {POLICY_NAME} ON "{table_name}"\n'
-        f"    FOR ALL\n"
-        f"    USING ({predicate})\n"
-        f"    WITH CHECK ({predicate})"
+    return _policy_ddl(
+        POLICY_NAME, table_name, tenant_column, REQUIRE_TENANT_FUNCTION_NAME
     )
 
 
 def drop_policy_ddl(table_name: str) -> str:
     return f'DROP POLICY IF EXISTS {POLICY_NAME} ON "{table_name}"'
+
+
+def create_organization_policy_ddl(table_name: str, organization_column: str) -> str:
+    return _policy_ddl(
+        ORGANIZATION_POLICY_NAME,
+        table_name,
+        organization_column,
+        REQUIRE_ORGANIZATION_FUNCTION_NAME,
+    )
+
+
+def drop_organization_policy_ddl(table_name: str) -> str:
+    return f'DROP POLICY IF EXISTS {ORGANIZATION_POLICY_NAME} ON "{table_name}"'
+
+
+def _policy_ddl(policy: str, table_name: str, column: str, function: str) -> str:
+    predicate = f'"{column}" = (SELECT {function}())'
+    return (
+        f'CREATE POLICY {policy} ON "{table_name}"\n'
+        f"    FOR ALL\n"
+        f"    USING ({predicate})\n"
+        f"    WITH CHECK ({predicate})"
+    )
 
 
 def _tenant_column(table: Table) -> str | None:
@@ -260,6 +332,39 @@ def _tenant_column(table: Table) -> str | None:
     return None
 
 
+def _organization_column(table: Table) -> str | None:
+    """The column this table's organization policy would compare, or None.
+
+    `organizations` is compared on `id`, as `tenants` is. Every other table
+    qualifies by carrying an `organization_id` column whose foreign key
+    targets `organizations.id` — and by not being tenant-scoped, which
+    `tenants` is, though its `organization_id` points there too.
+    """
+    if _tenant_column(table) is not None:
+        return None
+    if table.name == "organizations":
+        return "id"
+    organization_id_col = table.columns.get("organization_id")
+    if organization_id_col is None:
+        return None
+    if any(
+        fk.column.table.name == "organizations" and fk.column.name == "id"
+        for fk in organization_id_col.foreign_keys
+    ):
+        return "organization_id"
+    return None
+
+
+def organization_scoped_tables(metadata: MetaData) -> dict[str, str]:
+    """Table name -> the column its organization policy compares."""
+    return {
+        table.name: column
+        for table in metadata.tables.values()
+        if table.name not in GLOBAL_TABLES
+        and (column := _organization_column(table)) is not None
+    }
+
+
 def unscoped_tables(metadata: MetaData) -> list[str]:
     """Every table that breaks the rule: not global, and carrying no tenant.
 
@@ -271,12 +376,17 @@ def unscoped_tables(metadata: MetaData) -> list[str]:
     return sorted(
         table.name
         for table in metadata.tables.values()
-        if table.name not in GLOBAL_TABLES and _tenant_column(table) is None
+        if table.name not in GLOBAL_TABLES
+        and _tenant_column(table) is None
+        and _organization_column(table) is None
     )
 
 
 def scoped_tables(metadata: MetaData) -> dict[str, str]:
-    """Table name -> the column its policy compares: everything not global.
+    """Table name -> the column its tenant policy compares.
+
+    Everything not global and not organization-scoped
+    (`organization_scoped_tables`).
 
     Raises `UnscopedTableError` naming any table that is neither in
     `GLOBAL_TABLES` nor actually carrying a tenant. The failure is the point:
@@ -290,15 +400,16 @@ def scoped_tables(metadata: MetaData) -> dict[str, str]:
         if table.name in GLOBAL_TABLES:
             continue
         column = _tenant_column(table)
-        if column is None:
-            violations.append(table.name)
-        else:
+        if column is not None:
             tables[table.name] = column
+        elif _organization_column(table) is None:
+            violations.append(table.name)
     if violations:
         raise UnscopedTableError(
             f"table(s) carry no tenant and are not global: {sorted(violations)}. "
-            "Every table in the model metadata is tenant-scoped unless it is "
-            "named in db/rls_ddl.py's GLOBAL_TABLES. Inherit TenantScoped (or, "
+            "Every table in the model metadata is tenant-scoped, or "
+            "organization-scoped (OrganizationScoped), unless it is named in "
+            "db/rls_ddl.py's GLOBAL_TABLES. Inherit TenantScoped (or, "
             "for a plain Table(), add the equivalent tenant_id column with a "
             "foreign key to tenants.id), or — if the table genuinely holds no "
             "customer data — add it to GLOBAL_TABLES, which is a decision "
@@ -340,6 +451,37 @@ def attach_row_level_security(metadata: MetaData) -> None:
             "before_drop",
             DDL(drop_policy_ddl(table_name)).execute_if(dialect="postgresql"),
         )
+    event.listen(
+        metadata,
+        "before_create",
+        DDL(CREATE_REQUIRE_ORGANIZATION_FUNCTION).execute_if(dialect="postgresql"),
+    )
+    for table_name, column in organization_scoped_tables(metadata).items():
+        table = metadata.tables[table_name]
+        event.listen(
+            table,
+            "after_create",
+            DDL(enable_rls_ddl(table_name)).execute_if(dialect="postgresql"),
+        )
+        event.listen(
+            table,
+            "after_create",
+            DDL(create_organization_policy_ddl(table_name, column)).execute_if(
+                dialect="postgresql"
+            ),
+        )
+        event.listen(
+            table,
+            "before_drop",
+            DDL(drop_organization_policy_ddl(table_name)).execute_if(
+                dialect="postgresql"
+            ),
+        )
+    event.listen(
+        metadata,
+        "after_drop",
+        DDL(DROP_REQUIRE_ORGANIZATION_FUNCTION).execute_if(dialect="postgresql"),
+    )
     event.listen(
         metadata,
         "after_drop",

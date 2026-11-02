@@ -1130,11 +1130,15 @@ export interface AuthConfig {
 
 export type TenantRole = "owner" | "admin" | "member";
 
+export type OrganizationRole = "org_admin" | "member";
+
 export interface TenantMembership {
   id: string;
   slug: string;
   name: string;
   role: TenantRole;
+  organization_role: OrganizationRole | null;
+  organization_id: string | null;
 }
 
 export interface SessionUser {
@@ -1151,7 +1155,10 @@ export interface Session {
   tenant: TenantMembership | null;
   tenants: TenantMembership[];
   state: SessionStateName;
+  // Whether the caller may create a new organization with its first workspace.
   can_create_workspace: boolean;
+  // Whether the caller may add a workspace to the current organization.
+  can_add_workspace: boolean;
   // Whether an invitation naming an e-mail is sent there by this server.
   invite_email_enabled: boolean;
 }
@@ -1167,8 +1174,15 @@ export async function fetchSession(): Promise<Session | null> {
   }
 }
 
+/** Create an organization with a first workspace of the same name, and switch
+ * the session into the workspace. */
 export async function createTenant(name: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/tenants", "POST", { name });
+  const created = await jsonRequest<{ workspace: TenantMembership }>(
+    "/organizations",
+    "POST",
+    { name },
+  );
+  return created.workspace;
 }
 
 export async function switchTenant(tenantId: string): Promise<void> {
@@ -1181,6 +1195,10 @@ export interface Member {
   email: string;
   role: TenantRole;
   created_at: string;
+  organization_role: OrganizationRole | null;
+  // An organization admin with no membership of their own here, listed
+  // because the organization makes them an admin of every workspace.
+  via_organization: boolean;
 }
 
 export async function fetchMembers(tenantId: string): Promise<Member[]> {
@@ -1204,6 +1222,106 @@ export async function removeMember(tenantId: string, userId: string): Promise<vo
     `/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
     "DELETE",
   );
+}
+
+export interface OrganizationMember {
+  user_id: string;
+  name: string;
+  email: string;
+  role: OrganizationRole;
+  created_at: string;
+  /** After a demotion: sign-ins Switch could not revoke at a vendor while
+   * taking away what they held in workspaces they were in only as an
+   * organization admin. */
+  warning: string | null;
+}
+
+export interface OrganizationAuditEvent {
+  id: string;
+  occurred_at: string;
+  actor_user_id: string | null;
+  // Read from the account, so a removed member or the platform operator is
+  // named too; null only once the account is gone.
+  actor_name: string | null;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  target_name: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface CurrentOrganization {
+  id: string;
+  slug: string;
+  name: string;
+  // Null for the platform operator there through operator access alone.
+  role: OrganizationRole | null;
+}
+
+export interface OperatorWorkspace {
+  id: string;
+  slug: string;
+  name: string;
+  organization_id: string | null;
+  organization_name: string | null;
+}
+
+export async function fetchCurrentOrganization(): Promise<CurrentOrganization> {
+  return jsonRequest<CurrentOrganization>("/organizations/current", "GET");
+}
+
+export async function fetchOrganizationWorkspaces(): Promise<TenantMembership[]> {
+  return jsonRequest<TenantMembership[]>("/organizations/current/workspaces", "GET");
+}
+
+/** Add a workspace to the current organization. The session stays where it is. */
+export async function createOrganizationWorkspace(name: string): Promise<TenantMembership> {
+  return jsonRequest<TenantMembership>("/organizations/current/workspaces", "POST", { name });
+}
+
+export async function fetchOrganizationMembers(): Promise<OrganizationMember[]> {
+  return jsonRequest<OrganizationMember[]>("/organizations/current/members", "GET");
+}
+
+export async function updateOrganizationRole(
+  userId: string,
+  role: OrganizationRole,
+): Promise<OrganizationMember> {
+  return jsonRequest<OrganizationMember>(
+    `/organizations/current/members/${encodeURIComponent(userId)}`,
+    "PATCH",
+    { role },
+  );
+}
+
+/** The warning names sign-ins that could not be revoked at a vendor, if any. */
+export async function removeOrganizationMember(
+  userId: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest<{ warning: string | null }>(
+    `/organizations/current/members/${encodeURIComponent(userId)}`,
+    "DELETE",
+  );
+}
+
+export const ORGANIZATION_AUDIT_PAGE = 50;
+
+/** One page of the organization's audit log, newest first: the most recent
+ * events, or those before `before` (an `occurred_at` from an earlier page). */
+export async function fetchOrganizationAuditEvents(
+  before: string | null,
+): Promise<OrganizationAuditEvent[]> {
+  const query = new URLSearchParams({ limit: String(ORGANIZATION_AUDIT_PAGE) });
+  if (before !== null) query.set("before", before);
+  return jsonRequest<OrganizationAuditEvent[]>(
+    `/organizations/current/audit-events?${query}`,
+    "GET",
+  );
+}
+
+/** Every workspace on the server; the platform operator only. */
+export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
+  return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");
 }
 
 export interface Invitation {

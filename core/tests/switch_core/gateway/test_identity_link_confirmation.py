@@ -25,6 +25,7 @@ from switch_core.db.models import (
     CollaborationBridge,
     ExternalUser,
     ExternalUserClaim,
+    OrganizationMember,
     TenantMember,
     User,
 )
@@ -238,7 +239,9 @@ class TestClaimWaitsForTheAccount:
         summary = await _claim(world, world.ada)
         code = summary.link_request.code.code  # type: ignore[attr-defined]
         async with world.session_factory() as session:
-            assert await _STORE.redeem_link_code(session, world.account, code)
+            assert await _STORE.redeem_link_code(
+                session, world.account, code, UserStore()
+            )
             await session.commit()
 
         again = await _claim(world, world.ada)
@@ -286,6 +289,7 @@ class TestIssuingACode:
                     session,
                     world.account,
                     first.link_request.code.code,  # type: ignore[attr-defined]
+                    UserStore(),
                 )
                 is None
             )
@@ -293,6 +297,7 @@ class TestIssuingACode:
                 session,
                 world.account,
                 code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
 
     async def test_the_person_an_admin_linked_gets_the_code(
@@ -307,6 +312,7 @@ class TestIssuingACode:
                 session,
                 world.account,
                 code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
             assert confirmed is not None
             assert confirmed.user_id == world.ada.id
@@ -342,6 +348,7 @@ class TestIssuingACode:
                 session,
                 world.account,
                 code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
             await session.commit()
         claim = await _claim_of(world, world.ada)
@@ -363,10 +370,41 @@ class TestIssuingACode:
                     session,
                     world.account,
                     summary.link_request.code.code,  # type: ignore[attr-defined]
+                    UserStore(),
                 )
                 is None
             )
         assert await _claim_of(world, world.ada) is None
+
+    async def test_an_organization_admin_with_no_membership_can_confirm(
+        self, world: _World
+    ) -> None:
+        # An org_admin stands in every workspace of their organization without
+        # a membership row in it, and may be linked there; the code must not
+        # then refuse them for want of the row.
+        async with world.session_factory() as session:
+            carol = User(
+                name="carol", email=f"carol-{uuid.uuid4().hex[:6]}@test", role="user"
+            )
+            session.add(carol)
+            await session.flush()
+            session.add(
+                OrganizationMember(
+                    organization_id=TENANT_ZERO_ID, user_id=carol.id, role="org_admin"
+                )
+            )
+            await session.commit()
+        summary = await _claim(world, carol)
+
+        async with world.session_factory() as session:
+            assert await _STORE.redeem_link_code(
+                session,
+                world.account,
+                summary.link_request.code.code,  # type: ignore[attr-defined]
+                UserStore(),
+            )
+            await session.commit()
+        assert await _claim_of(world, carol) is not None
 
     async def test_a_confirmed_link_needs_no_code(self, world: _World) -> None:
         summary = await _claim(world, world.ada)
@@ -375,6 +413,7 @@ class TestIssuingACode:
                 session,
                 world.account,
                 summary.link_request.code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
             await session.commit()
 
@@ -476,6 +515,7 @@ class TestCancelling:
                     session,
                     world.account,
                     summary.link_request.code.code,  # type: ignore[attr-defined]
+                    UserStore(),
                 )
                 is None
             )
@@ -511,6 +551,7 @@ class TestCancelling:
                     session,
                     world.account,
                     code.code,  # type: ignore[attr-defined]
+                    UserStore(),
                 )
                 is None
             )
@@ -720,6 +761,7 @@ class TestRequiringConfirmationForOlderLinks:
                 session,
                 world.account,
                 code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
             await session.commit()
         claim = await _claim_of(world, world.ada)
@@ -732,6 +774,7 @@ class TestRequiringConfirmationForOlderLinks:
                 session,
                 world.account,
                 summary.link_request.code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
             await session.commit()
 
@@ -751,6 +794,7 @@ class TestRequiringConfirmationForOlderLinks:
                 session,
                 world.account,
                 code.code,  # type: ignore[attr-defined]
+                UserStore(),
             )
 
     async def test_running_it_again_moves_nothing(self, world: _World) -> None:

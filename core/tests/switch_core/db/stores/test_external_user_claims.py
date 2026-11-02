@@ -34,6 +34,7 @@ from switch_core.db.stores.external_user_store import (
     LinkRelease,
     NoSuchLink,
 )
+from switch_core.db.stores.user_store import UserStore
 
 _STORE = ExternalUserStore()
 
@@ -362,7 +363,9 @@ class TestLinkRequests:
         async with session_factory() as session:
             # Typed the way a person might: lower case, no hyphen, O for 0.
             typed = code.replace("-", "").lower().replace("0", "o")
-            confirmed = await _STORE.redeem_link_code(session, account, typed)
+            confirmed = await _STORE.redeem_link_code(
+                session, account, typed, UserStore()
+            )
             assert confirmed is not None
             assert confirmed.user_id == user_id
             await session.commit()
@@ -385,12 +388,18 @@ class TestLinkRequests:
                 session, account, user_id, requested_by_user_id=user_id
             )
             code, _expires = await _STORE.issue_link_code(session, request)
-            assert await _STORE.redeem_link_code(session, account, code) is not None
+            assert (
+                await _STORE.redeem_link_code(session, account, code, UserStore())
+                is not None
+            )
             await _STORE.release(session, account, user_id)
             await session.commit()
 
         async with session_factory() as session:
-            assert await _STORE.redeem_link_code(session, account, code) is None
+            assert (
+                await _STORE.redeem_link_code(session, account, code, UserStore())
+                is None
+            )
             assert await _STORE.claimant_ids(session, account.id) == []
 
     async def test_the_code_from_another_account_confirms_nothing(
@@ -412,7 +421,10 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert await _STORE.redeem_link_code(session, bystander, code) is None
+            assert (
+                await _STORE.redeem_link_code(session, bystander, code, UserStore())
+                is None
+            )
             await session.commit()
 
         async with session_factory() as session:
@@ -435,7 +447,10 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert await _STORE.redeem_link_code(session, account, code) is None
+            assert (
+                await _STORE.redeem_link_code(session, account, code, UserStore())
+                is None
+            )
             assert await _STORE.claimant_ids(session, account.id) == []
 
     async def test_a_new_code_replaces_the_old_one(
@@ -453,8 +468,14 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert await _STORE.redeem_link_code(session, account, old) is None
-            assert await _STORE.redeem_link_code(session, account, new) is not None
+            assert (
+                await _STORE.redeem_link_code(session, account, old, UserStore())
+                is None
+            )
+            assert (
+                await _STORE.redeem_link_code(session, account, new, UserStore())
+                is not None
+            )
 
     async def test_text_that_cannot_be_a_code_confirms_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -471,7 +492,10 @@ class TestLinkRequests:
 
         async with session_factory() as session:
             for text in ("", "hello", "@ABCD-EFGH", "ABCD-EFGH-JKMN"):
-                assert await _STORE.redeem_link_code(session, account, text) is None
+                assert (
+                    await _STORE.redeem_link_code(session, account, text, UserStore())
+                    is None
+                )
 
     async def test_confirming_upgrades_an_unverified_claim(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -491,7 +515,10 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert await _STORE.redeem_link_code(session, account, code) is not None
+            assert (
+                await _STORE.redeem_link_code(session, account, code, UserStore())
+                is not None
+            )
             await session.commit()
 
         async with session_factory() as session:
@@ -527,7 +554,10 @@ class TestLinkRequests:
             await session.commit()
 
         async with session_factory() as session:
-            assert await _STORE.redeem_link_code(session, account, code) is not None
+            assert (
+                await _STORE.redeem_link_code(session, account, code, UserStore())
+                is not None
+            )
 
     async def test_release_cancels_a_waiting_request(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -551,7 +581,10 @@ class TestLinkRequests:
         async with session_factory() as session:
             with pytest.raises(NoSuchLink):
                 await _STORE.release(session, account, user_id)
-            assert await _STORE.redeem_link_code(session, account, code) is None
+            assert (
+                await _STORE.redeem_link_code(session, account, code, UserStore())
+                is None
+            )
 
     async def test_deleting_the_switch_user_drops_their_requests(
         self, session_factory: async_sessionmaker[AsyncSession]

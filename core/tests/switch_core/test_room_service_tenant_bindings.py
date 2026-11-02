@@ -38,7 +38,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -110,6 +110,12 @@ class _TenantRecordingRoomStore(RoomStore):
     async def get_client_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         await self._note("get_client_ids", session)
         return await super().get_client_ids(session, room_id)
+
+    async def client_ids_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[str]]:
+        await self._note("client_ids_by_room", session)
+        return await super().client_ids_by_room(session, room_ids)
 
     async def add_client(
         self, session: AsyncSession, client_id: str, room_id: str
@@ -448,18 +454,8 @@ class TestReconcileRoomClients:
         assert sorted(store.tenants_for("add_client")) == sorted(
             [TENANT_ZERO_ID, TENANT_B]
         )
-        # `all_tenant_ids` names two tenants, so `get_all` runs once per
-        # tenant — and this fixture connects as the tables' owner, the same
-        # connection Phase 1 deploys as (see the module docstring), which
-        # exempts it from the policy `get_all` otherwise relies on to narrow
-        # its result. So each of those two calls sees every room, and
-        # `_reconcile_one_room` — bound to each room's own `tenant_id`
-        # regardless of which pass found it — runs twice per room rather than
-        # once. Harmless (the second pass finds nothing missing and returns),
-        # but it means every tenant appears at least once here rather than
-        # exactly once; the real one-pass-per-room count arrives with the
-        # restricted runtime role.
-        assert set(store.tenants_for("get_client_ids")) == {TENANT_ZERO_ID, TENANT_B}
+        # Each tenant's memberships were read under that tenant, once.
+        assert store.tenants_for("client_ids_by_room") == [TENANT_ZERO_ID, TENANT_B]
 
     async def test_the_room_enumeration_refuses_the_callers_tenant(
         self, session_factory: async_sessionmaker[AsyncSession]

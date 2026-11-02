@@ -19,8 +19,8 @@ from switch_core.db.models import (
     ExternalUser,
     ExternalUserClaim,
     ExternalUserLinkRequest,
-    TenantMember,
 )
+from switch_core.db.stores.user_store import UserStore
 
 
 class NoSuchLink(LookupError):
@@ -435,43 +435,49 @@ class ExternalUserStore:
         return code, request.code_expires_at
 
     async def redeem_link_code(
-        self, session: AsyncSession, external_user: ExternalUser, code: str
+        self,
+        session: AsyncSession,
+        external_user: ExternalUser,
+        code: str,
+        user_store: UserStore,
     ) -> ExternalUserLinkRequest | None:
         """Confirm the link this code was issued for, if it was issued for
-        this account, has not expired, and is for someone still a member of
+        this account, has not expired, and is for someone who still stands in
         the workspace.
 
         The request becomes a verified claim, upgrading an unverified one in
         place. None when nothing matches, which the caller reports without
         saying which part was wrong.
 
-        Membership is checked here as well as when the link was started,
-        because a request outlives a member's removal from the workspace and
-        the claim it turns into decides who the account is recognised as.
+        Standing is checked here as well as when the link was started, because
+        a request outlives a member's removal from the workspace and the claim
+        it turns into decides who the account is recognised as. It is asked of
+        `user_store` rather than read from `tenant_members`, because an
+        organization's `org_admin` stands in its workspaces without a
+        membership row there, and a link to them is started the same way.
         """
         normalised = normalise_link_code(code)
         if normalised is None:
             return None
-        member = (
-            select(TenantMember.user_id)
-            .where(
-                TenantMember.tenant_id == ExternalUserLinkRequest.tenant_id,
-                TenantMember.user_id == ExternalUserLinkRequest.user_id,
-            )
-            .exists()
-        )
-        request = await session.scalar(
+        result = await session.execute(
             select(ExternalUserLinkRequest)
             .where(
                 ExternalUserLinkRequest.external_user_id == external_user.id,
                 ExternalUserLinkRequest.code_hash == hash_link_code(normalised),
                 ExternalUserLinkRequest.code_expires_at > func.now(),
-                member,
             )
-            .with_for_update(of=ExternalUserLinkRequest)
+            .with_for_update()
             .execution_options(populate_existing=True)
         )
+        request = result.scalar_one_or_none()
         if request is None:
+            return None
+        if (
+            await user_store.effective_tenant_role(
+                session, request.tenant_id, request.user_id
+            )
+            is None
+        ):
             return None
         await self.confirm_link_request(session, request)
         return request
