@@ -598,6 +598,17 @@ function RoleRow({
 
 // ── Editable fields ─────────────────────────────────────────────────────────
 
+// The shared helpers speak to the owner ("only you"); these hold for whoever
+// is viewing the room.
+const ROOM_ACCESS_HELPERS: Record<AccessLevel, string> = {
+  private:
+    "Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.",
+  read_only:
+    "Everyone in the workspace can see it. Only its owner and admins can change it.",
+  public:
+    "Everyone in the workspace can see and change it. Only its owner and admins can change its access.",
+};
+
 function EditableFieldsSection({
   room,
   canWrite,
@@ -641,7 +652,7 @@ function EditableFieldsSection({
           !isBridged && description !== room.description ? description : undefined,
         instructions:
           instructions !== (room.instructions ?? "") ? instructions : undefined,
-        ...(access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
+        ...(canManage && access !== toAccessLevel(room) ? fromAccessLevel(access) : {}),
       });
       onSaved();
     } catch (err) {
@@ -649,7 +660,7 @@ function EditableFieldsSection({
     } finally {
       setSaving(false);
     }
-  }, [room, name, description, instructions, access, isBridged, onSaved]);
+  }, [room, name, description, instructions, access, isBridged, canManage, onSaved]);
 
   return (
     <Stack spacing={2}>
@@ -692,19 +703,13 @@ function EditableFieldsSection({
         minRows={6}
         helperText="Surfaced to agents on connect."
       />
-      <Box>
-        <AccessSelect
-          value={access}
-          onChange={setAccess}
-          disabled={!canManage || saving}
-          sx={{ maxWidth: 360 }}
-        />
-        {canWrite && !canManage && (
-          <Typography variant="caption" color="text.secondary" component="p">
-            Only the room's owner or an admin can change access.
-          </Typography>
-        )}
-      </Box>
+      <AccessSelect
+        value={access}
+        onChange={setAccess}
+        disabled={!canManage || saving}
+        helpers={ROOM_ACCESS_HELPERS}
+        sx={{ maxWidth: 360 }}
+      />
       <Box>
         <Button
           variant="contained"

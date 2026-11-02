@@ -1,6 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RoomDetail } from "../../data/api";
+import * as api from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import RoomDetailPage from "./RoomDetailPage";
@@ -21,16 +22,19 @@ vi.mock("../../data/hooks", () => ({
   useRoomGroups: vi.fn(),
 }));
 
+vi.mock("../../data/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../data/api")>();
+  return { ...actual, updateRoom: vi.fn() };
+});
+
 vi.mock("./RoomGraphView", () => ({ default: () => null }));
 vi.mock("./RoomLinkedRoomsSection", () => ({ default: () => null }));
 vi.mock("./RoomResourcesSection", () => ({ default: () => null }));
 vi.mock("./ExportRoomYamlDialog", () => ({ default: () => null }));
 
-const ACCESS_HINT = "Only the room's owner or an admin can change access.";
-
 // Public read & write is the default for a new room, so any workspace member
 // can edit it.
-const room = {
+const publicRoom = {
   id: "r1",
   name: "planning",
   description: "Sprint planning",
@@ -62,6 +66,15 @@ const room = {
   archived_at: null,
 } as RoomDetail;
 
+function showRoom(room: RoomDetail) {
+  vi.mocked(hooks.useRoom).mockReturnValue({
+    data: room,
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
+  });
+}
+
 function signInAs(userId: string, canAdminTenant: boolean) {
   vi.mocked(useAuth).mockReturnValue({
     user: { id: userId },
@@ -73,14 +86,13 @@ function accessSelect() {
   return screen.getByRole("combobox", { name: /^Access/ });
 }
 
+function nameField() {
+  return screen.getByRole<HTMLInputElement>("textbox", { name: "Name" });
+}
+
 describe("RoomDetailPage access control", () => {
   beforeEach(() => {
-    vi.mocked(hooks.useRoom).mockReturnValue({
-      data: room,
-      loading: false,
-      error: null,
-      refetch: vi.fn(),
-    });
+    showRoom(publicRoom);
     vi.mocked(hooks.useRoomGroups).mockReturnValue({
       data: [],
       loading: false,
@@ -99,6 +111,7 @@ describe("RoomDetailPage access control", () => {
       error: null,
       refetch: vi.fn(),
     });
+    vi.mocked(api.updateRoom).mockResolvedValue(publicRoom);
   });
 
   afterEach(() => {
@@ -106,22 +119,42 @@ describe("RoomDetailPage access control", () => {
     vi.clearAllMocks();
   });
 
-  it("does not let a member who is neither owner nor admin change access", () => {
+  it("lets a member edit a publicly writable room but not its access", async () => {
     signInAs("member", false);
     render(<RoomDetailPage />);
 
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
-    screen.getByText(ACCESS_HINT);
-    // The room is publicly writable, so the rest of its settings stay editable.
-    expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Name" }).disabled).toBe(false);
+    expect(accessSelect().getAttribute("aria-describedby")).toBeTruthy();
+    const hint = document.getElementById(accessSelect().getAttribute("aria-describedby")!);
+    expect(hint?.textContent).toContain("Only its owner and admins can change its access.");
+    expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
+
+    fireEvent.change(nameField(), { target: { value: "retro" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    const [, sent] = vi.mocked(api.updateRoom).mock.calls[0];
+    expect(sent.name).toBe("retro");
+    expect(sent).not.toHaveProperty("read_visibility");
+    expect(sent).not.toHaveProperty("write_visibility");
   });
 
-  it("lets the owner change access", () => {
+  it("lets the owner change access", async () => {
     signInAs("owner", false);
     render(<RoomDetailPage />);
 
     expect(accessSelect().getAttribute("aria-disabled")).toBeNull();
-    expect(screen.queryByText(ACCESS_HINT)).toBeNull();
+    screen.getByRole("button", { name: "Delete room" });
+
+    fireEvent.mouseDown(accessSelect());
+    fireEvent.click(await screen.findByRole("option", { name: "Private (only me)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.updateRoom).mock.calls[0][1]).toMatchObject({
+      read_visibility: "private",
+      write_visibility: "private",
+    });
   });
 
   it("lets a tenant admin who does not own the room change access", () => {
@@ -129,6 +162,16 @@ describe("RoomDetailPage access control", () => {
     render(<RoomDetailPage />);
 
     expect(accessSelect().getAttribute("aria-disabled")).toBeNull();
-    expect(screen.queryByText(ACCESS_HINT)).toBeNull();
+    screen.getByRole("button", { name: "Delete room" });
+  });
+
+  it("leaves a member with no write access nothing to edit", () => {
+    showRoom({ ...publicRoom, write_visibility: "private" });
+    signInAs("member", false);
+    render(<RoomDetailPage />);
+
+    expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
+    expect(nameField().disabled).toBe(true);
+    screen.getByText(/You don't have write access to this room/);
   });
 });

@@ -431,8 +431,9 @@ version of their own to them without also giving them a release of their own.
 - **The dashboard's room page offers Access only to the room's owner and
   admins.** On a publicly writable room, the default, anyone could change the
   Access setting and press Save, only for the server to refuse it. The setting
-  is now read-only for everyone else, with a note saying who can change it.
-  The room's other settings stay editable as before.
+  is now read-only for everyone else, and its description says who can see
+  the room and who can change it, for whoever is looking rather than only the
+  owner. The room's other settings stay editable as before.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
