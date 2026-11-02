@@ -205,11 +205,15 @@ def test_the_shipped_grafana_entry_connects_as_grafana_documents_and_serves():
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("grafana", "https://mcp.grafana.com/mcp")
     ]
-    # A live endpoint the authorization server's metadata does not name:
-    # OIDC-standard claims, with the account id as the label's fallback.
+    # No REST endpoint accepts Grafana's MCP token (maintainer direction on
+    # #826), so identity comes from the server's read-only, no-argument
+    # user_info tool through identity.mcp_tool: login is the account id and
+    # email the label, as on the Grafana entry's YAML.
     assert definition.auth.identity is not None
-    assert definition.auth.identity.url == "https://mcp.grafana.com/mcp/userinfo"
-    assert definition.auth.identity.account_id == "sub"
+    assert definition.auth.identity.url is None
+    assert definition.auth.identity.mcp_tool == "user_info"
+    assert definition.auth.identity.account_id == "login"
+    assert definition.auth.identity.label == "email"
     assert definition.access is not None and definition.access.write is not None
     # grafana:query runs raw SQL as written and can change data, so only
     # grafana:read is read-only, and write asks for all three explicitly.
