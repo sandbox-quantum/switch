@@ -396,6 +396,9 @@ version of their own to them without also giving them a release of their own.
 - **Reading an agent's rooms uses an index.** `room_agents` is indexed on
   `agent_id`; reads by agent scanned the whole table, 2.9 ms each at 10,000
   agents.
+- **Recording a message's usage builds its statement once.** The insert was
+  built for every message an agent sent; it is built once and run with bind
+  parameters.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
