@@ -114,6 +114,9 @@ class CreateChatRequest(CamelModel):
     # "group" makes a group even of one agent and nobody else, which would
     # otherwise be a direct chat; older clients send none.
     kind: Literal["group"] | None = None
+    # Makes the direct chat a private channel on this collaboration bridge
+    # (Slack), with the caller's own linked account; older clients send none.
+    bridge_id: str | None = None
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -326,6 +329,7 @@ async def create_chat(
         request_id=req.request_id,
         greeting=req.greeting,
         kind=req.kind,
+        bridge_id=req.bridge_id,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(

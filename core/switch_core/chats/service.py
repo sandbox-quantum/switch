@@ -67,6 +67,7 @@ from switch_core.db.models import (
     ChatRead,
     Client,
     ClientRoom,
+    CollaborationBridge,
     MediaBlob,
     Message,
     MessageAttachment,
@@ -1363,6 +1364,7 @@ class ChatService:
         request_id: str,
         greeting: str | None,
         kind: Literal["group"] | None,
+        bridge_id: str | None,
     ) -> Room:
         """A private room with the agents and members, owned by and joined by
         the user.
@@ -1380,9 +1382,18 @@ class ChatService:
         `greeting` is what the agent says as it joins, in place of its usual
         one-liner: its first words, written for it (switch-buddy's welcome).
         Only for a direct chat with one of the user's own agents.
+
+        `bridge_id` makes the direct chat a private channel on that bridge
+        between the user's own linked account there and the agent.
         """
         member_user_ids = sorted(set(member_user_ids) - {user.id})
         direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
+        if bridge_id is not None and not direct:
+            raise ChatError(
+                422,
+                "BRIDGED_CHAT_NEEDS_ONE_AGENT",
+                "A chat on a bridge is a direct chat with one agent and nobody else.",
+            )
         if member_user_ids or kind == "group" or not agent_ids:
             self._require_group_chats()
         if greeting is not None:
@@ -1412,6 +1423,11 @@ class ChatService:
         # Only when given, so a request without it hashes as it always has.
         if kind is not None:
             request["kind"] = kind
+        if bridge_id is not None:
+            # The greeting's text changes between app versions; a retry must
+            # still match the request it repeats.
+            request.pop("greeting", None)
+            request["bridgeId"] = bridge_id
         payload_hash = _hash(request)
         async with self._lock("create", tenant_id, user.id):
             async with tenant_session(self.session_factory, tenant_id) as session:
@@ -1439,6 +1455,11 @@ class ChatService:
                         "NOT_AGENT_OWNER",
                         "Only the agent's owner can give it a greeting.",
                     )
+                user_names = (
+                    [await self._linked_username(session, user.id, bridge_id)]
+                    if bridge_id is not None
+                    else None
+                )
                 if operation is None:
                     claimed = await self._claim(
                         session,
@@ -1470,6 +1491,7 @@ class ChatService:
                     + [member.name for member in members]
                 )
                 try:
+                    # shortcut: a crash or lost Slack response after the channel exists but before the room is saved leaves an orphan channel and a retry makes a second one; add adoption if this shows up.
                     created = await self._room_service.create_room(
                         RoomCreateConfig(
                             name=name or "New Chat",
@@ -1480,7 +1502,9 @@ class ChatService:
                             ),
                             agent_ids=[agent.id for agent in agents],
                             channel_type="direct" if direct else "channel_private",
-                            internal_only=True,
+                            internal_only=bridge_id is None,
+                            bridge_id=bridge_id,
+                            user_names=user_names,
                             created_by=user.id,
                             owner_id=user.id,
                             read_visibility="private",
@@ -1534,6 +1558,30 @@ class ChatService:
         if len(agents) == 1:
             self._start_session(agents[0].id, room.id)
         return room
+
+    @staticmethod
+    async def _linked_username(
+        session: AsyncSession, user_id: str, bridge_id: str
+    ) -> str:
+        """The user's own account name on the bridge, from the identity they
+        linked there; never one the client names."""
+        bridge = await session.get(CollaborationBridge, bridge_id)
+        if bridge is None or bridge.tenant_id != require_tenant_id():
+            raise ChatError(404, "BRIDGE_NOT_FOUND", "No such bridge.")
+        linked = [
+            external
+            for external in await ExternalUserStore().get_by_user(session, user_id)
+            if external.bridge_id == bridge_id
+        ]
+        if not linked:
+            raise ChatError(
+                422,
+                "ACCOUNT_NOT_LINKED",
+                f"Your Switch account is not linked to an account on "
+                f"{bridge.display_name}. Link it in your Switch settings, then "
+                "try again.",
+            )
+        return linked[0].external_username
 
     async def _room_of_operation(
         self, session: AsyncSession, operation_id: str
