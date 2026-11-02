@@ -188,6 +188,7 @@ class _Server:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=PUBLIC_URL,
+            allow_non_expiring_keys=False,
         )
 
 

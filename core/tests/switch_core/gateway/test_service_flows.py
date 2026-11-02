@@ -138,6 +138,7 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=public_url,
+        allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
@@ -1181,6 +1182,7 @@ def _sites_world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker

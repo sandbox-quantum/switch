@@ -18,12 +18,21 @@ An entry that asks for choices before its sign-in (`auth.oauth.choices`, a
 vendor's site) has its URLs rendered with them: a sign-in's from its flow,
 and a connection's from its secret, which keeps the choices it was made
 with, so a refresh or a revocation calls the site the sign-in was made at.
+
+An entry may also take a credential the person pastes in place of signing in
+(`auth.paste`: a token, or keys). It is checked with an MCP `initialize` at
+the entry's first MCP server, with the method's headers, when it is pasted
+and each time it is handed out; it is named by the entry's identity call
+where that answers, and is neither refreshed nor revoked: its vendor ends it.
+The connection's secret holds it as a session host is handed it,
+`{"secret": {fields}, "public": {choices}}`, beside the method and choices.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 import time
 from collections.abc import Mapping
@@ -43,10 +52,16 @@ from switch_core.connections.adapters import (
     ServiceAdapterError,
     ServiceUnavailableError,
 )
+from switch_core.connections.adapters.api_key import (
+    checked_fields,
+    credential_token,
+    secret_digest,
+)
 from switch_core.connections.loader import (
     AccessLevel,
     ChoicesError,
     ConnectionDefinition,
+    PasteMethod,
     choice_key,
     render,
 )
@@ -150,6 +165,22 @@ class SignIn:
 class TokenAnswer:
     body: dict[str, Any]
     client_id: str
+
+
+@dataclass(frozen=True)
+class Pasted:
+    """A credential a connection was made with in place of a sign-in: how it
+    was pasted, its fields, and the choices it was pasted for (a site)."""
+
+    method: PasteMethod
+    values: dict[str, str] = field(repr=False)
+    choices: dict[str, str]
+
+
+def credential_words(method: str) -> tuple[str, str]:
+    """A pasted credential as a sentence names it (`token` or `keys`), and
+    the pronoun that stands for it."""
+    return ("token", "it") if method == "token" else ("keys", "them")
 
 
 def s256(verifier: str) -> str:
@@ -379,26 +410,28 @@ class OAuthAdapter:
             ),
         )
 
+    def _initialize(self, mcp_url: str, headers: Mapping[str, str]) -> httpx.Request:
+        """An MCP `initialize` request to `mcp_url`, with `headers`."""
+        return self._http.build_request(
+            "POST",
+            mcp_url,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "switch", "version": "1.0.0"},
+                },
+            },
+            headers={**headers, "Accept": "application/json, text/event-stream"},
+        )
+
     async def _resource_metadata_url(self, mcp_url: str) -> str | None:
         """Where the MCP server says its metadata is: the `resource_metadata`
         of the 401 it answers a request without a token with (RFC 9728 §5)."""
-        response = await self._send(
-            self._http.build_request(
-                "POST",
-                mcp_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "clientInfo": {"name": "switch", "version": "1.0.0"},
-                    },
-                },
-                headers={"Accept": "application/json, text/event-stream"},
-            )
-        )
+        response = await self._send(self._initialize(mcp_url, {}))
         if response.status_code != 401:
             return None
         match = re.search(
@@ -567,6 +600,10 @@ class OAuthAdapter:
                 f"{self._name} would not say whose sign-in this is "
                 f"(HTTP {response.status_code})."
             )
+        return self._identity_from(response)
+
+    def _identity_from(self, response: httpx.Response) -> Identity:
+        """The account the identity call's answer names."""
         body = self._json(response, "account")
         account_id = _path_value(body, self._identity.account_id)
         label = _path_value(body, self._identity.label)
@@ -578,9 +615,154 @@ class OAuthAdapter:
             account_id, label if isinstance(label, str) and label else account_id
         )
 
+    # ── A credential pasted in place of a sign-in ────────────────────────────
+
+    def paste_method(self, name: str) -> PasteMethod:
+        method = self._definition.auth.paste_method(name)
+        if method is None:
+            raise ServiceAdapterError(f"{self._name} takes no pasted {name}.")
+        return method
+
+    def checked_paste(
+        self, method: PasteMethod, submitted: Mapping[str, str]
+    ) -> dict[str, str]:
+        """The pasted fields, each one printable line, and nothing else."""
+        return checked_fields(self._name, method.fields, submitted)
+
+    def pasted_secret(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> ConnectionSecret:
+        """What a connection made with a pasted credential stores."""
+        return ConnectionSecret(
+            {
+                "access_token": credential_token(values, choices),
+                "method": method.name,
+                "choices": dict(choices),
+            }
+        )
+
+    def pasted(self, secret: ConnectionSecret) -> Pasted | None:
+        """The pasted credential a connection's secret holds; None for a
+        sign-in. One this server no longer takes as it was pasted must be
+        pasted again: `ReauthorizationRequiredError`."""
+        name = secret.values.get("method")
+        if name is None:
+            return None
+        method = (
+            self._definition.auth.paste_method(name) if isinstance(name, str) else None
+        )
+        if method is None:
+            raise ReauthorizationRequiredError(
+                f"The {self._name} connection was made with a credential this "
+                "server no longer takes."
+            )
+        try:
+            values = json.loads(secret.access_token or "")["secret"]
+        except (ValueError, KeyError, TypeError):
+            values = None
+        if (
+            not isinstance(values, dict)
+            or set(values) != method.field_names()
+            or not all(isinstance(value, str) for value in values.values())
+        ):
+            words, _ = credential_words(method.name)
+            raise ReauthorizationRequiredError(
+                f"The {self._name} connection's pasted {words} no longer fit what "
+                "this server asks for."
+            )
+        return Pasted(method, values, self._choices_of(secret))
+
+    def _paste_headers(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> dict[str, str]:
+        fields = {**values, **choices}
+        return {name: render(value, fields) for name, value in method.headers.items()}
+
+    async def _status(self, request: httpx.Request) -> int:
+        """The status the vendor answers `request` with, the body unread: an
+        MCP server may answer with a stream it keeps open."""
+        try:
+            response = await self._http.send(
+                request, follow_redirects=False, stream=True
+            )
+        except httpx.HTTPError:
+            raise ServiceUnavailableError(
+                f"{self._name} could not be reached. Please try again."
+            ) from None
+        await response.aclose()
+        if response.status_code == 429 or response.status_code >= 500:
+            raise ServiceUnavailableError(
+                f"{self._name} is unavailable (HTTP {response.status_code}). "
+                "Please try again."
+            )
+        return response.status_code
+
+    async def check_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> None:
+        """Whether the vendor's MCP server takes the credential: an MCP
+        `initialize` at the entry's first server, at the choices' site, with
+        the method's headers. A 401 refuses it for good
+        (`ReauthorizationRequiredError`); any other answer but 200 is a
+        `ServiceAdapterError`."""
+        if self._mcp_url is None:
+            raise ServiceAdapterError(
+                f"{self._name} has no MCP server to check a pasted credential at."
+            )
+        status = await self._status(
+            self._initialize(
+                render(self._mcp_url, choices),
+                self._paste_headers(method, values, choices),
+            )
+        )
+        if status == 200:
+            return
+        words, _ = credential_words(method.name)
+        if status == 401:
+            raise ReauthorizationRequiredError(
+                f"{self._name} refused the pasted {words}, which may be wrong, "
+                "revoked or expired."
+            )
+        raise ServiceAdapterError(
+            f"{self._name}'s MCP server would not take the pasted {words} "
+            f"(HTTP {status}). Check that the {words} may use it."
+        )
+
+    async def identify_pasted(
+        self, method: PasteMethod, values: Mapping[str, str], choices: Mapping[str, str]
+    ) -> Identity:
+        """The account a pasted credential acts as, where the entry's
+        identity call answers with the method's headers. Where it will not
+        (a token not allowed to read the account), the credential's SHA-256
+        stands for the account, and the label is the part of it the vendor
+        shows (`alias`), or the service and the choices."""
+        response = await self._send(
+            self._http.build_request(
+                "GET",
+                render(self._identity.url, choices),
+                headers={
+                    **self._paste_headers(method, values, choices),
+                    "Accept": "application/json",
+                },
+            )
+        )
+        if response.status_code == 200:
+            return self._identity_from(response)
+        words, _ = credential_words(method.name)
+        return Identity(
+            secret_digest([values[field.name] for field in method.fields]),
+            method.alias_of(values)
+            or " · ".join([f"{self._name} {words}", *choices.values()]),
+        )
+
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
+        if secret.values.get("method") is not None:
+            # The broker checks a pasted credential instead, and never asks.
+            raise ServiceAdapterError(
+                f"A credential pasted for {self._name} is not refreshed."
+            )
         refresh_token = secret.values.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ReauthorizationRequiredError(
@@ -617,6 +799,14 @@ class OAuthAdapter:
         )
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
+        method = secret.values.get("method")
+        if method is not None:
+            words, pronoun = credential_words(str(method))
+            raise ConnectionNotRevocable(
+                f"Switch has forgotten the pasted {self._name} {words} but cannot "
+                f"revoke {pronoun}. Revoke {pronoun} in {self._name} to stop "
+                f"{pronoun} working."
+            )
         if self._oauth.revocation_url is None and not self._oauth.revocation_discovered:
             raise ConnectionNotRevocable(
                 f"Switch has stopped using the {self._name} sign-in but cannot "
