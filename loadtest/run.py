@@ -216,6 +216,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "controllers are revoked",
     )
     o.add_argument(
+        "--seed-only",
+        action="store_true",
+        help="with --keep: make the agents and rooms and keep them, connecting "
+        "nothing, for later runs' --reuse",
+    )
+    o.add_argument(
+        "--concurrency",
+        type=int,
+        default=8,
+        help="requests in flight while making and removing agents, rooms and "
+        "controllers; lower it on an environment with few pods",
+    )
+    o.add_argument(
         "--reuse",
         metavar="RUN_ID",
         help="use the agents and rooms a --keep run left instead of seeding; "
@@ -238,6 +251,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if (a.keep or a.reuse) and not a.controllers:
         # Agents of their own carry an API key each, which is not kept.
         ap.error("--keep and --reuse need agents behind --controllers")
+    if a.seed_only and (not a.keep or a.reuse):
+        ap.error("--seed-only needs --keep, and makes agents rather than reusing them")
+    if a.concurrency < 1:
+        ap.error("--concurrency must be at least 1")
     return a
 
 
@@ -418,7 +435,7 @@ async def cleanup(a: argparse.Namespace, kube: Kube) -> int:
         await admin.login(*admin_login(kube))
         if a.workspace:
             await admin.use_workspace(a.workspace)
-        done = await teardown(admin, a.cleanup)
+        done = await teardown(admin, a.cleanup, concurrency=a.concurrency)
     finally:
         await admin.close()
         if pf:
@@ -588,7 +605,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             names_from = kept["names_from"]
             meta["names_from"] = names_from
             made = await create_controllers(
-                admin, run_id, a.controllers, state, asyncio.Semaphore(8)
+                admin, run_id, a.controllers, state, asyncio.Semaphore(a.concurrency)
             )
             taken_over = True
             print(
@@ -599,7 +616,13 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             )
         elif a.controllers:
             seeded, room_ids, made = await seed_managed(
-                admin, run_id, max(a.steps), a.controllers, membership, state
+                admin,
+                run_id,
+                max(a.steps),
+                a.controllers,
+                membership,
+                state,
+                concurrency=a.concurrency,
             )
             taken_over = True
         else:
@@ -629,6 +652,8 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 + f" in {time.monotonic() - t:.1f}s",
                 flush=True,
             )
+        if a.seed_only:
+            print("seed only: nothing connects; agents and rooms are kept", flush=True)
         rooms_of: dict[int, list[str]] = {}
         for j, members in enumerate(membership):
             for m in members:
@@ -666,7 +691,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                     honor_busy=a.honor_busy,
                 )
             )
-        if controllers:
+        if controllers and not a.seed_only:
             # Placing an agent needs its controller online with a fresh status
             # report, so every controller connects and reports first.
             stats.phase = sampler.phase = "controllers"
@@ -690,7 +715,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 raise RuntimeError("not every controller came online")
 
         opened = 0
-        for step in a.steps:
+        for step in [] if a.seed_only else a.steps:
             if stop.is_set():
                 break
             stats.phase = sampler.phase = f"connect@{step}"
@@ -748,7 +773,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         try:
             if a.keep and taken_over:
                 meta["kept"] = True
-                td = await revoke_controllers(admin, run_id)
+                td = await revoke_controllers(admin, run_id, concurrency=a.concurrency)
                 record = kept_record(
                     run_id, names_from, seeded, room_ids, membership, a
                 )
@@ -761,9 +786,11 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 if td["left_controllers"] or td["errors"]:
                     code = code or 1
             else:
-                td = await teardown(admin, run_id)
+                td = await teardown(admin, run_id, concurrency=a.concurrency)
                 if names_from != run_id:
-                    seeded_td = await teardown(admin, names_from)
+                    seeded_td = await teardown(
+                        admin, names_from, concurrency=a.concurrency
+                    )
                     td = {k: td.get(k, 0) + seeded_td.get(k, 0) for k in td | seeded_td}
                 print(f"teardown: {json.dumps(td)}", flush=True)
                 if (

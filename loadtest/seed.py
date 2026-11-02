@@ -323,7 +323,9 @@ async def create_rooms(
     return [rid for rid in room_ids if rid]
 
 
-async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
+async def teardown(
+    admin: Admin, run_id: str, log=print, concurrency: int = 8
+) -> dict[str, int]:
     """Remove everything named after the run: agents deleted, rooms archived,
     the key deleted. `run_id` "*" removes every load run's leftovers.
     Returns what it removed, and what is still there after (should be 0)."""
@@ -336,7 +338,7 @@ async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
         "controllers_revoked": 0,
         "errors": 0,
     }
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(concurrency)
 
     async def one(method: str, path: str, counter: str) -> None:
         async with sem:
@@ -388,12 +390,14 @@ async def teardown(admin: Admin, run_id: str, log=print) -> dict[str, int]:
     return done
 
 
-async def revoke_controllers(admin: Admin, run_id: str, log=print) -> dict[str, int]:
+async def revoke_controllers(
+    admin: Admin, run_id: str, log=print, concurrency: int = 8
+) -> dict[str, int]:
     """Revoke the run's controllers and nothing else: what a kept run removes,
     so the agents and rooms it leaves carry no credential with them."""
     pre = prefix(run_id)
     done = {"controllers_revoked": 0, "errors": 0}
-    sem = asyncio.Semaphore(8)
+    sem = asyncio.Semaphore(concurrency)
 
     async def one(controller_id: str) -> None:
         path = f"/management/controllers/{controller_id}"

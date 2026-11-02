@@ -198,3 +198,13 @@ def test_urls_of_another_environment_are_refused() -> None:
     )
     with pytest.raises(Refused, match="--api-url"):
         resolve_urls(a, _Release())  # type: ignore[arg-type]
+
+
+def test_seed_only_keeps_what_it_makes_and_reuses_nothing() -> None:
+    base = ["--namespace", "switch-dev", "--controllers", "2"]
+    with pytest.raises(SystemExit):
+        parse_args([*base, "--seed-only"])
+    with pytest.raises(SystemExit):
+        parse_args([*base, "--keep", "--seed-only", "--reuse", "x"])
+    a = parse_args([*base, "--keep", "--seed-only", "--concurrency", "4"])
+    assert a.seed_only and a.concurrency == 4
