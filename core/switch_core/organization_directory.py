@@ -37,10 +37,12 @@ class DirectoryOrganization:
 
 @dataclass(frozen=True)
 class DirectoryMembership:
-    """Someone's membership of a customer's organization, as the directory
-    has it: the customer, and whether they are its `org_admin`."""
+    """Someone's membership of an organization, as the directory has it: the
+    directory's id for the organization (`organizations.workos_organization_id`
+    for the Switch organization linked to it), and whether they are its
+    `org_admin`."""
 
-    customer_id: str
+    workos_organization_id: str
     role: str
 
 

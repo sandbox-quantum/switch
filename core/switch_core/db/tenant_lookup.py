@@ -171,14 +171,17 @@ two. It discloses which workspaces a person belongs to or administers
 through an organization; the gateway asks it only about the signed-in
 caller.
 
-**`organization_of_customer` is the fifteenth**, and the one that answers
-with an organization rather than a workspace. Under the WorkOS directory
-(`workos_directory.py`) a sign-in names the customers the person belongs to,
-by the customer's id; which Switch organization each one is has to be read
-before anything is bound, to bring the person's membership rows up to date.
-It discloses whether a customer has a Switch organization, and its id; the
-gateway asks it only about customers WorkOS says the signed-in person belongs
-to.
+**`directory_organizations_of_user` is the fifteenth**, and the one that
+answers with organizations rather than workspaces. Under the WorkOS directory
+(`workos_directory.py`) a sign-in names the WorkOS organizations the person
+belongs to; which Switch organizations follow those, and which ones the
+person is already in that follow WorkOS at all, has to be read before
+anything is bound, to bring their membership rows up to date. Its second
+argument is a JSON array of WorkOS organization ids, so one call answers for
+all of them. It discloses which WorkOS organizations have a Switch
+organization, and which linked organizations a person belongs to; the
+gateway asks it only about the signed-in person and the organizations WorkOS
+says they belong to.
 
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
@@ -216,6 +219,7 @@ on the runtime-state sweep is one extra round trip every five seconds.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -456,14 +460,22 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
-        name="organization_of_customer",
-        arguments=("customer_id",),
-        query="SELECT id FROM organizations WHERE customer_id = p_customer_id",
+        name="directory_organizations_of_user",
+        arguments=("user_id", "workos_organization_ids"),
+        query=(
+            "SELECT id FROM organizations "
+            "WHERE workos_organization_id IN "
+            "(SELECT jsonb_array_elements_text(p_workos_organization_ids::jsonb)) "
+            "OR (workos_organization_id IS NOT NULL AND id IN "
+            "(SELECT organization_id FROM organization_members "
+            "WHERE user_id = p_user_id)) "
+            "ORDER BY id"
+        ),
         purpose=(
-            "Which organization is a customer's, from the customer's id a "
-            "WorkOS sign-in names. Read before anything is bound, to bring the "
-            "person's organization memberships up to date; unique by "
-            "constraint."
+            "Which organizations follow a WorkOS organization a sign-in names "
+            "(a JSON array of their ids), and which organizations following "
+            "WorkOS the person is already in. Read before anything is bound, "
+            "to bring the person's organization memberships up to date."
         ),
     ),
     TenantLookup(
@@ -592,8 +604,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "tenant_of_sign_in_flow": text(
         "SELECT tenant_id FROM tenant_of_sign_in_flow(:state) AS tenant_id"
     ),
-    "organization_of_customer": text(
-        "SELECT tenant_id FROM organization_of_customer(:customer_id) AS tenant_id"
+    "directory_organizations_of_user": text(
+        "SELECT tenant_id FROM directory_organizations_of_user("
+        ":user_id, :workos_organization_ids) AS tenant_id"
     ),
 }
 
@@ -752,8 +765,14 @@ async def tenant_of_sign_in_flow(
     return _at_most_one(lookup, await _call(session_factory, lookup, state))
 
 
-async def organization_of_customer(
-    session_factory: async_sessionmaker[AsyncSession], customer_id: str
-) -> str | None:
-    lookup = TENANT_LOOKUPS_BY_NAME["organization_of_customer"]
-    return _at_most_one(lookup, await _call(session_factory, lookup, customer_id))
+async def directory_organizations_of_user(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    workos_organization_ids: list[str],
+) -> list[str]:
+    return await _call(
+        session_factory,
+        TENANT_LOOKUPS_BY_NAME["directory_organizations_of_user"],
+        user_id,
+        json.dumps(sorted(workos_organization_ids)),
+    )

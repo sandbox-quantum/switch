@@ -85,6 +85,9 @@ class OrganizationAuditAction(StrEnum):
     SERVICE_CLEARED = "organization.service_cleared"
     # Brought in from a directory kept outside Switch when they signed in.
     MEMBER_ADDED_AT_SIGN_IN = "organization.member_added_at_sign_in"
+    MEMBER_PROMOTED_AT_SIGN_IN = "organization.member_promoted_at_sign_in"
+    # An operator made the organization follow one in the directory.
+    LINKED_TO_DIRECTORY = "organization.linked_to_directory"
 
 
 class ServerAuditAction(StrEnum):

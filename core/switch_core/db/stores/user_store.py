@@ -391,6 +391,15 @@ class UserStore:
                 "guess a winner a third time."
             )
 
+    async def link_oidc_identity(
+        self, session: AsyncSession, *, user: User, iss: str, sub: str
+    ) -> None:
+        """Link `(iss, sub)` to `user`, as an operator does for an account that
+        signed in some other way before (`workos_linking.py`)."""
+        await self._link_identity(
+            session, user=user, iss=iss, sub=sub, join_tenant=False
+        )
+
     async def _link_identity(
         self,
         session: AsyncSession,

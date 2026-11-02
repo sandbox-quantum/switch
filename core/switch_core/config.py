@@ -1548,6 +1548,13 @@ class SwitchConfig(BaseSettings):
                 "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
                 "the sign-in is what names the person there."
             )
+        if self.gateway_signup_mode != "invite_only":
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs GATEWAY_SIGNUP_MODE=invite_only: "
+                "until organizations can be created in WorkOS from Switch, a "
+                "customer's organization is linked by an operator "
+                "(switch-link-workos), not created by whoever signs up."
+            )
         return self
 
     @model_validator(mode="after")

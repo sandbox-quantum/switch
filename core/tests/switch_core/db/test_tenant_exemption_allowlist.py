@@ -238,6 +238,11 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
     # deployment, so there is no tenant for a policy to narrow on.
     "switch_core.trust.client",
+    # The operator's account linking reads `users` and writes
+    # `oidc_identities`, both global (`rls_ddl.GLOBAL_TABLES`): a person and
+    # their sign-in identities belong to no tenant. Its organization linking
+    # binds the organization (`organization_session`).
+    "switch_core.workos_linking",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The
