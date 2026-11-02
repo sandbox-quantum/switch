@@ -20,6 +20,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
   rpc: {
     switchServers,
+    userChanges: { watch: async () => false, unwatch: async () => {} },
     featureFlags: {
       get: async () => ({ success: true, data: { flags: { ...flags } } }),
     },

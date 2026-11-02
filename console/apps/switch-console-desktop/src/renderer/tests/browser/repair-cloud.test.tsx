@@ -16,7 +16,10 @@ const managedAgents = vi.hoisted(() => ({
   machines: vi.fn(),
 }));
 
-vi.mock('@renderer/lib/ipc', () => ({ events: { on: () => () => {} }, rpc: { managedAgents } }));
+vi.mock('@renderer/lib/ipc', () => ({
+  events: { on: () => () => {} },
+  rpc: { managedAgents, userChanges: { watch: async () => false, unwatch: async () => {} } },
+}));
 vi.mock('@renderer/features/locations/components/add-agent-modal/give-machine-login', () => ({
   GiveMachineLogin: ({ provider }: { provider: string }) => <p>give login for {provider}</p>,
 }));
