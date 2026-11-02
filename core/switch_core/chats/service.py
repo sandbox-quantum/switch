@@ -1502,7 +1502,7 @@ class ChatService:
                             )
                             return room
             operation_id = self._operation_id(tenant_id, user.id, request_id)
-            async with self._provisioning_one_at_a_time(operation_id):
+            async with self._provisioning_one_at_a_time(tenant_id, operation_id):
                 async with tenant_session(self.session_factory, tenant_id) as session:
                     found = await self._room_of_operation(session, operation_id)
                 if found is None:
@@ -1570,13 +1570,13 @@ class ChatService:
 
     @asynccontextmanager
     async def _provisioning_one_at_a_time(
-        self, operation_id: str
+        self, tenant_id: str, operation_id: str
     ) -> AsyncIterator[None]:
         """At most one attempt at an operation's room at once, across every
         server process: a session-level advisory lock, released with the
         connection if the process dies."""
         key = func.hashtext(f"chat-create:{operation_id}")
-        async with self.session_factory() as session:
+        async with tenant_session(self.session_factory, tenant_id) as session:
             await session.execute(select(func.pg_advisory_lock(key)))
             try:
                 yield
