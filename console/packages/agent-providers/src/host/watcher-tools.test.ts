@@ -406,6 +406,7 @@ it('says which room a post reached, and sends it where the agent named', async (
     connectionId: 'connection',
     placements,
     publish: async () => {},
+    placementsNameCallRooms: () => false,
     redactions: new Redactions(),
   });
   calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'posted' }] });
@@ -455,6 +456,7 @@ it('leaves a shared session at home when it connects to a room it shares', async
     connectionId: 'connection',
     placements,
     publish: async () => {},
+    placementsNameCallRooms: () => false,
     redactions: new Redactions(),
   });
   calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'connected' }] });

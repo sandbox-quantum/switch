@@ -463,7 +463,11 @@ async def test_a_shared_session_reading_a_room_it_answers_clears_that_room(
             agent_id=AGENT,
             session_key=CONN,
             session=CallerSession(
-                id="lead", host_id="host", epoch="epoch", room_id=CONNECTED_ROOM
+                id="lead",
+                host_id="host",
+                epoch="epoch",
+                room_id=CONNECTED_ROOM,
+                placed_by_controller=True,
             ),
         )
     )

@@ -27,6 +27,8 @@ const summary = (id: string, extra: Partial<RemoteRoomSummary> = {}): RemoteRoom
   ownerId: null,
   archived: false,
   createdAt: '',
+  viewerIsMember: true,
+  isConsoleChat: false,
   ...extra,
 });
 

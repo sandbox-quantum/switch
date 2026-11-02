@@ -364,7 +364,7 @@ it('follows the open direct chat into its room when it becomes a group, not an o
       name: 'pm-agent',
       roomId: 'current',
     });
-    await act(async () => root.render(<AgentChats agent={AGENT} />));
+    await act(async () => render(<AgentChats agent={AGENT} />));
     expect(navigate).not.toHaveBeenCalled();
 
     // Someone adds a person: the open chat is now a group.
@@ -438,7 +438,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
       JSON.stringify({ text: 'half a thought', mentions: [] })
     );
     navigation.reset({ serverId: 'server-1', agentId: 'agent-3', name: 'pm-agent' });
-    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
+    await act(async () => render(<AgentChats agent={{ ...AGENT, agentId: 'agent-3' }} />));
     const row = container.querySelector<HTMLElement>('[aria-label="Open chat New Chat"]');
     expect(row).not.toBeNull();
     await act(async () => row!.click());
@@ -450,7 +450,7 @@ it('lists an unsent New chat kept from before a restart, with its draft, and reo
     localStorage.removeItem(chatDraftKey({ ...scope, roomId: 'unsaved-chat:kept-request' }));
     navigation.reset({ serverId: 'server-1', agentId: 'agent-2', name: 'pm-agent' });
     localStorage.setItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!, 'emptied');
-    await act(async () => root.render(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
+    await act(async () => render(<AgentChats agent={{ ...AGENT, agentId: 'agent-2' }} />));
     expect(container.querySelector('[aria-label="Open chat New Chat"]')).toBeNull();
     expect(localStorage.getItem(unsavedChatKey({ ...scope, agentId: 'agent-2' })!)).toBeNull();
   } finally {
@@ -520,7 +520,7 @@ it('reopens the created chat whose first send failed, open before a reload, besi
       name: 'pm-agent',
       roomId: 'made',
     });
-    await act(async () => root.render(<AgentChats agent={agent} />));
+    await act(async () => render(<AgentChats agent={agent} />));
     expect(navigation.params().roomId).toBe('made');
     expect(openAgentChat(agent, 'made')?.roomId).toBe('made');
     expect(activeRows()).toEqual(['New Chat']);
@@ -559,7 +559,7 @@ it('reopens the unsent New chat that was open before a reload, not the newest ch
       chatsStore.serverId = 'server-1';
     });
     chatsStore.upsert(directChat('agent-4', 'newest', 'Newest', 5));
-    await act(async () => root.render(<AgentChats agent={agent} />));
+    await act(async () => render(<AgentChats agent={agent} />));
     expect(directChats.unsavedChat(roomId)).toBeDefined();
     expect(navigation.params().roomId).toBe(roomId);
     expect(openAgentChat(agent, roomId)).toBeNull();
@@ -579,7 +579,7 @@ it('reopens the unsent New chat that was open before a reload, not the newest ch
 it('offers a new room or an existing one from the Rooms section, with the agent picked', async () => {
   const { showModal } = await import('@renderer/lib/modal/modal-provider');
   vi.mocked(showModal).mockClear();
-  await act(async () => root.render(<AgentChats agent={AGENT} />));
+  await act(async () => render(<AgentChats agent={AGENT} />));
   const add = container.querySelector<HTMLButtonElement>('[aria-label="Add to a room"]')!;
   await act(async () => add.click());
   const items = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
