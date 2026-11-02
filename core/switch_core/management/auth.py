@@ -53,7 +53,7 @@ class ManagementAuthenticator:
     ) -> None:
         self._session_factory = session_factory
         self._controllers = controllers
-        self._token_secret = token_secret
+        self._verified = tokens.VerifiedTokens(secret=token_secret)
         self._presence = presence
         self._auth_cache = auth_cache
 
@@ -76,7 +76,7 @@ class ManagementAuthenticator:
 
     async def authenticate(self, token: str) -> ControllerPrincipal:
         try:
-            claims = tokens.verify_access_token(token, secret=self._token_secret)
+            claims = self._verified.verify(token)
         except tokens.AccessTokenExpired as exc:
             raise ControllerAuthError(
                 reason_codes.TOKEN_EXPIRED,

@@ -399,6 +399,9 @@ version of their own to them without also giving them a release of their own.
 - **Recording a message's usage builds its statement once.** The insert was
   built for every message an agent sent; it is built once and run with bind
   parameters.
+- **A controller's access token is verified once.** Each process keeps the
+  tokens that verified until they expire, where every request verified its
+  token again; revocation is still checked on every request.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
