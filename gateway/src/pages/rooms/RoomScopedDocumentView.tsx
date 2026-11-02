@@ -24,7 +24,7 @@ export default function RoomScopedDocumentView() {
   }>();
   const navigate = useNavigate();
   const { data: doc, loading, error } = useRoomDocument(roomId, documentId);
-  const { data: room } = useRoom(roomId);
+  const { data: room, error: roomError } = useRoom(roomId);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -136,6 +136,11 @@ export default function RoomScopedDocumentView() {
           <Divider />
 
           {deleteError && <Alert severity="error">{deleteError}</Alert>}
+          {roomError && (
+            <Alert severity="warning">
+              Couldn't load the room, so deleting is unavailable: {roomError}
+            </Alert>
+          )}
           {room?.can_write && (
             <Stack direction="row" justifyContent="flex-end">
               <Button

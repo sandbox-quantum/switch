@@ -45,6 +45,19 @@ describe("RoomScopedDocumentView", () => {
     screen.getByRole("button", { name: "Delete" });
   });
 
+  it("says so when it cannot tell whether deleting is allowed", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: null,
+      loading: false,
+      error: "HTTP 500",
+      refetch: vi.fn(),
+    });
+    render(<RoomScopedDocumentView />);
+
+    screen.getByText(/Couldn't load the room, so deleting is unavailable: HTTP 500/);
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
   it("shows a reader the document with no way to delete it", () => {
     showRoom(false);
     render(<RoomScopedDocumentView />);

@@ -159,7 +159,7 @@ describe("RoomDetailPage permissions", () => {
     screen.getByRole("button", { name: "Delete room" });
 
     fireEvent.mouseDown(accessSelect());
-    fireEvent.click(await screen.findByRole("option", { name: "Private (only me)" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Private" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));

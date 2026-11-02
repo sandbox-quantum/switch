@@ -62,6 +62,7 @@ import RoomGraphView from "./RoomGraphView";
 import RoomLinkedRoomsSection from "./RoomLinkedRoomsSection";
 import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
+import { ROOM_ACCESS_HELPERS, ROOM_ACCESS_OPTION_LABELS } from "./roomAccess";
 
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
@@ -588,17 +589,6 @@ function RoleRow({
 
 // ── Editable fields ─────────────────────────────────────────────────────────
 
-// The shared helpers speak to the owner ("only you"); these hold for whoever
-// is viewing the room.
-const ROOM_ACCESS_HELPERS: Record<AccessLevel, string> = {
-  private:
-    "Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.",
-  read_only:
-    "Everyone in the workspace can see it. Only its owner and admins can change it.",
-  public:
-    "Everyone in the workspace can see and change it. Only its owner and admins can change its access.",
-};
-
 function EditableFieldsSection({
   room,
   canWrite,
@@ -698,6 +688,7 @@ function EditableFieldsSection({
         onChange={setAccess}
         disabled={!canManage || saving}
         helpers={ROOM_ACCESS_HELPERS}
+        optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
       <Box>
