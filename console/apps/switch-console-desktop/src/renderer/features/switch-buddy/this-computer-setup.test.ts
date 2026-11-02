@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { providerCheckFailed, setUpThisComputer, type ThisComputerApi } from './this-computer-setup';
+import {
+  providerCheckFailed,
+  setUpThisComputer,
+  type ThisComputerApi,
+} from './this-computer-setup';
 
 function api(overview: Awaited<ReturnType<ThisComputerApi['getOverview']>>) {
   return {

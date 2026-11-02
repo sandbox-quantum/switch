@@ -97,15 +97,22 @@ describe('Meet switch-buddy start choices', () => {
     const text = container!.textContent ?? '';
     expect(text).not.toContain('Checking AI providers…');
     expect(text).toContain('Nothing is added until you choose.');
-    expect(text).toContain('Couldn’t check this computer’s AI providers. You can still choose Not now.');
+    expect(text).toContain(
+      'Couldn’t check this computer’s AI providers. You can still choose Not now.'
+    );
     expect(buttons()).toEqual(['Not now', 'Set up AI provider']);
     await act(async () => container!.querySelectorAll('button')[0]!.click());
     expect(on.onSkip).toHaveBeenCalled();
   });
 
   it('shows no such line when the check worked', async () => {
-    await render({ checking: false, ready: [], starting: null, ask: { adding: false, sharedCloud: false }, ...handlers() });
+    await render({
+      checking: false,
+      ready: [],
+      starting: null,
+      ask: { adding: false, sharedCloud: false },
+      ...handlers(),
+    });
     expect(container!.textContent).not.toContain('Couldn’t check');
   });
 });
-
