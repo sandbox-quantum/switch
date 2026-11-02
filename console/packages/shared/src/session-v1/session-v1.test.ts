@@ -384,6 +384,22 @@ describe('session-v1 client transport', () => {
   });
 });
 
+it('carries a cancel of a queued turn, and a turn reported cancelled', () => {
+  const cancel = commandSchema.parse({
+    ...examples.platformAnswer,
+    body: { type: 'turn.cancel', turnId: 'turn-demo' },
+  });
+  expect(cancel.body).toEqual({ type: 'turn.cancel', turnId: 'turn-demo' });
+  expect(() =>
+    commandSchema.parse({ ...examples.platformAnswer, body: { type: 'turn.cancel' } })
+  ).toThrow();
+  const reported = parseHostEvent({
+    ...examples.hostRequest,
+    body: { type: 'turn.upsert', turnId: 'turn-demo', status: 'cancelled', commandId: null },
+  });
+  expect(reported.body).toMatchObject({ status: 'cancelled' });
+});
+
 it('rejects publication authority on host items and requests', () => {
   const audience = { kind: 'room', roomId: 'room', threadId: null };
   expect(() =>

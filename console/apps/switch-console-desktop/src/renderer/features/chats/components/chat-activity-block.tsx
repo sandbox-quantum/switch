@@ -138,6 +138,7 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
     isThinking(turn) ||
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
+    turn.status === 'cancelled' ||
     turn.requests.length > 0 ||
     turnWarnings(turn).length > 0
   );
@@ -210,6 +211,15 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
           active
         />
+      )}
+      {turn.status === 'cancelled' && (
+        <div role="status">
+          <WorkLogRow
+            icon={<FailedIcon />}
+            label="Cancelled before the agent started"
+            tone="passive"
+          />
+        </div>
       )}
       {ended && (
         <div role="status">

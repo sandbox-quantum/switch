@@ -1108,6 +1108,11 @@ read context, re-assume the previous role if one was held, and confirm the resul
 to the requester in the original thread. If the role cannot be restored, report
 that limitation. Failed or unknown controls do not queue a success announcement.
 
+`!cancel @you <id>` takes a message that is still waiting in your queue out of
+it before you start on it. Only the person who sent the message can, and you are
+never handed it, so do not answer it or ask about it. A message you have started
+on cannot be cancelled; that is `!interrupt`.
+
 ## Tool index
 
 Every Switch tool you call in normal operation, one line each.
