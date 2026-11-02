@@ -57,6 +57,7 @@ from switch_core.bridges.agent.protocol.instructions import build_room_instructi
 from switch_core.bridges.agent.protocol.types import IntegrationProfile
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
+from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
@@ -716,16 +717,19 @@ async def read_context(
 
     buffer = protocol.event_buffer
     tenant_id = require_tenant_id()
-    # The room's newest `messages.seq`, taken before the history read because
-    # a message written while the read is in flight is not in its response.
-    # Recording the catch-up through a later number would mark such a message
-    # as read when the agent never saw it. Recording it through this number
-    # can at worst count a message twice.
-    through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
+    # The room's head, the membership check and the history read share one
+    # session, so a context read costs one pool checkout and one transaction.
+    async with shared_tenant_session(protocol.session_factory, tenant_id):
+        # The room's newest `messages.seq`, taken before the history read
+        # because a message written while the read is in flight is not in its
+        # response. Recording the catch-up through a later number would mark
+        # such a message as read when the agent never saw it. Recording it
+        # through this number can at worst count a message twice.
+        through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
-    context = await protocol.read_context(
-        agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
-    )
+        context = await protocol.read_context(
+            agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
+        )
 
     reader = counting_reader()
     if reader is not None and room_id in connected:
