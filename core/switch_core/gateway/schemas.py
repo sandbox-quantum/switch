@@ -875,6 +875,19 @@ class UnconfirmedLink(BaseModel):
     user_name: str
 
 
+class UnconfirmedLinkRef(BaseModel):
+    # The `ExternalUser` row id and the Switch user, as `UnconfirmedLink` names
+    # them.
+    id: str
+    user_id: str
+
+
+class RequireConfirmationRequest(BaseModel):
+    """The older links an admin was shown and agrees to stop trusting."""
+
+    links: list[UnconfirmedLinkRef]
+
+
 class RequireConfirmationResult(BaseModel):
     # How many links stopped counting and now wait for their owners' codes.
     moved: int

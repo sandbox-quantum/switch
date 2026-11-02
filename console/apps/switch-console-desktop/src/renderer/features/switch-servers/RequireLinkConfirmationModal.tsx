@@ -53,7 +53,12 @@ export const RequireLinkConfirmationModal = observer(function RequireLinkConfirm
     setRequiring(true);
     setError(null);
     try {
-      const result = await rpc.workspaces.requireLinkConfirmation({ workspaceId, bridgeId });
+      // Exactly the people listed here, not whoever is unconfirmed by now.
+      const result = await rpc.workspaces.requireLinkConfirmation({
+        workspaceId,
+        bridgeId,
+        links: (links ?? []).map((link) => ({ id: link.id, userId: link.userId })),
+      });
       if (result.kind !== 'required') {
         setError(linkRequestFailureText(result));
         setRequiring(false);

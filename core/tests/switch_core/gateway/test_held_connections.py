@@ -124,6 +124,10 @@ class _Adapter:
     def __init__(self, calls: _Calls) -> None:
         self._calls = calls
 
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        self._calls.record("platform account check")
+        return None
+
     async def search_directory_users(self, query: str) -> list[Any]:
         self._calls.record("platform directory search")
         return [
@@ -594,6 +598,7 @@ class TestBridgeRoutes:
             "platform edit check",
             "bridge restart",
             "platform directory search",
+            "platform account check",
             "platform directory search",
             "provision external user",
             "bridge remove",

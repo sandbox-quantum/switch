@@ -639,18 +639,6 @@ class CollaborationBridgeLifecycleService:
             )
         return adapter_cls.link_code_instructions(code, connection_config)
 
-    def unlinkable_account_reason(
-        self, bridge_type: str, external_user_id: str
-    ) -> str | None:
-        """Why this account cannot be linked to anyone. See
-        `PlatformAdapter.unlinkable_account_reason`."""
-        adapter_cls = self._adapter_registry.get(bridge_type)
-        if adapter_cls is None:
-            raise ValueError(
-                f"No adapter is registered for bridge type {bridge_type!r}"
-            )
-        return adapter_cls.unlinkable_account_reason(external_user_id)
-
     def renders_custom_url_schemes(self, bridge_type: str) -> bool:
         """Whether this platform makes a `switchdash://` link clickable.
 

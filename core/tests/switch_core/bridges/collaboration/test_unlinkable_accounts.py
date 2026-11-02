@@ -1,12 +1,28 @@
 """Accounts several people post as cannot be linked to one Switch user
-(CHOO-3881)."""
+(CHOO-3881): some tell by their id, others only when the platform is asked."""
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+from typing import Any
+
+import discord
 import pytest
 
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
-from switch_core.bridges.collaboration.slack.adapter import SlackAdapter
+from switch_core.bridges.collaboration.discord.adapter import (
+    DiscordAdapter,
+    DiscordConnectionConfig,
+)
+from switch_core.bridges.collaboration.mattermost.adapter import (
+    MattermostAdapter,
+    MattermostConnectionConfig,
+)
+from switch_core.bridges.collaboration.slack.adapter import (
+    SlackAdapter,
+    SlackConnectionConfig,
+)
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 
@@ -31,3 +47,108 @@ def test_a_slack_person_can_be_linked(account: str) -> None:
 
 def test_by_default_any_account_can_be_linked() -> None:
     assert PlatformAdapter.unlinkable_account_reason("anyone") is None
+
+
+# ── Asking the platform ─────────────────────────────────────────────────────
+
+
+class _SlackClient:
+    def __init__(self, users: dict[str, dict[str, object]]) -> None:
+        self._users = users
+
+    async def users_info(self, *, user: str) -> dict[str, object]:
+        return {"user": self._users[user]}
+
+
+def _slack(users: dict[str, dict[str, object]]) -> SlackAdapter:
+    adapter = SlackAdapter(
+        config=SlackConnectionConfig(
+            bot_token="xoxb-test", app_token="xapp-test", workspace_id="T123"
+        )
+    )
+    adapter._web_client = _SlackClient(users)  # type: ignore[assignment]
+    return adapter
+
+
+def _run(coro: Any) -> Any:
+    return asyncio.run(coro)
+
+
+def test_a_slack_bot_user_is_refused_though_its_id_looks_like_a_persons() -> None:
+    # An app posting with its bot token is bridged under its bot user's U-id.
+    adapter = _slack({"U0BOT": {"id": "U0BOT", "is_bot": True}})
+    assert _run(adapter.account_unlinkable_reason("U0BOT")) is not None
+
+
+def test_a_slack_person_is_linkable_when_asked() -> None:
+    adapter = _slack({"U0ADA": {"id": "U0ADA", "is_bot": False}})
+    assert _run(adapter.account_unlinkable_reason("U0ADA")) is None
+
+
+def test_a_slack_bot_id_is_refused_without_asking() -> None:
+    adapter = _slack({})
+    assert _run(adapter.account_unlinkable_reason("B0123ABCD")) is not None
+
+
+class _MattermostUsers:
+    def __init__(self, users: dict[str, dict[str, object]]) -> None:
+        self._users = users
+
+    def get_user(self, user_id: str) -> dict[str, object]:
+        return self._users[user_id]
+
+
+def _mattermost(users: dict[str, dict[str, object]]) -> MattermostAdapter:
+    adapter = MattermostAdapter(
+        config=MattermostConnectionConfig(
+            url="http://mm", admin_user="admin", admin_password="pw", team_name="t"
+        )
+    )
+    adapter._admin_driver = type("_Driver", (), {"users": _MattermostUsers(users)})()  # type: ignore[assignment]
+    return adapter
+
+
+def test_a_mattermost_bot_is_refused() -> None:
+    adapter = _mattermost({"bot1": {"id": "bot1", "is_bot": True}})
+    assert _run(adapter.account_unlinkable_reason("bot1")) is not None
+
+
+def test_a_mattermost_person_is_linkable_when_asked() -> None:
+    adapter = _mattermost({"ada1": {"id": "ada1", "is_bot": False}})
+    assert _run(adapter.account_unlinkable_reason("ada1")) is None
+
+
+class _DiscordClient:
+    def __init__(self, users: dict[int, Any]) -> None:
+        self._users = users
+
+    async def fetch_user(self, user_id: int) -> Any:
+        if user_id not in self._users:
+            raise discord.NotFound(
+                SimpleNamespace(status=404, reason="Not Found"), "Unknown User"
+            )
+        return self._users[user_id]
+
+
+def _discord(users: dict[int, Any]) -> DiscordAdapter:
+    adapter = DiscordAdapter(
+        config=DiscordConnectionConfig(bot_token="token", guild_id="1")
+    )
+    adapter._connection._client = _DiscordClient(users)  # type: ignore[union-attr,assignment]
+    return adapter
+
+
+def test_a_discord_bot_is_refused() -> None:
+    adapter = _discord({42: SimpleNamespace(bot=True, system=False)})
+    assert _run(adapter.account_unlinkable_reason("42")) is not None
+
+
+def test_a_discord_webhook_is_refused() -> None:
+    # A webhook's posts carry the webhook's id, which no user has.
+    adapter = _discord({})
+    assert _run(adapter.account_unlinkable_reason("777")) is not None
+
+
+def test_a_discord_person_is_linkable_when_asked() -> None:
+    adapter = _discord({42: SimpleNamespace(bot=False, system=False)})
+    assert _run(adapter.account_unlinkable_reason("42")) is None

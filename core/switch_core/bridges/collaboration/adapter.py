@@ -895,6 +895,17 @@ class PlatformAdapter(ABC):
         """
         return None
 
+    async def account_unlinkable_reason(self, external_user_id: str) -> str | None:
+        """Why this account cannot be linked to anyone, asking the platform
+        where the id alone cannot tell, or None if it can be.
+
+        A bot or an integration's account is one whoever runs it posts as, so
+        linking it would recognise all of them as one Switch user. Some
+        platforms say so in the id (`unlinkable_account_reason`); others only
+        when asked. Raise `RuntimeError` when the platform cannot be asked.
+        """
+        return self.unlinkable_account_reason(external_user_id)
+
     async def account_id_for_session(self, token: str) -> str:
         """The platform id of the account a session token belongs to.
 
