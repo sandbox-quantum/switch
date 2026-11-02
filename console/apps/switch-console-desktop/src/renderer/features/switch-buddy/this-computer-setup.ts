@@ -1,4 +1,8 @@
 import type { EmbeddedControllerOverview } from '@shared/core/embedded-controller/embedded-controller';
+import {
+  FLAGS_NOT_READ_YET,
+  type ServerFeatureFlags,
+} from '@shared/core/feature-flags/feature-flags';
 
 /** What setting this computer up needs from Console's main process. */
 export type ThisComputerApi = {
@@ -46,4 +50,27 @@ export async function setUpThisComputer(
 export function openingSetup(flagsKnown: boolean, hostedV2: boolean): 'wait' | 'read' | 'enrol' {
   if (!flagsKnown) return 'wait';
   return hostedV2 ? 'read' : 'enrol';
+}
+
+/**
+ * The gateway's refusal of a read made before signing in (gateway-client.ts).
+ * A fresh Console reads every server's flags before anyone has signed in, so
+ * this is the first answer on every first sign-in.
+ */
+export const FLAGS_NOT_SIGNED_IN = 'Not signed in to this Switch server.';
+
+/**
+ * Whether the server's flags give the buddy an answer to open on: read, or
+ * failed while signed in (then they stay off, so v1 is never held up). Not
+ * read yet, or refused because nobody had signed in yet, is no answer: on a v2
+ * server that would enrol this computer without asking (B38) on a first
+ * sign-in. The read after signing in answers.
+ */
+export function flagsAnswered(state: Pick<ServerFeatureFlags, 'fetchedAt' | 'error'>): boolean {
+  if (state.fetchedAt !== null && state.error === null) return true;
+  return (
+    state.error !== null &&
+    state.error !== FLAGS_NOT_READ_YET &&
+    state.error !== FLAGS_NOT_SIGNED_IN
+  );
 }

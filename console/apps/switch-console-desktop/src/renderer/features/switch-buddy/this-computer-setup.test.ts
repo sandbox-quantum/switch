@@ -1,5 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { openingSetup, setUpThisComputer, type ThisComputerApi } from './this-computer-setup';
+import { FLAGS_NOT_READ_YET } from '@shared/core/feature-flags/feature-flags';
+import {
+  FLAGS_NOT_SIGNED_IN,
+  flagsAnswered,
+  openingSetup,
+  setUpThisComputer,
+  type ThisComputerApi,
+} from './this-computer-setup';
 
 function api(overview: Awaited<ReturnType<ThisComputerApi['getOverview']>>) {
   return {
@@ -62,5 +70,38 @@ describe('openingSetup', () => {
 
   it('enrols straight away with hosted_v2 off, exactly as upstream', () => {
     expect(openingSetup(true, false)).toBe('enrol');
+  });
+});
+
+// B38 on a first sign-in: the read made before anyone signed in is no answer.
+describe('flagsAnswered', () => {
+  it('answers once the flags are read', () => {
+    expect(flagsAnswered({ fetchedAt: 1, error: null })).toBe(true);
+  });
+
+  it('is no answer before the flags are read', () => {
+    expect(flagsAnswered({ fetchedAt: null, error: FLAGS_NOT_READ_YET })).toBe(false);
+  });
+
+  it('is no answer when the read was refused because nobody had signed in yet', () => {
+    expect(flagsAnswered({ fetchedAt: null, error: FLAGS_NOT_SIGNED_IN })).toBe(false);
+    // A v2 server's buddy must wait, not enrol on every flag off.
+    expect(
+      openingSetup(flagsAnswered({ fetchedAt: null, error: FLAGS_NOT_SIGNED_IN }), false)
+    ).toBe('wait');
+  });
+
+  it('answers when a read fails while signed in, so v1 is never held up (every flag off: enrol, as upstream)', () => {
+    const failed = { fetchedAt: null, error: 'The server did not answer in time.' };
+    expect(flagsAnswered(failed)).toBe(true);
+    expect(openingSetup(flagsAnswered(failed), false)).toBe('enrol');
+  });
+
+  it("matches the gateway client's own not-signed-in refusal word for word", () => {
+    const gateway = readFileSync(
+      new URL('../../../main/core/switch-servers/gateway-client.ts', import.meta.url),
+      'utf8'
+    );
+    expect(gateway).toContain(`'${FLAGS_NOT_SIGNED_IN}'`);
   });
 });

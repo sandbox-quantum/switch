@@ -7,10 +7,17 @@ import {
 } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import { useFeatureFlags, useFeatureFlagsKnown } from '@renderer/lib/hooks/useFeatureFlags';
-import { rpc } from '@renderer/lib/ipc';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { events, rpc } from '@renderer/lib/ipc';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { openingSetup, setUpThisComputer, type ThisComputerSetup } from './this-computer-setup';
+import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
+import {
+  FLAGS_NOT_SIGNED_IN,
+  flagsAnswered,
+  openingSetup,
+  setUpThisComputer,
+  type ThisComputerSetup,
+} from './this-computer-setup';
 
 /**
  * This computer as a machine of the workspace, for the buddy to run on.
@@ -56,7 +63,7 @@ function setUp(serverId: string, workspaceId: string, allowEnrol: boolean) {
 export function useThisComputer(serverId: string, workspaceId: string) {
   // The shared-cloud wording only where Core says hosted agents v2 is on, on a box it names.
   const hostedV2 = useFeatureFlags(serverId).hosted_v2;
-  const flagsKnown = useFeatureFlagsKnown(serverId);
+  const flagsKnown = useFlagsAnswered(serverId);
   const cloudMachines = useCloudMachines(hostedV2 ? serverId : null);
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
@@ -174,4 +181,32 @@ function readyOn(machines: OwnedMachine[] | null | undefined): number {
 /** This computer among the workspace's machines, once it is one. */
 export function thisComputerIn(machines: OwnedMachine[] | null | undefined): OwnedMachine | null {
   return machines?.find((m) => m.local?.kind === 'this-computer') ?? null;
+}
+
+/**
+ * Whether the server's flags have answered (`flagsAnswered`), kept current: a
+ * read refused before sign-in waits for the read after it, so the buddy never
+ * enrols a v2 server's computer on that first refusal (B38).
+ */
+function useFlagsAnswered(serverId: string): boolean {
+  const [answered, setAnswered] = useState(false);
+  useEffect(() => {
+    setAnswered(false);
+    let current = true;
+    const off = events.on(featureFlagsChangedChannel, (state) => {
+      if (state.serverId === serverId) setAnswered(flagsAnswered(state));
+    });
+    void rpc.featureFlags.get(serverId).then((res) => {
+      if (!current || !res?.success) return;
+      setAnswered((now) => now || flagsAnswered(res.data));
+      // Last read refused for want of a sign-in: read again now that this page is open
+      // (signed in), rather than wait for the next poll. The change event answers.
+      if (res.data.error === FLAGS_NOT_SIGNED_IN) void rpc.featureFlags.refresh();
+    });
+    return () => {
+      current = false;
+      off();
+    };
+  }, [serverId]);
+  return answered;
 }
