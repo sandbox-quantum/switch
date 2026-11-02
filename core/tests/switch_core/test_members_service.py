@@ -24,47 +24,6 @@ def _service(handler) -> MembersService:
     )
 
 
-def _membership(membership_id: str, subject: str) -> dict:
-    return {"id": membership_id, "user_id": subject, "role": {"slug": "viewer"}}
-
-
-class TestFindingAMembership:
-    async def test_pages_through_with_the_admins_token(self) -> None:
-        seen: list[httpx.Request] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            seen.append(request)
-            offset = int(request.url.params["offset"])
-            page = (
-                [_membership(f"om_{i}", f"user_{i}") for i in range(100)]
-                if offset == 0
-                else [_membership("om_x", "user_wanted")]
-            )
-            return httpx.Response(200, json={"data": page, "total": 101})
-
-        found = await _service(handler).membership_of(TOKEN, "user_wanted")
-
-        assert found == "om_x"
-        assert [r.url.params["offset"] for r in seen] == ["0", "100"]
-        assert all(r.headers["Authorization"] == f"Bearer {TOKEN}" for r in seen)
-        assert seen[0].url.path == "/v1/auth/tenants/members"
-
-    async def test_someone_not_listed_has_none(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200, json={"data": [_membership("om_1", "user_1")], "total": 1}
-            )
-
-        assert await _service(handler).membership_of(TOKEN, "user_2") is None
-
-    async def test_an_answer_switch_cannot_read_is_unavailable(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"items": []})
-
-        with pytest.raises(DirectoryUnavailable):
-            await _service(handler).membership_of(TOKEN, "user_1")
-
-
 class TestChanging:
     async def test_a_role_is_set_by_membership(self) -> None:
         seen: list[httpx.Request] = []
@@ -81,6 +40,7 @@ class TestChanging:
             "/v1/auth/tenants/members/om_1",
         )
         assert json.loads(request.content) == {"role": "org_admin"}
+        assert request.headers["Authorization"] == f"Bearer {TOKEN}"
 
     async def test_a_membership_is_removed(self) -> None:
         seen: list[httpx.Request] = []

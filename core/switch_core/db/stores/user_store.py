@@ -273,6 +273,18 @@ class UserStore:
         await session.flush()
         return await session.get(User, identity.user_id)
 
+    async def oidc_subject(
+        self, session: AsyncSession, user_id: str, iss: str
+    ) -> str | None:
+        """The `sub` `user_id` signs in as at issuer `iss`, or None if they
+        have no identity there."""
+        subject: str | None = await session.scalar(
+            select(OidcIdentity.sub).where(
+                OidcIdentity.user_id == user_id, OidcIdentity.iss == iss
+            )
+        )
+        return subject
+
     async def get_or_create_oidc_user(
         self,
         session: AsyncSession,

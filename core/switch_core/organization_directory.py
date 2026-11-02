@@ -72,14 +72,17 @@ class DirectorySignInRequired(DirectoryError):
 
 @dataclass(frozen=True)
 class MemberChange:
-    """What a change made from Switch to someone's membership carries for the
-    directory: the access token the directory issued the admin making it for
-    the organization, and the directory's own id for the person it is about
-    (their `oidc_identities` subject under `identity_issuer`). Either is None
-    where there is none."""
+    """What a change made from Switch to someone's membership needs the
+    directory to do, worked out by `prepare_change` before anything is
+    changed: the directory's own id for the membership to change, None when
+    the directory needs no change, and the access token the directory issued
+    the admin making it for the organization, None when there is none."""
 
     access_token: str | None
-    subject: str | None
+    membership_id: str | None
+
+
+NO_DIRECTORY_CHANGE = MemberChange(access_token=None, membership_id=None)
 
 
 class OrganizationDirectory(Protocol):
@@ -88,15 +91,24 @@ class OrganizationDirectory(Protocol):
     hold locks while it waits on them."""
 
     # The OIDC issuer whose subjects are the directory's ids for people, for
-    # a route to read a `MemberChange.subject` with; None where it has none.
+    # a route to look up the subject `prepare_change` takes; None where it has
+    # none.
     identity_issuer: str | None
 
-    def check_can_change(
-        self, organization: Organization, access_token: str | None
-    ) -> None:
-        """Raise `DirectorySignInRequired` when a change to `organization`'s
-        members needs a token from the admin and `access_token` is None.
-        Asked before a route changes anything, so a sign-in costs nothing."""
+    async def prepare_change(
+        self,
+        organization: Organization,
+        subject: str | None,
+        role: str | None,
+        access_token: str | None,
+    ) -> MemberChange:
+        """What giving the person the directory knows as `subject` the role
+        `role` in `organization`, or removing them when `role` is None, needs
+        of the directory. Asked before a route changes anything, and before
+        it takes any lock: raises `DirectorySignInRequired` when the directory
+        has to change and takes the change only with a token from the admin,
+        and `access_token` is None; `DirectoryRefusal` when it won't take it
+        at all."""
         ...
 
     def sends_changes_for(self, organization: Organization) -> bool:
@@ -144,13 +156,15 @@ class OrganizationDirectory(Protocol):
         role: str,
         change: MemberChange,
     ) -> None:
-        """Change a member's role in `organization` to `role`."""
+        """Change a member's role in `organization` to `role`, with what
+        `prepare_change` worked out for it."""
         ...
 
     async def remove(
         self, organization: Organization, user_id: str, change: MemberChange
     ) -> None:
-        """End `user_id`'s membership of `organization`."""
+        """End `user_id`'s membership of `organization`, with what
+        `prepare_change` worked out for it."""
         ...
 
 
@@ -160,10 +174,14 @@ class LocalDirectory:
 
     identity_issuer: str | None = None
 
-    def check_can_change(
-        self, organization: Organization, access_token: str | None
-    ) -> None:
-        return None
+    async def prepare_change(
+        self,
+        organization: Organization,
+        subject: str | None,
+        role: str | None,
+        access_token: str | None,
+    ) -> MemberChange:
+        return NO_DIRECTORY_CHANGE
 
     def sends_changes_for(self, organization: Organization) -> bool:
         return False

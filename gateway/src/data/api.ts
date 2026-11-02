@@ -1481,8 +1481,13 @@ export function oidcLoginUrl(): string {
 
 /** Where an admin signs in to their organization's WorkOS account, for the
  * token a change to its members needs, and comes back to `returnTo`. */
+// A dashboard path, and nothing that could leave it: no `//`, which a browser
+// reads as another host. The server checks the same.
+const DASHBOARD_PATH = /^\/(?!\/)[A-Za-z0-9/_.-]*$/;
+
 export function organizationSignInUrl(returnTo: string): string {
-  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(returnTo)}`;
+  const path = DASHBOARD_PATH.test(returnTo) ? returnTo : "/organization";
+  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(path)}`;
 }
 
 /** The server's answer when a change to a linked organization's members
@@ -1490,6 +1495,15 @@ export function organizationSignInUrl(returnTo: string): string {
 export function needsOrganizationSignIn(err: unknown): boolean {
   if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
   return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
+}
+
+/** Whether the change that asked for a sign-in had already taken away the
+ * person's workspace access before it did. */
+export function signInAfterAccessEnded(err: unknown): boolean {
+  return (
+    needsOrganizationSignIn(err) &&
+    (err as ApiError & { detail: Record<string, unknown> }).detail.access_ended === true
+  );
 }
 
 export async function changePassword(

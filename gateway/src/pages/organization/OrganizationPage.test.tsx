@@ -469,17 +469,79 @@ describe("OrganizationPage", () => {
           "/gateway/auth/workos/organization?return_to=%2Forganization",
         ),
       );
-      expect(JSON.parse(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")!)).toEqual({
-        userId: "u2",
-        role: "org_admin",
+      expect(
+        JSON.parse(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")!),
+      ).toMatchObject({ change: { userId: "u2", role: "org_admin" }, organizationId: "o1" });
+    });
+
+    it("comes back only to a dashboard path", async () => {
+      window.location.pathname = "//elsewhere.example.test/organization";
+      signedInAs(session("org_admin", true));
+      answer(routes(signInFirst));
+      structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });
+
+      render(<OrganizationPage />);
+      fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+
+      await waitFor(() =>
+        expect(window.location.href).toBe(
+          "/gateway/auth/workos/organization?return_to=%2Forganization",
+        ),
+      );
+    });
+
+    it("says what was already taken away before sending the admin to sign in", async () => {
+      signedInAs(session("org_admin", true));
+      answer(routes(signInFirst));
+      structured({
+        error: "directory_sign_in_required",
+        message: "Your sign-in has ended. Access was already taken away.",
+        access_ended: true,
       });
+
+      render(<OrganizationPage />);
+      fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+
+      expect(
+        await screen.findByText("Your sign-in has ended. Access was already taken away."),
+      ).toBeTruthy();
+      expect(window.location.href).toBe("");
+      fireEvent.click(screen.getByRole("button", { name: "Confirm sign-in to finish" }));
+      expect(window.location.href).toBe(
+        "/gateway/auth/workos/organization?return_to=%2Forganization",
+      );
+    });
+
+    const keep = (organizationId: string, savedAt: number) =>
+      window.sessionStorage.setItem(
+        "switch.pendingOrganizationMemberChange",
+        JSON.stringify({ change: { userId: "u2", role: "org_admin" }, organizationId, savedAt }),
+      );
+    const patched = (fetchMock: ReturnType<typeof answer>) =>
+      fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH");
+
+    it("drops a kept change from another organization, or one too old", async () => {
+      for (const [organizationId, savedAt] of [
+        ["o2", Date.now()],
+        ["o1", Date.now() - 11 * 60 * 1000],
+      ] as const) {
+        keep(organizationId, savedAt);
+        signedInAs(session("org_admin", true));
+        const fetchMock = answer(routes({ ...bob, role: "org_admin", warning: null }));
+
+        const { unmount } = render(<OrganizationPage />);
+        await screen.findByTestId("row-u2");
+
+        expect(patched(fetchMock)).toBe(false);
+        expect(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")).toBeNull();
+        unmount();
+      }
     });
 
     it("makes the kept change on coming back", async () => {
-      window.sessionStorage.setItem(
-        "switch.pendingOrganizationMemberChange",
-        JSON.stringify({ userId: "u2", role: "org_admin" }),
-      );
+      keep("o1", Date.now());
       signedInAs(session("org_admin", true));
       const fetchMock = answer(routes({ ...bob, role: "org_admin", warning: null }));
 
@@ -497,10 +559,7 @@ describe("OrganizationPage", () => {
     });
 
     it("shows a kept change that still asks for a sign-in as a failure", async () => {
-      window.sessionStorage.setItem(
-        "switch.pendingOrganizationMemberChange",
-        JSON.stringify({ userId: "u2", role: "org_admin" }),
-      );
+      keep("o1", Date.now());
       signedInAs(session("org_admin", true));
       answer(routes(signInFirst));
       structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });

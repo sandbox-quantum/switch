@@ -1,6 +1,7 @@
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
+  Button,
   CircularProgress,
   IconButton,
   MenuItem,
@@ -20,6 +21,7 @@ import {
   needsOrganizationSignIn,
   organizationSignInUrl,
   removeOrganizationMember,
+  signInAfterAccessEnded,
   updateOrganizationRole,
 } from "../../data/api";
 import { formatDate } from "../../theme/hootFormat";
@@ -33,9 +35,13 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
 };
 
 /** A change kept across the sign-in to the organization's WorkOS account it
- * waited on, made again once, on coming back. */
+ * waited on, made again once, on coming back: only in the organization it was
+ * made in, and only while the sign-in it waited on could still be coming back
+ * (the server keeps a started sign-in for ten minutes). */
 type MemberChange = { userId: string; role: OrganizationRole } | { userId: string; remove: true };
+type PendingChange = { change: MemberChange; organizationId: string; savedAt: number };
 const PENDING_CHANGE_KEY = "switch.pendingOrganizationMemberChange";
+const PENDING_CHANGE_TTL_MS = 10 * 60 * 1000;
 
 function make(change: MemberChange): Promise<{ warning: string | null }> {
   return "remove" in change
@@ -43,12 +49,26 @@ function make(change: MemberChange): Promise<{ warning: string | null }> {
     : updateOrganizationRole(change.userId, change.role);
 }
 
-function takePendingChange(): MemberChange | null {
+function signInThenMake(change: MemberChange, organizationId: string): void {
+  const pending: PendingChange = { change, organizationId, savedAt: Date.now() };
+  window.sessionStorage.setItem(PENDING_CHANGE_KEY, JSON.stringify(pending));
+  window.location.href = organizationSignInUrl(window.location.pathname);
+}
+
+function takePendingChange(organizationId: string): MemberChange | null {
   const kept = window.sessionStorage.getItem(PENDING_CHANGE_KEY);
   window.sessionStorage.removeItem(PENDING_CHANGE_KEY);
   if (kept === null) return null;
   try {
-    return JSON.parse(kept) as MemberChange;
+    const pending = JSON.parse(kept) as PendingChange;
+    if (
+      pending.organizationId !== organizationId ||
+      typeof pending.savedAt !== "number" ||
+      Date.now() - pending.savedAt > PENDING_CHANGE_TTL_MS
+    ) {
+      return null;
+    }
+    return pending.change;
   } catch {
     return null;
   }
@@ -62,12 +82,14 @@ function takePendingChange(): MemberChange | null {
  * revoked at a vendor comes back as a warning, shown too. */
 export default function OrganizationMembersSection({
   selfId,
+  organizationId,
   asOperator,
   fromDirectory,
   directoryTakesChanges,
   onChanged,
 }: {
   selfId: string;
+  organizationId: string;
   // The platform operator, who is no admin here, may manage the members only
   // while the organization has no admin left, to make one.
   asOperator: boolean;
@@ -87,6 +109,9 @@ export default function OrganizationMembersSection({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionWarning, setActionWarning] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // A change that ended someone's workspace access and then asked for a
+  // sign-in, for the admin to finish knowingly.
+  const [toFinish, setToFinish] = useState<MemberChange | null>(null);
   const { refresh } = useAuth();
 
   const act = useCallback(
@@ -94,6 +119,7 @@ export default function OrganizationMembersSection({
       setBusy(change.userId);
       setActionError(null);
       setActionWarning(null);
+      setToFinish(null);
       try {
         const { warning } = await make(change);
         setActionWarning(warning);
@@ -105,26 +131,29 @@ export default function OrganizationMembersSection({
         // Once only: a change made again after the sign-in that still asks
         // for one is shown as the failure it is, not sent round again. The
         // operator is no member there and has nothing to sign in as.
+        // A change that already took something away says so first.
         if (needsOrganizationSignIn(err) && !replayed && !asOperator) {
-          window.sessionStorage.setItem(PENDING_CHANGE_KEY, JSON.stringify(change));
-          window.location.href = organizationSignInUrl(window.location.pathname);
-          return;
+          if (!signInAfterAccessEnded(err)) {
+            signInThenMake(change, organizationId);
+            return;
+          }
+          setToFinish(change);
         }
         setActionError(err instanceof Error ? err.message : "The change failed");
       } finally {
         setBusy(null);
       }
     },
-    [asOperator, onChanged, refetch, refresh, selfId],
+    [asOperator, onChanged, organizationId, refetch, refresh, selfId],
   );
 
   const replayed = useRef(false);
   useEffect(() => {
     if (replayed.current) return;
     replayed.current = true;
-    const pending = takePendingChange();
+    const pending = takePendingChange(organizationId);
     if (pending !== null) void act(pending, true);
-  }, [act]);
+  }, [act, organizationId]);
 
   const columns = useMemo<GridColDef<MemberRow>[]>(
     () => [
@@ -244,7 +273,24 @@ export default function OrganizationMembersSection({
         </Alert>
       )}
       {actionError && (
-        <Alert severity="error" onClose={() => setActionError(null)}>
+        <Alert
+          severity="error"
+          onClose={() => {
+            setActionError(null);
+            setToFinish(null);
+          }}
+          action={
+            toFinish && (
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => signInThenMake(toFinish, organizationId)}
+              >
+                Confirm sign-in to finish
+              </Button>
+            )
+          }
+        >
           {actionError}
         </Alert>
       )}

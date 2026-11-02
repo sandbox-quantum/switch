@@ -33,6 +33,7 @@ from tests.switch_core.gateway.test_organization_routes import (
     _app,
     _client,
     _name,
+    _operator,
     _workspace,
 )
 
@@ -42,14 +43,16 @@ ADMIN_TOKEN_OF = "token-of-"
 
 
 class _WorkOS:
-    """WorkOS's sign-in, answering every code as `signs_in_as` in
-    `organization`, and the members service, listing `members` (WorkOS user
-    -> membership id) and recording each change with the token it came with."""
+    """WorkOS, answering every sign-in code as `signs_in_as` in
+    `organization` and listing `members` (WorkOS user -> (membership id,
+    role)) to the API key, and the members service, recording each change
+    with the token it came with, or answering it with `refuses_with`."""
 
-    def __init__(self, members: dict[str, str]) -> None:
+    def __init__(self, members: dict[str, tuple[str, str]]) -> None:
         self.signs_in_as = ""
         self.organization = WORKOS_ORGANIZATION
         self.members = members
+        self.refuses_with: int | None = None
         self.changes: list[tuple[str, str, str]] = []
 
     def sign_in(self, request: httpx.Request) -> httpx.Response:
@@ -66,18 +69,30 @@ class _WorkOS:
             },
         )
 
+    def api(self, request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/user_management/organization_memberships"
+        subject = request.url.params["user_id"]
+        listed = self.members.get(subject)
+        return httpx.Response(
+            200,
+            json={
+                "data": []
+                if listed is None
+                else [
+                    {
+                        "id": listed[0],
+                        "user_id": subject,
+                        "organization_id": request.url.params["organization_id"],
+                        "role": {"slug": listed[1]},
+                    }
+                ],
+                "list_metadata": {"after": None},
+            },
+        )
+
     def members_service(self, request: httpx.Request) -> httpx.Response:
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json={
-                    "data": [
-                        {"id": membership, "user_id": subject}
-                        for subject, membership in self.members.items()
-                    ],
-                    "total": len(self.members),
-                },
-            )
+        if self.refuses_with is not None:
+            return httpx.Response(self.refuses_with, json={"error": "refused"})
         self.changes.append(
             (
                 request.method,
@@ -93,9 +108,7 @@ def _with(
 ) -> FastAPI:
     app = _app(session_factory)
     directory = WorkOSDirectory(
-        httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda request: httpx.Response(500))
-        ),
+        httpx.AsyncClient(transport=httpx.MockTransport(workos.api)),
         "workos-api-key-placeholder",
         "https://api.workos.example.test",
         ISSUER,
@@ -176,7 +189,7 @@ class TestChangingMembers:
         tenant_id, organization_id = await _linked(
             session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
         )
-        workos = _WorkOS({f"user_{bob}": "om_bob"})
+        workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
         workos.signs_in_as = f"user_{ada}"
 
         async with _client(_with(session_factory, workos), ada, tenant_id) as client:
@@ -205,7 +218,7 @@ class TestChangingMembers:
         tenant_id, organization_id = await _linked(
             session_factory, {ada: ("owner", "org_admin"), cy: ("admin", "org_admin")}
         )
-        workos = _WorkOS({f"user_{cy}": "om_cy"})
+        workos = _WorkOS({f"user_{cy}": ("om_cy", "org_admin")})
 
         async with _client(_with(session_factory, workos), ada, tenant_id) as client:
             refused = await client.patch(
@@ -236,7 +249,7 @@ class TestChangingMembers:
             )
             session.add(OidcIdentity(user_id=dee, iss=ISSUER, sub=f"user_{dee}"))
             await session.commit()
-        workos = _WorkOS({f"user_{dee}": "om_dee"})
+        workos = _WorkOS({f"user_{dee}": ("om_dee", "viewer")})
         workos.signs_in_as = f"user_{ada}"
 
         async with _client(_with(session_factory, workos), ada, tenant_id) as client:
@@ -247,6 +260,125 @@ class TestChangingMembers:
         assert [(m, om) for m, om, _ in workos.changes] == [("DELETE", "om_dee")]
         assert await _role(session_factory, organization_id, dee) is None
 
+    async def test_a_change_workos_does_not_need_waits_for_no_sign_in(
+        self, session_factory
+    ) -> None:
+        """Someone WorkOS lists in a role of another product, or not at all,
+        or who has no WorkOS identity, is made a Member in Switch alone."""
+        ada, cy, eli, fay = _name("ada"), _name("cy"), _name("eli"), _name("fay")
+        tenant_id, organization_id = await _linked(
+            session_factory,
+            {
+                ada: ("owner", "org_admin"),
+                cy: ("admin", "org_admin"),
+                eli: ("admin", "org_admin"),
+                fay: ("admin", "org_admin"),
+            },
+        )
+        async with session_factory() as session:
+            identity = await session.scalar(
+                select(OidcIdentity).where(OidcIdentity.user_id == fay)
+            )
+            await session.delete(identity)
+            await session.commit()
+        workos = _WorkOS({f"user_{cy}": ("om_cy", "editor")})
+
+        async with _client(_with(session_factory, workos), ada, tenant_id) as client:
+            made = [
+                await client.patch(
+                    f"/organizations/current/members/{who}", json={"role": "member"}
+                )
+                for who in (cy, eli, fay)
+            ]
+
+        assert [response.status_code for response in made] == [200, 200, 200]
+        assert workos.changes == []
+        for who in (cy, eli, fay):
+            assert await _role(session_factory, organization_id, who) == "member"
+
+    async def test_a_removal_refused_for_its_workspaces_asks_for_no_sign_in(
+        self, session_factory
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id, _ = await _linked(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+        )
+        workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
+
+        async with _client(_with(session_factory, workos), ada, tenant_id) as client:
+            refused = await client.delete(f"/organizations/current/members/{bob}")
+
+        assert refused.status_code == 409
+        assert "workspaces first" in refused.json()["detail"]
+
+    async def test_a_token_refused_after_access_was_ended_says_so(
+        self, session_factory
+    ) -> None:
+        ada, cy = _name("ada"), _name("cy")
+        tenant_id, organization_id = await _linked(
+            session_factory, {ada: ("owner", "org_admin"), cy: ("admin", "org_admin")}
+        )
+        workos = _WorkOS({f"user_{cy}": ("om_cy", "org_admin")})
+        workos.signs_in_as = f"user_{ada}"
+
+        async with _client(_with(session_factory, workos), ada, tenant_id) as client:
+            await _sign_in_to_workos(client)
+            workos.refuses_with = 401
+            refused = await client.patch(
+                f"/organizations/current/members/{cy}", json={"role": "member"}
+            )
+
+        assert refused.status_code == 403
+        detail = refused.json()["detail"]
+        assert detail["error"] == "directory_sign_in_required"
+        assert detail["access_ended"] is True
+        assert "already been taken away" in detail["message"]
+        assert await _role(session_factory, organization_id, cy) == "org_admin"
+
+
+class TestOperatorRestoring:
+    async def test_an_operator_is_told_who_can_make_the_change(
+        self, session_factory
+    ) -> None:
+        bob = _name("bob")
+        tenant_id, organization_id = await _linked(
+            session_factory, {bob: ("owner", "member")}
+        )
+        operator_id = await _operator(session_factory)
+        workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
+
+        async with _client(
+            _with(session_factory, workos), operator_id, tenant_id
+        ) as client:
+            refused = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+
+        assert refused.status_code == 409
+        assert "account settings" in refused.json()["detail"]
+        assert await _role(session_factory, organization_id, bob) == "member"
+
+    async def test_an_operator_restores_whom_workos_already_has_as_org_admin(
+        self, session_factory
+    ) -> None:
+        bob = _name("bob")
+        tenant_id, organization_id = await _linked(
+            session_factory, {bob: ("owner", "member")}
+        )
+        operator_id = await _operator(session_factory)
+        workos = _WorkOS({f"user_{bob}": ("om_bob", "org_admin")})
+
+        async with _client(
+            _with(session_factory, workos), operator_id, tenant_id
+        ) as client:
+            restored = await client.patch(
+                f"/organizations/current/members/{bob}", json={"role": "org_admin"}
+            )
+
+        assert restored.status_code == 200, restored.text
+        assert workos.changes == []
+        assert await _role(session_factory, organization_id, bob) == "org_admin"
+
 
 class TestSigningIn:
     async def test_signing_in_as_someone_else_keeps_no_token(
@@ -256,7 +388,7 @@ class TestSigningIn:
         tenant_id, _ = await _linked(
             session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
         )
-        workos = _WorkOS({f"user_{bob}": "om_bob"})
+        workos = _WorkOS({f"user_{bob}": ("om_bob", "viewer")})
         workos.signs_in_as = f"user_{bob}"
 
         async with _client(_with(session_factory, workos), ada, tenant_id) as client:
@@ -318,14 +450,19 @@ class TestSigningIn:
                 "/auth/workos/organization", params={"return_to": "/organization"}
             )
         async with _client(app, ada, tenant_id) as client:
-            elsewhere = await client.get(
-                "/auth/workos/organization",
-                params={"return_to": "https://elsewhere.example.test/"},
-            )
+            elsewhere = [
+                await client.get(
+                    "/auth/workos/organization", params={"return_to": return_to}
+                )
+                for return_to in (
+                    "https://elsewhere.example.test/",
+                    "//elsewhere.example.test/organization",
+                )
+            ]
 
         assert as_member.status_code == 403
         assert not_linked.status_code == 409
-        assert elsewhere.status_code == 400
+        assert [response.status_code for response in elsewhere] == [400, 400]
 
     async def test_nothing_to_sign_in_to_where_changes_are_not_sent(
         self, session_factory

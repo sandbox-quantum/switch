@@ -23,7 +23,7 @@ from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
@@ -41,7 +41,6 @@ from switch_core.db.audit import (
     record_organization_audit_event,
 )
 from switch_core.db.models import (
-    OidcIdentity,
     Organization,
     OrganizationMember,
     Tenant,
@@ -89,7 +88,10 @@ from switch_core.gateway.schemas import (
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.workos_sign_in_routes import directory_access_token
+from switch_core.gateway.workos_sign_in_routes import (
+    directory_access_token,
+    directory_subject,
+)
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
     create_organization_for,
@@ -103,6 +105,7 @@ from switch_core.organization_access import (
     workspaces_where_they_own_agents,
 )
 from switch_core.organization_directory import (
+    NO_DIRECTORY_CHANGE,
     DirectoryError,
     DirectorySignInRequired,
     MemberChange,
@@ -479,79 +482,97 @@ _ACCESS_ALREADY_ENDED = (
 
 async def _ask_directory(
     change: Callable[..., Awaitable[None]],
-    session: AsyncSession,
-    organization_id: str,
+    organization: Organization,
     *args: str,
     member_change: MemberChange,
     access_ended: bool,
 ) -> None:
-    """Ask the directory to make `change` to a member of `organization_id`,
-    with `args` and `member_change`: after every check that can refuse, under
-    the lock on the organization's admins, and before the write and its
-    commit (`organization_directory.py`). `access_ended` says the person's
-    access through the organization was ended on the way, which a refusal
-    does not give back."""
-    organization = await session.get(Organization, organization_id)
-    if organization is None:
-        raise RuntimeError(f"Organization {organization_id} is not visible here")
+    """Ask the directory to make `change` to a member of `organization`, with
+    `args` and `member_change`: after every check that can refuse, under the
+    lock on the organization's admins, and before the write and its commit
+    (`organization_directory.py`). `access_ended` says the person's access
+    through the organization was ended on the way, which a refusal does not
+    give back."""
     outcome = _ACCESS_ALREADY_ENDED if access_ended else NOTHING_CHANGED
     try:
         await change(organization, *args, member_change)
     except DirectorySignInRequired as error:
-        raise _sign_in_required(error, outcome) from None
+        raise _sign_in_required(error, outcome, access_ended) from None
     except DirectoryError as error:
         raise directory_failed(error, outcome) from None
 
 
-def _sign_in_required(error: DirectorySignInRequired, outcome: str) -> HTTPException:
+def _sign_in_required(
+    error: DirectorySignInRequired, outcome: str, access_ended: bool
+) -> HTTPException:
     """403 the dashboard tells apart by its `error`: it sends the admin to
     sign in to the organization's WorkOS account and back to make the change
-    again (`gateway/workos_sign_in_routes.py`)."""
+    again (`gateway/workos_sign_in_routes.py`). With `access_ended`, part of
+    the change was made already, so the dashboard says so before it sends
+    them anywhere."""
     return HTTPException(
         status_code=403,
         detail={
             "error": "directory_sign_in_required",
             "message": f"{error.message} {outcome}",
+            "access_ended": access_ended,
         },
     )
 
 
+# Why an operator restoring an `org_admin` can't make the change in WorkOS.
+_OPERATOR_CANNOT_SIGN_IN = (
+    "This organization's admins are kept in its account settings, and an "
+    "operator can't change them there. Have someone made org_admin in the "
+    "organization's account settings; Switch follows once it reads them "
+    "again. Nothing was changed."
+)
+
+
 async def _member_change(
     session: AsyncSession,
+    user_store: UserStore,
     organization_directory: OrganizationDirectory,
     token: OrganizationToken | None,
-    organization_id: str,
+    access: _OrganizationAccess,
+    organization: Organization,
     user_id: str,
+    role: str | None,
 ) -> MemberChange:
-    """What a change to `user_id`'s membership carries for the directory: the
-    admin's token, when it was issued for the organization's WorkOS
-    organization, and `user_id`'s id there. Refuses, before anything is
-    changed, a change the directory takes only with a token there is none
-    of."""
-    organization = await session.get(Organization, organization_id)
-    if organization is None:
-        raise RuntimeError(f"Organization {organization_id} is not visible here")
+    """What giving `user_id` `role` in `organization`, or removing them when
+    `role` is None, needs of the directory, with the admin's token when it
+    was issued for the organization's WorkOS organization. Asked before
+    anything is changed and before any lock is taken, so a refusal or a
+    sign-in costs nothing. An operator let in to restore an `org_admin` has
+    no token to sign in for, and is told who can make the change instead."""
     access_token = (
         token.access_token
         if token is not None
         and token.workos_organization_id == organization.workos_organization_id
         else None
     )
-    try:
-        organization_directory.check_can_change(organization, access_token)
-    except DirectorySignInRequired as error:
-        raise _sign_in_required(error, NOTHING_CHANGED) from None
-    subject = (
-        await session.scalar(
-            select(OidcIdentity.sub).where(
-                OidcIdentity.user_id == user_id,
-                OidcIdentity.iss == organization_directory.identity_issuer,
-            )
-        )
-        if organization_directory.identity_issuer is not None
-        else None
+    subject = await directory_subject(
+        session, user_store, organization_directory, user_id
     )
-    return MemberChange(access_token=access_token, subject=subject)
+    try:
+        return await organization_directory.prepare_change(
+            organization, subject, role, access_token
+        )
+    except DirectorySignInRequired as error:
+        if access.platform_access:
+            raise HTTPException(
+                status_code=409, detail=_OPERATOR_CANNOT_SIGN_IN
+            ) from None
+        raise _sign_in_required(error, NOTHING_CHANGED, access_ended=False) from None
+    except DirectoryError as error:
+        raise directory_failed(error, NOTHING_CHANGED) from None
+
+
+async def _organization(session: AsyncSession, organization_id: str) -> Organization:
+    organization = await session.get(Organization, organization_id)
+    if organization is None:
+        raise RuntimeError(f"Organization {organization_id} is not visible here")
+    return organization
 
 
 async def _end_access_through_organization(
@@ -637,16 +658,20 @@ async def update_organization_member_role(
     demoting = (
         member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE
     )
+    organization = await _organization(session, organization_id)
     member_change = (
         await _member_change(
             session,
+            user_store,
             organization_directory,
             directory_token,
-            organization_id,
+            access,
+            organization,
             user_id,
+            req.role,
         )
         if member.role != req.role
-        else MemberChange(access_token=None, subject=None)
+        else NO_DIRECTORY_CHANGE
     )
     last_admin = HTTPException(
         status_code=409, detail="Cannot demote the last organization admin"
@@ -692,8 +717,7 @@ async def update_organization_member_role(
     if member.role != req.role:
         await _ask_directory(
             organization_directory.set_role,
-            session,
-            organization_id,
+            organization,
             user_id,
             req.role,
             member_change=member_change,
@@ -769,9 +793,7 @@ async def remove_organization_member(
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
         raise last_admin
-    member_change = await _member_change(
-        session, organization_directory, directory_token, organization_id, user_id
-    )
+    organization = await _organization(session, organization_id)
     # Let go of the request's connection while each workspace is read on a
     # session of its own.
     await session.commit()
@@ -785,6 +807,17 @@ async def remove_organization_member(
             status_code=409,
             detail=(f"Remove them from the organization's workspaces first: {names}"),
         )
+    member_change = await _member_change(
+        session,
+        user_store,
+        organization_directory,
+        directory_token,
+        access,
+        organization,
+        user_id,
+        None,
+    )
+    await session.commit()
     warning = None
     if was_admin:
         try:
@@ -815,8 +848,7 @@ async def remove_organization_member(
         raise last_admin
     await _ask_directory(
         organization_directory.remove,
-        session,
-        organization_id,
+        organization,
         user_id,
         member_change=member_change,
         access_ended=was_admin,
