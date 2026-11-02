@@ -359,6 +359,7 @@ async def test_routes_are_unavailable_without_controller_settings(controller_app
     assert response.json() == {"detail": "This server does not support cloud agents."}
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_machines_lists_every_live_machine_with_the_contract_keys(
     controller_app,
 ):
@@ -564,6 +565,7 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
     ).enrollment_code_revision == 2
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_prepare_replaces_a_dead_code_and_retires_it(controller_app):
     """B111: a box whose first start comes after its code expired (or was used)
     gets a fresh code at the same revision, never the dead one, and the old one
@@ -596,6 +598,7 @@ async def test_two_prepares_at_once_mint_one_code(controller_app):
     assert len(app.enrollment.minted) == 1
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_new_revision_retires_the_previous_unused_code(controller_app):
     app = controller_app
     await update_machine(app.factory, app.machine_id, backend="box")
@@ -606,6 +609,7 @@ async def test_a_new_revision_retires_the_previous_unused_code(controller_app):
 
 
 @pytest.mark.parametrize(("backend", "cleared"), [("box", True), ("vm", False)])
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_listing_clears_a_spent_code_only_for_a_v2_box(
     controller_app, monkeypatch, backend: str, cleared: bool
 ):
@@ -841,6 +845,7 @@ async def test_a_machine_is_retained_only_once_no_workspace_has_an_agent(
     assert before + timedelta(days=7) <= datetime.fromisoformat(item["retain_until"])
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_controller_observation_fixture_is_accepted(controller_app):
     app = controller_app
     body = fixture("controller_observation.json")
@@ -857,6 +862,7 @@ async def test_controller_observation_fixture_is_accepted(controller_app):
     assert saved.running_observed_at is not None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_an_eviction_count_is_logged_once_and_nothing_else_changes(
     controller_app, caplog
 ):
@@ -878,6 +884,7 @@ async def test_an_eviction_count_is_logged_once_and_nothing_else_changes(
     ]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_an_eviction_is_remembered_as_visibility_v2s_box_moved(controller_app):
     """On this cluster a box only moves by eviction, so the count marks the box as moved for
     15 minutes (platform), and only a count above zero does."""
@@ -1519,6 +1526,7 @@ async def test_a_stopped_machine_enrolls_its_revoked_controller_at_its_next_star
     assert (await machine_of(app.factory, app.machine_id)).revision == before
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_operator_s_machine_list_says_when_machines_are_open_to_all(
     controller_app,
 ):
@@ -1554,6 +1562,9 @@ def v2_off(monkeypatch):
 
 async def test_v2_off_stops_a_running_box_and_keeps_it(controller_app, v2_off):
     app = controller_app
+    # A box with agents on it, as a live one has: an agentless machine asleep is
+    # retained by upstream's own idle sweep, whatever the switch says.
+    await enrolled(app, agents=1)
     await update_machine(
         app.factory,
         app.machine_id,
@@ -1610,20 +1621,23 @@ async def test_v2_off_the_listing_never_says_open_to_all(controller_app, v2_off)
 
 async def test_v2_off_the_owners_summary_is_as_before(controller_app, v2_off):
     app = controller_app
-    owned = (await app.client.get("/hosted-machines")).json()
-    machine = owned.get("machine") or owned
+    owned = await app.client.get("/hosted-machines")
+    assert owned.status_code == 200, owned.text
+    (machine,) = owned.json()["machines"]
     assert not {"room", "awake", "ai_calls_today", "backend"} & set(machine)
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_v2_on_the_owners_summary_names_the_backend(controller_app):
     """Console tells a v2 box by it (`backend`), not by guessing."""
     app = controller_app
-    owned = (await app.client.get("/hosted-machines")).json()
-    machine = owned.get("machine") or owned
+    owned = await app.client.get("/hosted-machines")
+    assert owned.status_code == 200, owned.text
+    (machine,) = owned.json()["machines"]
     assert machine["backend"] == "vm"
     await update_machine(app.factory, app.machine_id, backend="box")
-    owned = (await app.client.get("/hosted-machines")).json()
-    assert (owned.get("machine") or owned)["backend"] == "box"
+    (machine,) = (await app.client.get("/hosted-machines")).json()["machines"]
+    assert machine["backend"] == "box"
 
 
 async def test_v2_off_a_box_is_never_claimed_or_started(controller_app, v2_off):

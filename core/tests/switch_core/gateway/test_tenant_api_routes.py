@@ -2305,6 +2305,7 @@ class TestBudgetRoutes:
                 )
             )
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_each_budget_change_is_recorded_with_before_and_after(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -2354,6 +2355,7 @@ class TestBudgetRoutes:
         assert rows[1].details == {"before": terms, "after": after}
         assert rows[2].details == {"before": after}
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_budget_change_that_fails_records_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -2378,6 +2380,7 @@ class TestBudgetRoutes:
         rows = await self._budget_audit(session_factory)
         assert [r.action for r in rows] == ["budget.created"]
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_the_daily_ai_cap_is_set_as_a_budget_and_nudges_after_commit(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

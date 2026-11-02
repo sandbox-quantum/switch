@@ -69,6 +69,15 @@ def _hosted_v2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture
+def hosted_v2_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins hosted agents v2 on for a test written for it, so it reads the same
+    in the whole-suite off run (SWITCH_TEST_HOSTED_V2=0) as by default."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(hosted_v2, "_process_on", True)
+
+
 @pytest.fixture(autouse=True)
 def _restore_messaging_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
     """Undo whatever a test registers. Many register a stub adapter under a real

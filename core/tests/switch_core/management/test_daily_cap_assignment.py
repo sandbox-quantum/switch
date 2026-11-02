@@ -73,6 +73,7 @@ async def _assignment(harness: Harness, controller: EnrolledController) -> dict:
     return answer.json()
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_hosted_controller_reads_the_workspace_s_daily_cap(
     harness: Harness,
 ) -> None:

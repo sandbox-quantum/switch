@@ -67,6 +67,7 @@ async def test_a_v1_machines_copy_is_kept_when_the_code_is_used(
     assert workspace.enrollment_code_encrypted is not None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_copy_is_cleared_when_the_code_is_used(harness: Harness) -> None:
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
@@ -85,12 +86,15 @@ async def test_the_copy_is_cleared_when_the_code_is_used(harness: Harness) -> No
     assert workspace.enrollment_code_revision is None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_sweep_clears_an_expired_code_and_keeps_a_live_one(
     harness: Harness,
 ) -> None:
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
     machine = await _claim(factory, owner)
+    # Fifteen-minute codes are a v2 box's (a v1 machine's live 30, as upstream).
+    await _make_box(factory, machine.id)
     async with _hosted_app(factory, owner) as hosted:
         await _prepare(hosted, machine.id)
     now = datetime.now(UTC)

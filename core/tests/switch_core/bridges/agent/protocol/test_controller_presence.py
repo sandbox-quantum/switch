@@ -576,6 +576,7 @@ class TestTheAgentClientsReplies:
             "(@owner) can start it again in Switch Console."
         )
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_hosted_box_switch_cant_reach_says_so_in_the_status_words(
         self,
     ) -> None:
@@ -646,6 +647,7 @@ class TestTheAgentClientsReplies:
         )
         assert "move me to another machine" in removed
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_lifted_blocks_revoked_box_controller_wakes_the_box(
         self,
     ) -> None:
@@ -717,6 +719,7 @@ class TestTheAgentClientsReplies:
         )
         assert client._cloud_waking_notices == set()
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_follow_up_wakes_a_revoked_controllers_box_too(self) -> None:
         registry = AgentConnectionRegistry()
         _bind(registry, "auto")
@@ -863,6 +866,7 @@ class TestAddressingAControllerBackedAgent:
             assert enqueued == ["$asked"], model
             assert sent.bodies == [], model
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_connected_agent_whose_host_gave_up_still_tells_the_room(
         self,
     ) -> None:

@@ -641,6 +641,7 @@ class TestManagedAgents:
         assert view.json()["status"] == {**entry, "directory": None}
         assert view.json()["controller_state"] == "online"
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_the_view_says_why_the_agent_stopped(self, harness: Harness) -> None:
         """Visibility V2: a fixed reason code and times, decided by Core from the status report."""
         owner = await add_member(harness.session_factory, "ada")
@@ -709,6 +710,7 @@ class TestManagedAgents:
         assert "stop_reason" not in one.json()
         assert all("stop_reason" not in a for a in listed.json())
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_busy_is_accepted_only_as_a_real_boolean(
         self, harness: Harness
     ) -> None:
@@ -738,6 +740,7 @@ class TestManagedAgents:
                 assert refused.status_code == 422, bad
         assert accepted.status_code == 200, accepted.text
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_let_go_is_waiting_too_long_and_only_its_fixed_shape_is_accepted(
         self, harness: Harness
     ) -> None:
@@ -798,6 +801,7 @@ class TestManagedAgents:
         assert reported.status_code == 200, reported.text
         assert view.json()["status"]["session"] == "parked"
 
+    @pytest.mark.usefixtures("hosted_v2_on")
     async def test_a_session_state_outside_the_three_is_refused(
         self, harness: Harness
     ) -> None:

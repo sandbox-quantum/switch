@@ -68,6 +68,7 @@ async def _pause(harness: Harness, user_id: str) -> None:
             await session.commit()
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_paused_owners_cloud_controller_cant_rotate_or_exchange(
     harness: Harness,
 ) -> None:
@@ -300,6 +301,7 @@ async def test_v2_off_a_paused_owners_v1_controller_is_not_refused(
     assert exchanged.status_code == 200, exchanged.text
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_v2_on_a_boxs_controller_still_gets_its_token(harness: Harness) -> None:
     controller = await _cloud_controller(harness, "ken")
     await _on_machine(harness, controller, "box")
@@ -312,7 +314,9 @@ async def test_v2_on_a_boxs_controller_still_gets_its_token(harness: Harness) ->
 # sealed login is opened for it; and nothing about it is revoked or deleted.
 
 
-async def _box_workspace(harness: Harness, owner_id: str) -> MachineWorkspace:
+async def _box_workspace(harness: Harness, owner_id: str) -> str:
+    """A box machine of the owner's, serving the bound workspace: the id of
+    the workspace's row on it (read again by the caller in its own session)."""
     from tests.switch_core.hosted_machine_helpers import seed_machine
 
     async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
@@ -328,8 +332,9 @@ async def _box_workspace(harness: Harness, owner_id: str) -> MachineWorkspace:
         workspace = await session.scalar(
             select(MachineWorkspace).where(MachineWorkspace.machine_id == machine.id)
         )
+        workspace_id = workspace.id
         await session.commit()
-    return workspace
+    return workspace_id
 
 
 async def test_v2_off_a_box_cannot_enrol_with_its_code(
@@ -338,8 +343,9 @@ async def test_v2_off_a_box_cannot_enrol_with_its_code(
     from tests.switch_core.management.harness import fixture
 
     owner = await add_member(harness.session_factory, "mo")
-    workspace = await _box_workspace(harness, owner.id)
+    workspace_id = await _box_workspace(harness, owner.id)
     async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        workspace = await session.get(MachineWorkspace, (TENANT_ZERO_ID, workspace_id))
         code = await harness.management.service.machine_enrollment_code(
             session, workspace, datetime.now(UTC)
         )
@@ -351,7 +357,7 @@ async def test_v2_off_a_box_cannot_enrol_with_its_code(
     assert refused.status_code == 403, refused.text
     assert refused.json()["error"]["code"] == "hosted_v2_off"
     async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
-        still = await session.get(MachineWorkspace, workspace.id)
+        still = await session.get(MachineWorkspace, (TENANT_ZERO_ID, workspace_id))
     assert still.controller_id is None  # nothing enrolled
 
 

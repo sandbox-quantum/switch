@@ -29,6 +29,15 @@ from switch_core.visibility.shared_cloud_agents import router as shared_cloud_ro
 from tests.switch_core.gateway.test_app_route_mounting import _app
 from tests.switch_core.test_config_teams_app import _config
 
+
+@pytest.fixture(autouse=True)
+def _no_box_provisioning_in_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests build config from the environment and state each mode
+    themselves: an `HOSTED_BOX_PROVISIONING` exported by the runner must not
+    turn their "unset" into on."""
+    monkeypatch.delenv("HOSTED_BOX_PROVISIONING", raising=False)
+
+
 # Every router that is v2's alone: with v2 off each of its routes must answer
 # exactly as a route that doesn't exist.
 V2_ONLY_ROUTERS = (

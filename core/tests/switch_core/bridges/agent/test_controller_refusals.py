@@ -146,6 +146,7 @@ def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_refused_token_logs_one_warning_with_no_secret_and_no_client_text(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -179,6 +180,7 @@ async def test_a_refused_token_logs_one_warning_with_no_secret_and_no_client_tex
         assert secret_or_client_text not in everything
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_missing_credential_is_logged_too(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -204,6 +206,7 @@ async def test_a_good_token_logs_nothing(caplog: pytest.LogCaptureFixture) -> No
     assert _warnings(caplog) == []
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_act_as_path_logs_its_refusal_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -220,6 +223,7 @@ async def test_the_act_as_path_logs_its_refusal_once(
     ]
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_repeated_refusals_lock_the_address_out_with_a_429_and_no_more_lookups(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -264,6 +268,7 @@ async def test_repeated_refusals_lock_the_address_out_with_a_429_and_no_more_loo
     )
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_valid_token_is_still_served_from_a_locked_address() -> None:
     clock = _Clock()
     mw, served = _middleware(
@@ -348,6 +353,7 @@ def _public_middleware(
     return mw, served
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_refused_enrollment_code_logs_one_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -375,6 +381,7 @@ async def test_an_accepted_enrollment_logs_nothing(
     assert _warnings(caplog) == []
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_enrollment_is_never_locked_out() -> None:
     guard = RefusalGuard(lockout_after=2, clock=_Clock())
     mw, served = _public_middleware(guard, 401)
@@ -447,6 +454,7 @@ async def _hosted(
     return await gen.__anext__()
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_hosted_controller_route_logs_a_wrong_or_missing_token_once(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -468,6 +476,7 @@ async def test_the_hosted_controller_route_logs_a_wrong_or_missing_token_once(
     assert await _hosted(f"Bearer {HOSTED_TOKEN}") == "session"
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_the_hosted_controller_route_locks_out_wrong_tokens_but_serves_the_right_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

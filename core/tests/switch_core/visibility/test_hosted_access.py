@@ -581,6 +581,7 @@ async def test_turning_off_someone_who_isnt_a_member_is_refused(
 # ── Refusals on the paths that could start, wake or reconnect a box ─────────
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_controller_work_is_refused_for_a_blocked_owner(
     rls_harness: RLSHarness,
 ) -> None:
@@ -614,6 +615,7 @@ async def test_controller_work_is_refused_for_a_blocked_owner(
     assert paused.value.code == reason_codes.HOSTED_PAUSED
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_message_never_wakes_a_box_for_a_turned_off_workspace(
     rls_harness: RLSHarness,
 ) -> None:
@@ -850,6 +852,7 @@ async def _lift(
 
 
 @pytest.mark.parametrize("lift", ["pause", "turn_off"])
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_after_a_lift_a_message_for_the_blocks_revoked_controller_wakes_the_box(
     rls_harness: RLSHarness, lift: str
 ) -> None:
@@ -1187,6 +1190,7 @@ async def test_a_raw_id_or_a_workspace_keyed_id_never_resolves_to_a_user(
     assert await block_reason(rls_harness.restricted, user_id, None) is None
 
 
+@pytest.mark.usefixtures("hosted_v2_on")
 async def test_a_message_in_another_workspace_wakes_a_box_turned_off_elsewhere(
     rls_harness: RLSHarness,
 ) -> None:
