@@ -1,7 +1,6 @@
 {
   "assignment_revision": 3,
   "report_within_s": 60,
-  "wait_limit_seconds": 600,
   "controller_release": {
     "version": "0.2.0",
     "url": "https://github.com/sandbox-quantum/switch/releases/download/switch-agent-controller-v0.2.0/switch-agent-controller-0.2.0.tgz",

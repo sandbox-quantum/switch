@@ -232,11 +232,7 @@ class TestControllerMessages:
         assert assignment.status_code == 200
         assert_same_shape(assignment.json(), _fixture("assignment_response.json"))
         assert status.status_code == 200, status.text
-        status_shape = _fixture("status_response.json")
-        # v2's wait limit is told to a controller on a v2 box only, never with
-        # v2 off; this controller is on no cloud machine, so it's never sent.
-        del status_shape["wait_limit_seconds"]
-        assert_same_shape(status.json(), status_shape)
+        assert_same_shape(status.json(), _fixture("status_response.json"))
         assert status.json()["report_within_s"] == 60
         assert_same_shape(listed.json(), _fixture("operations_response.json"))
         assert claimed.status_code == 200
