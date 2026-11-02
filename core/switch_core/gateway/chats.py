@@ -1061,7 +1061,7 @@ async def _activity_frames(
         if change.revision is not None and sent.get(key, -1) >= change.revision:
             return []
     async with tenant_session(service.session_factory, tenant_id) as session:
-        member, reads = await service.reads_room(
+        member, reads, shows_tool_detail = await service.reads_room(
             session, tenant_id, user.id, change.room_id
         )
         if not member:
@@ -1082,7 +1082,6 @@ async def _activity_frames(
                 rows = await service.turn_items(
                     session, change.agent_id, change.session_id, change.key
                 )
-            shows_tool_detail = await service.shows_tool_detail(session, change.room_id)
             frames = []
             for row in rows:
                 key = (row.agent_id, row.session_id, row.turn_id, row.item_id)
