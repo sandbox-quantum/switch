@@ -360,6 +360,8 @@ export type RemoteRoomSummary = {
   isConsoleChat: boolean;
   archived: boolean;
   createdAt: string;
+  /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
+  writeVisibility?: RoomVisibility;
 };
 
 /**
