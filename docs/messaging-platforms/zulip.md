@@ -60,7 +60,8 @@ for the bot, and Switch relays them as soon as it is back, oldest first.
   card says how.
 - **No slash commands.** Use the `!` commands, for example `!invite-agent @helper`.
 - **No typing indicator.**
-- **Direct messages to the bot** are not relayed; use a stream.
+- **Direct messages to the bot** don't reach agents: the bot answers that it
+  only works in streams.
 - **Links to Switch Console** arrive as text to copy, since Zulip only links
   web addresses.
 - Deleting a room unsubscribes the bot from the stream; the stream and its

@@ -66,6 +66,11 @@ _POLL_TIMEOUT = httpx.Timeout(30.0, read=120.0)
 _RETRY_SECONDS = 5.0
 # How many unread messages are relayed at a time after a queue is made.
 _UNREAD_PAGE = 100
+
+DIRECT_MESSAGE_ANSWER = (
+    "I only work in streams. Write in a stream Switch is in, and mention an "
+    "agent there to ask it something."
+)
 # Zulip's default; the server's own figure replaces it once the queue is registered.
 _DEFAULT_MESSAGE_LIMIT = 10_000
 # Where an agent's post goes when it starts a conversation rather than
@@ -299,6 +304,22 @@ class ZulipAdapter(PlatformAdapter):
             if len(messages) < _UNREAD_PAGE:
                 return
 
+    async def _answer_direct_message(self, sender_id: int) -> None:
+        """Tell someone who wrote to the bot directly where Switch listens.
+
+        A room is a stream, so a direct message has no room to reach; it is
+        answered rather than dropped, so the sender is not left waiting.
+        """
+        await self._call(
+            "POST",
+            "/api/v1/messages",
+            data={
+                "type": "direct",
+                "to": json.dumps([sender_id]),
+                "content": DIRECT_MESSAGE_ANSWER,
+            },
+        )
+
     async def _mark_read(self, message_ids: list[int]) -> None:
         if message_ids:
             await self._call(
@@ -308,9 +329,10 @@ class ZulipAdapter(PlatformAdapter):
             )
 
     async def _relay(self, message: dict[str, Any], flags: list[str]) -> None:
-        if self._on_message is None or message.get("type") != "stream":
+        if self._on_message is None or message.get("sender_id") == self._bot_user_id:
             return
-        if message.get("sender_id") == self._bot_user_id:
+        if message.get("type") != "stream":
+            await self._answer_direct_message(int(message["sender_id"]))
             return
         stream_id = str(message["stream_id"])
         root = await self._topic_root(stream_id, str(message["subject"]))
