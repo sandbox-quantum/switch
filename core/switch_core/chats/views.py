@@ -26,6 +26,7 @@ from switch_core.db.models import (
     CollaborationBridge,
     Message,
     Room,
+    RoomArchive,
     User,
     room_agents,
 )
@@ -101,6 +102,8 @@ class ChatSummary(CamelModel):
     # Shown messages past the viewer's read position, less their own.
     unread_count: int
     last_message: ChatLastMessage | None
+    # The viewer archived this room in their own lists; nobody else is affected.
+    archived_by_viewer: bool
 
 
 class ChatSender(CamelModel):
@@ -262,6 +265,15 @@ async def chat_summaries(
         .group_by(Message.room_id)
     ):
         unread[room_id] = count
+    archived_by_viewer = set(
+        (
+            await session.execute(
+                select(RoomArchive.room_id).where(
+                    RoomArchive.user_id == viewer_id, RoomArchive.room_id.in_(room_ids)
+                )
+            )
+        ).scalars()
+    )
     # Per room, back along (room_id, seq) to its newest shown message only.
     last_shown = (
         select(Message)
@@ -321,6 +333,7 @@ async def chat_summaries(
                 member_count=len(member_user_ids),
                 member_user_ids=member_user_ids,
                 unread_count=unread.get(room.id, 0),
+                archived_by_viewer=room.id in archived_by_viewer,
                 last_message=(
                     ChatLastMessage(
                         seq=last.seq,

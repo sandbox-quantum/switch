@@ -137,6 +137,7 @@ USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("chat_hidden", "user_id"): "database cascades",
     ("chat_owner_grants", "user_id"): "database cascades",
     ("chat_reads", "user_id"): "database cascades",
+    ("room_archives", "user_id"): "database cascades",
     ("service_connections", "user_id"): "database cascades",
     ("sign_in_flows", "user_id"): "database cascades",
     ("clients", "user_id"): "database clears",

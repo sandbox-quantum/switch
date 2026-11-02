@@ -25,6 +25,7 @@ from switch_core.db.models import (
     ExternalUser,
     ExternalUserClaim,
     Room,
+    RoomArchive,
     RoomGroup,
     require_tenant_id,
     room_agents,
@@ -806,6 +807,36 @@ class RoomStore:
         else:
             room.archived_at = None
         await session.flush()
+
+    async def set_archived_by(
+        self, session: AsyncSession, room: Room, user_id: str, archived: bool
+    ) -> None:
+        """Archive or unarchive `room` in `user_id`'s own lists only."""
+        if archived:
+            await session.execute(
+                pg_insert(RoomArchive)
+                .values(tenant_id=room.tenant_id, user_id=user_id, room_id=room.id)
+                .on_conflict_do_nothing()
+            )
+        else:
+            await session.execute(
+                delete(RoomArchive).where(
+                    RoomArchive.user_id == user_id, RoomArchive.room_id == room.id
+                )
+            )
+
+    async def archived_by(
+        self, session: AsyncSession, user_id: str, room_ids: Collection[str]
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `user_id` archived in their own lists."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(RoomArchive.room_id).where(
+                RoomArchive.user_id == user_id, RoomArchive.room_id.in_(room_ids)
+            )
+        )
+        return set(result.scalars().all())
 
     async def update_fields(
         self,

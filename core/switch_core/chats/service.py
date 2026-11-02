@@ -272,6 +272,11 @@ class ChatService:
         if self._signals is not None:
             self._signals.memberships_changed(tenant_id, user_ids, room_ids)
 
+    def viewer_changed(self, tenant_id: str, user_id: str, room_id: str) -> None:
+        """Something about room `room_id` changed for `user_id` alone (their
+        personal archive) and has committed: re-send them its summary."""
+        self._memberships_changed(tenant_id, [user_id], [room_id])
+
     def _require_group_chats(self) -> None:
         """Refuse a group-only request while `group_chats` is off, so a fleet
         that turned it off (or never on) says so rather than half-serving it."""
@@ -1789,6 +1794,7 @@ class ChatService:
             )
             if unarchive:
                 await self._room_store.set_archived(session, room.id, False)
+            await self._room_store.set_archived_by(session, room, user.id, False)
             await session.commit()
         if unarchive:
             self._room_service.room_changed(tenant_id, room.id)

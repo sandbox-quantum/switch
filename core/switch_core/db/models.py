@@ -3428,6 +3428,32 @@ class ChatHidden(TenantScoped, Base):
     )
 
 
+class RoomArchive(TenantScoped, Base):
+    """A room one person archived in their own lists. Personal: nobody else's
+    view, the room itself and its bridged channel are untouched."""
+
+    __tablename__ = "room_archives"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "user_id", "room_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "room_id"],
+            ["rooms.tenant_id", "rooms.id"],
+            name="fk_room_archives_room",
+            ondelete="CASCADE",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_room_archives_user"),
+        nullable=False,
+    )
+    room_id: Mapped[str] = mapped_column(Text, nullable=False)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ChatRead(TenantScoped, Base):
     """How far one person has read a chat: the last room position they were
     shown. Only moves forward; set to the room's head as they join, so what

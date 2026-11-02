@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelType,
     RetireOutcome,
 )
+from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
 from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -29,6 +30,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.chats import get_chat_service
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_bridge_store,
@@ -358,6 +360,7 @@ async def list_rooms(
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
     involved = await room_store.involved_room_ids(session, user.id, room_ids)
+    archived_by_viewer = await room_store.archived_by(session, user.id, room_ids)
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
@@ -396,6 +399,7 @@ async def list_rooms(
                 created_at=str(room.created_at),
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
+                archived_by_viewer=room.id in archived_by_viewer,
                 is_console_chat="chat_operation_id" in (room.metadata_ or {}),
             )
         )
@@ -1339,6 +1343,54 @@ async def unarchive_room(
         protocol,
         user,
         is_admin,
+    )
+
+
+async def _set_archived_by_me(
+    room_id: str,
+    archived: bool,
+    session: AsyncSession,
+    room_store: RoomStore,
+    chat_service: ChatService,
+    user: User,
+    is_admin: bool,
+) -> Response:
+    room = await _require_room(session, room_store, room_id, user, "read", is_admin)
+    await room_store.set_archived_by(session, room, user.id, archived)
+    await session.commit()
+    chat_service.viewer_changed(room.tenant_id, user.id, room.id)
+    return Response(status_code=204)
+
+
+@router.put("/{room_id}/personal-archive", status_code=204)
+async def archive_room_for_me(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> Response:
+    """Archive the room in the caller's own lists. Anyone who can see the
+    room may. Nobody else's view changes, nor the room, nor its bridged
+    channel."""
+    return await _set_archived_by_me(
+        room_id, True, session, room_store, chat_service, user, is_admin
+    )
+
+
+@router.delete("/{room_id}/personal-archive", status_code=204)
+async def unarchive_room_for_me(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    chat_service: Annotated[ChatService, Depends(get_chat_service)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> Response:
+    """Undo `PUT /{room_id}/personal-archive` for the caller."""
+    return await _set_archived_by_me(
+        room_id, False, session, room_store, chat_service, user, is_admin
     )
 
 

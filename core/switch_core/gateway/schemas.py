@@ -88,6 +88,8 @@ class RoomSummary(BaseModel):
     # The caller owns the room, is in it (in Switch Console or through a
     # platform account they claimed), or owns an agent in it.
     viewer_is_member: bool = False
+    # The caller archived the room in their own lists; nobody else is affected.
+    archived_by_viewer: bool = False
     # A Switch Console chat (made through the chats API): only its members can open it.
     is_console_chat: bool = False
 
