@@ -26,6 +26,7 @@ const summary = (overrides: Partial<ChatSummary>): ChatSummary => ({
   agents: [],
   canManage: false,
   ownsAgent: false,
+  archivedByViewer: false,
   memberUserIds: [],
   memberCount: 0,
   unreadCount: 0,

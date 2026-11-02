@@ -53,6 +53,7 @@ vi.mock('@renderer/lib/modal/modal-provider', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   showModal: vi.fn(),
 }));
+vi.mock('@renderer/features/switch-rooms/room-archive', () => ({ roomArchiveAction: () => null }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
     watchMembership: () => () => {},
@@ -341,6 +342,7 @@ it('follows the open direct chat into its room when it becomes a group, not an o
       agents: [agentInChat],
       canManage: true,
       ownsAgent: true,
+      archivedByViewer: false,
       memberUserIds: [],
       memberCount: 1,
       unreadCount: 0,
@@ -396,6 +398,7 @@ it('opens no other chat in place of an unsaved one, so its header is not that ch
     ],
     canManage: true,
     ownsAgent: true,
+    archivedByViewer: false,
     memberUserIds: [],
     memberCount: 1,
     unreadCount: 0,
@@ -475,6 +478,7 @@ function directChat(agentId: string, roomId: string, name: string, seq: number |
     ],
     canManage: true,
     ownsAgent: true,
+    archivedByViewer: false,
     memberUserIds: [],
     memberCount: 1,
     unreadCount: 0,

@@ -3013,6 +3013,7 @@ type RoomSummaryJson = {
   external_channel_url?: string | null;
   owner_id?: string | null;
   viewer_is_member?: boolean;
+  archived_by_viewer?: boolean;
   is_console_chat?: boolean;
   archived: boolean;
   created_at: string;
@@ -3030,6 +3031,7 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
+    archivedByViewer: r.archived_by_viewer ?? false,
     isConsoleChat: r.is_console_chat ?? false,
     archived: r.archived,
     createdAt: r.created_at,
@@ -3079,6 +3081,22 @@ export async function syncRoomName(
     method: 'POST',
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
+/**
+ * Archive or unarchive a room in the signed-in user's own lists
+ * (`PUT|DELETE /rooms/{id}/personal-archive`). Nobody else's view changes, nor
+ * the room, nor its platform channel.
+ */
+export async function setRoomArchivedByMe(
+  server: SwitchServer,
+  roomId: string,
+  archived: boolean
+): Promise<void> {
+  await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}/personal-archive`, {
+    authenticated: true,
+    method: archived ? 'PUT' : 'DELETE',
+  });
 }
 
 /** One room in full (`GET /rooms/{id}`) — what its configuration page reads. */

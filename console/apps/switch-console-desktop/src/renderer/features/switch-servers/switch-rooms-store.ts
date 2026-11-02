@@ -272,6 +272,15 @@ export class SwitchRoomsStore {
   }
 
   /**
+   * Archive or unarchive a room in the signed-in user's own lists, then re-read
+   * the room list so it moves between the sidebar's sections. Throws on refusal.
+   */
+  async setRoomArchived(workspaceId: string, roomId: string, archived: boolean): Promise<void> {
+    await rpc.workspaces.setRoomArchived({ workspaceId, roomId, archived });
+    await this.refreshRoomState();
+  }
+
+  /**
    * The workspaces whose state is on screen: the active one, or all of them
    * when none is active (the same scope rule the room and location lists
    * follow).

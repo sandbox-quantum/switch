@@ -227,6 +227,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/rooms/{room_id}/personal-archive",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/rooms/{room_id}/references/{reference_id}",
       "auth": "session",
       "flags": []
@@ -1443,6 +1448,11 @@
     },
     {
       "route": "PUT /gateway/rooms/{room_id}/observe",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "PUT /gateway/rooms/{room_id}/personal-archive",
       "auth": "session",
       "flags": []
     },

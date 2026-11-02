@@ -75,6 +75,7 @@ import {
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
+  setRoomArchivedByMe,
   syncRoomName,
   updateRoom,
   updateTemplate,
@@ -146,6 +147,7 @@ import type {
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
+  SetRoomArchivedParams,
   SyncRoomNameParams,
   UpdateRoomParams,
 } from '@shared/core/switch-servers/switch-servers';
@@ -894,6 +896,12 @@ export const workspacesController = createRPCController({
   syncRoomName: (params: SyncRoomNameParams): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       syncRoomName(server, params.roomId)
+    ),
+
+  /** Archive or unarchive a room for the signed-in user alone. Refusals propagate. */
+  setRoomArchived: (params: SetRoomArchivedParams): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomArchivedByMe(server, params.roomId, params.archived)
     ),
 
   updateRoom: (params: UpdateRoomParams): Promise<RemoteRoomDetail> =>

@@ -336,6 +336,8 @@ export type RemoteRoomSummary = {
   /** A Switch Console chat: only its members can open it. False from a server that does not say. */
   isConsoleChat: boolean;
   archived: boolean;
+  /** The signed-in user archived the room in their own lists. False from a server that does not say. */
+  archivedByViewer: boolean;
   createdAt: string;
 };
 
@@ -382,6 +384,8 @@ export type RetireOutcome = {
  * an empty string clears the field rather than leaving it. */
 /** Name a room after the channel it is linked to. */
 export type SyncRoomNameParams = { workspaceId: string; roomId: string };
+
+export type SetRoomArchivedParams = { workspaceId: string; roomId: string; archived: boolean };
 
 export type UpdateRoomParams = {
   workspaceId: string;

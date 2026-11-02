@@ -165,7 +165,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
                   >
                     {chat.name}
                   </button>
-                  {chat.canManage && (
+                  {chat.archivedByViewer && (
                     <Button
                       size="sm"
                       variant="outline"

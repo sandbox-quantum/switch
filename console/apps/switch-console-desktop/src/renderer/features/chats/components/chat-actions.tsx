@@ -64,12 +64,15 @@ export function confirmLeaveChat(serverId: string, chat: ChatSummary): void {
 }
 
 /**
- * What can be done to a chat from its row or its header. Leaving is anyone's;
- * the rest act on the room for everyone in it, so each is offered only to its
- * managers: the room's owner or a workspace admin, the same rule the server
- * applies.
+ * What can be done to a chat from its row or its header. Leaving and
+ * archiving are anyone's: archiving is personal, it changes only this person's
+ * lists. Renaming and deleting act on the room for everyone in it, so they are
+ * offered only to its managers: the room's owner or a workspace admin, the same
+ * rule the server applies. A chat archived for everyone (by a manager, before
+ * archiving became personal) offers no Unarchive: a manager's message brings it back.
  */
 export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
+  const { roomId } = chat;
   const leave: ChatAction = {
     key: 'leave',
     label: 'Leave room…',
@@ -77,27 +80,10 @@ export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
     separatorBefore: true,
     run: () => confirmLeaveChat(serverId, chat),
   };
-  if (!chat.canManage) return [leave];
-  const { roomId } = chat;
-  return [
-    {
-      key: 'rename',
-      label: 'Rename',
-      icon: <Pencil className="size-4" />,
-      run: () => showModal('renameChatModal', { serverId, roomId, currentName: chat.name }),
-    },
-    chatsStore.archived.has(roomId)
-      ? {
-          key: 'unarchive',
-          label: 'Unarchive',
-          icon: <ArchiveRestore className="size-4" />,
-          run: () =>
-            void attempt(
-              () => chatsStore.unarchive(serverId, roomId),
-              'Could not unarchive the chat.'
-            ),
-        }
-      : {
+  const archived = chatsStore.archived.get(roomId);
+  const archiving: ChatAction[] = !archived
+    ? [
+        {
           key: 'archive',
           label: 'Archive',
           icon: <Archive className="size-4" />,
@@ -107,6 +93,30 @@ export function chatActions(serverId: string, chat: ChatSummary): ChatAction[] {
               leaveIfOpen(roomId);
             }, 'Could not archive the chat.'),
         },
+      ]
+    : archived.archivedByViewer
+      ? [
+          {
+            key: 'unarchive',
+            label: 'Unarchive',
+            icon: <ArchiveRestore className="size-4" />,
+            run: () =>
+              void attempt(
+                () => chatsStore.unarchive(serverId, roomId),
+                'Could not unarchive the chat.'
+              ),
+          },
+        ]
+      : [];
+  if (!chat.canManage) return [...archiving, leave];
+  return [
+    {
+      key: 'rename',
+      label: 'Rename',
+      icon: <Pencil className="size-4" />,
+      run: () => showModal('renameChatModal', { serverId, roomId, currentName: chat.name }),
+    },
+    ...archiving,
     {
       key: 'delete',
       label: 'Delete chat…',

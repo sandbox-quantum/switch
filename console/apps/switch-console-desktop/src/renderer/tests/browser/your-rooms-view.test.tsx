@@ -90,6 +90,7 @@ function room(id: string, extra: Partial<RemoteRoomSummary>): RemoteRoomSummary 
     ownerId: 'bob',
     viewerIsMember: false,
     isConsoleChat: false,
+    archivedByViewer: false,
     archived: false,
     createdAt: '',
     ...extra,

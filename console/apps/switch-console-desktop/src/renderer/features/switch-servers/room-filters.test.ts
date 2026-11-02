@@ -71,6 +71,7 @@ const chat = (roomId: string, extra: Partial<ChatSummary> = {}): ChatSummary => 
   agents: [agent],
   canManage: false,
   ownsAgent: false,
+  archivedByViewer: false,
   memberUserIds: [],
   memberCount: 0,
   unreadCount: 0,
@@ -104,6 +105,7 @@ describe('withConsoleGroupChats', () => {
     ownerId: 'u',
     viewerIsMember: false,
     isConsoleChat: false,
+    archivedByViewer: false,
     archived: false,
     createdAt: '',
   });

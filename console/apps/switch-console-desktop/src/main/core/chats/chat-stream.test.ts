@@ -15,6 +15,7 @@ function summary(roomId: string, seq: number | null): ChatSummary {
     agents: [],
     canManage: true,
     ownsAgent: false,
+    archivedByViewer: false,
     memberUserIds: [],
     memberCount: 0,
     unreadCount: 0,

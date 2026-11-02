@@ -2,6 +2,7 @@ import { computed } from 'mobx';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import type { ChatSummary } from '@shared/core/chats/chats';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
 import { isConsoleDirectChat, withConsoleGroupChats } from './room-filters';
 import { switchRoomsStore } from './switch-rooms-store';
@@ -28,8 +29,19 @@ function withoutChatsYouAreNotIn(
   return rooms.filter(
     (room) =>
       !room.isConsoleChat ||
-      (following && (chatsStore.chats.has(room.id) || chatsStore.unlisted.has(room.id)))
+      (following &&
+        (chatsStore.chats.has(room.id) ||
+          chatsStore.unlisted.has(room.id) ||
+          !!chatsStore.archived.get(room.id)?.archivedByViewer))
   );
+}
+
+/** The chats you are in, the ones you archived included. */
+function memberChats(): ChatSummary[] {
+  return [
+    ...chatsStore.chats.values(),
+    ...[...chatsStore.archived.values()].filter((chat) => chat.archivedByViewer),
+  ];
 }
 
 /**
@@ -47,7 +59,7 @@ export function useListedRoomsInActiveScope(): RemoteRoomSummary[] {
         filterConsoleDirectChats(switchRoomsStore.listedRoomsInActiveScope, flags.agent_chats),
         serverId
       ),
-      flags.agent_chats ? chatsStore.chats.values() : []
+      flags.agent_chats ? memberChats() : []
     )
   ).get();
 }
@@ -79,6 +91,6 @@ function useRoomsInWorkspace(
       filterConsoleDirectChats(rooms(workspaceId), flags.agent_chats),
       active ? serverId : null
     ),
-    flags.agent_chats && workspaceId === workspacesStore.activeId ? chatsStore.chats.values() : []
+    flags.agent_chats && workspaceId === workspacesStore.activeId ? memberChats() : []
   );
 }

@@ -39,6 +39,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
 }));
 
+vi.mock('@renderer/features/switch-rooms/room-archive', () => ({ roomArchiveAction: () => null }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
     roomWorkspaceId: () => 'ws-1',

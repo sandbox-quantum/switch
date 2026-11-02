@@ -14,6 +14,7 @@ const room = (id: string, bridgeType: string | null): RemoteRoomSummary => ({
   ownerId: null,
   viewerIsMember: false,
   isConsoleChat: false,
+  archivedByViewer: false,
   archived: false,
   createdAt: '',
 });

@@ -370,14 +370,6 @@ export async function fetchChatMedia(
   };
 }
 
-export async function archiveChat(server: SwitchServer, roomId: string): Promise<void> {
-  await call(server, `${room(roomId)}/archive`, { method: 'POST' });
-}
-
-export async function unarchiveChat(server: SwitchServer, roomId: string): Promise<void> {
-  await call(server, `${room(roomId)}/unarchive`, { method: 'POST' });
-}
-
 /** Rename uses the room route: a chat's name is its room's name. */
 export async function renameChat(
   server: SwitchServer,

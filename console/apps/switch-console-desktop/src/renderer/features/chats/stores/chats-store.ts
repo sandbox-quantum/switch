@@ -65,7 +65,8 @@ export class ChatsStore {
   removed = new Set<string>();
   /** Rooms off the list while the person is still a member. */
   unlisted = new Set<string>();
-  /** The person's archived chats: off the list, still readable, and written back into it. */
+  /** The person's archived chats: off the list, still readable. Archived by them alone
+   * (`archivedByViewer`), or for everyone in the room, which a message from a manager undoes. */
   archived = new Map<string, ChatSummary>();
   archivedError: string | null = null;
   streamState: ChatStreamState = 'offline';
@@ -191,9 +192,12 @@ export class ChatsStore {
       const chats = await this.api.listArchived(serverId);
       if (serverId !== this.serverId) return;
       runInAction(() => {
-        this.archived = new Map(
-          chats.filter((chat) => !this.chats.has(chat.roomId)).map((chat) => [chat.roomId, chat])
-        );
+        this.archived = new Map([
+          ...[...this.archived].filter(([, chat]) => chat.archivedByViewer),
+          ...chats
+            .filter((chat) => !this.chats.has(chat.roomId))
+            .map((chat): [string, ChatSummary] => [chat.roomId, chat]),
+        ]);
         this.archivedError = null;
       });
     } catch (error) {
@@ -205,6 +209,11 @@ export class ChatsStore {
   }
 
   upsert(chat: ChatSummary): void {
+    if (chat.archivedByViewer) {
+      this.chats.delete(chat.roomId);
+      this.archived.set(chat.roomId, chat);
+      return;
+    }
     this.chats.set(chat.roomId, chat);
     this.removed.delete(chat.roomId);
     const wasArchived = this.archived.delete(chat.roomId);
@@ -220,20 +229,19 @@ export class ChatsStore {
     if (serverId === this.serverId) this.upsert(chat);
   }
 
-  /** Archived for everyone in it; throws, leaving the chat listed, if the server refuses. */
+  /** Archived in this person's lists only; throws, leaving the chat listed, if the server refuses. */
   async archive(serverId: string, roomId: string): Promise<void> {
     await this.api.archive(serverId, roomId);
     const chat = this.chats.get(roomId);
-    this.remove(roomId, 'unlisted');
-    if (chat) this.archived.set(roomId, chat);
+    if (chat) this.upsert({ ...chat, archivedByViewer: true });
     await switchRoomsStore.refreshRoomState();
   }
 
-  /** Back on the list for everyone in it; throws, leaving it archived, if the server refuses. */
+  /** Back on this person's list; throws, leaving it archived, if the server refuses. */
   async unarchive(serverId: string, roomId: string): Promise<void> {
     await this.api.unarchive(serverId, roomId);
     const chat = this.archived.get(roomId);
-    if (chat) this.upsert(chat);
+    if (chat) this.upsert({ ...chat, archivedByViewer: false });
     await switchRoomsStore.refreshRoomState();
   }
 
@@ -255,6 +263,12 @@ export class ChatsStore {
   message(serverId: string, message: ChatMessage): void {
     if (serverId !== this.serverId) return;
     this.timelines.peek(serverId, message.roomId)?.apply(message);
+    // The server unarchives a chat for whoever writes in it.
+    const archived = this.archived.get(message.roomId);
+    if (archived?.archivedByViewer && message.sender.userId === this.userId) {
+      this.upsert({ ...archived, archivedByViewer: false });
+      void switchRoomsStore.refreshRoomState();
+    }
     const chat = this.chats.get(message.roomId);
     // The feed follows hidden chats too; a message in one is what brings it back.
     if (

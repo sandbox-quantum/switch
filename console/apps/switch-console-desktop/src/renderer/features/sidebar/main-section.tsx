@@ -1,6 +1,7 @@
-import { DoorOpen, MessageCircle, X } from 'lucide-react';
+import { Archive, ArchiveRestore, DoorOpen, MessageCircle, MoreHorizontal, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
+import { ArchivedFold } from '@renderer/features/chats/components/archived-fold';
 import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import { ManagedAgentList } from '@renderer/features/managed-agents/managed-agent-list';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
@@ -8,6 +9,7 @@ import { BuddyAvatar } from '@renderer/features/switch-buddy/buddy-avatar';
 import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
 import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
 import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
+import { roomArchiveAction } from '@renderer/features/switch-rooms/room-archive';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
@@ -15,6 +17,18 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useCurrentViewId } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { appState } from '@renderer/lib/stores/app-state';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@renderer/lib/ui/context-menu';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/lib/ui/dropdown-menu';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
@@ -52,7 +66,10 @@ export const SidebarMainSection = observer(function SidebarMainSection() {
   const rooms = useListedRoomsInActiveScope();
   // No count until the agents are read: a 0 that turns into the real number
   // a moment later reads as the list changing.
-  const count = tab === 'agents' ? (agents.data?.length ?? null) : rooms.length;
+  const count =
+    tab === 'agents'
+      ? (agents.data?.length ?? null)
+      : rooms.filter((room) => !room.archivedByViewer).length;
 
   return (
     <section aria-label={tab === 'agents' ? 'Agents' : 'Rooms'} className="flex flex-col">
@@ -108,29 +125,39 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
   );
 });
 
-/** New Room, then one row per room: its messaging app and its name. Nothing is nested under it. */
+/**
+ * New Room, then one row per room: its messaging app and its name. Nothing is
+ * nested under it. The rooms this person archived are folded away at the end.
+ */
 const RoomList = observer(function RoomList({ rooms }: { rooms: RemoteRoomSummary[] }) {
   const showCreateRoomModal = useShowModal('createRoomModal');
+  const active = rooms.filter((room) => !room.archivedByViewer);
+  const archived = rooms.filter((room) => room.archivedByViewer);
+  const row = (room: RemoteRoomSummary) => (
+    <RoomListRow
+      key={room.id}
+      roomId={room.id}
+      room={room}
+      isActive={isRoomViewActive(room.id)}
+      onOpen={() => openRoomView(room.id)}
+    />
+  );
   return (
     <div className="flex flex-col gap-[2px]" aria-label="Rooms">
       <NewRoomRow onCreate={() => showCreateRoomModal({})} />
       {rooms.length === 0 && (
         <p className="px-[9px] py-2 text-xs text-foreground-muted">No rooms on this server.</p>
       )}
-      {rooms.map((room) => (
-        <RoomListRow
-          key={room.id}
-          roomId={room.id}
-          room={room}
-          isActive={isRoomViewActive(room.id)}
-          onOpen={() => openRoomView(room.id)}
-        />
-      ))}
+      {active.map(row)}
+      <ArchivedFold count={archived.length} error={null}>
+        {archived.map(row)}
+      </ArchivedFold>
     </div>
   );
 });
 
-export function RoomListRow({
+/** One room's row, with its Archive or Unarchive behind a ⋯ button and a right-click. */
+export const RoomListRow = observer(function RoomListRow({
   roomId,
   room,
   isActive,
@@ -141,13 +168,20 @@ export function RoomListRow({
   isActive: boolean;
   onOpen: () => void;
 }) {
-  return (
+  const archive = roomArchiveAction(roomId);
+  const icon =
+    archive?.label === 'Unarchive' ? (
+      <ArchiveRestore className="size-4" />
+    ) : (
+      <Archive className="size-4" />
+    );
+  const row = (
     <SidebarMenuRow
       isActive={isActive}
       title={room.bridgeDisplayName ? `${room.name} · ${room.bridgeDisplayName}` : room.name}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onOpen}
-      className="h-[30px] py-0 text-[13px]"
+      className="group/row h-[30px] py-0 text-[13px]"
     >
       {hasBridgeIcon(room.bridgeType) ? (
         <BridgeIcon bridgeType={room.bridgeType} size={17} className="shrink-0" />
@@ -156,9 +190,40 @@ export function RoomListRow({
       )}
       <span className="min-w-0 flex-1 truncate">{room.name}</span>
       <UnreadBadge roomId={roomId} />
+      {archive && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            className="flex size-6 shrink-0 items-center justify-center rounded-md text-foreground-tertiary-muted opacity-0 group-hover/row:opacity-100 hover:bg-background-tertiary-2 focus-visible:opacity-100 data-[popup-open]:opacity-100"
+            aria-label={`Actions for ${room.name}`}
+            onMouseDown={(event) => event.preventDefault()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <MoreHorizontal className="size-3.5" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={archive.run}>
+              {icon}
+              {archive.label}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </SidebarMenuRow>
   );
-}
+  if (!archive) return row;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={row} />
+      <ContextMenuContent>
+        <ContextMenuItem onClick={archive.run}>
+          {icon}
+          {archive.label}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+});
 
 /**
  * One sentence about what is coming for these agents, under them, closed for

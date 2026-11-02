@@ -37,6 +37,7 @@ function summary(roomId: string, seq: number): ChatSummary {
     ],
     canManage: true,
     ownsAgent: false,
+    archivedByViewer: false,
     memberUserIds: [],
     memberCount: 0,
     unreadCount: 0,
@@ -219,6 +220,25 @@ describe('ChatsStore', () => {
     expect(api.unarchive).toHaveBeenCalledWith('s1', 'r2');
     expect(store.chats.has('r2')).toBe(true);
     expect(store.archived.size).toBe(0);
+  });
+
+  it('files a chat the person archived under the archive, and their own message brings it back', async () => {
+    const { store } = setup(async () => [
+      summary('r1', 1),
+      { ...summary('r2', 1), archivedByViewer: true },
+    ]);
+    await store.connect('s1');
+    expect(store.chats.has('r2')).toBe(false);
+    expect(store.archived.get('r2')?.archivedByViewer).toBe(true);
+
+    store.message('s1', {
+      ...message('r2', 2),
+      sender: { ...message('r2', 2).sender, userId: 'bob' },
+    });
+    expect(store.archived.has('r2')).toBe(true);
+    store.message('s1', message('r2', 3));
+    expect(store.archived.has('r2')).toBe(false);
+    expect(store.chats.get('r2')?.archivedByViewer).toBe(false);
   });
 
   it('says so when the archive cannot be listed, keeping the chats', async () => {

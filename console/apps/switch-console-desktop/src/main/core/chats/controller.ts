@@ -4,7 +4,7 @@ import { getAgents } from '@main/core/agents/getAgents';
 import { agentPlacements } from '@main/core/sdk-host/connection-health';
 import { localWatcherControl } from '@main/core/sdk-host/local-host';
 import { withSidecar } from '@main/core/sdk-host/sidecar-control';
-import { deleteRoom, fetchMe } from '@main/core/switch-servers/gateway-client';
+import { deleteRoom, fetchMe, setRoomArchivedByMe } from '@main/core/switch-servers/gateway-client';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
@@ -39,7 +39,6 @@ import {
   addChatAgent,
   addChatMember,
   answerChatApproval,
-  archiveChat,
   createChat,
   fetchChatMedia,
   fetchChatMessages,
@@ -57,7 +56,6 @@ import {
   renameChat,
   sendChatControl,
   sendChatMessage,
-  unarchiveChat,
   uploadChatAttachment,
   warmChatAgent,
 } from './gateway';
@@ -264,9 +262,9 @@ export const chatsController = createRPCController({
     return { mimeType: media.mimeType, data: Buffer.from(media.bytes).toString('base64') };
   },
   archive: (serverId: string, roomId: string): Promise<void> =>
-    onServer(serverId, (server) => archiveChat(server, roomId)),
+    onServer(serverId, (server) => setRoomArchivedByMe(server, roomId, true)),
   unarchive: (serverId: string, roomId: string): Promise<void> =>
-    onServer(serverId, (server) => unarchiveChat(server, roomId)),
+    onServer(serverId, (server) => setRoomArchivedByMe(server, roomId, false)),
   delete: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, async (server) => {
       await deleteRoom(server, roomId);

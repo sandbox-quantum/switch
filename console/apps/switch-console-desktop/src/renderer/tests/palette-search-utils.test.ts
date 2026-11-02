@@ -352,6 +352,7 @@ describe('matchDirectChats', () => {
     agents: [agent],
     canManage: true,
     ownsAgent: true,
+    archivedByViewer: false,
     memberUserIds: [],
     memberCount: 1,
     unreadCount: 0,

@@ -23,6 +23,7 @@ function summary(roomId: string, channelType: ChatSummary['channelType'] = 'dire
     ],
     canManage: true,
     ownsAgent: false,
+    archivedByViewer: false,
     memberUserIds: [],
     memberCount: 0,
     unreadCount: 0,

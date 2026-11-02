@@ -50,6 +50,7 @@ function render(canManage: boolean): string {
     agents: [agent],
     canManage,
     ownsAgent: false,
+    archivedByViewer: false,
     memberUserIds: ['u1', 'u2'],
     memberCount: 2,
     unreadCount: 0,

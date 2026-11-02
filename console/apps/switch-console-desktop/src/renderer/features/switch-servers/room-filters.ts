@@ -54,6 +54,7 @@ export function withConsoleGroupChats(
       viewerIsMember: true,
       isConsoleChat: true,
       archived: false,
+      archivedByViewer: chat.archivedByViewer,
       createdAt: chat.lastMessage?.sentAt ?? '',
     }));
   if (added.length === 0) return rooms;

@@ -50,6 +50,7 @@ import type {
   RemoteRoomDetail,
 } from '@shared/core/switch-servers/switch-servers';
 import { administersWorkspace } from '@shared/core/workspaces/workspaces';
+import { roomArchiveAction } from './room-archive';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
@@ -504,9 +505,35 @@ export const RoomConfigurationPanel = observer(function RoomConfigurationPanel({
             text across. */}
         <GeneralSection key={room.id} workspaceId={workspaceId} room={room} />
         <ParticipantsSection workspaceId={workspaceId} room={room} />
+        <ArchiveRoomSection roomId={room.id} />
         <DeleteRoomSection workspaceId={workspaceId} room={room} />
       </div>
     </div>
+  );
+});
+
+/** Archiving the room in the viewer's own lists. Anyone who sees the room may. */
+const ArchiveRoomSection = observer(function ArchiveRoomSection({ roomId }: { roomId: string }) {
+  const archive = roomArchiveAction(roomId);
+  if (!archive) return null;
+  return (
+    <section className="border-t border-border pt-6">
+      <div className="flex items-center justify-between gap-3">
+        <div className="space-y-0.5">
+          <h3 className="text-sm font-medium text-foreground">
+            {archive.label === 'Archive' ? 'Archive room' : 'Unarchive room'}
+          </h3>
+          <p className="text-xs text-foreground-muted">
+            {archive.label === 'Archive'
+              ? 'Moves the room to Archived in your Rooms list. Only you see this change. Nothing changes for other people, agents or the messaging app.'
+              : 'Puts the room back in your Rooms list.'}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" className="shrink-0" onClick={archive.run}>
+          {archive.label}
+        </Button>
+      </div>
+    </section>
   );
 });
 
