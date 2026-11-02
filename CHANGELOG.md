@@ -393,6 +393,9 @@ version of their own to them without also giving them a release of their own.
   `agent_controllers` send, and a miss reads all of the controller's agents
   at once. `CONTROLLER_AUTH_CACHE_MAX_AGENTS` (20,000) bounds the agent rows
   kept.
+- **Reading an agent's rooms uses an index.** `room_agents` is indexed on
+  `agent_id`; reads by agent scanned the whole table, 2.9 ms each at 10,000
+  agents.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
