@@ -25,7 +25,8 @@
     "POST /gateway/rooms/{room_id}/sync-name": "Needs a bridged room whose linked channel was renamed on the platform, which the fast lane's stacks cannot stage. Covered by core's test_room_sync_name.py against real Postgres.",
     "PUT /gateway/chats/{room_id}/read": "Switch Console read positions. Covered by core's test_chats_groups.py against real Postgres; no scenario drives Console chats yet (every other /gateway/chats route is still in the backlog).",
     "WS /gateway/changes/ws": "Console's change-notice socket. What it sends is covered by core's test_changes_socket.py, and the session probe checks it refuses a handshake without a session; no scenario drives Console's lists yet.",
-    "get_template_status": "Needs an agent created from an official template on a managed machine and then a newer revision of that template; no stack the harness builds has managed agents yet (create_agent is in the backlog). Covered by core's test_template_updates.py."
+    "get_template_status": "Needs an agent created from an official template on a managed machine and then a newer revision of that template; no stack the harness builds has managed agents yet (create_agent is in the backlog). Covered by core's test_template_updates.py.",
+    "invite_agent_to_room": "Its interesting answer is the refusal, and an agent is refused only when its owner is neither an admin nor the room's owner. Every harness agent and room belongs to the harness admin, and a second, plain user to own the agent cannot be deleted afterwards, which rules it out on local, dev and staging. Who may change a room's roster is covered by core's test_room_roster_authz.py, and the 403 with its detail by test_refusal_status_codes.py."
   },
   "unauthenticated": {
     "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",
