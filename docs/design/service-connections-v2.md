@@ -173,20 +173,106 @@ and its one registered client stays under the empty choice.
 
 Each connection also records how it was made, `service_connections.method`:
 `oauth` for a sign-in, `keys` for pasted keys (Datadog's connections from
-before the column read so), and `token` for a pasted token, which no entry
-offers yet. `GET /gateway/service-connections` answers each connection's
-`method` and `choices`, null where the person has not connected it. Each
-entry offers the ways its adapter connects (`ConnectionDefinition.methods`:
-`keys` for an `api_key` entry, `oauth` for any other). A connection made in a
-way its entry no longer offers, as Datadog's keys once Datadog signed in,
-reads as needing reconnecting, a grant on it is refused, and asking for its
-token is refused before anything it holds is used; its row is left as it is,
-so an entry that offers that way again takes the connection back.
+before the column read so), and `token` for a pasted token (below).
+`GET /gateway/service-connections` answers each connection's `method` and
+`choices`, null where the person has not connected it. Each entry offers the
+ways it connects (`ConnectionDefinition.methods`: `keys` for an `api_key`
+entry; `oauth`, and each pasted method it lists, for an OAuth entry). A
+connection made in a way its entry no longer offers, as Datadog's keys once
+Datadog signed in, reads as needing reconnecting, a grant on it is refused,
+and asking for its token is refused before anything it holds is used; its
+row is left as it is, so an entry that offers that way again takes the
+connection back.
+
+### Pasted credentials beside a sign-in
+
+A vendor whose people can also make a credential of their own (a personal
+access token, or an API key and an application key) lists it on its OAuth
+entry, beside the sign-in:
+
+```yaml
+auth:
+  oauth:
+    choices:
+      - { name: site, label: Example site, secret: false,
+          choices: [example.com, eu.example.com] }
+  identity:
+    url: "https://api.{site}/me"
+  paste:                        # at most two: token and keys
+    - name: token               # what service_connections.method records
+      label: Personal access token
+      fields:                   # what is pasted: every field secret
+        - { name: pat, label: Personal access token, secret: true }
+      headers: { Authorization: "Bearer {pat}" }    # the fields and choices
+      expires: vendor           # its vendor ends it on the date it was made for
+      alias: "^(expat_[a-z0-9]+)_"   # optional: the part the vendor shows people
+      help_url: https://docs.example.com/tokens
+    - name: keys
+      label: API and application keys
+      fields:
+        - { name: api_key, label: API key, secret: true }
+        - { name: application_key, label: Application key, secret: true }
+      headers: { X-Api-Key: "{api_key}", X-App-Key: "{application_key}" }
+      expires: never            # offered only with ALLOW_NON_EXPIRING_KEYS
+token: { kind: pass_through, max_lifetime: 3600 }   # the sign-in's token only
+```
+
+A field may not be named `token` (a template's `{token}` is the whole token
+handed out) or after a choice, and every field goes in some header. The
+site is the sign-in's choice, picked once for every method. The loader
+refuses a method on an entry without MCP servers or on any adapter but
+`oauth`, and the entry's `max_lifetime`, still at most seven days, bounds
+only the sign-in's own token.
+
+- **Connecting.** `PUT /gateway/service-connections/{service}/paste` with
+  `{"method": "token", "fields": {"pat": "..."}, "choices": {"site": "..."}}`.
+  Core holds the fields and choices to the entry, then makes an MCP
+  `initialize` at the entry's first MCP server, rendered for the site, with
+  the method's headers: a vendor that grants MCP by scope answers it with
+  the narrowest credential that can use MCP at all. A refusal is a 422 that
+  says so; nothing is stored. The entry's identity call is then made with the
+  same headers. Where it answers, its id and label name the connection; where
+  the credential may not read the account, the credential's SHA-256 is the
+  account id, and the label is the token's `alias` match (a public prefix
+  such as `expat_ab12`) or "<Service> keys · <site>". The connection is at
+  the write level (`KEY_CONSENT`): it reaches whatever the credential allows,
+  so a grant on it is on or off. One account is linked to one person in a
+  workspace, and pasting again or signing in replaces it in place. The answer
+  is `{warning, external_identity, method, choices}`.
+- **The services list** carries `paste`, the methods the server offers for
+  each service (`method`, `label`, `fields`, `help_url`, `expires` and
+  `access_note`), and, for each connection, `access_note` ("Reaches what your
+  token allows.", null for a sign-in) and, where its status says it must be
+  reconnected, `reconnect_code` and `reconnect_reason`.
+- **Expiry.** Switch neither asks for nor stores the credential's end date:
+  its vendor enforces it. Every token request makes the same MCP `initialize`
+  in place of a refresh, under the connection's lock. A 401 marks the
+  connection `needs_reauthorization` with `token_refused`, and the list's
+  `reconnect_reason` says a new one must be pasted; an unreachable vendor is
+  a retryable 503 that marks nothing.
+- **Issuing.** The token is the api_key shape,
+  `{"secret": {fields}, "public": {choices}}`, and the grant's MCP servers
+  carry the method's header templates, which the session host renders. The
+  answer's `expires_at` and `expires_in` are null, `use_until` is an hour
+  after the issue, and the broker's "more than `max_lifetime` left" check
+  does not apply. Its issuance record is live for that hour, which is what a
+  withdrawal's warning names.
+- **Never-expiring keys.** `ALLOW_NON_EXPIRING_KEYS`, off by default, offers
+  `expires: never` methods. Off, they are left out of `paste`, a paste with
+  one is refused (403 `forbidden`), and a connection made with one while it
+  was on reads as `needs_reauthorization` (`method_not_offered`), is left out
+  of a session's grants, and is refused at issue and grant time. A
+  never-expiring key can only be revoked at the vendor. An `api_key` entry
+  stays refused either way (`key_never_expires`).
+- **Disconnecting** forgets the credential and says that only the vendor
+  can revoke it.
 
 ## Tokens
 
 The broker holds every token to its entry's `max_lifetime`, and a minted one to
-the hour, as before. For a pass-through service:
+the hour, as before, except a credential pasted in place of a sign-in, whose
+end only its vendor knows (see "Pasted credentials beside a sign-in"). For a
+pass-through service:
 
 - The adapter hands out the owner's cached access token, never `revocable`:
   revoking it alone would end the owner's connection. An adapter that offers it

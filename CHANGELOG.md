@@ -538,6 +538,28 @@ version of their own to them without also giving them a release of their own.
   `sign_in_choices`, what a sign-in asks people to pick first, and a
   connection made in a way its service no longer offers reads
   `needs_reauthorization`.
+- **An OAuth connector can take a pasted token or keys in place of its
+  sign-in.** A catalog entry may list `auth.paste`: a token, or keys, each
+  with the fields a person pastes and the MCP headers they go in.
+  `PUT /gateway/service-connections/{service}/paste` connects with one, at
+  the site picked for the sign-in. Switch checks the credential with an MCP
+  `initialize` at the service's MCP server before storing it, names the
+  connection by the account where the credential may read it, and connects
+  at the write level: an agent granted it reaches what the credential
+  allows. Switch neither asks for nor stores when the credential ends; it
+  checks it again at every token request, and a credential the vendor
+  refuses marks the connection as needing a new one (`token_refused`). A
+  pasted credential is handed to the session host with no `expires_at`, to
+  use for an hour at a time. The services list says what each service takes
+  pasted (`paste`), what a pasted connection reaches (`access_note`), and why
+  a connection must be reconnected (`reconnect_code`, `reconnect_reason`).
+  No shipped connector takes one yet.
+- **`ALLOW_NON_EXPIRING_KEYS`** (off by default) lets a connector offer a
+  pasted credential that never expires, such as API and application keys,
+  and hand it to agents. Such a key can only be revoked at the vendor. Off,
+  it is not offered, and a connection made with one while the setting was on
+  must be reconnected another way. Connectors that connect with a key alone
+  stay refused either way.
 
 #### Changed
 - **The dashboard, and what Switch tells people, use Switch's own words.** A
@@ -3056,6 +3078,11 @@ version of their own to them without also giving them a release of their own.
   site beside the account you are connected as. A server that does not send
   `sign_in_choices` is read as one whose sign-ins take no choice, and a
   sign-in that takes none is started as before.
+- **A session can use a service connected with a pasted token or keys.**
+  Switch hands such a credential out with no expiry, which only its vendor
+  knows; the session host refused that answer. It now holds the credential
+  until Switch says to ask again, within the hour, and drops it as before
+  once its grant changes.
 - **Codex sessions can use an API key kept in the OS keyring.** With
   `cli_auth_credentials_store = "keyring"` or `"auto"`, the execution machine's
   Codex keeps its login in the keyring, where a session's own Codex home cannot
