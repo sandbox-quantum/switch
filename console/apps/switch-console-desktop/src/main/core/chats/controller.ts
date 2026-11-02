@@ -168,6 +168,8 @@ export const chatsController = createRPCController({
     name: string | null;
     requestId: string;
     greeting: string | null;
+    /** Open the chat in this messaging app connection instead of in Switch. */
+    bridgeId?: string | null;
     kind?: 'group';
   }): Promise<ChatSummary> => {
     const chat = await onServer(params.serverId, (server) => createChat(server, params));

@@ -4,7 +4,7 @@ import { platformLogoMarkdown } from '@renderer/features/chats/ui/platform-logo'
 const PLATFORMS: { type: string; name: string }[] = [
   { type: 'slack', name: 'Slack' },
   { type: 'teams', name: 'Microsoft Teams' },
-  { type: 'mattermost', name: 'Mattermost' },
+  { type: 'discord', name: 'Discord' },
   { type: 'telegram', name: 'Telegram' },
 ];
 
@@ -39,6 +39,15 @@ export function buddyWelcomeMessage({
     '- 🏠 Set up rooms where your team and agents work together',
     '- 💬 Answer anything about Switch',
     '',
-    'Tell me which app your team uses, and I’ll walk you through connecting it.',
+    'Pick where your team chats below to get started.',
   ].join('\n');
+}
+
+/** What the buddy says first in the Slack channel it continues in, once setup is done. */
+export function buddySlackOpener(firstName: string | null): string {
+  return [
+    `Hi${firstName ? ` ${firstName}` : ''}, setup is done: Slack is connected and this is our private channel. 🎉`,
+    'From here I can help you create agents and bring them into your team’s channels.',
+    'What do you mostly work on?',
+  ].join('\n\n');
 }

@@ -129,6 +129,7 @@ export async function createChat(
     name: string | null;
     requestId: string;
     greeting: string | null;
+    bridgeId?: string | null;
     /** `group` makes a group even of one agent and nobody else. */
     kind?: 'group';
   }
@@ -142,6 +143,7 @@ export async function createChat(
   if (input.memberUserIds) body.memberUserIds = input.memberUserIds;
   if (input.name) body.name = input.name;
   if (input.greeting !== null) body.greeting = input.greeting;
+  if (input.bridgeId) body.bridgeId = input.bridgeId;
   if (input.kind) body.kind = input.kind;
   return (await json(server, '/chats', chatCreatedSchema, { method: 'POST', body })).chat;
 }

@@ -10,6 +10,8 @@ import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
+import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
+import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-cards';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -325,7 +327,21 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           <EmbeddedRoom roomId={shownRoom} />
         ) : roomId ? (
           <>
-            <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />
+            <ChatPanel
+              key={`${serverId}:${roomId}`}
+              serverId={serverId}
+              roomId={roomId}
+              afterMessages={
+                isBuddy(agent) ? (
+                  <BuddySetupCards
+                    serverId={serverId}
+                    workspaceId={workspaceId}
+                    agentId={agentId}
+                    roomId={roomId}
+                  />
+                ) : null
+              }
+            />
             <div
               aria-hidden
               className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"

@@ -26,16 +26,24 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
 }));
 vi.mock('./buddy-intro-store', () => ({ buddyIntroStore: { skipped } }));
 vi.mock('./buddy-welcome-message', () => ({
+  buddySlackOpener: () => 'opener',
   buddyWelcomeMessage: ({ firstName, agentName }: { firstName: string; agentName: string }) =>
     `welcome ${firstName} from ${agentName}`,
 }));
 
-const { BUDDY_CHAT_NAME, openBuddyAfterOnboarding, openBuddyChat } = await import('./open-buddy');
+const { BUDDY_CHAT_NAME, continueBuddyInSlack, openBuddyAfterOnboarding, openBuddyChat } =
+  await import('./open-buddy');
 
 const buddy = { agentId: 'a-1', name: 'switch-buddy-max' };
 
-function chat(roomId: string, name: string, agentId = 'a-1', channelType = 'direct') {
-  return { roomId, name, channelType, agents: [{ id: agentId }] };
+function chat(
+  roomId: string,
+  name: string,
+  agentId = 'a-1',
+  channelType = 'direct',
+  bridgeType: string | null = null
+) {
+  return { roomId, name, channelType, bridgeType, agents: [{ id: agentId }] };
 }
 
 beforeEach(() => {
@@ -62,6 +70,7 @@ describe('openBuddyChat', () => {
     listChats.mockResolvedValue([
       chat('r-room', BUDDY_CHAT_NAME, 'a-1', 'channel_public'),
       chat('r-someone', BUDDY_CHAT_NAME, 'a-2'),
+      chat('r-slack', BUDDY_CHAT_NAME, 'a-1', 'direct', 'slack'),
       chat('r-newest', 'Ideas'),
       chat('r-older', 'Notes'),
     ]);
@@ -158,5 +167,27 @@ describe('openBuddyAfterOnboarding', () => {
     expect(navigate).toHaveBeenCalledWith('switchBuddy', { serverId: 'srv-1' });
     expect(skipped).toHaveBeenCalledTimes(1);
     expect(listChats).not.toHaveBeenCalled();
+  });
+});
+
+describe('continueBuddyInSlack', () => {
+  it('asks once, under a request id fixed by the agent and the connection', async () => {
+    createChat.mockResolvedValue(chat('r-slack', '', 'a-1', 'direct', 'slack'));
+
+    await Promise.all([
+      continueBuddyInSlack('srv-1', buddy, 'b-1'),
+      continueBuddyInSlack('srv-1', buddy, 'b-1'),
+    ]);
+    await continueBuddyInSlack('srv-1', buddy, 'b-1');
+
+    expect(createChat).toHaveBeenCalledTimes(2);
+    expect(createChat).toHaveBeenCalledWith({
+      serverId: 'srv-1',
+      agentIds: ['a-1'],
+      name: null,
+      bridgeId: 'b-1',
+      requestId: 'buddy-handoff:a-1:b-1',
+      greeting: 'opener',
+    });
   });
 });
