@@ -85,6 +85,7 @@ from switch_core.gateway.schemas import (
     SignupResponse,
     UserResponse,
 )
+from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.tenant_context import tenant_scope
@@ -392,7 +393,10 @@ async def session_state(
         # the web's navigation, so nothing is written to the operator log here:
         # `require_operator` records list changes before any operator route
         # answers.
-        hosted_operator=operators.is_operator(user.id),
+        # With hosted agents v2 off, not read or sent, as upstream.
+        hosted_operator=operators.is_operator(user.id)
+        if hosted_v2_on(config)
+        else None,
     )
 
 

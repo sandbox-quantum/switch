@@ -40,10 +40,38 @@ def harness(session_factory: async_sessionmaker[AsyncSession]) -> Harness:
     return build_harness(session_factory)
 
 
+async def _make_box(factory, machine_id: str) -> None:
+    from switch_core.db.models import CloudMachine
+
+    async with factory() as session:
+        await session.execute(
+            update(CloudMachine)
+            .where(CloudMachine.id == machine_id)
+            .values(backend="box")
+        )
+        await session.commit()
+
+
+async def test_a_v1_machines_copy_is_kept_when_the_code_is_used(
+    harness: Harness,
+) -> None:
+    """The v1/v2 switch (sweep row 19): as upstream, a v1 machine's copy stays."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "vee")
+    machine = await _claim(factory, owner)
+    async with _hosted_app(factory, owner) as hosted:
+        [entry] = (await _prepare(hosted, machine.id))["controllers"]
+    async with harness.client() as client:
+        await _enroll(client, entry["enrollment_code"])
+    workspace = await _workspace(factory, machine.id)
+    assert workspace.enrollment_code_encrypted is not None
+
+
 async def test_the_copy_is_cleared_when_the_code_is_used(harness: Harness) -> None:
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
     machine = await _claim(factory, owner)
+    await _make_box(factory, machine.id)  # a v2 box's only (sweep row 19)
     async with _hosted_app(factory, owner) as hosted:
         [entry] = (await _prepare(hosted, machine.id))["controllers"]
     workspace = await _workspace(factory, machine.id)

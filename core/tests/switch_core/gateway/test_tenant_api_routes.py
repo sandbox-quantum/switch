@@ -2425,6 +2425,65 @@ class TestBudgetRoutes:
         # No hosted controllers in this workspace here: nothing to nudge, and no error.
         assert nudged == []
 
+    async def test_with_v2_off_its_budgets_are_refused_and_nothing_is_audited(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The v1/v2 switch: with hosted agents v2 off, the daily
+        AI cap and awake-time budgets don't exist (422, as an unknown metric
+        before v2), a v1 budget is made as before with no Activity entry or
+        nudge, and the audit log is upstream's, with no name keys."""
+        from switch_core import hosted_v2
+        from switch_core.db.audit import AuditAction, record_audit_event
+
+        monkeypatch.setattr(hosted_v2, "_process_on", False)
+        user_id, token = await self._admin(session_factory, "budget-v2-off")
+        app = _app(session_factory)
+        nudged: list[tuple[str, str, int]] = []
+        app.state.assignment_nudge = lambda t, c, r: nudged.append((t, c, r))
+        terms = {"agent_id": None, "model": "", "amount_limit": 300, "period_hours": 24}
+        async with _client(app, token) as client:
+            refused = [
+                await client.post(
+                    f"/tenants/{TENANT_A}/budgets", json={**terms, "metric": metric}
+                )
+                for metric in ("hosted_ai_calls", "awake_minutes")
+            ]
+            made = await client.post(
+                f"/tenants/{TENANT_A}/budgets", json={**terms, "metric": "turns"}
+            )
+            async with tenant_session(session_factory, TENANT_A) as session:
+                await record_audit_event(
+                    session,
+                    tenant_id=TENANT_A,
+                    actor_user_id=user_id,
+                    action=AuditAction.MEMBER_ROLE_CHANGED,
+                    target_type="user",
+                    target_id=user_id,
+                    details={},
+                )
+                await session.commit()
+            audit = await client.get(f"/tenants/{TENANT_A}/audit-events")
+        for response in refused:
+            assert response.status_code == 422, response.text
+            assert response.json()["detail"][0]["loc"] == ["body", "metric"]
+        assert made.status_code == 201, made.text
+        assert await self._budget_audit(session_factory) == []
+        assert nudged == []
+        assert audit.status_code == 200, audit.text
+        # Upstream's entry exactly: no name keys at all.
+        [entry] = audit.json()
+        assert set(entry) == {
+            "id",
+            "occurred_at",
+            "actor_user_id",
+            "action",
+            "target_type",
+            "target_id",
+            "details",
+        }
+
     async def test_a_limit_that_is_not_positive_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

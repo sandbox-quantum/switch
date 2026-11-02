@@ -38,6 +38,7 @@ from switch_core.db.tenant_lookup import (
     tenant_of_agent_oauth_client,
     tenant_of_api_key,
 )
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.logging_context import log_context
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
 from switch_core.observability.metrics import metrics
@@ -500,7 +501,11 @@ class BearerAuthMiddleware:
         body: served as before, and a 401 from either logs one WARN (B91).
         They are never locked out: their secrets are long and random, so a
         lockout would add nothing against guessing, and behind a shared proxy
-        it would let one client's bad secret block everyone's enrollment."""
+        it would let one client's bad secret block everyone's enrollment.
+        With hosted agents v2 off, served exactly as before (no WARN)."""
+        if not process_hosted_v2():
+            await self.app(scope, receive, send)
+            return
         status: list[int] = []
 
         async def watching_send(message: MutableMapping[str, Any]) -> None:
@@ -520,7 +525,10 @@ class BearerAuthMiddleware:
     def _record_refusal(self, reason: str, path: str, scope: Scope) -> None:
         """One WARN for a refused controller credential (B91): the reason
         code, the kind of route, the method and the address the server saw.
-        Never the token, and never text the client chose."""
+        Never the token, and never text the client chose. With hosted agents
+        v2 off, nothing, as before."""
+        if not process_hosted_v2():
+            return
         self._refusals.refused(
             client_address(scope),
             reason=reason,
@@ -541,7 +549,10 @@ class BearerAuthMiddleware:
         it carries a token whose signature and expiry check out: that one is
         served as usual, so controllers sharing an address behind a proxy are
         never locked out by another client's bad credential. True when the
-        request has been answered here."""
+        request has been answered here. With hosted agents v2 off, never: as
+        before, no lockout."""
+        if not process_hosted_v2():
+            return False
         address = client_address(scope)
         if not self._refusals.locked(address):
             return False

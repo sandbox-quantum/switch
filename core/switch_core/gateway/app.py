@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.middleware.sessions import SessionMiddleware
@@ -81,6 +81,7 @@ from switch_core.gateway.trust_settings import router as trust_settings_router
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
+from switch_core.hosted_v2 import require_hosted_v2, set_process_hosted_v2
 from switch_core.keys import Purpose
 from switch_core.providers.hosted import (
     load_hosted_settings,
@@ -187,23 +188,43 @@ def create_gateway_app(
     # Before any route can need it; an unsafe key file stops the start here.
     app.state.keyed_id_key = load_keyed_id_key(config)
     set_process_keyed_id_key(app.state.keyed_id_key)
+    # The v1/v2 switch, once per start, for code with no config to hand.
+    set_process_hosted_v2(config)
     app.state.operator_list = OperatorList(config.visibility_operators_path)
     # Operator rate limits: A11's title takes its window from the setting, and
     # a limit set looser than security's default is named once at start.
     configure_limits(config)
-    app.include_router(operator_audit_router, tags=["hosted-operator"])
-    app.include_router(hosted_access_router, tags=["hosted-operator"])
-    app.include_router(operator_action_router, tags=["hosted-operator"])
-    app.include_router(hosted_usage_router, tags=["hosted-admin"])
+    # The v1/v2 switch: every v2-only router answers 404 with v2 off, before
+    # any authentication or work, exactly as a route that doesn't exist.
+    v2_only = [Depends(require_hosted_v2)]
+    app.include_router(
+        operator_audit_router, tags=["hosted-operator"], dependencies=v2_only
+    )
+    app.include_router(
+        hosted_access_router, tags=["hosted-operator"], dependencies=v2_only
+    )
+    app.include_router(
+        operator_action_router, tags=["hosted-operator"], dependencies=v2_only
+    )
+    app.include_router(hosted_usage_router, tags=["hosted-admin"], dependencies=v2_only)
     # Visibility V2: the signed-in person's own agents on the shared cloud, with their states.
-    app.include_router(shared_cloud_agents_router, tags=["shared-cloud"])
+    app.include_router(
+        shared_cloud_agents_router, tags=["shared-cloud"], dependencies=v2_only
+    )
+    # v1 hosted uses these two, so they stay up; their v2 parts are gated inside.
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
-    app.include_router(hosted_provisioner_router, tags=["hosted-provisioner"])
+    app.include_router(
+        hosted_provisioner_router, tags=["hosted-provisioner"], dependencies=v2_only
+    )
     # Visibility V4: the operator's overview and "Show name", and the admin's
     # People data. They answer 503 until a keyed-id key is set.
-    app.include_router(visibility_operator_router, tags=["visibility"])
-    app.include_router(visibility_admin_router, tags=["visibility"])
+    app.include_router(
+        visibility_operator_router, tags=["visibility"], dependencies=v2_only
+    )
+    app.include_router(
+        visibility_admin_router, tags=["visibility"], dependencies=v2_only
+    )
     app.state.connector_apps = connector_apps
     install_github_app(app.state, connector_apps.github_app())
     app.include_router(

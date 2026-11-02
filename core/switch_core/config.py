@@ -627,6 +627,15 @@ class SwitchConfig(BaseSettings):
     # when FRONTEND_BASE_URL is unset (`dashboard_base_url`).
     gateway_ui_dir: Path | None = None
 
+    @field_validator("hosted_box_provisioning", mode="before")
+    @classmethod
+    def _parse_box_provisioning(cls, value: object) -> bool:
+        # The v1/v2 switch fails closed: anything but a clear yes is off,
+        # never a refusal to start (`hosted_v2.parse_box_provisioning`).
+        from switch_core.hosted_v2 import parse_box_provisioning
+
+        return parse_box_provisioning(value)
+
     @field_validator("gateway_ui_dir", mode="before")
     @classmethod
     def _blank_gateway_ui_dir_is_unset(cls, value: object) -> object:

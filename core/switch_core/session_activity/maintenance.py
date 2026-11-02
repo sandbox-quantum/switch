@@ -194,3 +194,50 @@ async def restart_sweep_loop(
                 await sweep_once(session_factory, post_as_agent)
             except Exception:
                 logger.exception("Restart sweep failed")
+
+
+# The restart sweep is owned work too (tech lead, point 8): one process sweeps
+# every tenant, as upstream's sweeps, so two processes never both post the
+# restart line for one turn. It's registered only with hosted agents v2 on.
+RESTART_SWEEP_KIND = "restart_sweep"
+
+
+def own_restart_sweep(
+    ownership: Ownership,
+    session_factory: async_sessionmaker[AsyncSession],
+    post_as_agent: PostAsAgent,
+) -> OwnedKind:
+    """Register the restart sweep as owned work, wanted by this process; it
+    runs here only while it holds it."""
+    running: dict[str, asyncio.Task[None]] = {}
+
+    def launch(key: str) -> None:
+        task = asyncio.create_task(
+            restart_sweep_loop(session_factory, post_as_agent), name="restart-sweep"
+        )
+        running[key] = task
+        task.add_done_callback(lambda done: ended(key, done))
+
+    def ended(key: str, task: asyncio.Task[None]) -> None:
+        if task.cancelled() or running.get(key) is not task:
+            return
+        logger.error(
+            "Restart sweep stopped unexpectedly; restarting",
+            exc_info=task.exception(),
+        )
+        launch(key)
+
+    async def start(key: str, fence: Fence) -> None:
+        launch(key)
+
+    async def stop(key: str) -> None:
+        task = running.pop(key, None)
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    kind = ownership.kind(RESTART_SWEEP_KIND, start=start, stop=stop)
+    kind.want(SWEEP_KEY)
+    return kind

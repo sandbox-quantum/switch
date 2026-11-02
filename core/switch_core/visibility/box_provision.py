@@ -537,9 +537,12 @@ def held_clocks(machine_id: str, open_ids: Collection[str]) -> bool:
 
 
 def box_provisioning_on(config: SwitchConfig) -> bool:
-    """Whether V0 is on. Read defensively: a hand-built test config, or a
-    caller from before V0, simply has it off."""
-    return bool(getattr(config, "hosted_box_provisioning", False))
+    """Whether V0 is on: the v1/v2 switch's one answer (`hosted_v2_on`). Read
+    defensively: a hand-built test config, or a caller from before V0, simply
+    has it off."""
+    from switch_core.hosted_v2 import hosted_v2_on
+
+    return hosted_v2_on(config)
 
 
 async def ask_for_box(

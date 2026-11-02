@@ -93,6 +93,7 @@ from switch_core.gateway.cloud_controllers import (
     wake_lifted_machine,
 )
 from switch_core.gateway.known_agents import known_agent_for
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.observability.catalogue import OBSERVER_FAILURES
 from switch_core.observability.metrics import metrics
 from switch_core.observability.throttle import WarningThrottle
@@ -461,6 +462,8 @@ class CloudMachineState:
     owner_stopped: bool
     #: Whether the machine is meant to run now: woken by this message, or already up.
     starting: bool = False
+    #: A v2 box (`backend` "box"), not a v1 machine.
+    box: bool = False
 
     @classmethod
     def of(cls, machine: CloudMachine) -> CloudMachineState:
@@ -469,6 +472,7 @@ class CloudMachineState:
             revision=machine.revision,
             owner_stopped=owner_stopped(machine),
             starting=machine.desired_state == "running",
+            box=machine.backend == "box",
         )
 
 
@@ -808,7 +812,9 @@ class AgentRecipient:
             return
         if controllers.is_revoked(binding.controller_id):
             # Only a lifted pause or turn-off wakes it (`_controller_unavailable_reply`).
-            await self._wake_lifted_box(binding.controller_id)
+            # With hosted agents v2 off, as before v2: nothing.
+            if process_hosted_v2():
+                await self._wake_lifted_box(binding.controller_id)
             return
         await self._wake_cloud_machine(binding.controller_id)
 
@@ -839,7 +845,9 @@ class AgentRecipient:
                     unavailable = await self._reply_when_unavailable_here(
                         session, agent, meta, self._sender_handle(event)
                     )
-                elif self._connections.controllers.is_bound(self.agent.id):
+                elif process_hosted_v2() and self._connections.controllers.is_bound(
+                    self.agent.id
+                ):
                     # Connected is not the same as able to answer: the
                     # controller may have given up on this agent's host.
                     unavailable = await self._controller_host_failed_reply(
@@ -1460,6 +1468,9 @@ class AgentRecipient:
         owner = await self.owner_handle_in(session, agent, meta.bridge_id)
         if not binding.running:
             return _stopped_owner_message(owner, asker_handle)
+        if controllers.is_revoked(binding.controller_id) and not process_hosted_v2():
+            # The v1/v2 switch: with v2 off, exactly as before v2.
+            return _machine_removed_message(binding.controller_name, owner)
         if controllers.is_revoked(binding.controller_id):
             # A hosted box whose controller an operator's pause or an admin's
             # turn-off revoked (visibility V3): once that's lifted, a message
@@ -1479,12 +1490,21 @@ class AgentRecipient:
             return self._waking_notice_once(meta, machine, binding.controller_name)
         if not controllers.is_live(self.agent.id):
             machine = await self._wake_cloud_machine(binding.controller_id)
+            if not process_hosted_v2() and (
+                machine is None or machine.state == "error" or machine.box
+            ):
+                # The v1/v2 switch: with v2 off, as before v2. A v2 box stays
+                # stopped, so it reads as offline rather than waking.
+                return _machine_offline_message(binding.controller_name, owner)
             if machine is None:
                 # An agent on its owner's own machine: named as today.
                 return _machine_offline_message(binding.controller_name, owner)
             if machine.state == "error":
                 # A hosted box Switch can't reach: the visibility V2 line, the same words the
                 # owner's Console shows for `cant_reach` (spec U1, the designer's copy).
+                # A v1 machine keeps upstream's offline line, whatever the switch says.
+                if not machine.box:
+                    return _machine_offline_message(binding.controller_name, owner)
                 return room_line(StopReason.CANT_REACH, owner)
             if machine.owner_stopped:
                 return _cloud_machine_stopped_message(binding.controller_name, owner)
@@ -1810,7 +1830,10 @@ class AgentRecipient:
         """
         # Paused, or turned off in this workspace (visibility V3): the message
         # isn't kept for later, and the room is told at most once an hour.
-        blocked = await self._hosted_block(session, agent)
+        # With hosted agents v2 off, as before v2: no such check.
+        blocked = (
+            await self._hosted_block(session, agent) if process_hosted_v2() else None
+        )
         if blocked is not None:
             if self._triggered_by_auto_reply(event) or not _hosted_block_notice_due(
                 meta.room_id, blocked
@@ -1831,7 +1854,11 @@ class AgentRecipient:
             except BudgetExceeded as exc:
                 refusal = str(exc)
             else:
-                capped = await self._daily_cap_refusal(session, agent, meta)
+                capped = (
+                    await self._daily_cap_refusal(session, agent, meta)
+                    if process_hosted_v2()
+                    else None
+                )
                 if capped is None:
                     return _GateOutcome(addressed=True, refusal=None)
                 refusal = capped

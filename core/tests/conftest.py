@@ -56,6 +56,20 @@ for _platform in PLATFORMS:
 
 
 @pytest.fixture(autouse=True)
+def _hosted_v2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The v1/v2 switch's process-wide copy, for code with no config to hand.
+    On by default, so the v2 tests read as they were written; a run with
+    SWITCH_TEST_HOSTED_V2=0 takes the whole suite with v2 off, as v1 servers
+    run it (the switch's flag-off parity run). A test that needs one state
+    sets it itself."""
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(
+        hosted_v2, "_process_on", os.environ.get("SWITCH_TEST_HOSTED_V2", "1") != "0"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _restore_messaging_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
     """Undo whatever a test registers. Many register a stub adapter under a real
     platform's key, which would otherwise rename that platform for every test

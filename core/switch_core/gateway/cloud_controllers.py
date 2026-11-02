@@ -36,6 +36,7 @@ from switch_core.db.stores.hosted_machine_store import (
     idle_sleeping,
     workspaces_on,
 )
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.keys import Keyring
 from switch_core.observability.hosted import box_summary, record_box_report
 
@@ -124,6 +125,8 @@ async def enrollment_code(
     revision: int,
     keyring: Keyring,
     now: datetime,
+    *,
+    fresh: bool = True,
 ) -> str:
     """The code the machine's controller for the workspace enrolls with at the
     machine's `revision`: the same one for every retry of a revision while it
@@ -132,7 +135,20 @@ async def enrollment_code(
     code's 15 minutes gets a fresh one, never a dead one). A new code makes the
     old unused one stop working, so a box has one live code at a time. Callers
     hold the machine's lock (`CloudMachineStore.locked`), so two at once can't
-    both mint. The caller commits."""
+    both mint. The caller commits.
+
+    `fresh=False` is the v1/v2 switch with v2 off: exactly as before v2, the
+    stored code for the revision is reused as it is, and nothing is retired."""
+    if not fresh:
+        if (
+            workspace.enrollment_code_revision == revision
+            and workspace.enrollment_code_encrypted is not None
+        ):
+            return keyring.decrypt(workspace.enrollment_code_encrypted)
+        code = await cloud_enrollment().machine_enrollment_code(session, workspace, now)
+        workspace.enrollment_code_encrypted = keyring.encrypt(code)
+        workspace.enrollment_code_revision = revision
+        return code
     enrollment = cloud_enrollment()
     if (
         workspace.enrollment_code_revision == revision
@@ -254,15 +270,19 @@ async def record_controller_status(
     now = datetime.now(UTC)
     sessions = machine_reading.get("sessions_running")
     reports = controller_reports(machine)
+    v2 = process_hosted_v2()
     reports[workspace.id] = {
         "at": now.isoformat(),
         "sessions_running": sessions if isinstance(sessions, int) else None,
-        "metrics": box_summary(machine_reading, agents or []),
+        # The v1/v2 switch: the metrics summary and the operator's `box` facts
+        # are v2's; with it off, the heartbeat is as before v2.
+        **({"metrics": box_summary(machine_reading, agents or [])} if v2 else {}),
     }
-    record_box_report(machine_reading)
+    if v2:
+        record_box_report(machine_reading)
     machine.heartbeat = {
         # Keys this function doesn't own (the operator's `box` facts) stay.
-        **(machine.heartbeat or {}),
+        **((machine.heartbeat or {}) if v2 else {}),
         "disk": _reading(
             machine_reading.get("disk_free_bytes"),
             machine_reading.get("disk_total_bytes"),
@@ -298,6 +318,17 @@ async def wake_controller_machine(
     if found is None:
         return None
     machine, workspace = found
+    if not process_hosted_v2():
+        # The v1/v2 switch: with v2 off, exactly as before v2, and a v2 box
+        # never wakes (it stays stopped, its data kept).
+        if machine.backend == "box":
+            return machine
+        store = CloudMachineStore()
+        if idle_sleeping(machine):
+            store.start(machine, now)
+        elif machine.desired_state == "running":
+            machine.active_at = now
+        return machine
     # Paused, or turned off in this controller's workspace (visibility V3): a
     # message or a placement never wakes the box for it.
     from switch_core.visibility.hosted_access import block_reason_in
@@ -329,7 +360,9 @@ async def wake_lifted_machine(
     with a fresh one-time code; the revoked one stays revoked. None for any
     other revoke (the owner's removal, a replaced or revived controller, or a
     path added later), or a controller on no cloud machine. The caller holds
-    no other machine lock, and commits."""
+    no other machine lock, and commits. With hosted agents v2 off, always None."""
+    if not process_hosted_v2():
+        return None
     controller = await session.get(
         AgentController, controller_id, populate_existing=True
     )

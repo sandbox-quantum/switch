@@ -76,13 +76,20 @@ async def _assignment(harness: Harness, controller: EnrolledController) -> dict:
 async def test_a_hosted_controller_reads_the_workspace_s_daily_cap(
     harness: Harness,
 ) -> None:
+    from tests.switch_core.management.test_hosted_block_refusals import _on_machine
+
     cloud = await _controller(harness, "ada", ec2=True)
+    await _on_machine(harness, cloud, "box")
+    v1_machine = await _controller(harness, "cy", ec2=True)
+    await _on_machine(harness, v1_machine, "vm")
     own_computer = await _controller(harness, "bob", ec2=False)
     assert (await _assignment(harness, cloud))["gateway_daily_cap"] is None
     await _set_daily_cap(harness, 300)
     assert (await _assignment(harness, cloud))["gateway_daily_cap"] == 300
-    # A person's own computer is never capped this way.
+    # A person's own computer, and a v1 machine, are never capped this way: the
+    # cap is a v2 box's (sweep row 7).
     assert "gateway_daily_cap" not in await _assignment(harness, own_computer)
+    assert "gateway_daily_cap" not in await _assignment(harness, v1_machine)
     async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
         assert await hosted_daily_cap(session, TENANT_ZERO_ID) == 300
 

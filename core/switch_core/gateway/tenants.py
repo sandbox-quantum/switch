@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -28,6 +31,7 @@ from switch_core.connections.broker import (
 )
 from switch_core.db.audit import AuditAction, list_audit_events, record_audit_event
 from switch_core.db.models import (
+    AuditEvent,
     Invitation,
     OrganizationMember,
     Tenant,
@@ -119,6 +123,7 @@ from switch_core.gateway.schemas import (
     JoinDomainsResponse,
     MemberDetail,
     MemberUpdateRequest,
+    NamedAuditEventDetail,
     OperatorWorkspaceResponse,
     SessionUserResponse,
     TenantCreateRequest,
@@ -132,6 +137,7 @@ from switch_core.gateway.workspace_access import (
     revoke_workspace_access,
 )
 from switch_core.gateway.workspace_creation import create_organization_for
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
@@ -622,6 +628,27 @@ async def _budget_standing(
     raise HTTPException(status_code=404, detail="Budget not found")
 
 
+# The metrics before hosted agents v2, in their order: with v2 off, a budget on
+# any other is refused with the same validation error as before v2.
+_V1Metric = StrEnum(  # type: ignore[misc]
+    "UsageMetric",
+    {
+        m.name: m.value
+        for m in UsageMetric
+        if m not in (UsageMetric.AWAKE_MINUTES, UsageMetric.HOSTED_AI_CALLS)
+    },
+)
+
+
+def _v1_metric(metric: UsageMetric) -> None:
+    try:
+        TypeAdapter(_V1Metric).validate_python(metric.value)
+    except ValidationError as error:
+        raise RequestValidationError(
+            [{**e, "loc": ("body", "metric")} for e in error.errors()]
+        ) from None
+
+
 def _budget_terms(budget: UsageBudget) -> dict:
     """What a budget covers and allows, for its audit entry: ids, a fixed
     metric, numbers and the model name, never anything a person typed."""
@@ -645,7 +672,10 @@ async def _audit_budget(
 ) -> None:
     """Every budget change is recorded in the workspace's Activity (visibility
     L1, security), in the change's own transaction, so a change that doesn't
-    commit leaves no entry and one that does always has one."""
+    commit leaves no entry and one that does always has one. With hosted
+    agents v2 off, none, as before v2."""
+    if not process_hosted_v2():
+        return
     await record_audit_event(
         session,
         tenant_id=tenant_id,
@@ -673,8 +703,9 @@ def _nudge_controllers(
 async def _daily_cap_changed(
     session: AsyncSession, tenant_id: str, metric: str
 ) -> dict[str, int]:
-    """Bump the workspace's hosted controllers when the daily AI cap changes."""
-    if metric != UsageMetric.HOSTED_AI_CALLS.value:
+    """Bump the workspace's hosted controllers when the daily AI cap changes.
+    With hosted agents v2 off, none, as before v2."""
+    if not process_hosted_v2() or metric != UsageMetric.HOSTED_AI_CALLS.value:
         return {}
     return await bump_hosted_controllers(session, tenant_id)
 
@@ -724,6 +755,10 @@ async def create_budget(
     that one instead.
     """
     _require_bound_tenant(tenant_id)
+    if not process_hosted_v2():
+        # The v1/v2 switch: with hosted agents v2 off, its metrics don't exist,
+        # refused exactly as before v2.
+        _v1_metric(body.metric)
     if (
         body.metric is UsageMetric.AWAKE_MINUTES
         and not config.hosted_awake_budgets_enabled
@@ -886,14 +921,9 @@ async def list_tenant_audit_events(
     events = await list_audit_events(
         session, tenant_id=tenant_id, limit=limit, before=before
     )
-    # Names for the workspace's own members, whom its admins already see.
-    names = names_for(
-        events,
-        members=await member_names(session, tenant_id),
-        key=_keyed_id_key_or_none(request),
-    )
-    return [
-        AuditEventDetail(
+
+    def _entry(event: AuditEvent) -> AuditEventDetail:
+        return AuditEventDetail(
             id=event.id,
             occurred_at=event.occurred_at.isoformat(),
             actor_user_id=event.actor_user_id,
@@ -901,6 +931,20 @@ async def list_tenant_audit_events(
             target_type=event.target_type,
             target_id=event.target_id,
             details=event.details,
+        )
+
+    if not process_hosted_v2():
+        # The v1/v2 switch: upstream's entries, with no names looked up or sent.
+        return [_entry(event) for event in events]
+    # Names for the workspace's own members, whom its admins already see.
+    names = names_for(
+        events,
+        members=await member_names(session, tenant_id),
+        key=_keyed_id_key_or_none(request),
+    )
+    return [
+        NamedAuditEventDetail(
+            **_entry(event).model_dump(),
             actor_name=actor_name,
             target_name=target_name,
         )

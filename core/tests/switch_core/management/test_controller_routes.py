@@ -380,15 +380,12 @@ class TestStatus:
                 "/gateway/management/controllers", cookies=cookies_for(owner)
             )
         assert response.status_code == 200, response.text
-        assert (
-            response.json()
-            == {
-                "assignment_revision": 0,
-                "report_within_s": 60,
-                "wait_limit_seconds": 600,  # hosted_wait_limit_minutes, 10 by default (visibility V2)
-                "controller_release": None,
-            }
-        )
+        assert response.json() == {
+            "assignment_revision": 0,
+            "report_within_s": 60,
+            # No `wait_limit_seconds`: a v2 box's only (sweep row 6).
+            "controller_release": None,
+        }
         assert online.json()[0]["release"] is None
         assert online.json()[0]["state"] == "online"
         assert online.json()[0]["status"]["seq"] == 5

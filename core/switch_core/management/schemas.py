@@ -370,6 +370,82 @@ class StatusReport(_StatusBody):
     tools: list[ToolStatus]
     agents: list[AgentStatus]
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _as_upstream_while_v2_is_off(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        """The v1/v2 switch (sweep row 8): with hosted agents v2 off, a report
+        is read as upstream reads it. The fields v2 declared are kept as sent,
+        as upstream's `extra="allow"` keeps them, and none can refuse it."""
+        from switch_core.hosted_v2 import process_hosted_v2
+
+        if cls is StatusReport and not process_hosted_v2():
+            return _V1StatusReport.model_validate(data)  # type: ignore[return-value]
+        return handler(data)
+
+
+# Every field hosted agents v2 declared on a status report, read as upstream
+# reads an undeclared one while v2 is off: any value, kept as sent.
+V2_MACHINE_STATUS_FIELDS = (
+    "mem_anon_bytes",
+    "mem_cached_bytes",
+    "valve_memory",
+    "valve_hosts",
+    "valve_hosts_joined",
+    "gateway_agents",
+    "gateway_refused",
+    "gateway_calls_today",
+    "gateway_capped",
+    "gateway_daily_cap",
+    "gateway_cap_source",
+    "guard_stops",
+    "valve_parks",
+    "memory_note",
+    "memory_note_box_bytes",
+    "memory_note_shmem_bytes",
+)
+V2_AGENT_STATUS_FIELDS = ("session", "ai_calls_today", "let_go", "busy")
+
+
+class _V1MachineStatus(MachineStatus):
+    mem_anon_bytes: Any = None
+    mem_cached_bytes: Any = None
+    valve_memory: Any = None
+    valve_hosts: Any = None
+    valve_hosts_joined: Any = None
+    gateway_agents: Any = None
+    gateway_refused: Any = None
+    gateway_calls_today: Any = None
+    gateway_capped: Any = None
+    gateway_daily_cap: Any = None
+    gateway_cap_source: Any = None
+    guard_stops: Any = None
+    valve_parks: Any = None
+    memory_note: Any = None
+    memory_note_box_bytes: Any = None
+    memory_note_shmem_bytes: Any = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _drop_old_memory_note(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        # As upstream: a note is kept as sent, never dropped.
+        return handler(data)
+
+
+class _V1AgentStatus(AgentStatus):
+    session: Any = None
+    ai_calls_today: Any = None
+    let_go: Any = None
+    busy: Any = None
+
+
+class _V1StatusReport(StatusReport):
+    machine: _V1MachineStatus
+    agents: list[_V1AgentStatus]
+
 
 class ProgressRequest(_ControllerBody):
     message: str

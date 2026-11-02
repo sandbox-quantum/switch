@@ -31,6 +31,8 @@ from switch_core.db.models import (
     AgentController,
     AgentDefinition,
     AgentSessionActivityItem,
+    CloudMachine,
+    MachineWorkspace,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
@@ -101,7 +103,23 @@ async def _interrupt_turns(
 ) -> list[CutOffTurn]:
     leases = await read_leases(db, SwitchCoreProcessStore())
     clock = now or leases.read_at
-    controllers = (await db.execute(select(AgentController))).scalars().all()
+    # Only controllers on a v2 box (sweep row 4): a person's own computer that
+    # sleeps mid-turn, or a v1 machine, keeps upstream's behaviour.
+    controllers = (
+        (
+            await db.execute(
+                select(AgentController)
+                .join(
+                    MachineWorkspace,
+                    MachineWorkspace.controller_id == AgentController.id,
+                )
+                .join(CloudMachine, CloudMachine.id == MachineWorkspace.machine_id)
+                .where(CloudMachine.backend == "box")
+            )
+        )
+        .scalars()
+        .all()
+    )
     gone = [
         c.id
         for c in controllers

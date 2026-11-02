@@ -36,6 +36,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_session_factory,
 )
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.providers.hosted import (
     NOT_AVAILABLE,
     HostedControllerSettings,
@@ -176,9 +177,11 @@ async def machine_summary(
     enrolled as here, `controller_id` (null until it has)."""
     now = datetime.now(UTC)
     state, error = workspace_state(machine, workspace, now)
+    # The v1/v2 switch: with v2 off, the summary is exactly as before v2.
+    v2 = process_hosted_v2()
     controller = (
         None
-        if workspace.controller_id is None
+        if not v2 or workspace.controller_id is None
         else await session.get(AgentController, workspace.controller_id)
     )
     return {
@@ -190,7 +193,7 @@ async def machine_summary(
         # the block's own words. Why it's blocked comes from V2's reason codes.
         "stop_reason": (
             "owner"
-            if machine.stop_reason in ("paused", "turned_off")
+            if v2 and machine.stop_reason in ("paused", "turned_off")
             else machine.stop_reason
         ),
         "sleeping": idle_sleeping(machine),
@@ -208,8 +211,15 @@ async def machine_summary(
         "memory": _usage(machine.heartbeat, "memory"),
         "agents": await managed_agent_ids(session, workspace.controller_id),
         "controller_id": workspace.controller_id,
+        # v1 or v2 (`vm` or `box`): Console shows v2's card and states only for
+        # a box. With hosted agents v2 off, absent, as before v2.
+        **({"backend": machine.backend} if v2 else {}),
         # Your cloud (visibility L1): from this workspace's controller only.
-        **your_cloud(None if controller is None else controller.status, now),
+        **(
+            your_cloud(None if controller is None else controller.status, now)
+            if v2
+            else {}
+        ),
     }
 
 
@@ -236,15 +246,21 @@ async def ensure_machine(
     if settings is None or not machines_enabled(config, settings, owner_id):
         raise MachineUnavailable(MACHINES_DISABLED)
     machines = CloudMachineStore()
+    v2 = process_hosted_v2()
     # Turned off in this workspace by its admin (visibility V3): no box for it.
     # A pause is refused by the claim itself (`claim_conflict`).
     if (
-        await block_reason_in(session, owner_id, require_tenant_id())
+        v2
+        and await block_reason_in(session, owner_id, require_tenant_id())
         is StopReason.TURNED_OFF_BY_ADMIN
     ):
         raise CloudMachineConflict(MACHINE_TURNED_OFF)
     await lock_claims(session)
     existing = await machines.live_for_owner(session, owner_id)
+    if not v2 and existing is not None and existing.backend == "box":
+        # The v1/v2 switch: with v2 off, a v2 box is never claimed, joined,
+        # started or revived, and no VM is made over it.
+        raise MachineUnavailable(MACHINES_DISABLED)
     if existing is not None:
         existing = await machines.locked(session, existing.id)
         workspace = (
@@ -374,9 +390,16 @@ async def lifecycle(
         machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES
     ):
         raise HTTPException(409, f"machine is {machine.desired_state}")
+    if not process_hosted_v2() and machine.backend == "box":
+        # The v1/v2 switch: with v2 off, a v2 box takes no start, stop or retry.
+        raise HTTPException(409, MACHINES_DISABLED)
     # Paused, or turned off here: every action is refused, so the owner can't
     # undo an operator's pause or an admin's switch (visibility V3, draft 43).
-    blocked = await block_reason_in(session, user.id, workspace.tenant_id)
+    blocked = (
+        await block_reason_in(session, user.id, workspace.tenant_id)
+        if process_hosted_v2()
+        else None
+    )
     if blocked is StopReason.PAUSED_BY_SWITCH:
         raise HTTPException(409, MACHINE_PAUSED)
     if blocked is StopReason.TURNED_OFF_BY_ADMIN:

@@ -154,6 +154,7 @@ def _session_app(
     invite_email_enabled: bool = False,
     tenants_isolated: bool = True,
     operators: OperatorList | None = None,
+    hosted_v2: bool = True,
 ) -> FastAPI:
     """A route-scoped app for `GET /auth/session`, stubbed as `_app` is."""
 
@@ -171,6 +172,7 @@ def _session_app(
         gateway_signup_mode=signup_mode,
         gateway_max_workspaces_per_user=3,
         invite_email_enabled=invite_email_enabled,
+        hosted_box_provisioning=hosted_v2,
     )
     app.dependency_overrides[gw_deps.get_client_lifecycle] = lambda: SimpleNamespace(
         tenants_isolated=tenants_isolated
@@ -397,6 +399,7 @@ class TestSessionStateEndpoint:
         invite_email_enabled: bool = False,
         tenants_isolated: bool = True,
         operators: OperatorList | None = None,
+        hosted_v2: bool = True,
     ) -> httpx.Response:
         async with _client(
             _session_app(
@@ -405,6 +408,7 @@ class TestSessionStateEndpoint:
                 invite_email_enabled=invite_email_enabled,
                 tenants_isolated=tenants_isolated,
                 operators=operators,
+                hosted_v2=hosted_v2,
             ),
             token,
         ) as client:
@@ -432,6 +436,32 @@ class TestSessionStateEndpoint:
             "email": "ready@example.invalid",
             "is_operator": False,
             "hosted_operator": False,
+        }
+
+    async def test_with_v2_off_the_session_says_nothing_of_hosted_operators(
+        self, session_factory: async_sessionmaker[AsyncSession], tmp_path: Path
+    ) -> None:
+        """The v1/v2 switch (sweep row 21): the user is upstream's four keys,
+        and the operator list isn't read, even for someone on it."""
+        user_id = await _make_user_with_memberships(
+            session_factory, name="v1user", tenant_ids=[TENANT_ZERO_ID]
+        )
+        token = create_jwt(
+            user_id, "v1user@example.invalid", "user", _KEYRING, TENANT_ZERO_ID
+        )
+        response = await self._get(
+            session_factory,
+            token,
+            signup_mode="default_tenant",
+            operators=self._operator_list(tmp_path, [user_id]),
+            hosted_v2=False,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["user"] == {
+            "id": user_id,
+            "name": "v1user",
+            "email": "v1user@example.invalid",
+            "is_operator": False,
         }
 
     @staticmethod

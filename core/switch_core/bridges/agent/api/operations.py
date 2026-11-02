@@ -44,6 +44,7 @@ from switch_core.bridges.agent.protocol.agent_core import (
 )
 from switch_core.budgets import BudgetExceeded
 from switch_core.db.models import Agent
+from switch_core.hosted_v2 import process_hosted_v2
 from switch_core.observability.catalogue import (
     BRIDGE_CALL_DURATION,
     BRIDGE_ERRORS,
@@ -383,8 +384,10 @@ async def post_operation(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except AgentClientNotRunning as exc:
         # Core has only just started: the agent's host sends the post again
-        # (B62), as for any 503, rather than taking it as refused.
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        # (B62), as for any 503, rather than taking it as refused. With hosted
+        # agents v2 off, upstream's 422, as any ValueError (sweep row 9).
+        status = 503 if process_hosted_v2() else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except ValueError as exc:
         # Operations raise ValueError for "you asked for something that is not
         # there or not allowed yet" - surfaced rather than swallowed.

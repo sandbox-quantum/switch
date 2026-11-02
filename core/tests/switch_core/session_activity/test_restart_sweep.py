@@ -12,6 +12,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -29,7 +30,11 @@ from switch_core.db.models import (
 from switch_core.session_activity.maintenance import sweep_once
 from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.tenant_context import tenant_scope
-from tests.switch_core.hosted_machine_helpers import place_managed_agent
+from tests.switch_core.hosted_machine_helpers import (
+    place_managed_agent,
+    seed_machine,
+    workspace_on,
+)
 
 TURN_STARTED = datetime(2026, 10, 26, 11, 43, 39, tzinfo=UTC)
 BOX_KILLED = datetime(2026, 10, 26, 11, 43, 52, tzinfo=UTC)
@@ -60,6 +65,7 @@ async def _box_with_a_running_turn(
     disconnected_at: datetime | None = BOX_KILLED,
     process_id: str | None = None,
     command_id: str | None = "cmd-cut-off",
+    backend: str | None = "box",
 ) -> tuple[str, str]:
     async with session_factory() as db:
         room = Room(
@@ -96,6 +102,21 @@ async def _box_with_a_running_turn(
         )
         db.add(controller)
         await db.flush()
+        if backend is not None:
+            # The cloud machine the controller enrolled as (none: a person's
+            # own computer).
+            machine = await seed_machine(
+                db,
+                owner_id=owner.id,
+                state="ready",
+                desired_state="running",
+                stop_reason=None,
+                revision=1,
+            )
+            machine.backend = backend
+            workspace = await workspace_on(db, machine.id)
+            workspace.controller_id = controller.id
+            await db.flush()
         definition = await place_managed_agent(
             db,
             owner_id=owner.id,
@@ -303,3 +324,17 @@ async def test_each_line_core_posts_is_on_the_tenants_record(
         "command_id": "cmd-cut-off",
         "event_id": "$notice",
     }
+
+
+@pytest.mark.parametrize("backend", [None, "vm"])
+async def test_only_a_v2_boxs_turns_are_swept(
+    session_factory: async_sessionmaker[AsyncSession], backend: str | None
+) -> None:
+    """The v1/v2 switch (sweep row 4): a person's own computer that sleeps
+    mid-turn, or a v1 machine, is never told it was restarted, as upstream."""
+    agent_id, _ = await _box_with_a_running_turn(session_factory, backend=backend)
+    posts = Posts()
+    swept = await sweep_once(session_factory, posts, offline_after=timedelta(0))
+    assert swept == []
+    assert posts.calls == []
+    assert (await _turn(session_factory, agent_id)).status == "running"

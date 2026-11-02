@@ -1005,8 +1005,11 @@ class SessionStateUser(BaseModel):
     # On Core's Switch operator list (`visibility/operators.py`), the only
     # thing that admits someone to the hosted operator routes. Never derived
     # from `is_operator`. A hint for showing Hosted in the web's navigation:
-    # each operator route still checks the list itself.
-    hosted_operator: bool = False
+    # each operator route still checks the list itself. Left out of the answer
+    # with hosted agents v2 off, as upstream (sweep row 21).
+    hosted_operator: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class SessionStateResponse(BaseModel):
@@ -1115,6 +1118,12 @@ class AuditEventDetail(BaseModel):
     target_type: str
     target_id: str | None
     details: dict[str, Any] | None
+
+
+class NamedAuditEventDetail(AuditEventDetail):
+    """An audit entry with names, sent only with hosted agents v2 on: with it
+    off, the entry is upstream's, with no name keys (the v1/v2 switch)."""
+
     # The workspace's own members only (visibility L5); never an operator.
     actor_name: str | None = None
     target_name: str | None = None

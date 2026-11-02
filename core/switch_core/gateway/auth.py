@@ -754,7 +754,7 @@ def describe_session_state(
     operator_entered: TenantMembershipResponse | None,
     tenants_isolated: bool,
     *,
-    hosted_operator: bool = False,
+    hosted_operator: bool | None = None,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 

@@ -567,8 +567,9 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
 async def test_prepare_replaces_a_dead_code_and_retires_it(controller_app):
     """B111: a box whose first start comes after its code expired (or was used)
     gets a fresh code at the same revision, never the dead one, and the old one
-    is retired so only one is live."""
+    is retired so only one is live. A v2 box's (sweep row 16)."""
     app = controller_app
+    await update_machine(app.factory, app.machine_id, backend="box")
     first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
     assert first["enrollment_code"] == "swce_synthetic-1"
     again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
@@ -597,10 +598,43 @@ async def test_two_prepares_at_once_mint_one_code(controller_app):
 
 async def test_a_new_revision_retires_the_previous_unused_code(controller_app):
     app = controller_app
+    await update_machine(app.factory, app.machine_id, backend="box")
     await prepare(app.client, app.machine_id)
     await update_machine(app.factory, app.machine_id, revision=2)
     await prepare(app.client, app.machine_id)
     assert app.enrollment.retired == ["swce_synthetic-1"]
+
+
+@pytest.mark.parametrize(("backend", "cleared"), [("box", True), ("vm", False)])
+async def test_the_listing_clears_a_spent_code_only_for_a_v2_box(
+    controller_app, monkeypatch, backend: str, cleared: bool
+):
+    """Sweep row 17: the once-a-minute clearing of stored codes that can no
+    longer enrol is a v2 box's; a v1 machine's copy is kept, as upstream. The
+    fake enrolment keeps no code rows, so a stored code reads as spent."""
+    from switch_core.gateway import hosted_controller
+
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, backend=backend)
+    await prepare(app.client, app.machine_id)
+    assert (await workspace_of(app.factory, app.machine_id)).enrollment_code_encrypted
+    monkeypatch.setattr(hosted_controller, "_codes_cleared_at", None)  # due now
+    await list_machines(app.client)
+    workspace = await workspace_of(app.factory, app.machine_id)
+    assert (workspace.enrollment_code_encrypted is None) is cleared
+
+
+async def test_v2_on_a_v1_machines_code_is_reused_as_upstream(controller_app):
+    """B111's fresh codes are a v2 box's: a v1 machine's stored code for the
+    revision is handed out as it is, and nothing retired (sweep row 16)."""
+    app = controller_app
+    first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    app.enrollment.dead.add(first["enrollment_code"])
+    again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert again["enrollment_code"] == first["enrollment_code"]
+    await update_machine(app.factory, app.machine_id, revision=2)
+    await prepare(app.client, app.machine_id)
+    assert app.enrollment.retired == []
 
 
 async def test_prepare_names_the_controller_the_machine_enrolled_as(controller_app):
@@ -1506,3 +1540,156 @@ async def test_the_operator_s_machine_list_says_when_machines_are_open_to_all(
     )
     listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
     assert "open_to_all" not in listed.json()
+
+
+# ── The v1/v2 switch: with hosted agents v2 off, v1 as before v2 ─────────────
+
+
+@pytest.fixture
+def v2_off(monkeypatch):
+    from switch_core import hosted_v2
+
+    monkeypatch.setattr(hosted_v2, "_process_on", False)
+
+
+async def test_v2_off_stops_a_running_box_and_keeps_it(controller_app, v2_off):
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="running",
+    )
+    item = await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    # Asleep, not deleted or retained: a message wakes it once v2 is on again.
+    assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
+    assert item["desired_state"] == "stopped"
+
+
+async def test_v2_off_leaves_a_v1_machine_running(controller_app, v2_off):
+    app = controller_app
+    await update_machine(
+        app.factory, app.machine_id, state="ready", desired_state="running"
+    )
+    await listed(app.client, app.machine_id)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert machine.backend == "vm" and machine.desired_state == "running"
+
+
+async def test_v2_off_no_box_boots_or_enrols(controller_app, v2_off):
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, backend="box")
+    response = await prepare(app.client, app.machine_id)
+    assert response.status_code == 409
+    assert app.enrollment.minted == []
+
+
+async def test_v2_off_a_v1_code_is_reused_as_before(controller_app, v2_off):
+    """Before v2 (and B111), the stored code for a revision was handed out as
+    it was; with v2 off, still so, and nothing is retired."""
+    app = controller_app
+    first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    app.enrollment.dead.add(first["enrollment_code"])
+    again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert again["enrollment_code"] == first["enrollment_code"]
+    assert app.enrollment.retired == []
+
+
+async def test_v2_off_the_listing_never_says_open_to_all(controller_app, v2_off):
+    app = controller_app
+    app.client._transport.app.state.hosted_controller_settings = (
+        app.settings.model_copy(
+            update={"allowed_tenant_ids": None, "allowed_user_ids": None}
+        )
+    )
+    listed_all = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert "open_to_all" not in listed_all.json()
+
+
+async def test_v2_off_the_owners_summary_is_as_before(controller_app, v2_off):
+    app = controller_app
+    owned = (await app.client.get("/hosted-machines")).json()
+    machine = owned.get("machine") or owned
+    assert not {"room", "awake", "ai_calls_today", "backend"} & set(machine)
+
+
+async def test_v2_on_the_owners_summary_names_the_backend(controller_app):
+    """Console tells a v2 box by it (`backend`), not by guessing."""
+    app = controller_app
+    owned = (await app.client.get("/hosted-machines")).json()
+    machine = owned.get("machine") or owned
+    assert machine["backend"] == "vm"
+    await update_machine(app.factory, app.machine_id, backend="box")
+    owned = (await app.client.get("/hosted-machines")).json()
+    assert (owned.get("machine") or owned)["backend"] == "box"
+
+
+async def test_v2_off_a_box_is_never_claimed_or_started(controller_app, v2_off):
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="idle",
+    )
+    ensured = await app.client.post("/hosted-machines/ensure")
+    started = await app.client.post(
+        f"/hosted-machines/{app.machine_id}/lifecycle",
+        json={"action": "start", "revision": 1},
+    )
+    machine = await machine_of(app.factory, app.machine_id)
+    assert ensured.status_code == 503
+    assert started.status_code == 409
+    assert machine.desired_state == "stopped" and machine.backend == "box"
+
+
+async def test_v2_off_a_status_report_keeps_the_heartbeat_as_before(
+    controller_app, v2_off
+):
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=0)
+    await update_machine(app.factory, app.machine_id, heartbeat={"box": {"node": "n1"}})
+    await report_status(app, controller_id, sessions_running=0)
+    machine = await machine_of(app.factory, app.machine_id)
+    assert "box" not in (machine.heartbeat or {})
+    reports = controller_reports(machine)
+    assert all("metrics" not in report for report in reports.values())
+
+
+async def test_v2_off_a_message_never_wakes_a_box(controller_app, v2_off):
+    from switch_core.gateway.cloud_controllers import (
+        wake_controller_machine,
+        wake_lifted_machine,
+    )
+
+    app = controller_app
+    controller_id, _ = await enrolled(app, agents=0)
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="idle",
+    )
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            await wake_controller_machine(session, controller_id, datetime.now(UTC))
+            assert (
+                await wake_lifted_machine(session, controller_id, datetime.now(UTC))
+                is None
+            )
+            await session.commit()
+    machine = await machine_of(app.factory, app.machine_id)
+    assert machine.desired_state == "stopped"
+    # A v1 machine asleep still wakes for a message, as before.
+    await update_machine(app.factory, app.machine_id, backend="vm")
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            await wake_controller_machine(session, controller_id, datetime.now(UTC))
+            await session.commit()
+    assert (await machine_of(app.factory, app.machine_id)).desired_state == "running"

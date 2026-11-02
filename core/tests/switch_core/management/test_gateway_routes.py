@@ -683,6 +683,32 @@ class TestManagedAgents:
             entry["stop_reason"]
         )  # never the box's own text
 
+    async def test_with_v2_off_the_view_has_no_stop_reason(
+        self, harness: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The v1/v2 switch (sweep row 22): a managed agent reads as upstream's,
+        in the single view and the list."""
+        from switch_core import hosted_v2
+
+        monkeypatch.setattr(hosted_v2, "_process_on", False)
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            controller = await enroll_console(harness, client, owner)
+            await report_status(client, controller, 1, providers=[provider("claude")])
+            created = await create_managed_agent(
+                client, owner, name="reviewer", controller_id=controller.controller_id
+            )
+            agent_id = created.json()["agent_id"]
+            one = await client.get(
+                f"/gateway/management/agents/{agent_id}", cookies=cookies_for(owner)
+            )
+            listed = await client.get(
+                "/gateway/management/agents", cookies=cookies_for(owner)
+            )
+        assert one.status_code == 200, one.text
+        assert "stop_reason" not in one.json()
+        assert all("stop_reason" not in a for a in listed.json())
+
     async def test_busy_is_accepted_only_as_a_real_boolean(
         self, harness: Harness
     ) -> None:

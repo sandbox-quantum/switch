@@ -69,6 +69,7 @@ from switch_core.delivery.restart_notice import (
     RESTART_NOTICE_TEXT,
     restart_notice_key,
 )
+from switch_core.hosted_v2 import require_hosted_v2_here
 from switch_core.management import reason_codes
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.dependencies import (
@@ -311,7 +312,9 @@ class RestartNoticeRequest(BaseModel):
 
 
 @router.post(
-    "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice"
+    "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice",
+    # v2's notices: with hosted agents v2 off, as if absent (404).
+    dependencies=[Depends(require_hosted_v2_here)],
 )
 async def post_restart_notice(
     agent_id: str,
@@ -415,7 +418,10 @@ class RestNoticeRequest(BaseModel):
     stopped: int = Field(ge=1, le=MAX_STOPPED, strict=True)
 
 
-@router.post("/v1/management/controllers/{controller_id}/agents/{agent_id}/rest-notice")
+@router.post(
+    "/v1/management/controllers/{controller_id}/agents/{agent_id}/rest-notice",
+    dependencies=[Depends(require_hosted_v2_here)],
+)
 async def post_rest_notice(
     agent_id: str,
     request: RestNoticeRequest,
@@ -495,7 +501,8 @@ class ResetRefusedRequest(BaseModel):
 
 
 @router.post(
-    "/v1/management/controllers/{controller_id}/agents/{agent_id}/reset-refused"
+    "/v1/management/controllers/{controller_id}/agents/{agent_id}/reset-refused",
+    dependencies=[Depends(require_hosted_v2_here)],
 )
 async def post_reset_refused(
     agent_id: str,

@@ -182,6 +182,7 @@ from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
+from switch_core.hosted_v2 import hosted_v2_on
 from switch_core.keys import Keyring
 from switch_core.logging_config import configure_logging
 from switch_core.management.template_updates import TemplateUpdates
@@ -211,7 +212,7 @@ from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import (
     own_maintenance as own_session_activity_maintenance,
 )
-from switch_core.session_activity.maintenance import restart_sweep_loop
+from switch_core.session_activity.maintenance import own_restart_sweep
 from switch_core.session_activity.outcomes import ApprovalOutcomes
 from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.signals import SignalBus
@@ -755,7 +756,10 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     media_store = MediaStore()
     template_store = TemplateStore()
     # Awake-time budgets stay unenforced until every hosted box is split.
-    enforce_awake_budgets(config.hosted_awake_budgets_enabled)
+    # The v1/v2 switch: with hosted agents v2 off, none of v2's background
+    # work runs (awake budgets, alerts, sweeps), exactly as before v2.
+    v2 = hosted_v2_on(config)
+    enforce_awake_budgets(config.hosted_awake_budgets_enabled and v2)
 
     # ── Seed admin user + agent-registration bootstrap key ──────────────────
     # A second acquisition of the boot lock, distinct from the one around the
@@ -774,9 +778,10 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         async with engine.begin() as connection:
             event_boot = await connection.scalar(agent_event_boot_sequence.next_value())
     # Security: nobody should be both a Switch operator and a deployment admin.
-    await warn_if_operators_hold_admin(
-        session_factory, OperatorList(config.visibility_operators_path)
-    )
+    if v2:
+        await warn_if_operators_hold_admin(
+            session_factory, OperatorList(config.visibility_operators_path)
+        )
 
     # ── Event queue + request trackers ───────────────────────────────────────
     event_buffer = EventBuffer(
@@ -1408,9 +1413,15 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             # `gateway_app`, not the lifespan's `app` (the outer agent bridge
             # app): the keyed-id key is loaded onto the gateway's state, and
             # with the wrong app both workers stayed off (boot smoke test).
-            alerts_task = _start_hosted_alerts(config, gateway_app, session_factory)
-            bulk_alerts_task = _start_bulk_alert_sweep(
-                config, gateway_app, session_factory
+            alerts_task = (
+                _start_hosted_alerts(config, gateway_app, session_factory)
+                if v2
+                else None
+            )
+            bulk_alerts_task = (
+                _start_bulk_alert_sweep(config, gateway_app, session_factory)
+                if v2
+                else None
             )
             sweep_task = asyncio.create_task(_runtime_state_sweep_loop(protocol))
             retention_task = asyncio.create_task(
@@ -1451,16 +1462,12 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             )
             # Turns of a box that never came back: only where agents run on
             # controllers at all (Level 2, 3b).
-            restart_sweep_task = (
-                asyncio.create_task(
-                    restart_sweep_loop(session_factory, router.post_as_agent)
-                )
-                if management is not None
-                else None
-            )
+            # Owned work, as upstream's sweeps: one process runs it (point 8).
+            if management is not None and v2:
+                own_restart_sweep(ownership, session_factory, router.post_as_agent)
             # A pause or resume Core stopped part-way through is recorded
             # failed at the step it reached (visibility V3). Once, at start.
-            if management is not None:
+            if management is not None and v2:
                 asyncio.create_task(
                     _sweep_hosted_actions(
                         gateway_app, session_factory, management, config.keyring
@@ -1497,8 +1504,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                     management_task.cancel()
                 if template_updates_task is not None:
                     template_updates_task.cancel()
-                if restart_sweep_task is not None:
-                    restart_sweep_task.cancel()
                 ownership_task.cancel()
                 # The lease goes on being renewed while the owned work is
                 # handed over, which can take a few seconds: it must not lapse

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -39,7 +40,8 @@ from switch_core.gateway.cloud_controllers import (
     live_controller,
 )
 from switch_core.gateway.dependencies import get_config, get_session_factory
-from switch_core.gateway.hosted_machines import controller_settings
+from switch_core.gateway.hosted_machines import MACHINES_DISABLED, controller_settings
+from switch_core.hosted_v2 import process_hosted_v2, require_hosted_v2
 from switch_core.observability.hosted import record_evictions
 from switch_core.providers.hosted import (
     HostedControllerSettings,
@@ -109,6 +111,9 @@ def _refuse(
     checked first, by the caller, so it is served even from a locked address:
     the operator and the scaler can share one cluster address with anything
     else."""
+    if not process_hosted_v2():
+        # The v1/v2 switch: with v2 off, exactly as before v2 (no lockout).
+        raise HTTPException(401, "Invalid cloud controller credential.")
     guard = refusal_guard()
     address = client_address(request.scope)
     method = method_of(request.scope)
@@ -129,7 +134,7 @@ def _refuse(
 
 
 def machine_item(machine: CloudMachine) -> dict:
-    return {
+    item = {
         "machine_id": machine.id,
         "state": machine.state,
         "desired_state": machine.desired_state,
@@ -139,10 +144,14 @@ def machine_item(machine: CloudMachine) -> dict:
         if machine.retain_until
         else None,
         "bundle_revision": machine.revision,
-        # `vm` or `box` (V0): `serve` acts only on `vm`, the box side only on
-        # `box`. An older Core sends none, and every row it has is a `vm`.
-        "backend": machine.backend,
     }
+    # `vm` or `box` (V0): `serve` acts only on `vm`, the box side only on
+    # `box`. An older Core sends none, and every row it has is a `vm`. With
+    # hosted agents v2 off, a v1 machine's row is upstream's, with no key; a
+    # box's still says `box`, so `serve` leaves it alone (tech lead, point 2).
+    if process_hosted_v2() or machine.backend == "box":
+        item["backend"] = machine.backend
+    return item
 
 
 def _idle_stops(machine: CloudMachine, idle_minutes: int) -> bool:
@@ -297,9 +306,28 @@ async def machines(
             .order_by(CloudMachine.created_at)
         )
     )
+    v2 = process_hosted_v2()
+    if not v2:
+        # The v1/v2 switch: with v2 off, no v2 box runs. Each is stopped as
+        # asleep, its data kept, so a message wakes it once v2 is on again.
+        for candidate in candidates:
+            if candidate.backend != "box" or candidate.desired_state != "running":
+                continue
+            machine = await store.locked(session, candidate.id)
+            if (
+                machine is not None
+                and machine.backend == "box"
+                and machine.desired_state == "running"
+            ):
+                store.stop(machine, "idle", now)
+                logger.info(
+                    "Cloud machine %s: a v2 box, stopped while hosted agents v2 is off.",
+                    machine.id,
+                )
+            await session.commit()
     # V0: a machine whose box is still being made is left alone: its start
     # clocks run from the box's existence, not the claim.
-    being_made = await open_provision_machines(session, now)
+    being_made = await open_provision_machines(session, now) if v2 else frozenset()
     for candidate in candidates:
         if candidate.id in being_made:
             continue
@@ -316,10 +344,12 @@ async def machines(
                 now,
             )
         await session.commit()
-    if _codes_due(now):
-        # Stored enrolment codes live no longer than the codes (security).
+    if v2 and _codes_due(now):
+        # Stored enrolment codes live no longer than the codes (security). A v2
+        # box's only: a v1 machine's are kept, as upstream (sweep row 17).
         for candidate in candidates:
-            await clear_spent_codes(factory, candidate.id, now)
+            if candidate.backend == "box":
+                await clear_spent_codes(factory, candidate.id, now)
     if box_provisioning_on(config):
         await expire_provisions(session, now)
         await session.commit()
@@ -336,7 +366,7 @@ async def machines(
     # For the operator only (this route takes the controller's token): the
     # server lets every workspace and account claim a machine. Absent when
     # either list narrows it; owners' routes never carry it.
-    if open_to_all(settings, config.hosted_launch_capacity):
+    if v2 and open_to_all(settings, config.hosted_launch_capacity):
         response["open_to_all"] = True
     await session.commit()
     return response
@@ -366,6 +396,10 @@ async def prepare(
     machine = await _locked_machine(session, machine_id)
     if machine.state == "deleted" or machine.desired_state == "deleted":
         raise HTTPException(409, "machine is deleted")
+    v2 = process_hosted_v2()
+    if not v2 and machine.backend == "box":
+        # The v1/v2 switch: with v2 off, no v2 box boots or enrols.
+        raise HTTPException(409, MACHINES_DISABLED)
     now = datetime.now(UTC)
     controllers = []
     # Why each served workspace got no controller, when it was a V3 block.
@@ -382,8 +416,10 @@ async def prepare(
                     continue
                 # Paused, or turned off in this workspace (visibility V3): no
                 # controller and no enrollment code, so nothing new can connect.
-                blocked = await block_reason_in(
-                    scoped, machine.owner_id, workspace.tenant_id
+                blocked = (
+                    await block_reason_in(scoped, machine.owner_id, workspace.tenant_id)
+                    if v2
+                    else None
                 )
                 if blocked is not None:
                     logger.info(
@@ -402,7 +438,13 @@ async def prepare(
                         None
                         if controller is not None
                         else await enrollment_code(
-                            scoped, row, machine.revision, config.keyring, now
+                            scoped,
+                            row,
+                            machine.revision,
+                            config.keyring,
+                            now,
+                            # B111's fresh codes: a v2 box's only (row 16).
+                            fresh=v2 and machine.backend == "box",
                         )
                     )
                 except CloudEnrollmentUnavailable as error:
@@ -457,7 +499,9 @@ async def prepare(
     return result
 
 
-class Observation(BaseModel):
+class _UpstreamObservation(BaseModel):
+    """An observation as upstream reads it, with no v2 fields."""
+
     model_config = ConfigDict(extra="forbid")
     state: Literal[
         "provisioning",
@@ -475,6 +519,9 @@ class Observation(BaseModel):
     data_volume_id: str | None = Field(default=None, max_length=256)
     instance_id: str | None = Field(default=None, max_length=256)
     instance_type: str | None = Field(default=None, max_length=256)
+
+
+class Observation(_UpstreamObservation):
     # Boxes pushed off their machine since the operator's last accepted
     # observation (its eviction watch). Logged, counted, and kept as times in
     # the heartbeat's `box` key for V5's alerts; V2's `box_moved` for 15 minutes.
@@ -492,12 +539,35 @@ STALE_ERROR_IGNORED_STATES = {"deleted", "queued", "provisioning"}
 OBSERVED_ERROR = "The cloud machine could not start. Retry it in Switch Console, or contact your administrator if it keeps failing."
 
 
+def _refuse_v2_fields_while_off(body: Observation) -> None:
+    """The v1/v2 switch (sweep row 14): with hosted agents v2 off, an
+    observation naming v2's fields is refused as upstream refuses any unknown
+    field, with the same 422 (`extra_forbidden`), before anything is read."""
+    if process_hosted_v2():
+        return
+    v2_fields = set(Observation.model_fields) - set(_UpstreamObservation.model_fields)
+    named = [name for name in body.model_fields_set if name in v2_fields]
+    if named:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "extra_forbidden",
+                    "loc": ("body", name),
+                    "msg": "Extra inputs are not permitted",
+                    "input": getattr(body, name),
+                }
+                for name in named
+            ]
+        )
+
+
 @router.post("/machines/{machine_id}/observation")
 async def observe(
     machine_id: str,
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
 ) -> dict:
+    _refuse_v2_fields_while_off(body)
     machine = await _locked_machine(session, machine_id)
     now = datetime.now(UTC)
     if body.evictions:
@@ -591,7 +661,7 @@ async def _capped_body(request: Request, cap: int) -> bytes:
     return b"".join(chunks)
 
 
-@router.post("/cluster")
+@router.post("/cluster", dependencies=[Depends(require_hosted_v2)])
 async def cluster_report(
     request: Request,
     _session: Annotated[AsyncSession, Depends(controller_session)],
