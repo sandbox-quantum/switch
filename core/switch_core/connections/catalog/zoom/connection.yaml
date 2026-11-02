@@ -1,0 +1,52 @@
+slug: zoom
+name: Zoom Meetings
+category: Productivity
+description: Search meetings and retrieve meeting summaries, recordings, and transcripts.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # Zoom issues rotating refresh tokens. Each token refresh returns a new refresh token
+  # and invalidates the previous one.
+  refresh: rotating
+  oauth:
+    # Each server's operator registers a Zoom General App (User-managed OAuth)
+    # in the Zoom App Marketplace and saves its client credentials in the dashboard
+    # or names its settings file in ZOOM_CLIENT_CONFIG_PATH.
+    registration: static
+    client_settings: ZOOM
+    # Back to Core's own https callback: the server needs GATEWAY_PUBLIC_URL.
+    redirect: [core]
+    unchecked: >-
+      Switch can't check the redirect URL. Connect once to confirm.
+    authorization_url: https://zoom.us/oauth/authorize
+    token_url: https://zoom.us/oauth/token
+    revocation_url: https://zoom.us/oauth/revoke
+    prompt: consent
+    remove_access: >-
+      Remove it in the Zoom App Marketplace under Manage, Added Apps. Until
+      removed, Zoom retains authorization grants for this app.
+  identity:
+    url: https://api.zoom.us/v2/users/me
+    account_id: id
+    label: email
+# Zoom's access tokens live 60 minutes (3600 seconds).
+token: { kind: pass_through, max_lifetime: 3600 }
+mcp:
+  servers:
+    - name: zoom
+      url: "https://mcp.zoom.us/mcp/meeting/streamable"
+access:
+  # Zoom Meetings MCP server read capabilities:
+  # - user:read: required by the identity endpoint GET /v2/users/me
+  # - meeting:read: search meetings and retrieve meeting details
+  # - recording:read: retrieve meeting recordings, transcripts, and AI summaries
+  # Note: Zoom Marketplace apps also support granular scopes:
+  # user:read:user, meeting:read:search, meeting:read:assets,
+  # cloud_recording:read:content, cloud_recording:read:list_user_recordings.
+  read:
+    scopes:
+      - "user:read"
+      - "meeting:read"
+      - "recording:read"
+tools: { mode: pass_through }

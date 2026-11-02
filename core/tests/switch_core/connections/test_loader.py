@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "zoom",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "zoom",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["zoom"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -225,6 +228,43 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity is not None
     assert definition.auth.identity.url == "https://api.airtable.com/v0/meta/whoami"
     assert definition.auth.identity.account_id == "id"
+
+
+def test_the_shipped_zoom_entry_configures_oauth_and_mcp_servers():
+    definition = CATALOG["zoom"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "ZOOM"
+    assert oauth.authorization_url == "https://zoom.us/oauth/authorize"
+    assert oauth.token_url == "https://zoom.us/oauth/token"
+    assert oauth.revocation_url == "https://zoom.us/oauth/revoke"
+    assert oauth.prompt == "consent"
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("zoom", "https://mcp.zoom.us/mcp/meeting/streamable")
+    ]
+    assert definition.access is not None
+    assert definition.access.read.scopes == [
+        "user:read",
+        "meeting:read",
+        "recording:read",
+    ]
+    assert definition.access.write is None
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == "https://api.zoom.us/v2/users/me"
+    assert definition.auth.identity.account_id == "id"
+    assert definition.auth.identity.label == "email"
 
 
 @pytest.fixture
