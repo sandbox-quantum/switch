@@ -2,6 +2,56 @@ slug: salesforce
 name: Salesforce
 category: CRM
 description: Read and update Salesforce records.
-enabled: false
+enabled: true
+adapter: oauth
 auth:
   type: oauth
+  # Refresh tokens rotate on each exchange and old tokens are invalidated
+  # in compliance with Salesforce's OAuth 2.0 token security requirements.
+  refresh: rotating
+  oauth:
+    # Hosted MCP servers require an External Client App (ECA) created in Setup.
+    # Connected Apps and dynamic client registration are not supported for Hosted MCP.
+    # The operator configures client_id and client_secret in SALESFORCE_CLIENT_CONFIG_PATH
+    # or saves them under Connector apps in the operator dashboard.
+    registration: static
+    client_settings: SALESFORCE
+    # Console's listener on 127.0.0.1. The ECA's callback URLs must include the exact
+    # loopback URLs and ports configured here.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    prompt: consent
+    revocation_discovered: true
+    unchecked: >-
+      Switch cannot check that the External Client App callback URLs match the
+      registered loopback ports or that the required Hosted MCP servers are enabled.
+      Have someone connect once to confirm.
+  identity:
+    url: https://login.salesforce.com/services/oauth2/userinfo
+    account_id: user_id
+    label: preferred_username
+# Salesforce org session timeout defaults to 2 hours (7200 seconds).
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    # Least-privilege server: supports schema discovery, reads, queries, searches,
+    # record creation, and updates without deletion. Excludes sobject-deletes and sobject-all.
+    # An administrator must enable this server in Setup under API Catalog > MCP Servers.
+    # Flex Credits may apply depending on org licensing.
+    - { name: salesforce, url: "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations" }
+access:
+  # Salesforce provides the single mcp_api scope for Hosted MCP servers, which does
+  # not distinguish read from write access. Tool permissions are governed by the
+  # activated server (platform/sobject-mutations provides reads and updates, but no deletes)
+  # and the user's Salesforce permissions. Both access levels request the same scopes.
+  read:
+    scopes:
+      - mcp_api
+      - refresh_token
+      - openid
+  write:
+    scopes:
+      - mcp_api
+      - refresh_token
+      - openid
+tools: { mode: pass_through }

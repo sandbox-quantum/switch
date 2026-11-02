@@ -18,20 +18,20 @@ PLACEHOLDERS = {
     "new-relic",
     "notion",
     "linear",
-    "salesforce",
     "box",
     "canva",
     "vercel",
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_salesforce():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "salesforce",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +39,14 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "salesforce",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["salesforce"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -227,6 +229,65 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert definition.auth.identity.account_id == "id"
 
 
+def test_the_shipped_salesforce_entry_signs_in_and_reaches_hosted_mcp():
+    definition = CATALOG["salesforce"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["loopback"],
+    )
+    assert oauth.client_settings == "SALESFORCE"
+    assert oauth.loopback_ports == [39231, 39232, 39233, 39234, 39235]
+    assert oauth.prompt == "consent"
+    assert oauth.revocation_discovered is True
+    assert oauth.unchecked is not None and "Hosted MCP" in oauth.unchecked
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        7200,
+    )
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == (
+        "https://login.salesforce.com/services/oauth2/userinfo",
+        "user_id",
+        "preferred_username",
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        (
+            "salesforce",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations",
+        )
+    ]
+    # Least-privilege server: excludes sobject-deletes and sobject-all.
+    server_urls = [s.url for s in definition.mcp.servers]
+    assert not any(
+        "sobject-deletes" in url or "sobject-all" in url for url in server_urls
+    )
+    access = definition.access
+    assert access is not None and access.write is not None
+    expected_scopes = ["mcp_api", "refresh_token", "openid"]
+    assert access.read.scopes == expected_scopes
+    assert access.write.scopes == expected_scopes
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+
+    skill = CATALOG["salesforce"].skill_files["SKILL.md"]
+    assert "getObjectSchema" in skill
+    assert "soqlQuery" in skill
+    assert "find" in skill
+    assert "createSobjectRecord" in skill
+    assert "updateSobjectRecord" in skill
+    assert "updateRelatedRecord" in skill
+    assert "Deleting records is not supported" in skill
+
+
 @pytest.fixture
 def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
@@ -262,7 +323,11 @@ def test_rejects_a_slug_that_differs_from_its_directory(catalog_copy):
 
 
 def test_rejects_an_enabled_entry_without_a_skill(catalog_copy):
-    shutil.rmtree(catalog_copy / "github" / "skill")
+    skill_dir = catalog_copy / "github" / "skill"
+    for p in skill_dir.glob("**/*"):
+        if p.is_file():
+            p.unlink()
+    shutil.rmtree(skill_dir, ignore_errors=True)
     with pytest.raises(CatalogError, match="github is enabled but has no skill"):
         load_catalog(catalog_copy)
 
