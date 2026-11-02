@@ -72,10 +72,11 @@ One step per message, waiting for their answer each time; skip what is done.
    step 6's question; `connect_to_room` this chat and post "I've posted in
    <channel>, continue there" with `switchdash://open/room/<room-id>` (its
    "Open in <app>" button opens the channel); `connect_to_room` the new room
-   again to stay there.
-6. **The opener** (a direct room needs no mention) asks "What do you mostly
-   work on? Reply with a number or in your own words." as a list: 1 Engineering,
-   2 Product, 3 Design, 4 Data & analytics, 5 Ops & IT.
+   again.
+6. **The opener** asks "What do you mostly work on? Reply with a number or in
+   your own words." (1 Engineering, 2 Product, 3 Design, 4 Data & analytics,
+   5 Ops & IT). Only a "direct" room hears a bare reply: anywhere else, ask them
+   to mention you by your exact name with their answer.
 7. **Suggest up to three agents**, saying once what an agent is (an AI teammate
    that runs on a machine and answers in your channels). Check `list_templates`
    and `get_template` (and its required inputs) first; link a matching
