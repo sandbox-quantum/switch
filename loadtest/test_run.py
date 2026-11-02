@@ -9,12 +9,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from kube import Refused  # noqa: E402
 from run import (  # noqa: E402
     broken,
     kept_record,
     parse_args,
     plan,
     rate_phase,
+    resolve_urls,
     take_over,
 )
 from seed import SeededAgent  # noqa: E402
@@ -158,3 +160,41 @@ def test_a_later_run_takes_the_agents_over_only_with_the_same_rooms():
         take_over(record, plan(other)[0], 10)
     with pytest.raises(RuntimeError, match="kept 10 agents"):
         take_over(record, membership, 12)
+
+
+class _Release:
+    """The release's own URLs and its Ingresses' hostnames, as `Kube` reads them."""
+
+    def public_urls(self) -> tuple[str, str]:
+        return "https://dev.example.com", "https://dev.example.com"
+
+    def ingress_hosts(self) -> set[str]:
+        return {"dev-gateway.tail.ts.net", "dev-api.tail.ts.net"}
+
+
+def test_urls_default_to_the_release_and_may_be_its_ingresses() -> None:
+    a = parse_args(["--namespace", "switch-dev"])
+    resolve_urls(a, _Release())  # type: ignore[arg-type]
+    assert (a.gateway_url, a.api_url) == ("https://dev.example.com",) * 2
+
+    a = parse_args(
+        [
+            "--namespace",
+            "switch-dev",
+            "--gateway-url",
+            "https://dev-gateway.tail.ts.net/",
+            "--api-url",
+            "https://dev-api.tail.ts.net",
+        ]
+    )
+    resolve_urls(a, _Release())  # type: ignore[arg-type]
+    assert a.gateway_url == "https://dev-gateway.tail.ts.net"
+    assert a.api_url == "https://dev-api.tail.ts.net"
+
+
+def test_urls_of_another_environment_are_refused() -> None:
+    a = parse_args(
+        ["--namespace", "switch-dev", "--api-url", "https://staging-api.tail.ts.net"]
+    )
+    with pytest.raises(Refused, match="--api-url"):
+        resolve_urls(a, _Release())  # type: ignore[arg-type]

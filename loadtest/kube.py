@@ -1,7 +1,7 @@
 """Everything the harness asks of Kubernetes, all of it read-only.
 
-`kubectl get` to find the switch-core pods and the Secret holding the admin
-login, `kubectl exec` to run the sampler inside the pods, and, only with
+`kubectl get` to find the switch-core pods, the Secret holding the admin
+login and the hostnames of the namespace's Ingresses, `kubectl exec` to run the sampler inside the pods, and, only with
 `--via port-forward`, `kubectl port-forward` to reach the pods without the
 tailnet. Nothing here creates, changes, scales or restarts a Kubernetes
 object.
@@ -134,6 +134,17 @@ class Kube:
         gw = env.get("FRONTEND_BASE_URL", {}).get("value")
         api = env.get("GATEWAY_PUBLIC_URL", {}).get("value")
         return gw, api
+
+    def ingress_hosts(self) -> set[str]:
+        """The hostnames this namespace's Ingresses answer on, the tailnet
+        ones included, as their load balancers report them."""
+        return {
+            lb["hostname"]
+            for i in self.get_json("ingress")["items"]
+            for lb in (i.get("status") or {}).get("loadBalancer", {}).get("ingress")
+            or []
+            if lb.get("hostname")
+        }
 
 
 @dataclass

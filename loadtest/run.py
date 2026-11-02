@@ -32,6 +32,7 @@ import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -325,15 +326,22 @@ def broken(summary: dict) -> str | None:
 
 def resolve_urls(a: argparse.Namespace, kube: Kube) -> None:
     """Default the URLs to the release's own, and refuse URLs that belong to
-    another environment: the pods sampled must be the pods loaded."""
+    another environment: the pods sampled must be the pods loaded. A URL on
+    one of the namespace's own Ingresses (its tailnet one, say) is its too."""
     gw, api = kube.public_urls()
+    hosts: set[str] | None = None
     for flag, given, deployed in (
         ("--gateway-url", a.gateway_url, gw),
         ("--api-url", a.api_url, api),
     ):
-        if given and deployed and given.rstrip("/") != deployed.rstrip("/"):
+        if not given or not deployed or given.rstrip("/") == deployed.rstrip("/"):
+            continue
+        if hosts is None:
+            hosts = kube.ingress_hosts()
+        if urlparse(given).hostname not in hosts:
             raise Refused(
-                f"{flag} {given} is not this namespace's ({deployed}); refusing to load one env and sample another"
+                f"{flag} {given} is neither this namespace's ({deployed}) nor on "
+                "one of its Ingresses; refusing to load one env and sample another"
             )
     a.gateway_url = (a.gateway_url or gw or "").rstrip("/")
     a.api_url = (a.api_url or api or "").rstrip("/")
