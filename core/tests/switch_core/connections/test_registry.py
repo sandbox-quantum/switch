@@ -65,7 +65,7 @@ def test_github_gets_its_adapter_where_the_app_is_set_up(tmp_path: Path) -> None
     adapters = build_adapters(
         CATALOG, github_app=app, oauth_clients={}, http=HTTP, registration=REG
     )
-    assert set(adapters) == {"github", "atlassian", "datadog"}
+    assert set(adapters) == {"github", "atlassian", "datadog", "notion"}
     assert isinstance(adapters["github"], GitHubAdapter)
     assert adapters["github"].can_issue is True
 
@@ -121,6 +121,21 @@ def test_airtable_is_set_up_by_its_operators_own_client() -> None:
     assert isinstance(adapter, OAuthAdapter)
     assert isinstance(adapter._client, StaticClient)
     assert adapter._client.client.client_id == "c"
+
+
+def test_notion_needs_no_settings_and_registers_its_ports_and_scope() -> None:
+    adapters = build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapter = adapters["notion"]
+    assert isinstance(adapter, OAuthAdapter)
+    client = adapter._client
+    assert isinstance(client, RegisteredClient)
+    assert client._request["redirect_uris"] == [
+        f"http://127.0.0.1:{port}/switch-services/callback"
+        for port in (39231, 39232, 39233, 39234, 39235)
+    ]
+    assert client._request["scope"] == "default"
 
 
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:

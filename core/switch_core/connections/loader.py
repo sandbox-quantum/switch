@@ -165,10 +165,12 @@ class OAuthClient(BaseModel):
 class ConnectionIdentity(BaseModel):
     """Where the account's stable id is read: a GET of `url` with the access
     token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    people recognise (an email, a login). Without `url` the paths are read
+    from the sign-in's own token answer, for a vendor whose token reaches
+    nothing but its MCP server (Notion)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    url: str = Field(pattern=HTTPS_URL_PATTERN)
+    url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
 

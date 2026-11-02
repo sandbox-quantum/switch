@@ -538,6 +538,32 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Notion
+
+Built from a sign-in run against a test Notion workspace:
+
+- Notion offers dynamic registration, so Core registers its client. It takes a
+  loopback redirect, so Notion connects through Switch Console, on Atlassian's
+  five ports, and a server without a public address can connect it too.
+- A person's sign-in has one scope, `default`, which reaches every tool they
+  can use, so both levels name it and every connection is granted the write
+  level. Notion also lists `ema_issuer:manage`, for enterprise identity
+  providers, which is not asked for.
+- A Notion MCP token works only with Notion MCP: Notion's REST API refuses it
+  (401). The code's token answer names the person (`user_id`) and the
+  workspace (`workspace_name`), and a refresh's does not, so the entry's
+  identity has no `url` and the adapter reads both from that first answer.
+- Access tokens live 8 hours (28,800 s measured); every refresh rotates the
+  refresh token, and revoking it ends the sign-in.
+- The server's tools pass through unchanged: 65 at the first run, 64 a week
+  later, when `notion-connector-search` was no longer listed. Some depend on
+  the workspace's plan, and some reach Notion agent sessions, calendar events
+  and Notion Skills; the skill tells the agent to use those only when asked.
+
+To connect: Settings, Connections in Switch Console, then Notion. Nothing
+needs configuring on the server. To roll back, add `notion` to
+`DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP
@@ -624,9 +650,9 @@ it as unavailable, with its reason, and the next token request fails.
 - Google Workspace on Switch's hosted service, which waits on Google's review
   of Switch's own app.
 - Keeping a CLI vendor's token out of the CLI's process (a credential proxy).
-- Live runs against a real Jira site, a real Google Workspace and a real
-  Datadog organization stay manual and outside CI, which tests `gws`'s
-  handling against a stand-in, never the real binary, and Datadog's key check
-  against a stand-in transport.
+- Live runs against a real Jira site, a real Google Workspace, a real Notion
+  workspace and a real Datadog organization stay manual and outside CI, which
+  tests `gws`'s handling against a stand-in, never the real binary, and
+  Datadog's key check against a stand-in transport.
 - Connecting a key from the web dashboard: Switch Console starts it, as every
   connect.

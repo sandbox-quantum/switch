@@ -32,8 +32,10 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.adapters.oauth import (
+    Identity,
     OAuthAdapter,
     OAuthClientCredentials,
+    SignIn,
     StaticClient,
 )
 from switch_core.connections.broker import Principal, ServiceBroker
@@ -51,10 +53,18 @@ from tests.switch_core.connections.fake_vendor import (
     s256,
 )
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import CLI_ENTRY, OAUTH_ENTRY
+from tests.switch_core.connections.test_loader import (
+    CLI_ENTRY,
+    OAUTH_ENTRY,
+    TOKEN_IDENTITY_ENTRY,
+)
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STATIC = OAUTH_ENTRY.replace(
+    "    registration: dynamic\n",
+    "    registration: static\n    client_settings: EXAMPLE\n",
+)
+TOKEN_IDENTITY = TOKEN_IDENTITY_ENTRY.replace(
     "    registration: dynamic\n",
     "    registration: static\n    client_settings: EXAMPLE\n",
 )
@@ -88,6 +98,10 @@ def _request(resources: dict | None = None) -> IssueRequest:
 
 
 async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> ConnectionSecret:
+    return (await _exchange(adapter, vendor)).secret
+
+
+async def _exchange(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> SignIn:
     verifier = secrets.token_urlsafe(48)
     url = await adapter.authorization_url(
         redirect_uri=REDIRECT,
@@ -96,13 +110,12 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> Connection
         scopes=["read:items", "write:items"],
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
-    signed_in = await adapter.exchange_code(
+    return await adapter.exchange_code(
         code=back["code"][0],
         verifier=verifier,
         redirect_uri=REDIRECT,
         scopes=["read:items", "write:items"],
     )
-    return signed_in.secret
 
 
 @pytest.fixture
@@ -226,6 +239,33 @@ class TestSignIn:
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
             await adapter.identify(secret.access_token or "")
+
+    async def test_reads_the_account_from_the_codes_token_answer(self, vendor) -> None:
+        vendor.code_answer = {"user_id": "user-1", "workspace_name": "Ada's notes"}
+        adapter, _ = _adapter(vendor, TOKEN_IDENTITY)
+        signed_in = await _exchange(adapter, vendor)
+        assert signed_in.account == Identity("user-1", "Ada's notes")
+        assert IDENTITY_URL not in vendor.paths
+
+    async def test_a_token_answer_without_the_account_is_refused(self, vendor) -> None:
+        adapter, _ = _adapter(vendor, TOKEN_IDENTITY)
+        with pytest.raises(ServiceAdapterError, match="did not name the account"):
+            await _exchange(adapter, vendor)
+
+    async def test_an_account_read_by_url_is_not_taken_from_the_answer(
+        self, vendor
+    ) -> None:
+        vendor.code_answer = {"user_id": "user-1"}
+        adapter, _ = _adapter(vendor)
+        assert (await _exchange(adapter, vendor)).account is None
+
+    async def test_an_account_from_the_token_answer_is_never_asked_for(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(vendor, TOKEN_IDENTITY)
+        with pytest.raises(ServiceAdapterError, match="only in its token answer"):
+            await adapter.identify("any-token")
+        assert IDENTITY_URL not in vendor.paths
 
 
 class TestRefresh:
