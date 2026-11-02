@@ -21,11 +21,12 @@ What this costs and promises:
   announcement only once its transaction has committed, so a listener never
   hears of a row it cannot read, and a write that rolled back announces
   nothing.
-- **Nothing a commit announces is dropped while the database answers.** A
+- **Nothing a commit announces is dropped while the database keeps up.** A
   batch that fails is kept, ahead of anything handed over since, and sent
-  again. Past `MAX_UNSENT` the oldest are dropped and logged: the database
-  has refused for a long while by then, and the listeners' re-checks repair
-  what they announced.
+  again. The announcements waiting are bounded either way: past
+  `MAX_UNSENT`, whether the database refuses or announcements come faster
+  than one transaction at a time can send them, the oldest are dropped and
+  logged, and the listeners' re-checks find what they announced.
 - **An announcement can still be lost**, which the trigger could not: a
   process that dies between a commit and the send takes it with it. Every
   listener therefore treats an announcement as a hint and re-checks on a
@@ -57,8 +58,11 @@ MAX_PAYLOAD_BYTES = 7999
 # How long a batch that failed to send waits before it is tried again.
 RETRY_SECONDS = 2.0
 
-# How many unsent announcements are kept while the database refuses them.
+# How many announcements may wait to be sent. Past it the oldest are dropped,
+# down to `KEEP_AFTER_DROP` of it, so an overload logs once per drop rather
+# than once per announcement.
 MAX_UNSENT = 100_000
+KEEP_AFTER_DROP = 0.9
 
 # How long stopping waits for what is left to go out.
 FLUSH_SECONDS = 5.0
@@ -92,6 +96,8 @@ class Announcer:
                 f"({len(payload)} bytes)"
             )
         self._outbox.append((channel, payload))
+        if len(self._outbox) > MAX_UNSENT:
+            self._drop_oldest("announcements came faster than they could be sent")
         self._idle.clear()
         self._has_outbox.set()
 
@@ -165,18 +171,25 @@ class Announcer:
             else:
                 self._has_outbox.set()
 
+    def _drop_oldest(self, why: str) -> None:
+        """Keep the newest announcements, down to `KEEP_AFTER_DROP` of
+        `MAX_UNSENT`; the listeners' re-checks find what the others
+        announced."""
+        dropped = len(self._outbox) - int(MAX_UNSENT * KEEP_AFTER_DROP)
+        del self._outbox[:dropped]
+        logger.error(
+            "Dropped the %d oldest unsent announcement(s) (%s); the listeners' "
+            "re-checks find what they announced",
+            dropped,
+            why,
+        )
+
     def _keep(self, batch: list[tuple[str, str]]) -> None:
         """Put a batch that failed back ahead of anything handed over since,
         so a process still receives one sender's announcements in order."""
         self._outbox = batch + self._outbox
         if len(self._outbox) > MAX_UNSENT:
-            dropped = len(self._outbox) - MAX_UNSENT
-            self._outbox = self._outbox[dropped:]
-            logger.error(
-                "Dropped the %d oldest unsent announcement(s); the listeners' "
-                "re-checks find what they announced",
-                dropped,
-            )
+            self._drop_oldest("the database refused them")
         logger.error(
             "Could not send %d announcement(s); kept and retried in %.0fs",
             len(self._outbox),

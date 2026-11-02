@@ -127,6 +127,23 @@ class TestNothingIsLost:
         assert [payload for _, payload in announcements] == ["first", "second"]
         assert announcer.unsent == 0
 
+    def test_announcements_waiting_are_bounded_while_the_sender_keeps_up(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Not only while the database refuses: announcements handed over
+        faster than they go out drop the oldest, and the newest stay."""
+        monkeypatch.setattr(announcer_module, "MAX_UNSENT", 10)
+        announcer = Announcer(session_factory)
+
+        for n in range(25):
+            announcer.announce("switch_message", str(n))
+
+        assert announcer.unsent <= 10
+        assert announcer._outbox[-1] == ("switch_message", "24")
+        assert ("switch_message", "0") not in announcer._outbox
+
     async def test_stopping_waits_a_while_then_gives_up_on_a_refusing_database(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
