@@ -34,7 +34,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
-from switch_core.management import controller_routes
+from switch_core.management import controller_routes, socket_calls
 from switch_core.management.notifier import (
     ASSIGNMENT_CHANGED,
     CREDENTIAL_REVOKED,
@@ -166,6 +166,7 @@ class TestOpening:
                 "connection_id": opened["connection_id"],
                 "generation": opened["generation"],
                 "heartbeat_interval_s": HEARTBEAT_INTERVAL_SECONDS,
+                "calls": {"max_in_flight": socket_calls.MAX_CALLS_IN_FLIGHT},
             },
         )
         assert attached == (
