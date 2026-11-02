@@ -1394,8 +1394,14 @@ export class HostedSession {
 export function unpostedReply(outcome: TurnOutcome, detail: string | null): string | null {
   if (outcome !== 'error') return null;
   const reason = detail?.trim() ? `: ${cap(detail.trim(), 1000)}` : '.';
-  return `I finished without replying. The turn failed${reason}`;
+  const message = `I finished without replying. The turn failed${reason}`;
+  return REQUEST_TOO_LARGE.test(detail ?? '')
+    ? `${message}\n\nUse !reset to start a fresh session, then send your message again.`
+    : message;
 }
+
+const REQUEST_TOO_LARGE =
+  /exceeds [\d.]+ ?MB limit|request_too_large|request too large|prompt is too long/i;
 
 /** What the host posts for a turn whose every post to the room was refused. */
 export function postFailedReply(reason: string): string {

@@ -1479,6 +1479,18 @@ it('says only that a turn failed, and why; nothing for one that finished or was 
   );
 });
 
+it('adds a !reset hint when the provider refuses the request for size', () => {
+  const hint = '\n\nUse !reset to start a fresh session, then send your message again.';
+  const tooLarge = 'API Error: 400 The message size (30296644 bytes) exceeds 30.000MB limit.';
+  expect(unpostedReply('error', tooLarge)).toBe(
+    `I finished without replying. The turn failed: ${tooLarge}${hint}`
+  );
+  expect(unpostedReply('error', 'Prompt is too long')).toContain(hint);
+  expect(unpostedReply('error', 'Other error')).toBe(
+    'I finished without replying. The turn failed: Other error'
+  );
+});
+
 /**
  * One turn, as the provider reports it, with or without its reasoning; what
  * the host records and publishes for it, with the per-event noise removed.
