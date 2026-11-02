@@ -2,16 +2,11 @@ from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger,
-    Text,
-    and_,
     bindparam,
-    column,
     func,
     or_,
     select,
     text,
-    values,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -240,22 +235,25 @@ class MessageStore:
     ) -> set[str]:
         """Of the rooms in `cursors`, the ones with a row after their cursor,
         in one query whose result is only those rooms. With `types`, a row
-        of one of those types."""
+        of one of those types.
+
+        The rooms and cursors go as two arrays, so the statement is the same
+        however many rooms there are: a reader in every room of a workspace
+        asks about tens of thousands, past the 32,767 parameters a statement
+        may have, and building a statement that size would hold the event
+        loop for a good part of a second."""
         if not cursors:
             return set()
-        position = values(
-            column("room_id", Text), column("seq", BigInteger), name="position"
-        ).data(list(cursors.items()))
-        query = select(Message.room_id).join(
-            position,
-            and_(
-                Message.room_id == position.c.room_id,
-                Message.seq > position.c.seq,
-            ),
-        )
-        if types is not None:
-            query = query.where(Message.event_type.in_(list(types)))
-        result = await session.execute(query.distinct())
+        params: dict[str, object] = {
+            "room_ids": list(cursors),
+            "seqs": list(cursors.values()),
+        }
+        if types is None:
+            statement = _ROOMS_PAST
+        else:
+            statement = _ROOMS_PAST_OF_TYPES
+            params["types"] = list(types)
+        result = await session.execute(statement, params)
         return set(result.scalars().all())
 
     async def get_by_transport_event_id(
@@ -414,6 +412,19 @@ class MessageStore:
 # The two statements a message's number costs, run by asyncpg directly
 # (`db/raw.py`): every message an agent or a person sends takes the room's
 # lock and reads its head.
+_ROOMS_PAST_SQL = (
+    "SELECT position.room_id "
+    "FROM unnest(CAST(:room_ids AS text[]), CAST(:seqs AS bigint[])) "
+    "AS position(room_id, seq) "
+    "WHERE EXISTS (SELECT 1 FROM messages "
+    "WHERE messages.room_id = position.room_id AND messages.seq > position.seq{types})"
+)
+_ROOMS_PAST = text(_ROOMS_PAST_SQL.format(types=""))
+_ROOMS_PAST_OF_TYPES = text(
+    _ROOMS_PAST_SQL.format(
+        types=" AND messages.event_type = ANY(CAST(:types AS text[]))"
+    )
+)
 _LOCK_ROOM = RawStatement(text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"))
 _LOCK_ROOM_ANNOUNCED_BY_WRITER = RawStatement(
     text(f"SELECT pg_advisory_xact_lock(hashtext(:room_id)), {SET_WRITER_ANNOUNCES}")
