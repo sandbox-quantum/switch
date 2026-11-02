@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.addressing import parse_policy
 from switch_core.connections.broker import (
     KEY_CONSENT,
+    CheckedKey,
     ServiceBroker,
     ServiceError,
     effective_tools,
@@ -30,6 +31,9 @@ from switch_core.connections.loader import (
     AccessLevel,
     ApiKeyField,
     ConnectionDefinition,
+    ConnectionMethod,
+    PasteMethod,
+    PasteMethodName,
 )
 from switch_core.db.models import (
     Agent,
@@ -114,6 +118,11 @@ async def list_service_connections(
         connection = connections.get(definition.slug)
         standing = await broker.standing(session, definition.slug)
         unavailable = standing.unavailable
+        reconnect = (
+            None
+            if connection is None
+            else broker.reconnect_reason(standing, connection)
+        )
         entries.append(
             {
                 "slug": definition.slug,
@@ -165,7 +174,19 @@ async def list_service_connections(
                 # that asks (a vendor's site), each from its fixed list; null
                 # for any other.
                 "sign_in_choices": _sign_in_choices(definition),
+                # What a person may paste in place of signing in (a token,
+                # or keys), each with its fields; picked choices (a site) are
+                # the sign-in's. Empty for a service that takes none here.
+                "paste": [
+                    _paste_form(method)
+                    for method in broker.paste_methods(definition.slug)
+                ],
                 "status": broker.connection_status(standing, connection),
+                # Why the connection must be reconnected, as a code and a
+                # sentence, where its status says it must: `token_refused`
+                # asks for a new pasted credential. Null otherwise.
+                "reconnect_code": None if reconnect is None else reconnect[0],
+                "reconnect_reason": None if reconnect is None else reconnect[1],
                 "consent": None if connection is None else connection.consent,
                 "external_identity": (
                     None if connection is None else connection.external_identity
@@ -175,9 +196,46 @@ async def list_service_connections(
                 # when not connected.
                 "method": None if connection is None else connection.method,
                 "choices": None if connection is None else dict(connection.choices),
+                # What a connection made with a pasted credential reaches,
+                # said in place of its level; null for any other.
+                "access_note": (
+                    None
+                    if connection is None or connection.method == "oauth"
+                    else _pasted_reach(connection.method)
+                ),
             }
         )
     return {"connections": entries}
+
+
+def _pasted_reach(method: str) -> str:
+    return (
+        "Reaches what your token allows."
+        if method == "token"
+        else "Reaches what your keys allow."
+    )
+
+
+def _paste_form(method: PasteMethod) -> dict[str, Any]:
+    return {
+        "method": method.name,
+        "label": method.label,
+        "fields": [
+            {
+                "name": field.name,
+                "label": field.label,
+                "secret": field.secret,
+                "help": field.help,
+                "choices": field.choices,
+            }
+            for field in method.fields
+        ],
+        "help_url": method.help_url,
+        # `vendor`: it ends on the date it was made to end; `never`: only
+        # the vendor can revoke it.
+        "expires": method.expires,
+        "access_note": _pasted_reach(method.name),
+    }
 
 
 @router.get("/service-connections/{service}/agents")
@@ -270,11 +328,93 @@ async def connect_with_key(
     except ServiceError as error:
         return service_refusal(error)
     name = CATALOG[service].definition.name
+    linked = await _link_pasted(
+        session,
+        broker,
+        user,
+        service,
+        checked,
+        method="keys",
+        taken=f"This {name} key's account",
+    )
+    if isinstance(linked, JSONResponse):
+        return linked
+    return {"warning": linked, "external_identity": checked.label}
+
+
+class PasteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    method: PasteMethodName
+    fields: dict[str, str]
+    # What the person picked for the entry's choices (a site); {} for an
+    # entry that offers none.
+    choices: dict[str, str]
+
+
+@router.put("/service-connections/{service}/paste", response_model=None)
+async def connect_with_paste(
+    service: str,
+    body: PasteBody,
+    user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, Any] | JSONResponse:
+    """Connect a service that signs in with OAuth by pasting a credential in
+    its place (`method`: a token, or keys, as the services list's `paste`
+    offers), at the site picked in `choices`.
+
+    The credential is checked at the service's MCP server before anything is
+    stored, and never sent back. The connection is named by the account the
+    vendor says the credential acts as, or by the credential where it will
+    not say. It reaches whatever the credential allows at the vendor, so its
+    consent is `write` and a grant on it is on or off. Pasting again, or
+    signing in, replaces it in place, keeping the grants.
+    """
+    try:
+        await broker.require_workspace_enabled(session, service)
+        await session.commit()
+        checked = await broker.check_paste(
+            service, body.method, body.fields, body.choices
+        )
+    except ServiceError as error:
+        return service_refusal(error)
+    linked = await _link_pasted(
+        session,
+        broker,
+        user,
+        service,
+        checked,
+        method=body.method,
+        taken=f"This {CATALOG[service].definition.name} account",
+    )
+    if isinstance(linked, JSONResponse):
+        return linked
+    return {
+        "warning": linked,
+        "external_identity": checked.label,
+        "method": body.method,
+        "choices": checked.choices,
+    }
+
+
+async def _link_pasted(
+    session: AsyncSession,
+    broker: ServiceBroker,
+    user: User,
+    service: str,
+    checked: CheckedKey,
+    *,
+    method: ConnectionMethod,
+    taken: str,
+) -> str | None | JSONResponse:
+    """Link a pasted credential its vendor accepted to `user`, unless its
+    account is linked to someone else here (`taken` names it, for the
+    refusal); the warning `connect` returns, or the refusal."""
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
         {"key": f"service-link:{require_tenant_id()}:{service}"},
     )
-    taken = await session.scalar(
+    holder = await session.scalar(
         select(ServiceConnection.user_id).where(
             ServiceConnection.tenant_id == require_tenant_id(),
             ServiceConnection.service == service,
@@ -282,20 +422,20 @@ async def connect_with_key(
             ServiceConnection.account_id == checked.account_id,
         )
     )
-    if taken is not None:
+    if holder is not None:
         return JSONResponse(
             status_code=409,
             content={
                 "detail": (
-                    f"This {name} key's account is already linked to another "
-                    "Switch user in this workspace. Remove that link first."
+                    f"{taken} is already linked to another Switch user in this "
+                    "workspace. Remove that link first."
                 ),
                 "code": "account_linked_elsewhere",
                 "retryable": False,
             },
         )
     try:
-        warning = await broker.connect(
+        return await broker.connect(
             session,
             user_id=user.id,
             service=service,
@@ -305,12 +445,11 @@ async def connect_with_key(
             external_identity=checked.label,
             secret=checked.secret,
             oauth_client_id=None,
-            method="keys",
+            method=method,
             choices=checked.choices,
         )
     except ServiceError as error:
         return service_refusal(error)
-    return {"warning": warning, "external_identity": checked.label}
 
 
 @router.delete("/service-connections/{service}", response_model=None)
