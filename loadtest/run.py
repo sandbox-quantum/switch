@@ -324,6 +324,18 @@ def broken(summary: dict) -> str | None:
     return None
 
 
+def admin_login(kube: Kube) -> tuple[str, str]:
+    """The admin's email and password: LOADTEST_ADMIN_EMAIL and
+    LOADTEST_ADMIN_PASSWORD when both are set, for an environment whose admin
+    has changed the password it was deployed with, otherwise the release's
+    Secret. Kept in memory only."""
+    email = os.environ.get("LOADTEST_ADMIN_EMAIL")
+    password = os.environ.get("LOADTEST_ADMIN_PASSWORD")
+    if email and password:
+        return email, password
+    return kube.admin_login()
+
+
 def resolve_urls(a: argparse.Namespace, kube: Kube) -> None:
     """Default the URLs to the release's own, and refuse URLs that belong to
     another environment: the pods sampled must be the pods loaded. A URL on
@@ -397,7 +409,7 @@ async def cleanup(a: argparse.Namespace, kube: Kube) -> int:
         a.gateway_url = pf.open()[0]
     admin = Admin(a.gateway_url, RequestIds(f"cleanup-{a.cleanup}"))
     try:
-        await admin.login(*kube.admin_login())
+        await admin.login(*admin_login(kube))
         if a.workspace:
             await admin.use_workspace(a.workspace)
         done = await teardown(admin, a.cleanup)
@@ -552,7 +564,7 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     room_ids = []
     taken_over = False
     try:
-        await admin.login(*kube.admin_login())
+        await admin.login(*admin_login(kube))
         if a.workspace:
             meta["workspace"] = await admin.use_workspace(a.workspace)
             print(f"workspace: {json.dumps(meta['workspace'])}", flush=True)
