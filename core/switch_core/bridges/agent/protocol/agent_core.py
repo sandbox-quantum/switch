@@ -147,6 +147,8 @@ from switch_core.trust.client import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from switch_core.agent_runs import RunService
@@ -1451,8 +1453,17 @@ class AgentCore:
 
     async def require_room_member(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """Get room and verify agent is a member. Raises PermissionError if not."""
-        async with self.session_factory() as session:
+        async with self._bound_session() as session:
             return await self._room_member_in(session, agent_id, room_id)
+
+    def _bound_session(self) -> AbstractAsyncContextManager[AsyncSession]:
+        """A session for the bound tenant: the one a `shared_tenant_session`
+        block lends this task, if it is inside one, so a caller can put
+        several reads in one transaction."""
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            return self.session_factory()
+        return tenant_session(self.session_factory, tenant_id)
 
     async def require_room_poster(self, agent_id: str, room_id: str) -> RoomDescriptor:
         """`require_room_member`, and raise `BudgetExceeded` if the agent has
@@ -2594,7 +2605,7 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         limit = max(1, min(limit, HISTORY_MAX_LIMIT))
 
-        async with self.session_factory() as session:
+        async with self._bound_session() as session:
             # One more than asked for. Whether that row exists is precisely the
             # question `truncated` answers, so there is nothing to estimate and
             # no reason to be conservative about it.

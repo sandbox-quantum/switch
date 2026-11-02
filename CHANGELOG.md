@@ -374,6 +374,9 @@ version of their own to them without also giving them a release of their own.
 - **Reading an agent's budget standings no longer builds their query each
   time.** The standings are read twice for every message an agent posts, and
   building the query cost more than running it; it is now built once.
+- **Reading a room's context costs one transaction.** The room's newest
+  message number, the membership check and the history read share one
+  session, where each opened its own.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
