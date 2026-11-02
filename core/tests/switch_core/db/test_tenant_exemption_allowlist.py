@@ -128,6 +128,12 @@ _ALLOWED_MODULES = {
     # the flow's tenant, and the flow is then read scoped to it, so a wrong
     # answer is a missing flow rather than a cross-tenant read.
     "switch_core.connections.sign_in_flows",
+    # A WorkOS sign-in names the customers the person belongs to, by the
+    # customer's id; which Switch organization each one is has to be read
+    # before any is bound, and the membership is then written with that
+    # organization bound, so a wrong answer is a missing row rather than a
+    # write into another organization.
+    "switch_core.organization_mirror",
     # `switch_core.transport.postgres` and `switch_core.clients.agent_consumer`
     # came off this list with `tenant_of_client`: both were built from a
     # `clients` row that already named the tenant, so they carry it instead of

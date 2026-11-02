@@ -70,6 +70,8 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_CREATED = "organization.workspace_created"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    # Brought in from a directory kept outside Switch when they signed in.
+    MEMBER_ADDED_AT_SIGN_IN = "organization.member_added_at_sign_in"
 
 
 class ServerAuditAction(StrEnum):

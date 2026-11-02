@@ -274,9 +274,16 @@ class UserStore:
         sub: str,
         email_verified: bool,
         join_tenant: bool,
+        link_by_email: bool,
     ) -> User:
         """Resolve an OIDC identity to a gateway user, provisioning on first
         login (JIT).
+
+        `link_by_email` false refuses to link a new identity to an existing
+        account by email at all, verified or not: where the identity provider
+        is shared with other products (the WorkOS directory), its subject is
+        the only link, and an existing account is linked to it by an
+        administrator, never by a matching address.
 
         `join_tenant` decides whether an account this creates, or links, is
         given a membership in the tenant bound to the caller's context. With
@@ -319,6 +326,12 @@ class UserStore:
 
             existing = await self.get_by_email(session, email)
             if existing is not None:
+                if not link_by_email:
+                    raise OidcIdentityConflictError(
+                        f"An account with email {email!r} already exists here, "
+                        "and this sign-in is not linked to it. Ask your "
+                        "administrator to link it."
+                    )
                 if not email_verified:
                     raise OidcIdentityConflictError(
                         f"An account with email {email!r} already exists and "

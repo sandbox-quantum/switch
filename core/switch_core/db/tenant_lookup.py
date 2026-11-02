@@ -1,4 +1,4 @@
-"""The whole exemption from row-level security, written out as fourteen functions.
+"""The whole exemption from row-level security, written out as fifteen functions.
 
 Row-level security is enforced by `require_tenant_id()` (`db/rls_ddl.py`),
 which raises when no tenant is bound. That is the property everything else
@@ -169,6 +169,15 @@ two. It discloses which workspaces a person belongs to or administers
 through an organization; the gateway asks it only about the signed-in
 caller.
 
+**`organization_of_customer` is the fifteenth**, and the one that answers
+with an organization rather than a workspace. Under the WorkOS directory
+(`workos_directory.py`) a sign-in names the customers the person belongs to,
+by the customer's id; which Switch organization each one is has to be read
+before anything is bound, to bring the person's membership rows up to date.
+It discloses whether a customer has a Switch organization, and its id; the
+gateway asks it only about customers WorkOS says the signed-in person belongs
+to.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -261,7 +270,7 @@ class TenantLookup:
         return f"{self.name}({', '.join('text' for _ in self.arguments)})"
 
 
-# The fourteen of them. Ordered as the three shapes above: enumeration, then
+# The fifteen of them. Ordered as the three shapes above: enumeration, then
 # credential resolution, then deriving a tenant from an identifier in hand.
 TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
     TenantLookup(
@@ -428,6 +437,17 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="organization_of_customer",
+        arguments=("customer_id",),
+        query="SELECT id FROM organizations WHERE customer_id = p_customer_id",
+        purpose=(
+            "Which organization is a customer's, from the customer's id a "
+            "WorkOS sign-in names. Read before anything is bound, to bring the "
+            "person's organization memberships up to date; unique by "
+            "constraint."
+        ),
+    ),
+    TenantLookup(
         name="tenant_of_messaging_install",
         arguments=("platform", "external_workspace_id"),
         query=(
@@ -500,12 +520,12 @@ def attach_tenant_lookups(metadata: MetaData) -> None:
 # ── Calling them ──────────────────────────────────────────────────────────────
 
 # One `text()` per lookup, written out rather than assembled from `lookup.name`
-# at call time: the fourteen names are fixed and known here, so there is nothing
+# at call time: the fifteen names are fixed and known here, so there is nothing
 # for a call site to build. Each bind is named after the lookup's own argument,
 # which is what lets `_call` zip them positionally against the dataclass and
 # fail loudly on a mismatch rather than binding the workspace to the platform.
 # The assertion below is what keeps this dict from quietly falling behind
-# `TENANT_LOOKUPS`: a fifteenth lookup with no entry here fails at import, not
+# `TENANT_LOOKUPS`: a sixteenth lookup with no entry here fails at import, not
 # with a `KeyError` on whatever request reaches it first.
 _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     "all_tenant_ids": text("SELECT tenant_id FROM all_tenant_ids() AS tenant_id"),
@@ -549,6 +569,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenant_of_sign_in_flow": text(
         "SELECT tenant_id FROM tenant_of_sign_in_flow(:state) AS tenant_id"
+    ),
+    "organization_of_customer": text(
+        "SELECT tenant_id FROM organization_of_customer(:customer_id) AS tenant_id"
     ),
 }
 
@@ -699,3 +722,10 @@ async def tenant_of_sign_in_flow(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_sign_in_flow"]
     return _at_most_one(lookup, await _call(session_factory, lookup, state))
+
+
+async def organization_of_customer(
+    session_factory: async_sessionmaker[AsyncSession], customer_id: str
+) -> str | None:
+    lookup = TENANT_LOOKUPS_BY_NAME["organization_of_customer"]
+    return _at_most_one(lookup, await _call(session_factory, lookup, customer_id))

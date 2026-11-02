@@ -108,6 +108,7 @@ _ADDED_SINCE = {
     "tenants_open_to_domain": "7d3f5a19e2c8",
     "tenant_of_sign_in_flow": "e5956cbd3bdc",
     "tenants_bindable_by_user": "5c2e8f17a9d4",
+    "organization_of_customer": "f2b8d6c1a4e9",
 }
 
 # A third kind of change, and the quietest: a lookup whose body a later
