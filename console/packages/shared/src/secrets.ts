@@ -32,6 +32,17 @@ const SECRET_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
     (_match, openQuote: string, keyName: string, closeQuote: string, separator: string) =>
       `${openQuote}${keyName}${closeQuote}${separator}${openQuote}[REDACTED]${openQuote}`,
   ],
+  // A quoted value after `=` or `:` (`KEY="a b"`, `'password': 'x'`), masked to
+  // its closing quote so a space inside it cannot end the match early. A value
+  // cut off before its closing quote is masked to the end of the line.
+  [
+    new RegExp(
+      `\\b(${SECRET_KEY_NAMES})(["']?\\s*[:=]\\s*)(["'])(?:\\\\.|(?!\\3)[^\\\\\\n])*(?:\\3|$)`,
+      'gim'
+    ),
+    (_match, keyName: string, separator: string, quote: string) =>
+      `${keyName}${separator}${quote}[REDACTED]${quote}`,
+  ],
   // Unquoted: key=value, or key: <scheme> value. The scheme alternation must
   // stay in step with the auth schemes we might log: without `bot`, Discord's
   // `Authorization: Bot <token>` redacts the word "Bot" and leaves the token.
