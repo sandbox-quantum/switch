@@ -400,8 +400,8 @@ is not a failure here, because random input is supposed to be refused. As in
 the browser lane, the server log must stay free of errors for the whole run.
 
 The explorer deletes, archives and renames whatever it finds, so the lane
-refuses to run on anything but an ephemeral stack. It cannot sign out or
-change the password, since that would end the session it is testing.
+refuses to run on anything but an ephemeral stack. It cannot sign out, since
+that would end the session it is testing, and it acts only once signed in.
 Everything else is fair game, including deleting things behind a confirmation
 dialog. The lane seeds an agent and two rooms first, so the pages have
 something on them.

@@ -11,7 +11,7 @@
  * reaches instead of on a scripted path. A 4xx is not one of them: random input
  * is meant to be refused.
  */
-import { always, eventually, now } from '@antithesishq/bombadil';
+import { always, eventually, next, now } from '@antithesishq/bombadil';
 import { isAction } from '@antithesishq/bombadil/actions';
 import {
   actions,
@@ -50,11 +50,12 @@ const ROUTES = [
 ];
 
 /**
- * What would end the session the explorer is testing. Signing out and back in
- * proves nothing the browser lane does not, and a changed password locks the
- * lane out for the rest of the run.
+ * Signing out ends the session the explorer is testing, and signing back in
+ * proves nothing the browser lane does not. (Changing the password needs the
+ * current one, which random input does not know, so that dialog stays open to
+ * it.)
  */
-const SESSION_ENDING = ['Sign out', 'Change password'];
+const SIGN_OUT = 'Sign out';
 
 const path = extract((state) => state.window.location.pathname);
 
@@ -89,6 +90,27 @@ const openedPage = extract((state) => {
   return Custom !== undefined && (Custom.name === 'goTo' || Custom.name === 'signIn');
 });
 
+/**
+ * Whether the account menu, which holds Sign out, is open. Bombadil clicks a
+ * point, and picks it from elements the open menu can cover: a click meant for
+ * the page beneath can land on a menu item instead.
+ */
+const accountMenuOpen = extract((state) =>
+  Array.from(state.document.querySelectorAll('[role="menu"] [role="menuitem"]')).some(
+    (item) => (item.textContent ?? '').trim() === SIGN_OUT && item.getClientRects().length > 0
+  )
+);
+
+/**
+ * Whether the account menu opened with the last action. It grows into place,
+ * and a click while it does lands on whichever entry has moved under the
+ * point: Sign out, below the one aimed at.
+ */
+const accountMenuOpening = extract((state) => {
+  const action = state.lastAction as { Click?: { fingerprint: { accessible_name?: string } } } | null;
+  return action?.Click?.fingerprint.accessible_name === 'Account menu';
+});
+
 const errorBanners = extract((state) =>
   Array.from(state.document.querySelectorAll('[role="alert"].MuiAlert-colorError'))
     .filter((element) => element.getClientRects().length > 0)
@@ -119,20 +141,22 @@ export const signsIn = eventually(() => signedIn.current).within(30, 'seconds');
 
 /**
  * Once signed in, the explorer stays signed in. It cannot sign out (see
- * `SESSION_ENDING`), so the login page again means the session was lost.
+ * `SIGN_OUT`), so the login page again means the session was lost.
  */
 export const staysSignedIn = always(
-  now(() => !onLoginPage.current).implies(always(() => !onLoginPage.current))
+  now(() => signedIn.current).implies(always(() => !onLoginPage.current))
 );
 
 /**
  * No page opens with an error banner: MUI renders each as an `alert` with error
  * severity. A banner after a click is how the gateway refuses what random input
- * asked for (removing a member who owns agents, say), so only a banner that
- * comes with opening a page counts.
+ * asked for (removing a member who owns agents, say), and one stays up until
+ * dismissed, so only a banner that appears as a page opens counts.
  */
 export const noErrorBanner = always(
-  now(() => openedPage.current).implies(() => errorBanners.current.length === 0)
+  now(() => errorBanners.current.length === 0).implies(
+    next(now(() => openedPage.current).implies(() => errorBanners.current.length === 0))
+  )
 );
 
 /** The server answered no `/gateway` request with a 5xx. */
@@ -168,21 +192,44 @@ const goTo = registerCustomAction('goTo', async (_document, window, route: strin
 
 export const signingIn = actions(() => [signIn()]).when(() => onLoginPage.current);
 
-function endsSession(action: ActionTemplate): boolean {
-  if (!isAction(action, 'Click')) return false;
-  const { textContent, accessibleName } = action.Click.fingerprint;
-  return SESSION_ENDING.some((label) => textContent === label || accessibleName === label);
+/**
+ * Whether a click is safe: never Sign out, none while the account menu is still
+ * opening, and while it is open only on the menu's own entries, so a click
+ * cannot land on Sign out by accident.
+ */
+function safeClick(action: ActionTemplate): boolean {
+  if (!isAction(action, 'Click')) return true;
+  if (accountMenuOpening.current) return false;
+  const { textContent, accessibleName, role } = action.Click.fingerprint;
+  if (textContent === SIGN_OUT || accessibleName === SIGN_OUT) return false;
+  return !accountMenuOpen.current || role === 'menuitem' || role === 'radio';
 }
 
+const jumps = actions(() =>
+  ROUTES.filter((route) => route !== path.current).map((route) => goTo(route))
+);
+
 /**
- * Bombadil's default exploration, without what ends the session, plus a jump to
- * any page in the rail so a dead end (a dialog with nothing to click, a page
- * scrolled away from its links) does not hold the explorer.
+ * Bombadil's default exploration, without signing out, plus a jump to any page
+ * in the rail so a dead end (a dialog with nothing to click, a page scrolled
+ * away from its links) does not hold the explorer.
  */
 export const exploring = weighted([
-  [100, clicks.filter((action) => !endsSession(action))],
+  [100, clicks.filter(safeClick)],
   [100, inputs],
   [50, scroll],
   [10, navigation],
-  [5, actions(() => ROUTES.filter((route) => route !== path.current).map((route) => goTo(route)))],
-]).when(() => !onLoginPage.current);
+  [5, jumps],
+  [100, actions(() => (accountMenuOpening.current ? ['Wait'] : []))],
+]).when(() => signedIn.current);
+
+/**
+ * Neither signed in nor on the login form: the app is loading its session, or
+ * shows a screen without the rail (a workspace picker, onboarding). Wait it
+ * out, or leave.
+ */
+export const waiting = weighted([
+  [10, actions(() => ['Wait'])],
+  [1, navigation],
+  [1, jumps],
+]).when(() => !signedIn.current && !onLoginPage.current);
