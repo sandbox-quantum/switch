@@ -503,6 +503,18 @@ class TestWhereTheMetadataIs:
             in vendor.paths
         )
 
+    async def test_sends_a_dropbox_style_offline_token_request(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                "    client_settings: EXAMPLE\n"
+                "    authorization_params: { token_access_type: offline }\n",
+            ),
+        )
+        await _sign_in(adapter, vendor)
+        assert vendor.authorizations[-1]["token_access_type"] == "offline"
+
     async def test_asks_for_consent_where_the_catalog_says_to(self, vendor) -> None:
         adapter, _ = _adapter(
             vendor,
