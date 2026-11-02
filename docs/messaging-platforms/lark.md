@@ -71,11 +71,12 @@ ciphertext because CBC itself does not provide authentication.
   using that format. Lark card action callbacks are not supported on
   per-connection webhooks because Switch acknowledges those webhooks before
   processing.
-- Activity is visible as status text. Native reaction indicators are not
-  supported.
-- The adapter cannot search the Lark directory. Invite the bot to existing
-  rooms on Lark, or create a group from Switch when the app has group creation
-  and member management permissions.
+- Agent activity is shown with native emoji reactions (👓 for working, ⏳ for
+  queued). Requires `im:message.reaction:create` permission.
+- The adapter can search the Lark directory by name, nickname, or email. Invite
+  the bot to existing rooms on Lark, or create a group from Switch when the app
+  has group creation and member management permissions. Directory search requires
+  `contact:user:read` permission.
 - Encrypted rooms are not supported by this adapter. Lark's bot APIs deliver
   readable message bodies to the app; when the API delivers a message without
   readable content, Switch posts a notice explaining that the bot cannot
@@ -89,6 +90,7 @@ message permissions enabled). To bridge unaddressed group messages, select the
 permission to receive all group messages. If the app has only the permission to
 receive messages that mention the bot, Lark will deliver only those messages.
 For room creation and adding people, grant `im:chat:create` and
-`im:chat.members:write_only`. Depending on your organization and app approval
-settings, an administrator may need to approve these permissions before the
-bot can be used.
+`im:chat.members:write_only`. For agent activity reactions, grant
+`im:message.reaction:create`. For directory search, grant `contact:user:read`.
+Depending on your organization and app approval settings, an administrator may
+need to approve these permissions before the bot can be used.

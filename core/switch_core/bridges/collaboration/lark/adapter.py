@@ -16,7 +16,11 @@ import httpx
 import markdown
 from pydantic import Field
 
-from switch_core.bridges.collaboration.adapter import AgentIdentity, PlatformAdapter
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMark,
+    AgentIdentity,
+    PlatformAdapter,
+)
 from switch_core.bridges.collaboration.install import (
     InboundWebhook,
     WebhookAuthenticityError,
@@ -31,6 +35,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelCreationUnsupported,
     ChannelType,
+    DirectoryUser,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -245,7 +250,7 @@ class LarkAdapter(PlatformAdapter):
     receives_webhooks: ClassVar[bool] = True
     draws_session_activity: ClassVar[bool] = True
     supports_channel_creation: ClassVar[bool] = True
-    supports_directory_search: ClassVar[bool] = False
+    supports_directory_search: ClassVar[bool] = True
     renders_custom_url_schemes: ClassVar[bool] = False
     keeps_quiet_unless_listening: ClassVar[bool] = True
 
@@ -639,6 +644,35 @@ class LarkAdapter(PlatformAdapter):
     ) -> None:
         return None
 
+    async def mark_activity(
+        self,
+        channel_id: str,
+        message_ref: str,
+        *,
+        agent_name: str,
+        mark: ActivityMark,
+        on: bool,
+        force: bool = False,
+    ) -> None:
+        emoji_type = "EYEGLASSES" if mark == "working" else "HOURGLASS_NOT_DONE"
+        if on:
+            try:
+                await self._request(
+                    "POST",
+                    f"/open-apis/im/v1/messages/{message_ref}/reactions",
+                    json={"reaction_type": {"emoji_type": emoji_type}},
+                )
+            except BridgeOperationError:
+                pass
+        else:
+            try:
+                await self._request(
+                    "DELETE",
+                    f"/open-apis/im/v1/messages/{message_ref}/reactions/{emoji_type}",
+                )
+            except BridgeOperationError:
+                pass
+
     def translate_inbound(self, raw_message: str) -> str:
         return raw_message
 
@@ -701,6 +735,49 @@ class LarkAdapter(PlatformAdapter):
             data.get("invalid_user_id_list") or data.get("invalid_id_list") or []
         )
         return [str(user_id) for user_id in invalid_ids]
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        needle = query.strip().lower()
+        if not needle:
+            return []
+        matches: list[DirectoryUser] = []
+        page_token: str | None = None
+        while True:
+            params = {"page_size": 50, "user_id_type": "open_id"}
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                result = await self._request(
+                    "GET", "/open-apis/contact/v3/users", params=params
+                )
+            except BridgeOperationError:
+                break
+            items = result.get("items") or []
+            for user in items:
+                user_id = user.get("open_id")
+                name = user.get("name", "")
+                nickname = user.get("nickname", "")
+                email = user.get("email", "")
+                if not user_id:
+                    continue
+                if (
+                    needle in name.lower()
+                    or needle in nickname.lower()
+                    or needle in email.lower()
+                ):
+                    matches.append(
+                        DirectoryUser(
+                            external_user_id=str(user_id),
+                            username=name or nickname or str(user_id),
+                            display_name=name or nickname or str(user_id),
+                            email=email or None,
+                        )
+                    )
+            has_more = result.get("has_more", False)
+            page_token = result.get("page_token")
+            if not has_more or not page_token:
+                break
+        return matches
 
     async def get_channel_agent_names(self, channel_id: str) -> list[str]:
         return []

@@ -488,3 +488,124 @@ async def test_delete_callback_not_called_without_handler() -> None:
         },
     )
     await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_directory_search_finds_matching_users() -> None:
+    """Test that directory search finds users by name, nickname, or email."""
+    adapter = LarkAdapter(config=_config())
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "tenant-token"}
+            )
+        if request.url.path.endswith("/contact/v3/users"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "has_more": False,
+                        "items": [
+                            {
+                                "open_id": "ou_user1",
+                                "name": "Alice Smith",
+                                "nickname": "alice",
+                                "email": "alice@example.com",
+                            },
+                            {
+                                "open_id": "ou_user2",
+                                "name": "Bob Johnson",
+                                "nickname": "bobby",
+                                "email": "bob@example.com",
+                            },
+                            {
+                                "open_id": "ou_user3",
+                                "name": "Charlie Brown",
+                                "nickname": "charlie",
+                                "email": "charlie@example.com",
+                            },
+                        ],
+                    },
+                },
+            )
+        return httpx.Response(200, json={"code": 0})
+
+    await adapter._http.aclose()
+    adapter._http = httpx.AsyncClient(
+        base_url="https://open.larksuite.com", transport=httpx.MockTransport(handler)
+    )
+
+    # Search by name
+    results = await adapter.search_directory_users("alice")
+    assert len(results) == 1
+    assert results[0].external_user_id == "ou_user1"
+    assert results[0].display_name == "Alice Smith"
+    assert results[0].email == "alice@example.com"
+
+    # Search by nickname
+    results = await adapter.search_directory_users("bobby")
+    assert len(results) == 1
+    assert results[0].external_user_id == "ou_user2"
+
+    # Search by email
+    results = await adapter.search_directory_users("charlie@")
+    assert len(results) == 1
+    assert results[0].external_user_id == "ou_user3"
+
+    # Empty query returns empty list
+    results = await adapter.search_directory_users("")
+    assert len(results) == 0
+
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_activity_reactions_are_added_and_removed() -> None:
+    """Test that agent activity is shown with emoji reactions."""
+    adapter = LarkAdapter(config=_config())
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path.endswith("tenant_access_token/internal"):
+            return httpx.Response(
+                200, json={"code": 0, "tenant_access_token": "tenant-token"}
+            )
+        return httpx.Response(200, json={"code": 0})
+
+    await adapter._http.aclose()
+    adapter._http = httpx.AsyncClient(
+        base_url="https://open.larksuite.com", transport=httpx.MockTransport(handler)
+    )
+
+    # Mark as working (add reaction)
+    await adapter.mark_activity(
+        "oc_chat", "om_msg1", agent_name="test-agent", mark="working", on=True
+    )
+    reaction_call = [c for c in calls if "/reactions" in c.url.path][-1]
+    assert reaction_call.method == "POST"
+    assert "om_msg1/reactions" in reaction_call.url.path
+    reaction_body = json.loads(reaction_call.content)
+    assert reaction_body["reaction_type"]["emoji_type"] == "EYEGLASSES"
+
+    # Remove working mark
+    await adapter.mark_activity(
+        "oc_chat", "om_msg1", agent_name="test-agent", mark="working", on=False
+    )
+    remove_call = [c for c in calls if "/reactions/EYEGLASSES" in c.url.path][-1]
+    assert remove_call.method == "DELETE"
+
+    # Mark as queued
+    await adapter.mark_activity(
+        "oc_chat", "om_msg2", agent_name="test-agent", mark="queued", on=True
+    )
+    queued_call = [c for c in calls if "/reactions" in c.url.path and "om_msg2" in c.url.path][-1]
+    assert queued_call.method == "POST"
+    queued_body = json.loads(queued_call.content)
+    assert queued_body["reaction_type"]["emoji_type"] == "HOURGLASS_NOT_DONE"
+
+    await adapter.stop()
