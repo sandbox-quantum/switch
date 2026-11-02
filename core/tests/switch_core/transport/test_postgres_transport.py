@@ -166,9 +166,13 @@ class _FakeListener:
 
     def __init__(self) -> None:
         self.wakers: dict[str, set] = {}
+        self.types: dict[str, frozenset[str] | None] = {}
 
-    def subscribe(self, room_id: str, waker) -> None:
+    def subscribe(
+        self, room_id: str, waker, *, types: frozenset[str] | None = None
+    ) -> None:
         self.wakers.setdefault(room_id, set()).add(waker)
+        self.types[room_id] = types
 
     def unsubscribe(self, room_id: str, waker) -> None:
         self.wakers.get(room_id, set()).discard(waker)
@@ -901,6 +905,41 @@ class TestReceiving:
         # The room a handler is given is the transport-side id it knows, not
         # the internal one the listener announces.
         assert event.room_id == room
+
+    async def test_a_reader_of_some_types_is_handed_only_those(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Switch's own reader acts on command rows only, and was handed every
+        row of every room to find them."""
+        async with session_factory() as session:
+            _, room, client_id, user_id = await _make_room(session)
+            await session.commit()
+        listener = _FakeListener()
+        received = _Received()
+        reader = _transport(
+            session_factory, client_id=client_id, user_id=user_id, listener=listener
+        )
+        reader.register_handlers(received.handlers())
+        await reader.join_room(room)
+        commands = frozenset({"com.switch.command"})
+        task = asyncio.create_task(
+            reader.receive_forever(FromHead(MessageStore()), row_types=commands)
+        )
+        self._tasks.append((task, reader))
+        switch_room_id = await _watched_room(reader)
+        assert listener.types[switch_room_id] == commands
+
+        await reader.send_message(room, "before", sender_name="a", metered=True)
+        sent = await reader.send_event(
+            room,
+            "com.switch.command",
+            {"command": "help", "args": "", "user_id": user_id, "user_name": "a"},
+        )
+        await reader.send_message(room, "after", sender_name="a", metered=True)
+        await listener.announce(switch_room_id)
+
+        assert [event.event_id for event in received.events] == [sent.event_id]  # type: ignore[attr-defined]
+        assert isinstance(received.events[0], InboundCustomEvent)
 
     async def test_the_cursor_starts_at_the_head_and_does_not_repeat(
         self, session_factory: async_sessionmaker[AsyncSession]

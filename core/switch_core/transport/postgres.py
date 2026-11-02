@@ -280,6 +280,9 @@ class PostgresTransport:
         # been recorded through it.
         self._progress: DeliveryProgress | None = None
         self._recorded: dict[str, int] = {}
+        # The row types the current receive is for, or None for every row
+        # (`receive_forever`).
+        self._row_types: frozenset[str] | None = None
         # Rooms this client has been told moved but has not read yet, and the
         # signal its delivery loop waits on. A set because a room that moved
         # twice while the loop was busy is still one read.
@@ -304,17 +307,27 @@ class PostgresTransport:
     def register_handlers(self, handlers: TransportHandlers) -> None:
         self._handlers = handlers
 
-    async def receive_forever(self, progress: DeliveryProgress) -> None:
+    async def receive_forever(
+        self,
+        progress: DeliveryProgress,
+        *,
+        row_types: frozenset[str] | None = None,
+    ) -> None:
         """Deliver the rows written to this client's rooms, until closed.
 
         Each room is read from where `progress` says, and progress is recorded
         through it as rows are handled. Ending finishes the row in hand first
         and records it, so a reader that resumes from the record neither
         repeats nor skips it.
+
+        With `row_types`, only rows of those types: the client is woken only
+        when one is written and reads past the rest, so a reader that acts on
+        one kind of row costs nothing for every other row of every room.
         """
         self._closed = asyncio.Event()
         self._stopping = False
         self._progress = progress
+        self._row_types = row_types
         # Before the rooms are read, not after they are subscribed: reading
         # them and watching each is several round trips, and a removal rung
         # during those has no membership row for the caller to fall back to.
@@ -650,7 +663,9 @@ class PostgresTransport:
                     )
                 else:
                     seq = (await progress.resume(session, [room_id])).get(room_id)
-                head = await self._message_store.head_seq(session, room_id)
+                head = await self._message_store.head_seq(
+                    session, room_id, types=self._row_types
+                )
         except Exception:
             # A claim left behind would make every later `_watch` return
             # early on a room nothing is subscribed to.
@@ -679,8 +694,10 @@ class PostgresTransport:
         says the client joined at `joined_at`."""
         self._cursors[room_id] = seq
         self._recorded[room_id] = seq
-        self._room_cache.attach(self.tenant_id, room_id, self)
-        self._listener.subscribe(room_id, self._on_room_advanced)
+        if self._row_types is None:
+            # A reader of some types reads its own rows (`_drain_room`).
+            self._room_cache.attach(self.tenant_id, room_id, self)
+        self._listener.subscribe(room_id, self._on_room_advanced, types=self._row_types)
         self._ephemeral.subscribe(transport_room_id, self._on_ephemeral)
         self._joined_at[room_id] = joined_at
 
@@ -722,7 +739,9 @@ class PostgresTransport:
                     session, self.client_id, list(claimed)
                 )
                 places = await progress.resume(session, members)
-                heads = await self._message_store.head_seqs(session, list(members))
+                heads = await self._message_store.head_seqs(
+                    session, list(members), types=self._row_types
+                )
         except Exception:
             for room_id, transport_room_id in claimed.items():
                 self._release_claim(room_id, transport_room_id)
@@ -882,9 +901,12 @@ class PostgresTransport:
                 cursor = self._cursors.get(room_id)
                 if cursor is None or room_id not in self._watching:
                     return
-                rows, done = await self._read_shared_page(
-                    room_id, tenant_id, cursor, woken_at
-                )
+                if self._row_types is None:
+                    rows, done = await self._read_shared_page(
+                        room_id, tenant_id, cursor, woken_at
+                    )
+                else:
+                    rows, done = await self._read_page(room_id, tenant_id, cursor)
                 if self._cursors.get(room_id) != cursor:
                     # Removed and put back while waiting on the room's
                     # shared read: these rows are from the old
@@ -913,6 +935,7 @@ class PostgresTransport:
                 room_id,
                 after_seq=cursor,
                 limit=DELIVERY_PAGE,
+                types=self._row_types,
             )
             attachments = await self._message_store.attachments_for(
                 session, [row.id for row in rows]
