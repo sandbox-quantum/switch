@@ -20,12 +20,14 @@ import { fileURLToPath } from 'node:url';
  * Chromium against the same server: a smoke test of what an operator sees,
  * which no HTTP-level scenario can see break. `agentic` runs the same real
  * session as `provider`, but a model plays the human from a scenario file and
- * another model judges the conversation.
+ * another model judges the conversation. `explore` drives the same gateway UI
+ * as `browser`, but at random for a fixed time (Bombadil), checking properties
+ * every page must keep rather than following a script.
  */
-export type Lane = 'fast' | 'provider' | 'browser' | 'agentic';
+export type Lane = 'fast' | 'provider' | 'browser' | 'agentic' | 'explore';
 
 /** Every lane: the one list anything that takes a lane by name checks against. */
-export const LANES: readonly Lane[] = ['fast', 'provider', 'browser', 'agentic'];
+export const LANES: readonly Lane[] = ['fast', 'provider', 'browser', 'agentic', 'explore'];
 
 export function isLane(raw: string): raw is Lane {
   return (LANES as readonly string[]).includes(raw);
@@ -132,11 +134,19 @@ export interface HarnessEnv {
   serverLog: string | null;
   /**
    * The gateway UI, served against `switch.apiUrl` (its `/gateway` requests
-   * reach that server). Only the browser lane reads it.
+   * reach that server). Only the browser and explore lanes read it.
    */
   gatewayUiUrl: string | null;
-  /** Where the browser lane saves a screenshot of a page that failed, if anywhere. */
+  /**
+   * Where the browser lane saves a screenshot of a page that failed, and the
+   * explore lane its trace, if anywhere.
+   */
   outputDir: string | null;
+  /**
+   * How long the explore lane explores, as Bombadil's `--time-limit` takes it
+   * (`90s`, `5m`, `1h`). `SWITCH_E2E_EXPLORE_TIME_LIMIT`, default `5m`.
+   */
+  exploreTimeLimit: string;
   switch: SwitchEnv;
   /** `null` when no Mattermost is configured; scenarios that need one then skip or fail. */
   mattermost: MattermostEnv | null;
@@ -237,6 +247,33 @@ export function strictFrom(
 }
 
 /**
+ * The explore lane's time limit. Read on its own as well as by `loadEnv`,
+ * because the lane sizes its case's timeout from it before the rest of the
+ * configuration is loaded.
+ */
+export function exploreTimeLimitFrom(
+  source: Source = process.env,
+  file: Record<string, string> = readDotEnvFile()
+): string {
+  const raw = reader(source, file)('SWITCH_E2E_EXPLORE_TIME_LIMIT') ?? '5m';
+  durationMs(raw);
+  return raw;
+}
+
+const DURATION_UNITS_MS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+
+/** A duration as Bombadil's `--time-limit` takes it (`90s`, `5m`, `1h`, `1d`), in milliseconds. */
+export function durationMs(raw: string): number {
+  const match = /^([1-9][0-9]*)([smhd])$/.exec(raw);
+  if (match === null) {
+    throw new Error(
+      `SWITCH_E2E_EXPLORE_TIME_LIMIT must be a whole number with a unit, s, m, h or d (e.g. 5m) — got '${raw}'.`
+    );
+  }
+  return Number(match[1]) * DURATION_UNITS_MS[match[2] as keyof typeof DURATION_UNITS_MS];
+}
+
+/**
  * Resolve the harness configuration from `process.env` layered over `.env`.
  * Throws {@link MissingConfigError} naming every absent variable at once rather
  * than failing on the first — a first run is usually missing several.
@@ -288,6 +325,7 @@ export function loadEnv(
     serverLog: get('SWITCH_E2E_SERVER_LOG') ?? null,
     gatewayUiUrl: optionalUrl(get('SWITCH_GATEWAY_UI_URL')),
     outputDir: get('SWITCH_E2E_OUTPUT_DIR') ?? null,
+    exploreTimeLimit: exploreTimeLimitFrom(source, file),
     switch: {
       apiUrl: stripTrailingSlash(required.SWITCH_API_URL as string),
       gatewayAdminEmail: required.SWITCH_GATEWAY_ADMIN_EMAIL as string,
@@ -383,6 +421,6 @@ export function describeEnv(env: HarnessEnv): string {
   const mattermost = env.mattermost
     ? `mattermost=${env.mattermost.url} team=${env.mattermost.team}`
     : 'mattermost=none';
-  const ui = env.lane === 'browser' ? ` gateway-ui=${env.gatewayUiUrl ?? 'none'}` : '';
+  const ui = env.lane === 'browser' || env.lane === 'explore' ? ` gateway-ui=${env.gatewayUiUrl ?? 'none'}` : '';
   return `lane=${env.lane} environment=${env.environment} switch=${env.switch.apiUrl} ${mattermost}${ui}`;
 }
