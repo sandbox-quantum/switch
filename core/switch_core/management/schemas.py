@@ -444,7 +444,9 @@ class _V1AgentStatus(AgentStatus):
 
 class _V1StatusReport(StatusReport):
     machine: _V1MachineStatus
-    agents: list[_V1AgentStatus]
+    # Pydantic's v1 view of the same report: the narrower element type is the
+    # point, so list's invariance check doesn't apply here.
+    agents: list[_V1AgentStatus]  # type: ignore[assignment]
 
 
 class ProgressRequest(_ControllerBody):
