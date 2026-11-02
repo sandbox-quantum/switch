@@ -13,12 +13,9 @@ import { agentHasOwnUser } from './host-permissions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
-  RESET_ACCEPTED_LINE,
-  RESET_RESTING_LINE,
   retryRefusal,
   roomControlFollowup,
   roomControlRefusal,
-  SESSION_READY_MS,
 } from './room-control-followup';
 import { SharedRoomInbox, type roomConnectionSchema } from './room-inbox';
 import {
@@ -114,8 +111,6 @@ export type SharedHostOptions = {
   redactions: Redactions;
   /** Its services falling back to the machine's own sign-in, shown in the session once it is up. */
   serviceNotices: ServiceNotices;
-  /** How long a reset waits for the session to finish starting; `SESSION_READY_MS` unless a test says otherwise. */
-  sessionReadyMs?: number;
 };
 
 /** How long a session sits idle before its host parks, unless the environment says otherwise. */
@@ -155,7 +150,7 @@ export type ResetHold = 'none' | 'holding' | 'ended';
  * ended, such as background subagents, counts as a running turn.
  */
 export function sessionBusy(
-  snapshot: Readonly<Snapshot>,
+  snapshot: Snapshot,
   reset: ResetHold,
   roomsPending: number,
   backgroundWork: boolean
@@ -224,12 +219,6 @@ class RequestError extends Error {
 
 /** How a room control names the session's current generation and turn. */
 const CURRENT = 'current';
-
-/** The leading code of a refusal (`SESSION_STARTING`, `SESSION_BUSY`, ...), or its first word: never the rest. */
-export function refusalCode(message: string | null | undefined): string {
-  const text = (message ?? '').replace(/^Error: /, '');
-  return /^[A-Z][A-Z0-9_]+(?=:|$|\s)/.exec(text)?.[0] ?? /^[A-Za-z_]+/.exec(text)?.[0] ?? 'UNKNOWN';
-}
 
 const approvalOutcomesSchema = z.array(
   z.object({
@@ -414,8 +403,7 @@ export async function runSharedHost(
         ...(parentChannel && options.roomConnection
           ? {
               replyToRoom: async (reply) => {
-                const answer = await parentChannel.ask({ type: 'room-reply', ...reply });
-                return isAlready(answer) ? 'already' : 'posted';
+                await parentChannel.ask({ type: 'room-reply', ...reply });
               },
             }
           : {}),
@@ -529,7 +517,7 @@ export async function runSharedHost(
     const applyOutcomes = async (force: boolean) => {
       if (reportingUnsupported) return;
       const woken = waker.takeApprovalWake();
-      const waiting = host!.view().requests.some((r) => r.state === 'open');
+      const waiting = host!.snapshot().requests.some((r) => r.state === 'open');
       // The watcher's wake is the prompt route; the interval only covers a
       // wake that was lost, and only while a person's answer is awaited.
       if (!force && !woken && !(waiting && performance.now() - outcomesCheckedAt >= 5000)) return;
@@ -651,7 +639,7 @@ export async function runSharedHost(
     };
     const busyNow = (): BusyState =>
       sessionBusy(
-        host!.view(),
+        host!.snapshot(),
         resetHold(),
         rooms?.pending().length ?? 0,
         host!.backgroundWorkRunning
@@ -729,36 +717,10 @@ export async function runSharedHost(
         return { note: roomInstructionsUnreadNote(roomId, reason), instructions: null };
       }
     };
-    /**
-     * The session is to park as soon as it is idle: its machine is short of
-     * memory, or it was started only to take a reset while resting.
-     */
-    let parkRequested = false;
-    let parkWhy = 'the machine is short of memory';
-    /**
-     * Waits, up to `limitMs`, for a session that is still starting to finish:
-     * true once it has, false if it is still starting at the limit.
-     */
-    const startedWithin = (limitMs: number): Promise<boolean> => {
-      const starting = () => host!.view().session.status === 'starting';
-      if (!starting()) return Promise.resolve(true);
-      return new Promise((resolve) => {
-        const finish = () => {
-          clearTimeout(timer);
-          off();
-          resolve(!starting());
-        };
-        const off = host!.onPublished(() => {
-          if (!starting()) finish();
-        });
-        const timer = setTimeout(finish, limitMs);
-      });
-    };
     /** Runs a command, answering with what the host recorded for it, or why it did not run. */
     const run = async (
       value: unknown,
-      requesterName: string | null,
-      room: { told: boolean; resting: boolean } = { told: true, resting: false }
+      requesterName: string | null
     ): Promise<CommandStatus | string> => {
       executionSignal.throwIfAborted();
       active();
@@ -777,30 +739,13 @@ export async function runSharedHost(
       // about a conversation a reset or a restart has since replaced.
       if (command.epoch !== host!.snapshot().session.epoch)
         return 'STALE_EPOCH: the session has been reset or restarted since this command was made.';
-      const control = followupFor(command, requesterName);
-      // A resting session's reset is answered with a line, not a turn: its
-      // next reply starts the fresh conversation (B71).
-      const restingReset = room.resting && control?.action === 'reset';
-      const owed = restingReset ? null : control;
+      const owed = followupFor(command, requesterName);
       if (owed && !followups().some((record) => record.commandId === command.commandId))
         await state.journal.append(owed);
       const repeated = host!
         .snapshot()
         .commandStatuses.some((entry) => entry.commandId === command.commandId);
-      // A session started to take this reset (it was resting) reports ready a
-      // moment after its host is up; handed the reset before then, the host
-      // turned it away as busy and the room read "while I'm working on a
-      // turn" (B71, box C 27 Oct). It waits, and one still starting at the
-      // limit is refused with a reason that reads as "couldn't reset".
-      const ready =
-        command.body.type !== 'session.reset' ||
-        repeated ||
-        (await startedWithin(options.sessionReadyMs ?? SESSION_READY_MS));
       try {
-        if (!ready)
-          throw new Error(
-            'SESSION_STARTING: the session did not finish starting in time to take the reset.'
-          );
         await host!.command(command);
       } catch (error) {
         await host!.reject(command, error);
@@ -808,42 +753,27 @@ export async function runSharedHost(
       const status = host!
         .snapshot()
         .commandStatuses.find((entry) => entry.commandId === command.commandId);
-      // A refused reset leaves a trace beyond the room line: ids and the
-      // reason's code only, never the message's own text (B82).
-      if (command.body.type === 'session.reset' && status?.status === 'rejected' && !repeated)
-        console.warn(
-          `Reset ${command.commandId} of session ${command.sessionId} was refused: ${refusalCode(status.message)}.`
-        );
-      /** Says `body` in the room the control was typed in, as the agent. */
-      const tell = (body: string, what: string): Promise<void> =>
-        control && !repeated && parentChannel && options.roomConnection
-          ? parentChannel
-              .ask({ type: 'room-reply', roomId: control.roomId, threadId: control.threadId, body })
-              .then(
-                () => undefined,
-                (error: unknown) =>
-                  console.warn(
-                    `Could not tell room ${control.roomId} that ${what}: ${String(error)}`
-                  )
-              )
-          : Promise.resolve();
-      if (control && status?.status === 'applied') {
-        if (restingReset) {
-          // Said before going back to rest, so the line is not cut off with the host.
-          await tell(RESET_RESTING_LINE, 'its resting session was reset');
-          parkRequested = true;
-          parkWhy = 'it was started only to take a reset while resting';
-          waker.nudge();
-        } else if (control.action === 'reset' && !room.told)
-          void tell(RESET_ACCEPTED_LINE, 'its reset was taken');
-      }
       if (owed && status?.status === 'applied') await sendFollowup(owed);
-      // A refusal is answered in the room the control was typed in.
-      if (control && status?.status === 'rejected')
-        void tell(
-          roomControlRefusal(control.action, status.message),
-          `its ${control.action} was refused`
-        );
+      // Switch already told the room the control is under way; a refusal is answered there too.
+      if (
+        owed &&
+        status?.status === 'rejected' &&
+        !repeated &&
+        parentChannel &&
+        options.roomConnection
+      )
+        void parentChannel
+          .ask({
+            type: 'room-reply',
+            roomId: owed.roomId,
+            threadId: owed.threadId,
+            body: roomControlRefusal(owed.action, status.message),
+          })
+          .catch((error: unknown) =>
+            console.warn(
+              `Could not tell room ${owed.roomId} that its ${owed.action} was refused: ${String(error)}`
+            )
+          );
       // A retry asked for from a room that cannot run is answered there, where it was asked.
       if (
         command.body.type === 'message.retry' &&
@@ -968,11 +898,8 @@ export async function runSharedHost(
     parent?.serve({
       // Busy is announced before the reply, so a parent that has the reply has
       // already heard any change the command made.
-      command: async ({ command, requesterName, roomTold, resting }) => {
-        const outcome = await run(command, requesterName, {
-          told: roomTold !== false,
-          resting: resting === true,
-        });
+      command: async ({ command, requesterName }) => {
+        const outcome = await run(command, requesterName);
         announceBusy();
         if (typeof outcome === 'string') throw new Error(outcome);
         return outcome;
@@ -987,24 +914,11 @@ export async function runSharedHost(
       },
       snapshot: async () => host!.snapshot(),
       reasoning: async ({ turnIds }) => host!.reasoning(turnIds),
-      park: async () => {
-        const parking =
-          !host!.backgroundWorkRunning &&
-          host!.view().session.status === 'ready' &&
-          !busyNow().busy;
-        if (parking) {
-          parkRequested = true;
-          parkWhy = 'the machine is short of memory';
-          waker.nudge();
-        }
-        return { parking };
-      },
       approvals: async () => {
         active();
         waker.approvalsWaiting();
         return null;
       },
-      'restart-replies': async () => ({ owed: host!.retryOwedRestartReplies() }),
     });
     host.onPublished(active);
     host.onPublished(() => identify(host!.snapshot().session));
@@ -1029,11 +943,8 @@ export async function runSharedHost(
         active();
         return false;
       }
-      if (!parkRequested && performance.now() - lastActive < options.parkAfterMs) return false;
-      const idle = host!.view().session.status === 'ready' && !busyNow().busy;
-      // Work arrived after the request: it is no longer this session's turn to go.
-      if (!idle) parkRequested = false;
-      return idle;
+      if (performance.now() - lastActive < options.parkAfterMs) return false;
+      return host!.snapshot().session.status === 'ready' && !busyNow().busy;
     };
     for (const owed of followups()) {
       const applied = host
@@ -1103,7 +1014,7 @@ export async function runSharedHost(
     let heldForDecision = false;
     while (!executionSignal.aborted) {
       if (reportingFailure) throw reportingFailure;
-      const status = host.view().session.status;
+      const status = host.snapshot().session.status;
       if (status === 'stopped') break;
       if (status === 'error' && !host.resetDecisionPending) {
         // What faulted it, and the turn that ended with it, are what Switch most
@@ -1131,9 +1042,7 @@ export async function runSharedHost(
       announceBusy();
       if (idleEnough()) {
         console.info(
-          parkRequested
-            ? `Parking session ${options.session.sessionId} early: ${parkWhy}.`
-            : `Parking session ${options.session.sessionId} after ${Math.round(options.parkAfterMs! / 1000)} s idle.`
+          `Parking session ${options.session.sessionId} after ${Math.round(options.parkAfterMs! / 1000)} s idle.`
         );
         // Stops answering first: a request that arrives now waits for the
         // exit, which the parent reads as the host being gone and starts it again.
@@ -1294,13 +1203,4 @@ export async function hostSessionProcess(input: {
     await endpoint?.close();
     await mcp.close();
   }
-}
-
-/** Whether the parent found a `once` room reply already in the room and did not post it. */
-function isAlready(answer: unknown): boolean {
-  return (
-    typeof answer === 'object' &&
-    answer !== null &&
-    (answer as { posted?: unknown }).posted === false
-  );
 }

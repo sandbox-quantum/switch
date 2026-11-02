@@ -26,7 +26,7 @@ import {
   isInside,
   LaunchedBundle,
   type LaunchOptions,
-  probeWithLogin,
+  loginProbeEnvironment,
   parseRelayCredentials,
   probeProvider,
   readOptional,
@@ -228,21 +228,19 @@ export class SystemdRuntime implements AgentRuntime {
       ? join(this.deps.config.dataDir, 'login-check', provider, 'home')
       : join(this.deps.config.dataDir, 'probe-home-local');
     await mkdir(probeHome, { recursive: true, mode: 0o700 });
-    const run = (given: Record<string, string>) =>
-      probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
-        ...this.agentEnvironment(),
-        PATH: this.deps.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-        HOME: probeHome,
-        ...given,
-      });
-    if (!login) return run({});
-    // Deleted after the check, home included: both can hold the credential.
-    return probeWithLogin(
-      join(this.deps.config.dataDir, 'login-check', provider),
-      login,
-      binaryPath,
-      run
-    );
+    const given = login
+      ? await loginProbeEnvironment(
+          join(this.deps.config.dataDir, 'login-check', provider),
+          login,
+          binaryPath
+        )
+      : {};
+    return probeProvider(this.deps.config.bundle, provider, binaryPath, cwd, {
+      ...this.agentEnvironment(),
+      PATH: this.deps.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
+      HOME: probeHome,
+      ...given,
+    });
   }
 
   async warm(agentId: string, roomId: string): Promise<void> {
@@ -332,14 +330,7 @@ export class SystemdRuntime implements AgentRuntime {
     await this.deps.systemctl(['start', unit]);
   }
 
-  /**
-   * `asked` changes nothing here, as in the detached runtime: the unit's
-   * worker closes its sessions without marking the stop asked
-   * (`shared-daemon.ts`, `supervision.close()` with no `asked`), so a turn the
-   * stop cuts off has its room told when its session next starts
-   * (`session-host.ts`, `tellRoomAfterRestart` when `stopWasAsked` is false).
-   */
-  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
+  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
     const slot = this.deps.store.agentUser(agentId);
     if (slot === null) return;
     const watcher = join(agentRoot(this.deps.config, slot), 'watcher');

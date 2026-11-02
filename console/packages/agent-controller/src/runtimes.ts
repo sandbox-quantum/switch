@@ -4,7 +4,7 @@ import {
   type ProviderReadiness,
   type SharedHostConfig,
 } from '@switch-console/agent-providers';
-import { stopForMemoryOverControlPort, warmOverControlPort } from './control-port';
+import { warmOverControlPort } from './control-port';
 import type {
   AgentObservation,
   AgentRunner,
@@ -46,7 +46,7 @@ export class AgentRuntimes implements AgentRuntime {
     await chosen.launch(agentId, template, options);
   }
 
-  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
+  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
     await this.shared.stop(agentId, options);
     await this.isolated.stop(agentId, options);
   }
@@ -89,13 +89,6 @@ export class AgentRuntimes implements AgentRuntime {
   async warm(agentId: string, roomId: string): Promise<void> {
     if (await this.shared.warmHere(agentId, roomId)) return;
     await warmOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE), roomId);
-  }
-
-  /** The memory guard is stopping the agent: its host, wherever it runs, tells its rooms. */
-  async stopForMemory(agentId: string): Promise<number> {
-    const here = await this.shared.stopForMemoryHere(agentId);
-    if (here !== null) return here;
-    return stopForMemoryOverControlPort(join(this.agentStateRoot(agentId), CONTROL_FILE));
   }
 
   /** The same for both: moving an agent between them keeps its root. */

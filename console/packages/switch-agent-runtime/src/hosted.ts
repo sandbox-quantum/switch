@@ -65,13 +65,6 @@ export type CallerContext = {
   mediaDir: string;
   cwd: string;
   deadConnection: (operation: string) => string;
-  /**
-   * The host's key for the room post this call makes (`reply:…`), sent as
-   * `X-Switch-Client-Txn-Id`: Switch posts once per key for the agent, so a
-   * post sent again after a lost answer is the one already made. Set only by
-   * the host, never from the agent's own arguments.
-   */
-  clientTxnId?: string;
 };
 
 /**
@@ -299,97 +292,43 @@ export async function callOperation(
   name: string,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
-  return (await callOperationOutcome(ctx, name, args)).result;
-}
-
-/**
- * Statuses a gateway or a restarting Switch answers with while no Switch is
- * serving: the call may be made again once one is.
- */
-const UNAVAILABLE_STATUSES = new Set([502, 503, 504]);
-
-/**
- * One operation, and whether its failure is one Switch being away explains:
- * Switch could not be reached, a gateway answered for it (502, 503, 504), or
- * the agent's connection had lapsed (Switch restarted). Any other failure is
- * Switch's answer, and asking again would get it again.
- */
-export async function callOperationOutcome(
-  ctx: CallerContext,
-  name: string,
-  args: Record<string, unknown>
-): Promise<{ result: ToolResult; unavailable: boolean }> {
   const { identity } = ctx;
-  let resp: Response;
   try {
-    resp = await fetch(`${identity.endpoint}/agents/${identity.agentId}/ops/${name}`, {
+    const resp = await fetch(`${identity.endpoint}/agents/${identity.agentId}/ops/${name}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${identity.token}`,
         'Content-Type': 'application/json',
         'X-Switch-Connection-Id': ctx.connectionId,
         ...ctx.selector,
-        ...(ctx.clientTxnId ? { 'X-Switch-Client-Txn-Id': ctx.clientTxnId } : {}),
       },
       body: JSON.stringify(args),
     });
-  } catch (err) {
-    return {
-      result: { isError: true, content: [{ type: 'text', text: `${name} failed: ${err}` }] },
-      unavailable: true,
-    };
-  }
-  const read = await operationResult(ctx, name, resp);
-  return { result: read.result, unavailable: read.unavailable === true };
-}
-
-async function operationResult(
-  ctx: CallerContext,
-  name: string,
-  resp: Response
-): Promise<{ result: ToolResult; unavailable?: boolean }> {
-  try {
     const text = await resp.text();
     if (!resp.ok) {
       if (isDeadConnection(ctx.connectionId, resp.status, text)) {
-        return {
-          result: { isError: true, content: [{ type: 'text', text: ctx.deadConnection(name) }] },
-          unavailable: true,
-        };
+        return { isError: true, content: [{ type: 'text', text: ctx.deadConnection(name) }] };
       }
-      return {
-        result: { isError: true, content: [{ type: 'text', text: `${resp.status}: ${text}` }] },
-        unavailable:
-          UNAVAILABLE_STATUSES.has(resp.status) ||
-          // A Switch from before it answered 503 for this: started, but the
-          // agent's client not yet running in it.
-          (resp.status === 400 && text.includes('Agent client not running')),
-      };
+      return { isError: true, content: [{ type: 'text', text: `${resp.status}: ${text}` }] };
     }
     const data = JSON.parse(text) as { result?: unknown };
     const result = data.result ?? null;
     return {
-      result: {
-        content: [
-          {
-            type: 'text',
-            text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-          },
-        ],
-        // Object results are also returned as structured content: hosts read the
-        // tool's *fields* from it (room_id and agent_id off connect_to_room), and
-        // text alone leaves them with a blob they cannot address.
-        ...(result !== null && typeof result === 'object' && !Array.isArray(result)
-          ? { structuredContent: result as Record<string, unknown> }
-          : {}),
-      },
+      content: [
+        {
+          type: 'text',
+          text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+        },
+      ],
+      // Object results are also returned as structured content: hosts read the
+      // tool's *fields* from it (room_id and agent_id off connect_to_room), and
+      // text alone leaves them with a blob they cannot address.
+      ...(result !== null && typeof result === 'object' && !Array.isArray(result)
+        ? { structuredContent: result as Record<string, unknown> }
+        : {}),
     };
   } catch (err) {
-    // The answer was cut off on its way back: Switch may or may not have acted.
-    return {
-      result: { isError: true, content: [{ type: 'text', text: `${name} failed: ${err}` }] },
-      unavailable: true,
-    };
+    return { isError: true, content: [{ type: 'text', text: `${name} failed: ${err}` }] };
   }
 }
 

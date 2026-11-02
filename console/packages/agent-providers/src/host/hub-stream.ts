@@ -7,8 +7,6 @@ import {
 } from '@sandboxaq/switch-agent-runtime';
 import { z } from 'zod';
 import type { AgentEventStream, AgentStreamDeps, OpenAgentStream } from './agent-host';
-import { HubValveChannel } from './box-valve-client';
-import type { ControllerValveMessage } from './box-valve-wire';
 
 /**
  * The agent controller's hub, over a WebSocket on the controller's loopback
@@ -43,14 +41,6 @@ export const hubClientMessageSchema = z.discriminatedUnion('type', [
     protocol: z.number().int(),
     startCursor: z.number().int().nonnegative().nullable(),
     placements: placementsSchema,
-    /**
-     * Level 3 (the controller as its own user): the one-time ticket the
-     * launcher handed this host, which the hub spends at this hello (C2, C9).
-     */
-    ticket: z
-      .string()
-      .regex(/^[0-9a-f]{32}$/)
-      .optional(),
   }),
   z.object({ type: z.literal('done'), id: z.number().int(), error: z.string().optional() }),
   z.object({ type: z.literal('placements'), id: z.number().int(), placements: placementsSchema }),
@@ -67,9 +57,7 @@ export type HubServerMessage =
   | { type: 'session_command'; id: number; command: SessionCommand }
   | { type: 'approval_outcome'; id: number; outcome: ApprovalOutcome }
   | { type: 'room_gone'; id: number; roomId: string; sessionId: string }
-  | { type: 'result'; id: number; error?: string; refusedRooms?: string[] }
-  /** The box valve (B85): handled beside the events, never queued behind them. */
-  | ControllerValveMessage;
+  | { type: 'result'; id: number; error?: string; refusedRooms?: string[] };
 
 /** Node's WebSocket, which, unlike a browser's, takes request headers. */
 type HeaderedWebSocket = new (url: string, init: { headers: Record<string, string> }) => WebSocket;
@@ -82,25 +70,8 @@ const MAX_BACKOFF_MS = 5_000;
  * (`ws://127.0.0.1:<relay port>/hub`), with the relay token the agent host
  * was given.
  */
-export type HubStreamOptions = {
-  /**
-   * Level 3 (the controller as its own user): waits for the one-time ticket
-   * the launcher hands this host, for each hello; undefined if none came in
-   * time, and the hello waits for the next try.
-   */
-  ticket?: () => Promise<string | undefined>;
-};
-
-export function openHubStream(url: string, options: HubStreamOptions = {}): OpenAgentStream {
-  // The box valve rides on the same connection, through a channel that
-  // outlives each socket so the host's valve keeps its handlers across reconnects.
-  const valveChannel = new HubValveChannel();
-  return Object.assign(
-    (deps: AgentStreamDeps) => new HubEventStream(url, deps, valveChannel, options),
-    {
-      valveChannel,
-    }
-  );
+export function openHubStream(url: string): OpenAgentStream {
+  return (deps) => new HubEventStream(url, deps);
 }
 
 class HubEventStream implements AgentEventStream {
@@ -124,9 +95,7 @@ class HubEventStream implements AgentEventStream {
 
   constructor(
     private readonly url: string,
-    private readonly deps: AgentStreamDeps,
-    private readonly valve: HubValveChannel = new HubValveChannel(),
-    private readonly options: HubStreamOptions = {}
+    private readonly deps: AgentStreamDeps
   ) {
     this.cursor = deps.startCursor ?? null;
   }
@@ -163,16 +132,7 @@ class HubEventStream implements AgentEventStream {
     let backoff = INITIAL_BACKOFF_MS;
     let failures = 0;
     while (!signal.aborted && !this.standingDown) {
-      // A fresh ticket for every hello on split boxes: one is good once.
-      const ticket = this.options.ticket ? await this.options.ticket() : undefined;
-      if (signal.aborted) return;
-      if (this.options.ticket && ticket === undefined) {
-        log.warn('No launch ticket from the launcher yet; the agent host waits for one.');
-        await sleep(backoff, signal);
-        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
-        continue;
-      }
-      const { code, reason, helloed } = await this.connectOnce(ticket);
+      const { code, reason, helloed } = await this.connectOnce();
       if (signal.aborted) return;
       if (code === HUB_CLOSE.takenOver) {
         this.standingDown = true;
@@ -200,9 +160,7 @@ class HubEventStream implements AgentEventStream {
   }
 
   /** One socket, from open to close. */
-  private connectOnce(
-    ticket?: string
-  ): Promise<{ code: number; reason: string; helloed: boolean }> {
+  private connectOnce(): Promise<{ code: number; reason: string; helloed: boolean }> {
     return new Promise((resolve) => {
       const Socket = (globalThis as { WebSocket?: HeaderedWebSocket }).WebSocket;
       if (!Socket) throw new Error('The agent controller hub needs Node 22 or newer.');
@@ -221,14 +179,8 @@ class HubEventStream implements AgentEventStream {
             protocol: HUB_PROTOCOL,
             startCursor: this.cursor,
             placements: this.placements,
-            ...(ticket ? { ticket } : {}),
           })
         );
-        this.valve.bind((text) => {
-          if (socket.readyState !== WebSocket.OPEN) return false;
-          socket.send(text);
-          return true;
-        });
       });
       socket.addEventListener('message', (message) => {
         let parsed: HubServerMessage;
@@ -236,12 +188,6 @@ class HubEventStream implements AgentEventStream {
           parsed = JSON.parse(String(message.data)) as HubServerMessage;
         } catch {
           this.deps.log.error('Dropped a message from the agent controller hub that is not JSON');
-          return;
-        }
-        // An event's handler may itself be waiting on the valve, so valve
-        // messages never queue behind events.
-        if (parsed.type === 'valve') {
-          this.valve.deliver(parsed);
           return;
         }
         if (parsed.type === 'result') {
@@ -254,10 +200,7 @@ class HubEventStream implements AgentEventStream {
       });
       socket.addEventListener('close', (event) => {
         this.deps.signal.removeEventListener('abort', abort);
-        if (this.socket === socket) {
-          this.socket = null;
-          this.valve.bind(null);
-        }
+        if (this.socket === socket) this.socket = null;
         // The placements a call was sending go again with the next hello.
         for (const call of this.placementCalls.values())
           call({
@@ -276,7 +219,7 @@ class HubEventStream implements AgentEventStream {
     const { deps } = this;
     if (message.type === 'connected') return deps.onConnected?.();
     if (message.type === 'disconnected') return deps.onDisconnected?.({ error: message.error });
-    if (message.type === 'result' || message.type === 'valve') return;
+    if (message.type === 'result') return;
     let error: string | undefined;
     try {
       switch (message.type) {

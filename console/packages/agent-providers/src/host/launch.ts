@@ -5,20 +5,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
-import {
-  commandLineNames,
-  killProcessTree,
-  processCommandLine,
-  judgeOwnerRecord,
-  recordFolder,
-  recordPredatesHolder,
-} from './process-fence';
+import { commandLineNames, killProcessTree, processCommandLine } from './process-fence';
 import type { SessionLinks } from './session-channel';
 import { recordSessionStart, type HostStartSource } from './session-start';
 import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
-import { markStopAsked } from './stop-asked';
 import { requestStop } from './stop-request';
-import { AdoptUnsureError, leftByEarlierSupervisor, superviseSharedHost } from './supervisor';
+import { superviseSharedHost } from './supervisor';
 
 export function sharedSessionsBase(): string {
   return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
@@ -42,13 +34,8 @@ export type Supervision = {
    */
   build: string;
   start: (input: { root: string; configPath: string; watcher: boolean }) => Promise<void>;
-  /**
-   * Stops whatever currently owns this root, so a replacement can take it.
-   * Asked for unless `asked` is false: a turn it cuts off then owes its room
-   * no "I was restarted" line. An upgrade to a new build passes false, since
-   * that is a restart the person in the room did not ask for.
-   */
-  stop: (root: string, options?: { asked?: boolean }) => Promise<void>;
+  /** Stops whatever currently owns this root, so a replacement can take it. */
+  stop: (root: string) => Promise<void>;
   /**
    * The channels to the hosts this supervision starts, where they are
    * children of this process and talk to it over IPC. Null for hosts started
@@ -98,8 +85,7 @@ export function detachedSupervision(entrypoint: string): Supervision {
         await log.close();
       }
     },
-    stop: async (root, options) => {
-      if (options?.asked !== false) await markStopAsked(root);
+    stop: async (root) => {
       await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
       await stopOwnedProcess(root, join(root, 'shared-owner.lock'));
     },
@@ -117,20 +103,15 @@ export function detachedSupervision(entrypoint: string): Supervision {
  */
 export function inProcessSupervision(
   entrypoint: string,
-  links: SessionLinks,
-  /** Added to this process's environment for each host: an agents controller's owner marker. */
-  extraEnv: Record<string, string> = {}
-): Supervision & { close: (options?: { asked?: boolean }) => Promise<void> } {
+  links: SessionLinks
+): Supervision & { close: () => Promise<void> } {
   const running = new Map<string, { stop: AbortController; done: Promise<void> }>();
   let closed = false;
   return {
     build: entrypoint,
     links,
-    // `asked`: the agent is being stopped, not the whole controller going
-    // down, so each host is told its stop was asked for.
-    close: async (options?: { asked?: boolean }) => {
+    close: async () => {
       closed = true;
-      if (options?.asked) for (const root of running.keys()) await markStopAsked(root);
       const entries = [...running.values()];
       for (const entry of entries) entry.stop.abort();
       await Promise.all(entries.map((entry) => entry.done));
@@ -144,24 +125,18 @@ export function inProcessSupervision(
         root,
         executable: process.execPath,
         args: [entrypoint, root, configPath],
-        env: { ...process.env, ...extraEnv },
+        env: process.env,
         signal: stop.signal,
         build: entrypoint,
         links,
       })
         .catch((error: unknown) => {
           console.error(`Session host at ${root} stopped: ${String(error)}`);
-          // Nothing was spawned to exit and report it, so say it here: the
-          // agent's room hears that the session cannot start.
-          if (error instanceof AdoptUnsureError) links.reportFailure(root, error.message);
         })
         .finally(() => running.delete(root));
       running.set(root, { stop, done });
     },
-    stop: async (root, options) => {
-      // A supervisor stop is asked for unless it says otherwise (an upgrade):
-      // a box going down never comes this way.
-      if (options?.asked !== false) await markStopAsked(root);
+    stop: async (root) => {
       const entry = running.get(root);
       if (!entry) {
         await stopOwnedProcess(root, join(root, 'supervisor', 'owner.json'));
@@ -269,16 +244,9 @@ async function launch(input: LaunchInput): Promise<{ created: boolean }> {
  */
 export async function liveSupervisor(root: string): Promise<{ build: unknown } | null> {
   try {
-    const ownerPath = join(root, 'supervisor', 'owner.json');
-    const owner = JSON.parse(await readFile(ownerPath, 'utf8'));
+    const owner = JSON.parse(await readFile(join(root, 'supervisor', 'owner.json'), 'utf8'));
     if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0)
       throw new Error('Invalid shared host supervisor owner.');
-    // Judged first, so a record from before this box is seen (and logged) as
-    // such even when it names this process's own id.
-    if (await recordPredatesHolder(ownerPath, owner.pid)) return null;
-    // A record this process never wrote, naming its own id, was left by an
-    // earlier process with the same id (a restarted container): no supervisor.
-    if (leftByEarlierSupervisor(ownerPath, owner)) return null;
     process.kill(owner.pid, 0);
     return { build: owner.build };
   } catch (error) {
@@ -297,27 +265,6 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
     if (['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) return;
     throw error;
   }
-  // Only an owner judged alive may be stopped (and then only if its command
-  // line names this root, below). A stale record names nothing of ours: it
-  // goes, or the session would read as still running, and nothing is killed.
-  // An unknown one is neither stopped nor waited on: nothing is killed on a
-  // guess, and the caller is not held up by it.
-  const verdict = await judgeOwnerRecord(ownerPath, pid);
-  if (verdict.kind === 'stale') {
-    console.warn(
-      `The owner recorded in ${recordFolder(ownerPath)} (pid ${pid}) is not running (${verdict.reason}); leaving whatever holds that id alone and clearing the stale record.`
-    );
-    await unlink(ownerPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error;
-    });
-    return;
-  }
-  if (verdict.kind === 'unknown') {
-    console.warn(
-      `Could not tell whether the owner recorded in ${recordFolder(ownerPath)} (pid ${pid}) is still running; stopping nothing.`
-    );
-    return;
-  }
   const commandLine = await processCommandLine(pid);
   if (commandLine === null) return;
   if (!commandLineNames(commandLine, root))
@@ -331,7 +278,7 @@ async function stopOwnedProcess(root: string, ownerPath: string): Promise<void> 
   // longer changes nothing, and refusing leaves every update to this agent
   // failing the same way, so what is left of the tree is killed.
   console.warn(
-    `The SDK host in ${recordFolder(ownerPath)} (pid ${pid}) did not stop within ${STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
+    `The SDK host at ${root} (pid ${pid}) did not stop within ${STOP_GRACE_MS / 1000} s of being asked; killing it and everything it started.`
   );
   await killProcessTree(pid);
   if (await exitsWithin(pid, 5000)) return;

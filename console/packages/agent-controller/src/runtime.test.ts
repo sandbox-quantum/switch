@@ -7,7 +7,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -30,10 +29,7 @@ import {
   InProcessRuntime,
   isInside,
   LaunchedBundle,
-  clearLeftLoginChecks,
   loginProbeEnvironment,
-  probeProvider,
-  probeWithLogin,
   observeOnDisk,
 } from './runtime';
 import { buildWatcherTemplate } from './template';
@@ -43,11 +39,7 @@ const FAKE_BUNDLE = `
 const args = process.argv.slice(2);
 if (args[0] === '--probe') {
   console.log('noise first');
-  const given = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const message = given
-    ? 'credential present during the check: ' + require('node:fs').existsSync(given)
-    : args.join(' ');
-  console.log(JSON.stringify({ status: 'authenticated', message, models: [] }));
+  console.log(JSON.stringify({ status: 'authenticated', message: args.join(' '), models: [] }));
 }
 `;
 
@@ -241,13 +233,7 @@ describe('InProcessRuntime', () => {
       () => existsSync(join(dir, 'data', 'watchers', 'agent-1', 'supervisor', 'failure.json')),
       'the failure recorded'
     );
-    // The failure is written as the host gives up, a moment before the host
-    // is dropped from the running ones: wait for that, not just the file.
-    let observation = await runtime.observe('agent-1');
-    for (let i = 0; observation.alive && i < 100; i++) {
-      await delay(10);
-      observation = await runtime.observe('agent-1');
-    }
+    const observation = await runtime.observe('agent-1');
     expect(observation.alive).toBe(false);
     expect(observation.failure).toMatch(/stream refused/);
     await delay(100);
@@ -320,103 +306,6 @@ describe('InProcessRuntime', () => {
     });
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(SERVICE_ACCOUNT_KEY_FIXTURE);
-  });
-
-  it('deletes the login check’s copy of a given login once the check is done', async () => {
-    const login = {
-      status: 'connected' as const,
-      provider: 'claude' as const,
-      revision: '1',
-      kind: 'vertex' as const,
-      credential: vertexCredentialFixture(),
-    };
-    const readiness = await runtime.probe('claude', '/usr/bin/claude', '/tmp', login);
-    expect(readiness.message).toBe('credential present during the check: true');
-    expect(existsSync(join(dir, 'data', 'login-check', 'claude'))).toBe(false);
-  });
-
-  it('deletes the login check’s copy even when the check fails', async () => {
-    const checkDir = join(dir, 'login-check', 'claude');
-    const login = {
-      status: 'connected' as const,
-      provider: 'claude' as const,
-      revision: '1',
-      kind: 'vertex' as const,
-      credential: vertexCredentialFixture(),
-    };
-    let seen = false;
-    await expect(
-      probeWithLogin(checkDir, login, '/usr/bin/claude', async (env) => {
-        seen = existsSync(env.GOOGLE_APPLICATION_CREDENTIALS ?? '');
-        throw new Error('the CLI timed out');
-      })
-    ).rejects.toThrow('the CLI timed out');
-    expect(seen).toBe(true);
-    expect(existsSync(checkDir)).toBe(false);
-  });
-
-  it.skipIf(process.platform === 'win32')(
-    'ends what a timed-out check started, so nothing writes the login back after its folder is deleted',
-    async () => {
-      // A CLI the check started outlives the bundle a timeout ends, and would
-      // write into the check's folder after the clean-up.
-      const slow = join(dir, 'slow-bundle.cjs');
-      writeFileSync(
-        slow,
-        `const { spawn } = require('node:child_process');
-         spawn(process.execPath, ['-e', \`setTimeout(() => {
-           require('node:fs').mkdirSync(process.env.TARGET, { recursive: true });
-           require('node:fs').writeFileSync(process.env.TARGET + '/written-late', 'x');
-         }, 800)\`], { stdio: 'ignore' });
-         setInterval(() => {}, 1000);`
-      );
-      const checkDir = join(dir, 'login-check', 'claude');
-      const login = {
-        status: 'connected' as const,
-        provider: 'claude' as const,
-        revision: '1',
-        kind: 'vertex' as const,
-        credential: vertexCredentialFixture(),
-      };
-      await expect(
-        probeWithLogin(checkDir, login, '/usr/bin/claude', (env) =>
-          probeProvider(
-            slow,
-            'claude',
-            '/usr/bin/claude',
-            dir,
-            { ...process.env, ...env, TARGET: checkDir },
-            300
-          )
-        )
-      ).rejects.toThrow();
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
-      expect(existsSync(checkDir)).toBe(false);
-    }
-  );
-
-  it('clears a login check left by a controller stopped in the middle of one', async () => {
-    const left = join(dir, 'data', 'login-check', 'claude', 'provider-home');
-    mkdirSync(left, { recursive: true });
-    writeFileSync(join(left, 'google-credentials.json'), '{}');
-    await clearLeftLoginChecks(join(dir, 'data'));
-    expect(existsSync(join(dir, 'data', 'login-check'))).toBe(false);
-    await clearLeftLoginChecks(join(dir, 'data'));
-  });
-
-  it('reads a worker lock older than the process now holding its id as not running', async () => {
-    const root = join(dir, 'data', 'watchers', 'agent-stale');
-    mkdirSync(root, { recursive: true });
-    const lock = join(root, 'shared-owner.lock');
-    writeFileSync(lock, JSON.stringify({ pid: process.ppid }));
-    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-stale')).toMatchObject({
-      alive: true,
-    });
-    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600 * 1000);
-    utimesSync(lock, fourDaysAgo, fourDaysAgo);
-    expect(await observeOnDisk(dataLayout(join(dir, 'data')), 'agent-stale')).toMatchObject({
-      alive: false,
-    });
   });
 
   it('resolves working directories', async () => {

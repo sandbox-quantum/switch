@@ -21,15 +21,6 @@ export class SessionReplica {
     return structuredClone(this.value);
   }
 
-  /**
-   * The current state without a copy, for checks that run many times a
-   * second while a session sits idle. Read it straight away and let it go:
-   * it changes as events apply, and it must never be changed by the caller.
-   */
-  view(): Readonly<Snapshot> {
-    return this.value;
-  }
-
   get notices(): TranscriptNotice[] {
     return this.value.notices;
   }

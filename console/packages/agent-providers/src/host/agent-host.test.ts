@@ -1,15 +1,13 @@
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as runtime from '@sandboxaq/switch-agent-runtime';
 import type { AgentBridgeEvent, SwitchEventStreamDeps } from '@sandboxaq/switch-agent-runtime';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import {
-  compactAssignments,
   MAX_HOST_RESTARTS,
   type OpenAgentStream,
   stopSupersededSessions,
@@ -21,19 +19,11 @@ import {
   withDefinitionOf,
 } from './agent-host';
 import type { AgentStreamDeps } from './agent-host';
-import { BoxValve } from './box-valve';
 import type { Handoff } from './handoff';
 import { ensureSharedProcess, type Supervision } from './launch';
-import {
-  RESET_WHILE_WAITING_MESSAGE,
-  RoomWaitList,
-  STOPPED_WAITING_MESSAGE,
-  WAITING_FOR_ROOM_MESSAGE,
-} from './room-wait';
 import { type SessionRequest, SessionLinks } from './session-channel';
 import type * as sessionServices from './session-services';
 import { sharedConfigSchema } from './shared-config';
-import { keptLine, SESSION_CLOSED_MESSAGE, START_LET_GO_MESSAGE } from './start-failure';
 import { clearTakenOver, recordTakenOver } from './taken-over';
 import { SESSION_STARTING_MESSAGE, WatcherControl } from './watcher-tools';
 
@@ -55,37 +45,6 @@ vi.mock('./session-services', async (importOriginal) => ({
   GRANTS_CHECK_MS: 20,
   currentServicesShape: async () => grantsNow.shape,
 }));
-/** What each session's journal says about its turns, by session id; none means no journal. */
-const journals = vi.hoisted(() => new Map<string, string[]>());
-vi.mock('./journal-snapshot', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./journal-snapshot')>()),
-  readJournalSnapshot: async (sessionId: string) => {
-    const statuses = journals.get(sessionId);
-    if (!statuses) throw new Error('no journal');
-    return { turns: statuses.map((status, i) => ({ turnId: `turn-${i}`, status })) };
-  },
-}));
-/** Whether F1's ceiling lets a new session start. */
-const valve = vi.hoisted(() => ({ admit: true, asked: 0, settled: 0 }));
-vi.mock('./memory-pressure', async (importOriginal) => {
-  const original = await importOriginal<typeof import('./memory-pressure')>();
-  return {
-    ...original,
-    pressureValve: {
-      lastRefusal: '',
-      register: () => () => {},
-      registerAwake: () => () => {},
-      watch: () => () => {},
-      admit: async () => {
-        valve.asked++;
-        return valve.admit;
-      },
-      settle: () => {
-        valve.settled++;
-      },
-    },
-  };
-});
 const streams = vi.hoisted(() => [] as AgentStreamDeps[]);
 const declarations = vi.hoisted(() => [] as boolean[]);
 /** Every placements map the watcher stated to Switch, in order. */
@@ -120,10 +79,6 @@ vi.mock('@sandboxaq/switch-agent-runtime', async (importOriginal) => {
 
 const roots: string[] = [];
 afterEach(async () => {
-  journals.clear();
-  valve.admit = true;
-  valve.asked = 0;
-  valve.settled = 0;
   streams.length = 0;
   declarations.length = 0;
   published.length = 0;
@@ -164,8 +119,6 @@ function sessionHosts() {
      * as why — what a host whose provider CLI is not signed in does.
      */
     fail: null as string | null,
-    /** The kind the failing host records beside its message (B78), if any. */
-    failKind: null as 'no_login' | 'setup' | null,
     supervision: {
       build: 'build',
       start: async () => {},
@@ -198,7 +151,7 @@ function sessionHosts() {
         await mkdir(join(root, 'supervisor'), { recursive: true });
         await writeFile(
           join(root, 'supervisor', 'failure.json'),
-          JSON.stringify({ message: failure, ...(hosts.failKind ? { kind: hosts.failKind } : {}) })
+          JSON.stringify({ message: failure })
         );
         setImmediate(() => child.emit('exit', 1, null));
         return { created: true };
@@ -440,176 +393,6 @@ it('stays down while a takeover marker says another client holds the connection'
   ).rejects.toThrow('credentials.json');
 });
 
-describe('the owner lock after a crash', () => {
-  // A container restarting gives the new controller the same low process id
-  // as the one that crashed, so its own id is in the lock the old one left.
-  it('takes over a lock left by an earlier process that had this id', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-reused-pid-'));
-    roots.push(root);
-    paths.root = root;
-    await writeFlags(root, { enabled: true, spawn: true });
-    await writeFile(
-      join(root, 'shared-owner.lock'),
-      JSON.stringify({ pid: process.pid, token: 'left-by-the-process-before' })
-    );
-    const { supervision } = sessionHosts();
-    // Past the lock: it fails only on the credentials this test gave it none of.
-    await expect(
-      runAgentHost(
-        root,
-        watchable(root),
-        new AbortController().signal,
-        supervision,
-        new WatcherControl(),
-        openSwitchStream
-      )
-    ).rejects.toThrow('credentials.json');
-  });
-
-  it('takes over a lock with this id and no token, as an old controller wrote it', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-reused-pid-no-token-'));
-    roots.push(root);
-    paths.root = root;
-    await writeFlags(root, { enabled: true, spawn: true });
-    await writeFile(join(root, 'shared-owner.lock'), JSON.stringify({ pid: process.pid }));
-    const { supervision } = sessionHosts();
-    await expect(
-      runAgentHost(
-        root,
-        watchable(root),
-        new AbortController().signal,
-        supervision,
-        new WatcherControl(),
-        openSwitchStream
-      )
-    ).rejects.toThrow('credentials.json');
-  });
-
-  it('still refuses a lock held by another live process', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-live-owner-'));
-    roots.push(root);
-    paths.root = root;
-    await writeFlags(root, { enabled: true, spawn: true });
-    await writeFile(
-      join(root, 'shared-owner.lock'),
-      JSON.stringify({ pid: process.ppid, token: 'the-parent-holds-it' })
-    );
-    const { supervision } = sessionHosts();
-    await expect(
-      runAgentHost(
-        root,
-        watchable(root),
-        new AbortController().signal,
-        supervision,
-        new WatcherControl(),
-        openSwitchStream
-      )
-    ).rejects.toThrow('The shared SDK watcher is already running.');
-  });
-
-  it('takes a lock left by an earlier process whose id a later one holds now', async () => {
-    // Box A, 27 Oct: after a restart a saved id can name the controller or a
-    // sibling host. A lock written before that process started is stale.
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-stale-owner-'));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const lock = join(root, 'shared-owner.lock');
-    await writeFile(lock, JSON.stringify({ pid: process.ppid, token: 'left-four-days-ago' }));
-    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600 * 1000);
-    await utimes(lock, fourDaysAgo, fourDaysAgo);
-    const { supervision } = sessionHosts();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const stop = new AbortController();
-    const running = runAgentHost(
-      root,
-      config,
-      stop.signal,
-      supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(async () => {
-        const text = await readFile(lock, 'utf8').catch(() => '');
-        return text !== '' && !text.includes('left-four-days-ago');
-      });
-    } finally {
-      stop.abort();
-      await running;
-    }
-    expect(() => process.kill(process.ppid, 0)).not.toThrow();
-  });
-
-  it('takes a fresh lock naming this process with a token it never wrote', async () => {
-    // After a container restart the controller gets the same low id again, and
-    // the earlier one's lock can be newer than this process's start check
-    // allows for: it is judged alive, but this process never wrote it.
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-own-id-foreign-token-'));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const lock = join(root, 'shared-owner.lock');
-    await writeFile(lock, JSON.stringify({ pid: process.pid, token: 'an-earlier-process' }));
-    const { supervision } = sessionHosts();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const stop = new AbortController();
-    const running = runAgentHost(
-      root,
-      config,
-      stop.signal,
-      supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(async () => {
-        const text = await readFile(lock, 'utf8').catch(() => '');
-        return text !== '' && !text.includes('an-earlier-process');
-      });
-    } finally {
-      stop.abort();
-      await running;
-    }
-  });
-
-  it('still refuses a second watcher in this process while the first runs', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-same-process-'));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const { supervision } = sessionHosts();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const first = new AbortController();
-    const running = runAgentHost(
-      root,
-      config,
-      first.signal,
-      supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await expect(
-        runAgentHost(
-          root,
-          config,
-          new AbortController().signal,
-          supervision,
-          new WatcherControl(),
-          openSwitchStream
-        )
-      ).rejects.toThrow('The shared SDK watcher is already running.');
-    } finally {
-      first.abort();
-      await running;
-    }
-    // Released on the way out, so the next start in this process takes it.
-    await expect(readFile(join(root, 'shared-owner.lock'), 'utf8')).rejects.toThrow('ENOENT');
-  });
-});
-
 it('asks again for an event it assigned but died before routing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-unrouted-'));
   roots.push(root);
@@ -735,22 +518,9 @@ async function eventually(reached: () => boolean | Promise<boolean>): Promise<vo
   throw new Error('The watcher never reached the state this test was waiting for.');
 }
 
-/**
- * Whether every event the watcher parked has been taken by its session. Read
- * from a copy: opening the live journal a second time would clear a
- * compaction the watcher has under way (a journal has one owner).
- */
+/** Whether every event the watcher parked has been taken by its session. */
 async function settled(root: string): Promise<boolean> {
-  const copy = await mkdtemp(join(tmpdir(), 'journal-copy-'));
-  try {
-    await writeFile(
-      join(copy, 'assignments.jsonl'),
-      await readFile(join(root, 'assignments.jsonl'), 'utf8')
-    );
-    return (await AgentHostAssignments.open(copy)).pending().length === 0;
-  } finally {
-    await rm(copy, { recursive: true, force: true });
-  }
+  return (await AgentHostAssignments.open(root)).pending().length === 0;
 }
 
 const addressed = (sequence: number, roomId: string): AgentBridgeEvent => ({
@@ -1060,40 +830,6 @@ it('warms a room once: starts its session unasked, and the first message goes to
   await expect(control.warm('room')).rejects.toThrow('not running');
 });
 
-it('skips a warm the box has no room for, quietly at info, and answers null (B85)', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'shared-watch-warm-full-'));
-  roots.push(root);
-  paths.root = root;
-  const config = await spawning(root);
-  const hosts = sessionHosts();
-  const control = new WatcherControl();
-  valve.admit = false;
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-  const abort = new AbortController();
-  const run = runAgentHost(
-    root,
-    config,
-    abort.signal,
-    hosts.supervision,
-    control,
-    openSwitchStream
-  );
-  try {
-    await eventually(() => streams.length === 1);
-    expect(await control.warm('room')).toBeNull();
-  } finally {
-    abort.abort();
-    await run;
-    valve.admit = true;
-  }
-  expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-  expect(info.mock.calls.some(([line]) => String(line).startsWith('Skipped warming session'))).toBe(
-    true
-  );
-  expect(warn.mock.calls.some(([line]) => /warm/i.test(String(line)))).toBe(false);
-});
-
 it('warms nothing while the agent may not start sessions', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-warm-off-'));
   roots.push(root);
@@ -1186,274 +922,6 @@ function switchOps(refuse: { connect: boolean }) {
   });
   return calls;
 }
-
-describe('a room post made while Switch is away (B62)', () => {
-  /**
-   * A Switch that can be away (no process serving: every call fails to
-   * connect, as at 07:54:27.186 on box A, when the old Core had stopped and
-   * the new one answered only from 07:54:39), and that posts once per key for
-   * the agent, as Core's `uq_messages_sender_client_txn` does.
-   */
-  function restartingSwitch() {
-    const state = {
-      away: null as null | 'unreachable' | '502' | '409',
-      loseAnswer: false,
-      refuse: false,
-    };
-    const posted = new Map<string, string>();
-    const keys: (string | undefined)[] = [];
-    const bodies: unknown[] = [];
-    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-      const path = new URL(url).pathname;
-      if (path.endsWith('/ops'))
-        return Response.json({
-          operations: {
-            connect_to_room: { description: 'Connect.', input_schema: { type: 'object' } },
-            post_message: { description: 'Post.', input_schema: { type: 'object' } },
-          },
-        });
-      if (!path.endsWith('/ops/post_message')) return Response.json({ result: null });
-      const key = (init.headers as Record<string, string>)['X-Switch-Client-Txn-Id'];
-      keys.push(key);
-      bodies.push(JSON.parse(String(init.body)));
-      // The three ways a call meets a Switch that is away: nothing to connect
-      // to, a gateway answering for it, or a restarted Switch that no longer
-      // knows the agent's connection.
-      if (state.away === 'unreachable') throw new TypeError('fetch failed: connect ECONNREFUSED');
-      if (state.away === '502') return new Response('bad gateway', { status: 502 });
-      if (state.away === '409')
-        return new Response('connection watcher is not open', { status: 409 });
-      if (state.refuse) return new Response('agent is not a member of that room', { status: 403 });
-      const eventId = (key && posted.get(key)) ?? `event-${posted.size + 1}`;
-      if (key) posted.set(key, eventId);
-      if (state.loseAnswer) {
-        state.loseAnswer = false;
-        throw new TypeError('fetch failed: socket hang up');
-      }
-      return Response.json({ result: { event_id: eventId } });
-    });
-    return { state, posted, keys, bodies };
-  }
-
-  const placedSession = async (prefix: string) => {
-    const root = await mkdtemp(join(tmpdir(), prefix));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const caller = await existing(root, config);
-    await writeFile(
-      join(root, 'placements.json'),
-      JSON.stringify({ placements: { [caller.sessionId]: 'room' } })
-    );
-    const hosts = sessionHosts();
-    await hosts.start(caller.sessionRoot);
-    const identity = { agentId: config.session.agentId, sessionId: caller.sessionId };
-    return { root, config, caller, hosts, identity };
-  };
-  const post = (body: string, extra: Record<string, unknown> = {}) => ({
-    type: 'tool' as const,
-    name: 'post_message',
-    arguments: { body, thread_id: 'thread-1', ...extra },
-  });
-
-  it.each(['unreachable', '502', '409'] as const)(
-    'holds a reply Switch could not take (%s), tells the agent not to resend, and posts it once Switch is back',
-    async (away) => {
-      const { root, config, caller, hosts, identity } = await placedSession('shared-watch-b62-');
-      const switchCore = restartingSwitch();
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-      const abort = new AbortController();
-      const run = runAgentHost(
-        root,
-        config,
-        abort.signal,
-        hosts.supervision,
-        new WatcherControl(),
-        openSwitchStream
-      );
-      try {
-        await eventually(() => streams.length === 1);
-        // 07:54:27.186: the agent posts its reply while no Switch is serving.
-        switchCore.state.away = away;
-        const first = await hosts.ask(caller.sessionRoot, identity, post('the reply'));
-        expect(first.value).toEqual({
-          content: [
-            {
-              type: 'text',
-              text: "Switch is restarting, so your message hasn't reached the room yet. It's held and will be posted as soon as Switch is back. Don't post it again yourself.",
-            },
-          ],
-        });
-        // The agent sends it again anyway: still the one held post, not tried again.
-        const again = await hosts.ask(caller.sessionRoot, identity, post('the reply'));
-        expect(again.value).toEqual(first.value);
-        expect(switchCore.keys).toHaveLength(1);
-        // 07:54:39: Switch is back, and the agent's connection reopens.
-        switchCore.state.away = null;
-        streams[0]!.onConnected!();
-        await eventually(() => switchCore.posted.size === 1);
-      } finally {
-        abort.abort();
-        await run;
-      }
-      // Every try went under the one key the watcher chose, from the first.
-      expect(switchCore.keys.length).toBeGreaterThanOrEqual(2);
-      expect(new Set(switchCore.keys).size).toBe(1);
-      expect(switchCore.keys[0]).toMatch(/^reply:[0-9a-f-]{36}$/);
-      expect(switchCore.bodies.at(-1)).toEqual({ body: 'the reply', thread_id: 'thread-1' });
-      // Logged by key, session and room, never by what it said.
-      const lines = [...warn.mock.calls, ...info.mock.calls].map(([line]) => String(line));
-      expect(lines.some((line) => line.startsWith(`Holding reply ${switchCore.keys[0]}`))).toBe(
-        true
-      );
-      expect(lines.some((line) => line.startsWith(`Posted held reply ${switchCore.keys[0]}`))).toBe(
-        true
-      );
-      expect(lines.some((line) => line.includes('the reply'))).toBe(false);
-    }
-  );
-
-  it('posts one copy when Switch made the post but its answer was lost', async () => {
-    const { root, config, caller, hosts, identity } = await placedSession('shared-watch-b62-lost-');
-    const switchCore = restartingSwitch();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      switchCore.state.loseAnswer = true;
-      const first = await hosts.ask(caller.sessionRoot, identity, post('the reply'));
-      expect(first.value).toMatchObject({ content: [{ text: expect.stringContaining('held') }] });
-      streams[0]!.onConnected!();
-      await eventually(() => switchCore.keys.length === 2);
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(switchCore.keys[1]).toBe(switchCore.keys[0]);
-    expect(switchCore.posted.size).toBe(1);
-  });
-
-  it('tells the room a held reply was lost when the watcher before this one stopped holding it', async () => {
-    const { root, config, caller, hosts } = await placedSession('shared-watch-b62-restart-');
-    const key = 'reply:7f1c0000-0000-4000-8000-000000000001';
-    await writeFile(
-      join(root, 'held-replies.json'),
-      JSON.stringify({
-        owed: [
-          {
-            key,
-            sessionId: caller.sessionId,
-            roomId: 'room',
-            threadId: 'thread-1',
-            heldAt: Date.now(),
-          },
-        ],
-      })
-    );
-    const switchCore = restartingSwitch();
-    switchCore.state.away = 'unreachable';
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      // Switch answers again: the room is told, once, in the lost reply's thread.
-      switchCore.state.away = null;
-      streams[0]!.onConnected!();
-      await eventually(() => switchCore.posted.size === 1);
-      streams[0]!.onConnected!();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect([...switchCore.posted.keys()]).toEqual([`${key}:lost`]);
-    expect(switchCore.bodies.at(-1)).toEqual({
-      body: "I wrote a reply while Switch was restarting, but it couldn't be delivered in time and was lost. Please send your message again.",
-      thread_id: 'thread-1',
-    });
-    expect(JSON.parse(await readFile(join(root, 'held-replies.json'), 'utf8')).owed).toEqual([]);
-  });
-
-  it("passes Switch's refusal to the agent as before, holding nothing", async () => {
-    const { root, config, caller, hosts, identity } = await placedSession('shared-watch-b62-no-');
-    const switchCore = restartingSwitch();
-    switchCore.state.refuse = true;
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      const refused = await hosts.ask(caller.sessionRoot, identity, post('the reply'));
-      expect(refused.value).toMatchObject({
-        isError: true,
-        content: [{ text: '403: agent is not a member of that room' }],
-      });
-      streams[0]!.onConnected!();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(switchCore.keys).toHaveLength(1);
-  });
-
-  it("keys each post itself: an agent's own arguments never set the key", async () => {
-    const { root, config, caller, hosts, identity } = await placedSession('shared-watch-b62-key-');
-    const switchCore = restartingSwitch();
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await hosts.ask(
-        caller.sessionRoot,
-        identity,
-        post('one', { client_txn_id: 'reply:someone-elses', 'X-Switch-Client-Txn-Id': 'reply:x' })
-      );
-      await hosts.ask(caller.sessionRoot, identity, post('two'));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    // The agent's words go as its arguments, which Switch refuses; the key
-    // header is the watcher's own, a new one for each post.
-    expect(switchCore.keys).toHaveLength(2);
-    expect(switchCore.keys).not.toContain('reply:someone-elses');
-    expect(switchCore.keys).not.toContain('reply:x');
-    expect(new Set(switchCore.keys).size).toBe(2);
-  });
-});
 
 it('answers its sessions’ tool calls as the calling session, placing the room it connects to', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-tools-'));
@@ -1721,8 +1189,6 @@ it('steps over a neighbour whose saved config no longer parses', async () => {
 
   // This agent's own session is still picked up, which is the whole point.
   expect(newer.stop.mock.calls.map(([stopped]) => stopped)).toEqual([join(root, 'mine')]);
-  // An upgrade is a restart nobody in the room asked for: a turn it cuts off still owes the line.
-  expect(newer.stop.mock.calls.map(([, options]) => options)).toEqual([{ asked: false }]);
   // Skipped, but never in silence.
   expect(warn.mock.calls.map(String).join('\n')).toContain('stale');
   warn.mockRestore();
@@ -2793,192 +2259,6 @@ it('keeps a placement when Switch could not be asked, rather than taking it for 
   }
 });
 
-describe('a reset for a resting session (B71)', () => {
-  // Box A, 27 Oct: `!reset` to a parked session logged "Dropped command …:
-  // session … is not running here" (its host had parked and exited), while
-  // Switch had already told the room "Resetting my session".
-  const resetIn = (roomId: string) => ({
-    sessionId: null,
-    roomId,
-    roomTold: false,
-    commandId: 'reset-1',
-    body: { type: 'session.reset' },
-    origin: { roomId, threadId: 'thread-1', messageId: 'message-1', actorId: '@ada:test' },
-  });
-  const parkedIn = async (prefix: string) => {
-    const root = await mkdtemp(join(tmpdir(), prefix));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const placed = await existing(root, config);
-    await writeFile(
-      join(root, 'placements.json'),
-      JSON.stringify({ placements: { [placed.sessionId]: 'room-a' } })
-    );
-    return { root, config, placed };
-  };
-  /** Every room post made as the agent, by body and thread. */
-  const posts = () => {
-    const made: { body: string; thread_id?: string }[] = [];
-    vi.stubGlobal('fetch', async (url: string, init: RequestInit = {}) => {
-      if (new URL(url).pathname.endsWith('/ops/post_message'))
-        made.push(JSON.parse(String(init.body)));
-      return Response.json({ result: { event_id: 'event' } });
-    });
-    return made;
-  };
-
-  it('starts the resting session and hands it the reset, saying it was resting', async () => {
-    const { root, config, placed } = await parkedIn('shared-watch-reset-resting-');
-    const hosts = sessionHosts();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    const made = posts();
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await streams[0]!.onSessionCommand!(resetIn('room-a'));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.root)).toEqual([
-      placed.sessionRoot,
-    ]);
-    const { roomId: _room, roomTold: _told, ...command } = resetIn('room-a');
-    expect(hosts.to(placed.sessionRoot)).toEqual([
-      {
-        type: 'command',
-        command: { ...command, sessionId: placed.sessionId },
-        requesterName: null,
-        resting: true,
-        roomTold: false,
-      },
-    ]);
-    expect(warn.mock.calls.some(([line]) => String(line).includes('Dropped command'))).toBe(false);
-    // The host says what happened once it has; the watcher says nothing itself.
-    expect(made).toEqual([]);
-  });
-
-  it('tells the room it could not reset when the box is too full to start the session', async () => {
-    const { root, config, placed } = await parkedIn('shared-watch-reset-full-');
-    const hosts = sessionHosts();
-    valve.admit = false;
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    const made = posts();
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await streams[0]!.onSessionCommand!(resetIn('room-a'));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(ensureSharedProcess).not.toHaveBeenCalled();
-    expect(hosts.to(placed.sessionRoot)).toEqual([]);
-    expect(made).toEqual([
-      {
-        body: "I couldn't reset my session. Send the command again in a minute, or ask my owner to restart me from Switch Console.",
-        thread_id: 'thread-1',
-      },
-    ]);
-  });
-
-  it('waits for a wake already under way and resets the session as awake, not resting', async () => {
-    // Tech lead's review, fix 6: a room message woke the session just before
-    // its reset came. One start, not two, and no early park after it.
-    const { root, config, placed } = await parkedIn('shared-watch-reset-waking-');
-    const hosts = sessionHosts();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    vi.mocked(ensureSharedProcess).mockImplementation(async ({ root: sessionRoot }) => {
-      await gate;
-      return hosts.start(sessionRoot);
-    });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'info').mockImplementation(() => {});
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      // The message's start is held at the gate, as a slow wake would be.
-      const routing = streams[0]!.onEvent!(addressed(2, 'room-a'));
-      await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 1);
-      const resetting = streams[0]!.onSessionCommand!(resetIn('room-a'));
-      // Let the reset reach the start already under way before the wake ends.
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      release();
-      await Promise.all([routing, resetting]);
-      await eventually(() => hosts.to(placed.sessionRoot).some((r) => r.type === 'command'));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(
-      vi
-        .mocked(ensureSharedProcess)
-        .mock.calls.map(([input]) => [input.root, input.restart, input.resuming])
-    ).toEqual([[placed.sessionRoot, false, false]]);
-    const command = hosts.to(placed.sessionRoot).find((r) => r.type === 'command')!;
-    expect(command).toMatchObject({ type: 'command', roomTold: false });
-    expect(command).not.toHaveProperty('resting');
-  });
-
-  it('passes an awake session its reset as before, saying Switch left the room line to it', async () => {
-    const { root, config, placed } = await parkedIn('shared-watch-reset-awake-');
-    const hosts = sessionHosts();
-    await hosts.start(placed.sessionRoot);
-    vi.mocked(ensureSharedProcess).mockClear();
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await streams[0]!.onSessionCommand!(resetIn('room-a'));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(ensureSharedProcess).not.toHaveBeenCalled();
-    expect(hosts.to(placed.sessionRoot)).toMatchObject([
-      { type: 'command', roomTold: false, requesterName: null },
-    ]);
-    expect(hosts.to(placed.sessionRoot)[0]).not.toHaveProperty('resting');
-  });
-});
-
 it('hands a room control to the session working in its room, when Switch names only the room', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-room-control-'));
   roots.push(root);
@@ -3194,21 +2474,17 @@ function switchOperations(answers: { owner: string | null; refuseTargeted?: bool
 }
 
 const SIGN_IN = 'Sign in on the execution machine with claude auth login.';
-const quiet = { info: () => {}, warn: () => {} };
 
-it('keeps a message whose session cannot start, tells the room once in plain words, and answers it once it can', async () => {
+it('stops starting a session whose host failed, keeps its message, and tells its owner once', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-failed-start-'));
   roots.push(root);
   paths.root = root;
   const config = await spawning(root);
   const hosts = sessionHosts();
   hosts.fail = SIGN_IN;
-  hosts.failKind = 'no_login';
   const calls = switchOperations({ owner: 'ada' });
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.spyOn(console, 'info').mockImplementation(() => {});
-  const waits = new RoomWaitList({ retryMs: 20, startRetryMs: 600_000, log: quiet });
 
   const abort = new AbortController();
   const run = runAgentHost(
@@ -3217,8 +2493,7 @@ it('keeps a message whose session cannot start, tells the room once in plain wor
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    openSwitchStream,
-    waits
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -3226,55 +2501,55 @@ it('keeps a message whose session cannot start, tells the room once in plain wor
     (first.payload as { thread_id?: string }).thread_id = 'thread-root';
     const started = Date.now();
     await streams[0]!.onEvent!(first);
-    await eventually(() => calls.some((call) => call.name === 'post_message'));
+    await eventually(() => calls.some((call) => call.name === 'send_targeted_message'));
     // Told at once rather than after the wait for a host to come up.
     expect(Date.now() - started).toBeLessThan(5000);
     const sessionId = placementsOf(published).room!;
-    expect(calls.map((call) => call.name)).toEqual(['get_agent_detail', 'post_message']);
+    expect(calls.map((call) => call.name)).toEqual(['get_agent_detail', 'send_targeted_message']);
     expect(calls[1]).toEqual({
-      name: 'post_message',
+      name: 'send_targeted_message',
       session: sessionId,
-      body: { body: keptLine('no_login', 'ada'), thread_id: 'thread-root' },
+      body: {
+        body: `I couldn't start a session, and it needs you to fix it: ${SIGN_IN} Then address me again.`,
+        target_names: ['ada'],
+        thread_id: 'thread-root',
+      },
     });
-    // B64: the raw failure stays in the log, never in the room.
-    expect(JSON.stringify(calls)).not.toContain('claude auth login');
-    expect(JSON.stringify(calls)).not.toContain('address me again');
-    expect(error.mock.calls.some((call) => String(call[0]).includes(SIGN_IN))).toBe(true);
-    // No retry loop: nothing starts the host again straight away.
+    // No retry loop: nothing starts the host again on its own.
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls.some((call) => String(call[0]).includes(SIGN_IN))).toBe(true);
 
-    // A later message tries once more, and gets its own line; the first isn't told again.
+    // A later message tries once more, and that message is answered too.
     await streams[0]!.onEvent!(addressed(2, 'room'));
     await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 2);
-    await eventually(() => calls.filter((call) => call.name === 'post_message').length === 2);
+    await eventually(
+      () => calls.filter((call) => call.name === 'send_targeted_message').length === 2
+    );
     await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(calls.filter((call) => call.name === 'post_message')).toHaveLength(2);
+    expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(2);
+    expect(calls.filter((call) => call.name === 'send_targeted_message')).toHaveLength(2);
 
-    // Both messages are still owed, and wait (as starts, not for room).
+    // Both messages are still owed.
     expect((await AgentHostAssignments.open(root)).pending().map((e) => e.messageId)).toEqual([
       'message-1',
       'message-2',
     ]);
-    expect(waits.size).toBe(2);
-    expect(waits.count(config.session.agentId).count).toBe(0);
 
-    // Started from Console once it is fixed: the kept messages go to it, once each.
+    // Started from Console once it is fixed: the waiting messages go to it.
     hosts.fail = null;
     await hosts.start(join(root, sessionId));
     await eventually(() => settled(root));
     expect(
       hosts.to(join(root, sessionId)).map((request) => (request as { handoff: Handoff }).handoff)
     ).toMatchObject([{ messageId: 'message-1' }, { messageId: 'message-2' }]);
-    expect(waits.size).toBe(0);
   } finally {
     abort.abort();
     await run;
   }
-  expect(calls.filter((call) => call.name === 'post_message')).toHaveLength(2);
 });
 
-it('still tells the room a message is kept when its placements are not taken', async () => {
+it('still tells the owner a session could not start when its placements are not taken', async () => {
   // A statement that is refused (the controller hub reconnecting, say) used
   // to skip the notice after it, and the notice is sent once per message, so
   // the room heard nothing.
@@ -3284,7 +2559,6 @@ it('still tells the room a message is kept when its placements are not taken', a
   const config = await spawning(root);
   const hosts = sessionHosts();
   hosts.fail = SIGN_IN;
-  hosts.failKind = 'no_login';
   const calls = switchOperations({ owner: 'ada' });
   placementsRefusal.error = new Error('the agent controller hub is not connected');
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -3297,15 +2571,15 @@ it('still tells the room a message is kept when its placements are not taken', a
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    openSwitchStream,
-    new RoomWaitList({ startRetryMs: 600_000, log: quiet })
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onEvent!(addressed(1, 'room'));
-    await eventually(() => calls.some((call) => call.name === 'post_message'));
-    expect(calls.find((call) => call.name === 'post_message')?.body).toMatchObject({
-      body: keptLine('no_login', 'ada'),
+    await eventually(() => calls.some((call) => call.name === 'send_targeted_message'));
+    expect(calls.find((call) => call.name === 'send_targeted_message')?.body).toMatchObject({
+      body: `I couldn't start a session, and it needs you to fix it: ${SIGN_IN} Then address me again.`,
+      target_names: ['ada'],
     });
     expect(
       warn.mock.calls.some(([line]) =>
@@ -3318,16 +2592,15 @@ it('still tells the room a message is kept when its placements are not taken', a
   }
 });
 
-it("names no one when Switch doesn't say who the owner is, and survives a refused post", async () => {
+it('tells the room without addressing anyone when the owner cannot be addressed, and survives a refused post', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-failed-owner-'));
   roots.push(root);
   paths.root = root;
   const config = await spawning(root);
   const hosts = sessionHosts();
-  hosts.fail = 'The provider executable is missing.';
-  hosts.failKind = 'setup';
-  const calls = switchOperations({ owner: null });
-  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  hosts.fail = SIGN_IN;
+  const calls = switchOperations({ owner: 'ada', refuseTargeted: true });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
   const abort = new AbortController();
@@ -3337,19 +2610,21 @@ it("names no one when Switch doesn't say who the owner is, and survives a refuse
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    openSwitchStream,
-    new RoomWaitList({ startRetryMs: 600_000, log: quiet })
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
     await streams[0]!.onEvent!(addressed(1, 'room'));
     await eventually(() => calls.some((call) => call.name === 'post_message'));
     expect(calls.find((call) => call.name === 'post_message')!.body).toEqual({
-      body: keptLine('setup', null),
+      body: `I couldn't start a session, and my owner (ada) needs to fix it: ${SIGN_IN} Then address me again.`,
     });
-    expect(keptLine('setup', null)).toContain('My owner can see why');
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('Targets not in room'))).toBe(
+      true
+    );
 
-    // A post Switch refuses is logged, not fatal.
+    // A different failure is news, and a post Switch refuses is logged, not fatal.
+    hosts.fail = 'The provider executable is missing.';
     vi.stubGlobal('fetch', async () => new Response('down', { status: 503 }));
     await streams[0]!.onEvent!(addressed(2, 'room'));
     await eventually(() =>
@@ -3393,9 +2668,7 @@ it('tells the room once a session keeps not taking a message, instead of startin
     abort.signal,
     hosts.supervision,
     new WatcherControl(),
-    openSwitchStream,
-    // Kept, it is retried at the list's own pace, not in a loop; slow here.
-    new RoomWaitList({ startRetryMs: 600_000, log: quiet })
+    openSwitchStream
   );
   try {
     await eventually(() => streams.length === 1);
@@ -3403,19 +2676,19 @@ it('tells the room once a session keeps not taking a message, instead of startin
     // Bounded by real time, not by a count of fake seconds: each restart reads
     // the agent's template from disk, which advancing fake time does not wait for.
     const deadline = performance.now() + 20_000;
-    while (!calls.some((call) => call.name === 'post_message') && performance.now() < deadline) {
+    while (
+      !calls.some((call) => call.name === 'send_targeted_message') &&
+      performance.now() < deadline
+    ) {
       await vi.advanceTimersByTimeAsync(1000);
       await new Promise((resolve) => setImmediate(resolve));
     }
-    const told = calls.filter((call) => call.name === 'post_message');
+    const told = calls.filter((call) => call.name === 'send_targeted_message');
     expect(told).toHaveLength(1);
-    // Nothing the owner can fix: the plain kept line, the cause in the log.
-    expect((told[0]!.body as { body: string }).body).toBe(keptLine('unknown', 'ada'));
-    expect(
-      error.mock.calls.some((call) =>
-        String(call[0]).includes(`after being started ${MAX_HOST_RESTARTS} times`)
-      )
-    ).toBe(true);
+    expect(String((told[0]!.body as { body: string }).body)).toContain(
+      `after being started ${MAX_HOST_RESTARTS} times`
+    );
+    expect(error.mock.calls.some((call) => String(call[0]).includes('stay queued'))).toBe(true);
 
     // And it stops: nothing starts the host again on its own.
     const starts = vi.mocked(ensureSharedProcess).mock.calls.length;
@@ -3430,1049 +2703,4 @@ it('tells the room once a session keeps not taking a message, instead of startin
     await run;
     vi.useRealTimers();
   }
-});
-
-describe('sessions a restart cut off mid-turn', () => {
-  async function reconnecting(root: string) {
-    paths.root = root;
-    const config = await spawning(root);
-    const cut = randomUUID();
-    const finished = randomUUID();
-    await assignTo(root, config, 1, 'room-cut', cut);
-    await assignTo(root, config, 2, 'room-done', finished);
-    journals.set(cut, ['completed', 'running']);
-    journals.set(finished, ['completed', 'interrupted']);
-    return { config, cut, finished };
-  }
-
-  it('starts again, on reconnecting, only the sessions whose journal holds an unfinished turn', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-cut-off-'));
-    roots.push(root);
-    const { config, cut } = await reconnecting(root);
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      sessionHosts().supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      streams[0]!.onConnected!();
-      await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 1);
-      // A second reconnect looks again only at what still isn't running.
-      streams[0]!.onConnected!();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(
-      vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.config.session.sessionId)
-    ).toEqual([cut]);
-    expect(valve.asked).toBe(1);
-  });
-
-  it('also starts a session whose turn already reads interrupted but which still owes its room the line', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-cut-off-owed-'));
-    roots.push(root);
-    const { config, cut, finished } = await reconnecting(root);
-    // A clean stop: the provider exited first, so the journal says interrupted, and the host owes the line.
-    journals.set(cut, ['completed', 'interrupted']);
-    await mkdir(join(root, cut), { recursive: true });
-    await writeFile(
-      join(root, cut, 'inbox.jsonl'),
-      JSON.stringify({ type: 'restart-reply', commandId: 'turn-1', state: 'pending' }) + '\n'
-    );
-    // Already told: owes nothing.
-    await mkdir(join(root, finished), { recursive: true });
-    await writeFile(
-      join(root, finished, 'inbox.jsonl'),
-      JSON.stringify({ type: 'restart-reply', commandId: 'turn-1', state: 'pending' }) +
-        '\n' +
-        JSON.stringify({ type: 'restart-reply', commandId: 'turn-1', state: 'sent' }) +
-        '\n'
-    );
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      sessionHosts().supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      streams[0]!.onConnected!();
-      await eventually(() => vi.mocked(ensureSharedProcess).mock.calls.length === 1);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(
-      vi.mocked(ensureSharedProcess).mock.calls.map(([input]) => input.config.session.sessionId)
-    ).toEqual([cut]);
-  });
-
-  it('asks a running session that still owes its line to try again when Switch comes back', async () => {
-    // QA's case: Switch unreachable for longer than the host's 2-minute round
-    // just after a restart. The session is up, its line still pending; only
-    // the reconnect says Switch can take it now.
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-owed-live-'));
-    roots.push(root);
-    const { config, cut, finished } = await reconnecting(root);
-    journals.set(cut, ['completed', 'interrupted']);
-    journals.set(finished, ['completed', 'completed']);
-    await mkdir(join(root, cut), { recursive: true });
-    await writeFile(
-      join(root, cut, 'inbox.jsonl'),
-      JSON.stringify({ type: 'restart-reply', commandId: 'turn-1', state: 'pending' }) + '\n'
-    );
-    const hosts = sessionHosts();
-    await hosts.start(join(root, cut));
-    await hosts.start(join(root, finished));
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    const retries = () =>
-      hosts.requests.filter((r) => r.request.type === 'restart-replies').map((r) => r.root);
-    try {
-      await eventually(() => streams.length === 1);
-      // The first connection: the startup pass, which leaves running sessions alone.
-      streams[0]!.onConnected!();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      expect(retries()).toEqual([]);
-      // Back after an outage: the running session that owes a line is asked again.
-      streams[0]!.onConnected!();
-      await eventually(() => retries().length === 1);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(retries()).toEqual([join(root, cut)]);
-    expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-  });
-
-  it('does not start a cut-off session again while the box is out of memory', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-cut-off-full-'));
-    roots.push(root);
-    const { config, cut } = await reconnecting(root);
-    valve.admit = false;
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      sessionHosts().supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      streams[0]!.onConnected!();
-      await eventually(() => valve.asked === 1);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-    expect(
-      warning.mock.calls.some(([line]) =>
-        String(line).includes(`Session ${cut} has a turn a restart cut off`)
-      )
-    ).toBe(true);
-  });
-});
-
-describe('the memory ceiling on a first start', () => {
-  it("doesn't start a parked session when the box is full: it waits for room", async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-box-full-'));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const hosts = sessionHosts();
-    valve.admit = false;
-    switchOperations({ owner: 'ada' });
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const control = new WatcherControl();
-    const reports = vi.spyOn(control, 'report');
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      control,
-      openSwitchStream,
-      new RoomWaitList({ retryMs: 60_000, log: { info: () => {}, warn: () => {} } })
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await streams[0]!.onEvent!(addressed(1, 'room'));
-      await eventually(async () =>
-        (await readFile(join(root, 'assignments.jsonl'), 'utf8')).includes('"waiting"')
-      );
-      // Turned away for now, it no longer shows "Back in a moment" while the
-      // box is still running: the latest report has it resting, not waking.
-      const states = () =>
-        reports.mock.calls.map(([change]) => change.sessions).filter((s) => s !== undefined);
-      expect(states().some((s) => Object.values(s).includes('waking'))).toBe(true);
-      expect(Object.values(states().at(-1)!)).not.toContain('waking');
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-    expect(valve.asked).toBe(1);
-    expect(valve.settled).toBe(0);
-    // Not let go: still held in the journal, for the next start of the host.
-    expect((await AgentHostAssignments.open(root)).pending()).toHaveLength(1);
-  });
-
-  it('asks the ceiling once per start it makes, and settles it once the session is up', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-box-room-'));
-    roots.push(root);
-    paths.root = root;
-    const config = await spawning(root);
-    const hosts = sessionHosts();
-    const abort = new AbortController();
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      new WatcherControl(),
-      openSwitchStream
-    );
-    try {
-      await eventually(() => streams.length === 1);
-      await streams[0]!.onEvent!(addressed(1, 'room'));
-      await eventually(() => hosts.requests.length === 1);
-    } finally {
-      abort.abort();
-      await run;
-    }
-    expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
-    expect(valve.asked).toBe(1);
-    expect(valve.settled).toBe(1);
-  });
-});
-
-describe('wait for room', () => {
-  const posts = (calls: ReturnType<typeof switchOperations>) =>
-    calls.filter((call) => call.name === 'post_message').map((call) => call.body.body);
-  const journalText = (root: string) => readFile(join(root, 'assignments.jsonl'), 'utf8');
-
-  async function waitingHost(
-    root: string,
-    waits: RoomWaitList,
-    options: {
-      control?: WatcherControl;
-      hosts?: ReturnType<typeof sessionHosts>;
-      openStream?: OpenAgentStream;
-    } = {}
-  ) {
-    const config = await spawning(root);
-    const hosts = options.hosts ?? sessionHosts();
-    const control = options.control ?? new WatcherControl();
-    const abort = new AbortController();
-    const opened = streams.length;
-    const run = runAgentHost(
-      root,
-      config,
-      abort.signal,
-      hosts.supervision,
-      control,
-      options.openStream ?? openSwitchStream,
-      waits
-    );
-    await eventually(() => streams.length === opened + 1);
-    return {
-      hosts,
-      control,
-      stream: streams[opened]!,
-      stop: async () => {
-        abort.abort();
-        await run;
-      },
-    };
-  }
-
-  function setUp(prefix: string) {
-    return (async () => {
-      const root = await mkdtemp(join(tmpdir(), prefix));
-      roots.push(root);
-      paths.root = root;
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
-      vi.spyOn(console, 'error').mockImplementation(() => {});
-      vi.spyOn(console, 'info').mockImplementation(() => {});
-      return root;
-    })();
-  }
-
-  describe('on the box valve (B85)', () => {
-    /** The controller's valve with another agent holding every slot until `free()`. */
-    function boxFull(over: Partial<ConstructorParameters<typeof BoxValve>[0]> = {}) {
-      const box = new BoxValve({
-        limit: 6 * 1024 ** 3,
-        readUsage: async () => 0,
-        cap: 1,
-        settleMs: 0,
-        log: quiet,
-        ...over,
-      });
-      let otherAwake = 1;
-      box.connect({
-        agentId: 'another-agent',
-        awake: () => otherAwake,
-        idle: () => [],
-        park: async () => false,
-        start: () => {},
-        letGo: () => {},
-      });
-      const openStream: OpenAgentStream = Object.assign(
-        (deps: SwitchEventStreamDeps) => openSwitchStream(deps),
-        { boxValve: box }
-      );
-      return {
-        box,
-        openStream,
-        free: () => {
-          otherAwake = 0;
-        },
-      };
-    }
-
-    it('waits with one line, and starts when the box valve gives it room', async () => {
-      const root = await setUp('shared-watch-box-valve-');
-      const { box, openStream, free } = boxFull();
-      const calls = switchOperations({ owner: 'ada' });
-      // The host's own retries are slow: only the box valve's start can start it.
-      const waits = new RoomWaitList({ retryMs: 60_000, log: quiet });
-      const host = await waitingHost(root, waits, { openStream });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => posts(calls).length === 1);
-        expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
-        expect(box.status()).toMatchObject({ waiting: 1, waitingForRoom: 1 });
-        // The F1 mock is never asked: the box valve decides.
-        expect(valve.asked).toBe(0);
-        free();
-        await box.tick();
-        await eventually(() => host.hosts.requests.length === 1);
-        await eventually(() => box.status().waiting === 0);
-        await eventually(() => box.starting === 0);
-      } finally {
-        await host.stop();
-      }
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
-      expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
-    });
-
-    it('starts on the box valve’s start when a younger message on another agent also waits (QR-1 busy)', async () => {
-      const root = await setUp('shared-watch-box-valve-two-');
-      const { box, openStream, free } = boxFull();
-      const calls = switchOperations({ owner: 'ada' });
-      // The host's own retries are slow, and would be refused `busy` anyway while another agent's message waits:
-      // only the box valve's reserved room can let it in.
-      const waits = new RoomWaitList({ retryMs: 60_000, log: quiet });
-      const host = await waitingHost(root, waits, { openStream });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => box.status().waitingForRoom === 1);
-        // Another agent's message waits too, younger than this host's.
-        const other = box.connect({
-          agentId: 'agent-waiting-too',
-          awake: () => 0,
-          idle: () => [],
-          park: async () => false,
-          start: () => {},
-          letGo: () => {},
-        });
-        expect(
-          other.wait({
-            roomId: 'r2',
-            messageId: 'm2',
-            sessionId: 's2',
-            sinceMs: Date.now(),
-            kind: 'room',
-          })
-        ).toBe('waiting');
-        free();
-        await box.tick();
-        // Oldest first: this host's message gets the room and its session starts.
-        await eventually(() => host.hosts.requests.length === 1);
-        await eventually(() => box.status().waitingForRoom === 1);
-        expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
-      } finally {
-        await host.stop();
-      }
-    });
-
-    it("lets a message go with only the stopped line when the agent's share of the box list is full", async () => {
-      const root = await setUp('shared-watch-box-valve-full-');
-      const { openStream } = boxFull({ maxPerAgent: 1 });
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({ retryMs: 60_000, log: quiet });
-      const host = await waitingHost(root, waits, { openStream });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room-a'));
-        await eventually(() => posts(calls).length === 1);
-        await host.stream.onEvent!(addressed(2, 'room-b'));
-        await eventually(() => posts(calls).length === 2);
-        expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, STOPPED_WAITING_MESSAGE]);
-        await eventually(async () =>
-          (await journalText(root)).includes('no room in time (list full)')
-        );
-        expect(waits.size).toBe(1);
-      } finally {
-        await host.stop();
-      }
-    });
-
-    it('lets go with the stopped line when the box valve says its time is up', async () => {
-      const root = await setUp('shared-watch-box-valve-timeout-');
-      const { box, openStream } = boxFull({ maxWaitMs: 100 });
-      const calls = switchOperations({ owner: 'ada' });
-      // The host's own limit is longer: the box valve's letGo decides.
-      const waits = new RoomWaitList({ retryMs: 60_000, log: quiet });
-      const host = await waitingHost(root, waits, { openStream });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => posts(calls).length === 1);
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        await box.tick();
-        await eventually(() => posts(calls).length === 2);
-        expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, STOPPED_WAITING_MESSAGE]);
-        await eventually(() => waits.size === 0);
-        await eventually(async () =>
-          (await journalText(root)).includes('no room in time (timed out)')
-        );
-      } finally {
-        await host.stop();
-      }
-    });
-
-    it('leaves the box valve when it stops: its waiters go without a line', async () => {
-      const root = await setUp('shared-watch-box-valve-stop-');
-      const { box, openStream } = boxFull();
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({ retryMs: 60_000, log: quiet });
-      const host = await waitingHost(root, waits, { openStream });
-      await host.stream.onEvent!(addressed(1, 'room'));
-      await eventually(() => box.status().waiting === 1);
-      await host.stop();
-      expect(box.status().waiting).toBe(0);
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
-    });
-  });
-
-  it('holds a message the box has no room for, says so once, and starts it by itself once there is room', async () => {
-    const root = await setUp('shared-watch-wait-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    const waits = new RoomWaitList({ retryMs: 20, log: quiet });
-    const host = await waitingHost(root, waits);
-    try {
-      await host.stream.onEvent!(threaded(addressed(1, 'room'), 'thread-root'));
-      await eventually(() => posts(calls).length === 1);
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
-      expect(calls.find((call) => call.name === 'post_message')!.body.thread_id).toBe(
-        'thread-root'
-      );
-      const sessionId = placementsOf(published).room!;
-      // Console's amber card, and busy: nothing waiting for idle takes it as idle.
-      await eventually(() => host.control.health().waitingForRoom?.count === 1);
-      expect(host.control.health().busy).toContain(sessionId);
-      // A second message to the same room waits behind the first, without
-      // asking the gate again for itself.
-      const askedBefore = valve.asked;
-      await host.stream.onEvent!(addressed(2, 'room'));
-      await eventually(() => waits.size === 2);
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, WAITING_FOR_ROOM_MESSAGE]);
-      // Still no room: it keeps trying, every retry through the same gate.
-      await eventually(() => valve.asked >= askedBefore + 2);
-      expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-      // Room frees up: one start, both messages handed over in order, no extra line.
-      valve.admit = true;
-      await eventually(() => host.hosts.requests.length === 2);
-      expect(
-        host.hosts.requests.map(
-          (entry) => (entry.request as { handoff?: Handoff }).handoff?.messageId
-        )
-      ).toEqual(['message-1', 'message-2']);
-      await eventually(() => settled(root));
-      await eventually(() => host.control.health().waitingForRoom?.count === 0);
-      // Up and idle, it is no longer busy for waiting.
-      host.hosts.busy(join(root, sessionId), false);
-      await eventually(() => !(host.control.health().busy ?? []).includes(sessionId));
-    } finally {
-      await host.stop();
-    }
-    expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
-    expect(posts(calls)).toHaveLength(2);
-    expect(waits.size).toBe(0);
-  });
-
-  it("lets a message go with the designer's line once it has waited its limit", async () => {
-    const root = await setUp('shared-watch-wait-limit-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    const waits = new RoomWaitList({ retryMs: 20, maxWaitMs: 150, log: quiet });
-    const host = await waitingHost(root, waits);
-    try {
-      await host.stream.onEvent!(addressed(1, 'room'));
-      await eventually(() => posts(calls).length === 2);
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, STOPPED_WAITING_MESSAGE]);
-      await eventually(() => settled(root));
-      expect(await journalText(root)).toContain('no room in time (timed out)');
-      await eventually(() => host.control.health().waitingForRoom?.count === 0);
-    } finally {
-      await host.stop();
-    }
-    expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-  });
-
-  it('lets a message go straight away when the box already has its limit waiting', async () => {
-    const root = await setUp('shared-watch-wait-full-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    const waits = new RoomWaitList({ retryMs: 60_000, max: 1, log: quiet });
-    const host = await waitingHost(root, waits);
-    try {
-      await host.stream.onEvent!(addressed(1, 'room-a'));
-      await eventually(() => waits.size === 1);
-      await host.stream.onEvent!(addressed(2, 'room-b'));
-      await eventually(() => posts(calls).length === 2);
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, STOPPED_WAITING_MESSAGE]);
-      expect(await journalText(root)).toContain('no room in time (list full)');
-      expect(waits.size).toBe(1);
-    } finally {
-      await host.stop();
-    }
-  });
-
-  it('puts a new message behind those already waiting, so freed room goes to the oldest first', async () => {
-    // QA, 27 Oct: a newcomer needing a new session went straight to the gate
-    // and took room that freed up between retries, ahead of older messages.
-    const root = await setUp('shared-watch-wait-order-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    // No timer rounds in this test: only the newcomer's own round runs.
-    const waits = new RoomWaitList({ retryMs: 600_000, log: quiet });
-    const host = await waitingHost(root, waits);
-    try {
-      await host.stream.onEvent!(addressed(1, 'room-old'));
-      await eventually(() => waits.size === 1);
-      const asked = valve.asked;
-      valve.admit = true;
-      await host.stream.onEvent!(addressed(2, 'room-new'));
-      await eventually(() => host.hosts.requests.length === 2);
-      // Joined the list without asking the gate for itself first.
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, WAITING_FOR_ROOM_MESSAGE]);
-      expect(valve.asked).toBe(asked + 2);
-    } finally {
-      await host.stop();
-    }
-    const started = vi
-      .mocked(ensureSharedProcess)
-      .mock.calls.map(([input]) => input.config.session.sessionId);
-    const map = placementsOf(published);
-    expect(started).toEqual([map['room-old'], map['room-new']]);
-  });
-
-  it('keeps waiting messages through a host restart: same start time, no second line', async () => {
-    const root = await setUp('shared-watch-wait-restart-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    const waits = new RoomWaitList({ retryMs: 20, log: quiet });
-    const first = await waitingHost(root, waits);
-    let oldest: string | null = null;
-    try {
-      await first.stream.onEvent!(addressed(1, 'room'));
-      await eventually(() => waits.size === 1);
-      // Told, and recorded as told, before the restart.
-      await eventually(async () => (await journalText(root)).includes('"told"'));
-      oldest = waits.count(config(root)).oldestSince;
-    } finally {
-      // Stopped as the memory guard stops it, or a restart: off the list, no line.
-      await first.stop();
-    }
-    expect(waits.size).toBe(0);
-    expect((await AgentHostAssignments.open(root)).pending()).toHaveLength(1);
-    expect(await journalText(root)).not.toContain('"released"');
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    const second = await waitingHost(root, waits);
-    try {
-      await eventually(() => waits.size === 1);
-      expect(waits.count(config(root)).oldestSince).toBe(oldest);
-      valve.admit = true;
-      await eventually(() => second.hosts.requests.length === 1);
-      await eventually(() => settled(root));
-    } finally {
-      await second.stop();
-    }
-    expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE]);
-  });
-
-  it('lets go, after a restart, a message that waited past its limit meanwhile', async () => {
-    const root = await setUp('shared-watch-wait-expired-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    const waits = new RoomWaitList({ retryMs: 20, maxWaitMs: 200, log: quiet });
-    const first = await waitingHost(root, waits);
-    try {
-      await first.stream.onEvent!(addressed(1, 'room'));
-      await eventually(() => waits.size === 1);
-    } finally {
-      await first.stop();
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const second = await waitingHost(root, waits);
-    try {
-      await eventually(() => posts(calls).length === 2);
-      await eventually(() => settled(root));
-    } finally {
-      await second.stop();
-    }
-    expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, STOPPED_WAITING_MESSAGE]);
-    expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-  });
-
-  it('lets go of what waits for a session that is reset meanwhile, with the reset line', async () => {
-    const root = await setUp('shared-watch-wait-reset-');
-    valve.admit = false;
-    const calls = switchOperations({ owner: 'ada' });
-    const waits = new RoomWaitList({ retryMs: 60_000, log: quiet });
-    const host = await waitingHost(root, waits);
-    try {
-      await host.stream.onEvent!(addressed(1, 'room'));
-      await eventually(() => waits.size === 1);
-      await host.stream.onSessionCommand!({
-        sessionId: null,
-        roomId: 'room',
-        commandId: 'reset-1',
-        body: { type: 'session.reset' },
-      });
-      await eventually(() => posts(calls).length === 2);
-      expect(posts(calls)).toEqual([WAITING_FOR_ROOM_MESSAGE, RESET_WHILE_WAITING_MESSAGE]);
-      await eventually(() => settled(root));
-      expect(await journalText(root)).toContain('reset while waiting for room');
-      expect(waits.size).toBe(0);
-    } finally {
-      await host.stop();
-    }
-    expect(vi.mocked(ensureSharedProcess)).not.toHaveBeenCalled();
-  });
-
-  it("removes a delivered message's text from the journal as soon as it is released", async () => {
-    const root = await setUp('shared-watch-wait-leak-');
-    const waits = new RoomWaitList({ retryMs: 20, log: quiet });
-    switchOperations({ owner: 'ada' });
-    const secret = 'leak-scan-marker-7f3a';
-    const event = addressed(1, 'room');
-    (event.payload as { body: string }).body = secret;
-    valve.admit = false;
-    const first = await waitingHost(root, waits);
-    try {
-      await first.stream.onEvent!(event);
-      await eventually(() => waits.size === 1);
-      // Held: the text is in the journal, as nothing else keeps it.
-      expect(await journalText(root)).toContain(secret);
-      valve.admit = true;
-      await eventually(() => first.hosts.requests.length === 1);
-      await eventually(() => settled(root));
-      // Security's condition: gone from the file within seconds of its
-      // release (one quiet second, the burst debounce), not at the next
-      // compaction or host start.
-      const released = Date.now();
-      while ((await journalText(root)).includes(secret) && Date.now() - released < 3000)
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      expect(await journalText(root)).not.toContain(secret);
-    } finally {
-      await first.stop();
-    }
-    const second = await waitingHost(root, waits);
-    try {
-      await eventually(async () => !(await journalText(root)).includes(secret));
-    } finally {
-      await second.stop();
-    }
-    const reopened = await AgentHostAssignments.open(root);
-    expect(reopened.cursor).toBe(1);
-    expect(reopened.pending()).toEqual([]);
-    expect(reopened.sessions()).toHaveLength(1);
-    expect(await journalText(root)).not.toContain('"waiting"');
-  });
-
-  describe('a session that cannot start (B78)', () => {
-    it('retries a start with nothing to fix on its own clock: one line, one answer', async () => {
-      const root = await setUp('shared-watch-b78-login-');
-      const hosts = sessionHosts();
-      // No kind recorded: nothing the owner can fix, so the 30 s clock applies.
-      hosts.fail = 'The session host exited with code 1.';
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({ retryMs: 20, startRetryMs: 100, log: quiet });
-      const host = await waitingHost(root, waits, { hosts });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => posts(calls).length === 1);
-        expect(posts(calls)).toEqual([keptLine('unknown', 'ada')]);
-        // Whatever stopped it clears: the next retry starts it and it is answered.
-        hosts.fail = null;
-        await eventually(() => hosts.requests.length === 1);
-        await eventually(() => settled(root));
-        expect(waits.size).toBe(0);
-      } finally {
-        await host.stop();
-      }
-      expect(posts(calls)).toEqual([keptLine('unknown', 'ada')]);
-      expect(hosts.requests).toHaveLength(1);
-    });
-
-    it("replays BL-1: no login, then the login lands, and it's answered once with no extra line", async () => {
-      // BL-1, 27 Oct (user-b-lead): sent 14:46:50, can't-start line 14:47:21,
-      // login at 15:05:01, answered 15:05:24, after being told to resend.
-      // Scaled: the login lands well inside the limit here; past it, see below.
-      const root = await setUp('shared-watch-b78-bl1-');
-      const hosts = sessionHosts();
-      hosts.fail = SIGN_IN;
-      hosts.failKind = 'no_login';
-      const calls = switchOperations({ owner: 'ada' });
-      // Fast clocks, so a 30 s retry would show: a no-login wait must not use it.
-      const waits = new RoomWaitList({ retryMs: 20, startRetryMs: 50, log: quiet });
-      const host = await waitingHost(root, waits, { hosts });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => posts(calls).length === 1);
-        expect(posts(calls)).toEqual([keptLine('no_login', 'ada')]);
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        // No host started again on a fast clock while only a person can fix it.
-        expect(vi.mocked(ensureSharedProcess)).toHaveBeenCalledTimes(1);
-        // The login lands: the controller replaces the agent's definition.
-        hosts.fail = null;
-        const config = JSON.parse(await readFile(join(root, 'config.json'), 'utf8'));
-        await writeFile(join(root, 'config.json.tmp'), JSON.stringify(config));
-        await rename(join(root, 'config.json.tmp'), join(root, 'config.json'));
-        await eventually(() => hosts.requests.length === 1);
-        await eventually(() => settled(root));
-      } finally {
-        await host.stop();
-      }
-      expect(posts(calls)).toEqual([keptLine('no_login', 'ada')]);
-      expect(JSON.stringify(calls)).not.toContain('address me again');
-      expect(hosts.requests).toHaveLength(1);
-    });
-
-    it('lets a kept message go at its limit with one line, and never answers it after', async () => {
-      const root = await setUp('shared-watch-b78-limit-');
-      const hosts = sessionHosts();
-      hosts.fail = SIGN_IN;
-      hosts.failKind = 'no_login';
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({
-        retryMs: 20,
-        startRetryMs: 600_000,
-        maxWaitMs: 200,
-        log: quiet,
-      });
-      const host = await waitingHost(root, waits, { hosts });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => posts(calls).length === 2);
-        expect(posts(calls)).toEqual([keptLine('no_login', 'ada'), START_LET_GO_MESSAGE]);
-        await eventually(() => settled(root));
-        expect(await journalText(root)).toContain('no start in time (timed out)');
-        // The login lands afterwards, and the session is started from Console:
-        // the let-go message is not answered.
-        hosts.fail = null;
-        const config = JSON.parse(await readFile(join(root, 'config.json'), 'utf8'));
-        await writeFile(join(root, 'config.json.tmp'), JSON.stringify(config));
-        await rename(join(root, 'config.json.tmp'), join(root, 'config.json'));
-        const sessionId = placementsOf(published).room!;
-        await hosts.start(join(root, sessionId));
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        expect(hosts.to(join(root, sessionId))).toEqual([]);
-        // A resend after the let-go line is answered, once.
-        await host.stream.onEvent!(addressed(2, 'room'));
-        await eventually(() => hosts.requests.length === 1);
-        expect((hosts.requests[0]!.request as { handoff: Handoff }).handoff.messageId).toBe(
-          'message-2'
-        );
-      } finally {
-        await host.stop();
-      }
-      expect(posts(calls)).toEqual([keptLine('no_login', 'ada'), START_LET_GO_MESSAGE]);
-    });
-
-    it('lets a kept message go with the session-closed line when Console deletes its session', async () => {
-      const root = await setUp('shared-watch-b78-forget-');
-      const hosts = sessionHosts();
-      hosts.fail = SIGN_IN;
-      hosts.failKind = 'no_login';
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({ retryMs: 20, startRetryMs: 600_000, log: quiet });
-      const host = await waitingHost(root, waits, { hosts });
-      try {
-        await host.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => waits.size === 1);
-        // The kept line is posted beside the keep, not awaited by it: let it go out first.
-        await eventually(() => posts(calls).length === 1);
-        const sessionId = placementsOf(published).room!;
-        await host.control.forget(sessionId);
-        await eventually(() => posts(calls).length === 2);
-        expect(posts(calls)).toEqual([keptLine('no_login', 'ada'), SESSION_CLOSED_MESSAGE]);
-        expect(waits.size).toBe(0);
-        expect(await settled(root)).toBe(true);
-        expect(await journalText(root)).toContain('session deleted');
-      } finally {
-        await host.stop();
-      }
-      // Nothing comes back on a restart, and nothing is answered.
-      hosts.fail = null;
-      const again = await waitingHost(root, waits, { hosts });
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      } finally {
-        await again.stop();
-      }
-      expect(hosts.requests).toEqual([]);
-      expect(posts(calls)).toHaveLength(2);
-    });
-
-    it('tells the room again after a restart when the kept line never went through', async () => {
-      // engineer-6's review: the line was recorded as said before it was
-      // posted, so a post lost while Switch was away was never retried.
-      const root = await setUp('shared-watch-b78-untold-');
-      const hosts = sessionHosts();
-      hosts.fail = SIGN_IN;
-      hosts.failKind = 'no_login';
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({ retryMs: 20, startRetryMs: 600_000, log: quiet });
-      // Switch refuses every post at first.
-      const working = globalThis.fetch;
-      vi.stubGlobal('fetch', async () => new Response('down', { status: 503 }));
-      const first = await waitingHost(root, waits, { hosts });
-      try {
-        await first.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => waits.size === 1);
-        await eventually(async () => (await journalText(root)).includes('"waiting"'));
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } finally {
-        await first.stop();
-      }
-      expect(await journalText(root)).not.toContain('"told"');
-      expect(posts(calls)).toEqual([]);
-      // Switch is back; the host restarts and keeps the message again.
-      vi.stubGlobal('fetch', working);
-      const second = await waitingHost(root, waits, { hosts });
-      try {
-        await eventually(() => posts(calls).length === 1);
-        await eventually(async () => (await journalText(root)).includes('"told"'));
-        // The login lands: answered once, with no second line.
-        hosts.fail = null;
-        const config = JSON.parse(await readFile(join(root, 'config.json'), 'utf8'));
-        await writeFile(join(root, 'config.json.tmp'), JSON.stringify(config));
-        await rename(join(root, 'config.json.tmp'), join(root, 'config.json'));
-        await eventually(() => hosts.requests.length === 1);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } finally {
-        await second.stop();
-      }
-      expect(posts(calls)).toEqual([keptLine('no_login', 'ada')]);
-      expect(hosts.requests).toHaveLength(1);
-    });
-
-    it('keeps a kept message through a host restart without telling the room again', async () => {
-      const root = await setUp('shared-watch-b78-restart-');
-      const hosts = sessionHosts();
-      hosts.fail = SIGN_IN;
-      hosts.failKind = 'no_login';
-      const calls = switchOperations({ owner: 'ada' });
-      const waits = new RoomWaitList({ retryMs: 20, startRetryMs: 600_000, log: quiet });
-      const first = await waitingHost(root, waits, { hosts });
-      try {
-        await first.stream.onEvent!(addressed(1, 'room'));
-        await eventually(() => waits.size === 1);
-        await eventually(async () => (await journalText(root)).includes('"told"'));
-      } finally {
-        await first.stop();
-      }
-      expect(waits.size).toBe(0);
-      const second = await waitingHost(root, waits, { hosts });
-      try {
-        // Started again on restart, it fails again: kept again, not told again.
-        await eventually(() => waits.size === 1);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } finally {
-        await second.stop();
-      }
-      expect(posts(calls)).toEqual([keptLine('no_login', 'ada')]);
-      expect((await AgentHostAssignments.open(root)).pending()).toHaveLength(1);
-    });
-  });
-
-  /** The agent id the watcher reports waiting messages under. */
-  function config(root: string): string {
-    return (
-      JSON.parse(readFileSync(join(root, 'config.json'), 'utf8')) as {
-        session: { agentId: string };
-      }
-    ).session.agentId;
-  }
-});
-
-describe('compacting the assignment journal', () => {
-  it('reads the same before and after: cursor, held messages, placements and sessions', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-compact-'));
-    roots.push(root);
-    const config = watchable(root);
-    // Built whole first: a release compacts at once (security's condition),
-    // which this test holds back to compare everything before and after.
-    const held = vi
-      .spyOn(
-        AgentHostAssignments.prototype as unknown as { compactNow: () => Promise<void> },
-        'compactNow'
-      )
-      .mockResolvedValue(undefined);
-    const assignments = await AgentHostAssignments.open(root);
-    // An earlier numbering: a room assigned, a message held and delivered, one
-    // held and still waiting (text kept), then the server restarts.
-    const a = await assignments.assign(config, { sequence: 1, roomId: 'a', messageId: 'a1' });
-    await assignments.handled(1);
-    await assignments.park(
-      { sequence: 2, roomId: 'a', messageId: 'a2', event: { t: 'text-done' } },
-      true
-    );
-    await assignments.released({ roomId: 'a', messageId: 'a2' }, null);
-    await assignments.park(
-      { sequence: 3, roomId: 'h', messageId: 'h1', event: { t: 'text-held' } },
-      true
-    );
-    await assignments.waiting({ roomId: 'h', messageId: 'h1' }, Date.parse('2026-10-27T12:00:00Z'));
-    await assignments.restart();
-    // The current numbering: more assignments, handled positions, a held
-    // delivery assigned then released, and a let-go one.
-    const b = await assignments.assign(config, { sequence: 4, roomId: 'b', messageId: 'b1' });
-    await assignments.handled(4);
-    await assignments.park(
-      { sequence: 5, roomId: 'c', messageId: 'c1', event: { t: 'text-c' } },
-      true
-    );
-    const c = await assignments.assign(config, { sequence: 5, roomId: 'c', messageId: 'c1' });
-    await assignments.released({ roomId: 'c', messageId: 'c1' }, null);
-    await assignments.handled(6);
-    await assignments.park(
-      { sequence: 7, roomId: 'd', messageId: 'd1', event: { t: 'text-gone' } },
-      true
-    );
-    await assignments.waiting({ roomId: 'd', messageId: 'd1' }, Date.now());
-    await assignments.released({ roomId: 'd', messageId: 'd1' }, 'no room in time (timed out)');
-    await assignments.park(
-      { sequence: 8, roomId: 'e', messageId: 'e1', event: { t: 'text-e' } },
-      true
-    );
-    await assignments.warm(config, 'f');
-    const before = {
-      cursor: assignments.cursor,
-      pending: assignments.pending(),
-      placements: assignments.placements(),
-      sessions: assignments.sessions(),
-      configOfA: assignments.configOf(a.session.sessionId),
-      waitingH: assignments.waitingSince({ roomId: 'h', messageId: 'h1' }),
-    };
-    await assignments.close();
-    held.mockRestore();
-    const length = assignments.length;
-    const dropped = await assignments.compact();
-    expect(dropped).toBeGreaterThan(0);
-    const reopened = await AgentHostAssignments.open(root);
-    expect(reopened.length).toBe(length - dropped);
-    expect(reopened.cursor).toBe(before.cursor);
-    expect(reopened.pending()).toEqual(before.pending);
-    expect(reopened.placements()).toEqual(before.placements);
-    expect(reopened.sessions()).toEqual(before.sessions);
-    expect(reopened.configOf(a.session.sessionId)).toEqual(before.configOfA);
-    expect(reopened.waitingSince({ roomId: 'h', messageId: 'h1' })).toBe(before.waitingH);
-    // The same message served again is the session it was already given.
-    expect(await reopened.assign(config, { sequence: 4, roomId: 'b', messageId: 'b1' })).toEqual(b);
-    expect(await reopened.assign(config, { sequence: 5, roomId: 'c', messageId: 'c1' })).toEqual(c);
-    // Finished messages' text is gone; waiting ones' is kept.
-    const text = await readFile(join(root, 'assignments.jsonl'), 'utf8');
-    for (const gone of ['text-done', 'text-gone', 'text-c']) expect(text).not.toContain(gone);
-    for (const kept of ['text-held', 'text-e']) expect(text).toContain(kept);
-    // Compacting again finds nothing more to drop.
-    expect(await reopened.compact()).toBe(0);
-  });
-
-  it('rewrites the journal once for a burst of 20 releases, and the text is gone within seconds', async () => {
-    // Security: compacting on every release would rewrite the journal over
-    // and over in a burst; it is debounced to one rewrite.
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-compact-burst-'));
-    roots.push(root);
-    const assignments = await AgentHostAssignments.open(root);
-    const compactions = vi.spyOn(assignments, 'compact');
-    for (let i = 1; i <= 20; i++)
-      await assignments.park(
-        { sequence: i, roomId: `r${i}`, messageId: `m${i}`, event: { t: `burst-text-${i}` } },
-        true
-      );
-    const started = Date.now();
-    for (let i = 1; i <= 20; i++)
-      await assignments.released({ roomId: `r${i}`, messageId: `m${i}` }, null);
-    expect(compactions).not.toHaveBeenCalled();
-    const text = () => readFile(join(root, 'assignments.jsonl'), 'utf8');
-    while ((await text()).includes('burst-text-') && Date.now() - started < 3000)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(await text()).not.toContain('burst-text-');
-    expect(compactions).toHaveBeenCalledTimes(1);
-    await assignments.close();
-    expect(compactions).toHaveBeenCalledTimes(1);
-  });
-
-  it('compacts what a release scheduled when the host stops, before letting go of the journal', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'shared-watch-compact-close-'));
-    roots.push(root);
-    const assignments = await AgentHostAssignments.open(root);
-    await assignments.park(
-      { sequence: 1, roomId: 'r', messageId: 'm', event: { t: 'closing-text' } },
-      true
-    );
-    await assignments.released({ roomId: 'r', messageId: 'm' }, null);
-    await assignments.close();
-    expect(await readFile(join(root, 'assignments.jsonl'), 'utf8')).not.toContain('closing-text');
-  });
-
-  it('keeps a held message waiting across numberings, and drops it once released', () => {
-    const records = [
-      { parked: 3, roomId: 'h', messageId: 'h1', spawning: true, event: { t: 'x' } },
-      { restarted: true as const, at: 'one' },
-      { handled: 2 },
-      { restarted: true as const, at: 'two' },
-      { handled: 9 },
-      { handled: 4 },
-    ];
-    expect(compactAssignments(records)).toEqual([
-      records[0],
-      { restarted: true, at: 'two' },
-      { handled: 9 },
-    ]);
-    expect(
-      compactAssignments([...records, { released: { roomId: 'h', messageId: 'h1' } }])
-    ).toEqual([{ restarted: true, at: 'two' }, { handled: 9 }]);
-  });
 });

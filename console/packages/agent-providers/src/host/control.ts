@@ -65,14 +65,6 @@ export const controlMessageSchema = z.union([
   z.object({ forget: z.string().min(1) }),
   /** Start the session a message to this room would start, before the message is sent. */
   z.object({ warm: z.object({ roomId: z.string().min(1) }) }),
-  /** The agents controller's memory guard is about to stop this agent: tell its rooms. */
-  z.object({ stopForMemory: z.literal(true) }),
-  /** Level 3: the launcher hands this host the one-time ticket for its next hub hello. */
-  z.object({
-    hubTicket: z.string().regex(/^[0-9a-f]{32}$/),
-    /** HMAC of the ticket under this launch's push key: a ticket without a good one is ignored. */
-    mac: z.string().regex(/^[0-9a-f]{64}$/),
-  }),
   /**
    * A session's buffered reasoning, from its host. It rides on a `health`
    * message because a sidecar that predates it closes the connection on any
@@ -152,12 +144,6 @@ export async function handleControlMessage(
   dispatching: () => void
 ): Promise<unknown> {
   const { links, watcher } = context;
-  if ('hubTicket' in message) {
-    // The confirmation, or a refusal that says nothing about why.
-    const taken = watcher.giveHubTicket(message.hubTicket, message.mac);
-    if (taken === null) throw new Error('Ticket not taken.');
-    return taken;
-  }
   // The sessions directory is shared by every agent on the machine.
   const named = namedSession(message);
   const owner = named === null ? null : await sessionOwner(named);
@@ -215,7 +201,6 @@ export async function handleControlMessage(
   if ('place' in message) return watcher.place(message.place.sessionId, message.place.roomId);
   if ('forget' in message) return watcher.forget(message.forget);
   if ('warm' in message) return watcher.warm(message.warm.roomId);
-  if ('stopForMemory' in message) return watcher.stopForMemory();
   if ('reasoning' in message)
     return links.reasoning(
       sharedSessionRoot(message.reasoning.sessionId),
@@ -574,23 +559,6 @@ export class ControlClient {
       .string()
       .nullable()
       .parse(await this.call({ warm: { roomId } }));
-  }
-
-  /** The memory guard is about to stop this agent: its rooms are told; resolves to how many. */
-  async stopForMemory(): Promise<number> {
-    return z
-      .number()
-      .int()
-      .nonnegative()
-      .parse(await this.call({ stopForMemory: true }));
-  }
-
-  /** Level 3: hands the host the one-time ticket for its next hub hello. */
-  async giveHubTicket(ticket: string, mac: string): Promise<string> {
-    return z
-      .string()
-      .regex(/^[0-9a-f]{64}$/)
-      .parse(await this.call({ hubTicket: ticket, mac }));
   }
 
   /** The sidecar's room watcher: its connection state and placements. */

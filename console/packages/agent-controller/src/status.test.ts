@@ -6,7 +6,6 @@ import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
-import type { RestState } from './rest';
 import { type AgentObservation, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -16,7 +15,6 @@ import {
 } from './schemas';
 import { SealedLogins } from './sealed-logins';
 import {
-  awakeSessions,
   mapAgentProcess,
   noSessionMidTurn,
   PathProviderLocator,
@@ -24,12 +22,8 @@ import {
   providerStatusFrom,
   ProviderStatuses,
   StatusCollector,
-  reportFingerprint,
-  sessionChangeEntries,
-  sessionsSent,
   statusFingerprint,
   toolStatuses,
-  sessionStateOf,
 } from './status';
 import { type AgentRow, ControllerStore } from './store';
 import { FakeLocator, FakeRuntime } from './testing/fake-runtime';
@@ -623,84 +617,6 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(statuses.loginProblem('claude')?.code).toBe('internal');
   });
 
-  it('doesn’t mark a given login expired when its sign-in check didn’t run, and checks again on the next use', async () => {
-    // Just after a box wakes, the agents container's launcher isn't linked yet,
-    // so the check can't run. That is no verdict on the login (1 Nov defect).
-    const runtime = new FakeRuntime();
-    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
-    runtime.loginReadiness = {
-      status: 'unknown',
-      message: 'The sign-in check did not run (not_connected).',
-      models: [],
-    };
-    answer = sealedAnswer(vertexCredentialFixture(), 2, 'vertex');
-    const statuses = build(runtime);
-    const first = await statuses.check('claude');
-    expect(first).toMatchObject({ auth: 'unknown', auth_source: 'sealed' });
-    expect(first.reason).toBeUndefined();
-    expect(first.auth_problem).toContain('did not run');
-    expect(statuses.loginProblem('claude')).toBeNull();
-    expect(statuses.hasUnchecked()).toBe(true);
-    expect(await statuses.givenLogin('claude')).toBeNull();
-
-    // The launcher links: the next use checks again at once, not ten minutes later.
-    runtime.loginReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
-    expect((await statuses.givenLogin('claude'))?.kind).toBe('vertex');
-    expect(runtime.loginProbes).toHaveLength(3);
-    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
-    expect(statuses.hasUnchecked()).toBe(false);
-  });
-
-  it('keeps a given login that signed in while a later check can’t run', async () => {
-    const runtime = new FakeRuntime();
-    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
-    answer = sealedAnswer('sk-ant-oat-given', 5);
-    const statuses = build(runtime);
-    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
-    runtime.loginReadiness = { status: 'unknown', message: 'not linked', models: [] };
-    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
-    expect((await statuses.givenLogin('claude'))?.credential).toBe('sk-ant-oat-given');
-    // A new revision that can't be checked isn't used on trust.
-    answer = sealedAnswer('sk-ant-oat-newer', 6);
-    expect(await statuses.check('claude')).toMatchObject({
-      auth: 'unknown',
-      auth_source: 'sealed',
-    });
-    expect(await statuses.givenLogin('claude')).toBeNull();
-  });
-
-  it('never keeps a withdrawn login because a sign-in check can’t run (security)', async () => {
-    const runtime = new FakeRuntime();
-    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
-    answer = sealedAnswer('sk-ant-oat-given', 7);
-    const statuses = build(runtime);
-    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
-    // Withdrawn in Switch while the box's check can't run: nothing is used.
-    answer = null;
-    runtime.loginReadiness = { status: 'unknown', message: 'not linked', models: [] };
-    expect(await statuses.check('claude')).toMatchObject({
-      auth: 'missing',
-      reason: 'provider_login_missing',
-    });
-    expect(await statuses.givenLogin('claude')).toBeNull();
-    expect(statuses.hasUnchecked()).toBe(false);
-  });
-
-  it('still marks a given login expired when its sign-in check runs and fails', async () => {
-    const runtime = new FakeRuntime();
-    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
-    runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
-    answer = sealedAnswer('sk-ant-oat-expired');
-    const statuses = build(runtime);
-    expect(await statuses.check('claude')).toMatchObject({
-      auth: 'expired',
-      reason: 'provider_login_expired',
-    });
-    // Cached as before: no second probe within the TTL.
-    expect(await statuses.givenLogin('claude')).toBeNull();
-    expect(runtime.loginProbes).toHaveLength(1);
-  });
-
   it('keeps the login it holds while Switch cannot be asked', async () => {
     const runtime = new FakeRuntime();
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
@@ -859,50 +775,6 @@ describe('StatusCollector', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("reports the box's /proc/meminfo figures when there are some, and leaves them out when not", async () => {
-    const runtime = new FakeRuntime();
-    const providers = new ProviderStatuses({
-      locator: new FakeLocator(),
-      runtime,
-      sealed: null,
-      probeCwd: dir,
-      now: () => NOW,
-      log: silentLogger,
-      onChange: () => {},
-    });
-    const collectorWith = (meminfo: () => Promise<{ anon: number; cached: number } | null>) =>
-      new StatusCollector({
-        store,
-        runtime,
-        providers,
-        tools: async () => [],
-        attached: () => true,
-        dataDir: dir,
-        workspacesDir: join(dir, 'workspaces'),
-        version: '0.1.0',
-        updatedBy: 'self',
-        now: () => NOW,
-        meminfo,
-      });
-    const assignment = { revision: 1, agents: [] };
-    const read = await collectorWith(async () => ({
-      anon: 940_496 * 1024,
-      cached: 571_544 * 1024,
-    })).collect(assignment);
-    expect(read.machine).toMatchObject({
-      mem_anon_bytes: 963_067_904,
-      mem_cached_bytes: 585_261_056,
-    });
-    expect(statusReportSchema.safeParse({ ...read, seq: 1 }).success).toBe(true);
-
-    const none = await collectorWith(async () => null).collect(assignment);
-    expect(none.machine).not.toHaveProperty('mem_anon_bytes');
-    expect(none.machine).not.toHaveProperty('mem_cached_bytes');
-    expect(statusReportSchema.safeParse({ ...none, seq: 1 }).success).toBe(true);
-    // A new reading alone does not count as a change worth reporting early.
-    expect(statusFingerprint(read)).toBe(statusFingerprint(none));
-  });
-
   it('builds a report the protocol accepts, keeping since across reports', async () => {
     let clock = NOW;
     const runtime = new FakeRuntime();
@@ -916,8 +788,6 @@ describe('StatusCollector', () => {
       onChange: () => {},
     });
     await providers.check('claude');
-    const awakeSeen: [string, number][] = [];
-    const agentsSeen: string[][] = [];
     const collector = new StatusCollector({
       store,
       runtime,
@@ -927,21 +797,6 @@ describe('StatusCollector', () => {
         { tool: 'gh', state: 'missing' },
       ],
       attached: () => true,
-      // The box valve (B84/B85): its cap is reported, and it hears each agent's awake count.
-      onAgentAwake: (agentId, awake) => void awakeSeen.push([agentId, awake]),
-      onAgentsSeen: (ids) => void agentsSeen.push([...ids]),
-      sessionsMax: () => 12,
-      valveHosts: () => ({ joined: 2, hosts: 3 }),
-      valveMemory: () => 'unprotected',
-      // The guard's note goes as a fixed code and its figures, never text (status extras).
-      guard: {
-        held: () => null,
-        oomKills: () => 0,
-        boxNote: () => ({ code: 'unexplained', boxBytes: 5_000_000_000, shmemBytes: null }),
-      },
-      gatewayCounts: () => ({ agents: 4, refused: 1, callsToday: 37, capped: false }),
-      // The guard is on and the valve is off here: only the guard's count is sent.
-      boxCounts: () => ({ guardStops: 3, valveParks: null }),
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
       version: '0.1.0',
@@ -975,23 +830,6 @@ describe('StatusCollector', () => {
     });
     expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
-    expect(first.machine.sessions_max).toBe(12);
-    expect(first.machine).toMatchObject({ valve_hosts: 3, valve_hosts_joined: 2 });
-    // B113: a box whose memory the valve has never read is reported, so an operator sees it.
-    expect(first.machine.valve_memory).toBe('unprotected');
-    expect(first.machine.memory_note).toBe('unexplained');
-    expect(first.machine.memory_note_box_bytes).toBe(5_000_000_000);
-    expect(first.machine.memory_note_shmem_bytes).toBeUndefined();
-    expect(first.machine).toMatchObject({
-      gateway_agents: 4,
-      gateway_refused: 1,
-      gateway_calls_today: 37,
-      gateway_capped: false,
-    });
-    expect(first.machine.guard_stops).toBe(3);
-    expect(first.machine).not.toHaveProperty('valve_parks');
-    expect(awakeSeen).toEqual([['agent-1', 2]]);
-    expect(agentsSeen).toEqual([['agent-1']]);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
     expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
 
@@ -1015,46 +853,6 @@ describe('StatusCollector', () => {
     const resolved = await collector.collect(assignment);
     expect(resolved.agents[0]!.directory).toBe('/work/scout');
     expect(statusFingerprint(resolved)).not.toBe(statusFingerprint(second));
-
-    runtime.agents.set(
-      'agent-1',
-      observed({
-        alive: true,
-        health: {
-          ...health('connected')!,
-          sessions: { 'session-a': 'parked', 'session-b': 'parked' },
-        },
-      })
-    );
-    const parked = await collector.collect(assignment);
-    expect(parked.agents[0]!.sessions).toEqual({ active: 2, ids: ['session-a', 'session-b'] });
-    expect(parked.machine.sessions_running).toBe(0);
-
-    // Messages waiting for room: reported with the oldest, and only while any wait.
-    runtime.agents.set(
-      'agent-1',
-      observed({
-        alive: true,
-        health: {
-          ...health('connected')!,
-          waitingForRoom: { count: 2, oldestSince: '2026-01-01T11:59:00.000Z' },
-        },
-      })
-    );
-    const waiting = await collector.collect(assignment);
-    expect(waiting.agents[0]!.waiting_for_room).toEqual({
-      count: 2,
-      oldest_since: '2026-01-01T11:59:00.000Z',
-    });
-    expect(statusReportSchema.safeParse({ ...waiting, seq: 2 }).success).toBe(true);
-    runtime.agents.set(
-      'agent-1',
-      observed({
-        alive: true,
-        health: { ...health('connected')!, waitingForRoom: { count: 0, oldestSince: null } },
-      })
-    );
-    expect((await collector.collect(assignment)).agents[0]).not.toHaveProperty('waiting_for_room');
 
     runtime.agents.set('agent-1', observed({ failure: 'boom' }));
     const third = await collector.collect(assignment);
@@ -1087,293 +885,5 @@ describe('statusFingerprint', () => {
       statusFingerprint(report('Not logged in'))
     );
     expect(statusFingerprint(report())).not.toBe(statusFingerprint(report('Invalid API key')));
-  });
-});
-
-describe('reportFingerprint', () => {
-  const report = (session: 'parked' | 'waking' | 'active' | null) =>
-    ({
-      controller: { assignment_revision: 1 },
-      providers: [],
-      tools: [],
-      agents: [
-        {
-          agent_id: 'user-a-lead',
-          applied_revision: 1,
-          process: 'running',
-          attached: true,
-          sessions: { active: 1, ids: ['session-lead'] },
-          session,
-        },
-      ],
-    }) as unknown as Parameters<typeof reportFingerprint>[0];
-
-  it('changes when only where the sessions stand changes, which statusFingerprint does not see', () => {
-    // R7, 26 Oct: parked, then waking, then active, with nothing else changing.
-    const [parked, waking, active] = (['parked', 'waking', 'active'] as const).map(report);
-    expect(new Set([parked, waking, active].map(reportFingerprint)).size).toBe(3);
-    expect(new Set([parked, waking, active].map(statusFingerprint)).size).toBe(1);
-    expect(reportFingerprint(report(null))).not.toBe(reportFingerprint(parked));
-  });
-
-  it('changes when messages start or stop waiting for room, so the card shows within a poll', () => {
-    const idle = report('parked');
-    const waiting = structuredClone(idle);
-    (waiting.agents[0] as { waiting_for_room?: unknown }).waiting_for_room = {
-      count: 1,
-      oldest_since: '2026-10-27T12:00:00Z',
-    };
-    expect(reportFingerprint(waiting)).not.toBe(reportFingerprint(idle));
-    expect(statusFingerprint(waiting)).toBe(statusFingerprint(idle));
-  });
-});
-
-describe('sessionChangeEntries (B61 tail log)', () => {
-  // QA's rerun, 27 Oct: reply at +3.16 s, 'waking' reached Switch at +3.5 s,
-  // 'active' at +9.0 s. The log must show each move with its times.
-  const t0 = Date.parse('2026-10-27T08:30:00.000Z');
-  const report = (seq: number, session: 'parked' | 'waking' | 'active' | null) =>
-    ({
-      seq,
-      agents: [
-        { agent_id: 'user-a-lead', session },
-        { agent_id: 'user-a-qa', session: 'parked' },
-      ],
-    }) as unknown as Parameters<typeof sessionChangeEntries>[1];
-
-  it('logs one entry per agent whose sessions moved, with ids, states and times only', () => {
-    const before = sessionsSent(report(1, 'parked'));
-    const entries = sessionChangeEntries(before, report(2, 'waking'), {
-      checkedAt: t0 + 3_400,
-      sentAt: t0 + 3_500,
-      skippedAt: null,
-    });
-    expect(entries).toEqual([
-      {
-        message: 'Status report carried a session change',
-        fields: {
-          agent_id: 'user-a-lead',
-          seq: 2,
-          from: 'parked',
-          to: 'waking',
-          checked_at: '2026-10-27T08:30:03.400Z',
-          sent_at: '2026-10-27T08:30:03.500Z',
-          reason: 'seen at this check',
-        },
-      },
-    ]);
-  });
-
-  it('names the skipped check when a change waited behind a report on its way', () => {
-    const before = sessionsSent(report(2, 'waking'));
-    const [entry] = sessionChangeEntries(before, report(3, 'active'), {
-      checkedAt: t0 + 8_900,
-      sentAt: t0 + 9_000,
-      skippedAt: t0 + 3_900,
-    });
-    expect(entry!.fields).toMatchObject({
-      from: 'waking',
-      to: 'active',
-      reason: 'a check was skipped while another report was on its way',
-      skipped_at: '2026-10-27T08:30:03.900Z',
-    });
-  });
-
-  it('logs nothing for the first report or when nothing moved', () => {
-    const times = { checkedAt: t0, sentAt: t0, skippedAt: null };
-    expect(sessionChangeEntries(null, report(1, 'active'), times)).toEqual([]);
-    expect(
-      sessionChangeEntries(sessionsSent(report(1, 'active')), report(2, 'active'), times)
-    ).toEqual([]);
-  });
-});
-
-describe('sessions_running', () => {
-  // Box A, 27 Oct 11:50Z: user-a-designer parked with 6 placements, reported as 6 running,
-  // so a cloud machine that had ever chatted never read as idle to Core's sweep.
-  it('counts only awake sessions, so a parked box reports 0', () => {
-    const placements = { s1: 'r1', s2: 'r2', s3: 'r3' };
-    const at = (sessions: Record<string, 'active' | 'waking' | 'parked'>) =>
-      ({ ...health('connected'), placements, sessions }) as NonNullable<AgentObservation['health']>;
-    expect(awakeSessions(at({ s1: 'parked', s2: 'parked', s3: 'parked' }), 3)).toBe(0);
-    expect(awakeSessions(at({ s1: 'parked', s2: 'active', s3: 'waking' }), 3)).toBe(2);
-  });
-
-  it('counts every placement for a host that does not say where its sessions stand', () => {
-    expect(awakeSessions(health('connected')!, 2)).toBe(2);
-  });
-});
-
-describe('sessionStateOf', () => {
-  const withSessions = (
-    sessions: Record<string, 'active' | 'waking' | 'parked'> | undefined,
-    alive = true
-  ) =>
-    observed({
-      alive,
-      health: {
-        ...health('connected'),
-        ...(sessions ? { sessions } : {}),
-      } as AgentObservation['health'],
-    });
-
-  it('reports the most awake session: waking, then active, then parked', () => {
-    expect(sessionStateOf(withSessions({ a: 'parked', b: 'active', c: 'waking' }))).toBe('waking');
-    expect(sessionStateOf(withSessions({ a: 'parked', b: 'active' }))).toBe('active');
-    expect(sessionStateOf(withSessions({ a: 'parked', b: 'parked' }))).toBe('parked');
-  });
-
-  it('reports nothing when the watcher is not live, has no sessions, or is too old to say', () => {
-    expect(sessionStateOf(withSessions({ a: 'active' }, false))).toBeNull();
-    expect(sessionStateOf(withSessions({}))).toBeNull();
-    expect(sessionStateOf(withSessions(undefined))).toBeNull();
-  });
-});
-
-describe('a resting agent (B74)', () => {
-  const resting: RestState = { kind: 'resting', sessions: ['session-a', 'session-b'] };
-  const waking: RestState = { kind: 'waking', sessions: ['session-a', 'session-b'] };
-  const stoppedHost = observed({ alive: false, health: null });
-
-  function mapRest(
-    observation: AgentObservation,
-    rest: Parameters<typeof mapAgentProcess>[0]['rest'],
-    options: {
-      rowValue?: AgentRow | null;
-      assigned?: AgentAssignment;
-      streamCarries?: boolean;
-    } = {}
-  ) {
-    return mapAgentProcess({
-      assignment: options.assigned ?? entry(),
-      row: options.rowValue === undefined ? row() : options.rowValue,
-      observation,
-      relayAttached: false,
-      nowMs: NOW,
-      rest,
-      streamCarries: options.streamCarries ?? true,
-    });
-  }
-
-  it('reports running, never stopped or crashed, attached while Switch has it on the stream', () => {
-    // Without resting, the same stopped host maps to crashed.
-    expect(map(stoppedHost)).toMatchObject({ process: 'crashed' });
-    expect(mapRest(stoppedHost, resting)).toEqual({ process: 'running', attached: true });
-    expect(mapRest(stoppedHost, resting, { streamCarries: false })).toEqual({
-      process: 'running',
-      attached: false,
-    });
-  });
-
-  it('shows a failed start as failed, whatever resting says', () => {
-    const failed = row({
-      failure: { revision: 2, reason: 'internal', detail: 'The shared host launcher failed' },
-    });
-    expect(mapRest(stoppedHost, waking, { rowValue: failed })).toMatchObject({
-      process: 'failed',
-      reason: 'internal',
-    });
-    expect(mapRest(stoppedHost, resting, { rowValue: failed })).toMatchObject({
-      process: 'failed',
-    });
-  });
-
-  it('shows an agent its owner stopped as stopped', () => {
-    expect(
-      mapRest(stoppedHost, resting, { assigned: entry({ desired_state: 'stopped' }) })
-    ).toEqual({ process: 'stopped', attached: false });
-  });
-
-  it('reports running while woken and its host is not connected yet, then the host’s own state', () => {
-    expect(mapRest(stoppedHost, waking)).toEqual({ process: 'running', attached: true });
-    expect(mapRest(observed({ alive: true, health: health('connecting') }), waking)).toEqual({
-      process: 'running',
-      attached: true,
-    });
-    expect(mapRest(observed({ alive: true, health: health('connected') }), waking)).toMatchObject({
-      process: 'running',
-      since: '2026-01-01T11:30:00Z',
-    });
-  });
-
-  it('leaves an agent the memory guard stopped to the guard’s own state', () => {
-    expect(mapRest(stoppedHost, { kind: 'out_of_memory' })).toMatchObject({ process: 'crashed' });
-  });
-
-  describe('in the report', () => {
-    let dir: string;
-    let store: ControllerStore;
-    beforeEach(() => {
-      dir = mkdtempSync(join(tmpdir(), 'controller-rest-status-'));
-      store = ControllerStore.open(join(dir, 'controller.db'));
-    });
-    afterEach(() => {
-      store.close();
-      rmSync(dir, { recursive: true, force: true });
-    });
-
-    async function collect(
-      rest: Parameters<typeof mapAgentProcess>[0]['rest'],
-      observation: AgentObservation
-    ) {
-      const runtime = new FakeRuntime();
-      const providers = new ProviderStatuses({
-        locator: new FakeLocator(),
-        runtime,
-        sealed: null,
-        probeCwd: dir,
-        now: () => NOW,
-        log: silentLogger,
-        onChange: () => {},
-      });
-      const collector = new StatusCollector({
-        store,
-        runtime,
-        providers,
-        tools: async () => [],
-        attached: () => false,
-        rest: () => rest ?? null,
-        streamCarries: () => true,
-        dataDir: dir,
-        workspacesDir: join(dir, 'workspaces'),
-        version: '0.1.0',
-        updatedBy: 'self',
-        now: () => NOW,
-      });
-      store.recordApplied('agent-1', 2, '2026-01-01T11:00:00Z');
-      runtime.agents.set('agent-1', observation);
-      return collector.collect({ revision: 7, agents: [entry()] });
-    }
-
-    it('reads as parked with its sessions, counts 0 awake, and changes nothing a reconcile is decided on', async () => {
-      const parked = await collect(
-        null,
-        observed({
-          alive: true,
-          health: {
-            ...health('connected')!,
-            sessions: { 'session-a': 'parked', 'session-b': 'parked' },
-          },
-        })
-      );
-      const asleep = await collect(resting, stoppedHost);
-      expect(statusReportSchema.safeParse({ ...asleep, seq: 1 }).success).toBe(true);
-      expect(asleep.agents[0]).toMatchObject({
-        process: 'running',
-        attached: true,
-        session: 'parked',
-        sessions: { active: 2, ids: ['session-a', 'session-b'] },
-      });
-      expect(asleep.machine.sessions_running).toBe(0);
-      expect(asleep.agents[0]!.reason).toBeUndefined();
-      expect(asleep.agents[0]!.process).toBe(parked.agents[0]!.process);
-      expect(asleep.agents[0]!.sessions).toEqual(parked.agents[0]!.sessions);
-    });
-
-    it('reads as waking and counts it awake while its host comes back, so the box is not stopped mid-wake', async () => {
-      const report = await collect(waking, stoppedHost);
-      expect(report.agents[0]).toMatchObject({ process: 'running', session: 'waking' });
-      expect(report.machine.sessions_running).toBe(1);
-    });
   });
 });

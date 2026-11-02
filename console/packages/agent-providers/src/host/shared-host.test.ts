@@ -16,7 +16,7 @@ import { abandonWaits, announcing, changed, until } from '../testing/until';
 import { Redactions } from './redaction';
 import { ServiceNotices } from './service-notices';
 import { connectParent, type ParentChannel } from './session-channel';
-import { parkAfterMs, refusalCode, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
+import { parkAfterMs, RESET_HOLD_MS, runSharedHost, sessionBusy } from './shared-host';
 import { hostParked } from './shared-state';
 
 // Every step here writes the session journal and flushes it to disk, and
@@ -160,13 +160,6 @@ async function start(
     instructions?: string | null;
     /** The provider takes developer messages mid-conversation; each one is recorded here. */
     developerMessages?: string[];
-    /**
-     * The first start reports ready only when the test emits it, as a real
-     * provider does a moment after the host is up; later starts report at once.
-     */
-    readyLater?: boolean;
-    /** How long a reset waits for a session still starting. */
-    sessionReadyMs?: number;
   } = {}
 ): Promise<Harness> {
   const parent = fakeParent();
@@ -184,7 +177,6 @@ async function start(
   const turns: Harness['turns'] = [];
   let listener: (event: ProviderRuntimeEvent) => void = () => {};
   let live = false;
-  let starts = 0;
   const emit = (event: Record<string, unknown>) =>
     listener({
       ...event,
@@ -210,8 +202,7 @@ async function start(
           'No saved conversation'
         );
       live = true;
-      if (!opts.readyLater || starts++ > 0)
-        emit({ type: 'session.state.changed', status: 'ready' });
+      emit({ type: 'session.state.changed', status: 'ready' });
       return { provider: 'claude', sessionId: 'session', nativeSessionId: 'native' };
     }),
     sendTurn: vi.fn(async ({ turnId, text, attachments }) => {
@@ -325,7 +316,6 @@ async function start(
       parent: channel,
       parkAfterMs: opts.parkAfterMs ?? null,
       instructions: opts.instructions ?? null,
-      ...(opts.sessionReadyMs !== undefined ? { sessionReadyMs: opts.sessionReadyMs } : {}),
     },
     announcing(adapter),
     stop.signal
@@ -339,14 +329,13 @@ async function start(
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line));
-  if (!opts.readyLater)
-    await until(async () =>
-      expect(
-        (await journal()).some(
-          (event) => event.body.type === 'session.upsert' && event.body.session.status === 'ready'
-        )
-      ).toBe(true)
-    );
+  await until(async () =>
+    expect(
+      (await journal()).some(
+        (event) => event.body.type === 'session.upsert' && event.body.session.status === 'ready'
+      )
+    ).toBe(true)
+  );
   // A request sent before the host listens for them would go unheard.
   await until(() => expect(parent.sent.some((m) => m.kind === 'ready')).toBe(true));
   return {
@@ -871,42 +860,6 @@ it('parks itself once it has sat idle, and says so for whoever would start it', 
   expect(host.adapter.stopSession).toHaveBeenCalled();
 });
 
-it('parks early when its parent asks, because the machine is short of memory', async () => {
-  // A day's quiet spell: only the request can make it park now.
-  const host = await start({ parkAfterMs: 24 * 60 * 60 * 1000 });
-  expect(await host.parent.ask({ type: 'park' })).toMatchObject({
-    ok: true,
-    value: { parking: true },
-  });
-  await vi.waitFor(async () => expect(await hostParked(host.root)).toBe(true), { timeout: 5000 });
-  expect(await host.stop()).toBeNull();
-});
-
-it('refuses to park early while a turn is under way', async () => {
-  const host = await start({ rooms: true, ask: 'approval', parkAfterMs: 24 * 60 * 60 * 1000 });
-  try {
-    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Write it') });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
-    // Asked once the host itself reports the turn running: on a loaded machine
-    // the provider can be handed the turn a moment before the host's view says so.
-    await vi.waitFor(
-      async () =>
-        expect(await host.parent.ask({ type: 'snapshot' })).toMatchObject({
-          value: { turns: [{ status: 'running' }] },
-        }),
-      { timeout: 5000 }
-    );
-    expect(await host.parent.ask({ type: 'park' })).toMatchObject({
-      ok: true,
-      value: { parking: false },
-    });
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    expect(await hostParked(host.root)).toBe(false);
-  } finally {
-    await host.stop();
-  }
-});
-
 it('does not park while a turn waits on a person', async () => {
   const host = await start({ rooms: true, ask: 'approval', parkAfterMs: 1000 });
   try {
@@ -1047,201 +1000,6 @@ it('tells the session to rejoin its room once a reset asked for there has applie
     await host.parent.ask({ type: 'command', command: reset, requesterName: 'louisa' });
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(host.turns).toHaveLength(1);
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
-/** Answers every ask the host sends its parent, as a watcher that posted it would. */
-function answerAsks(host: Harness): () => { type?: string; body?: string; threadId?: string }[] {
-  const answered = new Set<number>();
-  const timer = setInterval(() => {
-    for (const message of host.parent.sent) {
-      if (message.kind !== 'ask' || answered.has(message.id!)) continue;
-      answered.add(message.id!);
-      host.parent.port.emit('message', { kind: 'answer', id: message.id, ok: true, value: null });
-    }
-  }, 10);
-  timer.unref();
-  return () =>
-    host.parent.sent
-      .filter((message) => message.kind === 'ask')
-      .map((message) => (message as unknown as { ask: Record<string, string> }).ask);
-}
-
-const roomReset = (commandId: string): Command => ({
-  ...relayed('current', commandId, { type: 'session.reset' }),
-  origin: {
-    actorId: '@person:test',
-    surface: 'mattermost',
-    roomId: 'room',
-    threadId: 'thread',
-    messageId: 'message-9',
-  },
-});
-
-// B71, box A 27 Oct: `!reset` to a parked session logged "Dropped command …:
-// session … is not running here" while the room read "Resetting my session".
-// The watcher now starts a resting session for its reset; the host clears the
-// conversation, says so with the designer's line, takes no turn, and rests again.
-it('answers a reset of a resting session with the resting line, takes no turn, and parks again', async () => {
-  const host = await start({ rooms: true, resettable: true, parkAfterMs: 60_000 });
-  const asks = answerAsks(host);
-  const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-  try {
-    const answer = await host.parent.ask({
-      type: 'command',
-      command: roomReset('resting-reset'),
-      requesterName: 'louisa',
-      roomTold: false,
-      resting: true,
-    });
-    expect(answer).toMatchObject({ ok: true, value: { status: 'applied' } });
-    // A fresh provider conversation, not the saved one resumed.
-    expect(vi.mocked(host.adapter.startSession).mock.calls.at(-1)![0]).not.toHaveProperty('resume');
-    expect(asks()).toEqual([
-      {
-        type: 'room-reply',
-        roomId: 'room',
-        threadId: 'thread',
-        body: "I was resting, so I've cleared my saved session. My next reply starts fresh.",
-      },
-    ]);
-    await vi.waitFor(async () => expect(await hostParked(host.root)).toBe(true), {
-      timeout: 5000,
-    });
-    expect(info.mock.calls.map(([line]) => String(line))).toContain(
-      'Parking session session early: it was started only to take a reset while resting.'
-    );
-    expect(host.turns).toEqual([]);
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
-// B71, box C 27 Oct: the parked session's host was started for its reset and
-// handed it at once, while the provider was still starting. The host turned
-// it away as busy, the room read "while I'm working on a turn", and the
-// conversation was kept. The reset now waits for the session to be ready.
-it('waits for a session started for its reset to finish starting, then resets it', async () => {
-  const host = await start({
-    rooms: true,
-    resettable: true,
-    parkAfterMs: 60_000,
-    readyLater: true,
-  });
-  const asks = answerAsks(host);
-  vi.spyOn(console, 'info').mockImplementation(() => {});
-  try {
-    const answer = host.parent.ask({
-      type: 'command',
-      command: roomReset('reset-while-starting'),
-      requesterName: 'louisa',
-      roomTold: false,
-      resting: true,
-    });
-    let answered = false;
-    void answer.then(() => (answered = true));
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    // Still starting: nothing said, nothing refused.
-    expect(answered).toBe(false);
-    expect(asks()).toEqual([]);
-    host.emit({ type: 'session.state.changed', status: 'ready' });
-    expect(await answer).toMatchObject({ ok: true, value: { status: 'applied' } });
-    expect(vi.mocked(host.adapter.startSession).mock.calls.at(-1)![0]).not.toHaveProperty('resume');
-    expect(asks().map((ask) => ask.body)).toEqual([
-      "I was resting, so I've cleared my saved session. My next reply starts fresh.",
-    ]);
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
-it('says it could not reset, not that it is busy, when the session never finishes starting', async () => {
-  const host = await start({
-    rooms: true,
-    resettable: true,
-    parkAfterMs: 60_000,
-    readyLater: true,
-    sessionReadyMs: 300,
-  });
-  const asks = answerAsks(host);
-  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  try {
-    const answer = await host.parent.ask({
-      type: 'command',
-      command: roomReset('reset-never-ready'),
-      requesterName: 'louisa',
-      roomTold: false,
-      resting: true,
-    });
-    expect(answer).toMatchObject({ ok: true, value: { status: 'rejected' } });
-    await vi.waitFor(() => expect(asks()).toHaveLength(1), { timeout: 5000 });
-    expect(asks()[0]!.body).toBe(
-      "I couldn't reset my session. Send the command again in a minute, or ask my owner to restart me from Switch Console."
-    );
-    // The saved conversation was not replaced.
-    expect(host.adapter.startSession).toHaveBeenCalledOnce();
-    // Logged with ids and the reason's code, not the refusal's text (B82).
-    const lines = warn.mock.calls.map(([line]) => String(line));
-    expect(lines).toContain(
-      'Reset reset-never-ready of session session was refused: SESSION_STARTING.'
-    );
-    expect(lines.join('\n')).not.toContain('did not finish starting');
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
-it('logs a refusal by its code, or its first word, and never the rest of its text', () => {
-  expect(refusalCode('Error: SESSION_BUSY: finish or interrupt the current turn first.')).toBe(
-    'SESSION_BUSY'
-  );
-  expect(refusalCode('Error: SESSION_STARTING: the session did not finish starting.')).toBe(
-    'SESSION_STARTING'
-  );
-  expect(refusalCode('Error: UNSUPPORTED_CAPABILITY')).toBe('UNSUPPORTED_CAPABILITY');
-  expect(refusalCode('Error: Session stop has been requested.')).toBe('Session');
-  expect(refusalCode(null)).toBe('UNKNOWN');
-});
-
-it('says an awake reset was taken only once applied, when Switch left that to the box', async () => {
-  const host = await start({ rooms: true, resettable: true });
-  const asks = answerAsks(host);
-  try {
-    const answer = await host.parent.ask({
-      type: 'command',
-      command: roomReset('awake-reset'),
-      requesterName: 'louisa',
-      roomTold: false,
-    });
-    expect(answer).toMatchObject({ ok: true, value: { status: 'applied' } });
-    await vi.waitFor(() => expect(asks()).toHaveLength(1), { timeout: 5000 });
-    expect(asks()[0]).toMatchObject({
-      type: 'room-reply',
-      threadId: 'thread',
-      body: 'Resetting my session: clearing context, then reconnecting.',
-    });
-    // The agent still rejoins the room and answers the person, as before.
-    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
-    expect(host.turns[0]!.text).toContain('The requested reset completed successfully.');
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
-it('adds no line of its own to an awake reset that Switch already announced', async () => {
-  const host = await start({ rooms: true, resettable: true });
-  const asks = answerAsks(host);
-  try {
-    await host.parent.ask({
-      type: 'command',
-      command: roomReset('announced-reset'),
-      requesterName: 'louisa',
-    });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    expect(asks()).toEqual([]);
   } finally {
     expect(await host.stop()).toBeNull();
   }
@@ -1417,148 +1175,6 @@ it('stops holding its host busy for a reset decision after the bound, and keeps 
     vi.useRealTimers();
   }
 }, 30000);
-
-/** The notice codes a host has recorded, in order. */
-async function noticeCodes(root: string): Promise<string[]> {
-  return (await readFile(join(root, 'events.jsonl'), 'utf8'))
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line).body)
-    .filter((body) => body.type === 'notice')
-    .map((body) => body.code);
-}
-
-/** Runs one room message to a completed turn, then stops the host as a park would. */
-async function answeredThenStopped(host: Harness): Promise<void> {
-  await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'first') });
-  await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 3000 });
-  host.emit({
-    type: 'turn.completed',
-    turnId: host.turns[0]!.turnId,
-    outcome: 'completed',
-    usage: [],
-  });
-  await new Promise((resolve) => setTimeout(resolve, 300));
-}
-
-// B83, box C 27 Oct: a reset to a resting session opened a new conversation
-// and parked before anything was said in it, so Claude never saved it. The
-// next message found nothing to resume, and the owner saw an error
-// ("conversation unavailable") and a warning ("starting fresh") after a reset
-// that had worked. A conversation that never had a turn now starts afresh
-// quietly, and each waiting message is answered once in it.
-it('starts afresh, with no error or warning, when the conversation a resting reset opened was never saved', async () => {
-  const first = await start({ rooms: true, resettable: true, parkAfterMs: 60_000 });
-  answerAsks(first);
-  const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-  await answeredThenStopped(first);
-  expect(
-    await first.parent.ask({
-      type: 'command',
-      command: roomReset('resting-reset'),
-      requesterName: 'louisa',
-      roomTold: false,
-      resting: true,
-    })
-  ).toMatchObject({ ok: true, value: { status: 'applied' } });
-  expect(await first.stop()).toBeNull();
-  await rm(join(first.root, 'shared-owner.lock'));
-  const before = (await noticeCodes(first.root)).length;
-
-  const host = await start({
-    rooms: true,
-    resettable: true,
-    base: first.base,
-    conversationLost: true,
-  });
-  try {
-    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'second') });
-    await host.parent.ask({ type: 'room', handoff: roomMessage(3, 'third') });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
-    host.emit({
-      type: 'turn.completed',
-      turnId: host.turns[0]!.turnId,
-      outcome: 'completed',
-      usage: [],
-    });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(2), { timeout: 5000 });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(host.turns.map((turn) => turn.text.includes('second'))).toEqual([true, false]);
-    expect(host.turns.map((turn) => turn.text.includes('third'))).toEqual([false, true]);
-    // The saved one was asked for, then a new one started: no second reset.
-    const starts = vi.mocked(host.adapter.startSession).mock.calls;
-    expect(starts).toHaveLength(2);
-    expect(starts[0]![0].resume).toEqual({ nativeSessionId: 'native' });
-    expect(starts[1]![0].resume).toBeUndefined();
-    const added = (await noticeCodes(host.root)).slice(before);
-    expect(added).not.toContain('NATIVE_CONVERSATION_UNAVAILABLE');
-    expect(added).not.toContain('FRESH_START_FOR_ROOM');
-    expect(added).not.toContain('CONTEXT_RESET');
-    // Said in the log, so the retest can see it happen.
-    expect(info.mock.calls.map(([line]) => String(line))).toContain(
-      'Session session starts a new conversation: the conversation it would resume had no turns.'
-    );
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
-
-// The tech lead's case for B83: a message that arrives while the host is
-// starting a fresh conversation for an earlier one (a conversation that had
-// turns, then was lost) waits for it, and both are answered once, in order.
-it('answers a message that arrives during a fresh start for an earlier one, once, after it', async () => {
-  const info = vi.spyOn(console, 'info').mockImplementation(() => {});
-  const first = await start({ rooms: true, resettable: true });
-  await answeredThenStopped(first);
-  expect(await first.stop()).toBeNull();
-  await rm(join(first.root, 'shared-owner.lock'));
-
-  const host = await start({
-    rooms: true,
-    resettable: true,
-    base: first.base,
-    conversationLost: true,
-  });
-  try {
-    const startSession = vi.mocked(host.adapter.startSession);
-    const normal = startSession.getMockImplementation()!;
-    let freshStarted!: () => void;
-    const freshStarting = new Promise<void>((resolve) => (freshStarted = resolve));
-    startSession.mockImplementationOnce(async (input) => {
-      freshStarted();
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      return normal(input);
-    });
-    await host.parent.ask({ type: 'room', handoff: roomMessage(2, 'second') });
-    await freshStarting;
-    // The fresh start is under way: this one is handed over in the middle of it.
-    await host.parent.ask({ type: 'room', handoff: roomMessage(3, 'third') });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(1), { timeout: 5000 });
-    expect(host.turns[0]!.text).toContain('second');
-    host.emit({
-      type: 'turn.completed',
-      turnId: host.turns[0]!.turnId,
-      outcome: 'completed',
-      usage: [],
-    });
-    await vi.waitFor(() => expect(host.turns).toHaveLength(2), { timeout: 5000 });
-    expect(host.turns[1]!.text).toContain('third');
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(host.turns).toHaveLength(2);
-    // Both in the new conversation: one fresh start, nothing resumed after it.
-    const starts = startSession.mock.calls;
-    expect(starts).toHaveLength(2);
-    expect(starts[1]![0].resume).toBeUndefined();
-    // A conversation that had a turn is never judged unused, across a restart
-    // from the same journal: it goes to the reset decision, with its notice.
-    expect(await noticeCodes(host.root)).toEqual(
-      expect.arrayContaining(['NATIVE_CONVERSATION_UNAVAILABLE', 'FRESH_START_FOR_ROOM'])
-    );
-    expect(info.mock.calls.map(([line]) => String(line)).join('\n')).not.toContain('had no turns');
-  } finally {
-    expect(await host.stop()).toBeNull();
-  }
-}, 20000);
 
 it('starts a fresh conversation for a room message the lost one could not take, and runs it', async () => {
   const first = await start({ rooms: true, resettable: true });

@@ -8,7 +8,6 @@ import {
   type Snapshot,
 } from '@switch-console/shared/session-v1';
 import { liveSupervisor, sharedSessionRoot } from './launch';
-import { restartReplyGivenUp, restartReplyRounds } from './restart-rounds';
 
 /** What the host's state adds to a journal replay: its last lease on the session. */
 export type JournalLease = { roomIds: string[] | null; retired: boolean | null } | null;
@@ -112,29 +111,4 @@ export async function readJournalSnapshot(sessionId: string): Promise<Snapshot> 
     break;
   }
   return replayJournal(events, (await liveSupervisor(root)) !== null, lease);
-}
-
-/**
- * Whether the session's host still owes a room an "I was restarted" line: its
- * inbox records one as `pending` with no `sent` after it. The reconnect
- * restart starts such a session so the line goes out without waiting for the
- * next message.
- */
-export async function owesRestartReply(sessionId: string): Promise<boolean> {
-  const lines = await completeLines(join(sharedSessionRoot(sessionId), 'inbox.jsonl'));
-  if (!lines) return false;
-  const state = new Map<string, string>();
-  for (const line of lines) {
-    try {
-      const record = JSON.parse(line) as { type?: string; commandId?: string; state?: string };
-      if (record.type === 'restart-reply' && record.commandId && record.state)
-        state.set(record.commandId, record.state);
-    } catch {
-      // A line the host never finished writing: not a record.
-    }
-  }
-  const rounds = await restartReplyRounds(sharedSessionRoot(sessionId));
-  return [...state.entries()].some(
-    ([turnId, value]) => value === 'pending' && !restartReplyGivenUp(rounds, turnId)
-  );
 }

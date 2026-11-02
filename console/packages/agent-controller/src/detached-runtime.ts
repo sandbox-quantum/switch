@@ -3,7 +3,6 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
-  CONTROL_FILE,
   clearTakenOver,
   type SharedHostConfig,
   WATCH_FLAGS_FILE,
@@ -12,7 +11,6 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
-import type { MarkerTable, OwnerMarkers } from './owner-marker';
 import type { DataLayout } from './paths';
 import {
   type AgentObservation,
@@ -55,35 +53,18 @@ export class DetachedRuntime implements AgentRunner {
       layout: DataLayout;
       /** The `shared-host-daemon.mjs` bundle from agent-providers. */
       bundlePath: string;
-      /**
-       * Marks everything an agent's host starts as that agent's, for the
-       * memory guard and resting agents to stop with proof (`owner-marker.ts`).
-       */
-      ownerMarkers?: Pick<OwnerMarkers | MarkerTable, 'environmentFor'>;
-      /**
-       * Starts the host from its written template in place of the bundle's
-       * `--ensure-watch`. Level 3's launcher does it in its own process, so the
-       * host is its child and its pid is known from the spawn.
-       */
-      start?: (agentId: string, root: string, templatePath: string) => Promise<void>;
     }
   ) {
     this.bundle = new LaunchedBundle(deps.bundlePath);
   }
 
-  /** Whether a host of this agent's recorded processes is alive and owns its root. */
-  private async living(root: string): Promise<boolean> {
+  async observe(agentId: string): Promise<AgentObservation> {
+    const root = this.deps.layout.watcherRoot(agentId);
     let living = false;
     for (const record of OWNER_RECORDS) {
       const pid = await recordedPid(join(root, record));
       if (pid !== null && pid !== process.pid && (await ownsRoot(pid, root))) living = true;
     }
-    return living;
-  }
-
-  async observe(agentId: string): Promise<AgentObservation> {
-    const root = this.deps.layout.watcherRoot(agentId);
-    const living = await this.living(root);
     const healthText = await readOptional(join(root, WATCHER_HEALTH_FILE));
     let health: AgentObservation['health'] = null;
     if (healthText !== null) {
@@ -107,25 +88,13 @@ export class DetachedRuntime implements AgentRunner {
     if (options.restart || options.replaceIdentity) await this.stop(agentId, { wait: true });
     if (options.replaceIdentity) await removeOptional(join(root, 'config.json'));
     if (options.clearTakenOver) await clearTakenOver(root);
-    // A host that ended without stopping cleanly (its box slept and the pod was
-    // killed) leaves its control.json, naming a port that is no longer its.
-    // The launcher would end every new host on its first ticket hand-over
-    // (`wrong_port`), so with no host of this agent alive, the file is stale
-    // and goes. A live host's own file is never touched (1 Nov defect).
-    if (!(await this.living(root))) await removeOptional(join(root, CONTROL_FILE));
     await this.writeFlags(root, { enabled: true, spawn: true });
     const templatePath = join(root, 'template.json');
     await writeAtomic(templatePath, JSON.stringify(template));
-    if (this.deps.start) return this.deps.start(agentId, root, templatePath);
-    await this.runBundle(
-      [root, templatePath, '--ensure-watch', 'false'],
-      LAUNCH_TIMEOUT_MS,
-      this.deps.ownerMarkers?.environmentFor(agentId) ?? {}
-    );
+    await this.runBundle([root, templatePath, '--ensure-watch', 'false'], LAUNCH_TIMEOUT_MS);
   }
 
-  /** `asked` is not needed here: its worker closes its sessions unasked, so cut-off turns owe their line. */
-  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
+  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await this.writeFlags(root, { enabled: false, spawn: false });
@@ -153,18 +122,9 @@ export class DetachedRuntime implements AgentRunner {
     await writeAtomic(join(root, WATCH_FLAGS_FILE), JSON.stringify(watchFlagsSchema.parse(flags)));
   }
 
-  /**
-   * Runs the bundle with this process's environment and `extraEnv`: the
-   * supervisor it starts, and everything after, inherit both. The controller's
-   * own environment is left as it is.
-   */
-  private async runBundle(
-    args: string[],
-    timeoutMs: number,
-    extraEnv: Record<string, string>
-  ): Promise<string> {
+  private async runBundle(args: string[], timeoutMs: number): Promise<string> {
     const child = spawn(process.execPath, [this.deps.bundlePath, ...args], {
-      env: { ...process.env, ...extraEnv },
+      env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';

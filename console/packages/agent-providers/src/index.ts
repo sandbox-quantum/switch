@@ -66,13 +66,7 @@ export {
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
-export {
-  commandLineNames,
-  killProcessTree,
-  judgeOwnerRecord,
-  processCommandLine,
-  recordedOwnerAlive,
-} from './host/process-fence';
+export { commandLineNames, killProcessTree, processCommandLine } from './host/process-fence';
 export { execProvider, findOnPath, spawnProvider, stopProvider } from './provider-process';
 export { replaceFile } from './host/replace-file';
 export {
@@ -125,19 +119,12 @@ export { superviseSharedHost } from './host/supervisor';
 export { controllerConnectionId } from './host/connection-id';
 export { AGENT_ENV_VARS, EXECUTION_INHERIT_ENV } from './host/agent-env';
 export { SHARED_GROUP_ENV } from './host/host-permissions';
-export { OWNER_MARKER_ENV, withOwnerMarker } from './host/owner-marker-env';
-export { boxLimitFromEnv, readUsage, startReserveFromEnv } from './host/memory-pressure';
-export { requestMemoryStop } from './host/memory-stop';
 export {
   type HostedCredential,
   hostedCredentialSchema,
   providerLoginEnvironment,
 } from './host/provider-login';
-export {
-  HOSTED_LOGIN_FILES,
-  materializeHostedProvider,
-  removeHostedLoginFiles,
-} from './host/hosted-provider';
+export { materializeHostedProvider } from './host/hosted-provider';
 export {
   generateSealingKeyPair,
   openProviderLogin,
@@ -170,7 +157,6 @@ export {
 export {
   WatcherControl,
   type PlaceOutcome,
-  type RestartNotice,
   type WatcherHealth,
   type WatcherState,
   watcherHealthSchema,
@@ -193,19 +179,6 @@ export {
 } from './providers/registry';
 export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/registry';
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
-export { macEquals, PUSH_KEY_BYTES, takenMac, ticketMac } from './host/push-key';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
-export {
-  BoxValve,
-  type BoxValveStatus,
-  type ValveEvent,
-  type BoxCap,
-  boxCap,
-  CAP_HEADROOM,
-  CONTROLLER_RESTING_BYTES,
-  SESSION_ALLOWANCE_BYTES,
-} from './host/box-valve';
-export { isValveFrame, ValveServer } from './host/box-valve-wire';
-export { HubHostValve, HubValveChannel } from './host/box-valve-client';

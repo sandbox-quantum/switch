@@ -48,18 +48,6 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
     command: z.unknown(),
     /** Who asked, as the room names them; null for a command from Console. */
     requesterName: z.string().nullable(),
-    /**
-     * Whether Switch already told the room a reset is under way. False from a
-     * Switch that leaves that to the box (B71); absent from one that predates
-     * it, which said so itself.
-     */
-    roomTold: z.boolean().optional(),
-    /**
-     * The session was resting (parked) when the reset came, and was started
-     * only to take it: it says so in the room rather than taking a turn, and
-     * goes back to rest.
-     */
-    resting: z.boolean().optional(),
   }),
   /** A room message the agent was addressed with, as the controller routed it. */
   z.object({
@@ -81,18 +69,6 @@ export const sessionRequestSchema = z.discriminatedUnion('type', [
    * link: a host that predates it cannot parse it and does not answer.
    */
   z.object({ type: z.literal('reasoning'), turnIds: z.array(z.string().min(1)).nullable() }),
-  /**
-   * Park now if idle, rather than after the usual quiet spell: the machine is
-   * short of memory. Answered `{ parking: false }` while a turn, a request to a
-   * person or background work is under way; a session mid-turn is never parked.
-   */
-  z.object({ type: z.literal('park') }),
-  /**
-   * Try again any "I was restarted" line this session still owes: its
-   * watcher's connection to Switch is back, after an outage that may have
-   * outlasted this start's tries. Answered `{ owed }`, the lines tried.
-   */
-  z.object({ type: z.literal('restart-replies') }),
 ]);
 export type SessionRequest = z.infer<typeof sessionRequestSchema>;
 
@@ -116,13 +92,6 @@ export const hostAskSchema = z.discriminatedUnion('type', [
     roomId: z.string().min(1),
     threadId: z.string().min(1).nullable(),
     body: z.string().min(1),
-    /**
-     * Post only if the room doesn't already show `body` from this agent in
-     * that thread after `afterMessageId`; answered `{ posted }`.
-     */
-    once: z.object({ afterMessageId: z.string().min(1) }).optional(),
-    /** The turn this is the restart line for: posted keyed by it where it can be. */
-    restartTurnId: z.string().min(1).max(200).optional(),
   }),
   /**
    * The room's own instructions, answered with `{ instructions }` ('' for a
@@ -528,19 +497,6 @@ export class SessionLinks {
   /** Why the last host at this root stopped on an error, or null if it did not. */
   failure(root: string): string | null {
     return this.links.get(root)?.failure ?? null;
-  }
-
-  /**
-   * Records that the host at this root cannot be started, when nothing was
-   * spawned to exit and say so (its supervisor gave up first), and tells the
-   * same listeners a failed exit would: the agent's room hears it, rather
-   * than a request waiting in silence.
-   */
-  reportFailure(root: string, failure: string): void {
-    const link = this.link(root);
-    link.failure = failure;
-    for (const wake of link.waiting.splice(0)) wake();
-    for (const listener of this.failureListeners) listener(root, failure);
   }
 
   /** Forgets a recorded failure: something is about to start the host again. */

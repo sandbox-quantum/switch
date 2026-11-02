@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -8,12 +8,7 @@ import {
   SERVICE_ACCOUNT_KEY_FIXTURE,
   vertexCredentialFixture,
 } from '../testing/vertex-fixtures';
-import {
-  HOSTED_LOGIN_FILES,
-  materializeHostedProvider,
-  removeHostedLoginFiles,
-  type HostedCredential,
-} from './hosted-provider';
+import { materializeHostedProvider, type HostedCredential } from './hosted-provider';
 
 let root: string;
 beforeEach(async () => {
@@ -181,45 +176,4 @@ it('refuses a Vertex AI login for another provider than Claude, or one that is n
     )
   ).rejects.toThrow(/Only a service account key/);
   await expect(stat(join(root, 'provider-home'))).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-it('deletes every login file a given login can leave under the root, and nothing else', async () => {
-  // A Vertex login written the way an agent host writes it, then each other
-  // provider's file and the markers beside it, and a file that is not a login.
-  await materializeHostedProvider(
-    root,
-    {},
-    {
-      status: 'connected',
-      revision: '1',
-      provider: 'claude',
-      kind: 'vertex',
-      credential: vertexCredentialFixture(SERVICE_ACCOUNT_KEY_FIXTURE),
-    },
-    'claude'
-  );
-  for (const relative of HOSTED_LOGIN_FILES.slice(1)) {
-    const path = join(root, relative);
-    await mkdir(join(path, '..'), { recursive: true });
-    await writeFile(path, 'secret');
-    await writeFile(`${path}.switch-new`, 'secret');
-  }
-  await writeFile(join(root, 'provider-home', 'settings.json'), '{}');
-
-  const removed = await removeHostedLoginFiles(root);
-
-  expect(removed).toEqual(
-    expect.arrayContaining([
-      'provider-home/google-credentials.json',
-      'provider-home/google-credentials.json.switch-credential',
-      'provider-home/auth.json',
-      'provider-data/opencode/auth.json.switch-new',
-      'provider-home/antigravity-acp/acp_token.json',
-    ])
-  );
-  for (const relative of HOSTED_LOGIN_FILES)
-    for (const suffix of ['', '.switch-credential', '.switch-new'])
-      await expect(stat(join(root, relative + suffix))).rejects.toMatchObject({ code: 'ENOENT' });
-  expect(await readFile(join(root, 'provider-home', 'settings.json'), 'utf8')).toBe('{}');
-  expect(await removeHostedLoginFiles(root)).toEqual([]);
 });

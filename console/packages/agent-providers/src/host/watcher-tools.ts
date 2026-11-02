@@ -1,10 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   type CallerContext,
   callOperation,
-  callOperationOutcome,
   loadOperations,
   SESSION_SELECTOR_HEADERS,
   SwitchToolCatalog,
@@ -12,15 +10,7 @@ import {
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
-import {
-  HELD_REPLY_LOST_LINE,
-  HELD_REPLY_NOTICE,
-  HELD_TOOLS,
-  type HeldReplies,
-  type ResendOutcome,
-} from './held-replies';
 import type { PlacementMap, SessionPlacements } from './placements';
-import { macEquals, takenMac, ticketMac } from './push-key';
 import type { Redactions } from './redaction';
 import { issueServiceToken, readServiceGrants } from './service-access';
 import { AgentServiceTokens } from './service-tokens';
@@ -46,21 +36,7 @@ import { sharedConfigSchema } from './shared-config';
  * and scrubs every token handed out from the arguments of every call it makes,
  * so a token an agent echoes into a room message never reaches Switch.
  */
-/**
- * Posts the "I was restarted" line for a turn through the agent's controller,
- * as the agent, keyed `restart:<turnId>` so Switch posts it once however
- * often it is asked. `unsupported` from a Switch server that predates it, so
- * the line goes the older way instead.
- */
-export type RestartNotice = (notice: {
-  roomId: string;
-  threadId: string | null;
-  turnId: string;
-}) => Promise<'posted' | 'unsupported'>;
-
 export function sessionToolAnswerer(deps: {
-  /** Where the controller can post a restart line keyed by its turn; absent off a controller. */
-  restartNotice?: RestartNotice;
   identity: SwitchIdentity;
   connectionId: string;
   placements: SessionPlacements;
@@ -73,11 +49,6 @@ export function sessionToolAnswerer(deps: {
   placementsNameCallRooms: () => boolean;
   /** The service tokens handed out in this process, added to as more are. */
   redactions: Redactions;
-  /**
-   * Where a room post Switch could not take, because it was away, is held to
-   * be sent again (B62). Without it such a post fails to the agent as before.
-   */
-  held?: HeldReplies;
 }): AskHandler {
   const services = new AgentServiceTokens({
     endpoint: deps.identity,
@@ -218,22 +189,12 @@ export function sessionToolAnswerer(deps: {
     caller: Caller,
     catalog: SwitchToolCatalog,
     ask: Extract<HostAsk, { type: 'room-reply' }>
-  ): Promise<null | { posted: boolean }> => {
+  ): Promise<null> => {
     const attended = deps.placements.roomOf(caller.sessionId);
     if (attended !== ask.roomId)
       throw new Error(
         `Session ${caller.sessionId} no longer attends room ${ask.roomId}${attended ? ` (it attends ${attended})` : ''}, so its reply was not posted there.`
       );
-    // The restart line, keyed by its turn through the controller: Switch
-    // posts it once, so no room check is needed first.
-    if (ask.restartTurnId && deps.restartNotice) {
-      const outcome = await deps.restartNotice({
-        roomId: ask.roomId,
-        threadId: ask.threadId,
-        turnId: ask.restartTurnId,
-      });
-      if (outcome === 'posted') return { posted: true };
-    }
     // Stated again first: a reply is posted as the session, in the room Switch
     // holds it in, and the placement it was refused on may be the reason the
     // turn could not post itself.
@@ -244,75 +205,12 @@ export function sessionToolAnswerer(deps: {
           `Could not state the session placements before posting a reply for session ${caller.sessionId}: ${error instanceof Error ? error.message : String(error)}`
         )
       );
-    const body = deps.redactions.text(ask.body);
-    const ctx = await context(caller);
-    // Raises when the room can't be read, so a reply is never posted blind.
-    if (ask.once && (await alreadyInRoom(catalog, ctx, deps.identity.agentId, ask, body)))
-      return { posted: false };
-    const posted = await catalog.call(ctx, 'post_message', {
-      body,
+    const posted = await catalog.call(await context(caller), 'post_message', {
+      body: deps.redactions.text(ask.body),
       ...(ask.threadId ? { thread_id: ask.threadId } : {}),
     });
     if (posted.isError) throw new Error(resultText(posted));
-    return ask.once ? { posted: true } : null;
-  };
-
-  /**
-   * A room post by the agent, under a key of its own from the first try, so
-   * Switch posts it once however often it is sent (B62). One that fails
-   * because Switch is away is held and sent again under the same key when
-   * Switch is back, and the agent is told so, rather than told it failed: a
-   * failed post read as the turn's end left the room with no reply.
-   */
-  const post = async (
-    caller: Caller,
-    name: string,
-    args: Record<string, unknown>,
-    holder: HeldReplies
-  ): Promise<ToolResult> => {
-    const heldNotice: ToolResult = { content: [{ type: 'text', text: HELD_REPLY_NOTICE }] };
-    // Sent again by an agent told it was held: still the one post.
-    if (holder.heldLike(caller.sessionId, name, args)) return heldNotice;
-    const roomId = deps.placements.roomOf(caller.sessionId);
-    const key = `reply:${randomUUID()}`;
-    const send = async (as: string, tool: string, sent: Record<string, unknown>) =>
-      callOperationOutcome({ ...(await context(caller)), clientTxnId: as }, tool, sent);
-    const first = await send(key, name, args);
-    if (!first.result.isError || !first.unavailable || roomId === null) return first.result;
-    /** One more try, only while the session still attends the room it posted to. */
-    const again = async (
-      as: string,
-      tool: string,
-      sent: Record<string, unknown>
-    ): Promise<ResendOutcome> => {
-      const attended = deps.placements.roomOf(caller.sessionId);
-      if (attended !== roomId)
-        return {
-          kind: 'final',
-          detail: `session ${caller.sessionId} no longer attends room ${roomId}${attended ? ` (it attends ${attended})` : ''}`,
-        };
-      const { result, unavailable } = await send(as, tool, sent);
-      if (!result.isError) return { kind: 'posted' };
-      // Only the status goes in the log: Switch's own words can quote the post.
-      const status = /^(\d{3}): /.exec(resultText(result))?.[1];
-      const detail = status ? `Switch answered ${status}` : 'Switch could not be reached';
-      return unavailable ? { kind: 'unavailable', detail } : { kind: 'final', detail };
-    };
-    const thread = typeof args.thread_id === 'string' ? { thread_id: args.thread_id } : {};
-    const held = holder.hold({
-      key,
-      sessionId: caller.sessionId,
-      roomId,
-      threadId: typeof args.thread_id === 'string' ? args.thread_id : null,
-      tool: name,
-      args,
-      resend: () => again(key, name, args),
-      // In the lost post's thread, under a key of its own, so it too is said once.
-      tellLost: () =>
-        again(`${key}:lost`, 'post_message', { body: HELD_REPLY_LOST_LINE, ...thread }),
-    });
-    if (!held) return first.result;
-    return heldNotice;
+    return null;
   };
 
   /**
@@ -352,76 +250,12 @@ export function sessionToolAnswerer(deps: {
     if (ask.type === 'room-instructions') return roomInstructions(caller, catalog, ask);
     const args = deps.redactions.value(ask.arguments);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
-    if (deps.held && HELD_TOOLS.has(ask.name) && catalog.has(ask.name))
-      return post(caller, ask.name, args, deps.held);
     return catalog.call(await context(caller), ask.name, args);
   };
 }
 
 /** The heading `connect_to_room` puts over a room's own instructions (`build_room_instructions`). */
 const ROOM_SECTION_HEADING = /^## Room-specific instructions\s*/;
-
-const contextEntrySchema = z.object({
-  id: z.string(),
-  kind: z.string(),
-  sender_name: z.string().nullable().optional(),
-  body: z.string().nullable().optional(),
-  timestamp: z.number(),
-});
-const roomContextSchema = z.object({
-  threads: z.array(z.object({ root: contextEntrySchema, replies: z.array(contextEntrySchema) })),
-});
-const agentNamesSchema = z.object({
-  name: z.string(),
-  display_name: z.string().nullable().optional(),
-});
-
-/** How far back a `once` reply looks: well past the few messages since a restart. */
-const ONCE_CONTEXT_LIMIT = 200;
-
-/**
- * Whether the room already shows `body` from this agent, in the reply's thread
- * (top level when it has none), at or after the message it answers. Reads only
- * the session's own room, as the session. Raises when either read fails.
- */
-async function alreadyInRoom(
-  catalog: SwitchToolCatalog,
-  ctx: CallerContext,
-  agentId: string,
-  ask: Extract<HostAsk, { type: 'room-reply' }>,
-  body: string
-): Promise<boolean> {
-  const read = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
-    const result = await catalog.call(ctx, name, args);
-    if (result.isError) throw new Error(`Could not check the room first: ${resultText(result)}`);
-    return JSON.parse(resultText(result));
-  };
-  const self = agentNamesSchema.parse(await read('get_agent_detail', { agent_id: agentId }));
-  const names = new Set([self.name, ...(self.display_name ? [self.display_name] : [])]);
-  const { threads } = roomContextSchema.parse(
-    await read('read_context', { limit: ONCE_CONTEXT_LIMIT })
-  );
-  const all = threads.flatMap((thread) => [thread.root, ...thread.replies]);
-  const after = ask.once?.afterMessageId;
-  const since = all.find((entry) => entry.id === after)?.timestamp ?? Number.NEGATIVE_INFINITY;
-  const placed = ask.threadId
-    ? threads
-        .filter(
-          (thread) =>
-            thread.root.id === ask.threadId || thread.replies.some((r) => r.id === ask.threadId)
-        )
-        .flatMap((thread) => [thread.root, ...thread.replies])
-    : threads.map((thread) => thread.root);
-  return placed.some(
-    (entry) =>
-      entry.kind === 'message' &&
-      entry.timestamp >= since &&
-      entry.id !== after &&
-      names.has(entry.sender_name ?? '') &&
-      // Switch Trust may append a note to a post, so the line need only be in it.
-      (entry.body ?? '').includes(body)
-  );
-}
 
 function resultText(result: ToolResult): string {
   return result.content.map((part) => part.text).join('\n');
@@ -436,54 +270,6 @@ function resultText(result: ToolResult): string {
  * The call is made as the session, so Switch must already know the room is
  * placed with it.
  */
-/**
- * Tells a room, as the session, that a reply it held before this process
- * started was lost (B62), in that reply's thread, under `<key>:lost`, so it
- * is said once however often it is tried. `final` when the session no longer
- * attends that room, or Switch refuses.
- */
-export async function tellRoomReplyLost(input: {
-  identity: SwitchIdentity;
-  connectionId: string;
-  session: { sessionId: string; hostId: string; epoch: string };
-  root: string;
-  cwd: string;
-  line: { key: string; roomId: string; threadId: string | null };
-  attending: string | null;
-}): Promise<ResendOutcome> {
-  if (input.attending !== input.line.roomId)
-    return {
-      kind: 'final',
-      detail: `session ${input.session.sessionId} no longer attends room ${input.line.roomId}`,
-    };
-  const { result, unavailable } = await callOperationOutcome(
-    {
-      identity: input.identity,
-      connectionId: input.connectionId,
-      selector: {
-        [SESSION_SELECTOR_HEADERS.sessionId]: input.session.sessionId,
-        [SESSION_SELECTOR_HEADERS.hostId]: input.session.hostId,
-        [SESSION_SELECTOR_HEADERS.epoch]: input.session.epoch,
-      },
-      room: null,
-      mediaDir: join(input.root, 'media'),
-      cwd: input.cwd,
-      deadConnection: (operation) =>
-        `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
-      clientTxnId: `${input.line.key}:lost`,
-    },
-    'post_message',
-    {
-      body: HELD_REPLY_LOST_LINE,
-      ...(input.line.threadId ? { thread_id: input.line.threadId } : {}),
-    }
-  );
-  if (!result.isError) return { kind: 'posted' };
-  const status = /^(\d{3}): /.exec(resultText(result))?.[1];
-  const detail = status ? `Switch answered ${status}` : 'Switch could not be reached';
-  return unavailable ? { kind: 'unavailable', detail } : { kind: 'final', detail };
-}
-
 /** The notice a room gets while a session starts to answer it. */
 export const SESSION_STARTING_MESSAGE = 'Starting a session to handle this — one moment.';
 
@@ -520,15 +306,14 @@ export async function announceSessionStart(input: {
   if (posted.isError) throw new Error(resultText(posted));
 }
 
-/** Tells the room a new session was refused because the machine is out of memory. */
-export async function announceBoxFull(input: {
+export async function announceStartFailure(input: {
   identity: SwitchIdentity;
   connectionId: string;
   session: { sessionId: string; hostId: string; epoch: string };
   root: string;
   cwd: string;
   threadId: string | null;
-  body: string;
+  failure: string;
 }): Promise<void> {
   const ctx: CallerContext = {
     identity: input.identity,
@@ -544,57 +329,36 @@ export async function announceBoxFull(input: {
     deadConnection: (operation) =>
       `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
   };
-  const posted = await callOperation(ctx, 'post_message', {
-    body: input.body,
-    ...(input.threadId ? { thread_id: input.threadId } : {}),
-  });
-  if (posted.isError) throw new Error(resultText(posted));
-}
-
-/**
- * Tells the room a session can't start and its message is kept (B78), in one
- * of the designer's lines, which `line` builds with the agent owner's handle
- * when Switch gives one. A plain post: the line itself names the owner, so
- * they are addressed without a second mention, and never with the raw
- * failure (B64).
- */
-export async function announceKept(input: {
-  identity: SwitchIdentity;
-  connectionId: string;
-  session: { sessionId: string; hostId: string; epoch: string };
-  root: string;
-  cwd: string;
-  threadId: string | null;
-  line: (owner: string | null) => string;
-}): Promise<void> {
-  const ctx: CallerContext = {
-    identity: input.identity,
-    connectionId: input.connectionId,
-    selector: {
-      [SESSION_SELECTOR_HEADERS.sessionId]: input.session.sessionId,
-      [SESSION_SELECTOR_HEADERS.hostId]: input.session.hostId,
-      [SESSION_SELECTOR_HEADERS.epoch]: input.session.epoch,
-    },
-    room: null,
-    mediaDir: join(input.root, 'media'),
-    cwd: input.cwd,
-    deadConnection: (operation) =>
-      `Switch refused ${operation}: this agent's connection (${input.connectionId}) had lapsed.`,
-  };
+  const thread = input.threadId ? { thread_id: input.threadId } : {};
   const detail = await callOperation(ctx, 'get_agent_detail', {
     agent_id: input.identity.agentId,
   });
-  const found = detail.isError ? null : detail.structuredContent?.owner_name;
-  const owner = typeof found === 'string' && found ? found : null;
-  if (!owner)
+  const owner = detail.isError ? null : detail.structuredContent?.owner_name;
+  if (typeof owner === 'string' && owner) {
+    const targeted = await callOperation(ctx, 'send_targeted_message', {
+      body: `I couldn't start a session, and it needs you to fix it: ${input.failure} Then address me again.`,
+      target_names: [owner],
+      ...thread,
+    });
+    if (!targeted.isError) return;
     console.warn(
-      `Could not find this agent's owner to name in the line about session ${input.session.sessionId} not starting${
-        detail.isError ? ` (${resultText(detail)})` : ''
-      }.`
+      `Could not address this agent's owner (${owner}) about session ${input.session.sessionId} failing to start: ${resultText(targeted)}. Telling the room without addressing them.`
     );
+    const posted = await callOperation(ctx, 'post_message', {
+      body: `I couldn't start a session, and my owner (${owner}) needs to fix it: ${input.failure} Then address me again.`,
+      ...thread,
+    });
+    if (posted.isError) throw new Error(resultText(posted));
+    return;
+  }
+  console.warn(
+    `Could not find this agent's owner to tell about session ${input.session.sessionId} failing to start${
+      detail.isError ? ` (${resultText(detail)})` : ''
+    }. Telling the room without addressing them.`
+  );
   const posted = await callOperation(ctx, 'post_message', {
-    body: input.line(owner),
-    ...(input.threadId ? { thread_id: input.threadId } : {}),
+    body: `I couldn't start a session, and my owner needs to fix it: ${input.failure} Then address me again.`,
+    ...thread,
   });
   if (posted.isError) throw new Error(resultText(posted));
 }
@@ -632,19 +396,6 @@ export const watcherStateSchema = z.enum([
 ]);
 export type WatcherState = z.infer<typeof watcherStateSchema>;
 
-/** Where one session stands, as Console shows it: Running, Back in a moment, or Resting. */
-export const sessionStateSchema = z.enum(['active', 'waking', 'parked']);
-export type SessionState = z.infer<typeof sessionStateSchema>;
-
-function sameSessions(
-  a: Record<string, SessionState> | undefined,
-  b: Record<string, SessionState> | undefined
-): boolean {
-  if (!a || !b) return a === b;
-  const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
-}
-
 export const watcherHealthSchema = z.object({
   state: watcherStateSchema,
   /** The stream's last error, why the watcher stopped, or why it stood down. */
@@ -658,19 +409,6 @@ export const watcherHealthSchema = z.object({
    * said whether it is. Absent from a watcher too old to report it.
    */
   busy: z.array(z.string()).optional(),
-  /**
-   * Each of the agent's sessions here: `active` while its host runs, `waking`
-   * while it is being started for a message, `parked` while saved and
-   * unloaded. Absent from a watcher too old to report it.
-   */
-  sessions: z.record(z.string(), sessionStateSchema).optional(),
-  /**
-   * Room messages waiting for room in a full box ("wait for room"): how many,
-   * and since when the oldest. Absent from a watcher too old to report it.
-   */
-  waitingForRoom: z
-    .object({ count: z.number().int().nonnegative(), oldestSince: z.string().nullable() })
-    .optional(),
 });
 export type WatcherHealth = z.infer<typeof watcherHealthSchema>;
 
@@ -679,11 +417,6 @@ export type WatcherHandlers = {
   place: (sessionId: string, roomId: string) => Promise<PlaceOutcome>;
   forget: (sessionId: string) => Promise<void>;
   warm: (roomId: string) => Promise<string | null>;
-  /**
-   * The memory guard is stopping this agent: tell its rooms, and say how many
-   * were told. Only an agent host under an agents controller has it.
-   */
-  stopForMemory?: () => Promise<number>;
 };
 
 /**
@@ -693,13 +426,6 @@ export type WatcherHandlers = {
  * keeps current here.
  */
 export class WatcherControl {
-  /** How the watcher posts a restart line keyed by its turn, when it runs under a controller. */
-  readonly restartNotice: RestartNotice | undefined;
-
-  constructor(options: { restartNotice?: RestartNotice } = {}) {
-    this.restartNotice = options.restartNotice;
-  }
-
   private handlers: WatcherHandlers | null = null;
   private current: WatcherHealth = {
     state: 'not-running',
@@ -716,50 +442,6 @@ export class WatcherControl {
     return () => {
       if (this.handlers === handlers) this.handlers = null;
     };
-  }
-
-  private hubTicket: string | null = null;
-  private readonly ticketWaiters: ((ticket: string) => void)[] = [];
-  private pushKey: Buffer | null = null;
-
-  /** Level 3: this launch's push key, read from the launcher's pipe at start. */
-  setPushKey(key: Buffer): void {
-    this.pushKey = key;
-  }
-
-  /**
-   * Level 3: a one-time hub ticket from the launcher, for the next hello; the
-   * newest wins. Taken only with a good HMAC under this launch's push key, and
-   * answered with the confirmation; anything else is ignored (null).
-   */
-  giveHubTicket(ticket: string, mac: string): string | null {
-    if (!this.pushKey || !macEquals(mac, ticketMac(this.pushKey, ticket))) return null;
-    const waiter = this.ticketWaiters.shift();
-    if (waiter) waiter(ticket);
-    else this.hubTicket = ticket;
-    return takenMac(this.pushKey, ticket);
-  }
-
-  /** The ticket for the next hello, taken once; waits up to `timeoutMs` for one, else undefined. */
-  takeHubTicket(timeoutMs: number): Promise<string | undefined> {
-    if (this.hubTicket !== null) {
-      const ticket = this.hubTicket;
-      this.hubTicket = null;
-      return Promise.resolve(ticket);
-    }
-    return new Promise((resolve) => {
-      const waiter = (ticket: string) => {
-        clearTimeout(timer);
-        resolve(ticket);
-      };
-      const timer = setTimeout(() => {
-        const at = this.ticketWaiters.indexOf(waiter);
-        if (at >= 0) this.ticketWaiters.splice(at, 1);
-        resolve(undefined);
-      }, timeoutMs);
-      timer.unref?.();
-      this.ticketWaiters.push(waiter);
-    });
   }
 
   /** Whether a watcher is running behind this control. */
@@ -802,17 +484,6 @@ export class WatcherControl {
     return this.handlers.warm(roomId);
   }
 
-  /**
-   * The agents controller's memory guard is about to stop this agent: its
-   * rooms are told once (`memory-stop.ts`). Resolves to how many were told.
-   * Refused when no watcher is running.
-   */
-  stopForMemory(): Promise<number> {
-    if (!this.handlers?.stopForMemory)
-      return Promise.reject(new Error("The agent's room watcher is not running."));
-    return this.handlers.stopForMemory();
-  }
-
   health(): WatcherHealth {
     return this.current;
   }
@@ -832,8 +503,6 @@ export class WatcherControl {
     detail?: string | null;
     placements?: PlacementMap;
     busy?: string[];
-    sessions?: Record<string, SessionState>;
-    waitingForRoom?: { count: number; oldestSince: string | null };
   }): void {
     const state = change.state ?? this.current.state;
     const same = state === this.current.state;
@@ -847,25 +516,12 @@ export class WatcherControl {
         : this.current.busy
           ? { busy: this.current.busy }
           : {}),
-      ...(change.sessions
-        ? { sessions: { ...change.sessions } }
-        : this.current.sessions
-          ? { sessions: this.current.sessions }
-          : {}),
-      ...(change.waitingForRoom
-        ? { waitingForRoom: { ...change.waitingForRoom } }
-        : this.current.waitingForRoom
-          ? { waitingForRoom: this.current.waitingForRoom }
-          : {}),
     };
     if (
       same &&
       next.detail === this.current.detail &&
       samePlacements(next.placements, this.current.placements) &&
-      sameList(next.busy, this.current.busy) &&
-      sameSessions(next.sessions, this.current.sessions) &&
-      next.waitingForRoom?.count === this.current.waitingForRoom?.count &&
-      next.waitingForRoom?.oldestSince === this.current.waitingForRoom?.oldestSince
+      sameList(next.busy, this.current.busy)
     )
       return;
     this.current = next;

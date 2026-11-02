@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type CallerContext,
   callOperation,
-  callOperationOutcome,
   serveMcpOverHttp,
   SwitchToolCatalog,
   type ToolDefinition,
@@ -38,64 +37,6 @@ function context(overrides: Partial<CallerContext> = {}): CallerContext {
     ...overrides,
   };
 }
-
-describe('an operation call while Switch may be away (B62)', () => {
-  it('sends the host key as a header, and only when there is one', async () => {
-    const fetchMock = vi.fn(async () => Response.json({ result: { event_id: 'e' } }));
-    vi.stubGlobal('fetch', fetchMock);
-    await callOperationOutcome(context({ clientTxnId: 'reply:k' }), 'post_message', { body: 'x' });
-    await callOperationOutcome(context(), 'post_message', { body: 'x' });
-    const headers = fetchMock.mock.calls.map(
-      (call) => (call as unknown as [string, RequestInit])[1].headers as Record<string, string>
-    );
-    expect(headers[0]!['X-Switch-Client-Txn-Id']).toBe('reply:k');
-    expect(headers[1]).not.toHaveProperty('X-Switch-Client-Txn-Id');
-  });
-
-  it.each([
-    ['no Switch to connect to', () => Promise.reject(new TypeError('fetch failed')), true],
-    [
-      'a gateway with no Switch behind it (502)',
-      async () => new Response('bad gateway', { status: 502 }),
-      true,
-    ],
-    ['503', async () => new Response('unavailable', { status: 503 }), true],
-    ['504', async () => new Response('timeout', { status: 504 }), true],
-    [
-      'a connection Switch forgot when it restarted',
-      async () => new Response('connection connection is not open', { status: 409 }),
-      true,
-    ],
-    [
-      'a Switch just started, its agent client not yet running (older Switch: 400)',
-      async () => new Response('{"detail":"Agent client not running"}', { status: 400 }),
-      true,
-    ],
-    ['a refusal (403)', async () => new Response('not a member', { status: 403 }), false],
-    ['a bad request (400)', async () => new Response('bad', { status: 400 }), false],
-    ['Switch failing (500)', async () => new Response('boom', { status: 500 }), false],
-  ])('says whether %s is Switch being away', async (_name, answer, unavailable) => {
-    vi.stubGlobal('fetch', vi.fn(answer));
-    const outcome = await callOperationOutcome(context(), 'post_message', { body: 'x' });
-    expect(outcome.result.isError).toBe(true);
-    expect(outcome.unavailable).toBe(unavailable);
-  });
-
-  it('counts a success as available', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => Response.json({ result: { event_id: 'e' } }))
-    );
-    const outcome = await callOperationOutcome(context(), 'post_message', { body: 'x' });
-    expect(outcome).toEqual({
-      result: {
-        content: [{ type: 'text', text: JSON.stringify({ event_id: 'e' }, null, 2) }],
-        structuredContent: { event_id: 'e' },
-      },
-      unavailable: false,
-    });
-  });
-});
 
 describe('an operation call', () => {
   it('is made as the caller: its connection and the session selector', async () => {

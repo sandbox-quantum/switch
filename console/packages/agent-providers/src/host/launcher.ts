@@ -3,7 +3,6 @@ import { open, mkdir, readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HostConnection } from './client';
-import { recordedOwnerAlive } from './process-fence';
 
 export async function connectHost(
   root: string,
@@ -40,8 +39,12 @@ export async function connectHost(
     const owner = await readFile(ownerPath, 'utf8');
     const pid = Number(owner);
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid SDK host owner lock.');
-    // Gone, or its id now held by a process started after the lock was written.
-    if (!(await recordedOwnerAlive(ownerPath, pid))) await unlink(ownerPath);
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      await unlink(ownerPath);
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }

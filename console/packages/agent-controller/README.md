@@ -452,29 +452,6 @@ the credential, so a proxy that does not send `/v1` to switch-core shows up),
 the shared-host bundle, each provider CLI on `PATH` and its sign-in, the service,
 and updates. It exits 1 when a check fails.
 
-### Live status
-
-With `SWITCH_CONTROLLER_LIVE_STATUS_DIR` naming a folder, the running controller
-writes `live-status.json` there every 10 seconds: counts, states, times and ids cut
-to 8 characters, never file contents, log lines, environment values or messages.
-`status --json` prints it for scripts (with a `version` field, so a script can refuse
-a shape it doesn't know), `status --live` prints it for a person, and `--since <ISO
-time>` adds the controller's fixed events since then. Reading it opens nothing but
-that file. The command exits 1 when the file is missing, unreadable, or over 60
-seconds old (3 already means revoked).
-
-The folder must exist, belong to the controller's user, not be writable by anyone
-else, and be outside the data folder. If it isn't, the controller runs on with the
-live status off and logs one error saying which check failed. Set
-`SWITCH_IMAGE_DIGEST` to the image's `sha256:` digest to have it reported.
-
-On a box where the agents run as the controller's own user, they can write that
-folder too, so the file is only as trustworthy as everything else on the box: fine
-for test reads. Where the agents run as a user or container of their own, mount the
-folder on the controller's container only, so no agent can reach it. There, the
-process and login-copy counts are `null` until the launcher's measurements supply
-them, since the controller's container can't see the agents' processes or files.
-
 ### Running under your own supervisor
 
 To run it under another supervisor, have it run `run` and restart it on exit code
