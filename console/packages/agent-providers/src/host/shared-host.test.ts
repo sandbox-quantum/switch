@@ -968,6 +968,52 @@ it('reports what an ended turn spent on its row, and the row alone to a server t
   }
 }, 20000);
 
+it("sends a tool call's redacted detail on its row, and the row alone to a server that predates it", async () => {
+  const host = await start({ rooms: true });
+  // Assembled at runtime so no scanner mistakes the fixture for a real key.
+  const key = ['sk', 'live', 'x'.repeat(24)].join('_');
+  const calls = (id: string) =>
+    host.switchCore.calls.filter(
+      (c) =>
+        c.path.endsWith('/activity') &&
+        (c.body as { kind: string }).kind === 'tool-activity' &&
+        (c.body as { item_id: string }).item_id.includes(id) &&
+        (c.body as { status: string }).status === 'completed'
+    );
+  const ran = (id: string) =>
+    host.emit({
+      type: 'item.completed',
+      turnId: host.turns[0]!.turnId,
+      item: {
+        id,
+        type: 'command_execution',
+        status: 'completed',
+        title: 'Ran env',
+        text: `STRIPE_KEY=${key}\nok`,
+        payload: { command: 'env' },
+      },
+    });
+  try {
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'Check it') });
+    await until(() => expect(host.turns).toHaveLength(1));
+
+    ran('first');
+    await until(() => expect(calls('first')).toHaveLength(1));
+    const detail = (calls('first')[0]!.body as { tool_detail: string }).tool_detail;
+    expect(detail).toBe('$ env\nSTRIPE_KEY=[REDACTED_STRIPE_KEY]\nok');
+    expect(calls('first')[0]!.body).toMatchObject({ text: '' });
+
+    host.switchCore.state.refusesToolDetail = true;
+    ran('second');
+    await until(() => expect(calls('second')).toHaveLength(2));
+    expect(calls('second')[0]!.body).toHaveProperty('tool_detail');
+    expect(calls('second')[1]!.body).not.toHaveProperty('tool_detail');
+    expect(JSON.stringify(host.switchCore.calls)).not.toContain(key);
+  } finally {
+    await host.stop();
+  }
+}, 20000);
+
 it('tells the session to rejoin its room once a reset asked for there has applied', async () => {
   const host = await start({ resettable: true });
   try {

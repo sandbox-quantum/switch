@@ -69,6 +69,11 @@ type ToolEntry = {
   exitCode: number | null;
 };
 
+/** What the buffer holds of one call, as `toolDetailPreview` reads it. */
+export type ToolDetailParts = Readonly<
+  Pick<ToolEntry, 'input' | 'head' | 'tail' | 'outputClipped' | 'hasOutput' | 'exitCode'>
+>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -241,6 +246,14 @@ export class ToolDetailBuffer {
       picked.push({ turnId, tools: details });
     }
     return picked.reverse();
+  }
+
+  /** What is held of the call projected as session-v1 item `itemId` in `turnId`. */
+  parts(epoch: string, turnId: string, itemId: string): ToolDetailParts | null {
+    if (this.epoch !== epoch) return null;
+    for (const entry of this.turns.get(turnId)?.values() ?? [])
+      if (entry.itemId === itemId) return { ...entry };
+    return null;
   }
 
   private turn(turnId: string): Map<string, ToolEntry> {

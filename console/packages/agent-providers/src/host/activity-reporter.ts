@@ -36,6 +36,13 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /**
+   * A tool call's redacted, capped input and output, on its own row only.
+   * Sent whatever the room's setting: Switch keeps it only for a room that
+   * shows tool detail. Left out when nothing is held of the call, and a
+   * server that predates it refuses the row, which is then sent without it.
+   */
+  tool_detail?: string;
 };
 
 export type UsageRow = {
@@ -116,7 +123,8 @@ export class ActivityReporter {
   reports(
     event: ServerEvent,
     originOf: (turnId: string) => Origin | null,
-    usageOf: (turnId: string) => TokenUsage[]
+    usageOf: (turnId: string) => TokenUsage[],
+    toolDetailOf: (turnId: string, itemId: string) => string | null
   ): Report[] {
     const body = event.body;
     const place = (turnId: string): Placement => {
@@ -153,6 +161,8 @@ export class ActivityReporter {
       }
       case 'item.upsert': {
         const { item } = body;
+        const detail =
+          item.kind === 'tool-activity' ? toolDetailOf(item.turnId, item.itemId) : null;
         return [
           {
             kind: 'activity',
@@ -167,6 +177,7 @@ export class ActivityReporter {
               command_id: null,
               ...place(item.turnId),
               occurred_at: event.occurredAt,
+              ...(detail ? { tool_detail: detail } : {}),
             },
           },
         ];

@@ -30,6 +30,7 @@ import { fitModelCatalog } from './model-catalog';
 import { ReasoningBuffer, type HostReasoningList } from './reasoning-buffer';
 import type { Redactions } from './redaction';
 import { ToolDetailBuffer } from './tool-detail-buffer';
+import { toolDetailPreview } from './tool-detail-preview';
 
 export const hostInboxRecordSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('accepted'), command: commandSchema }),
@@ -572,6 +573,16 @@ export class HostedSession {
   /** What `turnId` spent, as its provider reported when it ended. */
   usageOf(turnId: string): TokenUsage[] {
     return this.usage.get(turnId) ?? [];
+  }
+
+  /**
+   * A redacted preview of what tool call `itemId` was given and gave back,
+   * for its activity row to Switch only; null when nothing is held of it.
+   * Never in the session's own events, journal or snapshot.
+   */
+  toolDetailOf(turnId: string, itemId: string): string | null {
+    const parts = this.toolDetails.parts(this.config.session.epoch, turnId, itemId);
+    return parts ? toolDetailPreview(parts, this.config.redactions ?? null) : null;
   }
 
   /**
