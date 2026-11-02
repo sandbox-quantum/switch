@@ -1,4 +1,4 @@
-import { DoorOpen, ExternalLink } from 'lucide-react';
+import { ArrowLeft, DoorOpen, ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useLayoutEffect, useRef } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -20,6 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/toolti
 import { RoomConfigurationPanel } from './room-configuration-panel';
 import { roomEmbedSlotStore } from './room-embed-slot';
 import { openRoomChannel } from './room-links';
+import { RoomSidePanel } from './room-side-panel';
 import { embeddedRoomTab, type RoomTab, roomTabStore } from './room-tab-store';
 
 /**
@@ -95,15 +96,19 @@ export const RoomTabs = observer(function RoomTabs({
  * agent in it, and picking one of those to stand in front of it would be a
  * claim about how you got here rather than about where you are.
  *
- * The two sides of a room sit next to its name rather than in a sidebar or a
- * menu: there are only two, and which one you are on is the first thing you
- * need to know about the page under it.
+ * Beside the name: where the room lives (its messaging app, or a group chat
+ * here) and what it is for. Its settings are a page of their own, reached from
+ * the room's side panel, and the title bar says when that page is showing.
  */
 const RoomTitlebar = observer(function RoomTitlebar() {
   const { params } = useParams('room');
-  const name =
-    switchRoomsStore.roomNameById(params.roomId) ?? chatsStore.chat(params.roomId)?.name ?? null;
-  const bridgeType = switchRoomsStore.roomBridgeTypeById(params.roomId);
+  const roomId = params.roomId;
+  const summary = switchRoomsStore.roomSummaryById(roomId);
+  const name = switchRoomsStore.roomNameById(roomId) ?? chatsStore.chat(roomId)?.name ?? null;
+  const bridgeType = switchRoomsStore.roomBridgeTypeById(roomId);
+  const settings = roomTabStore.tabFor(roomId, 'chat') === 'configuration';
+  const where = summary?.bridgeDisplayName ?? (opensAsConsoleChat(roomId) ? 'Group chat' : null);
+  const description = summary?.description.trim() || null;
 
   return (
     <Titlebar
@@ -119,15 +124,26 @@ const RoomTitlebar = observer(function RoomTitlebar() {
                   <DoorOpen className="size-3.5 shrink-0" />
                 ),
                 label: name ?? 'Room',
+                onClick: settings ? () => roomTabStore.setTab(roomId, 'chat') : undefined,
               },
+              ...(settings ? [{ key: 'settings', label: 'Room settings' }] : []),
             ]}
           />
-          <RoomTabs roomId={params.roomId} fallback="chat" />
+          {!settings && where && (
+            <span className="shrink-0 rounded-full bg-background-tertiary px-2 py-0.5 text-[11px] text-foreground-muted">
+              {where}
+            </span>
+          )}
+          {!settings && description && (
+            <span className="min-w-0 truncate text-sm text-foreground-muted" title={description}>
+              {description}
+            </span>
+          )}
         </div>
       }
       rightSlot={
         <div className="mr-2 flex items-center gap-1">
-          <OpenInMessagingApp roomId={params.roomId} />
+          <OpenInMessagingApp roomId={roomId} />
         </div>
       }
     />
@@ -141,20 +157,58 @@ const ConsoleChat = observer(function ConsoleChat({ roomId }: { roomId: string }
   return <ChatPanel key={`${serverId}:${roomId}`} serverId={serverId} roomId={roomId} />;
 });
 
-/** Settings when the room is showing them; otherwise a Console chat's
- * conversation, or nothing, and the conversation drawn by `RoomEmbedLayer`
- * above shows through. */
+/**
+ * The room's page: its side panel and its conversation, or — once Room
+ * settings is picked — its settings across the whole page, with a way back.
+ * Settings replace the page rather than sit beside the panel, so there is only
+ * ever one column of the room's own beside the app's sidebar.
+ */
 const RoomMainPanel = observer(function RoomMainPanel(): React.JSX.Element {
   const { params } = useParams('room');
+  const roomId = params.roomId;
   return (
     <>
-      <ConsoleChatRedirect roomId={params.roomId} />
-      {roomTabStore.tabFor(params.roomId, 'chat') === 'configuration' ? (
-        <RoomConfigurationPanel roomId={params.roomId} />
+      <ConsoleChatRedirect roomId={roomId} />
+      {roomTabStore.tabFor(roomId, 'chat') === 'configuration' ? (
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="px-6 pt-3">
+            <Button variant="outline" size="sm" onClick={() => roomTabStore.setTab(roomId, 'chat')}>
+              <ArrowLeft className="size-3.5" />
+              Back to room
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1">
+            <RoomConfigurationPanel roomId={roomId} />
+          </div>
+        </div>
       ) : (
-        <ConsoleChat roomId={params.roomId} />
+        <div className="flex h-full min-h-0">
+          <RoomSidePanel roomId={roomId} />
+          <RoomConversation roomId={roomId} />
+        </div>
       )}
     </>
+  );
+});
+
+/**
+ * The room's conversation beside its side panel: a Console chat drawn here, or
+ * a box that `RoomEmbedLayer` lays the messaging app's conversation over —
+ * the app itself where it can be drawn inline, otherwise its way out to it.
+ */
+const RoomConversation = observer(function RoomConversation({ roomId }: { roomId: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const consoleChat = opensAsConsoleChat(roomId);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || consoleChat) return;
+    roomEmbedSlotStore.claim({ roomId, element, fallback: 'chat' });
+    return () => roomEmbedSlotStore.release(element);
+  }, [roomId, consoleChat]);
+  return (
+    <div ref={ref} data-testid="room-conversation" className="flex min-w-0 flex-1 flex-col">
+      {consoleChat && <ConsoleChat roomId={roomId} />}
+    </div>
   );
 });
 
