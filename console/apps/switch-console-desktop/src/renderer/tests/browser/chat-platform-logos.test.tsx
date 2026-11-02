@@ -45,7 +45,7 @@ function apps(): string[] {
     .map((name) => {
       const app = name.parentElement!;
       const logo = app.querySelector('svg') !== null ? 'logo' : 'no logo';
-      const inline = app.closest('p') !== null ? 'inline' : 'apart';
+      const inline = app.closest('p, li') !== null ? 'inline' : 'apart';
       return `${name.textContent?.trim()} (${logo}, ${inline})`;
     });
 }
@@ -56,12 +56,10 @@ describe('messaging-app logos in chat', () => {
     expect(apps()).toEqual([
       'Slack (logo, inline)',
       'Microsoft Teams (logo, inline)',
-      'Mattermost (logo, inline)',
+      'Discord (logo, inline)',
       'Telegram (logo, inline)',
     ]);
-    expect(container!.textContent?.replace(/\s+/g, ' ')).toContain(
-      'Slack, Microsoft Teams, Mattermost and Telegram'
-    );
+    expect(container!.textContent).toContain('Where does your team chat?');
     expect(container!.textContent).not.toContain('switchdash');
   });
 
