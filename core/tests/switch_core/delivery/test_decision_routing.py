@@ -44,7 +44,9 @@ from switch_core.db.stores.room_store import DECISION_NOTICE_AT_KEY, RoomStore
 from switch_core.decision.client import DynamicDecisionClient
 from switch_core.decision.settings import DecisionAvailability, ServerDefault
 from switch_core.delivery.decision import DECISION_NOTICE, THREAD_CONTEXT
+from switch_core.delivery.recipient import AgentRecipient
 from switch_core.outbound import OutboundPolicy
+from switch_core.tenant_context import current_tenant_id, no_tenant
 from switch_core.transport import InboundMessage
 from tests.conftest import TEST_KEYRING
 from tests.routing import process_on
@@ -448,6 +450,38 @@ class TestWhatTheAgentIsGiven:
         assert "confidence=0.9 threshold=0.6 latency_ms=" in caplog.text
         assert "backend=server_default" in caplog.text
         assert event.payload.routed_reason == "decided"
+
+    async def test_what_follows_a_delivery_runs_in_the_rooms_workspace(
+        self,
+        world: World,
+        room: Journey,
+        service: DecisionService,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Once the decision is delivered, the follow-up work (is the agent
+        connected, wake its machine if not) reads the database. The decision
+        worker has no request to take a workspace from, so it binds the room's
+        own; under a restricted role Postgres otherwise refuses that read, and
+        the decision is logged as failed after the agent already has it."""
+        workspaces: list[str | None] = []
+        is_available = AgentRecipient._is_available
+
+        async def recording(
+            recipient: AgentRecipient, session: AsyncSession, agent: Agent, room_id: str
+        ) -> bool:
+            workspaces.append(current_tenant_id())
+            return await is_available(recipient, session, agent, room_id)
+
+        monkeypatch.setattr(AgentRecipient, "_is_available", recording)
+        _stop_waking(room)
+        service.pick = "helper"
+        told = await room.say("bob", "can someone check why the deploy failed?", at=10)
+
+        with no_tenant():
+            assert await room.process.router.decide_pending(TENANT_ZERO_ID) == 1
+
+        assert await room.reached(told) == {"helper"}
+        assert workspaces == [TENANT_ZERO_ID]
 
     async def test_a_mention_is_not_marked_routed(
         self, world: World, room: Journey

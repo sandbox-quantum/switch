@@ -1438,7 +1438,7 @@ class MessageRouter:
         decisions = self._decisions
         assert decisions is not None
         room_id = pending.room_id
-        with log_context(room_id=room_id):
+        with tenant_scope(tenant_id), log_context(room_id=room_id):
             async with tenant_session(
                 self.services.session_factory, tenant_id
             ) as session:
