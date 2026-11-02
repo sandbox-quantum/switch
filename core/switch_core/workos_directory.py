@@ -251,6 +251,11 @@ class WorkOSDirectory:
         existing accounts."""
         return await self._list("/user_management/users", {"email": email})
 
+    def keeps_members_of(self, organization: Organization) -> bool:
+        """Only an organization an operator linked follows WorkOS; any other
+        is still Switch's own."""
+        return organization.workos_organization_id is not None
+
     async def create_organization(
         self, creator: User, name: str
     ) -> DirectoryOrganization:

@@ -946,6 +946,7 @@ class TestTheCurrentOrganization:
         )
         assert as_operator.status_code == 200, as_operator.text
         assert as_operator.json()["role"] is None
+        assert as_member.json()["members_from_directory"] is False
 
 
 class TestNamesInTheOrganizationAuditLog:

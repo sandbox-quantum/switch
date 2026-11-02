@@ -1068,12 +1068,15 @@ class OrganizationSummary(BaseModel):
 
 class CurrentOrganizationResponse(BaseModel):
     """The bound workspace's organization, and the caller's role in it: None
-    for the platform operator there on the operator flag alone."""
+    for the platform operator there on the operator flag alone.
+    `members_from_directory`: its members and `org_admin`s come from a
+    directory kept outside Switch (`OrganizationDirectory.keeps_members_of`)."""
 
     id: str
     slug: str
     name: str
     role: str | None
+    members_from_directory: bool
 
 
 class OrganizationIssueDetail(BaseModel):

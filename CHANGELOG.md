@@ -134,6 +134,17 @@ version of their own to them without also giving them a release of their own.
   the agent's binding to it. The socket's first frame offers calls
   (`calls.max_in_flight`, 64); a call over that is answered 429
   `capacity_exceeded` without running, so the controller sends it over HTTP.
+- **Organizations can follow WorkOS (experimental, off by default).** With
+  `ORGANIZATION_DIRECTORY=workos`, an organization an operator links to a
+  WorkOS organization (`switch-link-workos`) takes its members, and who is
+  its Org Admin, from there: at sign-in, from WorkOS's events every 30
+  seconds, and in a full check once a day. A change from WorkOS is applied
+  even when it breaks a rule Switch keeps (the last Org Admin, agents left
+  without an owner who can act for them), and the Organization page tells
+  its admins what is left to fix. Adding someone to a linked organization or
+  making them Org Admin is done in WorkOS, and the dashboard says so; taking
+  either away in Switch ends access at once but lasts only while WorkOS
+  agrees. Setup and limits: `docs/old/workos-directory.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)

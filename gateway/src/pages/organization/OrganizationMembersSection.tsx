@@ -39,12 +39,17 @@ const ROLE_LABELS: Record<OrganizationRole, string> = {
 export default function OrganizationMembersSection({
   selfId,
   asOperator,
+  fromDirectory,
   onChanged,
 }: {
   selfId: string;
   // The platform operator, who is no admin here, may manage the members only
   // while the organization has no admin left, to make one.
   asOperator: boolean;
+  // The members come from the organization's account settings: nobody can be
+  // made Org Admin here, and what is taken away here comes back while those
+  // settings still grant it.
+  fromDirectory: boolean;
   // Called after each change that went through.
   onChanged: () => void;
 }) {
@@ -104,7 +109,11 @@ export default function OrganizationMembersSection({
             sx={{ fontSize: "0.875rem" }}
           >
             {(Object.keys(ROLE_LABELS) as OrganizationRole[]).map((role) => (
-              <MenuItem key={role} value={role}>
+              <MenuItem
+                key={role}
+                value={role}
+                disabled={fromDirectory && role === "org_admin" && row.role !== "org_admin"}
+              >
                 {ROLE_LABELS[role]}
               </MenuItem>
             ))}
@@ -139,7 +148,7 @@ export default function OrganizationMembersSection({
           ),
       },
     ],
-    [act, busy, selfId],
+    [act, busy, fromDirectory, selfId],
   );
   // The operator restores an admin and nothing more: removing a member is
   // refused to them, so there is nothing to offer.
@@ -162,8 +171,20 @@ export default function OrganizationMembersSection({
       )}
       {asOperator && !error && !loading && (
         <Alert severity="warning">
-          This organization has no admin. As platform operator you can make one of its members
-          an admin; the change is recorded in its audit log, marked as yours.
+          {fromDirectory
+            ? "This organization has no admin. Its admins come from its account settings, so " +
+              "someone has to be made an organization admin there."
+            : "This organization has no admin. As platform operator you can make one of its " +
+              "members an admin; the change is recorded in its audit log, marked as yours."}
+        </Alert>
+      )}
+      {fromDirectory && !asOperator && (
+        <Alert severity="info">
+          This organization's members, and who is its admin, come from your organization's
+          account settings. Add people and make someone an organization admin there; the change
+          shows here shortly. Removing someone here, or making an admin a member, takes effect at
+          once but lasts only while the account settings agree: they are read again at the
+          person's next sign-in and once a day. Make the same change there to keep it.
         </Alert>
       )}
       {actionError && (

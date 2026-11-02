@@ -51,6 +51,7 @@ export default function OrganizationPage() {
           <OrganizationMembersSection
             selfId={session.user.id}
             asOperator={!isAdmin}
+            fromDirectory={organization?.members_from_directory === true}
             onChanged={onMembersChanged}
           />
         )}

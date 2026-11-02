@@ -28,6 +28,7 @@ export default function WorkspacePage() {
         {canAdminTenant ? (
           <InvitationsSection
             tenantId={tenant.id}
+            inOrganization={tenant.organization_id !== null}
             isOwner={isOwner}
             emailEnabled={session.invite_email_enabled}
           />

@@ -68,6 +68,13 @@ class OrganizationDirectory(Protocol):
     bound every call: they are handed rows, never a session, and a route may
     hold locks while it waits on them."""
 
+    def keeps_members_of(self, organization: Organization) -> bool:
+        """Whether the directory, not Switch, is the record of who is in
+        `organization` and who is its `org_admin`: then adding someone or
+        making them `org_admin` is done there, and what Switch takes away
+        lasts only until the directory is read again."""
+        ...
+
     async def memberships_at_sign_in(
         self, subject: str
     ) -> list[DirectoryMembership] | None:
@@ -107,6 +114,9 @@ class OrganizationDirectory(Protocol):
 class LocalDirectory:
     """Switch's own tables are the record: each change is the route's write
     to them, and nothing is asked first."""
+
+    def keeps_members_of(self, organization: Organization) -> bool:
+        return False
 
     async def memberships_at_sign_in(
         self, subject: str

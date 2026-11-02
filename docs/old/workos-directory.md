@@ -110,6 +110,19 @@ operator, who may then make one), a workspace with no owner, agents whose
 owner can no longer act for them, and a linked WorkOS organization that was
 deleted. The audit log keeps the history.
 
+## In the dashboard
+
+On a linked organization's Organization page, the Members section says that
+its members and Org Admins come from the organization's account settings
+(WorkOS), and does not offer making a member Org Admin. Removing someone or
+making an Org Admin a Member is still offered: it ends their access at once,
+and the page says it lasts only until WorkOS is read again (their next
+sign-in, or the daily check) unless the same change is made there. The
+platform operator, on a linked organization with no admin, is told the admin
+has to be made in WorkOS. A workspace's Invitations section says that only
+people already in the organization can accept, since accepting can't add
+anyone new to it.
+
 ## Not done yet
 
 - **Granting from Switch is refused** for a linked organization: adding a

@@ -213,6 +213,16 @@ class TestChangesFromSwitch:
         await directory.set_role(linked, "u", "member")  # type: ignore[arg-type]
         await directory.remove(linked, "u")  # type: ignore[arg-type]
 
+    def test_it_keeps_the_members_of_a_linked_organization_only(self) -> None:
+        directory = _directory(lambda request: httpx.Response(500))
+
+        assert directory.keeps_members_of(
+            SimpleNamespace(workos_organization_id="org_a")  # type: ignore[arg-type]
+        )
+        assert not directory.keeps_members_of(
+            SimpleNamespace(workos_organization_id=None)  # type: ignore[arg-type]
+        )
+
     async def test_an_organization_switch_keeps_itself_needs_nothing(self) -> None:
         directory = _directory(lambda request: httpx.Response(500))
         local = SimpleNamespace(workos_organization_id=None)

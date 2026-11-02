@@ -1264,6 +1264,9 @@ export interface CurrentOrganization {
   name: string;
   // Null for the platform operator there through operator access alone.
   role: OrganizationRole | null;
+  // Its members, and who is its Org Admin, come from a directory kept outside
+  // Switch: people are added and made Org Admin there, not here.
+  members_from_directory: boolean;
 }
 
 export interface OperatorWorkspace {
