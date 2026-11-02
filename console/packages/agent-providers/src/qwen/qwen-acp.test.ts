@@ -385,15 +385,18 @@ it('answers a question it cannot show with cancelled', async () => {
   });
 });
 
-it('shows the agent tool as a subagent once Qwen names it', async () => {
+it('starts the agent tool as a subagent once Qwen names it', async () => {
   const { adapter, events, server } = await setup();
   await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'delegate' });
+  // The shape Qwen 0.26.1 sends for an agent called through its deferred
+  // `tool_call`: the first notification has no input and no hint of the agent.
   for (const update of [
     {
       sessionUpdate: 'tool_call',
       status: 'pending',
       title: 'ToolCall',
       kind: 'other',
+      rawInput: {},
       _meta: { toolName: 'tool_call', provenance: 'builtin' },
     },
     {
@@ -413,12 +416,23 @@ it('shows the agent tool as a subagent once Qwen names it', async () => {
       sessionId: 'native',
       update: { toolCallId: 'task', ...update },
     });
-  expect(events.find((e) => e.type === 'item.updated')).toMatchObject({
-    item: { id: 'task', type: 'subagent', title: 'Agent: read the README' },
-  });
-  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
-    item: { id: 'task', type: 'subagent', status: 'completed' },
-  });
+  const items = events.flatMap((e) =>
+    e.type.startsWith('item.') && 'item' in e && e.item.id === 'task'
+      ? [`${e.type}:${e.item.type}`]
+      : []
+  );
+  // The conformance suite waits for a subagent's item.started: the plain tool
+  // call that Qwen announced first is started again as the subagent it is.
+  expect(items).toEqual([
+    'item.started:tool_call',
+    'item.started:subagent',
+    'item.completed:subagent',
+  ]);
+  expect(events.find((e) => e.type === 'item.started' && e.item.type === 'subagent')).toMatchObject(
+    {
+      item: { id: 'task', title: 'Agent: read the README', status: 'in_progress' },
+    }
+  );
 });
 
 it('keeps a built-in tool typed by its ACP kind', async () => {
