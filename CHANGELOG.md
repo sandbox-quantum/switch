@@ -307,6 +307,11 @@ version of their own to them without also giving them a release of their own.
   one bell.
 - **Reading an agent's own events no longer builds its query each time.**
   Each shape of the read is built once and run with bind parameters.
+- **A message addressed to a connected agent no longer reads the agent's
+  membership after it commits.** That read stops an agent removed from the
+  room in the meantime from saying anything there, and a connected agent has
+  nothing to say about a message addressed to it, so the read is now made only
+  before a refusal or an offline notice is posted, or a machine woken.
 
 #### Fixed
 - **On Slack, the 👀 and the activity card no longer arrive after the agent's
