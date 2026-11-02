@@ -179,6 +179,11 @@ class _CollabLifecycle:
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
+    def unlinkable_account_reason(
+        self, bridge_type: str, external_user_id: str
+    ) -> str | None:
+        return None
+
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
 
@@ -569,7 +574,11 @@ class TestBridgeRoutes:
             )
             claimed = await client.post(
                 f"/bridges/{bridge.id}/identities",
-                json={"external_user_id": "U1", "username": "ada"},
+                json={
+                    "external_user_id": "U1",
+                    "username": "ada",
+                    "expects_confirmation": True,
+                },
             )
             deleted = await client.delete(f"/bridges/{bridge.id}")
 

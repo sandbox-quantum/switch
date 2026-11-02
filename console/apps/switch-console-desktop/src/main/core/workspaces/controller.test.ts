@@ -18,6 +18,11 @@ const runTemplateWithAgents = vi.hoisted(() => vi.fn());
 const runTemplateDocument = vi.hoisted(() => vi.fn());
 const fetchRoomDetail = vi.hoisted(() => vi.fn());
 const fetchManagedAgent = vi.hoisted(() => vi.fn());
+const claimIdentityOnServer = vi.hoisted(() => vi.fn());
+const cancelLinkRequestOnServer = vi.hoisted(() => vi.fn());
+const fetchMyIdentities = vi.hoisted(() => vi.fn());
+const fetchUnconfirmedLinks = vi.hoisted(() => vi.fn());
+const requireLinkConfirmationOnServer = vi.hoisted(() => vi.fn());
 const managedAgentLocator = vi.hoisted(() =>
   vi.fn(async () => (controllerId: string) => (controllerId === 'c1' ? 'local' : 'remote'))
 );
@@ -90,7 +95,10 @@ vi.mock('@main/core/switch-servers/disconnect-bridge', () => ({
   bridgeInstallState,
 }));
 vi.mock('@main/core/switch-servers/identities', () => ({
-  claimIdentityOnServer: vi.fn(),
+  cancelLinkRequestOnServer,
+  claimIdentityOnServer,
+  issueLinkCodeOnServer: vi.fn(),
+  requireLinkConfirmationOnServer,
   searchDirectoryOnServer: vi.fn(),
 }));
 vi.mock('@main/core/switch-servers/teams-package', () => ({ saveTeamsPackage }));
@@ -115,7 +123,9 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
   fetchBridgeTypes: vi.fn(),
   fetchConnectionAgents,
   fetchWorkspaceServices,
-  fetchMyIdentities: vi.fn(),
+  fetchMyIdentities,
+  fetchMyPendingIdentities: vi.fn(),
+  fetchUnconfirmedLinks,
   fetchRoomAgentIds: vi.fn(),
   fetchManagedAgent,
   fetchRoomDetail,
@@ -202,6 +212,158 @@ describe('disconnecting a bridge', () => {
 
     await vi.waitFor(() =>
       expect(trackEvent).toHaveBeenCalledWith('bridge_disconnected', {
+        bridge_platform: 'slack',
+        outcome: 'failure',
+      })
+    );
+  });
+});
+
+describe('linking a messaging account', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    managedServerHostBlocked.mockReturnValue(null);
+    getServer.mockResolvedValue(server({}));
+    requireWorkspace.mockResolvedValue(workspace());
+    fetchBridges.mockResolvedValue([{ id: 'b1', type: 'slack' }]);
+  });
+
+  const PARAMS = { workspaceId: 'ws', bridgeId: 'b1', externalUserId: 'U1', username: 'ada' };
+
+  it('reports a link waiting for its code apart from one that took effect', async () => {
+    // A pending link counts for nothing until the code is posted; filing it
+    // under success would hide every link that is never confirmed.
+    claimIdentityOnServer.mockResolvedValue({ kind: 'pending', pending: {}, code: null });
+
+    await workspacesController.claimBridgeIdentity(PARAMS);
+
+    await vi.waitFor(() =>
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
+        bridge_platform: 'slack',
+        outcome: 'pending',
+      })
+    );
+  });
+
+  it('reports a link that took effect at once as a success', async () => {
+    claimIdentityOnServer.mockResolvedValue({ kind: 'claimed', identity: {} });
+
+    await workspacesController.claimBridgeIdentity(PARAMS);
+
+    await vi.waitFor(() =>
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
+        bridge_platform: 'slack',
+        outcome: 'success',
+      })
+    );
+  });
+
+  it('cancels a waiting confirmation through the request-only route', async () => {
+    // The full unlink would also drop a link made before confirming, which
+    // works today; Cancel must only ever withdraw the code.
+    cancelLinkRequestOnServer.mockResolvedValue({ kind: 'cancelled' });
+
+    await expect(
+      workspacesController.cancelIdentityLinkRequest({
+        workspaceId: 'ws',
+        bridgeId: 'b1',
+        identityId: 'eu-1',
+      })
+    ).resolves.toEqual({ kind: 'cancelled' });
+
+    expect(cancelLinkRequestOnServer).toHaveBeenCalledWith(expect.anything(), 'b1', 'eu-1');
+  });
+
+  describe('a confirmation the screen saw', () => {
+    const CONFIRMED = { id: 'eu-1', bridgeId: 'b1', bridgeType: 'slack', verified: true };
+    const REPORT = { workspaceId: 'ws', bridgeId: 'b1', identityId: 'eu-1', kind: 'pending' };
+
+    it('is reported once the server agrees the link is confirmed', async () => {
+      fetchMyIdentities.mockResolvedValue([CONFIRMED]);
+
+      await workspacesController.reportIdentityConfirmed(REPORT);
+
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_confirmed', {
+        bridge_platform: 'slack',
+        link_kind: 'new',
+      });
+    });
+
+    it('names a link made before confirming as existing', async () => {
+      fetchMyIdentities.mockResolvedValue([CONFIRMED]);
+
+      await workspacesController.reportIdentityConfirmed({ ...REPORT, kind: 'unverified' });
+
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_confirmed', {
+        bridge_platform: 'slack',
+        link_kind: 'existing',
+      });
+    });
+
+    it('reports a kind it does not recognise as unknown rather than passing it on', async () => {
+      fetchMyIdentities.mockResolvedValue([CONFIRMED]);
+
+      await workspacesController.reportIdentityConfirmed({ ...REPORT, kind: 'whatever' });
+
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_confirmed', {
+        bridge_platform: 'slack',
+        link_kind: 'unknown',
+      });
+    });
+
+    it('is not reported when the server does not list the link as confirmed', async () => {
+      fetchMyIdentities.mockResolvedValue([{ ...CONFIRMED, verified: false }]);
+
+      await workspacesController.reportIdentityConfirmed(REPORT);
+
+      expect(trackEvent).not.toHaveBeenCalled();
+    });
+
+    it('asks the server nothing while sharing is off', async () => {
+      canSend.mockResolvedValueOnce(false);
+
+      await workspacesController.reportIdentityConfirmed(REPORT);
+
+      expect(fetchMyIdentities).not.toHaveBeenCalled();
+      expect(trackEvent).not.toHaveBeenCalled();
+    });
+
+    it('never fails, even when the server cannot be read', async () => {
+      fetchMyIdentities.mockRejectedValue(new Error('unreachable'));
+
+      await expect(workspacesController.reportIdentityConfirmed(REPORT)).resolves.toBeUndefined();
+      expect(trackEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  it('lists one app’s older links from its server', async () => {
+    const LINKS = [
+      { id: 'eu-1', externalUserId: 'U1', externalUsername: 'ada', userId: 'u1', userName: 'Ada' },
+    ];
+    fetchUnconfirmedLinks.mockResolvedValue(LINKS);
+
+    await expect(
+      workspacesController.listUnconfirmedLinks({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toEqual(LINKS);
+    expect(fetchUnconfirmedLinks).toHaveBeenCalledWith(expect.anything(), 'b1');
+  });
+
+  it('requires confirming one app’s older links', async () => {
+    requireLinkConfirmationOnServer.mockResolvedValue({ kind: 'required', moved: 2 });
+
+    await expect(
+      workspacesController.requireLinkConfirmation({ workspaceId: 'ws', bridgeId: 'b1' })
+    ).resolves.toEqual({ kind: 'required', moved: 2 });
+    expect(requireLinkConfirmationOnServer).toHaveBeenCalledWith(expect.anything(), 'b1');
+  });
+
+  it('reports a refused claim as a failure', async () => {
+    claimIdentityOnServer.mockResolvedValue({ kind: 'bridge-unavailable', message: 'stopped' });
+
+    await workspacesController.claimBridgeIdentity(PARAMS);
+
+    await vi.waitFor(() =>
+      expect(trackEvent).toHaveBeenCalledWith('bridge_identity_claimed', {
         bridge_platform: 'slack',
         outcome: 'failure',
       })

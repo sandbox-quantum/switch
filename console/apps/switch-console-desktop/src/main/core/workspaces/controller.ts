@@ -39,6 +39,8 @@ import {
   fetchManagedAgent,
   fetchMessagingApps,
   fetchMyIdentities,
+  fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
   fetchRoomAgentIds,
   fetchRoomDetail,
   fetchRoomGroups,
@@ -80,7 +82,10 @@ import {
   updateTemplate,
 } from '@main/core/switch-servers/gateway-client';
 import {
+  cancelLinkRequestOnServer,
   claimIdentityOnServer,
+  issueLinkCodeOnServer,
+  requireLinkConfirmationOnServer,
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
@@ -97,13 +102,18 @@ import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryBridgeFailure,
   TelemetryBridgePlatform,
+  TelemetryIdentityClaimOutcome,
   TelemetryOutcome,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
   TelemetryRoomCreateSource,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
-import { entryPointOf, roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
+import {
+  entryPointOf,
+  identityLinkKindOf,
+  roomAgentsDirectionOf,
+} from '@main/core/telemetry/narrow';
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
 import type {
@@ -119,6 +129,7 @@ import type {
   AgentIconBackfill,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
+  CancelLinkRequestResult,
   ChatClaim,
   ClaimIdentityParams,
   ConnectedChat,
@@ -129,8 +140,12 @@ import type {
   CreateRoomResult,
   DeleteBridgeParams,
   DeleteBridgeResult,
+  IssueLinkCodeResult,
   LinkedIdentity,
   MessagingApps,
+  PendingIdentity,
+  RequireLinkConfirmationResult,
+  UnconfirmedLink,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
@@ -994,7 +1009,9 @@ export const workspacesController = createRPCController({
       searchDirectoryOnServer(server, params.bridgeId, params.query)
     ),
 
-  /** Claim a messaging-app account as the signed-in Switch user's own. */
+  /** Claim a messaging-app account as the signed-in Switch user's own. A
+   * current server holds the link pending until a code is posted from the
+   * account, and the result carries that code. */
   claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
     const result = await withReachableWorkspaceSession(params.workspaceId, (server) =>
       claimIdentityOnServer(server, {
@@ -1003,27 +1020,105 @@ export const workspacesController = createRPCController({
         username: params.username,
       })
     );
+    const outcome: TelemetryIdentityClaimOutcome =
+      result.kind === 'claimed' ? 'success' : result.kind === 'pending' ? 'pending' : 'failure';
     // Reported after the lease, not inside it: the platform lookup takes a lease
     // of its own, and the bridge is still there to read afterwards.
     reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform, at) =>
-      trackEventAt(
-        'bridge_identity_claimed',
-        {
-          bridge_platform,
-          outcome: result.kind === 'claimed' ? 'success' : 'failure',
-        },
-        at
-      )
+      trackEventAt('bridge_identity_claimed', { bridge_platform, outcome }, at)
     );
     return result;
   },
 
-  /** Give up a claim on a messaging-app account, leaving any other user's claim
-   * on it in place. `userId` is whose claim to drop — null for the signed-in
-   * user, which is the only one this app offers. Failures propagate: unclaiming
-   * is a deliberate act, and reporting success for one that did not happen
-   * would leave the user thinking an agent is no longer reachable by them when
-   * it still is. */
+  /** A fresh code confirming the signed-in user's link to a messaging-app
+   * account — one still pending, or one made before links had to be confirmed.
+   * Replaces any code issued before. */
+  issueIdentityLinkCode: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+  }): Promise<IssueLinkCodeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      issueLinkCodeOnServer(server, params.bridgeId, params.identityId)
+    ),
+
+  /**
+   * Report that a link the confirmation screen was waiting on is confirmed.
+   *
+   * The code is posted in the chat app, so the screen watching for it is the
+   * only thing that sees this happen; it says so, and `kind` is its own name for
+   * the link. The server is asked before anything is reported, so a screen that
+   * is wrong reports nothing — and nothing at all is asked while sharing is off.
+   * Never fails: a report that cannot be made is logged and dropped.
+   */
+  reportIdentityConfirmed: async (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+    kind: string;
+  }): Promise<void> => {
+    const at = Date.now();
+    try {
+      if (!(await telemetryService.canSend())) return;
+      const identities = await withWorkspaceSession(params.workspaceId, fetchMyIdentities);
+      const confirmed = identities.find(
+        (i) => i.id === params.identityId && i.bridgeId === params.bridgeId && i.verified
+      );
+      if (confirmed === undefined) return;
+      trackEventAt(
+        'bridge_identity_confirmed',
+        {
+          bridge_platform: bridgePlatformOfType(confirmed.bridgeType),
+          link_kind: identityLinkKindOf(params.kind),
+        },
+        at
+      );
+    } catch (error) {
+      log.warn('A confirmed link could not be checked to report it', {
+        event: 'telemetry_identity_confirmed',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        error: String(error),
+      });
+    }
+  },
+
+  /** The links on a messaging app made before links had to be confirmed, which
+   * still count. Admin only; empty on a server that predates them. */
+  listUnconfirmedLinks: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<UnconfirmedLink[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchUnconfirmedLinks(server, params.bridgeId)
+    ),
+
+  /** Stop trusting a messaging app's older links until each owner confirms
+   * theirs with a code. Admin only. */
+  requireLinkConfirmation: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<RequireLinkConfirmationResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      requireLinkConfirmationOnServer(server, params.bridgeId)
+    ),
+
+  /** Withdraw the signed-in user's confirmation waiting on a code. A link that
+   * already works stays; unlinking is {@link releaseBridgeIdentity}. */
+  cancelIdentityLinkRequest: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+  }): Promise<CancelLinkRequestResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      cancelLinkRequestOnServer(server, params.bridgeId, params.identityId)
+    ),
+
+  /** Give up a claim on a messaging-app account, along with any confirmation
+   * waiting on it, leaving any other user's claim on it in place. `userId` is
+   * whose claim to drop — null for the signed-in user, which is the only one
+   * this app offers. Failures propagate: unclaiming is a deliberate act, and
+   * reporting success for one that did not happen would leave the user thinking
+   * an agent is no longer reachable by them when it still is. */
   releaseBridgeIdentity: (params: {
     workspaceId: string;
     bridgeId: string;
@@ -1034,9 +1129,16 @@ export const workspacesController = createRPCController({
       releaseBridgeIdentity(server, params.bridgeId, params.identityId, params.userId)
     ),
 
-  /** The messaging accounts the signed-in user has claimed in this workspace. */
+  /** The messaging accounts linked to the signed-in user in this workspace —
+   * only links that count; see {@link listMyPendingIdentities} for the rest. */
   listMyIdentities: (workspaceId: string): Promise<LinkedIdentity[]> =>
     withWorkspaceSession(workspaceId, fetchMyIdentities),
+
+  /** The messaging accounts waiting for a code to confirm a link to the
+   * signed-in user in this workspace. Empty on a server that predates
+   * confirming links. */
+  listMyPendingIdentities: (workspaceId: string): Promise<PendingIdentity[]> =>
+    withWorkspaceSession(workspaceId, fetchMyPendingIdentities),
 
   /** Whether the signed-in user owns an agent here that is set to answer its
    * owner, which is what makes an unlinked messaging account worth warning
