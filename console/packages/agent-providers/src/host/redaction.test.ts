@@ -2,6 +2,7 @@ import type { FileHandle } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
+  launchSecrets,
   LogRedactor,
   pipeRedactedLogs,
   Redactions,
@@ -274,5 +275,52 @@ describe('tool detail shown in a chat', () => {
     const redactions = new Redactions();
     const output = 'max_tokens: 4096\nrotate the token in Settings\n12 passed, 0 failed';
     expect(redactions.toolDetail(output)).toBe(output);
+  });
+});
+
+describe('secrets the host itself passes to the agent', () => {
+  it('takes secret-named environment variables, MCP headers and MCP environment', () => {
+    const secrets = launchSecrets(
+      {
+        OPENAI_API_KEY: 'synthetic-openai-key',
+        SWITCH_SERVICE_BEARER: 'synthetic-bearer',
+        CONFIGURED: 'synthetic-not-a-secret',
+      },
+      {
+        vendor: {
+          transport: 'http',
+          url: 'http://127.0.0.1:4321/mcp',
+          headers: { Authorization: 'Bearer synthetic-mcp-token', Accept: 'application/json' },
+        },
+        local: {
+          transport: 'stdio',
+          command: 'echo-mcp',
+          args: [],
+          env: { ECHO_ACCESS_TOKEN: 'synthetic-stdio-token', ECHO_MODE: 'verbose-output' },
+        },
+      }
+    );
+    expect(secrets.sort()).toEqual(
+      [
+        'synthetic-openai-key',
+        'synthetic-bearer',
+        'Bearer synthetic-mcp-token',
+        'synthetic-mcp-token',
+        'synthetic-stdio-token',
+      ].sort()
+    );
+  });
+
+  it('leaves short values alone, so a secret-named flag does not mask every 1', () => {
+    expect(launchSecrets({ USE_TOKEN: '1', AUTH_TOKEN: 'true' }, {})).toEqual([]);
+  });
+
+  it('masks a passed secret in tool detail, where no shape would catch it', () => {
+    const redactions = new Redactions();
+    for (const secret of launchSecrets({ VENDOR_PASSWORD: 'plain-words-here' }, {}))
+      redactions.add(secret);
+    expect(redactions.toolDetail('cat ~/.netrc\nlogin me password-is plain-words-here')).toBe(
+      'cat ~/.netrc\nlogin me password-is [REDACTED]'
+    );
   });
 });
