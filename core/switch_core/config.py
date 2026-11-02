@@ -14,7 +14,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from switch_core.connections.loader import CATALOG, RedirectMode
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
@@ -90,6 +89,8 @@ def _require_matching_keypair(
 
 # A connection catalog slug (`connections/loader.py`, SLUG_PATTERN).
 _SERVICE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+# Where a service's sign-ins come back (`connections/loader.py`, RedirectMode).
+_RedirectMode = Literal["loopback", "core"]
 
 # The version shape the controller's package script accepts: a release's
 # x.y.z, or a dev build's x.y.z-<prerelease> (0.31.1-dev.412.gabc1234).
@@ -360,8 +361,9 @@ class SwitchConfig(BaseSettings):
     # Core's callback is registered with a vendor only where sign-ins use it,
     # so naming `core` for a service whose client Core registers itself, or no
     # longer naming it, registers a new client, and every connection to that
-    # service on this server must be reconnected once.
-    service_sign_in_redirect: dict[str, RedirectMode] = Field(default_factory=dict)
+    # service on this server must be reconnected once. Set the same value on
+    # every replica: they share one registered client per service.
+    service_sign_in_redirect: dict[str, _RedirectMode] = Field(default_factory=dict)
     # Sets the Secure flag on the gateway's cookies (the switch_auth session
     # and the OIDC sign-in cookie), so they are never sent over plain HTTP.
     # Only a local stack served over http:// should turn it off.
@@ -1496,49 +1498,12 @@ class SwitchConfig(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_service_sign_in_redirect(self) -> "SwitchConfig":
-        for slug, mode in self.service_sign_in_redirect.items():
-            entry = CATALOG.get(slug)
-            if entry is None:
+        for slug in self.service_sign_in_redirect:
+            if not _SERVICE_SLUG_RE.fullmatch(slug):
                 raise ValueError(
-                    f"SERVICE_SIGN_IN_REDIRECT names {slug!r}, which is not in the "
-                    "catalog."
-                )
-            oauth = entry.definition.auth.oauth
-            allowed = [] if oauth is None else oauth.redirect
-            if mode not in allowed:
-                raise ValueError(
-                    f"SERVICE_SIGN_IN_REDIRECT names {mode!r} for {slug}, which "
-                    + (
-                        "allows only " + " or ".join(repr(listed) for listed in allowed)
-                        if allowed
-                        else "allows none: it has no OAuth sign-in"
-                    )
-                    + "."
+                    f"SERVICE_SIGN_IN_REDIRECT names an invalid service: {slug!r}"
                 )
         return self
-
-    def sign_in_redirect_warnings(self) -> list[str]:
-        """A warning for each service SERVICE_SIGN_IN_REDIRECT sends back
-        through Core on a server without GATEWAY_PUBLIC_URL, which signs in
-        through loopback instead where its entry allows it."""
-        if self.gateway_public_url is not None:
-            return []
-        warnings = []
-        for slug, mode in self.service_sign_in_redirect.items():
-            if mode != "core":
-                continue
-            oauth = CATALOG[slug].definition.auth.oauth
-            assert oauth is not None
-            warnings.append(
-                f"SERVICE_SIGN_IN_REDIRECT names 'core' for {slug}, but "
-                "GATEWAY_PUBLIC_URL is unset, so "
-                + (
-                    f"{slug}'s sign-ins come back to Switch Console (loopback) instead."
-                    if "loopback" in oauth.redirect
-                    else f"{slug} cannot be connected until it is set."
-                )
-            )
-        return warnings
 
     @model_validator(mode="after")
     def _validate_migration_lock_timeout(self) -> "SwitchConfig":

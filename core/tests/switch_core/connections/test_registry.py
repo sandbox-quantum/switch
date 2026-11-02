@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -23,7 +25,11 @@ from switch_core.connections.adapters.oauth import (
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG, CATALOG_ROOT, load_catalog
-from switch_core.connections.oauth_clients import RegisteredClient
+from switch_core.connections.oauth_clients import (
+    RegisteredClient,
+    check_sign_in_redirects,
+    sign_in_redirect_warnings,
+)
 from switch_core.connections.registry import (
     ClientRegistration,
     ServiceSetupError,
@@ -481,13 +487,32 @@ class TestDisabledServices:
 
 
 class TestServiceSignInRedirect:
+    def test_reading_the_config_does_not_load_the_catalog(self) -> None:
+        # A subprocess, because this one has imported the loader already.
+        # Alembic reads the config on every migration, and must not depend
+        # on the catalog's files.
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, switch_core.config; "
+                "assert 'switch_core.connections.loader' not in sys.modules",
+            ],
+            check=True,
+        )
+
     def test_read_as_a_map_of_service_to_the_way_back(self) -> None:
         config = _config(
             service_sign_in_redirect={"atlassian": "core"},
             gateway_public_url="https://switch.example.com",
         )
         assert config.service_sign_in_redirect == {"atlassian": "core"}
-        assert config.sign_in_redirect_warnings() == []
+        assert (
+            sign_in_redirect_warnings(
+                CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+            )
+            == []
+        )
 
     def test_empty_by_default(self) -> None:
         assert _config().service_sign_in_redirect == {}
@@ -508,10 +533,22 @@ class TestServiceSignInRedirect:
                 {"github": "core"},
                 "names 'core' for github, which allows none: it has no OAuth sign-in.",
             ),
-            ({"atlassian": "web"}, "Input should be 'loopback' or 'core'"),
         ],
     )
     def test_a_service_or_way_its_entry_does_not_list_stops_the_server(
+        self, named: dict, message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=re.escape(message)):
+            check_sign_in_redirects(CATALOG, named)
+
+    @pytest.mark.parametrize(
+        ("named", "message"),
+        [
+            ({"atlassian": "web"}, "Input should be 'loopback' or 'core'"),
+            ({"Not A Slug": "core"}, "names an invalid service: 'Not A Slug'"),
+        ],
+    )
+    def test_a_malformed_entry_is_refused_as_the_config_is_read(
         self, named: dict, message: str
     ) -> None:
         with pytest.raises(ValueError, match=re.escape(message)):
@@ -521,7 +558,9 @@ class TestServiceSignInRedirect:
         self,
     ) -> None:
         config = _config(service_sign_in_redirect={"atlassian": "core"})
-        assert config.sign_in_redirect_warnings() == [
+        assert sign_in_redirect_warnings(
+            CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+        ) == [
             "SERVICE_SIGN_IN_REDIRECT names 'core' for atlassian, but "
             "GATEWAY_PUBLIC_URL is unset, so atlassian's sign-ins come back to "
             "Switch Console (loopback) instead."
@@ -549,8 +588,9 @@ class TestServiceSignInRedirect:
     def test_a_service_that_signs_in_only_through_core_cannot_fall_back(
         self,
     ) -> None:
-        config = _config(service_sign_in_redirect={"google-workspace": "core"})
-        assert config.sign_in_redirect_warnings() == [
+        assert sign_in_redirect_warnings(
+            CATALOG, {"google-workspace": "core"}, None
+        ) == [
             "SERVICE_SIGN_IN_REDIRECT names 'core' for google-workspace, but "
             "GATEWAY_PUBLIC_URL is unset, so google-workspace cannot be "
             "connected until it is set."
