@@ -87,6 +87,62 @@ class Admin:
         if not self._cookie:
             raise RuntimeError("admin sign-in returned no switch_auth cookie")
 
+    async def use_workspace(self, name: str) -> dict:
+        """Bind this session to the admin's workspace called `name`, made as
+        an organization of its own when there is none, then put the admin's
+        own selection back.
+
+        Signing in selects the workspace the admin last switched to, so
+        without that, whoever signs in as the admin while a run is going, a
+        person or a scheduled job, would land in the load test's workspace.
+        This session keeps the cookie bound to `name`; the one the second
+        switch mints is dropped."""
+        r = await self.call("GET", "/tenants/current")
+        before = r.json()["id"] if r.status_code == 200 else None
+        r = await self.call("GET", "/tenants")
+        if r.status_code != 200:
+            raise _fail("listing the admin's workspaces", r)
+        named = [t for t in r.json() if t.get("name") == name]
+        if len(named) > 1:
+            raise RuntimeError(f"the admin has {len(named)} workspaces named {name}")
+        if named:
+            workspace = named[0]
+            r = await self.call("POST", f"/tenants/{workspace['id']}/switch")
+            if r.status_code != 200:
+                raise _fail(f"switching to the workspace {name}", r)
+        else:
+            r = await self.call("POST", "/organizations", json={"name": name})
+            if r.status_code != 201:
+                raise _fail(f"creating the workspace {name}", r)
+            workspace = r.json()["workspace"]
+        cookie = r.cookies.get("switch_auth")
+        if not cookie:
+            raise RuntimeError(f"switching to {name} returned no switch_auth cookie")
+        self._cookie = cookie
+        if before is not None and before != workspace["id"]:
+            r = await self.call("POST", f"/tenants/{before}/switch")
+            if r.status_code != 200:
+                raise _fail("putting the admin's own workspace back", r)
+        return {"id": workspace["id"], "name": name, "made": not named}
+
+    async def refuse_bridges(self) -> None:
+        """Refuse a workspace with an active bridge: each bridge gives every
+        agent of its workspace an identity on its platform (a role on
+        Discord, a user group on Slack, a bot on Mattermost), so a run there
+        would make thousands of them."""
+        r = await self.call("GET", "/collaborations")
+        if r.status_code != 200:
+            raise _fail("listing the workspace's bridges", r)
+        active = [b for b in r.json() if b.get("status") == "active"]
+        if active:
+            names = ", ".join(
+                f"{b.get('bridge_type')} {b.get('display_name')!r}" for b in active
+            )
+            raise RuntimeError(
+                f"the run's workspace has active bridges ({names}); "
+                "run it in a workspace of its own with --workspace"
+            )
+
     async def close(self) -> None:
         await self.http.aclose()
 

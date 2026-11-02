@@ -84,6 +84,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="urls",
         help="port-forward: reach each core pod through kubectl, for a Mac off the tailnet (smoke runs only)",
     )
+    t.add_argument(
+        "--workspace",
+        help="run in the admin's workspace of this name, made as an organization "
+        "of its own if missing, so the agents stay off the bridges of the "
+        "admin's own workspace",
+    )
     w = ap.add_argument_group("workload")
     w.add_argument(
         "--scenarios",
@@ -246,6 +252,7 @@ def kept_record(
         "agents": [{"index": s.index, "id": s.id, "name": s.name} for s in seeded],
         "rooms": room_ids,
         "membership_fingerprint": fingerprint(membership),
+        "workspace": a.workspace,
     }
 
 
@@ -383,6 +390,8 @@ async def cleanup(a: argparse.Namespace, kube: Kube) -> int:
     admin = Admin(a.gateway_url, RequestIds(f"cleanup-{a.cleanup}"))
     try:
         await admin.login(*kube.admin_login())
+        if a.workspace:
+            await admin.use_workspace(a.workspace)
         done = await teardown(admin, a.cleanup)
     finally:
         await admin.close()
@@ -536,9 +545,18 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     taken_over = False
     try:
         await admin.login(*kube.admin_login())
+        if a.workspace:
+            meta["workspace"] = await admin.use_workspace(a.workspace)
+            print(f"workspace: {json.dumps(meta['workspace'])}", flush=True)
+        await admin.refuse_bridges()
         t = time.monotonic()
         if a.reuse:
             kept = json.loads((RUNS / a.reuse / "keep.json").read_text())
+            if kept.get("workspace") != a.workspace:
+                raise RuntimeError(
+                    f"{a.reuse} kept its agents in workspace {kept.get('workspace')}: "
+                    "reuse them with the same --workspace"
+                )
             seeded = take_over(kept, membership, max(a.steps))
             room_ids = kept["rooms"]
             names_from = kept["names_from"]
