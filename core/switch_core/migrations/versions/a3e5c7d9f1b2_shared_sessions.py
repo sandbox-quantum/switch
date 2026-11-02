@@ -20,7 +20,7 @@ per model, so an agent answering several rooms can be costed per room. No
 foreign keys beyond the tenant, so counts outlive their room and agent.
 
 Revision ID: a3e5c7d9f1b2
-Revises: 9d41b7e2c6a3
+Revises: ad15e53358fe
 Create Date: 2026-10-21 00:00:00.000000
 
 """
@@ -31,7 +31,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a3e5c7d9f1b2"
-down_revision: str | Sequence[str] | None = "9d41b7e2c6a3"
+down_revision: str | Sequence[str] | None = "ad15e53358fe"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
