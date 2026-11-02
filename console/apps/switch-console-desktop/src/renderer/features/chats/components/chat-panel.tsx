@@ -1,10 +1,12 @@
 import { Lock, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
+import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { Button } from '@renderer/lib/ui/button';
 import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
 import { useChatPeople } from '../chat-people';
+import { chatAvailability } from '../machine-availability';
 import { readThroughSeq } from '../read-progress';
 import { directChats } from '../start-direct-chat';
 import { agentActivities } from '../stores/activities';
@@ -91,6 +93,12 @@ export const ChatPanel = observer(function ChatPanel({
       : []);
   const activities = useAgentActivities(serverId, chat);
   const people = useChatPeople(serverId, chat);
+  const managed = useManagedAgents(serverId);
+  const availability = chatAvailability(
+    agents,
+    (chat?.memberUserIds ?? []).filter((userId) => userId !== chatsStore.userId).length,
+    managed.data
+  );
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const lost = timeline.accessLost || chatsStore.removed.has(roomId);
 
@@ -211,6 +219,7 @@ export const ChatPanel = observer(function ChatPanel({
             ? 'Switch cannot be reached right now.'
             : null
         }
+        availability={availability}
       />
     </div>
   );

@@ -24,6 +24,7 @@ vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
 }));
 
 import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
+import { AVAILABLE } from '@renderer/features/chats/machine-availability';
 import {
   ChatTimeline,
   type TimelineApi,
@@ -56,6 +57,7 @@ async function render(): Promise<HTMLTextAreaElement> {
           replyTo={null}
           onClearReply={() => {}}
           disabled={null}
+          availability={AVAILABLE}
         />
       </QueryClientProvider>
     )

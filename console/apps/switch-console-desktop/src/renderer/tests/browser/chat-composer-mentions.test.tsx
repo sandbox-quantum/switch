@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // Geometry is the subject, so the real utility classes must be present.
 import '@renderer/index.css';
 import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
+import { AVAILABLE } from '@renderer/features/chats/machine-availability';
 import {
   ChatTimeline,
   type TimelineApi,
@@ -64,6 +65,7 @@ describe('ChatComposer mention badges', () => {
         replyTo={null}
         onClearReply={() => {}}
         disabled={null}
+        availability={AVAILABLE}
       />
     );
     const draft = `${Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n')}\n@agent-two last`;
@@ -122,6 +124,7 @@ describe('ChatComposer picked mentions', () => {
         replyTo={null}
         onClearReply={() => {}}
         disabled={null}
+        availability={AVAILABLE}
       />
     );
     const kinds = () =>
@@ -172,6 +175,7 @@ describe('ChatComposer on a server without group chats', () => {
           replyTo={null}
           onClearReply={() => {}}
           disabled={null}
+          availability={AVAILABLE}
         />
       );
       await act(async () => {

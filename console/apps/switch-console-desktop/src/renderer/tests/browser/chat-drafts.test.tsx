@@ -20,6 +20,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
 }));
 
 import { ChatComposer } from '@renderer/features/chats/components/chat-composer';
+import { AVAILABLE } from '@renderer/features/chats/machine-availability';
 import {
   chatDraftKey,
   moveChatDraft,
@@ -84,6 +85,7 @@ async function mount(timeline: ChatTimeline): Promise<HTMLTextAreaElement> {
           replyTo={null}
           onClearReply={() => {}}
           disabled={null}
+          availability={AVAILABLE}
         />
       </QueryClientProvider>
     )

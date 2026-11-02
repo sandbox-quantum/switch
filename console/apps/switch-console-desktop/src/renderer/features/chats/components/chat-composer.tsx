@@ -23,6 +23,7 @@ import {
 } from '@shared/core/chats/chats';
 import { snippetOf } from '../chat-threads';
 import { commandQuery, filterCommands } from '../command-query';
+import type { ChatAvailability } from '../machine-availability';
 import {
   agentTargets,
   composeMentions,
@@ -209,6 +210,7 @@ export const ChatComposer = observer(function ChatComposer({
   replyTo,
   onClearReply,
   disabled,
+  availability,
 }: {
   serverId: string;
   timeline: ChatTimeline;
@@ -221,6 +223,8 @@ export const ChatComposer = observer(function ChatComposer({
   replyTo: ChatMessage | null;
   onClearReply: () => void;
   disabled: string | null;
+  /** Whether the chat's agents can answer: a bar above the composer, and Send held back in a 1:1 chat with an offline machine. */
+  availability: ChatAvailability;
 }) {
   // Kept across reloads and restarts, per account, workspace and room.
   const draftKey = chatDraftKey({
@@ -324,6 +328,12 @@ export const ChatComposer = observer(function ChatComposer({
   const allowed = (found: MentionToken[]) => (groupChats ? found : withoutGroupMentions(found));
   const tokens = allowed(composeMentions(draft, picked, targets));
   const agentNamed = tokens.some((token) => token.kind === 'agent');
+  const offline = new Set(availability.offlineAgentIds);
+  const offlineNamed = [
+    ...new Set(
+      tokens.flatMap((token) => (token.kind === 'agent' && offline.has(token.id) ? [token.id] : []))
+    ),
+  ].flatMap((id) => agents.filter((each) => each.id === id).map(chatAgentLabel));
   const mentionable =
     (agents.length > 0 && (groupChats || !agentNamed)) || mentionPeople.length > 0;
   // A `!` that starts the message offers the room's commands, as the server lists them.
@@ -464,7 +474,7 @@ export const ChatComposer = observer(function ChatComposer({
 
   const send = () => {
     const body = draft.trim();
-    if (disabled || (!body && !files.length)) return;
+    if (disabled || availability.block || (!body && !files.length)) return;
     reportBuddyMessage(
       agents,
       timeline.messages.filter((message) => message.sender.kind === 'human').length +
@@ -519,6 +529,20 @@ export const ChatComposer = observer(function ChatComposer({
           timeline={timeline}
           who={agent ? chatAgentLabel(agent) : 'the agent'}
         />
+      )}
+      {availability.bar && (
+        <div
+          role="status"
+          className="mb-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-warning"
+        >
+          {availability.bar}
+        </div>
+      )}
+      {!availability.block && offlineNamed.length > 0 && (
+        <p role="status" className="mb-2 px-1 text-xs text-foreground-warning">
+          {offlineNamed.join(', ')} {offlineNamed.length === 1 ? 'is' : 'are'} offline and won't
+          reply until {offlineNamed.length === 1 ? 'its machine is' : 'their machines are'} back.
+        </p>
       )}
       {replyTo && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs text-foreground-muted">
@@ -589,7 +613,8 @@ export const ChatComposer = observer(function ChatComposer({
                       aria-selected={index === activeIndex}
                       className={cn(
                         'flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5',
-                        index === activeIndex && 'bg-background-2'
+                        index === activeIndex && 'bg-background-2',
+                        each.kind === 'agent' && offline.has(each.id) && 'opacity-50'
                       )}
                       onMouseEnter={() => setMentionIndex(index)}
                       // Keep focus (and the caret) in the textarea.
@@ -615,6 +640,11 @@ export const ChatComposer = observer(function ChatComposer({
                           {each.agent.alias && (
                             <span className="truncate text-xs text-foreground-muted">
                               @{each.agent.alias}
+                            </span>
+                          )}
+                          {offline.has(each.id) && (
+                            <span className="ml-auto shrink-0 text-xs text-foreground-muted">
+                              offline
                             </span>
                           )}
                         </>
@@ -702,7 +732,10 @@ export const ChatComposer = observer(function ChatComposer({
               className="h-8 min-w-8"
               onStop={() => void stopActivity?.control('interrupt')}
               stopDisabledReason={stopActivity?.pendingControl ? 'Sending…' : null}
-              disabled={disabled !== null || (!showStop && !draft.trim() && !files.length)}
+              disabled={
+                disabled !== null ||
+                (!showStop && (availability.block || (!draft.trim() && !files.length)))
+              }
             />
           </div>
         </PromptInput>
