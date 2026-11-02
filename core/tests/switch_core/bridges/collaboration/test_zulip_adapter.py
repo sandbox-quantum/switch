@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.session.renderers import RequestReference
 from switch_core.bridges.collaboration.session.renderers.neutral import request_summary
 from switch_core.bridges.collaboration.zulip import adapter as zulip
 from switch_core.bridges.collaboration.zulip.adapter import (
+    DIRECT_MESSAGE_ANSWER,
     NEW_CONVERSATION_TOPIC,
     ZulipAdapter,
     ZulipConnectionConfig,
@@ -281,15 +282,33 @@ async def test_a_bang_command_is_relayed_as_a_command(server: Zulip) -> None:
     assert command.root_id == "12"
 
 
-async def test_the_bots_own_messages_and_direct_messages_are_not_relayed(
+async def test_the_bots_own_messages_are_neither_relayed_nor_answered(
     server: Zulip,
 ) -> None:
     adapter, heard = await _started(server)
 
     await adapter._relay(_message(sender_id=BOT_ID), [])
+    await adapter._relay(_message(type="private", sender_id=BOT_ID), [])
+
+    assert heard == []
+    assert server.sent("POST", "/api/v1/messages") == []
+
+
+async def test_a_direct_message_is_answered_with_where_to_write(
+    server: Zulip,
+) -> None:
+    server.on("POST", "/api/v1/messages", lambda r: _ok(id=31))
+    adapter, heard = await _started(server)
+
     await adapter._relay(_message(type="private"), [])
 
     assert heard == []
+    [answer] = server.sent("POST", "/api/v1/messages")
+    assert _form(answer) == {
+        "type": "direct",
+        "to": f"[{PERSON_ID}]",
+        "content": DIRECT_MESSAGE_ANSWER,
+    }
 
 
 async def test_what_arrived_while_not_listening_is_relayed_and_marked_read(
