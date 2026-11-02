@@ -98,8 +98,9 @@ export default function RoomDetailPage() {
     (user.id === room.owner_id ||
       canAdminTenant ||
       room.write_visibility === "public");
-  // Delete is stricter — owner or admin only, never via public write.
-  const canDelete =
+  // Delete and access changes are stricter — owner or admin only, never via
+  // public write. The server applies the same rule to both.
+  const canManage =
     !!user && (user.id === room.owner_id || canAdminTenant);
 
   return (
@@ -135,6 +136,7 @@ export default function RoomDetailPage() {
         <EditableFieldsSection
           room={room}
           canWrite={canWrite}
+          canManage={canManage}
           onSaved={refetch}
         />
         <Divider />
@@ -157,7 +159,7 @@ export default function RoomDetailPage() {
             <ArchiveSection room={room} onChanged={refetch} />
           </>
         )}
-        {canDelete && (
+        {canManage && (
           <>
             <Divider />
             <DangerSection room={room} onDeleted={() => navigate("/rooms")} />
@@ -599,10 +601,12 @@ function RoleRow({
 function EditableFieldsSection({
   room,
   canWrite,
+  canManage,
   onSaved,
 }: {
   room: RoomDetail;
   canWrite: boolean;
+  canManage: boolean;
   onSaved: () => void;
 }) {
   const [name, setName] = useState(room.name);
@@ -688,12 +692,19 @@ function EditableFieldsSection({
         minRows={6}
         helperText="Surfaced to agents on connect."
       />
-      <AccessSelect
-        value={access}
-        onChange={setAccess}
-        disabled={!canWrite || saving}
-        sx={{ maxWidth: 360 }}
-      />
+      <Box>
+        <AccessSelect
+          value={access}
+          onChange={setAccess}
+          disabled={!canManage || saving}
+          sx={{ maxWidth: 360 }}
+        />
+        {canWrite && !canManage && (
+          <Typography variant="caption" color="text.secondary" component="p">
+            Only the room's owner or an admin can change access.
+          </Typography>
+        )}
+      </Box>
       <Box>
         <Button
           variant="contained"
