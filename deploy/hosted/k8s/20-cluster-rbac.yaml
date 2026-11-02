@@ -1,0 +1,328 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-box-watch
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-0
+  resources:
+  - pods
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resources:
+  - events
+  verbs:
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-cluster-report-nodes
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+- apiGroups:
+  - metrics.k8s.io
+  resources:
+  - nodes
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-egress-lists-boxes
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - switch-proxy-login
+  resources:
+  - secrets
+  verbs:
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-hosted-controller-boxes
+rules:
+- apiGroups:
+  - apps
+  resourceNames:
+  - box
+  resources:
+  - statefulsets
+  verbs:
+  - get
+- apiGroups:
+  - apps
+  resourceNames:
+  - box
+  resources:
+  - statefulsets/scale
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - ''
+  resourceNames:
+  - switch-enrol
+  resources:
+  - secrets
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-0
+  resources:
+  - pods
+  verbs:
+  - get
+  - delete
+- apiGroups:
+  - ''
+  resourceNames:
+  - data-controller
+  - data-agents
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resources:
+  - events
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-hosted-provisioner
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - ''
+  resources:
+  - resourcequotas
+  - serviceaccounts
+  - configmaps
+  - secrets
+  - persistentvolumeclaims
+  verbs:
+  - create
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+- apiGroups:
+  - apps
+  resourceNames:
+  - box
+  resources:
+  - statefulsets
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resourceNames:
+  - box
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resourceNames:
+  - data-controller
+  - data-agents
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - get
+- apiGroups:
+  - networking.k8s.io
+  resourceNames:
+  - default-deny
+  - agent-egress
+  resources:
+  - networkpolicies
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resourceNames:
+  - no-shared-services-priority
+  resources:
+  - resourcequotas
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resourceNames:
+  - switch-ca
+  - claude-managed-settings
+  resources:
+  - configmaps
+  verbs:
+  - get
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - create
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - switch-box-watch
+  - switch-operator-restart
+  resources:
+  - rolebindings
+  verbs:
+  - get
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - switch-box-watch
+  - switch-operator-restart
+  resources:
+  - clusterroles
+  verbs:
+  - bind
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-operator-drain
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - patch
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-0
+  resources:
+  - pods
+  verbs:
+  - get
+- apiGroups:
+  - ''
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-operator-restart
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-0
+  resources:
+  - pods
+  verbs:
+  - get
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-cluster-report-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-cluster-report-nodes
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-egress-lists-boxes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-egress-lists-boxes
+subjects:
+- kind: ServiceAccount
+  name: egress-lists
+  namespace: egress-lists
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-hosted-controller-boxes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-hosted-controller-boxes
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-hosted-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-hosted-provisioner
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-provisioner
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-operator-drain
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-operator-drain
+subjects:
+- kind: ServiceAccount
+  name: switch-drain
+  namespace: switch-hosted

@@ -1,0 +1,958 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: switch-drain
+  name: switch-drain
+  namespace: switch-hosted
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: switch-drain
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: switch-drain
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: switch-box
+              namespaceSelector:
+                matchLabels:
+                  app.kubernetes.io/managed-by: switch-hosted
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - switch-drain-worker
+        env:
+        - name: SWITCH_DRAIN_CORE_URL
+          value: https://__SERVER_IP__
+        - name: SWITCH_DRAIN_CORE_TOKEN_FILE
+          value: "/etc/switch/core/bearer"
+        - name: SWITCH_DRAIN_CORE_CA
+          value: "/etc/switch/files/box-ca.crt"
+        - name: SWITCH_DRAIN_BOX_MAP
+          value: "/etc/switch/box-map"
+        - name: SWITCH_DRAIN_PAUSE_IMAGE
+          value: __PAUSE_IMAGE__
+        - name: SWITCH_PLACEMENT_POOL
+          valueFrom:
+            configMapKeyRef:
+              key: pool
+              name: switch-placement
+        - name: SWITCH_PLACEMENT_TARGET
+          valueFrom:
+            configMapKeyRef:
+              key: target
+              name: switch-placement
+        - name: SWITCH_PLACEMENT_CEILING
+          valueFrom:
+            configMapKeyRef:
+              key: ceiling
+              name: switch-placement
+        - name: SWITCH_DRAIN_OWN_NODE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: spec.nodeName
+        image: __CONTROLLER_IMAGE__
+        imagePullPolicy: IfNotPresent
+        name: drain
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 20m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/etc/switch/files"
+          name: files
+          readOnly: true
+        - mountPath: "/etc/switch/core"
+          name: core
+          readOnly: true
+        - mountPath: "/etc/switch/box-map"
+          name: box-map
+          readOnly: true
+        - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
+          name: kube
+          readOnly: true
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      nodeSelector:
+        switch.dev/pool: agents
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: switch-drain
+      serviceAccountName: switch-drain
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: box-ca.crt
+            path: box-ca.crt
+          name: switch-box-operator-files
+        name: files
+      - name: core
+        secret:
+          defaultMode: 256
+          secretName: switch-operator-actions-bearer
+      - name: box-map
+        secret:
+          defaultMode: 288
+          secretName: box-map
+      - name: kube
+        projected:
+          defaultMode: 288
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: kube-root-ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+                path: namespace
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: switch-hosted-controller
+  name: switch-hosted-controller
+  namespace: switch-hosted
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: switch-hosted-controller
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: switch-hosted-controller
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - switch-hosted-workers
+        env:
+        - name: SWITCH_HOSTED_WORKERS_SCALER
+          value: '1'
+        - name: SWITCH_HOSTED_WORKERS_EVICTIONS
+          value: '1'
+        - name: SWITCH_HOSTED_WORKERS_CLUSTER_REPORT
+          value: '1'
+        - name: SWITCH_HOSTED_WORKERS_INTERVAL_SECONDS
+          value: '30'
+        - name: SWITCH_HOSTED_WORKERS_CORE_URL
+          value: https://__SERVER_IP__
+        - name: SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE
+          value: "/etc/switch/core/token"
+        - name: SWITCH_HOSTED_WORKERS_CORE_CA
+          value: "/etc/switch/files/box-ca.crt"
+        - name: SWITCH_HOSTED_WORKERS_BOX_MAP
+          value: "/etc/switch/box-map"
+        - name: SWITCH_SCALER_REPORT_EVICTIONS
+          value: '1'
+        - name: SWITCH_SCALER_REPORT_BOX_FACTS
+          value: '1'
+        - name: SWITCH_CLUSTER_PROXY_NAMESPACE
+          value: egress-proxy
+        - name: SWITCH_CLUSTER_OPERATOR_NAMESPACE
+          value: switch-hosted
+        - name: SWITCH_CLUSTER_OPERATOR_DEPLOYMENT
+          value: switch-hosted-controller
+        - name: SWITCH_PLACEMENT_POOL
+          valueFrom:
+            configMapKeyRef:
+              key: pool
+              name: switch-placement
+        - name: SWITCH_PLACEMENT_TARGET
+          valueFrom:
+            configMapKeyRef:
+              key: target
+              name: switch-placement
+        - name: SWITCH_PLACEMENT_CEILING
+          valueFrom:
+            configMapKeyRef:
+              key: ceiling
+              name: switch-placement
+        image: __CONTROLLER_IMAGE__
+        imagePullPolicy: IfNotPresent
+        name: workers
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/etc/switch/files"
+          name: files
+          readOnly: true
+        - mountPath: "/etc/switch/core"
+          name: core
+          readOnly: true
+        - mountPath: "/etc/switch/box-map"
+          name: box-map
+          readOnly: true
+        - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
+          name: kube
+          readOnly: true
+        - mountPath: "/tmp"
+          name: tmp
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      nodeSelector:
+        switch.dev/pool: agents
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: switch-hosted-controller
+      serviceAccountName: switch-hosted-controller
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: box-ca.crt
+            path: box-ca.crt
+          name: switch-box-operator-files
+        name: files
+      - name: core
+        secret:
+          defaultMode: 256
+          secretName: switch-hosted-controller-core
+      - name: box-map
+        secret:
+          defaultMode: 288
+          secretName: box-map
+      - name: kube
+        projected:
+          defaultMode: 288
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: kube-root-ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+                path: namespace
+      - emptyDir:
+          sizeLimit: 64Mi
+        name: tmp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: switch-hosted-operator
+  name: switch-hosted-operator
+  namespace: switch-hosted
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: switch-hosted-operator
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: switch-hosted-operator
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - switch-hosted-workers
+        env:
+        - name: SWITCH_HOSTED_WORKERS_SCALER
+          value: '0'
+        - name: SWITCH_HOSTED_WORKERS_EVICTIONS
+          value: '0'
+        - name: SWITCH_HOSTED_WORKERS_CLUSTER_REPORT
+          value: '0'
+        - name: SWITCH_HOSTED_WORKERS_RESTART
+          value: '1'
+        - name: SWITCH_HOSTED_WORKERS_INTERVAL_SECONDS
+          value: '30'
+        - name: SWITCH_HOSTED_WORKERS_CORE_URL
+          value: https://__SERVER_IP__
+        - name: SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE
+          value: "/etc/switch/core/bearer"
+        - name: SWITCH_HOSTED_WORKERS_CORE_CA
+          value: "/etc/switch/files/box-ca.crt"
+        - name: SWITCH_HOSTED_WORKERS_BOX_MAP
+          value: "/etc/switch/box-map"
+        image: __CONTROLLER_IMAGE__
+        imagePullPolicy: IfNotPresent
+        name: restart
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/etc/switch/files"
+          name: files
+          readOnly: true
+        - mountPath: "/etc/switch/core"
+          name: core
+          readOnly: true
+        - mountPath: "/etc/switch/box-map"
+          name: box-map
+          readOnly: true
+        - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
+          name: kube
+          readOnly: true
+        - mountPath: "/tmp"
+          name: tmp
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      nodeSelector:
+        switch.dev/pool: agents
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: switch-hosted-controller
+      serviceAccountName: switch-hosted-controller
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          items:
+          - key: box-ca.crt
+            path: box-ca.crt
+          name: switch-box-operator-files
+        name: files
+      - name: core
+        secret:
+          defaultMode: 256
+          secretName: switch-operator-actions-bearer
+      - name: box-map
+        secret:
+          defaultMode: 288
+          secretName: box-map
+      - name: kube
+        projected:
+          defaultMode: 288
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: kube-root-ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+                path: namespace
+      - emptyDir:
+          sizeLimit: 64Mi
+        name: tmp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: switch-hosted-provisioner
+  name: switch-hosted-provisioner
+  namespace: switch-hosted
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: switch-hosted-provisioner
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        app: switch-hosted-provisioner
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - command:
+        - switch-box-operator
+        env:
+        - name: SWITCH_BOX_OPERATOR_CONFIG
+          value: "/etc/switch/operator/config.json"
+        - name: SWITCH_BOX_OPERATOR_BOX_CA
+          value: "/etc/switch/files/box-ca.crt"
+        - name: SWITCH_BOX_OPERATOR_MANAGED_SETTINGS
+          value: "/etc/switch/files/managed-settings.json"
+        - name: SWITCH_BOX_OPERATOR_CORE_URL
+          value: https://__SERVER_IP__
+        - name: SWITCH_BOX_OPERATOR_CORE_TOKEN_FILE
+          value: "/etc/switch/core/token"
+        - name: SWITCH_BOX_OPERATOR_CORE_CA
+          value: "/etc/switch/files/box-ca.crt"
+        image: __CONTROLLER_IMAGE__
+        imagePullPolicy: IfNotPresent
+        name: provisioner
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: "/dev/termination-log"
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: "/etc/switch/operator"
+          name: config
+          readOnly: true
+        - mountPath: "/etc/switch/files"
+          name: files
+          readOnly: true
+        - mountPath: "/etc/switch/core"
+          name: core
+          readOnly: true
+        - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
+          name: kube
+          readOnly: true
+        - mountPath: "/tmp"
+          name: tmp
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: false
+      nodeSelector:
+        switch.dev/pool: agents
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: switch-hosted-provisioner
+      serviceAccountName: switch-hosted-provisioner
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: switch-box-operator-config
+        name: config
+      - configMap:
+          defaultMode: 420
+          name: switch-box-operator-files
+        name: files
+      - name: core
+        secret:
+          defaultMode: 288
+          secretName: switch-hosted-provisioner-core
+      - name: kube
+        projected:
+          defaultMode: 288
+          sources:
+          - serviceAccountToken:
+              expirationSeconds: 3600
+              path: token
+          - configMap:
+              items:
+              - key: ca.crt
+                path: ca.crt
+              name: kube-root-ca.crt
+          - downwardAPI:
+              items:
+              - fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+                path: namespace
+      - emptyDir:
+          sizeLimit: 64Mi
+        name: tmp
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: default-deny
+  namespace: switch-hosted
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: operator-egress
+  namespace: switch-hosted
+spec:
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __SERVER_IP__/32
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __API_SERVER_IP_1__/32
+    - ipBlock:
+        cidr: __API_SERVER_IP_2__/32
+    - ipBlock:
+        cidr: 172.20.0.1/32
+  podSelector:
+    matchLabels:
+      app: switch-hosted-operator
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: provisioner-egress
+  namespace: switch-hosted
+spec:
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __SERVER_IP__/32
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __API_SERVER_IP_1__/32
+    - ipBlock:
+        cidr: __API_SERVER_IP_2__/32
+    - ipBlock:
+        cidr: 172.20.0.1/32
+  podSelector:
+    matchLabels:
+      app: switch-hosted-provisioner
+  policyTypes:
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: switch-drain-egress
+  namespace: switch-hosted
+spec:
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __SERVER_IP__/32
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __API_SERVER_IP_1__/32
+    - ipBlock:
+        cidr: __API_SERVER_IP_2__/32
+    - ipBlock:
+        cidr: 172.20.0.1/32
+  podSelector:
+    matchLabels:
+      app: switch-drain
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  finalizers:
+  - networking.k8s.aws/resources
+  name: workers-egress
+  namespace: switch-hosted
+spec:
+  egress:
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __SERVER_IP__/32
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: __API_SERVER_IP_1__/32
+    - ipBlock:
+        cidr: __API_SERVER_IP_2__/32
+    - ipBlock:
+        cidr: 172.20.0.1/32
+  podSelector:
+    matchLabels:
+      app: switch-hosted-controller
+  policyTypes:
+  - Ingress
+  - Egress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-cluster-report-services
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - apps
+  resourceNames:
+  - switch-hosted-controller
+  resources:
+  - deployments
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-egress-lists-box-map
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-map
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-hosted-controller-box-map
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-map
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-hosted-controller-box-templates
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-templates
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-hosted-provisioner-box-map
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-map
+  resources:
+  - secrets
+  verbs:
+  - get
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-hosted-provisioner-box-templates
+  namespace: switch-hosted
+rules:
+- apiGroups:
+  - ''
+  resourceNames:
+  - box-templates
+  resources:
+  - secrets
+  verbs:
+  - get
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-cluster-report-services
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-cluster-report-services
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-egress-lists-box-map
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-egress-lists-box-map
+subjects:
+- kind: ServiceAccount
+  name: egress-lists
+  namespace: egress-lists
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-hosted-controller-box-map
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-hosted-controller-box-map
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-hosted-controller-box-templates
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-hosted-controller-box-templates
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-hosted-provisioner-box-map
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-hosted-provisioner-box-map
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-provisioner
+  namespace: switch-hosted
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-hosted-provisioner-box-templates
+  namespace: switch-hosted
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-hosted-provisioner-box-templates
+subjects:
+- kind: ServiceAccount
+  name: switch-hosted-provisioner
+  namespace: switch-hosted
+---
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  name: switch-drain
+  namespace: switch-hosted
+---
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  name: switch-hosted-controller
+  namespace: switch-hosted
+---
+apiVersion: v1
+automountServiceAccountToken: false
+kind: ServiceAccount
+metadata:
+  name: switch-hosted-provisioner
+  namespace: switch-hosted
+---
+apiVersion: v1
+data:
+  config.json: |
+    {
+      "server_ip": "__SERVER_IP__",
+      "server_url": "https://__SERVER_IP__",
+      "image": "__BOX_IMAGE__",
+      "storage_class": "gp3",
+      "proxy_host": "squid.egress-proxy.svc",
+      "proxy_port": 3128,
+      "zones": [
+        "__ZONE__"
+      ],
+      "sizes": {
+        "standard": {
+          "disk": "15Gi",
+          "cpu_request": "150m",
+          "cpu_limit": "3",
+          "memory_request": "768Mi",
+          "memory_limit": "5376Mi"
+        }
+      },
+      "ceiling": 20,
+      "default_size": "standard",
+      "split": true,
+      "allowed_images": [
+        "__PREVIOUS_BOX_IMAGE_3__",
+        "__PREVIOUS_BOX_IMAGE_2__",
+        "__PREVIOUS_BOX_IMAGE_1__"
+      ]
+    }
+kind: ConfigMap
+metadata:
+  name: switch-box-operator-config
+  namespace: switch-hosted
+---
+apiVersion: v1
+data:
+  box-ca.crt: __BOX_CA_CERT__
+  managed-settings.json: |
+    {
+      "env": {
+        "DISABLE_AUTOUPDATER": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DISABLE_ERROR_REPORTING": "1"
+      }
+    }
+kind: ConfigMap
+metadata:
+  name: switch-box-operator-files
+  namespace: switch-hosted
+---
+apiVersion: v1
+data:
+  ceiling: '12'
+  pool: agents
+  target: '7'
+kind: ConfigMap
+metadata:
+  name: switch-placement
+  namespace: switch-hosted
