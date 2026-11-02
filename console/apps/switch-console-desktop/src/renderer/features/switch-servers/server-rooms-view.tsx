@@ -8,12 +8,11 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { openRoom } from '@renderer/features/switch-rooms/open-room';
+import { roomArchiveAction } from '@renderer/features/switch-rooms/room-archive';
 import { roomTitle } from '@renderer/features/switch-rooms/room-labels';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
-import { failureText } from '@renderer/lib/errors/describe-failure';
-import { toast } from '@renderer/lib/hooks/use-toast';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
@@ -50,8 +49,11 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   }, [serverId]);
 
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const yours = useListedRoomsInWorkspace(workspaceId);
-  const all = allReadableRooms(yours, useReadableRoomsInWorkspace(workspaceId));
+  const listed = useListedRoomsInWorkspace(workspaceId);
+  const readable = allReadableRooms(listed, useReadableRoomsInWorkspace(workspaceId));
+  // The rooms this person archived go to the Archived fold, not the lists.
+  const yours = listed.filter((room) => !room.archivedByViewer);
+  const all = readable.filter((room) => !room.archivedByViewer);
   // Only someone who can read more than their own (an admin, or public rooms) gets the choice.
   const [showAll, setShowAll] = useState(false);
   const canShowAll = all.length > yours.length;
@@ -62,13 +64,20 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
   const query = filter.trim().toLowerCase();
   const matching = query === '' ? rooms : rooms.filter((r) => r.name.toLowerCase().includes(query));
   const groups = groupByMessagingApp(matching);
-  const archived =
-    chatsStore.serverId === serverId
+  // Archived by this person, any kind of room, and chats archived for everyone
+  // (no Unarchive: a manager's message brings one back).
+  const archived = [
+    ...readable
+      .filter((room) => room.archivedByViewer)
+      .map((room) => ({ roomId: room.id, name: roomTitle(room), personal: true })),
+    ...(chatsStore.serverId === serverId
       ? [...chatsStore.archived.values()]
-          .filter(isConsoleGroupChatSummary)
-          .filter((chat) => query === '' || chat.name.toLowerCase().includes(query))
-          .sort((a, b) => a.name.localeCompare(b.name))
-      : [];
+          .filter((chat) => isConsoleGroupChatSummary(chat) && !chat.archivedByViewer)
+          .map((chat) => ({ roomId: chat.roomId, name: chat.name, personal: false }))
+      : []),
+  ]
+    .filter((room) => query === '' || room.name.toLowerCase().includes(query))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <ServerPage
@@ -101,7 +110,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
         <ServerTableEmpty>
           This server&apos;s room list could not be read. Refresh from Home to try again.
         </ServerTableEmpty>
-      ) : all.length === 0 ? (
+      ) : readable.length === 0 ? (
         <ServerTableEmpty>
           No rooms here yet. Create one to give your agents somewhere to work.
         </ServerTableEmpty>
@@ -165,18 +174,11 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
                   >
                     {chat.name}
                   </button>
-                  {chat.archivedByViewer && (
+                  {chat.personal && (
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() =>
-                        void chatsStore.unarchive(serverId, chat.roomId).catch((error: unknown) =>
-                          toast({
-                            title: failureText(error, 'Could not unarchive the room.'),
-                            variant: 'destructive',
-                          })
-                        )
-                      }
+                      onClick={() => roomArchiveAction(chat.roomId)?.run()}
                     >
                       Unarchive
                     </Button>

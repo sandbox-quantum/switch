@@ -43,6 +43,10 @@ vi.mock('@renderer/features/chats/stores/chats', async () => {
     }),
   };
 });
+const archiving = vi.hoisted(() => ({ run: (_roomId: string) => {} }));
+vi.mock('@renderer/features/switch-rooms/room-archive', () => ({
+  roomArchiveAction: (roomId: string) => ({ label: 'Unarchive', run: () => archiving.run(roomId) }),
+}));
 vi.mock('@renderer/lib/stores/use-workspace-agents', () => ({
   useWorkspaceAgents: () => ({ data: [] }),
 }));
@@ -189,4 +193,27 @@ it('offers no choice to someone who can read only their own rooms', async () => 
   ];
   await render();
   expect(toggle('All rooms')).toBeUndefined();
+});
+
+it('folds the rooms you archived, bridged ones too, away from the lists, closed, with Unarchive', async () => {
+  archiving.run = vi.fn();
+  rooms.list.all.push(
+    room('old-launch', {
+      bridgeType: 'discord',
+      bridgeDisplayName: 'Discord',
+      viewerIsMember: true,
+      archivedByViewer: true,
+    })
+  );
+  await render();
+  await act(async () => toggle('All rooms')!.click());
+  expect(names()).not.toContain('#old-launch');
+  const fold = toggle('Archived (1)');
+  expect(fold?.getAttribute('aria-expanded')).toBe('false');
+  expect(container.textContent).not.toContain('#old-launch');
+
+  await act(async () => fold!.click());
+  expect(container.textContent).toContain('#old-launch');
+  await act(async () => toggle('Unarchive')!.click());
+  expect(archiving.run).toHaveBeenCalledWith('old-launch');
 });
