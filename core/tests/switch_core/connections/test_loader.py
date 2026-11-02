@@ -210,27 +210,20 @@ def test_the_shipped_hubspot_entry_connects_as_hubspot_documents():
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("hubspot", "https://mcp.hubspot.com")
     ]
+    # No REST lookup is known to accept HubSpot's MCP token (maintainer
+    # direction on #830), so identity comes from the server's read-only,
+    # no-argument get_user_details tool through identity.mcp_tool.
     assert definition.auth.identity is not None
-    assert definition.auth.identity.url == (
-        "https://api.hubapi.com/account-info/v3/details"
-    )
-    assert definition.auth.identity.account_id == "portalId"
-    assert definition.access is not None and definition.access.write is not None
-    assert definition.access.read.scopes == [
-        "account-info.security.read",
-        "crm.objects.contacts.read",
-        "crm.objects.companies.read",
-        "crm.objects.deals.read",
-    ]
-    assert definition.access.write.scopes == [
-        "account-info.security.read",
-        "crm.objects.contacts.read",
-        "crm.objects.contacts.write",
-        "crm.objects.companies.read",
-        "crm.objects.companies.write",
-        "crm.objects.deals.read",
-        "crm.objects.deals.write",
-    ]
+    assert definition.auth.identity.url is None
+    assert definition.auth.identity.mcp_tool == "get_user_details"
+    assert definition.auth.identity.account_id == "userId"
+    assert definition.auth.identity.label == "userId"
+    # HubSpot's metadata lists scopes_supported: [], so access is unscoped:
+    # empty read and write scope lists, write consent implied, and the real
+    # boundary is the signed-in user's HubSpot permissions.
+    assert definition.access is not None and definition.access.unscoped is True
+    assert definition.access.read.scopes == []
+    assert definition.access.write is not None and definition.access.write.scopes == []
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():

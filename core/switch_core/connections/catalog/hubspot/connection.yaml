@@ -28,11 +28,20 @@ auth:
     # (a DELETE naming the token in its path) is not one Switch can make.
     remove_access: In HubSpot, open Settings, Integrations, Connected Apps and uninstall Switch. Until you do, the sign-in keeps working.
   identity:
-    # Documented account endpoint; needs the account-info.security.read
-    # scope. It names no display field, so the portal id is also the label.
-    url: https://api.hubapi.com/account-info/v3/details
-    account_id: portalId
-    label: portalId
+    # Maintainer direction on #830 (petr-sandbox, 2026-11-02): get the
+    # identity from get_user_details through identity.mcp_tool, since no
+    # REST lookup is known to accept the MCP token. get_user_details is a
+    # read-only, no-argument tool HubSpot documents for exactly this; its
+    # result carries the user id and the account (hub) id. The documented
+    # field names are userId and hubId. The shared implementation keys the
+    # connection by this account_id alone, so the hub id is recorded here
+    # for the expected composite keying (user id plus account id, per the
+    # #830 discussion) but is not yet part of the key. An email/owner-name
+    # display field is expected from HubSpot's usage guidance but unverified
+    # until a live sign-in, so the user id is the label for now.
+    mcp_tool: get_user_details
+    account_id: userId
+    label: userId
 # HubSpot documents 30-minute OAuth access tokens; whether MCP-issued
 # tokens differ is not documented. Verify at manual QA.
 token: { kind: pass_through, max_lifetime: 1800 }
@@ -40,25 +49,15 @@ mcp:
   servers:
     - { name: hubspot, url: "https://mcp.hubspot.com" }
 access:
-  # HubSpot says an MCP connector's scopes are not defined explicitly - they
-  # follow the server's tools and the permissions granted at install - and
-  # its metadata lists none, so whether consent honours an explicit scope
-  # list is unverified until an operator client exists. This is HubSpot's
-  # documented granular CRM set, the least that covers the issue:
-  # account-info.security.read only so Switch can say whose account it is.
-  read:
-    scopes:
-      - account-info.security.read
-      - crm.objects.contacts.read
-      - crm.objects.companies.read
-      - crm.objects.deals.read
-  write:
-    scopes:
-      - account-info.security.read
-      - crm.objects.contacts.read
-      - crm.objects.contacts.write
-      - crm.objects.companies.read
-      - crm.objects.companies.write
-      - crm.objects.deals.read
-      - crm.objects.deals.write
+  # Maintainer direction on #830 (petr-sandbox, 2026-11-02): use
+  # access.unscoped. HubSpot's authorization-server metadata lists
+  # scopes_supported: [] and its MCP docs say an MCP connector's scopes are
+  # not defined explicitly - they follow the server's tools and the
+  # permissions granted at install - so there is no vendor scope parameter
+  # to send and no vendor-enforced read-only consent. The signed-in user's
+  # HubSpot permissions are the real boundary; the skill says read and write
+  # stay within them, and read-only via tools.mode: listed may follow.
+  unscoped: true
+  read: { scopes: [] }
+  write: { scopes: [] }
 tools: { mode: pass_through }
