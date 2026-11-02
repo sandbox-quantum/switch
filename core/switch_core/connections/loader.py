@@ -163,14 +163,27 @@ class OAuthClient(BaseModel):
 
 
 class ConnectionIdentity(BaseModel):
-    """Where the account's stable id is read: a GET of `url` with the access
-    token, and the dotted paths in its JSON answer to the id and to a label
-    people recognise (an email, a login)."""
+    """Where the account's stable id is read: a `method` request to `url` with
+    the access token, and the dotted paths in its JSON answer to the id and to
+    a label people recognise (an email, a login).
+
+    A POST may carry a static JSON `body`, and sends no body without one; a
+    GET never carries one. This differs from `ApiKeyIdentity`, whose POST must
+    have a body: some vendors answer a POST that takes no parameters.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    method: Literal["GET", "POST"]
     url: str = Field(pattern=HTTPS_URL_PATTERN)
+    body: dict[str, object] | None = None
     account_id: str = Field(pattern=JSON_PATH_PATTERN)
     label: str = Field(pattern=JSON_PATH_PATTERN)
+
+    @model_validator(mode="after")
+    def _only_a_post_has_a_body(self) -> "ConnectionIdentity":
+        if self.body is not None and self.method != "POST":
+            raise ValueError("only a POST identity call sends a body")
+        return self
 
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"

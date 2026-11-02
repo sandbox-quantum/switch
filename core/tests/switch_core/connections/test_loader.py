@@ -461,6 +461,7 @@ auth:
     redirect: [loopback, core]
     remove_access: Remove Switch under Connected apps in Example.
   identity:
+    method: GET
     url: https://api.example.test/me
     account_id: account.id
     label: account.email
@@ -503,6 +504,48 @@ def test_loads_an_oauth_entry(catalog_copy):
     assert definition.level_tools("write") == []
 
 
+GET_IDENTITY = "    method: GET\n"
+
+
+def test_loads_a_post_identity_with_no_body(catalog_copy):
+    _write_example(
+        catalog_copy, OAUTH_ENTRY.replace(GET_IDENTITY, "    method: POST\n")
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert (identity.method, identity.body) == ("POST", None)
+
+
+def test_loads_a_post_identity_with_a_static_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            GET_IDENTITY, '    method: POST\n    body: { fields: ["id"] }\n'
+        ),
+    )
+    identity = load_catalog(catalog_copy)["example"].definition.auth.identity
+    assert identity is not None
+    assert identity.body == {"fields": ["id"]}
+
+
+def test_rejects_a_get_identity_with_a_body(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            GET_IDENTITY, '    method: GET\n    body: { fields: ["id"] }\n'
+        ),
+    )
+    with pytest.raises(CatalogError, match="only a POST identity call sends a body"):
+        load_catalog(catalog_copy)
+
+
+@pytest.mark.parametrize("replacement", ["", "    method: PUT\n", "    method: get\n"])
+def test_rejects_an_identity_without_a_known_method(catalog_copy, replacement):
+    _write_example(catalog_copy, OAUTH_ENTRY.replace(GET_IDENTITY, replacement))
+    with pytest.raises(CatalogError, match="auth.identity.method"):
+        load_catalog(catalog_copy)
+
+
 def test_takes_several_prompt_values_as_oauth_writes_them(catalog_copy):
     _write_example(
         catalog_copy,
@@ -543,7 +586,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "an oauth entry needs auth.oauth",
         ),
         (
-            "  identity:\n    url: https://api.example.test/me\n"
+            "  identity:\n    method: GET\n    url: https://api.example.test/me\n"
             "    account_id: account.id\n    label: account.email\n",
             "",
             "needs auth.identity",

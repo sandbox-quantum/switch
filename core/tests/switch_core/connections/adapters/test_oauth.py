@@ -213,6 +213,33 @@ class TestSignIn:
         identity = await adapter.identify(secret.access_token or "")
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
+    async def test_a_get_identity_sends_no_body(self, vendor) -> None:
+        adapter, _ = _adapter(vendor)
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        assert vendor.identity_requests == [("GET", b"")]
+
+    async def test_a_post_identity_without_a_body_sends_none(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor, STATIC.replace("    method: GET\n", "    method: POST\n")
+        )
+        secret = await _sign_in(adapter, vendor)
+        identity = await adapter.identify(secret.access_token or "")
+        assert identity.account_id == "acct-1"
+        assert vendor.identity_requests == [("POST", b"")]
+
+    async def test_a_post_identity_sends_its_static_body(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    method: GET\n", '    method: POST\n    body: { fields: ["id"] }\n'
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        await adapter.identify(secret.access_token or "")
+        [(method, body)] = vendor.identity_requests
+        assert (method, json.loads(body)) == ("POST", {"fields": ["id"]})
+
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
