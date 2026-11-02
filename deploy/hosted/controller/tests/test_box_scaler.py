@@ -1,4 +1,6 @@
-from switch_hosted_controller.box_scaler import decide, reconcile_once, run
+import pytest
+
+from switch_hosted_controller.box_scaler import CoreRefused, _observe, decide, reconcile_once, run
 
 M = "11111111-1111-1111-1111-111111111111"
 BOXES = {M: "agents-user-b"}
@@ -227,3 +229,110 @@ def test_start_not_ready_after_3_minutes_is_reported_as_an_error():
     kube.ready = 1
     reconcile_once(core, kube, BOXES, waiting, now=lambda: clock[0])
     assert core.seen[-1][1] == "running" and M not in waiting
+
+
+class _Boxes:
+    """Several boxes, each its own namespace and replica count."""
+
+    def __init__(self, replicas):
+        self.replicas, self.calls = dict(replicas), []
+
+    def scale(self, ns):
+        n = self.replicas[ns]
+        return n, n
+
+    def set_replicas(self, ns, n):
+        self.calls.append((ns, n))
+        self.replicas[ns] = n
+
+
+class _RefusingCore:
+    """Core with hosted agents v2 off: every box listed stopped, and every observation refused, as Core refuses v2's
+    fields with a 422 then."""
+
+    def __init__(self, machines):
+        self._m, self.tried = machines, []
+
+    def machines(self):
+        return self._m
+
+    def observe(self, machine_id, *args, **kwargs):
+        self.tried.append(machine_id)
+        raise CoreRefused(f"/machines/{machine_id}/observation", 422, "Unprocessable Entity")
+
+
+A, B = "33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444"
+TWO = {A: "agents-user-a", B: "agents-user-b2"}
+
+
+def test_a_box_running_at_v2_off_reaches_zero_though_every_observation_is_refused(caplog):
+    """Item 9, U10 at flag-off: Core wanted it stopped, but the first refused
+    observation ended the pass, so the box listed after it stayed at 1."""
+    kube = _Boxes({"agents-user-a": 0, "agents-user-b2": 1})
+    core = _RefusingCore([m("stopped", mid=A), m("stopped", mid=B)])
+    with caplog.at_level("WARNING"):
+        reconcile_once(core, kube, TWO)
+    assert kube.calls == [("agents-user-b2", 0)]
+    assert core.tried == [A, B]  # each box was observed, neither stopped the pass
+    assert "observation (CoreRefused); the pass goes on" in caplog.text
+    assert "422" not in caplog.text  # by type only
+
+
+def test_nothing_scales_up_while_every_box_reads_stopped():
+    kube = _Boxes({"agents-user-a": 0, "agents-user-b2": 0})
+    core = _RefusingCore([m("stopped", mid=A), m("stopped", mid=B)])
+    for _ in range(3):
+        reconcile_once(core, kube, TWO)
+    assert kube.calls == []
+
+
+class _BrokenKube(_Boxes):
+    def scale(self, ns):
+        if ns == "agents-user-a":
+            raise OSError("the API server timed out")
+        return super().scale(ns)
+
+
+def test_a_box_whose_kubernetes_call_fails_leaves_the_others_to_their_step(caplog):
+    kube = _BrokenKube({"agents-user-a": 1, "agents-user-b2": 1})
+    core = _RefusingCore([m("stopped", mid=A), m("stopped", mid=B)])
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match="1 box step"):
+        reconcile_once(core, kube, TWO)  # the pass still reads as failed
+    assert kube.calls == [("agents-user-b2", 0)]
+    assert f"Machine {A}: its step failed this pass (OSError)" in caplog.text
+
+
+class _Owed:
+    def __init__(self):
+        self.reported = []
+
+    def __call__(self, machine_id, n):
+        self.reported.append((machine_id, n))
+
+
+class _V2OffCore:
+    """Core with hosted agents v2 off: v2's observation fields are refused with a 422, upstream's are taken."""
+
+    def __init__(self, status=422):
+        self.status, self.calls = status, []
+
+    def observe(self, machine_id, state, revision, error=None, **v2):
+        self.calls.append(sorted(v2))
+        if v2:
+            raise CoreRefused(f"/machines/{machine_id}/observation", self.status, "refused")
+
+
+def test_a_422_for_v2_s_fields_sends_the_observation_again_with_upstream_s_only():
+    core, watch, facts = _V2OffCore(), type("W", (), {})(), type("F", (), {})()
+    watch.reported, facts.reported = _Owed(), _Owed()
+    _observe(core, M, "stopped", 3, None, 2, {"restarts": 1, "node": "n1"}, watch, facts)
+    assert core.calls == [["evictions", "node", "restarts"], []]
+    assert watch.reported.reported == [] and facts.reported.reported == []  # still owed
+
+
+def test_any_other_refusal_is_not_sent_again_and_stays_with_that_box(caplog):
+    core = _V2OffCore(status=503)
+    with caplog.at_level("WARNING"):
+        _observe(core, M, "stopped", 3, None, 2, {}, None, None)
+    assert core.calls == [["evictions"]]
+    assert "Core did not take its observation (CoreRefused)" in caplog.text

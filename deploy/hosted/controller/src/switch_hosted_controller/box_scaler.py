@@ -54,6 +54,14 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class CoreRefused(RuntimeError):
+    """Core answered a call with an HTTP error status (`status`). Its text names the path and status only."""
+
+    def __init__(self, path: str, status: int, reason: object):
+        super().__init__(f"Core call {path} failed: HTTP Error {status}: {reason}")
+        self.status = status
+
+
 class ScalerConfigError(ValueError):
     pass
 
@@ -175,6 +183,51 @@ START_LIMIT_S = 180.0
 START_TIMEOUT_ERROR = "The box did not become ready within 3 minutes of starting."
 
 
+def _observe(
+    core: Any,
+    machine_id: str,
+    observed: str,
+    revision: int,
+    error: str | None,
+    evictions: int | None,
+    facts: dict[str, Any],
+    watch: Any,
+    box_facts: Any,
+) -> None:
+    """Tell Core what the box is doing. With hosted agents v2 off, Core refuses v2's fields (`evictions`, `restarts`,
+    `node`) with a 422, as upstream refuses any unknown field: the observation then goes again with upstream's fields
+    only, and those facts stay owed. Any other failure is logged by type and goes no further than this box."""
+    try:
+        if evictions is None and not facts:
+            core.observe(machine_id, observed, revision, error)
+            return
+        try:
+            core.observe(
+                machine_id,
+                observed,
+                revision,
+                error,
+                **({"evictions": evictions} if evictions is not None else {}),
+                **facts,
+            )
+        except CoreRefused as refused:
+            if refused.status != 422:
+                raise
+            core.observe(machine_id, observed, revision, error)
+            return
+        # Accepted (a refused call raises): only what came after is still owed.
+        if evictions is not None and watch is not None:
+            watch.reported(machine_id, evictions)
+        if box_facts is not None and facts:
+            box_facts.reported(machine_id, facts["restarts"])
+    except Exception as exc:
+        logger.warning(
+            "Machine %s: Core did not take its observation (%s); the pass goes on.",
+            machine_id,
+            type(exc).__name__,
+        )
+
+
 def reconcile_once(
     core: Core,
     kube: Kube,
@@ -217,6 +270,7 @@ def reconcile_once(
     waiting = {} if waiting is None else waiting
     steps: list[Step] = []
     listed = core.machines()
+    failed = 0
     for raw in listed:
         machine_id = str(raw.get("machine_id", ""))
         namespace = boxes.get(machine_id)
@@ -231,86 +285,91 @@ def reconcile_once(
                 "Machine %s: skipped, Core sent an invalid desired state or revision.", machine_id
             )
             continue
-        replicas, ready = kube.scale(namespace)
-        action, observed = decide(desired, replicas, ready)
-        if action == "scale_up":
-            if codes is not None:
-                codes.before_start(machine_id, namespace)
-            if place is not None:
-                try:  # placement is a preference: nothing it does may stop a start
-                    place(namespace)
-                except Exception as exc:
-                    logger.warning(
-                        "Machine %s: placement failed (%s); starting it anyway.",
-                        machine_id,
-                        type(exc).__name__,
-                    )
-            kube.set_replicas(namespace, 1)
-        elif action == "scale_down":
-            kube.set_replicas(namespace, 0)
-        if action:
-            logger.info(
-                "Machine %s: %s %s/%s (Core wants %s).", machine_id, action, namespace, BOX, desired
-            )
-        evictions = None
-        facts: dict[str, Any] = {}
-        if watch is not None:
-            watch.check(machine_id, namespace)
-            if watch.report_to_core:
-                evictions = watch.unreported(machine_id)
-            if box_facts is not None and machine_id in watch.last_pods:
-                pods = watch.last_pods[machine_id]
-                box_facts.see(machine_id, pods)
-                facts = {"restarts": box_facts.unreported(machine_id), "node": box_node(pods)}
-        error = None
-        if desired == RUNNING and observed != RUNNING:
-            since = waiting.setdefault(machine_id, now())
-            if (
-                codes is not None
-                and action is None
-                and replicas >= 1
-                and codes.stuck(machine_id, namespace, now() - since)
-            ):
-                # Never registered and its code went dead: a fresh one is in its
-                # Secret now, and a box reads it only at boot, so start it again.
+        # One box failing (Kubernetes, or Core) is that box's alone: the pass goes on,
+        # so every other box still gets its scale step this pass.
+        try:
+            replicas, ready = kube.scale(namespace)
+            action, observed = decide(desired, replicas, ready)
+            if action == "scale_up":
+                if codes is not None:
+                    codes.before_start(machine_id, namespace)
+                if place is not None:
+                    try:  # placement is a preference: nothing it does may stop a start
+                        place(namespace)
+                    except Exception as exc:
+                        logger.warning(
+                            "Machine %s: placement failed (%s); starting it anyway.",
+                            machine_id,
+                            type(exc).__name__,
+                        )
+                kube.set_replicas(namespace, 1)
+            elif action == "scale_down":
                 kube.set_replicas(namespace, 0)
-                waiting.pop(machine_id, None)
+            if action:
                 logger.info(
-                    "Machine %s: restarting %s/%s to register with its new code.",
+                    "Machine %s: %s %s/%s (Core wants %s).",
                     machine_id,
+                    action,
                     namespace,
                     BOX,
+                    desired,
                 )
-                observed = "provisioning"
-            elif now() - since > START_LIMIT_S:
-                observed, error = "error", START_TIMEOUT_ERROR
-                logger.warning("Machine %s: not ready 3 minutes after starting.", machine_id)
-        else:
-            waiting.pop(machine_id, None)
-            if codes is not None and desired == RUNNING and observed == RUNNING:
-                codes.ready(machine_id, namespace)
-        if evictions is None and not facts:
-            core.observe(machine_id, observed, revision, error)
-        else:
-            core.observe(
-                machine_id,
-                observed,
-                revision,
-                error,
-                **({"evictions": evictions} if evictions is not None else {}),
-                **facts,
+            evictions = None
+            facts: dict[str, Any] = {}
+            if watch is not None:
+                watch.check(machine_id, namespace)
+                if watch.report_to_core:
+                    evictions = watch.unreported(machine_id)
+                if box_facts is not None and machine_id in watch.last_pods:
+                    pods = watch.last_pods[machine_id]
+                    box_facts.see(machine_id, pods)
+                    facts = {"restarts": box_facts.unreported(machine_id), "node": box_node(pods)}
+            error = None
+            if desired == RUNNING and observed != RUNNING:
+                since = waiting.setdefault(machine_id, now())
+                if (
+                    codes is not None
+                    and action is None
+                    and replicas >= 1
+                    and codes.stuck(machine_id, namespace, now() - since)
+                ):
+                    # Never registered and its code went dead: a fresh one is in its
+                    # Secret now, and a box reads it only at boot, so start it again.
+                    kube.set_replicas(namespace, 0)
+                    waiting.pop(machine_id, None)
+                    logger.info(
+                        "Machine %s: restarting %s/%s to register with its new code.",
+                        machine_id,
+                        namespace,
+                        BOX,
+                    )
+                    observed = "provisioning"
+                elif now() - since > START_LIMIT_S:
+                    observed, error = "error", START_TIMEOUT_ERROR
+                    logger.warning("Machine %s: not ready 3 minutes after starting.", machine_id)
+            else:
+                waiting.pop(machine_id, None)
+                if codes is not None and desired == RUNNING and observed == RUNNING:
+                    codes.ready(machine_id, namespace)
+            _observe(
+                core, machine_id, observed, revision, error, evictions, facts, watch, box_facts
             )
-            # Accepted (a refused call raises): only what came after is still owed.
-            if evictions is not None and watch is not None:
-                watch.reported(machine_id, evictions)
-            if box_facts is not None and facts:
-                box_facts.reported(machine_id, facts["restarts"])
-        steps.append(Step(machine_id, namespace, desired, replicas, ready, action, observed))
+            steps.append(Step(machine_id, namespace, desired, replicas, ready, action, observed))
+        except Exception as exc:
+            failed += 1
+            logger.warning(
+                "Machine %s: its step failed this pass (%s); the pass goes on.",
+                machine_id,
+                type(exc).__name__,
+            )
     if rebalance is not None:
         try:
             rebalance(listed, boxes)
         except Exception as exc:
             logger.warning("Placement pass failed (%s); scaling is unaffected.", type(exc).__name__)
+    if failed:
+        # Every other box had its step; the pass still reads as failed.
+        raise RuntimeError(f"{failed} box step(s) failed this pass")
     return steps
 
 
@@ -500,7 +559,9 @@ class CoreApi:
         try:
             with build_opener(*self._handlers, _NoRedirect).open(req, timeout=30) as r:
                 return json.load(r)
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except HTTPError as exc:
+            raise CoreRefused(path, exc.code, exc.reason) from None
+        except (URLError, TimeoutError) as exc:
             raise RuntimeError(f"Core call {path} failed: {exc}") from None
 
     def report_cluster(self, report: dict[str, Any]) -> None:
