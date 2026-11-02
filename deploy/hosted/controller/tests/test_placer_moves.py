@@ -13,7 +13,7 @@ from switch_hosted_controller.placement import (
     PlaceholderLimits,
     placeholder_counts,
 )
-from switch_hosted_controller.placer import Placer, PlacementKubeApi, placer_from_env
+from switch_hosted_controller.placer import PlacementKubeApi, Placer, placer_from_env
 
 L = Limits(target=7, ceiling=12)
 M1 = "11111111-1111-1111-1111-111111111111"
@@ -30,7 +30,12 @@ class Clock:
 
 class Kube:
     def __init__(self, nodes, running, placeholders=None, fail=None):
-        self._nodes, self.running, self._ph, self._fail = nodes, dict(running), dict(placeholders or {}), fail
+        self._nodes, self.running, self._ph, self._fail = (
+            nodes,
+            dict(running),
+            dict(placeholders or {}),
+            fail,
+        )
         self.scaled, self.ph_set, self.patches = [], [], []
 
     def nodes(self):
@@ -111,7 +116,10 @@ def test_never_moves_a_box_this_scaler_does_not_own_but_still_counts_it():
     assert Placer(kube, L, clock=Clock(), moves=True).rebalance([machine(mid=M2)], BOXES) == []
     # Ours is one of 9 on m1 only because the others are counted: with 6 others (7 in all) there is no move.
     nodes, running = crowded(extra_on_m1=6)
-    assert Placer(Kube(nodes, running), L, clock=Clock(), moves=True).rebalance([machine()], BOXES) == []
+    assert (
+        Placer(Kube(nodes, running), L, clock=Clock(), moves=True).rebalance([machine()], BOXES)
+        == []
+    )
 
 
 def test_never_moves_a_box_whose_start_is_still_pending():
@@ -134,13 +142,17 @@ def test_the_cooldown_and_the_per_minute_budget_hold_across_passes():
             machines.append(machine(mid=mid))
     clock = Clock()
     kube = Kube(nodes, running)
-    placer = Placer(kube, L, clock=clock, move_limits=MoveLimits(per_minute=2, cooldown_s=3600), moves=True)
+    placer = Placer(
+        kube, L, clock=clock, move_limits=MoveLimits(per_minute=2, cooldown_s=3600), moves=True
+    )
     assert len(placer.rebalance(machines, boxes)) == 2
     clock.t += 30
     assert placer.rebalance(machines, boxes) == []  # two already this minute
     clock.t += 31
     second = placer.rebalance(machines, boxes)
-    assert len(second) == 2 and not set(second) & {ns for ns, _ in kube.scaled[:2]}  # cooldown: not the same boxes
+    assert len(second) == 2 and not set(second) & {
+        ns for ns, _ in kube.scaled[:2]
+    }  # cooldown: not the same boxes
 
 
 def test_tick_does_nothing_unless_switched_on_and_never_raises(caplog):
@@ -187,7 +199,12 @@ def test_the_scaler_calls_rebalance_once_after_scaling_with_cores_list_and_the_b
     kube = ScalerKube(0, 0)
     kube.set_replicas = lambda ns, n: order.append(("scale", ns, n))
     raw = machine(resting=False)
-    reconcile_once(Core(raw), kube, BOXES, rebalance=lambda listed, boxes: order.append(("tick", listed, boxes)))
+    reconcile_once(
+        Core(raw),
+        kube,
+        BOXES,
+        rebalance=lambda listed, boxes: order.append(("tick", listed, boxes)),
+    )
     assert order == [("scale", "agents-user-mine", 1), ("tick", [raw], BOXES)]
 
 
@@ -207,12 +224,16 @@ def test_a_moved_box_is_placed_and_started_again_on_the_next_pass():
     pkube = Kube(nodes, running)
     placer = Placer(pkube, L, clock=Clock(), moves=True)
     skube = ScalerKube(1, 1)
-    pkube.set_box_replicas = lambda ns, n: setattr(skube, "replicas", n) or setattr(skube, "ready", 0)
+    pkube.set_box_replicas = lambda ns, n: (
+        setattr(skube, "replicas", n) or setattr(skube, "ready", 0)
+    )
     reconcile_once(Core(machine()), skube, BOXES, place=placer.place, rebalance=placer.tick)
     assert skube.replicas == 0 and skube.calls == []  # this pass: moved (stopped)
     pkube.running.pop("agents-user-mine")  # its pod is gone
     reconcile_once(Core(machine()), skube, BOXES, place=placer.place, rebalance=placer.tick)
-    assert pkube.patches == ["agents-user-mine"] and skube.calls == [("scale", "agents-user-mine", 1)]
+    assert pkube.patches == ["agents-user-mine"] and skube.calls == [
+        ("scale", "agents-user-mine", 1)
+    ]
     assert placer.ledger.pending == {"agents-user-mine": "m2"}  # placed on the emptier machine
 
 
@@ -222,7 +243,11 @@ PL = PlaceholderLimits(max_per_zone=3)
 
 
 def test_a_full_zone_or_one_with_no_ready_machine_asks_for_one_more_placeholder_up_to_the_limit():
-    nodes = [Node("a1", "a"), Node("b1", "b", ready=False), Node("c1", "c", taints=frozenset({GATE1_TAINT}))]
+    nodes = [
+        Node("a1", "a"),
+        Node("b1", "b", ready=False),
+        Node("c1", "c", taints=frozenset({GATE1_TAINT})),
+    ]
     got = placeholder_counts(nodes, {"a1": 7}, L, {"a": 0, "b": 3, "c": 1}, PL)
     assert got == {"a": 1, "b": 3, "c": 2}
 
@@ -247,7 +272,9 @@ def test_size_placeholders_patches_only_zones_that_change_and_that_have_a_set(ca
     assert changed == {"a": 1} and kube.ph_set == [("a", 1)]
     messages = [r.getMessage() for r in caplog.records]
     assert "Placeholders: zone=a from=0 to=1" in messages
-    assert not any("zone=b" in m and "Placeholders:" in m for m in messages)  # b has room: no change wanted
+    assert not any(
+        "zone=b" in m and "Placeholders:" in m for m in messages
+    )  # b has room: no change wanted
 
 
 # --- the Kubernetes calls -------------------------------------------------------------------------------------------
@@ -266,7 +293,12 @@ def test_a_move_is_a_scale_to_zero_of_the_box_only_with_the_short_timeout():
     rec = Recorder()
     PlacementKubeApi(rec).set_box_replicas("agents-user-a", 0)
     assert rec.calls == [
-        ("PATCH", "/apis/apps/v1/namespaces/agents-user-a/statefulsets/box/scale", {"spec": {"replicas": 0}}, 4.0)
+        (
+            "PATCH",
+            "/apis/apps/v1/namespaces/agents-user-a/statefulsets/box/scale",
+            {"spec": {"replicas": 0}},
+            4.0,
+        )
     ]
     with pytest.raises(ValueError):
         PlacementKubeApi(rec).set_box_replicas("kube-system", 0)
@@ -275,10 +307,20 @@ def test_a_move_is_a_scale_to_zero_of_the_box_only_with_the_short_timeout():
 def test_placeholder_calls_stay_in_their_namespace_and_refuse_odd_zone_names():
     reply = {
         "items": [
-            {"metadata": {"name": "switch-placeholder-a", "labels": {"switch.dev/placeholder-zone": "a"}},
-             "spec": {"replicas": 2}},
-            {"metadata": {"name": "something-else", "labels": {"switch.dev/placeholder-zone": "b"}},
-             "spec": {"replicas": 5}},
+            {
+                "metadata": {
+                    "name": "switch-placeholder-a",
+                    "labels": {"switch.dev/placeholder-zone": "a"},
+                },
+                "spec": {"replicas": 2},
+            },
+            {
+                "metadata": {
+                    "name": "something-else",
+                    "labels": {"switch.dev/placeholder-zone": "b"},
+                },
+                "spec": {"replicas": 5},
+            },
         ]
     }
     rec = Recorder(reply)
@@ -286,7 +328,8 @@ def test_placeholder_calls_stay_in_their_namespace_and_refuse_odd_zone_names():
     assert api.placeholders() == {"a": 2}
     api.set_placeholders("a", 3)
     assert rec.calls[-1][:3] == (
-        "PATCH", "/apis/apps/v1/namespaces/switch-placer/deployments/switch-placeholder-a/scale",
+        "PATCH",
+        "/apis/apps/v1/namespaces/switch-placer/deployments/switch-placeholder-a/scale",
         {"spec": {"replicas": 3}},
     )
     for bad in ("../x", "A", "a/b", ""):
@@ -306,15 +349,24 @@ def test_everything_is_off_by_default():
 
 def test_placement_on_reads_the_limits_and_leaves_moves_and_placeholders_off():
     placer = placer_from_env(
-        Recorder(), {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_TARGET": "6", "SWITCH_PLACEMENT_CEILING": "10"}
+        Recorder(),
+        {
+            "SWITCH_BOX_PLACEMENT": "on",
+            "SWITCH_PLACEMENT_TARGET": "6",
+            "SWITCH_PLACEMENT_CEILING": "10",
+        },
     )
     assert isinstance(placer, Placer)
     assert (placer._limits.target, placer._limits.ceiling) == (6, 10)
     assert (placer._moves_on, placer._placeholders_on) == (False, False)
     both = placer_from_env(
         Recorder(),
-        {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_BOX_MOVES": "on", "SWITCH_BOX_PLACEHOLDERS": "on",
-         "SWITCH_PLACEHOLDER_NAMESPACE": "switch-placer"},
+        {
+            "SWITCH_BOX_PLACEMENT": "on",
+            "SWITCH_BOX_MOVES": "on",
+            "SWITCH_BOX_PLACEHOLDERS": "on",
+            "SWITCH_PLACEHOLDER_NAMESPACE": "switch-placer",
+        },
     )
     assert (both._moves_on, both._placeholders_on) == (True, True)
 
@@ -326,10 +378,17 @@ def test_placement_on_reads_the_limits_and_leaves_moves_and_placeholders_off():
         {"SWITCH_BOX_MOVES": "on"},  # moves need placement on
         {"SWITCH_BOX_PLACEHOLDERS": "on"},
         {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_BOX_PLACEHOLDERS": "on"},  # no namespace
-        {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_BOX_PLACEHOLDERS": "on", "SWITCH_PLACEHOLDER_NAMESPACE": "Bad/ns"},
+        {
+            "SWITCH_BOX_PLACEMENT": "on",
+            "SWITCH_BOX_PLACEHOLDERS": "on",
+            "SWITCH_PLACEHOLDER_NAMESPACE": "Bad/ns",
+        },
         {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_TARGET": "seven"},
         {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_TARGET": "-1"},
-        {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_TARGET": "13"},  # above the default ceiling
+        {
+            "SWITCH_BOX_PLACEMENT": "on",
+            "SWITCH_PLACEMENT_TARGET": "13",
+        },  # above the default ceiling
     ],
 )
 def test_a_bad_flag_refuses_to_start_rather_than_guess(env):
@@ -339,12 +398,18 @@ def test_a_bad_flag_refuses_to_start_rather_than_guess(env):
 
 def test_the_machine_pool_is_read_from_the_flag_so_level_3_machines_are_seen():
     rec = Recorder({"items": []})
-    placer = placer_from_env(rec, {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_POOL": "agents-l3"})
+    placer = placer_from_env(
+        rec, {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_POOL": "agents-l3"}
+    )
     placer._kube.nodes()
     assert rec.calls[-1][1] == "/api/v1/nodes?labelSelector=switch.dev/pool%3Dagents-l3"
     rec2 = Recorder({"items": []})
     placer_from_env(rec2, {"SWITCH_BOX_PLACEMENT": "on"})._kube.nodes()
-    assert rec2.calls[-1][1] == "/api/v1/nodes?labelSelector=switch.dev/pool%3Dagents"  # the default
+    assert (
+        rec2.calls[-1][1] == "/api/v1/nodes?labelSelector=switch.dev/pool%3Dagents"
+    )  # the default
     for bad in ("Agents", "a,b", "x=y", "-a"):
         with pytest.raises(ValueError):
-            placer_from_env(Recorder(), {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_POOL": bad})
+            placer_from_env(
+                Recorder(), {"SWITCH_BOX_PLACEMENT": "on", "SWITCH_PLACEMENT_POOL": bad}
+            )

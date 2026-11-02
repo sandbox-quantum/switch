@@ -26,9 +26,15 @@ def n(name, zone="a", **kw):
 
 
 def test_fewest_boxes_wins_then_most_free_memory_then_name():
-    nodes = [n("m1", free_memory_bytes=1), n("m2", free_memory_bytes=9), n("m3", free_memory_bytes=9)]
+    nodes = [
+        n("m1", free_memory_bytes=1),
+        n("m2", free_memory_bytes=9),
+        n("m3", free_memory_bytes=9),
+    ]
     assert choose(nodes, {"m1": 2, "m2": 3, "m3": 3}, L, "a").first == "m1"
-    assert choose(nodes, {"m1": 3, "m2": 3, "m3": 3}, L, "a").first == "m2"  # more memory, then name
+    assert (
+        choose(nodes, {"m1": 3, "m2": 3, "m3": 3}, L, "a").first == "m2"
+    )  # more memory, then name
     d = choose(nodes, {"m1": 3, "m2": 3, "m3": 3}, L, "a")
     assert (d.second, d.reason, d.count_before) == ("m3", "below_target", 3)
 
@@ -50,7 +56,9 @@ def test_never_chooses_a_machine_that_is_not_ready_cordoned_draining_or_gate1_ta
 
 def test_a_box_is_always_placed_in_its_home_zone_never_another():
     nodes = [n("a1", "a"), n("b1", "b")]
-    assert choose(nodes, {"a1": 11, "b1": 0}, L, "a").first == "a1"  # even full, the disk is in zone a
+    assert (
+        choose(nodes, {"a1": 11, "b1": 0}, L, "a").first == "a1"
+    )  # even full, the disk is in zone a
 
 
 def test_over_target_still_places_and_says_so():
@@ -61,9 +69,9 @@ def test_over_target_still_places_and_says_so():
 def test_no_candidate_in_the_home_zone_gives_no_machine_and_the_zone_preference():
     d = choose([n("a1", "a", ready=False), n("b1", "b")], {}, L, "a")
     assert (d.zone, d.first, d.reason) == ("a", None, "no_machine_in_zone")
-    terms = template_patch(d, first_start=False)["spec"]["template"]["spec"]["affinity"]["nodeAffinity"][
-        "preferredDuringSchedulingIgnoredDuringExecution"
-    ]
+    terms = template_patch(d, first_start=False)["spec"]["template"]["spec"]["affinity"][
+        "nodeAffinity"
+    ]["preferredDuringSchedulingIgnoredDuringExecution"]
     assert terms == [
         {
             "weight": 20,
@@ -127,18 +135,21 @@ def test_the_patch_sets_only_node_affinity_with_preferred_terms_never_required()
     assert list(affinity) == ["nodeAffinity"]  # podAntiAffinity, a sibling, is left as it is
     na = affinity["nodeAffinity"]
     assert list(na) == ["preferredDuringSchedulingIgnoredDuringExecution"]
-    weights = [(t["weight"], t["preference"]["matchExpressions"][0]["values"][0]) for t in na[
-        "preferredDuringSchedulingIgnoredDuringExecution"
-    ]]
+    weights = [
+        (t["weight"], t["preference"]["matchExpressions"][0]["values"][0])
+        for t in na["preferredDuringSchedulingIgnoredDuringExecution"]
+    ]
     assert weights == [(100, "m1"), (50, "m2")]
-    assert list(patch) == ["spec"] and list(patch["spec"]) == ["template"]  # nothing else in the StatefulSet
+    assert list(patch) == ["spec"] and list(patch["spec"]) == [
+        "template"
+    ]  # nothing else in the StatefulSet
 
 
 def test_a_first_start_also_prefers_the_chosen_zone():
     d = Decision(zone="b", first="b1", second=None, reason="first_start", count_before=0)
-    terms = template_patch(d, first_start=True)["spec"]["template"]["spec"]["affinity"]["nodeAffinity"][
-        "preferredDuringSchedulingIgnoredDuringExecution"
-    ]
+    terms = template_patch(d, first_start=True)["spec"]["template"]["spec"]["affinity"][
+        "nodeAffinity"
+    ]["preferredDuringSchedulingIgnoredDuringExecution"]
     assert [t["weight"] for t in terms] == [100, 20]
 
 
@@ -155,7 +166,9 @@ ML = MoveLimits(per_minute=2, cooldown_s=3600)
 
 
 def boxes_on(node, k, resting=True, start=0, last_moved=None):
-    return [BoxState(f"agents-user-{node}-{start + i}", node, resting, last_moved) for i in range(k)]
+    return [
+        BoxState(f"agents-user-{node}-{start + i}", node, resting, last_moved) for i in range(k)
+    ]
 
 
 def test_moves_only_resting_boxes_off_a_machine_over_target():
@@ -164,12 +177,17 @@ def test_moves_only_resting_boxes_off_a_machine_over_target():
     moves = plan_moves(boxes, nodes, L, ML, now=10_000, moves_last_minute=0)
     assert len(moves) == 1  # one per machine per pass
     namespace, source = moves[0]
-    assert source == "m1" and namespace in {b.namespace for b in boxes if b.resting and b.node == "m1"}
+    assert source == "m1" and namespace in {
+        b.namespace for b in boxes if b.resting and b.node == "m1"
+    }
 
 
 def test_never_moves_an_awake_box():
     nodes = [n("m1"), n("m2")]
-    assert plan_moves(boxes_on("m1", 9, resting=False) + boxes_on("m2", 1), nodes, L, ML, 10_000, 0) == []
+    assert (
+        plan_moves(boxes_on("m1", 9, resting=False) + boxes_on("m2", 1), nodes, L, ML, 10_000, 0)
+        == []
+    )
 
 
 def test_nothing_moves_while_a_machine_in_the_zone_is_not_ready():
@@ -189,4 +207,6 @@ def test_the_rate_limit_and_the_cooldown_hold():
 def test_no_move_when_no_machine_in_the_zone_is_below_target():
     nodes = [n("m1"), n("m2"), n("b1", "b")]
     boxes = boxes_on("m1", 9) + boxes_on("m2", 7) + boxes_on("b1", 0)
-    assert plan_moves(boxes, nodes, L, ML, 10_000, 0) == []  # zone b's room can't take zone a's boxes
+    assert (
+        plan_moves(boxes, nodes, L, ML, 10_000, 0) == []
+    )  # zone b's room can't take zone a's boxes

@@ -33,7 +33,9 @@ class Node:
     @property
     def candidate(self) -> bool:
         """Whether a planned placement may choose this machine at all."""
-        return self.ready and self.schedulable and not self.draining and GATE1_TAINT not in self.taints
+        return (
+            self.ready and self.schedulable and not self.draining and GATE1_TAINT not in self.taints
+        )
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,9 @@ class Limits:
 class Decision:
     zone: str
     first: str | None  # the chosen machine; None when the zone has no candidate machine at all
-    second: str | None  # the next best in the same zone, for when the first is gone by the time the pod is made
+    second: (
+        str | None
+    )  # the next best in the same zone, for when the first is gone by the time the pod is made
     reason: str  # below_target, over_target, first_start, no_machine_in_zone
     count_before: int  # boxes on (or planned for) the chosen machine before this one
 
@@ -156,7 +160,9 @@ def template_patch(decision: Decision, first_start: bool) -> dict:
     already in the template is a sibling key, so it's kept)."""
     return {
         "spec": {
-            "template": {"spec": {"affinity": {"nodeAffinity": node_affinity(decision, first_start)}}}
+            "template": {
+                "spec": {"affinity": {"nodeAffinity": node_affinity(decision, first_start)}}
+            }
         }
     }
 
@@ -219,7 +225,10 @@ def plan_moves(
         # Only worth it if some other candidate in the zone is below target to take it.
         zone = zone_of.get(b.node)
         if not any(
-            n.candidate and n.zone == zone and n.name != b.node and counts.get(n.name, 0) < limits.target
+            n.candidate
+            and n.zone == zone
+            and n.name != b.node
+            and counts.get(n.name, 0) < limits.target
             for n in nodes
         ):
             continue

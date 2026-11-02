@@ -48,10 +48,16 @@ PLACEHOLDER_ZONE_LABEL = "switch.dev/placeholder-zone"
 
 class PlacementKube(Protocol):
     def nodes(self) -> list[Node]: ...
-    def running_boxes(self) -> dict[str, str]: ...  # box namespace -> node, for box pods scheduled on a node
-    def home_zone(self, namespace: str) -> str | None: ...  # the zone of the box's bound disk; None if unbound
+    def running_boxes(
+        self,
+    ) -> dict[str, str]: ...  # box namespace -> node, for box pods scheduled on a node
+    def home_zone(
+        self, namespace: str
+    ) -> str | None: ...  # the zone of the box's bound disk; None if unbound
     def patch_template(self, namespace: str, patch: dict) -> None: ...
-    def set_box_replicas(self, namespace: str, replicas: int) -> None: ...  # a move: stop it so it starts elsewhere
+    def set_box_replicas(
+        self, namespace: str, replicas: int
+    ) -> None: ...  # a move: stop it so it starts elsewhere
     def placeholders(self) -> dict[str, int]: ...  # zone -> placeholder replicas now
     def set_placeholders(self, zone: str, replicas: int) -> None: ...
 
@@ -102,19 +108,33 @@ class Placer:
             zone = self._kube.home_zone(namespace)
             decision = choose(nodes, box_counts(running, self.ledger), self._limits, zone)
             if decision is None:
-                logger.warning("Box %s: not placed, no zone has a machine that can take it (scheduler decides).", namespace)
+                logger.warning(
+                    "Box %s: not placed, no zone has a machine that can take it (scheduler decides).",
+                    namespace,
+                )
                 return
             self._kube.patch_template(namespace, template_patch(decision, first_start=zone is None))
             if decision.first:
                 self.ledger.pending[namespace] = decision.first
-            zone_boxes = sum(box_counts(running, self.ledger).get(n.name, 0) for n in nodes if n.zone == decision.zone)
+            zone_boxes = sum(
+                box_counts(running, self.ledger).get(n.name, 0)
+                for n in nodes
+                if n.zone == decision.zone
+            )
             logger.info(
                 "Box placed: %s zone=%s machine=%s second=%s reason=%s machine_boxes_before=%d zone_boxes=%d",
-                namespace, decision.zone, decision.first, decision.second, decision.reason,
-                decision.count_before, zone_boxes,
+                namespace,
+                decision.zone,
+                decision.first,
+                decision.second,
+                decision.reason,
+                decision.count_before,
+                zone_boxes,
             )
         except Exception as exc:  # placement is a preference: never stop a start over it
-            logger.warning("Box %s: not placed (%s); the scheduler decides.", namespace, type(exc).__name__)
+            logger.warning(
+                "Box %s: not placed (%s); the scheduler decides.", namespace, type(exc).__name__
+            )
 
     def tick(self, machines: list[dict], boxes: Mapping[str, str]) -> None:
         """The end-of-pass jobs. Never raises: each job's failure is logged and the next pass tries again."""
@@ -139,15 +159,21 @@ class Placer:
         nodes, running = self._cluster()
         now = self._clock()
         self._recent_moves = [t for t in self._recent_moves if now - t < 60]
-        states = {ns: BoxState(ns, node, False, self._moved_at.get(ns)) for ns, node in running.items()}
+        states = {
+            ns: BoxState(ns, node, False, self._moved_at.get(ns)) for ns, node in running.items()
+        }
         for raw in machines:
             namespace = boxes.get(str(raw.get("machine_id", "")))
             if namespace is None or namespace not in running or namespace in self.ledger.pending:
                 continue
             resting = (
-                raw.get("resting") is True and raw.get("desired_state") == "running" and raw.get("state") == "ready"
+                raw.get("resting") is True
+                and raw.get("desired_state") == "running"
+                and raw.get("state") == "ready"
             )
-            states[namespace] = BoxState(namespace, running[namespace], resting, self._moved_at.get(namespace))
+            states[namespace] = BoxState(
+                namespace, running[namespace], resting, self._moved_at.get(namespace)
+            )
         moves = plan_moves(
             states.values(), nodes, self._limits, self._move_limits, now, len(self._recent_moves)
         )
@@ -162,7 +188,10 @@ class Placer:
             moved.append(namespace)
             logger.info(
                 "Box moving: %s from=%s machine_boxes=%d target=%d (resting; it starts again next pass)",
-                namespace, source, counts.get(source, 0), self._limits.target,
+                namespace,
+                source,
+                counts.get(source, 0),
+                self._limits.target,
             )
         if moved:
             self._snapshot = None  # the next placement reads the cluster again
@@ -206,7 +235,10 @@ def nodes_from_list(items: list[dict]) -> list[Node]:
                 ready=conditions.get("Ready") == "True",
                 schedulable=not spec.get("unschedulable", False),
                 taints=taints,
-                draining=any(k.startswith(("karpenter.sh/disrupt", "ToBeDeletedByClusterAutoscaler")) for k in taints),
+                draining=any(
+                    k.startswith(("karpenter.sh/disrupt", "ToBeDeletedByClusterAutoscaler"))
+                    for k in taints
+                ),
             )
         )
     return out
@@ -218,17 +250,25 @@ def running_from_pods(items: list[dict]) -> dict[str, str]:
     for item in items:
         meta, spec, status = item.get("metadata", {}), item.get("spec", {}), item.get("status", {})
         node = spec.get("nodeName")
-        if node and status.get("phase") not in ("Succeeded", "Failed") and not meta.get("deletionTimestamp"):
+        if (
+            node
+            and status.get("phase") not in ("Succeeded", "Failed")
+            and not meta.get("deletionTimestamp")
+        ):
             out[meta.get("namespace", "")] = node
     return out
 
 
 def zone_from_pv(pv: Mapping) -> str | None:
     """The zone a bound EBS volume lives in, from its required node affinity."""
-    terms = (((pv.get("spec") or {}).get("nodeAffinity") or {}).get("required") or {}).get("nodeSelectorTerms") or []
+    terms = (((pv.get("spec") or {}).get("nodeAffinity") or {}).get("required") or {}).get(
+        "nodeSelectorTerms"
+    ) or []
     for term in terms:
         for expr in term.get("matchExpressions", []) or []:
-            if expr.get("key") in (ZONE_KEY, "topology.ebs.csi.aws.com/zone") and expr.get("values"):
+            if expr.get("key") in (ZONE_KEY, "topology.ebs.csi.aws.com/zone") and expr.get(
+                "values"
+            ):
                 return expr["values"][0]
     return None
 
@@ -255,20 +295,28 @@ class PlacementKubeApi:
         return namespace
 
     def nodes(self) -> list[Node]:
-        return nodes_from_list(self._call("GET", f"/api/v1/nodes?labelSelector={quote(self._pool)}").get("items", []))
+        return nodes_from_list(
+            self._call("GET", f"/api/v1/nodes?labelSelector={quote(self._pool)}").get("items", [])
+        )
 
     def running_boxes(self) -> dict[str, str]:
-        return running_from_pods(self._call("GET", f"/api/v1/pods?labelSelector={quote(BOX_LABEL)}").get("items", []))
+        return running_from_pods(
+            self._call("GET", f"/api/v1/pods?labelSelector={quote(BOX_LABEL)}").get("items", [])
+        )
 
     def home_zone(self, namespace: str) -> str | None:
-        pvc = self._call("GET", f"/api/v1/namespaces/{self._box(namespace)}/persistentvolumeclaims/data")
+        pvc = self._call(
+            "GET", f"/api/v1/namespaces/{self._box(namespace)}/persistentvolumeclaims/data"
+        )
         volume = (pvc.get("spec") or {}).get("volumeName")
         if not volume:
             return None  # not bound yet: a first start
         return zone_from_pv(self._call("GET", f"/api/v1/persistentvolumes/{volume}"))
 
     def patch_template(self, namespace: str, patch: dict) -> None:
-        self._call("PATCH", f"/apis/apps/v1/namespaces/{self._box(namespace)}/statefulsets/box", patch)
+        self._call(
+            "PATCH", f"/apis/apps/v1/namespaces/{self._box(namespace)}/statefulsets/box", patch
+        )
 
     def set_box_replicas(self, namespace: str, replicas: int) -> None:
         self._call(
@@ -283,7 +331,9 @@ class PlacementKubeApi:
         return f"/apis/apps/v1/namespaces/{self._placeholder_ns}/deployments"
 
     def placeholders(self) -> dict[str, int]:
-        listed = self._call("GET", f"{self._placeholder_path()}?labelSelector={quote(PLACEHOLDER_LABEL)}")
+        listed = self._call(
+            "GET", f"{self._placeholder_path()}?labelSelector={quote(PLACEHOLDER_LABEL)}"
+        )
         out: dict[str, int] = {}
         for item in listed.get("items", []):
             meta = item.get("metadata", {})
@@ -302,7 +352,9 @@ class PlacementKubeApi:
         )
 
 
-def make_placer(kube_call, enabled: bool = False, limits: Limits | None = None) -> Callable[[str], None] | None:
+def make_placer(
+    kube_call, enabled: bool = False, limits: Limits | None = None
+) -> Callable[[str], None] | None:
     """The `place` the box scaler takes, or None (the default): placement stays off unless switched on, e.g.
     `run(core, kube, boxes, place=make_placer(kube._call, enabled=True))`."""
     if not enabled:
@@ -351,14 +403,22 @@ def placer_from_env(kube_call, env: Mapping[str, str]) -> Placer | None:
         return None
     namespace = env.get(ENV_PLACEHOLDER_NS, "").strip() or None
     if placeholders and (namespace is None or not K8S_NAME_RE.fullmatch(namespace)):
-        raise ValueError(f"{ENV_PLACEHOLDERS}=on needs {ENV_PLACEHOLDER_NS} set to a namespace name")
-    limits = Limits(_number(env, ENV_TARGET, Limits.target), _number(env, ENV_CEILING, Limits.ceiling))
+        raise ValueError(
+            f"{ENV_PLACEHOLDERS}=on needs {ENV_PLACEHOLDER_NS} set to a namespace name"
+        )
+    limits = Limits(
+        _number(env, ENV_TARGET, Limits.target), _number(env, ENV_CEILING, Limits.ceiling)
+    )
     pool = env.get(ENV_POOL, "").strip() or DEFAULT_POOL
     if not POOL_RE.fullmatch(pool):
         raise ValueError(f"{ENV_POOL} must be a machine pool name")
     logger.info(
         "Placement on: pool=%s target=%d ceiling=%d moves=%s placeholders=%s",
-        pool, limits.target, limits.ceiling, "on" if moves else "off", "on" if placeholders else "off",
+        pool,
+        limits.target,
+        limits.ceiling,
+        "on" if moves else "off",
+        "on" if placeholders else "off",
     )
     return Placer(
         PlacementKubeApi(kube_call, namespace, pool), limits, moves=moves, placeholders=placeholders

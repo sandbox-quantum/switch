@@ -20,12 +20,11 @@ MANIFEST = (HERE.parents[1] / "placer" / "placer-guard.PROPOSED.yaml").read_text
 def expressions(manifest: str) -> str:
     """Only the policy's CEL expressions: the `validations` block of the policy document, less comment and
     message lines, so wording in a comment or a message can never count as a check."""
-    policy = next(doc for doc in manifest.split("\n---\n") if "kind: ValidatingAdmissionPolicy\n" in doc)
+    policy = next(
+        doc for doc in manifest.split("\n---\n") if "kind: ValidatingAdmissionPolicy\n" in doc
+    )
     block = policy.split("\n  validations:\n", 1)[1]
-    kept = [
-        line for line in block.splitlines()
-        if not line.lstrip().startswith(("#", "message:"))
-    ]
+    kept = [line for line in block.splitlines() if not line.lstrip().startswith(("#", "message:"))]
     return "\n".join(kept)
 
 
@@ -34,15 +33,24 @@ POLICY = expressions(MANIFEST)
 # What the placer may change, or the server manages. Everything else must be compared or absent.
 ALLOWED = {
     "metadata": {
-        "creationTimestamp", "deletionGracePeriodSeconds", "deletionTimestamp", "generation",
-        "managedFields", "resourceVersion", "selfLink", "uid",  # set by the API server
-        "name", "namespace",  # can't change on update; and checked: box in agents-user-*
+        "creationTimestamp",
+        "deletionGracePeriodSeconds",
+        "deletionTimestamp",
+        "generation",
+        "managedFields",
+        "resourceVersion",
+        "selfLink",
+        "uid",  # set by the API server
+        "name",
+        "namespace",  # can't change on update; and checked: box in agents-user-*
     },
     "spec": {"replicas", "template"},  # replicas: the scaler's job; template: walked below
     "spec.template": {"spec"},  # walked below
     "spec.template.spec": {"affinity"},  # walked below
     "spec.template.spec.affinity": {"nodeAffinity"},  # walked below
-    "spec.template.spec.affinity.nodeAffinity": {"preferredDuringSchedulingIgnoredDuringExecution"},  # the placer's
+    "spec.template.spec.affinity.nodeAffinity": {
+        "preferredDuringSchedulingIgnoredDuringExecution"
+    },  # the placer's
 }
 MUST_BE_ABSENT = {"spec.template.spec": {"nodeName", "hostNetwork", "hostPID", "hostIPC"}}
 
@@ -124,9 +132,8 @@ def test_wording_in_a_comment_or_message_does_not_count():
     fake = MANIFEST.replace(
         "  validations:\n",
         "  validations:\n    # object.spec.template.spec.zzz == oldObject.spec.template.spec.zzz\n"
-        "    - expression: \"true\"\n      message: \"!has(object.spec.template.spec.yyy)\"\n",
+        '    - expression: "true"\n      message: "!has(object.spec.template.spec.yyy)"\n',
         1,
     )
     policy = expressions(fake)
     assert "spec.zzz" not in policy and "spec.yyy" not in policy
-

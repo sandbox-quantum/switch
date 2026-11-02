@@ -86,7 +86,9 @@ def action(step=None, requested=T0 - 10, expires=T0 + 590, machine=MID, kind="re
 
 def worker(kube, core, now=T0, boxes=None):
     clock = {"t": now}
-    w = ra.RestartWorker(kube, core, boxes if boxes is not None else {MID: NS}, clock=lambda: clock["t"])
+    w = ra.RestartWorker(
+        kube, core, boxes if boxes is not None else {MID: NS}, clock=lambda: clock["t"]
+    )
     return w, clock
 
 
@@ -284,15 +286,24 @@ def test_a_pod_replaced_between_the_read_and_the_delete_counts_as_restarted():
 def test_the_kube_client_sends_the_uid_precondition(monkeypatch):
     sent = []
     api = ra.RestartKubeApi.__new__(ra.RestartKubeApi)
-    monkeypatch.setattr(api, "_call", lambda method, path, body=None: sent.append((method, path, body)) or {})
+    monkeypatch.setattr(
+        api, "_call", lambda method, path, body=None: sent.append((method, path, body)) or {}
+    )
     api.delete_box_pod(NS, "u-1")
-    assert sent == [("DELETE", f"/api/v1/namespaces/{NS}/pods/box-0",
-                     {"kind": "DeleteOptions", "apiVersion": "v1", "preconditions": {"uid": "u-1"}})]
+    assert sent == [
+        (
+            "DELETE",
+            f"/api/v1/namespaces/{NS}/pods/box-0",
+            {"kind": "DeleteOptions", "apiVersion": "v1", "preconditions": {"uid": "u-1"}},
+        )
+    ]
 
 
 def test_redirects_are_refused_so_the_bearer_never_follows_one():
     handler = ra._NoRedirect()
-    assert handler.redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/") is None
+    assert (
+        handler.redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/") is None
+    )
 
 
 def test_logs_name_the_machine_not_the_namespace(caplog):

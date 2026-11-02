@@ -3,8 +3,8 @@ import logging
 from switch_hosted_controller.box_scaler import reconcile_once
 from switch_hosted_controller.placement import Limits, Node, choose, template_patch
 from switch_hosted_controller.placer import (
-    Placer,
     PlacementKubeApi,
+    Placer,
     make_placer,
     nodes_from_list,
     running_from_pods,
@@ -16,7 +16,12 @@ M = "11111111-1111-1111-1111-111111111111"
 
 class FakePlacementKube:
     def __init__(self, nodes, running=None, zones=None, fail=False):
-        self._nodes, self._running, self._zones, self._fail = nodes, running or {}, zones or {}, fail
+        self._nodes, self._running, self._zones, self._fail = (
+            nodes,
+            running or {},
+            zones or {},
+            fail,
+        )
         self.patches = []
 
     def nodes(self):
@@ -55,7 +60,9 @@ def test_placer_writes_the_emptiest_machine_in_the_home_zone_and_logs_ids_and_co
 
 
 def test_a_burst_of_starts_spreads_through_the_ledger():
-    kube = FakePlacementKube([Node("a1", "a"), Node("a2", "a")], zones={f"agents-user-{i}": "a" for i in range(4)})
+    kube = FakePlacementKube(
+        [Node("a1", "a"), Node("a2", "a")], zones={f"agents-user-{i}": "a" for i in range(4)}
+    )
     placer = Placer(kube)
     for i in range(4):
         placer.place(f"agents-user-{i}")
@@ -98,12 +105,21 @@ def test_the_scaler_places_a_stopped_box_just_before_starting_it_and_never_a_run
     order = []
     kube = FakeKube(0, 0)
     kube.set_replicas = lambda ns, n: order.append(("scale", ns, n))
-    reconcile_once(FakeCore("running"), kube, {M: "agents-user-b"}, place=lambda ns: order.append(("place", ns)))
+    reconcile_once(
+        FakeCore("running"),
+        kube,
+        {M: "agents-user-b"},
+        place=lambda ns: order.append(("place", ns)),
+    )
     assert order == [("place", "agents-user-b"), ("scale", "agents-user-b", 1)]
     # Already running, or stopping: no placement call (a template change would restart a running pod).
     order.clear()
-    reconcile_once(FakeCore("running"), FakeKube(1, 1), {M: "agents-user-b"}, place=lambda ns: order.append(ns))
-    reconcile_once(FakeCore("stopped"), FakeKube(1, 1), {M: "agents-user-b"}, place=lambda ns: order.append(ns))
+    reconcile_once(
+        FakeCore("running"), FakeKube(1, 1), {M: "agents-user-b"}, place=lambda ns: order.append(ns)
+    )
+    reconcile_once(
+        FakeCore("stopped"), FakeKube(1, 1), {M: "agents-user-b"}, place=lambda ns: order.append(ns)
+    )
     assert order == []
 
 
@@ -137,10 +153,22 @@ def test_nodes_are_read_with_readiness_cordon_taints_and_zone():
 
 def test_running_boxes_skip_unscheduled_finished_and_terminating_pods():
     items = [
-        {"metadata": {"namespace": "agents-user-a"}, "spec": {"nodeName": "m1"}, "status": {"phase": "Running"}},
+        {
+            "metadata": {"namespace": "agents-user-a"},
+            "spec": {"nodeName": "m1"},
+            "status": {"phase": "Running"},
+        },
         {"metadata": {"namespace": "agents-user-b"}, "spec": {}, "status": {"phase": "Pending"}},
-        {"metadata": {"namespace": "agents-user-c", "deletionTimestamp": "x"}, "spec": {"nodeName": "m1"}, "status": {}},
-        {"metadata": {"namespace": "agents-user-d"}, "spec": {"nodeName": "m2"}, "status": {"phase": "Failed"}},
+        {
+            "metadata": {"namespace": "agents-user-c", "deletionTimestamp": "x"},
+            "spec": {"nodeName": "m1"},
+            "status": {},
+        },
+        {
+            "metadata": {"namespace": "agents-user-d"},
+            "spec": {"nodeName": "m2"},
+            "status": {"phase": "Failed"},
+        },
     ]
     assert running_from_pods(items) == {"agents-user-a": "m1"}
 
@@ -151,7 +179,11 @@ def test_the_disk_zone_is_read_from_the_volumes_node_affinity():
             "nodeAffinity": {
                 "required": {
                     "nodeSelectorTerms": [
-                        {"matchExpressions": [{"key": "topology.ebs.csi.aws.com/zone", "values": ["eu-west-3b"]}]}
+                        {
+                            "matchExpressions": [
+                                {"key": "topology.ebs.csi.aws.com/zone", "values": ["eu-west-3b"]}
+                            ]
+                        }
                     ]
                 }
             }
@@ -176,7 +208,9 @@ class CountingKube(FakePlacementKube):
 
 def test_a_burst_in_one_pass_reads_nodes_and_pods_once():
     now = [100.0]
-    kube = CountingKube([Node("a1", "a"), Node("a2", "a")], zones={f"agents-user-{i}": "a" for i in range(5)})
+    kube = CountingKube(
+        [Node("a1", "a"), Node("a2", "a")], zones={f"agents-user-{i}": "a" for i in range(5)}
+    )
     placer = Placer(kube, clock=lambda: now[0])
     for i in range(4):
         placer.place(f"agents-user-{i}")
@@ -213,7 +247,9 @@ def test_only_user_box_namespaces_are_placed_or_called():
 
 def test_every_placer_call_uses_a_short_timeout():
     seen = []
-    api = PlacementKubeApi(lambda method, path, body=None, timeout=None: seen.append(timeout) or {"items": []})
+    api = PlacementKubeApi(
+        lambda method, path, body=None, timeout=None: seen.append(timeout) or {"items": []}
+    )
     api.nodes()
     api.running_boxes()
     api.home_zone("agents-user-a")
@@ -235,14 +271,28 @@ def merge_patch(target, patch):
 
 
 def test_the_merge_patch_keeps_the_templates_pod_anti_affinity():
-    anti = {"preferredDuringSchedulingIgnoredDuringExecution": [{"weight": 100, "podAffinityTerm": {"topologyKey": "h"}}]}
-    sts = {"spec": {"replicas": 0, "template": {"spec": {"runtimeClassName": "gvisor", "affinity": {"podAntiAffinity": anti}}}}}
+    anti = {
+        "preferredDuringSchedulingIgnoredDuringExecution": [
+            {"weight": 100, "podAffinityTerm": {"topologyKey": "h"}}
+        ]
+    }
+    sts = {
+        "spec": {
+            "replicas": 0,
+            "template": {
+                "spec": {"runtimeClassName": "gvisor", "affinity": {"podAntiAffinity": anti}}
+            },
+        }
+    }
     d = choose([Node("a1", "a")], {}, Limits(), "a")
     after = merge_patch(sts, template_patch(d, first_start=False))
     affinity = after["spec"]["template"]["spec"]["affinity"]
     assert affinity["podAntiAffinity"] == anti
     assert "nodeAffinity" in affinity
-    assert after["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor" and after["spec"]["replicas"] == 0
+    assert (
+        after["spec"]["template"]["spec"]["runtimeClassName"] == "gvisor"
+        and after["spec"]["replicas"] == 0
+    )
 
 
 def test_placement_is_off_unless_switched_on():

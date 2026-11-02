@@ -48,7 +48,11 @@ READY_WITHIN_S = 300.0
 KIND = "restart"
 
 CLAIMED, POD_DELETED, BOX_READY = "claimed", "pod_deleted", "box_ready"
-BOX_NOT_FOUND, DELETE_REFUSED, NOT_READY_IN_TIME = "box_not_found", "delete_refused", "not_ready_in_time"
+BOX_NOT_FOUND, DELETE_REFUSED, NOT_READY_IN_TIME = (
+    "box_not_found",
+    "delete_refused",
+    "not_ready_in_time",
+)
 RUNNING, DONE, FAILED = "running", "done", "failed"
 
 
@@ -90,7 +94,8 @@ def pod_facts(pod: Mapping[str, Any] | None) -> dict[str, Any] | None:
     meta = pod.get("metadata") or {}
     status = pod.get("status") or {}
     ready = any(
-        c.get("type") == "Ready" and c.get("status") == "True" for c in status.get("conditions") or []
+        c.get("type") == "Ready" and c.get("status") == "True"
+        for c in status.get("conditions") or []
     )
     images = [c.get("image") for c in (pod.get("spec") or {}).get("containers") or []]
     return {
@@ -108,7 +113,9 @@ class _Running:
     deadline: float
     old_uid: str | None
     images: tuple[str, ...]
-    not_before: float | None = None  # the new pod must be created after this (the action's requested_at)
+    not_before: float | None = (
+        None  # the new pod must be created after this (the action's requested_at)
+    )
 
 
 @dataclass
@@ -139,7 +146,9 @@ class RestartWorker:
                 self._running.pop(action_id, None)
             except Exception as exc:
                 logger.warning(
-                    "Restart action %s: step failed (%s); trying again next pass.", action_id, type(exc).__name__
+                    "Restart action %s: step failed (%s); trying again next pass.",
+                    action_id,
+                    type(exc).__name__,
                 )
         for gone in set(self._running) - seen:  # finished or expired in Core
             self._running.pop(gone, None)
@@ -156,7 +165,9 @@ class RestartWorker:
             self.core.step(action_id, CLAIMED, RUNNING)
             step = CLAIMED
         if namespace is None or not NAMESPACE_RE.fullmatch(namespace):
-            logger.warning("Restart action %s: machine %s isn't in the box map.", action_id, machine_id or "?")
+            logger.warning(
+                "Restart action %s: machine %s isn't in the box map.", action_id, machine_id or "?"
+            )
             self.core.step(action_id, BOX_NOT_FOUND, FAILED)
             return
 
@@ -172,15 +183,23 @@ class RestartWorker:
                 # The pod is newer than the request: an earlier run of ours, or the scaler or an eviction, replaced it.
                 logger.info(
                     "Restart action %s: the box pod for machine %s is already newer than the request; no delete by this run.",
-                    action_id, machine_id,
+                    action_id,
+                    machine_id,
                 )
             else:
                 try:
                     # Only the pod looked at: a uid precondition, so a pod replaced in between is never touched.
                     self.kube.delete_box_pod(namespace, None if before is None else before["uid"])
                 except HTTPError as exc:
-                    if exc.code not in (404, 409):  # gone already, or already replaced: the same outcome
-                        logger.warning("Restart action %s: the delete was refused (HTTP %s).", action_id, exc.code)
+                    if exc.code not in (
+                        404,
+                        409,
+                    ):  # gone already, or already replaced: the same outcome
+                        logger.warning(
+                            "Restart action %s: the delete was refused (HTTP %s).",
+                            action_id,
+                            exc.code,
+                        )
                         self.core.step(action_id, DELETE_REFUSED, FAILED)
                         return
             self._running[action_id] = _Running(
@@ -197,14 +216,19 @@ class RestartWorker:
         if step == POD_DELETED:
             run = self._running.get(action_id)
             if run is None:  # resumed after the worker restarted: only wait, never delete again
-                run = self._running[action_id] = _Running(namespace, _deadline(now, expires), None, (), requested)
+                run = self._running[action_id] = _Running(
+                    namespace, _deadline(now, expires), None, (), requested
+                )
             pod = pod_facts(self.kube.box_pod(namespace))
             fresh = (
                 pod is not None
                 and pod["ready"]
                 and not pod["deleting"]
                 and pod["uid"] != run.old_uid
-                and (run.not_before is None or (pod["created"] is not None and pod["created"] > run.not_before))
+                and (
+                    run.not_before is None
+                    or (pod["created"] is not None and pod["created"] > run.not_before)
+                )
                 and (not run.images or pod["images"] == run.images)
             )
             if fresh:
@@ -248,7 +272,11 @@ class RestartKubeApi:
             self._server + path,
             method=method,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": "Bearer " + self._token, "Accept": "application/json", "Content-Type": "application/json"},
+            headers={
+                "Authorization": "Bearer " + self._token,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
         )
         with build_opener(_NoRedirect, HTTPSHandler(context=self._ctx)).open(req, timeout=20) as r:
             return json.load(r)
