@@ -24,6 +24,10 @@
     "./windows-spawn": {
       "types": "./dist/windows-spawn.d.mts",
       "default": "./dist/windows-spawn.mjs"
+    },
+    "./redact-secrets": {
+      "types": "./dist/redact-secrets.d.mts",
+      "default": "./dist/redact-secrets.mjs"
     }
   },
   "scripts": {
