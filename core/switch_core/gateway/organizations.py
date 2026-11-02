@@ -58,6 +58,7 @@ from switch_core.gateway.auth import (
     get_current_user,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
+    tenants_bindable_or_any,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -100,7 +101,10 @@ from switch_core.organization_access import (
     workspaces_where_they_own_agents,
 )
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
-from switch_core.organization_issues import organization_issues
+from switch_core.organization_issues import (
+    organization_wide_issues,
+    workspace_issues,
+)
 
 router = APIRouter()
 
@@ -409,20 +413,18 @@ async def list_organization_issues(
     access = await _require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
-    organization_id = access.organization_id
-    workspaces = await organization_workspaces_bindable_by(
+    issues, admins = await organization_wide_issues(session, access.organization_id)
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own.
+    await session.commit()
+    issues += await workspace_issues(
         session_factory,
         user_store,
-        user.id,
-        organization_id,
-        is_operator=access.platform_access,
-    )
-    issues = await organization_issues(
-        session,
-        session_factory,
-        user_store,
-        organization_id=organization_id,
-        workspaces=[(workspace.id, workspace.name) for workspace in workspaces],
+        organization_id=access.organization_id,
+        admins=admins,
+        candidates=await tenants_bindable_or_any(
+            session_factory, user.id, is_operator=access.platform_access
+        ),
     )
     return [
         OrganizationIssueDetail(
