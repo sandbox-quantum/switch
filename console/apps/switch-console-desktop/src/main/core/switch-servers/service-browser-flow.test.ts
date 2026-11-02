@@ -53,7 +53,9 @@ function listed(ports: number[] | null): ConnectionCatalogEntry[] {
       token_lifetime: 28_800,
       loopback_ports: ports,
       key: null,
+      sign_in_choices: null,
       external_identity: null,
+      choices: null,
       consent: null,
       workspace_enabled: null,
     },
@@ -67,7 +69,7 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.resetAllMocks();
 });
-async function start(service = 'example') {
+async function start(service = 'example', choices: Record<string, string> = {}) {
   vi.mocked(cancelServiceConnection).mockResolvedValue(undefined);
   vi.mocked(completeServiceConnection).mockResolvedValue({
     warning: null,
@@ -81,12 +83,35 @@ async function start(service = 'example') {
     callback_url: null,
   }));
   const open = vi.fn().mockResolvedValue(undefined);
-  const { id, callbackUrl } = await startServiceBrowserFlow(server, service, open);
+  const { id, callbackUrl } = await startServiceBrowserFlow(server, service, choices, open);
   expect(callbackUrl).toBeNull();
   flows.push([service, id]);
   const input = vi.mocked(startServiceConnection).mock.calls[0]![2];
   return { id, input, open, url: `http://127.0.0.1:${input.port}/switch-services/callback` };
 }
+
+it('starts with what the person picked, and takes the code back past what the vendor adds', async () => {
+  const { id, input, url } = await start('example', { site: 'eu.example.test' });
+  expect(input.choices).toEqual({ site: 'eu.example.test' });
+  // Datadog sends its site, domain and organization beside the code.
+  const extras = new URLSearchParams({
+    code: 'SYNTHETIC',
+    state: id,
+    site: 'https://app.eu.example.test',
+    domain: 'app.eu.example.test',
+    dd_oid: 'org-1',
+    dd_org_name: 'Example Org',
+  });
+  const response = await fetch(`${url}?${extras}`);
+  expect(response.status).toBe(200);
+  expect(completeServiceConnection).toHaveBeenCalledExactlyOnceWith(
+    server,
+    'example',
+    id,
+    'SYNTHETIC',
+    input.completion_secret
+  );
+});
 
 it('takes back only this Console’s state, and hands the code to Core with its secret', async () => {
   const { id, input, open, url } = await start();
@@ -275,6 +300,7 @@ it('hands on the server’s callback when the sign-in returns through it', async
   const started = await startServiceBrowserFlow(
     server,
     'example',
+    {},
     vi.fn().mockResolvedValue(undefined)
   );
   flows.push(['example', started.id]);
@@ -292,7 +318,7 @@ it('cancels the server flow if the browser cannot open', async () => {
     callback_url: null,
   }));
   await expect(
-    startServiceBrowserFlow(server, 'example', async () => {
+    startServiceBrowserFlow(server, 'example', {}, async () => {
       throw new Error('Private shell detail');
     })
   ).rejects.toThrow('Could not open the sign-in page in your browser.');
@@ -334,7 +360,7 @@ it('says which ports to free when every one is taken, and starts nothing', async
   const busy = await occupy(43873);
   try {
     vi.mocked(getConnectionCatalog).mockResolvedValue(listed([43873]));
-    await expect(startServiceBrowserFlow(server, 'example', vi.fn())).rejects.toThrow(
+    await expect(startServiceBrowserFlow(server, 'example', {}, vi.fn())).rejects.toThrow(
       'Example takes a sign-in back only on port 43873 of this computer, and all are in use.'
     );
     expect(startServiceConnection).not.toHaveBeenCalled();

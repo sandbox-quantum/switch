@@ -1527,12 +1527,19 @@ export const workspacesController = createRPCController({
 
   /**
    * Start signing in to `service` for this workspace: the browser opens at the
-   * vendor, and this Console's listener takes the result back. Resolves to the
-   * flow's id, and the server's callback where the browser returns through it.
+   * vendor, and this Console's listener takes the result back. `choices` are
+   * what the person picked first (a vendor's site). Resolves to the flow's id,
+   * and the server's callback where the browser returns through it.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    choices: Record<string, string>;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, params.service, params.choices, (url) =>
+        appService.openExternal(url)
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>

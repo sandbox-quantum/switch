@@ -93,8 +93,15 @@ export const connectionCatalogEntrySchema = z.object({
   loopback_ports: z.array(z.number().int()).nullable(),
   /** The fields a person pastes to connect it, for a service connected with a key; else null. */
   key: serviceKeyFormSchema.nullable(),
+  /**
+   * What a person picks before signing in (a vendor's site), each from its
+   * list, for a service whose sign-in asks; else null.
+   */
+  sign_in_choices: z.array(serviceKeyFieldSchema).nullable(),
   /** The connected account as people recognise it; null when not connected. */
   external_identity: z.string().nullable(),
+  /** What the person picked to connect (a site), by name; null when not connected. */
+  choices: z.record(z.string(), z.string()).nullable(),
   /** What the person allowed when they connected; null when not connected or not said. */
   consent: z.enum(['read', 'write']).nullable(),
   /**
@@ -119,7 +126,9 @@ export const connectionCatalogSchema = z.object({
         token_lifetime: true,
         loopback_ports: true,
         key: true,
+        sign_in_choices: true,
         external_identity: true,
+        choices: true,
         consent: true,
         workspace_enabled: true,
       })
@@ -146,6 +155,8 @@ export const serviceConnectionsSchema = z.object({
       token_lifetime: z.number().nullable().default(null),
       loopback_ports: z.array(z.number().int()).nullable().default(null),
       key: serviceKeyFormSchema.nullable().default(null),
+      /** What a person picks before signing in (a vendor's site); null when nothing. */
+      sign_in_choices: z.array(serviceKeyFieldSchema).nullable().default(null),
       external_identity: z.string().nullable().default(null),
       consent: z.enum(['read', 'write']).nullable().default(null),
       workspace_enabled: z.boolean().nullable().default(null),

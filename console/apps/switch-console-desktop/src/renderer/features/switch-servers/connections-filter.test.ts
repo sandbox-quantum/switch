@@ -19,7 +19,9 @@ function entry(name: string, category: string): ConnectionCatalogEntry {
     token_lifetime: null,
     loopback_ports: null,
     key: null,
+    sign_in_choices: null,
     external_identity: null,
+    choices: null,
     consent: null,
     workspace_enabled: null,
   };
