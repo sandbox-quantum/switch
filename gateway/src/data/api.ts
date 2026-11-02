@@ -255,6 +255,8 @@ export interface RoomDetail extends RoomSummary {
   archived_at: string | null;
   /** Absent on servers that predate decision routing. */
   auto_route?: RoomAutoRoute;
+  /** Whether the room's chat shows what agents' tools were given and gave back. */
+  show_tool_detail: boolean;
 }
 
 /**
@@ -309,6 +311,7 @@ export interface UpdateRoomInput {
   admin_mode?: boolean;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
+  show_tool_detail?: boolean;
 }
 
 /** A failed gateway call that keeps what the server said: the status, for
