@@ -109,6 +109,10 @@ from switch_core.connections.loader import CATALOG, with_access_profiles
 from switch_core.connections.maintenance import (
     maintenance_loop as service_token_maintenance_loop,
 )
+from switch_core.connections.oauth_clients import (
+    check_sign_in_redirects,
+    sign_in_redirect_warnings,
+)
 from switch_core.connections.organization_apps import OrganizationApps
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.db import encrypted_json
@@ -2651,7 +2655,10 @@ def main() -> None:
     )
     for warning in deprecated_env_names():
         logger.warning(warning)
-    for warning in config.sign_in_redirect_warnings():
+    check_sign_in_redirects(CATALOG, config.service_sign_in_redirect)
+    for warning in sign_in_redirect_warnings(
+        CATALOG, config.service_sign_in_redirect, config.gateway_public_url
+    ):
         logger.warning(warning)
 
     if config.db_migrate_on_boot:

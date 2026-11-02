@@ -34,7 +34,7 @@ from switch_core.connections.adapters.oauth import (
     AuthorizationEndpoints,
     OAuthClientCredentials,
 )
-from switch_core.connections.loader import RedirectMode
+from switch_core.connections.loader import Connection, RedirectMode
 from switch_core.db.models import ServiceOAuthClient
 from switch_core.keys import Keyring
 
@@ -74,6 +74,61 @@ def sign_in_mode(
     if preferred == "loopback" or public_url is not None:
         return preferred
     return "loopback" if "loopback" in modes else None
+
+
+def _listed_modes(entry: Connection) -> list[RedirectMode]:
+    oauth = entry.definition.auth.oauth
+    return [] if oauth is None else oauth.redirect
+
+
+def check_sign_in_redirects(
+    catalog: dict[str, Connection], named: dict[str, RedirectMode]
+) -> None:
+    """Refuse a `SERVICE_SIGN_IN_REDIRECT` that names a service not in the
+    catalog, or a way back its entry does not list."""
+    for slug, mode in named.items():
+        entry = catalog.get(slug)
+        if entry is None:
+            raise ValueError(
+                f"SERVICE_SIGN_IN_REDIRECT names {slug!r}, which is not in the catalog."
+            )
+        allowed = _listed_modes(entry)
+        if mode not in allowed:
+            raise ValueError(
+                f"SERVICE_SIGN_IN_REDIRECT names {mode!r} for {slug}, which "
+                + (
+                    "allows only " + " or ".join(repr(listed) for listed in allowed)
+                    if allowed
+                    else "allows none: it has no OAuth sign-in"
+                )
+                + "."
+            )
+
+
+def sign_in_redirect_warnings(
+    catalog: dict[str, Connection],
+    named: dict[str, RedirectMode],
+    public_url: str | None,
+) -> list[str]:
+    """A warning for each service `SERVICE_SIGN_IN_REDIRECT` sends back
+    through Core whose sign-ins cannot come back that way on this server."""
+    warnings = []
+    for slug, mode in named.items():
+        if mode != "core":
+            continue
+        actual = sign_in_mode(_listed_modes(catalog[slug]), mode, public_url)
+        if actual == "core":
+            continue
+        warnings.append(
+            f"SERVICE_SIGN_IN_REDIRECT names 'core' for {slug}, but "
+            "GATEWAY_PUBLIC_URL is unset, so "
+            + (
+                f"{slug}'s sign-ins come back to Switch Console (loopback) instead."
+                if actual == "loopback"
+                else f"{slug} cannot be connected until it is set."
+            )
+        )
+    return warnings
 
 
 def redirect_uris(
