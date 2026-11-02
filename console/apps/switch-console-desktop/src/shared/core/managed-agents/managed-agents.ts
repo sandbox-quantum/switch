@@ -1,5 +1,6 @@
 import type { RepoAgentField } from '@switch-console/core/agents/plugins';
 import type { AdvancedConfigValue } from '@switch-console/plugins/agents';
+import type { StopReason } from '@shared/core/stop-reasons/stop-reasons';
 
 /**
  * An agent whose configuration lives on its Switch server: what it is, the
@@ -43,6 +44,11 @@ export type ManagedAgentView = {
     directory: string | null;
     isolation: 'shared' | 'isolated';
   };
+  /**
+   * Why it stopped or can't take work (visibility V2): a fixed code and times from the server, shown in the
+   * Status panel and on shared-cloud cards. Null when nothing stands in the way, or from an older server.
+   */
+  stopReason?: StopReason | null;
   /** What its machine last reported for it, or null before it has. */
   status: {
     process: string;
@@ -51,6 +57,17 @@ export type ManagedAgentView = {
     detail: string | null;
     /** The absolute working directory it runs in; null until the machine resolved one. */
     directory: string | null;
+    /**
+     * Where its conversation is, as the controller reports it on the shared
+     * cloud: loaded (`active`), resuming after a message (`waking`), or saved
+     * and unloaded to save memory (`parked`). Absent where it isn't reported.
+     */
+    session?: 'active' | 'waking' | 'parked' | null;
+    /**
+     * Conversations waiting for room in a full shared-cloud box, as its
+     * controller reports them; absent when nothing waits.
+     */
+    waitingForRoom?: { count: number; oldestSince: string | null } | null;
   } | null;
 };
 
@@ -131,6 +148,8 @@ export type OwnedMachine = ManagedMachine & {
   workspacesDir: string | null;
   /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
   os: string | null;
+  /** The version of that system, as its controller enrolled (a kernel release on Linux); null when not known. */
+  osVersion?: string | null;
   local: MachineLocal;
 };
 

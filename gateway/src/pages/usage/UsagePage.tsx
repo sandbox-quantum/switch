@@ -23,11 +23,24 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import DataTable from "../../components/DataTable";
-import { type Budget, type CurrentTenant, type UsageTotal, deleteBudget } from "../../data/api";
-import { useBudgets, useCurrentTenant, useUsage } from "../../data/hooks";
+import {
+  type Budget,
+  type CurrentTenant,
+  type HostedUsagePerson,
+  type UsageTotal,
+  deleteBudget,
+} from "../../data/api";
+import { useBudgets, useCurrentTenant, useHostedUsage, useUsage } from "../../data/hooks";
 import { formatDateTime } from "../../theme/hootFormat";
 import BudgetDialog from "./BudgetDialog";
-import { formatAmount, formatPeriod, metricLabel } from "./usageFormat";
+import {
+  budgetMetricLabel,
+  capLine,
+  formatAmount,
+  formatPeriod,
+  hoursLabel,
+  metricLabel,
+} from "./usageFormat";
 
 const WINDOWS = [
   { label: "Last 24 hours", hours: 24 },
@@ -59,6 +72,7 @@ function WorkspaceUsage({ tenant }: { tenant: CurrentTenant }) {
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, gap: 3 }}>
       <Typography variant="h5">Usage · {tenant.name}</Typography>
       <BudgetsSection tenantId={tenant.id} />
+      <HostedUsageSection tenantId={tenant.id} />
       <UsageSection tenantId={tenant.id} />
     </Box>
   );
@@ -106,7 +120,15 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
         field: "metric",
         headerName: "Metric",
         width: 170,
-        valueFormatter: (value) => metricLabel(value),
+        valueFormatter: (value) => budgetMetricLabel(value),
+        // Wraps rather than cutting off "Daily AI calls per person" (tech lead, on the fix list).
+        renderCell: ({ formattedValue }) => (
+          <Stack justifyContent="center" sx={{ height: "100%" }}>
+            <Typography variant="body2" sx={{ whiteSpace: "normal", lineHeight: 1.3 }}>
+              {formattedValue}
+            </Typography>
+          </Stack>
+        ),
       },
       {
         field: "model",
@@ -120,7 +142,17 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
         flex: 1,
         minWidth: 220,
         sortable: false,
-        renderCell: ({ row }) => (
+        renderCell: ({ row }) =>
+          row.metric === "hosted_ai_calls" ? (
+            // Each person's box counts and applies its own cap (L1b), so a
+            // workspace total would mean nothing here.
+            <Stack justifyContent="center" sx={{ height: "100%" }}>
+              {/* Wraps rather than cutting off (designer's fix list, item 5). */}
+              <Typography variant="body2" sx={{ whiteSpace: "normal", lineHeight: 1.3 }}>
+                {formatAmount(row.amount_limit)} a day for each person, applied by their box
+              </Typography>
+            </Stack>
+          ) : (
           <Stack justifyContent="center" sx={{ height: "100%" }} spacing={0.5}>
             <Typography variant="body2">
               {formatAmount(row.spent)} of {formatAmount(row.amount_limit)} per{" "}
@@ -132,7 +164,7 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
               color={row.exhausted ? "error" : "primary"}
             />
           </Stack>
-        ),
+          ),
       },
       {
         field: "resets_at",
@@ -145,7 +177,9 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
         headerName: "Status",
         width: 120,
         renderCell: ({ row }) =>
-          row.exhausted ? (
+          row.metric === "hosted_ai_calls" ? (
+            "—"
+          ) : row.exhausted ? (
             <Chip size="small" color="error" label="Reached" />
           ) : (
             <Chip size="small" variant="outlined" label="Within" />
@@ -219,7 +253,7 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
             </Alert>
           )}
           <DialogContentText>
-            Remove the {deleteTarget ? metricLabel(deleteTarget.metric).toLowerCase() : ""} budget
+            Remove the {deleteTarget ? budgetMetricLabel(deleteTarget.metric).toLowerCase() : ""} budget
             for {deleteTarget?.agent_id === null ? "every agent" : deleteTarget?.agent_name}? What
             it covers will no longer be limited.
           </DialogContentText>
@@ -237,6 +271,70 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
           </Button>
         </DialogActions>
       </Dialog>
+    </Box>
+  );
+}
+
+type HostedRow = HostedUsagePerson & { id: string };
+
+/** Hosted agents this month (visibility L1, spec A3): awake hours, AI calls and
+ * the daily AI cap each person's box applies. Counts only. Hidden when the
+ * server has no hosted view. */
+export function HostedUsageSection({ tenantId }: { tenantId: string }) {
+  const { data, loading, error } = useHostedUsage(tenantId);
+  const { data: budgets } = useBudgets(tenantId);
+  const setCap =
+    budgets?.find((b) => b.metric === "hosted_ai_calls" && b.agent_id === null)?.amount_limit ??
+    null;
+  const rows = useMemo<HostedRow[]>(
+    () => (data?.usage?.people ?? []).map((p) => ({ ...p, id: p.user_id })),
+    [data],
+  );
+  const columns = useMemo<GridColDef<HostedRow>[]>(
+    () => [
+      { field: "name", headerName: "Person", flex: 1, minWidth: 180 },
+      {
+        field: "awake_hours",
+        headerName: "Awake time",
+        // Wide enough for the whole heading plus the grid's sort and menu icons (designer: it read "Awake ti…" at 140).
+        width: 170,
+        valueFormatter: (value: number) => hoursLabel(value),
+      },
+      {
+        field: "ai_calls",
+        headerName: "AI calls",
+        type: "number",
+        width: 120,
+        valueFormatter: (value: number) => formatAmount(value),
+      },
+      {
+        field: "cap_in_force",
+        headerName: "Daily AI cap",
+        flex: 1,
+        minWidth: 220,
+        sortable: false,
+        valueGetter: (_value, row) => capLine(row, setCap) ?? "Not set",
+      },
+    ],
+    [setCap],
+  );
+  if (loading) return <CircularProgress />;
+  if (error)
+    return (
+      <Alert severity="error">Couldn't load hosted agents' usage. Reload the page to try again.</Alert>
+    );
+  if (!data?.usage) return null;
+  return (
+    <Box>
+      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+        Hosted agents this month
+      </Typography>
+      <Typography variant="body2" color="text.secondary" mb={1}>
+        Awake time and AI calls for each person in this workspace, counts only.
+      </Typography>
+      <Box sx={{ display: "flex", flexDirection: "column", height: Math.min(420, 108 + rows.length * 52) }}>
+        <DataTable rows={rows} columns={columns} fillHeight pageSize={10} />
+      </Box>
     </Box>
   );
 }

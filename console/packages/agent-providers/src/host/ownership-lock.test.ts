@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -135,3 +135,50 @@ it('outlasts a live process that left its ticket while shutting down, and names 
     exiting.kill('SIGKILL');
   }
 }, 40_000);
+
+it('passes over a ticket left by an earlier process that had this id', async () => {
+  // A container restarting gives the controller the same low id as the one
+  // killed in the middle of an election, so its own id names the old ticket.
+  const root = await mkdtemp(join(tmpdir(), 'ownership-reused-pid-'));
+  roots.push(root);
+  await mkdir(join(root, 'ownership'), { recursive: true });
+  await writeFile(
+    join(root, 'ownership', `${process.pid}-00000000-0000-4000-8000-000000000000.json`),
+    JSON.stringify({ choosing: false, ticket: 1 })
+  );
+  const started = performance.now();
+  await expect(withOwnershipLock(root, async () => 'taken')).resolves.toBe('taken');
+  // Without the fix it waits the full 15 s for the ticket and then refuses.
+  expect(performance.now() - started).toBeLessThan(5000);
+});
+
+it('still waits for a ticket another live process holds', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'ownership-live-ticket-'));
+  roots.push(root);
+  await mkdir(join(root, 'ownership'), { recursive: true });
+  await writeFile(
+    join(root, 'ownership', `${process.ppid}-00000000-0000-4000-8000-000000000000.json`),
+    JSON.stringify({ choosing: false, ticket: 1 })
+  );
+  await expect(withOwnershipLock(root, async () => 'taken')).rejects.toThrow('FENCING_REQUIRED');
+}, 30_000);
+
+it.skipIf(process.platform === 'win32')(
+  'passes over a ticket left by an earlier process whose id a later one holds now',
+  async () => {
+    // A ticket mid-choice, from a process that died; its id now belongs to a
+    // live, later process. Counted as a contender it would hold the lock forever.
+    const root = await rootDirectory();
+    const directory = join(root, 'ownership');
+    await mkdir(directory, { recursive: true });
+    const ticket = join(directory, `${process.ppid}-00000000-0000-4000-8000-000000000000.json`);
+    await writeFile(ticket, JSON.stringify({ choosing: true, ticket: 0 }));
+    const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600 * 1000);
+    await utimes(ticket, fourDaysAgo, fourDaysAgo);
+    const ran = await Promise.race([
+      withOwnershipLock(root, async () => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000)),
+    ]);
+    expect(ran).toBe(true);
+  }
+);

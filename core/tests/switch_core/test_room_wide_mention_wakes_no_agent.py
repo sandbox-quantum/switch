@@ -148,6 +148,7 @@ def _service(
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
     ) -> str:
         sent.append(_Sent(body, extra_content))
         return f"evt-{len(sent)}"

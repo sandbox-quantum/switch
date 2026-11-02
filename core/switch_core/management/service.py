@@ -25,8 +25,9 @@ import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -54,6 +55,7 @@ from switch_core.db.models import (
     CONTROLLER_KEY_TYPE,
     Agent,
     AgentController,
+    AgentControllerEnrollmentCode,
     AgentControllerOperation,
     ApiKey,
     MachineWorkspace,
@@ -66,6 +68,7 @@ from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.budget_store import hosted_daily_cap
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
@@ -103,9 +106,37 @@ from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.providers.registry import provider_ids
 from switch_core.user_changes import MACHINE, MANAGED_AGENT, UserChangePublisher
+from switch_core.visibility.awake_usage import (
+    record_awake_minutes,
+    record_hosted_ai_calls,
+)
+from switch_core.visibility.stop_reason_sources import (
+    ReasonSignals,
+    agent_stop_reason,
+    load_reason_signals,
+)
 
 _INSTALLS = TemplateInstallStore()
 logger = logging.getLogger(__name__)
+
+# Controllers whose old free-text memory note has been dropped, so each is
+# logged once per Core process rather than on every report.
+_OLD_NOTE_DROPPED: set[str] = set()
+
+
+def _note_dropped(controller_id: str) -> None:
+    """Count an older controller's dropped free-text memory note: its id only,
+    never the text, once per controller (security, status extras)."""
+    if controller_id in _OLD_NOTE_DROPPED:
+        return
+    _OLD_NOTE_DROPPED.add(controller_id)
+    logger.info(
+        "Controller %s sent an old free-text memory note; it was dropped, not "
+        "stored (%d controllers so far)",
+        controller_id,
+        len(_OLD_NOTE_DROPPED),
+    )
+
 
 OPERATION_LEASE = timedelta(minutes=5)
 # An operation still open this long after it was created is expired rather
@@ -133,6 +164,9 @@ class ManagementSettings:
     # The controller release every controller is told to run; None when the
     # deployment names none, and then controllers are told nothing.
     controller_release: ControllerRelease | None
+    # How long a box lets a message wait for room before it lets it go and its agent shows
+    # `waiting_too_long` (visibility V2): `hosted_wait_limit_minutes`, sent in every status answer.
+    wait_limit_seconds: int = 600
 
 
 @dataclass(frozen=True)
@@ -283,6 +317,47 @@ class ManagementService:
         )
         return code
 
+    async def _machine_code_row(
+        self, session: AsyncSession, code: str
+    ) -> tuple[ApiKey, AgentControllerEnrollmentCode] | None:
+        key = await self.api_keys.get_by_hash(session, tokens.hash_secret(code))
+        if key is None or key.type != CONTROLLER_ENROLLMENT_KEY_TYPE:
+            return None  # used (its key is deleted on enrollment) or never issued
+        row = await session.scalar(
+            select(AgentControllerEnrollmentCode).where(
+                AgentControllerEnrollmentCode.api_key_id == key.id
+            )
+        )
+        return None if row is None else (key, row)
+
+    async def machine_enrollment_code_live(
+        self, session: AsyncSession, code: str, now: datetime
+    ) -> bool:
+        found = await self._machine_code_row(session, code)
+        if found is None:
+            return False
+        _key, row = found
+        return row.used_at is None and row.expires_at > now
+
+    async def revoke_machine_controller(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> None:
+        """V0: revoke a cleaned-up cloud machine's old controller as its row is
+        revived. Nothing is announced: the machine had no box. The caller
+        commits."""
+        await self._revoke(session, tenant_id, controller_id)
+
+    async def retire_machine_enrollment_code(
+        self, session: AsyncSession, code: str
+    ) -> None:
+        found = await self._machine_code_row(session, code)
+        if found is None:
+            return  # already spent: nothing holds it any more
+        key, row = found
+        if row.controller_id is not None:
+            return  # never cut off what enrolled with it (security, B111)
+        await self.api_keys.delete(session, key.id)
+
     async def enroll(
         self,
         session: AsyncSession,
@@ -323,6 +398,8 @@ class ManagementService:
             workspace is None or machine is None or machine.state == "deleted"
         ):
             raise invalid
+        if consumed.machine_workspace_id is not None:
+            await _refuse_if_blocked(session, consumed.owner_id, tenant_id)
         controller_key, credential = await self._new_hash_only_key(
             session,
             owner_id=consumed.owner_id,
@@ -352,6 +429,10 @@ class ManagementService:
         if workspace is not None:
             replaced = workspace.controller_id
             workspace.controller_id = controller.id
+            # The code is spent: forget the encrypted copy kept for retried
+            # prepares (V0, security's ruling on the enrolment code).
+            workspace.enrollment_code_encrypted = None
+            workspace.enrollment_code_revision = None
             if replaced is not None and replaced != controller.id:
                 await self._revoke(session, tenant_id, replaced)
                 moved = await self._move_placed(
@@ -404,6 +485,8 @@ class ManagementService:
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
+        if controller.kind == "ec2":
+            await _refuse_if_blocked(session, controller.owner_id, tenant_id)
         return tokens.mint_access_token(
             secret=self.settings.token_secret,
             controller_id=controller.id,
@@ -416,6 +499,8 @@ class ManagementService:
         self, session: AsyncSession, principal: ControllerPrincipal
     ) -> str:
         controller = await self._principal_controller(session, principal)
+        if controller.kind == "ec2":
+            await _refuse_if_blocked(session, controller.owner_id, principal.tenant_id)
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=controller.owner_id,
@@ -450,10 +535,17 @@ class ManagementService:
         rows = await self.definitions.list_for_controller(
             session, principal.tenant_id, controller.id
         )
-        return {
+        assignment: dict[str, Any] = {
             "revision": controller.assignment_revision,
             "agents": [assignment_entry(row, agent) for row, agent in rows],
         }
+        if controller.kind == "ec2":
+            # Visibility L1b: the workspace's daily AI cap for this box's gateway,
+            # or null with none set. A person's own computer never gets one.
+            assignment["gateway_daily_cap"] = await hosted_daily_cap(
+                session, principal.tenant_id
+            )
+        return assignment
 
     async def assignment_revision(
         self, session: AsyncSession, principal: ControllerPrincipal
@@ -461,6 +553,18 @@ class ManagementService:
         return (
             await self._principal_controller(session, principal)
         ).assignment_revision
+
+    async def controls_agent(
+        self, session: AsyncSession, principal: ControllerPrincipal, agent_id: str
+    ) -> bool:
+        """Whether `agent_id` is bound to the calling controller: the only
+        agents a controller may act for."""
+        return any(
+            agent.id == agent_id
+            for _row, agent in await self.definitions.list_for_controller(
+                session, principal.tenant_id, principal.controller_id
+            )
+        )
 
     async def record_status(
         self,
@@ -475,9 +579,36 @@ class ManagementService:
         not on every report: free disk and memory, and the times a report and
         its provider checks were taken, move on every one of them.
         """
+        # A session state is kept only for agents bound to this controller, so a
+        # box can't set "Resting" or "Running" on anyone else's agent. (Each
+        # agent's view reads only its own controller's report anyway.)
+        bound_clients = {
+            agent.id: agent.client_id
+            for _row, agent in await self.definitions.list_for_controller(
+                session, principal.tenant_id, principal.controller_id
+            )
+        }
+        bound = set(bound_clients)
+        status = report.model_dump(mode="json", exclude_unset=True)
+        if report.machine._dropped_old_note:
+            _note_dropped(principal.controller_id)
+        for entry in status.get("agents", []):
+            if entry.get("agent_id") not in bound and "session" in entry:
+                entry.pop("session")
+                # Not an error a box can cause by accident: worth a look.
+                logger.warning(
+                    "Controller %s reported a session state for agent %s, which "
+                    "is not bound to it; the state was dropped",
+                    principal.controller_id,
+                    entry.get("agent_id"),
+                )
+        seen_at = self.now()
+        previous_seen_at, previous_status = await self.controllers.lock_previous_report(
+            session, principal.tenant_id, principal.controller_id
+        )
         controller = await self._principal_controller(session, principal)
         before = _status_signature(controller.status)
-        new_status = report.model_dump(mode="json", exclude_unset=True)
+        new_status = status
         stored = await self.controllers.record_status(
             session,
             principal.tenant_id,
@@ -486,7 +617,7 @@ class ManagementService:
             status=new_status,
             version=report.controller.version,
             platform=report.machine.platform.model_dump(mode="json"),
-            seen_at=self.now(),
+            seen_at=seen_at,
         )
         if not stored:
             logger.info(
@@ -502,7 +633,29 @@ class ManagementService:
         owner_id = controller.owner_id
         if stored and controller.kind == "ec2":
             await record_controller_status(
-                session, controller.id, report.machine.model_dump(mode="json")
+                session,
+                controller.id,
+                report.machine.model_dump(mode="json"),
+                status.get("agents", []),
+            )
+            # Hosted agents' awake time, for usage and awake-time budgets (L5).
+            await record_awake_minutes(
+                session,
+                tenant_id=principal.tenant_id,
+                previous_seen_at=previous_seen_at,
+                seen_at=seen_at,
+                agents=status.get("agents", []),
+                bound=bound_clients,
+            )
+            # AI calls, as the day's rise, per agent (display only, L5).
+            await record_hosted_ai_calls(
+                session,
+                tenant_id=principal.tenant_id,
+                previous_seen_at=previous_seen_at,
+                seen_at=seen_at,
+                previous_status=previous_status,
+                status=status,
+                bound=bound_clients,
             )
         await session.commit()
         if stored and _status_signature(new_status) != before:
@@ -512,6 +665,7 @@ class ManagementService:
         return {
             "assignment_revision": revision,
             "report_within_s": self.settings.status_interval_seconds,
+            "wait_limit_seconds": self.settings.wait_limit_seconds,
             "controller_release": controller_release_view(
                 controller, self.settings.controller_release
             ),
@@ -907,6 +1061,10 @@ class ManagementService:
             session, tenant_id, owner_id, controller_id
         )
         if controller.revoked_at is not None:
+            # Already revoked, by a pause perhaps: the owner's removal now wins,
+            # so no resume may wake its box again (E11).
+            await self._revoke(session, tenant_id, controller_id)
+            await session.commit()
             return
         await self._revoke(session, tenant_id, controller_id)
         machine = (
@@ -927,16 +1085,32 @@ class ManagementService:
         self._announce_revoked(controller_id)
 
     async def _revoke(
-        self, session: AsyncSession, tenant_id: str, controller_id: str
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_id: str,
+        revoked_by: Literal["pause", "turn_off"] | None = None,
     ) -> None:
         """Mark revoked, delete the credential, cancel open operations and
-        drop sealed logins. The caller commits, then announces it."""
+        drop sealed logins. The caller commits, then announces it.
+
+        `revoked_by` is only for an operator's pause or an admin's turn-off
+        (visibility V3): a message after the lift may then wake the hosted box
+        to enrol a new controller (E11). Every other caller leaves it None,
+        which also clears the mark on a row a pause already revoked, so a path
+        added later is safe without knowing about it (security)."""
         controller = await self.controllers.get(session, tenant_id, controller_id)
-        if controller is None or controller.revoked_at is not None:
+        if controller is None:
+            return
+        if controller.revoked_at is not None:
+            if revoked_by is None and controller.revoked_by is not None:
+                await self.controllers.clear_revoked_by(
+                    session, tenant_id, controller_id
+                )
             return
         key_id = controller.api_key_id
         await self.controllers.mark_revoked(
-            session, tenant_id, controller_id, self.now()
+            session, tenant_id, controller_id, self.now(), revoked_by=revoked_by
         )
         if key_id is not None:
             await self.api_keys.delete(session, key_id)
@@ -971,6 +1145,25 @@ class ManagementService:
 
     def _announce_revoked(self, controller_id: str) -> None:
         self.signals.revoked(controller_id)
+
+    async def revoke_controllers(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller_ids: list[str],
+        revoked_by: Literal["pause", "turn_off"] | None = None,
+    ) -> None:
+        """Revoke these controllers as a replaced one is revoked on enrolment,
+        for an operator's pause and an admin's per-person switch (visibility
+        V3). The caller commits, then calls `announce_revoked`: each live
+        stream then gets `credential.revoked`, and its box controller stops its
+        agents and exits."""
+        for controller_id in controller_ids:
+            await self._revoke(session, tenant_id, controller_id, revoked_by)
+
+    def announce_revoked(self, controller_ids: list[str]) -> None:
+        for controller_id in controller_ids:
+            self._announce_revoked(controller_id)
 
     # ── Provider logins sealed to a controller ────────────────────────────────
 
@@ -1135,6 +1328,7 @@ class ManagementService:
         controllers: dict[str, AgentController],
         leases: ProcessLeases,
         templates: dict[str, dict[str, Any]] | None = None,
+        signals: ReasonSignals | None = None,
     ) -> dict[str, Any]:
         """The managed agent as the API shows it. `templates` is what
         `templates_of_agents` read for a list of agents at once; without it,
@@ -1150,13 +1344,32 @@ class ManagementService:
                     controllers[controller.id] = controller
         if templates is None:
             templates = await _INSTALLS.templates_of_agents(session, [agent.id])
-        return managed_agent_view(
+        if signals is None:
+            signals = await load_reason_signals(
+                session,
+                tenant_id,
+                [agent.id],
+                controller_ids=[controller.id] if controller is not None else [],
+                owner_ids=[agent.owner_id] if agent.owner_id else [],
+            )
+        view = managed_agent_view(
             row,
             agent,
             controller,
             self.state_of(controller, leases) if controller is not None else None,
             templates.get(agent.id),
         )
+        # Why it stopped (visibility V2): a fixed code and times, worked out by Core.
+        provider = (row.definition or {}).get("provider")
+        view["stop_reason"] = agent_stop_reason(
+            agent,
+            controller,
+            leases,
+            signals,
+            self.now(),
+            provider=provider if isinstance(provider, str) else None,
+        )
+        return view
 
     async def list_managed_agents(
         self, session: AsyncSession, tenant_id: str, owner_id: str
@@ -1168,15 +1381,23 @@ class ManagementService:
             )
         }
         leases = await self.leases(session)
-        owned = await self.definitions.list_for_owner(session, tenant_id, owner_id)
+        rows = await self.definitions.list_for_owner(session, tenant_id, owner_id)
         templates = await _INSTALLS.templates_of_agents(
-            session, [agent.id for _, agent in owned]
+            session, [agent.id for _, agent in rows]
+        )
+        # The reasons' signals for every agent at once: four queries, not four per agent.
+        signals = await load_reason_signals(
+            session,
+            tenant_id,
+            [agent.id for _, agent in rows],
+            controller_ids=list(controllers),
+            owner_ids=[owner_id],
         )
         return [
             await self._view(
-                session, tenant_id, row, agent, controllers, leases, templates
+                session, tenant_id, row, agent, controllers, leases, templates, signals
             )
-            for row, agent in owned
+            for row, agent in rows
         ]
 
     async def _owned_agent(
@@ -1221,6 +1442,8 @@ class ManagementService:
         controller = await self.owned_controller(
             session, tenant_id, owner_id, controller_id
         )
+        if check_placement and controller.kind == "ec2":
+            await _refuse_if_blocked(session, controller.owner_id, tenant_id)
         if check_placement:
             # Placing an agent on a sleeping Switch cloud machine wakes it.
             machine = (
@@ -1839,3 +2062,24 @@ def _status_signature(status: dict[str, Any] | None) -> dict[str, Any] | None:
             for p in providers
         ]
     return signature
+
+
+async def _refuse_if_blocked(
+    session: AsyncSession, owner_id: str, tenant_id: str
+) -> None:
+    """Refuse a cloud box's controller work for an owner an operator paused, or
+    a workspace admin turned off here (visibility V3)."""
+    from switch_core.visibility.hosted_access import block_reason_in
+    from switch_core.visibility.reason_codes import StopReason
+
+    blocked = await block_reason_in(session, owner_id, tenant_id)
+    if blocked is StopReason.PAUSED_BY_SWITCH:
+        raise ManagementError(
+            403, reason_codes.HOSTED_PAUSED, "Hosted agents are paused for this user."
+        )
+    if blocked is StopReason.TURNED_OFF_BY_ADMIN:
+        raise ManagementError(
+            403,
+            reason_codes.HOSTED_TURNED_OFF,
+            "Hosted agents are turned off for this user in this workspace.",
+        )

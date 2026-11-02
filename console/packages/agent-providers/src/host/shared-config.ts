@@ -9,6 +9,7 @@ import type { CodexKeyringLogin, HttpMcpServerSpec, ProviderSessionStartInput } 
 import { codexSourceHome, prepareCodexSessionHome } from '../codex/home';
 import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
+import { withOwnerMarker, withoutPlantedMarkers } from './owner-marker-env';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
@@ -220,6 +221,8 @@ export async function prepareSharedConfig(
     input.mcpServers[name] = spec;
   }
   input.mcpServers.switch = runtime;
+  input.env = withOwnerMarker(input.env, process.env);
+  input.mcpServers = withoutPlantedMarkers(input.mcpServers);
   if (!agentApiUrl || !token)
     throw new Error('Shared SDK host requires execution-host Switch credentials.');
   // Read from the grants as the session starts, never from the saved

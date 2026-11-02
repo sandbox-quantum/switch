@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -354,12 +355,26 @@ def _client(
     registry: AgentConnectionRegistry,
     agent_id: str,
     cloud_machine: CloudMachineState | None = None,
+    host_failure: str | None = None,
+    lifted: CloudMachineState | None = None,
 ) -> SimpleNamespace:
     async def _unavailable_reply(*_args: Any, **_kwargs: Any) -> str:
         return "offline"
 
-    async def _wake_cloud_machine(_controller_id: str) -> CloudMachineState | None:
+    async def _agent_host_failure(_controller_id: str) -> str | None:
+        return host_failure
+
+    woken: list[str] = []
+    woken_lifted: list[str] = []
+
+    async def _wake_cloud_machine(controller_id: str) -> CloudMachineState | None:
+        woken.append(controller_id)
         return cloud_machine
+
+    async def _wake_lifted_box(controller_id: str) -> CloudMachineState | None:
+        # `wake_lifted_machine`: a box only for a lifted pause or turn-off's revoke.
+        woken_lifted.append(controller_id)
+        return lifted
 
     async def owner_handle_in(*_args: Any) -> str | None:
         return "owner"
@@ -371,19 +386,45 @@ def _client(
         _unavailable_reply=_unavailable_reply,
         owner_handle_in=owner_handle_in,
         _wake_cloud_machine=_wake_cloud_machine,
+        _wake_lifted_box=_wake_lifted_box,
+        _agent_host_failure=_agent_host_failure,
         _cloud_waking_notices=set(),
+        woken=woken,
+        woken_lifted=woken_lifted,
     )
     ns._is_available = AgentRecipient._is_available.__get__(ns)
+    ns._waking_notice_once = AgentRecipient._waking_notice_once.__get__(ns)
+    ns._wake_for_follow_up = AgentRecipient._wake_for_follow_up.__get__(ns)
     ns._reply_when_unavailable_here = (
         AgentRecipient._reply_when_unavailable_here.__get__(ns)
     )
     ns._controller_unavailable_reply = (
         AgentRecipient._controller_unavailable_reply.__get__(ns)
     )
+    ns._controller_host_failed_reply = (
+        AgentRecipient._controller_host_failed_reply.__get__(ns)
+    )
     return ns
 
 
 class TestTheAgentClientsReplies:
+    async def test_a_stopped_or_offline_agent_is_told_so_before_any_failure_is_read(
+        self,
+    ) -> None:
+        # The owner's switch and the machine come first: a host that gave up
+        # on an agent since stopped, or on a machine since gone, says that.
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto", running=False)
+        _go_live(registry, ("auto", {ROOM}))
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        agent = _agent("auto", "auto_session")
+        reply = await _client(
+            registry, "auto", host_failure="internal"
+        )._reply_when_unavailable_here(object(), agent, meta, "u")
+        assert reply is not None and reply.startswith("@owner — you've stopped me")
+
     async def test_a_connected_agent_is_available_and_no_reply_is_owed(
         self,
     ) -> None:
@@ -535,6 +576,29 @@ class TestTheAgentClientsReplies:
             "(@owner) can start it again in Switch Console."
         )
 
+    async def test_a_hosted_box_switch_cant_reach_says_so_in_the_status_words(
+        self,
+    ) -> None:
+        """Visibility V2: the same `cant_reach` words the owner's Console shows, for a hosted
+        box only; an agent on its owner's own machine keeps naming its machine."""
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        client = _client(
+            registry,
+            "auto",
+            CloudMachineState(state="error", revision=4, owner_stopped=False),
+        )
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply == (
+            "I can't reach my cloud right now, and Switch is on it. If I haven't "
+            "answered in a few minutes, send this again."
+        )
+
     async def test_an_offline_or_removed_machine_is_named_not_console(
         self,
     ) -> None:
@@ -563,6 +627,97 @@ class TestTheAgentClientsReplies:
         )
         assert "move me to another machine" in removed
 
+    async def test_a_lifted_blocks_revoked_box_controller_wakes_the_box(
+        self,
+    ) -> None:
+        """E11: a pause revoked the box's controller; after the resume a message
+        wakes the box, which enrols again as a new controller. The revoked one
+        stays revoked, and the room hears the waking line once."""
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        registry.controllers.revoke_controller(CONTROLLER)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        agent = _agent("auto", "auto_session")
+        client = _client(
+            registry,
+            "auto",
+            lifted=CloudMachineState(
+                state="stopped", revision=5, owner_stopped=False, starting=True
+            ),
+        )
+
+        first = await client._reply_when_unavailable_here(object(), agent, meta, "u")
+        again = await client._reply_when_unavailable_here(object(), agent, meta, "u")
+
+        assert first == (
+            "My machine, **machine**, was asleep and is starting now. I'll pick "
+            "this up as soon as it's back, usually within a few minutes."
+        )
+        assert again is None
+        # Only the lifted-block wake is asked, never the ordinary one.
+        assert client.woken_lifted == [CONTROLLER, CONTROLLER]
+        assert client.woken == []
+        # Nothing brings the revoked controller back: the box enrols a new one.
+        assert registry.controllers.is_revoked(CONTROLLER)
+
+    @pytest.mark.parametrize(
+        "machine",
+        [
+            # A paused or turned-off owner: `wake_controller_machine` refuses, the box stays asleep.
+            CloudMachineState(
+                state="stopped", revision=5, owner_stopped=False, starting=False
+            ),
+            CloudMachineState(
+                state="error", revision=5, owner_stopped=False, starting=True
+            ),
+            CloudMachineState(
+                state="stopped", revision=5, owner_stopped=True, starting=False
+            ),
+            # Any other revoke (the owner's removal, a replaced or revived controller), an own
+            # machine or a removed box: `wake_lifted_machine` gives nothing.
+            None,
+        ],
+    )
+    async def test_a_revoked_controller_that_cant_wake_is_still_removed(
+        self, machine: CloudMachineState | None
+    ) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        registry.controllers.revoke_controller(CONTROLLER)
+        meta = SimpleNamespace(
+            room_id=ROOM, name="Room", bridge_id=None, agent_greeting=None
+        )
+        client = _client(registry, "auto", lifted=machine)
+        reply = await client._reply_when_unavailable_here(
+            object(), _agent("auto", "auto_session"), meta, "u"
+        )
+        assert reply is not None and reply.startswith(
+            "@owner — my machine, **machine**, has been removed from Switch"
+        )
+        assert client._cloud_waking_notices == set()
+
+    async def test_a_follow_up_wakes_a_revoked_controllers_box_too(self) -> None:
+        registry = AgentConnectionRegistry()
+        _bind(registry, "auto")
+        registry.controllers.revoke_controller(CONTROLLER)
+        client = _client(registry, "auto")
+        await client._wake_for_follow_up()
+        assert (client.woken_lifted, client.woken) == ([CONTROLLER], [])
+        # A controller that isn't revoked takes the ordinary wake.
+        live = AgentConnectionRegistry()
+        _bind(live, "auto")
+        asleep = _client(live, "auto")
+        await asleep._wake_for_follow_up()
+        assert (asleep.woken_lifted, asleep.woken) == ([], [CONTROLLER])
+        # A stopped agent's box is still left alone.
+        stopped = AgentConnectionRegistry()
+        _bind(stopped, "auto", running=False)
+        idle = _client(stopped, "auto")
+        await idle._wake_for_follow_up()
+        assert (idle.woken_lifted, idle.woken) == ([], [])
+
     async def test_an_always_on_agent_is_available_while_its_controller_is(
         self,
     ) -> None:
@@ -588,7 +743,10 @@ class _Sent:
 
 
 def _addressing_client(
-    registry: AgentConnectionRegistry, agent_id: str, connection_model: str
+    registry: AgentConnectionRegistry,
+    agent_id: str,
+    connection_model: str,
+    host_failure: str | None = None,
 ) -> tuple[SimpleNamespace, _Sent, list[str]]:
     """An agent recipient deciding a message addressed to it in ROOM, its
     availability and replies the real ones over `registry`."""
@@ -611,7 +769,7 @@ def _addressing_client(
     async def _gate_addressed(*_args: Any) -> _GateOutcome:
         return _GateOutcome(addressed=True, refusal=None)
 
-    ns = _client(registry, agent_id)
+    ns = _client(registry, agent_id, host_failure=host_failure)
     ns.agent = SimpleNamespace(
         id=agent_id,
         name="reviewer",
@@ -685,6 +843,27 @@ class TestAddressingAControllerBackedAgent:
 
             assert enqueued == ["$asked"], model
             assert sent.bodies == [], model
+
+    async def test_a_connected_agent_whose_host_gave_up_still_tells_the_room(
+        self,
+    ) -> None:
+        # B48: the machine is online, so the agent counts as live, but its
+        # controller reports the host failed ("Agent host failed too often; it
+        # stays down until restarted", Step 5). The room is told, not left silent.
+        for model in ("auto_session", "session_addressable", "always_on"):
+            registry = AgentConnectionRegistry()
+            _bind(registry, "agent")
+            _go_live(registry, ("agent", {ROOM}))
+            client, sent, enqueued = _addressing_client(
+                registry, "agent", model, host_failure="internal"
+            )
+
+            await _deliver(client, _addressing("$asked"))
+
+            assert enqueued == ["$asked"], model
+            assert len(sent.bodies) == 1, model
+            assert "I stopped after failing to start several times" in sent.bodies[0]
+            assert "can restart me from Your Agents in Switch Console" in sent.bodies[0]
 
     async def test_a_disconnected_agent_gets_the_not_connected_reply(self) -> None:
         cases = {
@@ -831,3 +1010,24 @@ class TestMembership:
         assert left_here == [
             {"name": "holder", "present_here": False, "session_room": None}
         ]
+
+
+def test_only_a_failed_host_counts_as_given_up_not_a_crashed_one() -> None:
+    from switch_core.delivery.recipient import _host_failure_reason
+
+    # The entry the controller sends for the Step 5 failure (status.ts, failure.json).
+    gave_up = {
+        "agent_id": "auto",
+        "process": "failed",
+        "attached": False,
+        "reason": "internal",
+        "detail": "The shared SDK watcher is already running.",
+    }
+    assert _host_failure_reason(gave_up) == "internal"
+    assert (
+        _host_failure_reason({**gave_up, "reason": "invalid_credential"})
+        == "invalid_credential"
+    )
+    for process in ("crashed", "running", "starting", "pending", "stopped", "stopping"):
+        assert _host_failure_reason({**gave_up, "process": process}) is None
+    assert _host_failure_reason(None) is None

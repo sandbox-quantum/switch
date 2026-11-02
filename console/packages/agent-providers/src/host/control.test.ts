@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { AttachmentTransfers } from './attachment-transfers';
 import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
 import type { Supervision } from './launch';
+import { takenMac, ticketMac } from './push-key';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
 
@@ -339,6 +340,31 @@ it('moves a room to a session through the watcher, and says why when it cannot',
   await serving;
 });
 
+it('takes a hub ticket only with a good HMAC under the push key, and answers with the confirmation', async () => {
+  const { stop, serving, client, watcher } = await started();
+  const key = Buffer.alloc(32, 7);
+  const ticket = 'e'.repeat(32);
+  const launcher = client();
+  await launcher.ready;
+  // No key yet: nothing can verify, so nothing is taken.
+  await expect(launcher.giveHubTicket(ticket, ticketMac(key, ticket))).rejects.toThrow();
+  watcher.setPushKey(key);
+  // A tool that can reach the port but never saw the pipe: a guessed HMAC is ignored.
+  await expect(launcher.giveHubTicket(ticket, 'f'.repeat(64))).rejects.toThrow();
+  await expect(
+    launcher.giveHubTicket(ticket, ticketMac(Buffer.alloc(32, 8), ticket))
+  ).rejects.toThrow();
+  expect(await watcher.takeHubTicket(10)).toBeUndefined();
+  expect(await launcher.giveHubTicket(ticket, ticketMac(key, ticket))).toBe(takenMac(key, ticket));
+  expect(await watcher.takeHubTicket(10)).toBe(ticket);
+  await expect(
+    launcher.giveHubTicket('not-a-ticket', ticketMac(key, 'not-a-ticket'))
+  ).rejects.toThrow();
+  launcher.close();
+  stop.abort();
+  await serving;
+});
+
 it('stops serving while Console still holds its connection open', async () => {
   const { base, stop, serving, client } = await started();
   const console = client();
@@ -594,4 +620,23 @@ it('reads as a health ask to a sidecar that predates reasoning, so its connectio
   expect(await console.reasoning('session', null)).toEqual({ state: 'connected' });
   expect(console.isClosed).toBe(false);
   expect(toSidecar).toHaveLength(2);
+});
+
+it("carries the memory guard's stop to the agent host's handler, and refuses it with none bound", async () => {
+  const { stop, serving, client, watcher } = await started();
+  const console = client();
+  await console.ready;
+  await expect(console.stopForMemory()).rejects.toThrow('room watcher is not running');
+  // A watcher without the handler (Console's own) refuses it too.
+  let unbind = watcher.bind({ place: vi.fn(), forget: vi.fn(), warm: vi.fn() });
+  await expect(console.stopForMemory()).rejects.toThrow('room watcher is not running');
+  unbind();
+  const told = vi.fn(async () => 2);
+  unbind = watcher.bind({ place: vi.fn(), forget: vi.fn(), warm: vi.fn(), stopForMemory: told });
+  expect(await console.stopForMemory()).toBe(2);
+  expect(told).toHaveBeenCalledOnce();
+  unbind();
+  console.close();
+  stop.abort();
+  await serving;
 });

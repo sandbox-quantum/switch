@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
+import { sharedCloudBoxIds } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { serverAvailability } from '@renderer/features/switch-servers/server-availability';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -145,6 +146,16 @@ export function useOwnedMachines(serverId: string) {
     refetchInterval: (query) =>
       refreshEvery(MACHINES_REFRESH_MS, pushed, query.state.status === 'error'),
   });
+}
+
+/**
+ * Whether the agent runs in a shared-cloud box, as its owner's machine list
+ * says. False while the list is loading, so nothing new shows until it's known.
+ */
+export function useOnSharedCloudBox(agent: ManagedAgentView): boolean {
+  const machines = useOwnedMachines(agent.serverId);
+  const offered = useFeatureFlags(agent.serverId).hosted_agents;
+  return agent.machine !== null && sharedCloudBoxIds(machines.data, offered).has(agent.machine.id);
 }
 
 /** Whether the agent's machine is this computer, as its owner's machine list says. */

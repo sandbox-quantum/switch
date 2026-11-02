@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import {
   parseGoogleCredentials,
   type ProviderLogin,
@@ -5,9 +7,11 @@ import {
   sealProviderLogin,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
+import { app } from 'electron';
 import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { hostControllerService } from '@main/core/host-controllers/host-controllers';
+import { MOCK_BOX, sharedCloudMock } from '@main/core/shared-cloud/shared-cloud-client';
 import {
   AgentManagementUnavailableError,
   deleteAgent,
@@ -17,7 +21,10 @@ import {
   fetchManagementControllers,
   GatewayError,
   giveMachineLogin,
+  listCloudMachines,
+  managementErrorCode,
   managementErrorMessage,
+  repairController,
   setManagedAgentDesiredState,
   updateManagedAgent,
 } from '@main/core/switch-servers/gateway-client';
@@ -42,11 +49,49 @@ import type {
   OwnedMachine,
   ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
+import {
+  accountLabelOf,
+  type LoginSourceRecord,
+  type LoginSourceView,
+  REPAIR_FAILED,
+  RESEAL_WINDOW_MS,
+  type ResealResult,
+  repairRefusal,
+  resealPlan,
+} from '@shared/core/managed-agents/repair';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { ownedMachines, preferredFirst, thisComputerReport } from './owned-machines';
+import { RepairNotes } from './repair-notes';
+
+/** V3b: where each machine's login came from, and this Console's Repair presses. */
+const repairNotes = new RepairNotes(() =>
+  join(app.getPath('userData'), 'managed-agents', 'repair-notes.json')
+);
+/** V3b: at most one automatic copy per controller and provider for each run of Console. */
+const resealTried = new Set<string>();
 
 async function machinesOn(serverId: string): Promise<OwnedMachine[] | null> {
+  const machines = await realMachinesOn(serverId);
+  if (!sharedCloudMock() || machines === null) return machines;
+  return [
+    ...machines,
+    {
+      ...MOCK_BOX,
+      providers: [
+        { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true },
+      ],
+      acceptsLogins: false,
+      cloud: false,
+      workspacesDir: null,
+      os: 'linux',
+      osVersion: '4.19.0-gvisor',
+      local: null,
+    },
+  ];
+}
+
+async function realMachinesOn(serverId: string): Promise<OwnedMachine[] | null> {
   const [thisComputer, hosts] = await Promise.all([
     embeddedControllerService.enrolledControllerId(serverId),
     hostControllerService.recordsOn(serverId),
@@ -106,9 +151,13 @@ export const managedAgentsController = createRPCController({
           displayName: agent.displayName,
           iconUrl: agent.iconUrl,
           description: agent.description,
-          machine: machine
-            ? { id: machine.id, name: machine.name, kind: machine.kind, state: machine.state }
-            : null,
+          // Buddy runs on this computer, not in a box, in the mock as in life.
+          machine:
+            sharedCloudMock() && !agent.name.startsWith('switch-buddy')
+              ? MOCK_BOX
+              : machine
+                ? { id: machine.id, name: machine.name, kind: machine.kind, state: machine.state }
+                : null,
           desiredState: agent.desiredState,
           revision: agent.revision,
           ...(agent.template !== undefined ? { template: agent.template } : {}),
@@ -123,6 +172,7 @@ export const managedAgentsController = createRPCController({
             isolation: agent.isolation,
           },
           status: agent.status,
+          stopReason: agent.stopReason ?? null,
         };
       });
     });
@@ -161,9 +211,8 @@ export const managedAgentsController = createRPCController({
     login: MachineLoginInput;
   }): Promise<{ operationId: string }> =>
     withReachableServerWorkspaceSession(params.serverId, async (server) => {
-      const controller = (await fetchManagementControllers(server)).find(
-        (candidate) => candidate.id === params.machineId
-      );
+      const controllers = await fetchManagementControllers(server);
+      const controller = controllers.find((candidate) => candidate.id === params.machineId);
       if (!controller) throw new Error('That machine is not one of yours on this server.');
       if (!controller.sealingKey)
         throw new Error(
@@ -183,7 +232,180 @@ export const managedAgentsController = createRPCController({
           login,
         })
       );
+      // V3b: remember only which kind of login this was, for a repair's re-seal. A note that can't be
+      // written costs a later ask, never the login just given.
+      await repairNotes
+        .setSource(
+          controller.id,
+          params.provider,
+          sourceRecordFor(params.provider, params.login, login)
+        )
+        .then(() => repairNotes.prune(liveControllerIds(controllers), Date.now(), RESEAL_WINDOW_MS))
+        .catch(() => {});
       return { operationId };
+    }),
+
+  /**
+   * V3b: the owner repairs their cloud box, whose controller Core sees failing to sign in. Refusals
+   * come back as fixed lines, never the server's text. On success this Console notes the press, with
+   * the revoked controller and Core's own time for it, so it may copy the login to the box's next
+   * controller by itself (`resealAfterRepair`).
+   */
+  repairCloud: (params: {
+    serverId: string;
+    machineId: string;
+    controllerId: string;
+  }): Promise<void> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      // The press is tied to its machine (security): the owner's own summary must name this
+      // controller for this machine, or a mismatch could copy one machine's login kind to another.
+      const machine = (await listCloudMachines(server).catch(() => null))?.find(
+        (candidate) => candidate.machine_id === params.machineId
+      );
+      if (!machine || machine.controller_id !== params.controllerId)
+        throw new Error(repairRefusal(404, null));
+      try {
+        await repairController(server, params.controllerId);
+      } catch (error) {
+        if (error instanceof GatewayError)
+          throw new Error(repairRefusal(error.status, managementErrorCode(error)));
+        throw new Error(REPAIR_FAILED);
+      }
+      const pressedAt = Date.now();
+      const revoked = (await fetchManagementControllers(server).catch(() => [])).find(
+        (candidate) => candidate.id === params.controllerId
+      );
+      await repairNotes
+        .setPress(params.machineId, {
+          revokedControllerId: params.controllerId,
+          // Without Core's own time for the revocation nothing can be shown to be newer, so this
+          // press then only ever asks.
+          revokedAt: revoked?.revokedAt ?? null,
+          pressedAt,
+          copiedControllerId: null,
+        })
+        .catch(() => {});
+    }),
+
+  /** V3b: for the Repair dialog, whether each provider's login on this machine came from this computer. */
+  loginSources: async (params: {
+    controllerId: string;
+  }): Promise<Record<string, LoginSourceView>> => {
+    const sources = await repairNotes.sources(params.controllerId).catch(() => ({}));
+    const views: Record<string, LoginSourceView> = {};
+    for (const [provider, record] of Object.entries(sources)) {
+      if (record.source !== 'this-computer' && record.source !== 'vertex-this-computer') {
+        views[provider] = { kind: 'typed' };
+        continue;
+      }
+      // The label comes from this computer's own provider file, read here in the main process,
+      // never from the server; only a plain e-mail address leaves this function (security).
+      const label =
+        // Only Codex's file names an account, so only Codex's is read.
+        record.source === 'this-computer' && provider === 'codex'
+          ? await readLocalProviderSignIn(provider, localProviderAuthPath(provider))
+              .then((credential) => (credential ? accountLabelOf(provider, credential) : undefined))
+              .catch(() => undefined)
+          : undefined;
+      views[provider] = label ? { kind: 'this-computer', label } : { kind: 'this-computer' };
+    }
+    return views;
+  },
+
+  /**
+   * V3b: after a repair, seals each login the box's new controller asks for (`reseal_providers`) to its
+   * own key, by itself where design v1.2 allows it, and says which ones the owner must give again.
+   * The main process re-reads the owner's machine and controllers itself; the renderer passes no
+   * login and chooses nothing.
+   */
+  resealAfterRepair: (params: { serverId: string; machineId: string }): Promise<ResealResult> =>
+    withReachableServerWorkspaceSession(params.serverId, async (server) => {
+      const machine = (await listCloudMachines(server))?.find(
+        (candidate) => candidate.machine_id === params.machineId
+      );
+      const providers = machine?.reseal_providers ?? [];
+      if (!machine?.controller_id || providers.length === 0) return { copied: [], asked: [] };
+      const controllers = await fetchManagementControllers(server);
+      const controller = controllers.find((candidate) => candidate.id === machine.controller_id);
+      const now = Date.now();
+      const press = await repairNotes.press(machine.machine_id).catch(() => null);
+      const sources: Record<string, LoginSourceRecord> = press
+        ? await repairNotes
+            .sources(press.revokedControllerId)
+            .catch((): Record<string, LoginSourceRecord> => ({}))
+        : {};
+      const keyMatches =
+        controller?.sealingKey != null &&
+        sealingKeyId(controller.sealingKey.key) === controller.sealingKey.keyId;
+      const plan =
+        controller && controller.revokedAt === null && keyMatches
+          ? resealPlan({
+              now,
+              press,
+              controller: { id: controller.id, createdAt: controller.createdAt ?? null },
+              providers,
+              source: (provider) => sources[provider] ?? null,
+            })
+          : providers.map((provider) => ({ provider, action: 'ask' as const }));
+      const copied: string[] = [];
+      const asked: string[] = [];
+      for (const { provider, action } of plan) {
+        const attempt = `${controller?.id}:${provider}`;
+        const record = sources[provider];
+        if (action === 'ask' || !controller?.sealingKey || !record || resealTried.has(attempt)) {
+          asked.push(provider);
+          continue;
+        }
+        resealTried.add(attempt);
+        // The first new controller takes the press before anything is sent; a later one is asked.
+        if (!(await repairNotes.claimPress(machine.machine_id, controller.id).catch(() => false))) {
+          asked.push(provider);
+          continue;
+        }
+        try {
+          const input: MachineLoginInput =
+            record.source === 'vertex-this-computer'
+              ? {
+                  source: 'vertex',
+                  project: record.project ?? '',
+                  region: record.region ?? '',
+                  credentials: { from: 'this-computer' },
+                }
+              : { source: 'this-computer' };
+          const login = await loginToGive(provider as AgentProviderId, input);
+          // The sign-in here must name the same account as the record, including naming none:
+          // a record with no account and a sign-in that now names one is asked for (QA).
+          if (accountHashOf(provider, login) !== record.accountHash) {
+            asked.push(provider);
+            continue;
+          }
+          await giveMachineLogin(
+            server,
+            controller.id,
+            provider,
+            sealProviderLogin({
+              publicKey: controller.sealingKey.key,
+              controllerId: controller.id,
+              provider: provider as AgentProviderId,
+              login,
+            })
+          );
+          await repairNotes.setSource(controller.id, provider, record).catch(() => {});
+          copied.push(provider);
+        } catch {
+          asked.push(provider);
+        }
+      }
+      await repairNotes
+        .prune(liveControllerIds(controllers), now, RESEAL_WINDOW_MS)
+        .catch(() => {});
+      // Counts and fixed words only: never a login, a key, a path or the server's text.
+      log.info('Repair re-seal', {
+        event: 'repair_reseal',
+        copied: copied.length,
+        asked: asked.length,
+      });
+      return { copied, asked };
     }),
 
   /** How the machine took up a login given to it, by the operation `giveMachineLogin` answered. */
@@ -277,6 +499,48 @@ function definitionBody(changes: ManagedAgentChanges['definition']): Record<stri
   if (changes.directory !== undefined) body.directory = changes.directory;
   if (changes.isolation !== undefined) body.isolation = changes.isolation;
   return body;
+}
+
+function liveControllerIds(
+  controllers: readonly { id: string; revokedAt: string | null }[]
+): Set<string> {
+  return new Set(controllers.filter((c) => c.revokedAt === null).map((c) => c.id));
+}
+
+/** A SHA-256 of the account a provider's own sign-in file names, where it names one. Only Codex's
+ * ChatGPT login does (`tokens.account_id`). gcloud's own sign-in file names no account, so Claude
+ * through Vertex from this computer gets no account check (security accepted this); a pasted
+ * Vertex key is always asked for again, so it needs none. */
+function accountHashOf(provider: string, login: ProviderLogin): string | undefined {
+  if (provider !== 'codex' || login.kind !== 'auth-json') return undefined;
+  try {
+    const parsed = JSON.parse(login.credential) as { tokens?: { account_id?: unknown } };
+    const account = parsed.tokens?.account_id;
+    return typeof account === 'string' && account.length > 0
+      ? createHash('sha256').update(account).digest('hex')
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What Console keeps about a login it gave: its kind only, never the login. */
+function sourceRecordFor(
+  provider: string,
+  input: MachineLoginInput,
+  login: ProviderLogin
+): LoginSourceRecord {
+  if (input.source === 'vertex')
+    return {
+      source: input.credentials.from === 'this-computer' ? 'vertex-this-computer' : 'vertex-key',
+      project: input.project,
+      region: input.region,
+    };
+  if (input.source === 'typed') return { source: 'typed' };
+  const accountHash = accountHashOf(provider, login);
+  return accountHash === undefined
+    ? { source: 'this-computer' }
+    : { source: 'this-computer', accountHash };
 }
 
 /** The login a machine is given, from what was typed or this computer's own sign-in. */

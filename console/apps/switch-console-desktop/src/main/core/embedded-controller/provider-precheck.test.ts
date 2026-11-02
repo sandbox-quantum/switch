@@ -113,4 +113,47 @@ describe('ProviderPrecheck', () => {
     advance(10 * 60 * 1000 + 1_000);
     expect(await service.results()).toEqual([]);
   });
+
+  // B38 follow-up: on a dev Console with no controller built, finding the
+  // bundle threw and the page waited on "Checking AI providers…" for ever.
+  it('says it failed, without throwing, when the controller bundle is missing', async () => {
+    const { service, execute, warn } = precheck({
+      bundles: {
+        controller: () => {
+          throw new Error('agent-controller.mjs not found');
+        },
+        sharedHost: () => '/app/shared-host.mjs',
+      },
+    });
+    expect(service.failed()).toBe(false);
+    expect(() => service.start()).not.toThrow();
+    expect(execute).not.toHaveBeenCalled();
+    expect(service.failed()).toBe(true);
+    expect(warn).toHaveBeenCalledWith('Could not check the providers ahead of the controller', {
+      error: 'agent-controller.mjs not found',
+    });
+  });
+
+  it('says it failed when the check itself fails, and starts clean when run again', async () => {
+    let fail = true;
+    const { service, advance } = precheck({
+      execute: vi.fn(async () => {
+        if (fail) throw new Error('exit 1');
+      }),
+    });
+    service.start();
+    await vi.waitFor(() => expect(service.failed()).toBe(true));
+    fail = false;
+    advance(10 * 60 * 1000);
+    service.start();
+    expect(service.failed()).toBe(false);
+  });
+
+  it('does not call a check that worked a failure', async () => {
+    const { service } = precheck();
+    service.start();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(service.failed()).toBe(false);
+  });
 });

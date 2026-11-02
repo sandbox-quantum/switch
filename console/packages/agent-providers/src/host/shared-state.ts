@@ -101,7 +101,7 @@ export class SharedState {
             started: z.number().int().positive().optional(),
           })
           .parse(JSON.parse(await readFile(lock, 'utf8')));
-        await fenceDeadOwner(owner.pid, owner.group, owner.started ?? null);
+        await fenceDeadOwner(owner.pid, owner.group, owner.started ?? null, lock);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }

@@ -10,6 +10,7 @@ import { getLocationManagerStore } from '@renderer/features/locations/stores/loc
 import {
   MANAGED_AGENTS_KEY,
   refreshEvery,
+  useManagedAgents,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { useUserChangesLive } from '@renderer/features/managed-agents/use-user-changes';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
@@ -19,6 +20,7 @@ import {
   useRemoteHostReadiness,
 } from '@renderer/features/remote-hosts/host-readiness-notice';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { isBuddy } from '@renderer/features/switch-buddy/buddy-identity';
 import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -79,6 +81,10 @@ import {
   machineLabel,
   machineRunLocation,
   machineRunLocations,
+  hasSharedCloudBox,
+  offlineSharedCloudMachine,
+  SHARED_CLOUD_LABEL,
+  sharedCloudMachine,
   sshHostIsMachine,
   thisComputerIsMachine,
 } from './server-run-locations';
@@ -149,15 +155,6 @@ export const NewAgentForm = observer(function NewAgentForm({
   // be chosen only where the server says this workspace can claim a machine:
   // its cloud machine list is null where it cannot, and undefined until read.
   const serverFlags = useFeatureFlags(selectedServerId);
-  const cloudOffered = !!selectedServer && serverFlags['hosted_agents'];
-  const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
-  const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
-  const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
-  // A sleeping machine is not listed as a machine of its own, so the Switch
-  // cloud entry says it is there: choosing it wakes it.
-  const cloudAsleep =
-    Array.isArray(cloudMachines.data) &&
-    cloudMachines.data.some((machine) => isMachineAsleep(machine, Date.now()));
   const isCloudRun = runHost === 'cloud';
   // Why the form moved off Switch cloud by itself, said under the picker.
   const [cloudFallback, setCloudFallback] = useState<string | null>(null);
@@ -181,6 +178,46 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
+  // Someone on the shared cloud has a box among their machines (see
+  // `hasSharedCloudBox`), on a server that offers hosted agents, so it needs no
+  // change to Core. They are never offered
+  // a cloud machine of their own: claiming one would start a separate machine,
+  // at a real cost, for agents that already have somewhere to run.
+  const onSharedCloud = hasSharedCloudBox(serverMachines, serverFlags['hosted_agents']);
+  const cloudOffered = !!selectedServer && serverFlags['hosted_agents'] && !onSharedCloud;
+  const cloudMachines = useCloudMachines(cloudOffered ? selectedServerId : null);
+  const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
+  const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
+  // A sleeping machine is not listed as a machine of its own, so the Switch
+  // cloud entry says it is there: choosing it wakes it.
+  const cloudAsleep =
+    Array.isArray(cloudMachines.data) &&
+    cloudMachines.data.some((machine) => isMachineAsleep(machine, Date.now()));
+  // On the shared cloud the agent goes in the user's own box, as prod puts a
+  // cloud agent on the user's cloud machine: the form picks it, and calls it
+  // what prod calls a cloud machine.
+  const ownAgents = useManagedAgents(onSharedCloud ? selectedServerId : null);
+  // Buddy always runs on the person's own computer, never in their box, so it
+  // says nothing about where their box is.
+  const agentMachineIds = new Set(
+    (ownAgents.data ?? []).flatMap((agent) =>
+      agent.machine && !isBuddy(agent) ? [agent.machine.id] : []
+    )
+  );
+  const sharedBox =
+    onSharedCloud && serverMachines && !ownAgents.isLoading
+      ? sharedCloudMachine(serverMachines, agentMachineIds)
+      : null;
+  const offlineBox =
+    onSharedCloud && serverMachines && !ownAgents.isLoading
+      ? offlineSharedCloudMachine(serverMachines, agentMachineIds)
+      : null;
+  const pickedSharedBox = useRef(false);
+  useEffect(() => {
+    if (!sharedBox || pickedSharedBox.current) return;
+    pickedSharedBox.current = true;
+    setRunHost(machineRunLocation(sharedBox.id));
+  }, [sharedBox]);
   // Choosing Switch cloud claims the owner's cloud machine and starts it. Once
   // its agent controller has enrolled and is online, the agent is placed on it
   // like on any machine.
@@ -213,7 +250,9 @@ export const NewAgentForm = observer(function NewAgentForm({
     ? 'Switch cloud'
     : isMachineRun
       ? serverMachine
-        ? machineLabel(serverMachine)
+        ? serverMachine.id === sharedBox?.id
+          ? SHARED_CLOUD_LABEL
+          : machineLabel(serverMachine)
         : 'Machine'
       : isRemoteRun
         ? (onboardedHosts.find((h) => h.sshHost === runHost)?.name ?? runHost)
@@ -763,7 +802,7 @@ export const NewAgentForm = observer(function NewAgentForm({
                 ) : isMachineRun ? (
                   serverMachine?.local?.kind === 'this-computer' ? (
                     <Monitor className="size-4 text-foreground-muted" />
-                  ) : serverMachine?.cloud ? (
+                  ) : serverMachine?.cloud || serverMachine?.id === sharedBox?.id ? (
                     <Cloud className="size-4 text-foreground-muted" />
                   ) : (
                     <Server className="size-4 text-foreground-muted" />
@@ -778,7 +817,7 @@ export const NewAgentForm = observer(function NewAgentForm({
             </SelectTrigger>
             <SelectContent>
               {serverMachines &&
-                machineRunLocations(serverMachines).map((option) => (
+                machineRunLocations(serverMachines, sharedBox?.id ?? null).map((option) => (
                   <SelectItem key={option.value} value={option.value} disabled={option.disabled}>
                     {option.icon === 'monitor' ? (
                       <Monitor className="size-4 text-foreground-muted" />
@@ -826,6 +865,16 @@ export const NewAgentForm = observer(function NewAgentForm({
                 ))}
             </SelectContent>
           </Select>
+          {onSharedCloud && serverMachines && !sharedBox && !pickedSharedBox.current && (
+            <p className="flex items-start gap-1.5 text-xs text-foreground-warning" role="status">
+              <Cloud className="mt-0.5 size-3.5 shrink-0" />
+              <span>
+                {offlineBox
+                  ? `Your Switch cloud machine, ${offlineBox.name}, is offline right now, so this agent can't go there yet. Choose another place, or wait and try again.`
+                  : "Choose where this agent runs. Switch couldn't tell which of your machines is your Switch cloud machine, so it hasn't picked one for you."}
+              </span>
+            </p>
+          )}
           {cloudFallback && !isCloudRun && (
             <p className="flex items-start gap-1.5 text-xs text-foreground-muted" role="status">
               <Cloud className="mt-0.5 size-3.5 shrink-0" />
@@ -854,7 +903,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           )}
           {isMachineRun && serverMachine && (
             <p className="flex items-start gap-1.5 text-xs text-foreground-muted">
-              {serverMachine.cloud ? (
+              {serverMachine.cloud || serverMachine.id === sharedBox?.id ? (
                 <Cloud className="mt-0.5 size-3.5 shrink-0" />
               ) : (
                 <Server className="mt-0.5 size-3.5 shrink-0" />

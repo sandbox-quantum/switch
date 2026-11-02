@@ -47,8 +47,9 @@ done
 **Histogram panels need two things, not one.** Request latency, delivery lag,
 database query duration, pool hold and wait time (`switch.db.pool.hold.duration`,
 `switch.db.pool.wait.duration`), platform call duration, rate-limit hold-backs,
-the agent buffer's scan length and duration, and garbage-collection pauses
-(`switch.runtime.gc_pause`) are OTLP histograms, and the
+the agent buffer's scan length and duration, garbage-collection pauses
+(`switch.runtime.gc_pause`) and hosted box memory (`switch.hosted.box_memory_used`,
+`switch.hosted.box_anon_memory`) are OTLP histograms, and the
 `p95:`/`p99:` queries here assume the collector exports them to Datadog as
 *distributions*. Check the collector's
 histogram mode — in the older `histograms` mode they arrive as separate
@@ -128,3 +129,26 @@ unsplit series.
 `dashboard.json` sums per-pod gauges (consumers, pool, memory) so
 its totals stay totals with several pods, and the pool-saturation monitor
 alerts per pod, since one pod can exhaust its pool while the others idle.
+
+## Hosted agents
+
+The `switch.hosted.*` metrics are reported only with the `hosted_agents` flag on,
+and come from what hosted boxes already send Core: their status reports and the
+operator's observations. Laptops and SSH hosts are never counted. No metric
+carries an id: every attribute is a word from a fixed set
+(`core/switch_core/observability/hosted.py`).
+
+- The gauges come from one Core process, the one holding the hosted metrics
+  advisory lock, so several processes don't each report every box. A report
+  older than 3 minutes is left out rather than reported as it was.
+- `switch.hosted.guard_stops` and `switch.hosted.valve_parks` are counts of the
+  rise in each box's since-start figures, so a controller restart reads as a
+  reset, not a drop.
+- **A silent box** is `switch.hosted.boxes_reporting` below
+  `switch.hosted.boxes_expected`. Boxes stopped, paused or turned off are not
+  expected, so they don't set it off.
+- `switch.controller.credential_refusals` counts refused controller credentials
+  by reason only, never the client's address.
+- `switch.hosted.alerts_open` counts the operator alerts open now, by condition
+  only. Which box, machine or service is on the operator's Alerts tab, never
+  in Datadog.

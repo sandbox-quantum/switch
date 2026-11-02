@@ -2,18 +2,25 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.refusals import (
+    client_address,
+    method_of,
+    refusal_guard,
+)
 from switch_core.config import SwitchConfig
 from switch_core.db.models import CloudMachine
 from switch_core.db.standing import stands_in
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
+    MACHINE_PAUSED,
+    MACHINE_TURNED_OFF,
     CloudMachineStore,
     WorkspaceOnMachine,
     bump_revision,
@@ -25,6 +32,7 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.gateway.cloud_controllers import (
     CloudEnrollmentUnavailable,
+    clear_spent_codes,
     controller_machine_idle,
     controller_reports,
     enrollment_code,
@@ -32,8 +40,33 @@ from switch_core.gateway.cloud_controllers import (
 )
 from switch_core.gateway.dependencies import get_config, get_session_factory
 from switch_core.gateway.hosted_machines import controller_settings
-from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.observability.hosted import record_evictions
+from switch_core.providers.hosted import (
+    HostedControllerSettings,
+    open_to_all,
+)
 from switch_core.tenant_context import no_tenant, tenant_scope
+from switch_core.visibility.alerts import (
+    CLUSTER_CONDITIONS,
+    apply_verdicts,
+    cluster_verdicts,
+)
+from switch_core.visibility.box_facts import with_box_facts
+from switch_core.visibility.box_provision import (
+    ask_for_box,
+    box_provisioning_on,
+    expire_provisions,
+    open_provision_machines,
+)
+from switch_core.visibility.cluster_report import (
+    NODE_NAME,
+    SHARED_SERVICES,
+    ClusterReport,
+    keep_cluster_report,
+)
+from switch_core.visibility.hosted_access import block_reason_in
+from switch_core.visibility.reason_codes import StopReason
+from switch_core.visibility.recent_moves import recent_moves
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +91,41 @@ async def controller_session(
     if not secrets.compare_digest(
         supplied, "Bearer " + settings.token.get_secret_value()
     ):
-        raise HTTPException(401, "Invalid cloud controller credential.")
+        _refuse(request, supplied)
     with no_tenant():
         async with factory() as session:
             yield session
+
+
+def _refuse(
+    request: Request,
+    supplied: str,
+    route: str = "hosted_controller",
+    reason: str | None = None,
+) -> NoReturn:
+    """A refused cloud-controller credential (B91): one WARN through the
+    shared refusal guard, never the credential, then a 401. An address that
+    keeps being refused gets a 429 at once instead. The correct token is
+    checked first, by the caller, so it is served even from a locked address:
+    the operator and the scaler can share one cluster address with anything
+    else."""
+    guard = refusal_guard()
+    address = client_address(request.scope)
+    method = method_of(request.scope)
+    if guard.locked(address):
+        guard.refused(address, reason="locked_out", route=route, method=method)
+        raise HTTPException(
+            429,
+            "Too many refused credentials from this address; try again later.",
+            headers={"Retry-After": str(guard.retry_after_s(address))},
+        )
+    guard.refused(
+        address,
+        reason=reason or ("missing" if not supplied else "wrong"),
+        route=route,
+        method=method,
+    )
+    raise HTTPException(401, "Invalid cloud controller credential.")
 
 
 def machine_item(machine: CloudMachine) -> dict:
@@ -75,6 +139,9 @@ def machine_item(machine: CloudMachine) -> dict:
         if machine.retain_until
         else None,
         "bundle_revision": machine.revision,
+        # `vm` or `box` (V0): `serve` acts only on `vm`, the box side only on
+        # `box`. An older Core sends none, and every row it has is a `vm`.
+        "backend": machine.backend,
     }
 
 
@@ -176,11 +243,50 @@ async def _sweep(
             store.stop(machine, "idle", now)
 
 
+# When this process last cleared spent enrolment codes: the clear reads each
+# workspace on its own session, so it runs at most once a minute, not on every
+# poll. A code lives 15 minutes, so its copy outlives it by a minute at most.
+_codes_cleared_at: datetime | None = None
+CODES_CLEAR_EVERY = timedelta(minutes=1)
+
+
+def _codes_due(now: datetime) -> bool:
+    global _codes_cleared_at
+    if _codes_cleared_at is not None and now - _codes_cleared_at < CODES_CLEAR_EVERY:
+        return False
+    _codes_cleared_at = now
+    return True
+
+
+async def _ask_for_waiting_boxes(
+    factory: async_sessionmaker[AsyncSession],
+    candidates: list[CloudMachine],
+    being_made: frozenset[str],
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    now: datetime,
+) -> None:
+    """V0: ask again for boxes a cap held back, or a crash missed, between the
+    claim and its request. Only for machines still starting, whose owner isn't
+    paused and is still on the lists in a workspace they're turned on in; a
+    machine that has ever run, or has a box, is skipped by the request itself."""
+    for machine in candidates:
+        if machine.id in being_made or machine.state not in {"provisioning", "queued"}:
+            continue
+        if machine.desired_state != "running" or machine.backend != "box":
+            continue
+        # The gates are checked by the request itself (security).
+        await ask_for_box(
+            factory, machine_id=machine.id, config=config, settings=settings, now=now
+        )
+
+
 @router.get("/machines")
 async def machines(
     session: Annotated[AsyncSession, Depends(controller_session)],
     factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
 ) -> dict:
     store = CloudMachineStore()
     now = datetime.now(UTC)
@@ -191,7 +297,12 @@ async def machines(
             .order_by(CloudMachine.created_at)
         )
     )
+    # V0: a machine whose box is still being made is left alone: its start
+    # clocks run from the box's existence, not the claim.
+    being_made = await open_provision_machines(session, now)
     for candidate in candidates:
+        if candidate.id in being_made:
+            continue
         if not _needs_sweep(candidate, now, config.hosted_idle_stop_minutes):
             continue
         machine = await store.locked(session, candidate.id)
@@ -205,13 +316,28 @@ async def machines(
                 now,
             )
         await session.commit()
+    if _codes_due(now):
+        # Stored enrolment codes live no longer than the codes (security).
+        for candidate in candidates:
+            await clear_spent_codes(factory, candidate.id, now)
+    if box_provisioning_on(config):
+        await expire_provisions(session, now)
+        await session.commit()
+        await _ask_for_waiting_boxes(
+            factory, candidates, being_made, config, settings, now
+        )
     rows = await session.scalars(
         select(CloudMachine)
         .where(CloudMachine.state != "deleted")
         .order_by(CloudMachine.created_at)
         .execution_options(populate_existing=True)
     )
-    response = {"machines": [machine_item(machine) for machine in rows]}
+    response: dict = {"machines": [machine_item(machine) for machine in rows]}
+    # For the operator only (this route takes the controller's token): the
+    # server lets every workspace and account claim a machine. Absent when
+    # either list narrows it; owners' routes never carry it.
+    if open_to_all(settings, config.hosted_launch_capacity):
+        response["open_to_all"] = True
     await session.commit()
     return response
 
@@ -242,6 +368,8 @@ async def prepare(
         raise HTTPException(409, "machine is deleted")
     now = datetime.now(UTC)
     controllers = []
+    # Why each served workspace got no controller, when it was a V3 block.
+    blocked_reasons: list[StopReason] = []
     for workspace in await workspaces_on(factory, machine.id):
         with tenant_scope(workspace.tenant_id):
             async with factory() as scoped:
@@ -251,6 +379,20 @@ async def prepare(
                         machine.id,
                         workspace.tenant_id,
                     )
+                    continue
+                # Paused, or turned off in this workspace (visibility V3): no
+                # controller and no enrollment code, so nothing new can connect.
+                blocked = await block_reason_in(
+                    scoped, machine.owner_id, workspace.tenant_id
+                )
+                if blocked is not None:
+                    logger.info(
+                        "Cloud machine %s: no controller in workspace %s (%s).",
+                        machine.id,
+                        workspace.tenant_id,
+                        blocked.value,
+                    )
+                    blocked_reasons.append(blocked)
                     continue
                 row = await workspace_on(scoped, machine.id)
                 assert row is not None
@@ -284,6 +426,17 @@ async def prepare(
                 key: report for key, report in reports.items() if key in served
             },
         }
+    if not controllers and blocked_reasons:
+        # Paused, or turned off everywhere it serves (visibility V3): nothing
+        # to boot, but the box isn't broken. It's left as it is (never marked
+        # in error, which the clean-up would act on), and stays stopped.
+        await session.commit()
+        raise HTTPException(
+            409,
+            MACHINE_PAUSED
+            if StopReason.PAUSED_BY_SWITCH in blocked_reasons
+            else MACHINE_TURNED_OFF,
+        )
     if not controllers:
         machine.state = "error"
         machine.error = "The cloud machine's owner is no longer a member of any workspace it serves."
@@ -322,6 +475,14 @@ class Observation(BaseModel):
     data_volume_id: str | None = Field(default=None, max_length=256)
     instance_id: str | None = Field(default=None, max_length=256)
     instance_type: str | None = Field(default=None, max_length=256)
+    # Boxes pushed off their machine since the operator's last accepted
+    # observation (its eviction watch). Logged, counted, and kept as times in
+    # the heartbeat's `box` key for V5's alerts; V2's `box_moved` for 15 minutes.
+    evictions: int | None = Field(default=None, ge=0, le=1_000_000)
+    # The box pod's container restarts since the last accepted observation,
+    # and the node it runs on (V5's A2, V4's Boxes tab).
+    restarts: int | None = Field(default=None, ge=0, le=1_000_000)
+    node: str | None = Field(default=None, pattern=NODE_NAME, max_length=253)
 
 
 ERROR_REPLACING_STATES = {"error", "retained", "deleting", "deleted"}
@@ -339,6 +500,27 @@ async def observe(
 ) -> dict:
     machine = await _locked_machine(session, machine_id)
     now = datetime.now(UTC)
+    if body.evictions:
+        # Real whatever the revision: the box restarted without anyone asking.
+        record_evictions(body.evictions)
+        logger.warning(
+            "Cloud machine %s: its box was pushed off its machine %d time(s) since the last observation.",
+            machine.id,
+            body.evictions,
+        )
+        # On this cluster a box only moves by eviction, so this is V2's `box_moved` (platform),
+        # remembered in memory for 15 minutes.
+        recent_moves.record(machine.id, now)
+    # Kept whatever the revision too: they describe the box as it is now.
+    box_changed = bool(body.evictions or body.restarts or body.node is not None)
+    if box_changed:
+        machine.heartbeat = with_box_facts(
+            machine.heartbeat,
+            node=body.node,
+            restarts=body.restarts,
+            evictions=body.evictions,
+            now=now,
+        )
     if body.revision != machine.revision:
         if body.revision > machine.revision:
             logger.warning(
@@ -354,11 +536,15 @@ async def observe(
             machine.error = body.error or OBSERVED_ERROR
             machine.error_code = body.error_code
             machine.updated_at = now
+        # Box facts are kept whichever branch ran, an ignored observation too.
+        if box_changed or machine.state == "error":
             await session.commit()
         return machine_item(machine)
     if machine.state == "deleted" or (
         machine.state == "error" and body.state not in ERROR_REPLACING_STATES
     ):
+        if box_changed:
+            await session.commit()
         return machine_item(machine)
     for field in ("data_volume_id", "instance_id", "instance_type"):
         if (value := getattr(body, field)) is not None:
@@ -384,3 +570,52 @@ async def observe(
         machine.updated_at = now
     await session.commit()
     return machine_item(machine)
+
+
+# A cluster report is at most 200 nodes and a short list of services; this is
+# well above that, and is checked before anything is parsed (security, V5).
+MAX_CLUSTER_REPORT_BYTES = 64 * 1024
+
+
+async def _capped_body(request: Request, cap: int) -> bytes:
+    declared = request.headers.get("content-length")
+    if declared is not None and (not declared.isdigit() or int(declared) > cap):
+        raise HTTPException(413, "The cluster report is too large.")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            raise HTTPException(413, "The cluster report is too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@router.post("/cluster")
+async def cluster_report(
+    request: Request,
+    _session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict:
+    """The operator's cluster report, every 30 s (V5, V4): each node's zone,
+    memory and safety-check state, and each shared service's copies.
+
+    Strict, capped, and never echoed: a refusal says which check failed, not
+    what was sent. It's kept as the latest report for the Machines tab, and
+    the machine and service alerts (A3, A4, A6) are decided on it here.
+    """
+    raw = await _capped_body(request, MAX_CLUSTER_REPORT_BYTES)
+    try:
+        report = ClusterReport.model_validate_json(raw)
+    except ValidationError:
+        raise HTTPException(422, "The cluster report isn't valid.") from None
+    if any(service.name not in SHARED_SERVICES for service in report.services):
+        raise HTTPException(422, "The cluster report names a service not on the list.")
+    keep_cluster_report(report)
+    written = 0
+    if config.hosted_agents_enabled:
+        written = await apply_verdicts(
+            factory, cluster_verdicts(report), CLUSTER_CONDITIONS
+        )
+    return {"kept": True, "alerts_written": written}

@@ -11,6 +11,9 @@ import {
 } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
 import { errorMessage, type Logger } from './log';
+import { type MeminfoReading, readMeminfo } from './meminfo';
+import type { BoxNote } from './memory-guard';
+import type { RestState } from './rest';
 import type { AgentObservation, AgentRuntime } from './runtime';
 import {
   type AgentAssignment,
@@ -98,6 +101,35 @@ export interface ProviderLocator {
  * as Console's dependency detection does, and asks it for its version. `path`
  * is read on every lookup, so a PATH refreshed since start is the one used.
  */
+/**
+ * Where an agent's sessions stand, the most awake first, from its live
+ * watcher's own report: `waking`, then `active`, then `parked`. Null when the
+ * watcher is not live, reports no sessions, or is too old to report them.
+ */
+export function sessionStateOf(
+  observation: AgentObservation
+): 'active' | 'waking' | 'parked' | null {
+  if (!observation.alive || !observation.health?.current) return null;
+  const states = Object.values(observation.health.sessions ?? {});
+  if (states.includes('waking')) return 'waking';
+  if (states.includes('active')) return 'active';
+  if (states.includes('parked')) return 'parked';
+  return null;
+}
+
+/**
+ * How many of an agent's sessions are awake (active or waking). A host too old
+ * to say where its sessions stand counts every placement, as before, so it is
+ * never taken for idle.
+ */
+export function awakeSessions(
+  health: NonNullable<AgentObservation['health']>,
+  placements: number
+): number {
+  if (!health.sessions) return placements;
+  return Object.values(health.sessions).filter((state) => state !== 'parked').length;
+}
+
 export class PathProviderLocator implements ProviderLocator {
   /**
    * `probeHome` is the home CLIs run with to print their version: some
@@ -552,6 +584,26 @@ type Mapped = {
   since?: string;
 };
 
+/**
+ * The rest state that stands in for what the agent host reports: a resting
+ * agent, or one woken from a rest whose host is not connected yet (bounded by
+ * `WAKE_GRACE_MS` in `AgentRest.state`). Never for an agent its owner stopped.
+ */
+export function restStandsIn(
+  rest: RestState | null,
+  assignment: AgentAssignment,
+  observation: AgentObservation
+): (RestState & { kind: 'resting' | 'waking' }) | null {
+  if (!rest || assignment.desired_state === 'stopped') return null;
+  if (rest.kind === 'resting') return rest;
+  if (rest.kind !== 'waking') return null;
+  const connected =
+    observation.alive &&
+    observation.health?.current === true &&
+    observation.health.state === 'connected';
+  return connected ? null : rest;
+}
+
 /** One agent's process state in the contract's terms, from what the controller recorded and sees. */
 export function mapAgentProcess(input: {
   assignment: AgentAssignment;
@@ -560,8 +612,19 @@ export function mapAgentProcess(input: {
   /** The agent's events flow on the controller stream and its agent host is taking them. */
   relayAttached: boolean;
   nowMs: number;
+  /** Resting, or waking from a rest, as `AgentRest` holds it (B74); absent where agents do not rest. */
+  rest?: RestState | null;
+  /** Switch has the agent attached on a connected controller stream, host or not. */
+  streamCarries?: boolean;
+  /**
+   * The memory guard's detail while it holds the agent stopped (until its
+   * next message), or null. Below an owner's stop and a failure, above the rest.
+   */
+  guardStop?: string | null;
 }): Mapped {
   const { assignment, row, observation } = input;
+  // A failure recorded at this revision wins over resting and waking, so a
+  // host that will not start always shows as failed.
   if (row?.failure && row.failure.revision === assignment.revision)
     return {
       process: 'failed',
@@ -570,6 +633,10 @@ export function mapAgentProcess(input: {
       detail: truncate(row.failure.detail),
     };
   const desiredStopped = assignment.desired_state === 'stopped';
+  if (restStandsIn(input.rest ?? null, assignment, observation))
+    // Its host is stopped on purpose (or coming back for a message) and its
+    // events are held: running, as Core and Console must read it, never stopped.
+    return { process: 'running', attached: input.streamCarries ?? false };
   const health = observation.health?.current ? observation.health : null;
   if (observation.alive) {
     if (desiredStopped || observation.flags?.enabled === false)
@@ -612,6 +679,13 @@ export function mapAgentProcess(input: {
       detail: truncate(observation.failure),
     };
   if (desiredStopped) return { process: 'stopped', attached: false };
+  if (input.guardStop)
+    return {
+      process: 'stopped',
+      attached: false,
+      reason: 'out_of_memory',
+      detail: truncate(input.guardStop),
+    };
   if ((row?.appliedRevision ?? -1) < assignment.revision)
     return { process: 'pending', attached: false };
   if (row && input.nowMs - Date.parse(row.changedAt) < LAUNCH_GRACE_MS)
@@ -658,12 +732,45 @@ export class StatusCollector {
       tools: () => Promise<ToolStatus[]>;
       /** Whether the relay has the agent attached; see `mapAgentProcess`. */
       attached: (agentId: string) => boolean;
+      /** Resting or waking from a rest (B74); absent where agents do not rest. */
+      rest?: (agentId: string) => RestState | null;
+      /** Switch has the agent attached on a connected controller stream, host or not. */
+      streamCarries?: (agentId: string) => boolean;
       dataDir: string;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
       version: string;
       updatedBy: UpdatedBy;
       now: () => number;
+      /** Told each agent's awake count from its health, for the box valve's floor (B85). */
+      onAgentAwake?: (agentId: string, awake: number) => void;
+      /** Told every agent the poll read, so the box valve forgets any other's count. */
+      onAgentsSeen?: (agentIds: ReadonlySet<string>) => void;
+      /** The box valve's cap on awake sessions (B84), for `sessions_max`; 0 or absent where off. */
+      sessionsMax?: () => number;
+      /** Isolated hosts on the hub, and how many joined the box valve; null where the valve is off. */
+      valveHosts?: () => { joined: number; hosts: number } | null;
+      /** The box valve's memory problem (B113), or null when readings are fine or the valve is off. */
+      valveMemory?: () => 'unprotected' | 'failing' | null;
+      /** The provider gateway's counts; null where it is off. */
+      gatewayCounts?: () => GatewayCounts | null;
+      /** Level 3 test boxes: operator exec into the agents container is on. */
+      operatorExec?: boolean;
+      /**
+       * Since the controller started: agents the memory guard stopped, and
+       * sessions the box valve parked. Each is null where that part is off,
+       * and then left out of the report.
+       */
+      boxCounts?: () => BoxCounts;
+      /** The memory guard: whom it holds stopped, and how often it has stopped each. */
+      guard?: {
+        held: (agentId: string) => string | null;
+        oomKills: (agentId: string) => number;
+        /** Why the box is high when no agent explains it (a code and figures), or null. */
+        boxNote: () => BoxNote | null;
+      };
+      /** The box's `/proc/meminfo` figures, or null where there are none (`readMeminfo`). */
+      meminfo?: () => Promise<MeminfoReading | null>;
     }
   ) {}
 
@@ -671,33 +778,68 @@ export class StatusCollector {
     const nowMs = this.deps.now();
     const now = new Date(nowMs).toISOString();
     const agents: AgentStatus[] = [];
+    let awake = 0;
     const seen = new Set<string>();
     for (const entry of assignment?.agents ?? []) {
       seen.add(entry.agent_id);
       const row = this.deps.store.agent(entry.agent_id);
       const observation = await this.deps.runtime.observe(entry.agent_id);
+      const rest = this.deps.rest?.(entry.agent_id) ?? null;
       const mapped = mapAgentProcess({
         assignment: entry,
         row,
         observation,
         relayAttached: this.deps.attached(entry.agent_id),
         nowMs,
+        rest,
+        streamCarries: this.deps.streamCarries?.(entry.agent_id) ?? false,
+        guardStop: this.deps.guard?.held(entry.agent_id) ?? null,
       });
+      const standIn = restStandsIn(rest, entry, observation);
       const before = this.previous.get(entry.agent_id);
       const since =
         before && before.process === mapped.process ? before.since : (mapped.since ?? now);
       this.previous.set(entry.agent_id, { process: mapped.process, since });
       const health = observation.alive && observation.health?.current ? observation.health : null;
-      const ids = health ? Object.keys(health.placements).sort() : [];
+      // A resting agent keeps the sessions it rested with, all parked, so
+      // resting changes nothing Switch reads but the agent host's processes.
+      const ids = standIn
+        ? [...standIn.sessions]
+        : health
+          ? Object.keys(health.placements).sort()
+          : [];
+      const session = standIn
+        ? standIn.kind === 'resting'
+          ? 'parked'
+          : 'waking'
+        : sessionStateOf(observation);
+      // Resting holds nothing awake; waking counts, so the box is not stopped mid-wake.
+      const agentAwake = standIn
+        ? standIn.kind === 'waking'
+          ? 1
+          : 0
+        : health
+          ? awakeSessions(health, ids.length)
+          : 0;
+      awake += agentAwake;
+      // The box valve's floor for this agent's count (B85).
+      this.deps.onAgentAwake?.(entry.agent_id, agentAwake);
+      const waiting = health?.waitingForRoom;
       agents.push({
         agent_id: entry.agent_id,
         applied_revision: row?.appliedRevision ?? null,
         process: mapped.process,
         attached: mapped.attached,
         sessions: { active: ids.length, ids },
+        session,
+        ...(waiting && waiting.count > 0
+          ? {
+              waiting_for_room: { count: waiting.count, oldest_since: waiting.oldestSince },
+            }
+          : {}),
         restarts_10m: this.deps.store.restartsSince(entry.agent_id, nowMs - 10 * 60 * 1000),
-        // v1 does not observe OOM kills; nothing here can count one.
-        oom_kills: 0,
+        // Stops by the memory guard; the kernel's own kills take the whole box.
+        oom_kills: this.deps.guard?.oomKills(entry.agent_id) ?? 0,
         directory: observation.configured?.cwd ?? null,
         since,
         ...(mapped.reason ? { reason: mapped.reason } : {}),
@@ -706,7 +848,10 @@ export class StatusCollector {
     }
     for (const agentId of this.previous.keys())
       if (!seen.has(agentId)) this.previous.delete(agentId);
+    this.deps.onAgentsSeen?.(seen);
     const disk = await statfs(this.deps.dataDir);
+    const memoryNote = this.deps.guard?.boxNote() ?? null;
+    const meminfo = await (this.deps.meminfo ?? readMeminfo)();
     return {
       observed_at: now,
       controller: {
@@ -721,16 +866,89 @@ export class StatusCollector {
         disk_total_bytes: disk.blocks * disk.bsize,
         mem_free_bytes: freemem(),
         mem_total_bytes: totalmem(),
-        sessions_running: agents.reduce((total, agent) => total + agent.sessions.active, 0),
-        // v1 enforces no session limit; 0 says so rather than inventing one.
-        sessions_max: 0,
+        // Awake sessions only: a parked session holds no process, so counting
+        // it would keep a cloud machine from ever reading as idle.
+        sessions_running: awake,
+        // The box valve's cap (B84) where it is on; 0 where nothing limits sessions.
+        sessions_max: this.deps.sessionsMax?.() ?? 0,
         workspaces_dir: this.deps.workspacesDir,
+        ...memoryNoteOf(memoryNote),
+        ...valveHostsOf(this.deps.valveHosts?.() ?? null),
+        ...valveMemoryOf(this.deps.valveMemory?.() ?? null),
+        ...gatewayCountsOf(this.deps.gatewayCounts?.() ?? null),
+        ...boxCountsOf(this.deps.boxCounts?.() ?? null),
+        ...(this.deps.operatorExec ? { operator_exec: true } : {}),
+        ...(meminfo ? { mem_anon_bytes: meminfo.anon, mem_cached_bytes: meminfo.cached } : {}),
       },
       providers: this.deps.providers.snapshot(),
       tools: await this.deps.tools(),
       agents,
     };
   }
+}
+
+/**
+ * What decides whether a report goes out early: everything `statusFingerprint`
+ * covers, plus where each agent's sessions stand (`session`: waking, active or
+ * parked). Kept apart from `statusFingerprint`, which also decides when the
+ * controller reconciles locally, so a session waking or parking sends a report
+ * within one status poll without reconciling on every wake. Without it a wake
+ * waited for the next periodic report, up to a minute (B61, 26 Oct: Switch
+ * showed an agent parked for 47 s after it had woken and answered).
+ */
+export function reportFingerprint(report: Omit<StatusReport, 'seq'>): string {
+  return JSON.stringify([
+    statusFingerprint(report),
+    report.agents.map((a) => [a.agent_id, a.session ?? null, a.waiting_for_room?.count ?? 0]),
+  ]);
+}
+
+/** Where each agent's sessions stood in a report, by agent id. */
+export type SessionsSent = ReadonlyMap<string, string | null>;
+
+export function sessionsSent(report: Pick<StatusReport, 'agents'>): SessionsSent {
+  return new Map(report.agents.map((a) => [a.agent_id, a.session ?? null]));
+}
+
+/**
+ * One log entry per agent whose sessions moved since the last report Switch
+ * took (B61 tail, 27 Oct: 'active' reached Switch about 6 s after the reply).
+ * Ids, states and times only. `checkedAt` is when this report was collected;
+ * `skippedAt`, when set, is a check before it that was passed over because
+ * another report was on its way, the one place a change can wait a whole
+ * poll after it was seen.
+ */
+export function sessionChangeEntries(
+  before: SessionsSent | null,
+  report: Pick<StatusReport, 'agents' | 'seq'>,
+  times: { checkedAt: number; sentAt: number; skippedAt: number | null }
+): { message: string; fields: Record<string, unknown> }[] {
+  if (before === null) return [];
+  return report.agents.flatMap((a) => {
+    const was = before.get(a.agent_id) ?? null;
+    const now = a.session ?? null;
+    if (was === now) return [];
+    return [
+      {
+        message: 'Status report carried a session change',
+        fields: {
+          agent_id: a.agent_id,
+          seq: report.seq,
+          from: was,
+          to: now,
+          checked_at: new Date(times.checkedAt).toISOString(),
+          sent_at: new Date(times.sentAt).toISOString(),
+          reason:
+            times.skippedAt === null
+              ? 'seen at this check'
+              : 'a check was skipped while another report was on its way',
+          ...(times.skippedAt === null
+            ? {}
+            : { skipped_at: new Date(times.skippedAt).toISOString() }),
+        },
+      },
+    ];
+  });
 }
 
 /**
@@ -786,4 +1004,69 @@ export function providerLoginTest(
           ),
         })
       : null;
+}
+
+/** The guard's note for the report: a fixed code and its figures, never text; absent when there is none. */
+function memoryNoteOf(note: BoxNote | null): {
+  memory_note?: BoxNote['code'];
+  memory_note_box_bytes?: number;
+  memory_note_shmem_bytes?: number;
+} {
+  if (!note) return {};
+  return {
+    memory_note: note.code,
+    memory_note_box_bytes: note.boxBytes,
+    ...(note.shmemBytes === null ? {} : { memory_note_shmem_bytes: note.shmemBytes }),
+  };
+}
+
+/** The box valve's memory problem, for the report (B113): absent when there is none. */
+function valveMemoryOf(problem: 'unprotected' | 'failing' | null): {
+  valve_memory?: 'unprotected' | 'failing';
+} {
+  return problem ? { valve_memory: problem } : {};
+}
+
+/** The box valve's joined hosts, for the report: absent where the valve is off. */
+function valveHostsOf(hosts: { joined: number; hosts: number } | null): {
+  valve_hosts_joined?: number;
+  valve_hosts?: number;
+} {
+  return hosts ? { valve_hosts_joined: hosts.joined, valve_hosts: hosts.hosts } : {};
+}
+
+/** Since-start counts for the box (Datadog's guard stops and valve parks); null where that part is off. */
+export type BoxCounts = { guardStops: number | null; valveParks: number | null };
+
+/** The since-start counts, for the report: each absent where its part is off. */
+function boxCountsOf(counts: BoxCounts | null): { guard_stops?: number; valve_parks?: number } {
+  if (!counts) return {};
+  return {
+    ...(counts.guardStops === null ? {} : { guard_stops: counts.guardStops }),
+    ...(counts.valveParks === null ? {} : { valve_parks: counts.valveParks }),
+  };
+}
+
+/** The provider gateway's counts; `callsToday` and `capped` only where a daily cap is set. */
+export type GatewayCounts = {
+  agents: number;
+  refused: number;
+  callsToday?: number;
+  capped?: boolean;
+};
+
+/** The provider gateway's counts, for the report: absent where it is off. */
+function gatewayCountsOf(counts: GatewayCounts | null): {
+  gateway_agents?: number;
+  gateway_refused?: number;
+  gateway_calls_today?: number;
+  gateway_capped?: boolean;
+} {
+  if (!counts) return {};
+  return {
+    gateway_agents: counts.agents,
+    gateway_refused: counts.refused,
+    ...(counts.callsToday === undefined ? {} : { gateway_calls_today: counts.callsToday }),
+    ...(counts.capped === undefined ? {} : { gateway_capped: counts.capped }),
+  };
 }

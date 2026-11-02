@@ -20,8 +20,13 @@ export function workspaceNavViews(server: {
   managed: boolean;
   serviceConnections: boolean;
   administers: boolean;
+  /** The server shows this person, a Switch operator, the shared machines. */
+  sharedCloud?: boolean;
 }): WorkspaceNavView[] {
-  const admin = (server.serviceConnections && server.administers) || server.managed;
+  const admin =
+    (server.serviceConnections && server.administers) ||
+    server.managed ||
+    server.sharedCloud === true;
   return [
     'server',
     'serverAgents',
@@ -42,8 +47,10 @@ export function adminNavTarget(server: {
   serviceConnections: boolean;
   administers: boolean;
   frozen: boolean;
+  sharedCloud?: boolean;
 }): 'admin' | 'managedServer' {
-  return server.serviceConnections && server.administers && !server.frozen
+  return ((server.serviceConnections && server.administers) || server.sharedCloud === true) &&
+    !server.frozen
     ? 'admin'
     : 'managedServer';
 }

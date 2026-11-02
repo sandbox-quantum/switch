@@ -9,6 +9,7 @@ import LoginPage from "./pages/auth/LoginPage";
 import CollaborationsPage from "./pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "./pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "./pages/ecosystem/EcosystemGraphPage";
+import HostedPage from "./pages/hosted/HostedPage";
 import MachinesPage from "./pages/machines/MachinesPage";
 import RegistrationKeysPage from "./pages/registration-keys/RegistrationKeysPage";
 import DocumentDetailPage from "./pages/resources/DocumentDetailPage";
@@ -148,6 +149,7 @@ export function AppRoutes() {
         <Route path="workspace" element={<WorkspacePage />} />
         <Route path="organization" element={<OrganizationPage />} />
         <Route path="operator/workspaces" element={<OperatorWorkspacesPage />} />
+        <Route path="hosted/*" element={<HostedPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
       <Route path="/login" element={<Navigate to="/" replace />} />

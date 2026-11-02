@@ -1969,7 +1969,13 @@ describe('sign-up support', () => {
       controller_id: null,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse(machine));
-    await expect(ensureCloudMachine(SERVER)).resolves.toEqual(machine);
+    // A server without Your cloud's figures reads as none of them (visibility L1).
+    await expect(ensureCloudMachine(SERVER)).resolves.toEqual({
+      ...machine,
+      room: null,
+      awake: null,
+      ai_calls_today: null,
+    });
     const [url, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/hosted-machines/ensure');
     expect(options.method).toBe('POST');
@@ -2020,7 +2026,9 @@ describe('sign-up support', () => {
       controller_id: null,
     };
     fetchMock.mockResolvedValueOnce(jsonResponse({ machines: [machine] }));
-    await expect(listCloudMachines(SERVER)).resolves.toEqual([machine]);
+    await expect(listCloudMachines(SERVER)).resolves.toEqual([
+      { ...machine, room: null, awake: null, ai_calls_today: null },
+    ]);
     const [url] = fetchMock.mock.calls[0] as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/hosted-machines');
     fetchMock.mockResolvedValueOnce(errorResponse(404, '{"detail":"Not Found"}'));
@@ -3412,6 +3420,8 @@ describe('agent management calls', () => {
         controllerId: 'controller-1',
         machine: { id: 'controller-1', name: 'build-box', kind: 'console', state: 'online' },
         desiredState: 'running',
+        // No `stop_reason` in the answer, so no reason (visibility V2).
+        stopReason: null,
         revision: 3,
         provider: 'claude',
         model: 'opus',
@@ -3437,6 +3447,8 @@ describe('agent management calls', () => {
         description: '',
         controllerId: 'controller-1',
         desiredState: 'running',
+        // No `stop_reason` in the answer, so no reason (visibility V2).
+        stopReason: null,
         revision: 0,
         provider: 'codex',
         model: null,
@@ -3457,6 +3469,8 @@ describe('agent management calls', () => {
         controllerId: null,
         machine: null,
         desiredState: 'stopped',
+        // No `stop_reason` in the answer, so no reason (visibility V2).
+        stopReason: null,
         revision: 0,
         provider: 'unknown',
         model: null,
@@ -3471,6 +3485,31 @@ describe('agent management calls', () => {
     ]);
     const [, older] = await fetchManagedAgents(SERVER);
     expect(older!.machine).toBeUndefined();
+  });
+
+  it('reads conversations waiting for room, and ignores a report that names none', async () => {
+    const agent = (waiting: unknown) => ({
+      agent_id: 'agent-1',
+      name: 'scout',
+      display_name: null,
+      controller_id: 'controller-1',
+      desired_state: 'running',
+      definition: { provider: 'claude' },
+      status: { process: 'running', attached: true, session: 'parked', waiting_for_room: waiting },
+    });
+    fetchMock.mockImplementation(async () =>
+      respond(200, [
+        agent({ count: 2, oldest_since: '2026-10-27T10:00:00Z' }),
+        agent({ count: 0, oldest_since: null }),
+        agent(null),
+        agent({ count: 'lots' }),
+      ])
+    );
+    const [two, zero, none, bad] = await fetchManagedAgents(SERVER);
+    expect(two!.status!.waitingForRoom).toEqual({ count: 2, oldestSince: '2026-10-27T10:00:00Z' });
+    expect(two!.status!.session).toBe('parked');
+    for (const entry of [zero, none, bad])
+      expect(entry!.status).not.toHaveProperty('waitingForRoom');
   });
 
   it('refuses an advanced configuration of a shape no field takes rather than dropping it', async () => {

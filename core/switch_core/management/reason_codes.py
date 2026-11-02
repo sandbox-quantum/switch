@@ -44,6 +44,14 @@ ENROLLMENT_CODE_INVALID = "enrollment_code_invalid"
 OPERATION_UNSUPPORTED = "operation_unsupported"
 NOT_FOUND = "not_found"
 VALIDATION_ERROR = "validation_error"
+# The server runs agent management, but not for this workspace (the hosted
+# config's `management_tenant_ids`).
+WORKSPACE_NOT_ENABLED = "workspace_not_enabled"
+# An operator paused this user, or a workspace admin turned hosted agents off
+# for them in this workspace (visibility V3): their cloud box's controllers
+# get no new credential, token or placement until it's undone.
+HOSTED_PAUSED = "paused_by_switch"
+HOSTED_TURNED_OFF = "turned_off_by_admin"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -81,5 +89,8 @@ ALL_REASON_CODES = frozenset(
         OPERATION_UNSUPPORTED,
         NOT_FOUND,
         VALIDATION_ERROR,
+        WORKSPACE_NOT_ENABLED,
+        HOSTED_PAUSED,
+        HOSTED_TURNED_OFF,
     }
 )

@@ -1,59 +1,73 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
+import { hasSharedCloudBox } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import {
+  providerCheckFailed,
+  setUpThisComputer,
+  type ThisComputerSetup,
+} from './this-computer-setup';
 
 /**
  * This computer as a machine of the workspace, for the buddy to run on.
  *
+ * `needs-permission`: not a machine of the workspace, and not made one until
+ * the person says so (B38).
  * `starting`: being enrolled, or enrolled and not yet reported to Switch.
  * `failed`: it could not be set up; `error` says why, and nothing pretends
  * the providers are known.
  */
 export type ThisComputer =
+  | { kind: 'needs-permission' }
   | { kind: 'starting' }
   | { kind: 'ready'; machine: OwnedMachine }
   | { kind: 'failed'; error: string };
 
 /**
- * One setup per server at a time: the buddy pages each ask, and a second
+ * One enrolment per server at a time: the buddy pages each ask, and a second
  * enrolment started while the first runs would be refused as a duplicate.
  */
-const settingUp = new Map<string, Promise<void>>();
+const enrolling = new Map<string, Promise<ThisComputerSetup>>();
 
-function ensureRunsAgents(serverId: string, workspaceId: string): Promise<void> {
-  const running = settingUp.get(serverId);
+function setUp(serverId: string, workspaceId: string, allowEnrol: boolean) {
+  const running = enrolling.get(serverId);
   if (running) return running;
-  const attempt = (async () => {
-    const overview = await rpc.embeddedController.getOverview({ serverId, workspaceId });
-    if (overview.unsupportedReason) throw new Error(overview.unsupportedReason);
-    if (overview.enrollment === null)
-      await rpc.embeddedController.enable({ serverId, workspaceId });
-  })().finally(() => settingUp.delete(serverId));
-  settingUp.set(serverId, attempt);
-  return attempt;
+  const attempt = setUpThisComputer(rpc.embeddedController, serverId, workspaceId, allowEnrol);
+  if (!allowEnrol) return attempt;
+  enrolling.set(serverId, attempt);
+  return attempt.finally(() => enrolling.delete(serverId));
 }
 
 /**
- * Makes sure this computer runs managed agents for the workspace, enrolling
- * it when it does not yet, and follows what it reports.
+ * Whether this computer runs managed agents for the workspace, and what it
+ * reports once it does.
  *
  * The buddy always runs on the person's own computer, whatever server they
- * chose, so this happens on every path, in the background, as soon as the
- * workspace is known.
+ * chose. Opening a page only reads: a computer that is not yet a machine of
+ * the workspace is made one by `allow`, when the person chooses to (B38). It
+ * is never enrolled just because a page opened.
  */
 export function useThisComputer(serverId: string, workspaceId: string) {
+  const hostedAgents = useFeatureFlags(serverId).hosted_agents;
   const queryClient = useQueryClient();
   const [setupError, setSetupError] = useState<string | null>(null);
+  /** Null until the first read comes back. */
+  const [setup, setSetup] = useState<ThisComputerSetup | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        await ensureRunsAgents(serverId, workspaceId);
-        await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+        const found = await setUp(serverId, workspaceId, false);
+        if (cancelled) return;
+        setSetup(found);
+        // Not enrolled: Console's own look at the providers, so the page can
+        // say what is signed in without enrolling anything.
+        if (found === 'needs-permission') void rpc.embeddedController.precheckProviders();
       } catch (cause) {
         if (!cancelled)
           setSetupError(failureText(cause, 'Could not set this computer up to run agents.'));
@@ -62,6 +76,16 @@ export function useThisComputer(serverId: string, workspaceId: string) {
     return () => {
       cancelled = true;
     };
+  }, [serverId, workspaceId]);
+
+  /**
+   * The person's yes: makes this computer a machine of the workspace. When it
+   * fails it throws, and the computer stays as it was, still to be asked: the
+   * page says why and offers it again (or Not now).
+   */
+  const allow = useCallback(async (): Promise<void> => {
+    setSetup(await setUp(serverId, workspaceId, true));
+    await queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
   }, [serverId, workspaceId, queryClient]);
 
   const machines = useQuery({
@@ -93,13 +117,28 @@ export function useThisComputer(serverId: string, workspaceId: string) {
   // the page goes by until this computer's controller reports.
   const early = useQuery({
     queryKey: ['provider-precheck'],
-    queryFn: () => rpc.embeddedController.precheckedProviders(),
+    queryFn: async () => ({
+      providers: await rpc.embeddedController.precheckedProviders(),
+      failed: await rpc.embeddedController.precheckFailed(),
+    }),
     enabled: !reported,
     refetchInterval: 1_000,
   });
-  const state = thisComputerState(setupError, machines.data);
-  const earlyProviders = !reported && early.data && early.data.length > 0 ? early.data : null;
-  return { state, recheck, earlyProviders };
+  // Asked, not yet allowed, comes first after a failure; otherwise upstream's
+  // `thisComputerState` decides (failed, ready or starting).
+  const state: ThisComputer =
+    !setupError && setup === 'needs-permission'
+      ? { kind: 'needs-permission' }
+      : thisComputerState(setupError, machines.data);
+  const earlyProviders =
+    !reported && early.data?.providers && early.data.providers.length > 0
+      ? early.data.providers
+      : null;
+  /** Console's own check failed and this computer hasn't reported: nothing more is coming to wait for. */
+  const checkFailed = providerCheckFailed(early.data, reported);
+  /** The person's agents run on a shared-cloud box: what the ask says about the rest. */
+  const sharedCloud = hasSharedCloudBox(machines.data, hostedAgents);
+  return { state, recheck, earlyProviders, checkFailed, allow, sharedCloud };
 }
 
 /**

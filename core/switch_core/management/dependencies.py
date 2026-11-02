@@ -8,14 +8,17 @@ established. What is here is what only management has.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
 from switch_core.bridges.agent.auth import ControllerPrincipal
+from switch_core.db.models import User, require_tenant_id
+from switch_core.gateway.auth import get_current_user
 from switch_core.management import reason_codes
-from switch_core.management.auth import ManagementAuthenticator
+from switch_core.management.auth import ManagementAuthenticator, workspace_not_enabled
 from switch_core.management.errors import ManagementError
 from switch_core.management.service import ManagementService
 
@@ -66,3 +69,15 @@ def require_controller(
             "This access token belongs to a different controller.",
         )
     return principal
+
+
+def require_management_workspace(
+    user: Annotated[User, Depends(get_current_user)],
+    authenticator: Annotated[ManagementAuthenticator, Depends(get_authenticator)],
+) -> None:
+    """The Console-side routes' share of the workspace rule: after sign-in has
+    bound the caller's workspace, refuse one agent management isn't on for,
+    so it can't mint an enrollment code it could never use."""
+    del user  # needed only so the workspace is bound first
+    if not authenticator.workspace_allowed(require_tenant_id()):
+        raise workspace_not_enabled()

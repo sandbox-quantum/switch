@@ -342,6 +342,7 @@ async def test_a_session_in_the_room_is_sent_the_command_through_its_controller(
         "messageId": "$reset-command",
     }
     assert frame["requesterName"] == "louisa"
+    assert "roomTold" not in frame
     assert reply.bodies[-1].startswith("Resetting my session")
 
 
@@ -409,10 +410,14 @@ async def test_a_controller_backed_agent_is_sent_the_command_on_its_controllers_
         assert frame["sessionId"] is None
         assert frame["origin"]["roomId"] == "room-1"
         assert frame["body"] == {"type": "session.reset"}
-        assert reply.bodies[-1].startswith("Resetting my session")
+        # B71: the box says how the reset went once it knows (an awake
+        # session, a resting one cleared, or one it couldn't reset), so Switch
+        # no longer claims one is under way when it has only relayed it.
+        assert frame["roomTold"] is False
+        assert reply.bodies == []
     else:
         assert conn.session_commands == []
-        assert "controller is not connected" in reply.bodies[-1]
+        assert reply.bodies == [commands.RESET_NOT_SENT]
 
 
 def test_an_interrupt_names_the_current_turn() -> None:

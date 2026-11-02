@@ -11,7 +11,9 @@ import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 const switchServers = vi.hoisted(() => ({
   cloudMachines: vi.fn(),
   cloudMachineLifecycle: vi.fn(),
+  sharedCloudAgents: vi.fn(),
 }));
+const flags = vi.hoisted(() => ({ service_connections: true, hosted_agents: false }));
 const navigate = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
@@ -19,7 +21,7 @@ vi.mock('@renderer/lib/ipc', () => ({
   rpc: {
     switchServers,
     featureFlags: {
-      get: async () => ({ success: true, data: { flags: { service_connections: true } } }),
+      get: async () => ({ success: true, data: { flags: { ...flags } } }),
     },
   },
 }));
@@ -73,6 +75,9 @@ function sleepingMachine(): CloudMachine {
     memory: { total_bytes: 17179869184, available_bytes: 12884901888 },
     agents: ['00000000-0000-4000-8000-000000000001'],
     controller_id: null,
+    room: null,
+    awake: null,
+    ai_calls_today: null,
   };
 }
 
@@ -84,6 +89,9 @@ beforeEach(() => {
   navigate.mockReset();
   switchServers.cloudMachines.mockReset();
   switchServers.cloudMachineLifecycle.mockReset();
+  switchServers.sharedCloudAgents.mockReset();
+  switchServers.sharedCloudAgents.mockResolvedValue(null);
+  flags.hosted_agents = false;
 });
 
 afterEach(async () => {
@@ -161,4 +169,49 @@ it('stops a ready machine once confirmed', async () => {
     'stop',
     5
   );
+});
+
+it("shows a shared-cloud user's own box as Your cloud, with Repair and no machine controls", async () => {
+  // A real v2 server: hosted agents offered, and the shared-cloud list answers for this person.
+  flags.hosted_agents = true;
+  switchServers.sharedCloudAgents.mockResolvedValue([]);
+  const box = {
+    ...sleepingMachine(),
+    state: 'ready',
+    desired_state: 'running',
+    stop_reason: null,
+    sleeping: false,
+    instance_type: null,
+    controller_id: 'c-box',
+    room: { used_bytes: 2 * 1024 ** 3, total_bytes: 8 * 1024 ** 3 },
+    awake: { running: 1, max: 4 },
+    repair_available: true,
+  } satisfies CloudMachine;
+  switchServers.cloudMachines.mockResolvedValue([box]);
+  const el = await render();
+  await settle();
+
+  expect(switchServers.sharedCloudAgents).toHaveBeenCalled();
+  expect(el.textContent).toMatch(/Your cloud/);
+  expect(el.textContent).not.toMatch(/Cloud machine/);
+  expect(el.textContent).toMatch(/Room to work: Plenty of room/);
+  expect(el.textContent).toMatch(/1 of 4 awake/);
+  expect(button(el, /Repair my cloud/)).toBeDefined();
+  expect(button(el, /start machine/i)).toBeUndefined();
+  expect(button(el, /stop machine/i)).toBeUndefined();
+});
+
+it('says a paused box is paused by Switch, and offers no start', async () => {
+  const paused = {
+    ...sleepingMachine(),
+    stop_reason: 'paused',
+    sleeping: false,
+  } satisfies CloudMachine;
+  switchServers.cloudMachineLifecycle.mockResolvedValue(paused);
+  switchServers.cloudMachines.mockResolvedValue([paused]);
+  const el = await render();
+
+  expect(el.textContent).toMatch(/Paused by Switch · Contact your admin/);
+  expect(el.textContent).not.toMatch(/Your cloud: Ready/);
+  expect(button(el, /start machine/i)).toBeUndefined();
 });

@@ -143,6 +143,14 @@ describe('session-v1 wire contract', () => {
     expect(replica.snapshot().throughSequence).toBe(30);
     expect(replica.snapshot().items).toEqual([]);
   });
+  it('gives a view of the current state without copying it', () => {
+    const replica = new SessionReplica(initial());
+    const view = replica.view();
+    expect(replica.view()).toBe(view);
+    expect(view).toEqual(replica.snapshot());
+    replica.advanceCursor(30);
+    expect(replica.view().throughSequence).toBe(30);
+  });
   it('keeps execution state on connection loss and closes interrupted requests', () => {
     const replica = new SessionReplica(initial());
     replica.apply(event(11, { type: 'session.connectivity', connectivity: 'offline' }));

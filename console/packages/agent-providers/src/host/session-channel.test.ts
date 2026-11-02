@@ -163,6 +163,8 @@ it('serves requests on the host side once it has handlers', async () => {
     snapshot: async () => 'snapshot',
     approvals: async () => null,
     reasoning: async () => null,
+    'restart-replies': async () => ({ owed: 0 }),
+    park: async () => ({ parking: true }),
   });
   served.ready();
   served.push(event(3) as never);

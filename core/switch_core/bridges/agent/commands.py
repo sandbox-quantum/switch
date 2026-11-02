@@ -598,15 +598,25 @@ async def _decide_control_command(
             target_message_id=target,
         )
 
+        # A controller's agent host says how a reset went once it knows: an
+        # awake session, a resting one cleared, or one that couldn't be (B71).
+        # Said here as well, the room would read a reset that never happened.
+        box_tells = controller_backed and command == "reset"
+        if box_tells:
+            frame["roomTold"] = False
+
         async def relay() -> None:
             if client._connections.relay_session_command(agent.id, frame):
-                await _reply(client, room, event, texts.ack)
+                if not box_tells:
+                    await _reply(client, room, event, texts.ack)
                 return
             await _reply(
                 client,
                 room,
                 event,
-                f"Could not send {command}: the agent's controller is not connected to Switch.",
+                RESET_NOT_SENT
+                if box_tells
+                else f"Could not send {command}: the agent's controller is not connected to Switch.",
             )
 
         return ControlDecision(queued=None, answer=relay)
@@ -705,6 +715,12 @@ async def _dispatch_control_command(
         message_key=event.message_id,
     )
 
+
+# The designer's line for a reset that couldn't be done (B71, 27 Oct).
+RESET_NOT_SENT = (
+    "I couldn't reset my session. Send the command again in a minute, or ask "
+    "my owner to restart me from Switch Console."
+)
 
 _RESET = ControlTexts(
     ack="Resetting my session — clearing context, then reconnecting to this room.",

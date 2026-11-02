@@ -14,15 +14,16 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type Budget,
   type UsageMetric,
+  DAILY_CAP_HELP,
   MAX_BUDGET_AMOUNT,
   MAX_BUDGET_PERIOD_HOURS,
   PER_MODEL_METRICS,
-  USAGE_METRICS,
+  budgetMetrics,
   createBudget,
   updateBudget,
 } from "../../data/api";
-import { useAgents } from "../../data/hooks";
-import { formatAmount, metricLabel, parseBound } from "./usageFormat";
+import { useAgents, useFeatureFlags } from "../../data/hooks";
+import { budgetMetricLabel, dailyCapProblem, formatAmount, metricLabel, parseBound } from "./usageFormat";
 
 const WHOLE_WORKSPACE = "";
 
@@ -37,6 +38,8 @@ interface Props {
 
 export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved }: Props) {
   const { data: agents } = useAgents();
+  const { data: flags } = useFeatureFlags();
+  const metrics = budgetMetrics(flags?.hosted_awake_budgets === true);
   const [agentId, setAgentId] = useState(WHOLE_WORKSPACE);
   const [metric, setMetric] = useState<UsageMetric>("output_tokens");
   const [model, setModel] = useState("");
@@ -55,11 +58,26 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
     setError(null);
   }, [open, budget]);
 
+  // The daily AI cap (L1b): every agent, per day, within the gateway's range.
+  const dailyCap = metric === "hosted_ai_calls";
   const perModel = PER_MODEL_METRICS.includes(metric);
-  const limitValue = parseBound(limit, MAX_BUDGET_AMOUNT);
-  const periodValue = parseBound(periodHours, MAX_BUDGET_PERIOD_HOURS);
+  const capProblem = dailyCap ? dailyCapProblem(limit) : null;
+  const limitValue = dailyCap
+    ? capProblem === null
+      ? Number(limit.trim())
+      : null
+    : parseBound(limit, MAX_BUDGET_AMOUNT);
+  const periodValue = dailyCap ? 24 : parseBound(periodHours, MAX_BUDGET_PERIOD_HOURS);
   const limitInvalid = limit.trim() !== "" && limitValue === null;
-  const periodInvalid = periodHours.trim() !== "" && periodValue === null;
+  const periodInvalid = !dailyCap && periodHours.trim() !== "" && periodValue === null;
+
+  const chooseMetric = (next: UsageMetric) => {
+    setMetric(next);
+    if (next === "hosted_ai_calls") {
+      setAgentId(WHOLE_WORKSPACE);
+      setPeriodHours("24");
+    }
+  };
 
   const handleSubmit = useCallback(async () => {
     if (limitValue === null || periodValue === null) return;
@@ -73,7 +91,7 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
         });
       } else {
         await createBudget(tenantId, {
-          agent_id: agentId === WHOLE_WORKSPACE ? null : agentId,
+          agent_id: dailyCap || agentId === WHOLE_WORKSPACE ? null : agentId,
           metric,
           model: perModel ? model.trim() : "",
           amount_limit: limitValue,
@@ -87,7 +105,7 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
     } finally {
       setSubmitting(false);
     }
-  }, [budget, tenantId, agentId, metric, perModel, model, limitValue, periodValue, onSaved, onClose]);
+  }, [budget, tenantId, agentId, dailyCap, metric, perModel, model, limitValue, periodValue, onSaved, onClose]);
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
@@ -105,8 +123,15 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
             label="Applies to"
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
-            disabled={budget !== null}
-            helperText="A workspace budget caps what all agents spend together."
+            disabled={budget !== null || dailyCap}
+            // The whole-workspace choice is the empty value, which a select
+            // otherwise shows as blank (designer's fix list, item 6).
+            slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+            helperText={
+              dailyCap
+                ? "The daily AI cap covers every person's agents."
+                : "A workspace budget caps what all agents spend together."
+            }
             fullWidth
           >
             <MenuItem value={WHOLE_WORKSPACE}>Every agent in the workspace</MenuItem>
@@ -123,13 +148,14 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
             select
             label="Metric"
             value={metric}
-            onChange={(e) => setMetric(e.target.value as UsageMetric)}
+            onChange={(e) => chooseMetric(e.target.value as UsageMetric)}
             disabled={budget !== null}
+            helperText={dailyCap ? DAILY_CAP_HELP : undefined}
             fullWidth
           >
-            {USAGE_METRICS.map((m) => (
+            {(budget && !metrics.includes(budget.metric) ? [...metrics, budget.metric] : metrics).map((m) => (
               <MenuItem key={m} value={m}>
-                {metricLabel(m)}
+                {budgetMetricLabel(m)}
               </MenuItem>
             ))}
           </TextField>
@@ -155,7 +181,11 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
               required
               fullWidth
               error={limitInvalid}
-              helperText={limitInvalid ? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.` : undefined}
+              helperText={
+                limitInvalid
+                  ? (capProblem ?? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.`)
+                  : undefined
+              }
               slotProps={{ htmlInput: { min: 1, max: MAX_BUDGET_AMOUNT, step: 1 } }}
             />
             <TextField
@@ -165,11 +195,14 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
               onChange={(e) => setPeriodHours(e.target.value)}
               required
               fullWidth
+              disabled={dailyCap}
               error={periodInvalid}
               helperText={
-                periodInvalid
-                  ? `A whole number of hours from 1 to ${formatAmount(MAX_BUDGET_PERIOD_HOURS)}.`
-                  : "24 is a day, 168 a week."
+                dailyCap
+                  ? "Fixed at one day for the daily AI cap."
+                  : periodInvalid
+                    ? `A whole number of hours from 1 to ${formatAmount(MAX_BUDGET_PERIOD_HOURS)}.`
+                    : "24 is a day, 168 a week."
               }
               slotProps={{ htmlInput: { min: 1, max: MAX_BUDGET_PERIOD_HOURS, step: 1 } }}
             />

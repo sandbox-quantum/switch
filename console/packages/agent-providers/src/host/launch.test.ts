@@ -1,14 +1,20 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import {
+  detachedSupervision,
+  ensureSharedProcess,
+  inProcessSupervision,
+  liveSupervisor,
+} from './launch';
 import { killProcessTree } from './process-fence';
 import { SessionLinks } from './session-channel';
 import { owedSessionStart, type HostStartSource } from './session-start';
 import type { SharedHostConfig } from './shared-config';
+import { stopWasAsked } from './stop-asked';
 
 if (process.platform === 'win32') vi.setConfig({ testTimeout: 60_000 });
 
@@ -368,3 +374,102 @@ it('kills a host that will not stop for its replacement, with the session hosts 
     await rm(root, { recursive: true, force: true });
   }
 }, 60_000);
+
+it('reads a supervisor record left by an earlier process that had this id as no supervisor', async () => {
+  // After a container restart the controller has the same low id as the one
+  // that wrote the record, so its own id must not read as a live supervisor:
+  // nothing would ever start the session again.
+  const root = await mkdtemp(join(tmpdir(), 'live-supervisor-reused-pid-'));
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  try {
+    await writeFile(
+      join(root, 'supervisor', 'owner.json'),
+      JSON.stringify({ pid: process.pid, token: 'left-by-the-process-before', build: 'b' })
+    );
+    await expect(liveSupervisor(root)).resolves.toBeNull();
+    await writeFile(
+      join(root, 'supervisor', 'owner.json'),
+      JSON.stringify({ pid: process.ppid, token: 'the-parent-holds-it', build: 'b' })
+    );
+    await expect(liveSupervisor(root)).resolves.toEqual({ build: 'b' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('reads a record older than the process now holding its id as no supervisor, and stops nothing for it', async () => {
+  // Box A, 27 Oct 08:50: each session folder kept a record written on 23 Oct
+  // by pid 2. After the box restarted, pid 2 was the controller, so the record
+  // read as a live supervisor; stopping that "redefined" session then refused
+  // to kill the controller and threw, and every agent host died with it.
+  const base = await mkdtemp(join(tmpdir(), 'live-supervisor-stale-'));
+  const root = join(base, 'sdk-sessions', 'session-stale');
+  const ownerPath = join(root, 'supervisor', 'owner.json');
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  const fourDaysAgo = new Date(Date.now() - 4 * 24 * 3600 * 1000);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    // The parent stands in for the controller: alive, and not naming this root.
+    await writeFile(ownerPath, JSON.stringify({ pid: process.ppid, token: 't', build: 'b' }));
+    await utimes(ownerPath, fourDaysAgo, fourDaysAgo);
+    await expect(liveSupervisor(root)).resolves.toBeNull();
+
+    await expect(detachedSupervision('bundle.mjs').stop(root)).resolves.toBeUndefined();
+    expect(() => process.kill(process.ppid, 0)).not.toThrow();
+    await expect(readFile(ownerPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // The same for a host this process supervises with no entry for the root.
+    await writeFile(ownerPath, JSON.stringify({ pid: process.ppid, token: 't', build: 'b' }));
+    await utimes(ownerPath, fourDaysAgo, fourDaysAgo);
+    const supervision = inProcessSupervision('/nonexistent-entrypoint.mjs', new SessionLinks());
+    await expect(supervision.stop(root)).resolves.toBeUndefined();
+    await supervision.close();
+    expect(() => process.kill(process.ppid, 0)).not.toThrow();
+    await expect(readFile(ownerPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    // The warning names the session folder only: the full path names the user's home.
+    const lines = warn.mock.calls.map((call) => String(call[0]));
+    expect(lines.some((line) => line.includes('sdk-sessions/session-stale'))).toBe(true);
+    expect(lines.some((line) => line.includes(base))).toBe(false);
+  } finally {
+    warn.mockRestore();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+it('still refuses to stop a live process that does not name the root when its record is current', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stop-current-stranger-'));
+  await mkdir(join(root, 'supervisor'), { recursive: true });
+  try {
+    await writeFile(
+      join(root, 'supervisor', 'owner.json'),
+      JSON.stringify({ pid: process.ppid, token: 't', build: 'b' })
+    );
+    await expect(detachedSupervision('bundle.mjs').stop(root)).rejects.toThrow(
+      'The saved PID no longer identifies this SDK host'
+    );
+    expect(() => process.kill(process.ppid, 0)).not.toThrow();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('marks every stop its supervisor makes as asked for, and an agent stop on close, but not the controller exiting', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'stop-asked-'));
+  const stopped = join(base, 'stopped');
+  await mkdir(stopped, { recursive: true });
+  const supervision = inProcessSupervision('/nonexistent-entrypoint.mjs', new SessionLinks());
+  // A session its supervisor stops (a new build, a new definition, deleted or restarted).
+  await supervision.stop(stopped);
+  expect(await stopWasAsked(stopped)).toBe(true);
+  // An upgrade's stop (a new build) is not asked for: the turn it cuts off owes its line.
+  const upgraded = join(base, 'upgraded');
+  await mkdir(upgraded, { recursive: true });
+  await supervision.stop(upgraded, { asked: false });
+  expect(await stopWasAsked(upgraded)).toBe(false);
+  // Closing for the controller exiting marks nothing; closing for the agent being turned off would.
+  const exiting = inProcessSupervision('/nonexistent-entrypoint.mjs', new SessionLinks());
+  await exiting.close();
+  await exiting.close({ asked: true });
+  await rm(base, { recursive: true, force: true });
+});

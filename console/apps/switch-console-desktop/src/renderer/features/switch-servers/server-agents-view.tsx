@@ -3,7 +3,12 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
 import { CloudMachineCard } from '@renderer/features/cloud-agents/cloud-machine-card';
-import { useCloudMachines } from '@renderer/features/cloud-agents/use-cloud-agents';
+import { useResealResult } from '@renderer/features/cloud-agents/repair-cloud';
+import {
+  useCloudMachineFor,
+  useCloudMachines,
+} from '@renderer/features/cloud-agents/use-cloud-agents';
+import { sharedCloudBoxIds } from '@renderer/features/locations/components/add-agent-modal/server-run-locations';
 import { useConfirmDeleteAgent } from '@renderer/features/locations/hooks/use-confirm-delete-agent';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { getLocationStore } from '@renderer/features/locations/stores/location-selectors';
@@ -14,14 +19,24 @@ import {
 import {
   useMachineLabel,
   useManagedAgents,
+  useOnSharedCloudBox,
+  useOwnedMachines,
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
+import { SharedCloudAgentState } from '@renderer/features/shared-cloud/shared-cloud-agent-state';
+import {
+  sharedCloudFromSession,
+  sharedCloudPresentation,
+  showsSharedCloudState,
+} from '@renderer/features/shared-cloud/shared-cloud-state';
+import { useSharedCloudAgents } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { resetAgentErrorText } from '@renderer/lib/errors/reset-agent-error';
 import { useToast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -38,6 +53,7 @@ import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { Agent } from '@shared/core/agents/agents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import type { SharedCloudAgent } from '@shared/core/shared-cloud/shared-cloud';
 import { isFrozenServer } from './managed-server-state';
 import { matchesNameFilter } from './name-filter';
 import { openServerPage } from './open-server-page';
@@ -74,6 +90,16 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     matchesNameFilter([managedAgentLabel(agent), agent.name], filter)
   );
   const any = allAgents.length > 0 || (managed.data?.length ?? 0) > 0;
+  // On the shared cloud the page stays as it is everywhere else, with two
+  // changes the shared machines force: no cloud machine of your own to add,
+  // and an agent that is resting or waking says so.
+  const shared = useSharedCloudAgents(serverId);
+  const onSharedCloud = Array.isArray(shared.data);
+  const sharedById = new Map((shared.data ?? []).map((entry) => [entry.agent_id, entry]));
+  const boxIds = sharedCloudBoxIds(
+    useOwnedMachines(serverId).data,
+    useFeatureFlags(serverId).hosted_agents
+  );
 
   return (
     <ServerPage
@@ -84,8 +110,21 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
       {machines.data
         ?.filter((machine) => machine.state !== 'deleted')
         .map((machine) => (
-          <CloudMachineCard key={machine.machine_id} machine={machine} serverId={serverId} />
+          <CloudMachineCard
+            key={machine.machine_id}
+            machine={machine}
+            serverId={serverId}
+            // A shared-cloud box is the person's own cloud, never a machine to
+            // manage: it shows as "Your cloud", with its figures and Repair but
+            // no machine controls. On the shared cloud every row is the box.
+            box={onSharedCloud || (!!machine.controller_id && boxIds.has(machine.controller_id))}
+          />
         ))}
+      {shared.error && (
+        <p role="alert" className="mb-3 text-sm text-destructive">
+          {failureText(shared.error, 'Could not check whether your agents are working or resting.')}
+        </p>
+      )}
       {machines.error && (
         <p role="alert" className="mb-3 text-sm text-destructive">
           {failureText(machines.error, 'Could not load the cloud machine.')}
@@ -126,7 +165,11 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
         {managedAgents.map((agent) => (
-          <ManagedAgentCard key={agent.agentId} agent={agent} />
+          <ManagedAgentCard
+            key={agent.agentId}
+            agent={agent}
+            shared={sharedById.get(agent.agentId) ?? null}
+          />
         ))}
       </div>
       {managed.error && !(server && isFrozenServer(server)) && (
@@ -139,12 +182,24 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 });
 
 /** A managed agent Console has no row for, as its server lists it. */
-function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
+function ManagedAgentCard({
+  agent,
+  shared,
+}: {
+  agent: ManagedAgentView;
+  /** Its state as the shared-cloud service reports it; null to work it out from the agent's own status. */
+  shared: SharedCloudAgent | null;
+}) {
   const { navigate } = useNavigate();
   const label = managedAgentLabel(agent);
   const state = managedAgentState(agent);
   const provider = providerDisplayName(agent.definition.provider) ?? agent.definition.provider;
   const machine = useMachineLabel(agent);
+  const onSharedBox = useOnSharedCloudBox(agent);
+  const box = useCloudMachineFor(agent);
+  const resealResult = useResealResult(agent.serverId, box);
+  const sharedState =
+    shared ?? sharedCloudFromSession(agent, onSharedBox, box, resealResult !== undefined);
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
       <button
@@ -170,11 +225,17 @@ function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
           </div>
         </div>
       </div>
-      <div
-        className={`pointer-events-none px-3.5 pb-3 text-xs ${state.tone === 'problem' ? 'text-destructive' : 'text-foreground-muted'}`}
-      >
-        {state.label}
-      </div>
+      {sharedState && showsSharedCloudState(sharedState) ? (
+        <div className="pointer-events-none px-3.5 pb-3">
+          <SharedCloudAgentState shown={sharedCloudPresentation(sharedState, new Date())} />
+        </div>
+      ) : (
+        <div
+          className={`pointer-events-none px-3.5 pb-3 text-xs ${state.tone === 'problem' ? 'text-destructive' : 'text-foreground-muted'}`}
+        >
+          {state.label}
+        </div>
+      )}
     </div>
   );
 }

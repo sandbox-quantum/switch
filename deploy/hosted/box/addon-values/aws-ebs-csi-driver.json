@@ -1,0 +1,33 @@
+{
+  "controller": {
+    "replicaCount": 2,
+    "nodeSelector": { "switch.dev/pool": "system" },
+    "tolerations": [
+      { "key": "switch.dev/system", "operator": "Equal", "value": "true", "effect": "NoSchedule" },
+      { "key": "CriticalAddonsOnly", "operator": "Exists" }
+    ],
+    "affinity": {
+      "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+          "nodeSelectorTerms": [
+            { "matchExpressions": [ { "key": "kubernetes.io/os", "operator": "In", "values": ["linux"] } ] }
+          ]
+        }
+      },
+      "podAntiAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": [
+          { "labelSelector": { "matchLabels": { "app": "ebs-csi-controller" } }, "topologyKey": "kubernetes.io/hostname" }
+        ]
+      }
+    },
+    "topologySpreadConstraints": [
+      {
+        "maxSkew": 1,
+        "topologyKey": "topology.kubernetes.io/zone",
+        "whenUnsatisfiable": "ScheduleAnyway",
+        "labelSelector": { "matchLabels": { "app": "ebs-csi-controller" } }
+      }
+    ],
+    "podDisruptionBudget": { "enabled": true, "maxUnavailable": 1 }
+  }
+}

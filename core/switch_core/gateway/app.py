@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -52,6 +50,7 @@ from switch_core.gateway.feature_flags import router as feature_flags_router
 from switch_core.gateway.github_connections import router as github_connections_router
 from switch_core.gateway.hosted_controller import router as hosted_controller_router
 from switch_core.gateway.hosted_machines import router as hosted_machines_router
+from switch_core.gateway.hosted_provisioner import router as hosted_provisioner_router
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
@@ -59,6 +58,11 @@ from switch_core.gateway.messaging_installs import (
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.organizations import router as organizations_router
+from switch_core.gateway.origin_check import (
+    OriginCheckMiddleware,
+    allowed_origins,
+    log_origin_setup,
+)
 from switch_core.gateway.packages import router as packages_router
 from switch_core.gateway.providers import router as providers_router
 from switch_core.gateway.references import router as references_router
@@ -78,12 +82,35 @@ from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
 from switch_core.keys import Purpose
-from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.hosted import (
+    load_hosted_settings,
+    log_operator_overlaps,
+    warn_if_open_to_all,
+)
 from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
 from switch_core.user_changes import LocalUserChanges
+from switch_core.visibility.audit_routes import router as operator_audit_router
+from switch_core.visibility.dependencies import (
+    load_keyed_id_key,
+    set_process_keyed_id_key,
+)
+from switch_core.visibility.hosted_access_routes import router as hosted_access_router
+from switch_core.visibility.hosted_usage import router as hosted_usage_router
+from switch_core.visibility.operator_action_routes import (
+    router as operator_action_router,
+)
+from switch_core.visibility.operator_limits import configure_limits
+from switch_core.visibility.operators import OperatorList
+from switch_core.visibility.read_views import admin_router as visibility_admin_router
+from switch_core.visibility.read_views import (
+    operator_router as visibility_operator_router,
+)
+from switch_core.visibility.shared_cloud_agents import (
+    router as shared_cloud_agents_router,
+)
 
 
 def create_gateway_app(
@@ -144,19 +171,39 @@ def create_gateway_app(
 
     app = FastAPI(title="Switch Gateway API")
     app.state.chat_service = chat_service
-    app.state.hosted_controller_settings = (
-        HostedControllerSettings.model_validate_json(
-            Path(config.hosted_controller_config_path).read_text()
-        )
-        if config.hosted_controller_config_path
-        else None
+    app.state.hosted_controller_settings = load_hosted_settings(
+        config.hosted_controller_config_path
     )
     if config.hosted_launch_capacity and app.state.hosted_controller_settings is None:
         raise ValueError(
             "HOSTED_LAUNCH_CAPACITY above 0 requires HOSTED_CONTROLLER_CONFIG_PATH."
         )
+    warn_if_open_to_all(
+        app.state.hosted_controller_settings, config.hosted_launch_capacity
+    )
+    # The operator bearer's overlaps (design v1.3): open ones named with their
+    # end, lapsed ones still in the file warned about.
+    log_operator_overlaps(app.state.hosted_controller_settings)
+    # Before any route can need it; an unsafe key file stops the start here.
+    app.state.keyed_id_key = load_keyed_id_key(config)
+    set_process_keyed_id_key(app.state.keyed_id_key)
+    app.state.operator_list = OperatorList(config.visibility_operators_path)
+    # Operator rate limits: A11's title takes its window from the setting, and
+    # a limit set looser than security's default is named once at start.
+    configure_limits(config)
+    app.include_router(operator_audit_router, tags=["hosted-operator"])
+    app.include_router(hosted_access_router, tags=["hosted-operator"])
+    app.include_router(operator_action_router, tags=["hosted-operator"])
+    app.include_router(hosted_usage_router, tags=["hosted-admin"])
+    # Visibility V2: the signed-in person's own agents on the shared cloud, with their states.
+    app.include_router(shared_cloud_agents_router, tags=["shared-cloud"])
     app.include_router(hosted_machines_router, tags=["hosted-machines"])
     app.include_router(hosted_controller_router, tags=["hosted-controller"])
+    app.include_router(hosted_provisioner_router, tags=["hosted-provisioner"])
+    # Visibility V4: the operator's overview and "Show name", and the admin's
+    # People data. They answer 503 until a keyed-id key is set.
+    app.include_router(visibility_operator_router, tags=["visibility"])
+    app.include_router(visibility_admin_router, tags=["visibility"])
     app.state.connector_apps = connector_apps
     install_github_app(app.state, connector_apps.github_app())
     app.include_router(
@@ -192,6 +239,11 @@ def create_gateway_app(
     )
     if config.gateway_oidc_enabled:
         register_oidc_client(config)
+    # One Origin check for every cookie-authenticated change (W.5), and
+    # `X-Frame-Options: DENY` on every answer (W.8).
+    origins = allowed_origins(config)
+    log_origin_setup(config, origins)
+    app.add_middleware(OriginCheckMiddleware, allowed=origins)
 
     app.add_exception_handler(RequestValidationError, validation_error_response)
     app.add_exception_handler(SessionError, session_error_response)

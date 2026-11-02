@@ -36,6 +36,7 @@ const FRESH_MS = 10 * 60 * 1000;
 export class ProviderPrecheck {
   private running: Promise<void> | null = null;
   private startedAt: number | null = null;
+  private failure = false;
 
   constructor(private readonly deps: ProviderPrecheckDeps) {}
 
@@ -44,30 +45,51 @@ export class ProviderPrecheck {
     if (this.running) return;
     if (this.startedAt !== null && this.deps.now() - this.startedAt < FRESH_MS) return;
     this.startedAt = this.deps.now();
+    this.failure = false;
+    let args: string[];
+    try {
+      // Finding the bundles throws when one is missing (a dev Console with no
+      // controller built): a failed check, not a failed page.
+      args = [
+        this.deps.bundles.controller(),
+        'precheck',
+        '--out',
+        this.deps.seedFile(),
+        '--probe-dir',
+        this.deps.probeDir(),
+        '--shared-host-bundle',
+        this.deps.bundles.sharedHost(),
+      ];
+    } catch (error) {
+      this.noteFailure(error);
+      return;
+    }
     this.running = this.deps
-      .execute(
-        this.deps.execPath,
-        [
-          this.deps.bundles.controller(),
-          'precheck',
-          '--out',
-          this.deps.seedFile(),
-          '--probe-dir',
-          this.deps.probeDir(),
-          '--shared-host-bundle',
-          this.deps.bundles.sharedHost(),
-        ],
-        { ...this.deps.env(), ELECTRON_RUN_AS_NODE: '1', SWITCH_CONTROLLER_LOG_LEVEL: 'warn' }
-      )
-      .catch((error: unknown) => {
-        // The controller checks every provider itself, as it did before.
-        this.deps.log.warn('Could not check the providers ahead of the controller', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+      .execute(this.deps.execPath, args, {
+        ...this.deps.env(),
+        ELECTRON_RUN_AS_NODE: '1',
+        SWITCH_CONTROLLER_LOG_LEVEL: 'warn',
       })
+      .catch((error: unknown) => this.noteFailure(error))
       .finally(() => {
         this.running = null;
       });
+  }
+
+  /**
+   * Whether the checks started in this session failed outright, so no results
+   * are coming: a page waiting on them stops waiting and says so (B38).
+   */
+  failed(): boolean {
+    return this.failure;
+  }
+
+  private noteFailure(error: unknown): void {
+    this.failure = true;
+    // The controller checks every provider itself, as it did before.
+    this.deps.log.warn('Could not check the providers ahead of the controller', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   /**

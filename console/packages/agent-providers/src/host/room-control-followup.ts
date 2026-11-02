@@ -28,10 +28,33 @@ export function followupCommandId(commandId: string): string {
   return `${commandId}:followup`;
 }
 
+/**
+ * The room lines for a reset typed in a room (B71; the designer's words, 27
+ * Oct). Each is said only once the box knows what happened, so no line claims
+ * a reset that didn't happen.
+ */
+/** An awake session took the reset. */
+export const RESET_ACCEPTED_LINE = 'Resetting my session: clearing context, then reconnecting.';
+/** A resting (parked) session was reset: its saved conversation is cleared. */
+export const RESET_RESTING_LINE =
+  "I was resting, so I've cleared my saved session. My next reply starts fresh.";
+/** The reset could not be done. */
+export const RESET_FAILED_LINE =
+  "I couldn't reset my session. Send the command again in a minute, or ask my owner to restart me from Switch Console.";
+
+/**
+ * How long a session host waits for a session it has just started to finish
+ * starting before it hands it a reset (B71, box C 27 Oct): a resting session
+ * is started to take its reset, and the provider reports ready a moment after
+ * the host is up. Its parent waits this long, and a little more, for the answer.
+ */
+export const SESSION_READY_MS = 30_000;
+
 /** What the room is told when the session refused a reset or compaction asked for there. */
 export function roomControlRefusal(action: 'reset' | 'compact', reason: string | null): string {
   if (reason?.includes('SESSION_BUSY'))
     return `I can't ${action} my session while I'm working on a turn. Ask again once I've finished, or stop the turn first.`;
+  if (action === 'reset') return RESET_FAILED_LINE;
   return `I couldn't ${action} my session: ${reason?.replace(/^Error: /, '') || 'the session refused it.'}`;
 }
 

@@ -41,6 +41,7 @@ from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
     Agent,
     ApiKey,
+    AuditEvent,
     Client,
     Invitation,
     Organization,
@@ -2291,6 +2292,138 @@ class TestBudgetRoutes:
             )
 
         assert response.status_code == 404
+
+    async def _budget_audit(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> list[AuditEvent]:
+        async with tenant_session(session_factory, TENANT_A) as session:
+            return list(
+                await session.scalars(
+                    select(AuditEvent)
+                    .where(AuditEvent.target_type == "budget")
+                    .order_by(AuditEvent.occurred_at, AuditEvent.id)
+                )
+            )
+
+    async def test_each_budget_change_is_recorded_with_before_and_after(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Visibility L1 (security): add, change and remove each write one
+        Activity entry: who, which budget, and the limit and period before and
+        after."""
+        user_id, token = await self._admin(session_factory, "budget-audit")
+        async with _client(_app(session_factory), token) as client:
+            created = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": "turns",
+                    "model": "",
+                    "amount_limit": 5,
+                    "period_hours": 24,
+                },
+            )
+            budget_id = created.json()["id"]
+            changed = await client.put(
+                f"/tenants/{TENANT_A}/budgets/{budget_id}",
+                json={"amount_limit": 9, "period_hours": 48},
+            )
+            removed = await client.delete(f"/tenants/{TENANT_A}/budgets/{budget_id}")
+        assert (created.status_code, changed.status_code, removed.status_code) == (
+            201,
+            200,
+            204,
+        )
+        rows = await self._budget_audit(session_factory)
+        assert [r.action for r in rows] == [
+            "budget.created",
+            "budget.updated",
+            "budget.deleted",
+        ]
+        assert {r.actor_user_id for r in rows} == {user_id}
+        assert {r.target_id for r in rows} == {budget_id}
+        terms = {
+            "metric": "turns",
+            "model": "",
+            "agent_id": None,
+            "amount_limit": 5,
+            "period_hours": 24,
+        }
+        assert rows[0].details == {"after": terms}
+        after = {**terms, "amount_limit": 9, "period_hours": 48}
+        assert rows[1].details == {"before": terms, "after": after}
+        assert rows[2].details == {"before": after}
+
+    async def test_a_budget_change_that_fails_records_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        _, token = await self._admin(session_factory, "budget-audit-fails")
+        budget = {
+            "agent_id": None,
+            "metric": "turns",
+            "model": "",
+            "amount_limit": 5,
+            "period_hours": 24,
+        }
+        async with _client(_app(session_factory), token) as client:
+            first = await client.post(f"/tenants/{TENANT_A}/budgets", json=budget)
+            twice = await client.post(f"/tenants/{TENANT_A}/budgets", json=budget)
+            missing = await client.put(
+                f"/tenants/{TENANT_A}/budgets/no-such-budget",
+                json={"amount_limit": 9, "period_hours": 48},
+            )
+            gone = await client.delete(f"/tenants/{TENANT_A}/budgets/no-such-budget")
+        assert (first.status_code, twice.status_code) == (201, 409)
+        assert (missing.status_code, gone.status_code) == (404, 404)
+        rows = await self._budget_audit(session_factory)
+        assert [r.action for r in rows] == ["budget.created"]
+
+    async def test_the_daily_ai_cap_is_set_as_a_budget_and_nudges_after_commit(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Visibility L1b: the admin sets the daily AI cap; the route bumps the
+        workspace's hosted controllers and nudges them only after the commit.
+        Changing it to anything but a day is refused."""
+        _, token = await self._admin(session_factory, "daily-cap-admin")
+        app = _app(session_factory)
+        nudged: list[tuple[str, str, int]] = []
+        app.state.assignment_nudge = lambda t, c, r: nudged.append((t, c, r))
+        async with _client(app, token) as client:
+            created = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": "hosted_ai_calls",
+                    "model": "",
+                    "amount_limit": 300,
+                    "period_hours": 24,
+                },
+            )
+            assert created.status_code == 201, created.text
+            budget_id = created.json()["id"]
+            stretched = await client.put(
+                f"/tenants/{TENANT_A}/budgets/{budget_id}",
+                json={"amount_limit": 300, "period_hours": 720},
+            )
+            lowered = await client.put(
+                f"/tenants/{TENANT_A}/budgets/{budget_id}",
+                json={"amount_limit": 200, "period_hours": 24},
+            )
+            weekly = await client.post(
+                f"/tenants/{TENANT_A}/budgets",
+                json={
+                    "agent_id": None,
+                    "metric": "hosted_ai_calls",
+                    "model": "",
+                    "amount_limit": 300,
+                    "period_hours": 168,
+                },
+            )
+        assert stretched.status_code == 422
+        assert lowered.status_code == 200
+        assert weekly.status_code == 422
+        # No hosted controllers in this workspace here: nothing to nudge, and no error.
+        assert nudged == []
 
     async def test_a_limit_that_is_not_positive_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]

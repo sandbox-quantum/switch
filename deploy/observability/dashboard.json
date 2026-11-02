@@ -1162,6 +1162,252 @@
         "width": 12,
         "height": 4
       }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**Hosted agents.** Read from hosted boxes' status reports and the operator's observations: no ids, only counts and fixed words. Gauges come from one Core process (the hosted metrics lock holder) and leave out reports older than 3 minutes. A box gone silent shows as boxes reporting below boxes expected; paused or stopped boxes aren't expected.",
+        "background_color": "gray",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 101,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Agents on hosted boxes, by process and session state",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.agents{$env,$service} by {process,session}",
+            "display_type": "area"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 103,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted agents stopped, by reason (out_of_memory = memory guard); guard stops and valve parks",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.agents_stopped{$env,$service} by {reason}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.guard_stops{$env,$service}.as_count()",
+            "display_type": "bars"
+          },
+          {
+            "q": "sum:switch.hosted.valve_parks{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 103,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted sessions: running vs max, and waiting for room",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.sessions{$env,$service} by {kind}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.waiting_for_room{$env,$service}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 107,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box memory used (%), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.box_memory_used{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.box_memory_used{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 107,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted box anonymous memory (bytes), p95 / max. Needs distribution mapping, see README",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "p95:switch.hosted.box_anon_memory{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.hosted.box_anon_memory{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 111,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted agent restarts (last 10 min), OOM kills, and box evictions",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.agent_restarts_10m{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.agent_oom_kills{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.box_evictions{$env,$service}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 111,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Provider gateway on hosted boxes, by kind; boxes with a valve memory problem, by state",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.gateway{$env,$service} by {kind}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.boxes_valve_memory{$env,$service} by {state}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 115,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Hosted boxes reporting vs expected (silent box = reporting below expected)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.boxes_reporting{$env,$service}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:switch.hosted.boxes_expected{$env,$service}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 6,
+        "y": 115,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Controller credentials refused per second, by reason (lockout_started = an address locked out)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.controller.credential_refusals{$env,$service} by {reason}.as_rate()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 119,
+        "width": 6,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Operator alerts open, by condition (the box, machine or service is on the operator's Alerts tab)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.hosted.alerts_open{$env,$service} by {condition}",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 123,
+        "width": 12,
+        "height": 4
+      }
     }
   ]
 }

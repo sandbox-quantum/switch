@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { refreshCodexAuthentication } from '../codex/home';
 import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
@@ -106,6 +106,39 @@ async function writeAuthentication(root: string, relative: string, content: stri
   } finally {
     await record.close();
   }
+}
+
+/**
+ * Every file `materializeHostedProvider` can write a login into under an agent
+ * host's root, whatever the provider, relative to the root.
+ */
+export const HOSTED_LOGIN_FILES = [
+  VERTEX_CREDENTIALS_FILE,
+  'provider-home/auth.json',
+  'provider-data/opencode/auth.json',
+  'provider-home/antigravity-acp/acp_token.json',
+] as const;
+
+/**
+ * Deletes the login files a given login left under an agent host's root, with
+ * the fingerprints and half-written copies beside them; the paths deleted,
+ * relative to the root. The agent host writes the login it is given again
+ * when it starts, so a login withdrawn or replaced leaves no copy behind.
+ */
+export async function removeHostedLoginFiles(root: string): Promise<string[]> {
+  const removed: string[] = [];
+  for (const relative of HOSTED_LOGIN_FILES)
+    for (const suffix of ['', '.switch-credential', '.switch-new']) {
+      const path = join(root, relative + suffix);
+      try {
+        await lstat(path);
+      } catch {
+        continue;
+      }
+      await rm(path, { force: true });
+      removed.push(relative + suffix);
+    }
+  return removed;
 }
 
 export async function materializeHostedProvider(

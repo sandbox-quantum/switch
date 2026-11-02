@@ -72,6 +72,14 @@ SWITCH_BUDDY = "switch_buddy"
 # turning it on before the rollout finishes is not protected.
 GROUP_CHATS = "group_chats"
 
+# Awake-time budgets on hosted agents (visibility L5). Off until every hosted
+# box is split (v12.2's roll), because on an unsplit box the agents share the
+# controller's user and could under-report the awake time a budget sums
+# (security; the tech lead's decision). Off, the budgets route refuses an
+# `awake_minutes` budget, `BudgetGuard` ignores any such row, and Console
+# doesn't offer one. Awake time is still counted and shown either way.
+HOSTED_AWAKE_BUDGETS = "hosted_awake_budgets"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -84,5 +92,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         AGENT_CHATS,
         SWITCH_BUDDY,
         GROUP_CHATS,
+        HOSTED_AWAKE_BUDGETS,
     }
 )

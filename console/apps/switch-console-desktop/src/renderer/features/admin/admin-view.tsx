@@ -7,6 +7,8 @@ import {
   useConnectorCatalog,
   useServerFeatureFlags,
 } from '@renderer/features/connectors/connectors-queries';
+import { SharedCloudAdmin } from '@renderer/features/shared-cloud/shared-cloud-admin';
+import { useSharedCloudOverview } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -17,6 +19,7 @@ import { PageContent } from '@renderer/lib/components/page-layout';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import type { SharedCloudOverview } from '@shared/core/shared-cloud/shared-cloud';
 import { AdminFrame, adminGroupsInScope } from './admin-frame';
 import {
   ADMIN_MENU_LABELS,
@@ -58,11 +61,15 @@ const AdminPanel = observer(function AdminPanel() {
   const { navigate } = useNavigate();
   const access = connectorsPageAccess(useServerFeatureFlags(serverId));
   const workspace = workspacesStore.onServerInScope(serverId);
-  const groups = adminGroupsInScope(serverId, access === 'shown');
+  // The shared machines are a Switch operator's view. The server says who that
+  // is; a workspace admin's view of them is parked for now.
+  const overview = useSharedCloudOverview(serverId);
+  const sharedCloud = overview.data?.viewer === 'operator';
+  const groups = adminGroupsInScope(serverId, access === 'shown', sharedCloud);
   const section = shownAdminSection(groups, params.section);
   const hasStatus = groups.some((group) => group.items.includes('status'));
   const redirect =
-    access === 'loading' || section !== null
+    access === 'loading' || overview.isLoading || section !== null
       ? null
       : hasStatus
         ? 'managedServer'
@@ -73,7 +80,7 @@ const AdminPanel = observer(function AdminPanel() {
     if (redirect !== null) navigate(redirect, { serverId });
   }, [redirect, navigate, serverId]);
 
-  if (access !== 'shown' || workspace === null || redirect !== null)
+  if ((access !== 'shown' && !sharedCloud) || workspace === null || redirect !== null)
     return (
       <ServerPage width={880} title="Admin" description="">
         <Spinner />
@@ -94,6 +101,7 @@ const AdminPanel = observer(function AdminPanel() {
       operator={operator}
       groups={groups}
       section={section}
+      overview={overview.data ?? null}
       openApp={params.app ?? null}
       workspace={workspace}
       serverName={switchServersStore.servers.find((s) => s.id === serverId)?.name ?? 'This server'}
@@ -111,6 +119,7 @@ function Admin({
   operator,
   groups,
   section,
+  overview,
   openApp,
   workspace,
   serverName,
@@ -119,6 +128,7 @@ function Admin({
   operator: boolean;
   groups: AdminGroup[];
   section: AdminSection;
+  overview: SharedCloudOverview | null;
   openApp: string | null;
   workspace: { id: string; name: string };
   serverName: string;
@@ -145,7 +155,22 @@ function Admin({
   return (
     <AdminFrame serverId={serverId} groups={groups} active={section}>
       <PageContent className="px-0">
-        {opened ? (
+        {section === 'cloud' ? (
+          <div className="space-y-6 pb-10">
+            <PageHeader
+              sticky
+              title={ADMIN_MENU_LABELS.cloud}
+              description={`The shared machines that run cloud agents on ${serverName}: how full each one is, and whether people are kept apart.`}
+            />
+            {overview ? (
+              <SharedCloudAdmin overview={overview} />
+            ) : (
+              <p className="text-sm text-foreground-muted">
+                The shared cloud isn't answering right now. This page fills in when it does.
+              </p>
+            )}
+          </div>
+        ) : opened ? (
           <div className="pt-10 pb-10">
             <ConnectorAppProfile
               key={opened.slug}

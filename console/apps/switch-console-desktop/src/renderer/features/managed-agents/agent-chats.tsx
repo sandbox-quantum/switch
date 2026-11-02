@@ -34,9 +34,11 @@ import {
   shownAgentRoom,
   shownAgentSection,
 } from './agent-sections';
+import { AgentStatusPanel } from './agent-status-panel';
 import { shouldAutoStartChat } from './auto-start-chat';
 import { ManagedAgentPage } from './managed-agent-page';
 import { managedAgentLabel } from './managed-agent-state';
+import { useManagedAgentActions } from './use-managed-agent-actions';
 import { useRunsOnThisComputer } from './use-managed-agents';
 
 /**
@@ -182,6 +184,12 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
   const thisComputer = useRunsOnThisComputer(agent);
+  // Visibility V2: Restart agent in the Status panel is turning it off and on again, as Your Agents does (B48).
+  const { busy: restarting, setDesiredState } = useManagedAgentActions(agent);
+  const restart = async () => {
+    await setDesiredState('stopped');
+    await setDesiredState('running');
+  };
   const shownRoom = openAgentRoom(agent, params.room, section);
   // The unsaved chat open before a reload is kept, but not in memory yet: it opens again.
   const restoring =
@@ -232,6 +240,15 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           selected={section}
           onSelect={(chosen) => setParams({ section: chosen })}
         />
+        {/* Why it stopped (visibility V2): on a Switch cloud machine only, as the cards are. */}
+        {agent.stopReason && agent.machine && isCloudMachine(agent.machine) && (
+          <AgentStatusPanel
+            reason={agent.stopReason}
+            now={new Date()}
+            onRestart={() => void restart()}
+            restarting={restarting}
+          />
+        )}
         <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
           {ownServer && chatsStore.listError && (
             <div

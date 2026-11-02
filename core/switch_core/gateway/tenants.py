@@ -32,6 +32,8 @@ from switch_core.db.models import (
     Tenant,
     TenantJoinDomain,
     TenantMember,
+    UsageBudget,
+    UsageMetric,
     User,
     require_tenant_id,
 )
@@ -42,6 +44,7 @@ from switch_core.db.stores.budget_store import (
     BudgetNotFound,
     BudgetStanding,
     BudgetStore,
+    bump_hosted_controllers,
 )
 from switch_core.db.stores.invitation_store import (
     InvitationNotUsableError,
@@ -120,6 +123,7 @@ from switch_core.gateway.schemas import (
     TenantCreateRequest,
     TenantMembershipResponse,
     UsageTotalResponse,
+    daily_cap_problem,
 )
 from switch_core.gateway.service_connections import service_refusal
 from switch_core.gateway.workspace_access import (
@@ -130,6 +134,8 @@ from switch_core.gateway.workspace_creation import create_organization_for
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
 from switch_core.tenant_context import current_tenant_id
+from switch_core.visibility.activity_names import member_names, names_for
+from switch_core.visibility.keyed_id import KeyedIdKey
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +621,74 @@ async def _budget_standing(
     raise HTTPException(status_code=404, detail="Budget not found")
 
 
+def _budget_terms(budget: UsageBudget) -> dict:
+    """What a budget covers and allows, for its audit entry: ids, a fixed
+    metric, numbers and the model name, never anything a person typed."""
+    return {
+        "metric": budget.metric,
+        "model": budget.model,
+        "agent_id": budget.agent_id,
+        "amount_limit": budget.amount_limit,
+        "period_hours": budget.period_hours,
+    }
+
+
+async def _audit_budget(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    actor_id: str,
+    action: AuditAction,
+    budget_id: str,
+    details: dict,
+) -> None:
+    """Every budget change is recorded in the workspace's Activity (visibility
+    L1, security), in the change's own transaction, so a change that doesn't
+    commit leaves no entry and one that does always has one."""
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=actor_id,
+        action=action,
+        target_type="budget",
+        target_id=budget_id,
+        details=details,
+    )
+
+
+def _nudge_controllers(
+    request: Request, tenant_id: str, revisions: dict[str, int]
+) -> None:
+    """After the commit: tell the workspace's hosted controllers their
+    assignment changed (the daily cap, L1b). The wiring in `switch_core.main`
+    hands the gateway this hook, so this module needn't import management."""
+    nudge = getattr(request.app.state, "assignment_nudge", None)
+    if nudge is None:
+        return
+    for controller_id, revision in revisions.items():
+        nudge(tenant_id, controller_id, revision)
+
+
+async def _daily_cap_changed(
+    session: AsyncSession, tenant_id: str, metric: str
+) -> dict[str, int]:
+    """Bump the workspace's hosted controllers when the daily AI cap changes."""
+    if metric != UsageMetric.HOSTED_AI_CALLS.value:
+        return {}
+    return await bump_hosted_controllers(session, tenant_id)
+
+
+async def _budget_row(
+    session: AsyncSession, tenant_id: str, budget_id: str
+) -> UsageBudget | None:
+    budget: UsageBudget | None = await session.scalar(
+        select(UsageBudget).where(
+            UsageBudget.tenant_id == tenant_id, UsageBudget.id == budget_id
+        )
+    )
+    return budget
+
+
 @router.get("/tenants/{tenant_id}/budgets")
 async def list_budgets(
     tenant_id: str,
@@ -638,7 +712,9 @@ async def create_budget(
     session: Annotated[AsyncSession, Depends(get_session)],
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
     agent_store: Annotated[AgentStore, Depends(get_agent_store)],
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    request: Request,
 ) -> BudgetResponse:
     """Add a budget to the bound tenant. `owner`/`admin` only.
 
@@ -647,6 +723,15 @@ async def create_budget(
     that one instead.
     """
     _require_bound_tenant(tenant_id)
+    if (
+        body.metric is UsageMetric.AWAKE_MINUTES
+        and not config.hosted_awake_budgets_enabled
+    ):
+        # Off until every hosted box is split (`hosted_awake_budgets`).
+        raise HTTPException(
+            status_code=422,
+            detail="Awake-time budgets aren't available on this server yet",
+        )
     if body.agent_id is not None:
         agent = await agent_store.get(session, body.agent_id)
         if agent is None or agent.tenant_id != tenant_id:
@@ -666,7 +751,17 @@ async def create_budget(
             status_code=409,
             detail="A budget for this agent, metric and model already exists",
         ) from exc
+    await _audit_budget(
+        session,
+        tenant_id=tenant_id,
+        actor_id=user.id,
+        action=AuditAction.BUDGET_CREATED,
+        budget_id=budget.id,
+        details={"after": _budget_terms(budget)},
+    )
+    revisions = await _daily_cap_changed(session, tenant_id, budget.metric)
     await session.commit()
+    _nudge_controllers(request, tenant_id, revisions)
     return await _budget_standing(session, budget_store, tenant_id, budget.id)
 
 
@@ -677,13 +772,27 @@ async def update_budget(
     body: BudgetUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    request: Request,
 ) -> BudgetResponse:
     """Change a budget's limit and period. `owner`/`admin` only. What it
     covers is fixed; to cover something else, add another budget."""
     _require_bound_tenant(tenant_id)
+    before = await _budget_row(session, tenant_id, budget_id)
+    before_terms = None if before is None else _budget_terms(before)
+    if before is not None and before.metric == UsageMetric.HOSTED_AI_CALLS.value:
+        # The daily AI cap stays daily (visibility L1b, engineer-4).
+        try:
+            daily_cap_problem(
+                agent_id=None,
+                model="",
+                amount_limit=body.amount_limit,
+                period_hours=body.period_hours,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        await budget_store.update(
+        updated = await budget_store.update(
             session,
             tenant_id=tenant_id,
             budget_id=budget_id,
@@ -692,7 +801,17 @@ async def update_budget(
         )
     except BudgetNotFound as exc:
         raise HTTPException(status_code=404, detail="Budget not found") from exc
+    await _audit_budget(
+        session,
+        tenant_id=tenant_id,
+        actor_id=user.id,
+        action=AuditAction.BUDGET_UPDATED,
+        budget_id=budget_id,
+        details={"before": before_terms, "after": _budget_terms(updated)},
+    )
+    revisions = await _daily_cap_changed(session, tenant_id, updated.metric)
     await session.commit()
+    _nudge_controllers(request, tenant_id, revisions)
     return await _budget_standing(session, budget_store, tenant_id, budget_id)
 
 
@@ -702,15 +821,32 @@ async def delete_budget(
     budget_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     budget_store: Annotated[BudgetStore, Depends(get_budget_store)],
-    _user: Annotated[User, Depends(require_tenant_admin)],
+    user: Annotated[User, Depends(require_tenant_admin)],
+    request: Request,
 ) -> Response:
     """Remove a budget. `owner`/`admin` only."""
     _require_bound_tenant(tenant_id)
+    before = await _budget_row(session, tenant_id, budget_id)
+    before_terms = None if before is None else _budget_terms(before)
     try:
         await budget_store.delete(session, tenant_id=tenant_id, budget_id=budget_id)
     except BudgetNotFound as exc:
         raise HTTPException(status_code=404, detail="Budget not found") from exc
+    await _audit_budget(
+        session,
+        tenant_id=tenant_id,
+        actor_id=user.id,
+        action=AuditAction.BUDGET_DELETED,
+        budget_id=budget_id,
+        details={"before": before_terms},
+    )
+    revisions = (
+        {}
+        if before is None
+        else await _daily_cap_changed(session, tenant_id, before.metric)
+    )
     await session.commit()
+    _nudge_controllers(request, tenant_id, revisions)
     return Response(status_code=204)
 
 
@@ -727,9 +863,15 @@ async def list_invitations(
     return [_invitation_detail(i) for i in invitations]
 
 
+def _keyed_id_key_or_none(request: Request) -> KeyedIdKey | None:
+    key = getattr(request.app.state, "keyed_id_key", None)
+    return key if isinstance(key, KeyedIdKey) else None
+
+
 @router.get("/tenants/{tenant_id}/audit-events")
 async def list_tenant_audit_events(
     tenant_id: str,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     _user: Annotated[User, Depends(require_tenant_admin)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -743,6 +885,12 @@ async def list_tenant_audit_events(
     events = await list_audit_events(
         session, tenant_id=tenant_id, limit=limit, before=before
     )
+    # Names for the workspace's own members, whom its admins already see.
+    names = names_for(
+        events,
+        members=await member_names(session, tenant_id),
+        key=_keyed_id_key_or_none(request),
+    )
     return [
         AuditEventDetail(
             id=event.id,
@@ -752,8 +900,10 @@ async def list_tenant_audit_events(
             target_type=event.target_type,
             target_id=event.target_id,
             details=event.details,
+            actor_name=actor_name,
+            target_name=target_name,
         )
-        for event in events
+        for event, (actor_name, target_name) in zip(events, names, strict=True)
     ]
 
 

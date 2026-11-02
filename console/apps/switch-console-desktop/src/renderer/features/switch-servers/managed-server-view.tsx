@@ -6,6 +6,7 @@ import { type GuardResult, type ViewDefinition } from '@renderer/app/view-regist
 import { AdminFrame, adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
+import { useSharedCloudOverview } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
@@ -129,7 +130,9 @@ const ManagedServerInAdmin = observer(function ManagedServerInAdmin({
   server: SwitchServer;
 }) {
   const serviceConnections = useFeatureFlags(server.id).service_connections;
-  const groups = adminGroupsInScope(server.id, serviceConnections && !isFrozenServer(server));
+  const frozen = isFrozenServer(server);
+  const sharedCloud = useSharedCloudOverview(frozen ? null : server.id).data?.viewer === 'operator';
+  const groups = adminGroupsInScope(server.id, serviceConnections && !frozen, sharedCloud);
   return (
     <AdminFrame serverId={server.id} groups={groups} active="status">
       <ManagedServerPage server={server} />

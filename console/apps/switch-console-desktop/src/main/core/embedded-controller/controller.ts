@@ -43,6 +43,9 @@ export const embeddedControllerController = createRPCController({
   precheckedProviders: async (): Promise<MachineProvider[] | null> =>
     (await providerPrecheck.results())?.map(machineProvider) ?? null,
 
+  /** Whether that check failed outright, so nothing more is coming from it. */
+  precheckFailed: async (): Promise<boolean> => providerPrecheck.failed(),
+
   /** Renames this computer as a machine and/or changes its description, on the server. */
   updateDetails: (params: { serverId: string; changes: MachineDetailsChange }): Promise<void> =>
     embeddedControllerService.updateDetails(params.serverId, params.changes),

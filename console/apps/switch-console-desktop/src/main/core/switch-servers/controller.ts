@@ -6,6 +6,10 @@ import { resetChatStream } from '@main/core/chats/chat-streams';
 import { embeddedControllerService } from '@main/core/embedded-controller/embedded-controllers';
 import { featureFlagsService } from '@main/core/feature-flags/feature-flags';
 import { isManagedServerRunning } from '@main/core/managed-switch-server/managed-server-status';
+import {
+  fetchSharedCloudOverview,
+  listSharedCloudAgents,
+} from '@main/core/shared-cloud/shared-cloud-client';
 import type { TelemetryAuthMethod, TelemetrySignInFailure } from '@main/core/telemetry/events';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { reconcileServerWorkspaces } from '@main/core/workspaces/reconcile-workspaces';
@@ -278,6 +282,12 @@ export const switchServersController = createRPCController({
     withServerWorkspaceSession(serverId, async (server) =>
       (await hostedAgentsOn(server)) ? listCloudMachines(server) : null
     ),
+  /** The caller's agents on the shared cloud with their states, or null when the server offers none. */
+  sharedCloudAgents: (serverId: string) =>
+    withServerWorkspaceSession(serverId, (server) => listSharedCloudAgents(server)),
+  /** The admin's view of the shared cloud, or null when it is not offered or not theirs. */
+  sharedCloudOverview: (serverId: string) =>
+    withServerWorkspaceSession(serverId, (server) => fetchSharedCloudOverview(server)),
   cloudMachineLifecycle: (
     serverId: string,
     machineId: string,

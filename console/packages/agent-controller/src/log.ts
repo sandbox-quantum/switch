@@ -50,3 +50,13 @@ export function errorMessage(error: unknown): string {
   const cause = error.cause instanceof Error ? error.cause.message : null;
   return cause && !error.message.includes(cause) ? `${error.message} (${cause})` : error.message;
 }
+
+/**
+ * An error's code or name for a log line: never its message, which on a box
+ * can carry a path with a home folder in it.
+ */
+export function errorCode(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') return code;
+  return error instanceof Error ? error.name : 'unknown error';
+}

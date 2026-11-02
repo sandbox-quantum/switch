@@ -14,12 +14,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.ownership import Fence, OwnedKind, Ownership
+from switch_core.session_activity.restart_sweep import (
+    OFFLINE_AFTER,
+    CutOffTurn,
+    PostAsAgent,
+    sweep_tenant,
+)
 from switch_core.session_activity.service import AgentSessionActivityService
 from switch_core.tenant_context import no_tenant, tenant_scope
 
@@ -143,3 +149,48 @@ def own_maintenance(
     kind = ownership.kind(SWEEP_KIND, start=start, stop=stop)
     kind.want(SWEEP_KEY)
     return kind
+
+
+# ── Turns of boxes that never came back (Level 2, 3b) ─────────────────────────
+
+RESTART_SWEEP_EVERY_SECONDS = 60.0
+
+
+async def sweep_once(
+    session_factory: async_sessionmaker[AsyncSession],
+    post_as_agent: PostAsAgent,
+    *,
+    offline_after: timedelta = OFFLINE_AFTER,
+    now: datetime | None = None,
+) -> list[CutOffTurn]:
+    """One restart sweep over every tenant (`restart_sweep.py`)."""
+    interrupted: list[CutOffTurn] = []
+    for tenant_id in await all_tenant_ids(session_factory):
+        with tenant_scope(tenant_id):
+            try:
+                interrupted.extend(
+                    await sweep_tenant(
+                        session_factory,
+                        tenant_id,
+                        post_as_agent,
+                        offline_after=offline_after,
+                        now=now,
+                    )
+                )
+            except Exception:
+                # One tenant's failure must not stop the others' turns closing.
+                logger.exception("Restart sweep failed for tenant %s", tenant_id)
+    return interrupted
+
+
+async def restart_sweep_loop(
+    session_factory: async_sessionmaker[AsyncSession], post_as_agent: PostAsAgent
+) -> None:
+    """The restart sweep every minute, for the life of the process."""
+    with no_tenant():
+        while True:
+            await asyncio.sleep(RESTART_SWEEP_EVERY_SECONDS)
+            try:
+                await sweep_once(session_factory, post_as_agent)
+            except Exception:
+                logger.exception("Restart sweep failed")

@@ -3,6 +3,7 @@ import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
 import ApartmentOutlined from "@mui/icons-material/ApartmentOutlined";
 import DnsOutlined from "@mui/icons-material/DnsOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
+import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
@@ -74,6 +75,12 @@ const ADMIN_ITEMS: NavItem[] = [
   { label: "Connectors", path: "/connectors", icon: PowerOutlined },
 ];
 
+// People on Core's Switch operator list (`hosted_operator`), not the server
+// admin flag. The page itself asks Core.
+const HOSTED_ITEMS: NavItem[] = [
+  { label: "Hosted", path: "/hosted", icon: CloudOutlined },
+];
+
 // The rail follows the window's height: at a laptop's it is sized so an
 // operator's eleven labelled items and the account button fit, and it grows
 // with the window up to its full size. Shorter still, the items scroll.
@@ -135,7 +142,7 @@ function RailItem({ item, active }: { item: NavItem; active: boolean }) {
 
 export default memo(function NavRail() {
   const location = useLocation();
-  const { user, session, isOperator, logout, switchTo } = useAuth();
+  const { user, session, isOperator, isHostedOperator, logout, switchTo } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -173,6 +180,7 @@ export default memo(function NavRail() {
     ...(managementAvailable ? MANAGEMENT_ITEMS : []),
     ...(tenant?.administers ? WORKSPACE_ADMIN_ITEMS : []),
     ...(isOperator ? ADMIN_ITEMS : []),
+    ...(isHostedOperator ? HOSTED_ITEMS : []),
   ];
   const current = session?.tenant ?? null;
   const others = (session?.tenants ?? []).filter((t) => t.id !== current?.id);

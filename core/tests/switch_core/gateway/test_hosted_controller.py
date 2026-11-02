@@ -2,6 +2,7 @@
 one to boot (the controller it enrolled as, or a one-time code to enroll with),
 and recording what the operator controller observed of it."""
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -69,6 +70,7 @@ MACHINE_ITEM_KEYS = {
     "data_volume_id",
     "retain_until",
     "bundle_revision",
+    "backend",
 }
 
 
@@ -82,12 +84,25 @@ class FakeEnrollment:
 
     def __init__(self) -> None:
         self.minted: list[tuple[str, str]] = []
+        #: Codes a test has made unusable (expired or used), and codes Core retired.
+        self.dead: set[str] = set()
+        self.retired: list[str] = []
 
     async def machine_enrollment_code(
         self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
     ) -> str:
         self.minted.append((require_tenant_id(), workspace.id))
         return f"swce_synthetic-{len(self.minted)}"
+
+    async def machine_enrollment_code_live(
+        self, session: AsyncSession, code: str, now: datetime
+    ) -> bool:
+        return code not in self.dead and code not in self.retired
+
+    async def retire_machine_enrollment_code(
+        self, session: AsyncSession, code: str
+    ) -> None:
+        self.retired.append(code)
 
 
 @dataclass
@@ -372,6 +387,7 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         "data_volume_id": None,
         "retain_until": None,
         "bundle_revision": 1,
+        "backend": "vm",
     }
 
 
@@ -546,6 +562,45 @@ async def test_prepare_hands_over_one_enrollment_code_per_revision(controller_ap
     assert (
         await workspace_of(app.factory, app.machine_id)
     ).enrollment_code_revision == 2
+
+
+async def test_prepare_replaces_a_dead_code_and_retires_it(controller_app):
+    """B111: a box whose first start comes after its code expired (or was used)
+    gets a fresh code at the same revision, never the dead one, and the old one
+    is retired so only one is live."""
+    app = controller_app
+    first = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert first["enrollment_code"] == "swce_synthetic-1"
+    again = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert again["enrollment_code"] == "swce_synthetic-1"  # still live: the same
+    assert app.enrollment.retired == []
+    app.enrollment.dead.add("swce_synthetic-1")
+    fresh = (await prepare(app.client, app.machine_id)).json()["controllers"][0]
+    assert fresh["enrollment_code"] == "swce_synthetic-2"
+    assert app.enrollment.retired == ["swce_synthetic-1"]
+    workspace = await workspace_of(app.factory, app.machine_id)
+    assert workspace.enrollment_code_revision == 1  # same revision, new code
+
+
+async def test_two_prepares_at_once_mint_one_code(controller_app):
+    """The tech lead's point 1: the machine's lock serialises them, so the
+    second finds the first's code live and returns it."""
+    app = controller_app
+    first, second = await asyncio.gather(
+        prepare(app.client, app.machine_id), prepare(app.client, app.machine_id)
+    )
+    assert first.status_code == second.status_code == 200
+    codes = {r.json()["controllers"][0]["enrollment_code"] for r in (first, second)}
+    assert codes == {"swce_synthetic-1"}
+    assert len(app.enrollment.minted) == 1
+
+
+async def test_a_new_revision_retires_the_previous_unused_code(controller_app):
+    app = controller_app
+    await prepare(app.client, app.machine_id)
+    await update_machine(app.factory, app.machine_id, revision=2)
+    await prepare(app.client, app.machine_id)
+    assert app.enrollment.retired == ["swce_synthetic-1"]
 
 
 async def test_prepare_names_the_controller_the_machine_enrolled_as(controller_app):
@@ -766,6 +821,50 @@ async def test_controller_observation_fixture_is_accepted(controller_app):
     assert saved.instance_id == body["instance_id"]
     assert saved.instance_type == body["instance_type"]
     assert saved.running_observed_at is not None
+
+
+async def test_an_eviction_count_is_logged_once_and_nothing_else_changes(
+    controller_app, caplog
+):
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning", revision=1)
+    with caplog.at_level("WARNING", logger="switch_core.gateway.hosted_controller"):
+        plain = await observe(app.client, app.machine_id, state="running", revision=1)
+        counted = await observe(
+            app.client, app.machine_id, state="running", revision=1, evictions=2
+        )
+        zero = await observe(
+            app.client, app.machine_id, state="running", revision=1, evictions=0
+        )
+    # The field changes nothing in what Core records or answers.
+    assert plain == counted == zero
+    lines = [r.getMessage() for r in caplog.records if "pushed off" in r.getMessage()]
+    assert lines == [
+        f"Cloud machine {app.machine_id}: its box was pushed off its machine 2 time(s) since the last observation."
+    ]
+
+
+async def test_an_eviction_is_remembered_as_visibility_v2s_box_moved(controller_app):
+    """On this cluster a box only moves by eviction, so the count marks the box as moved for
+    15 minutes (platform), and only a count above zero does."""
+    from switch_core.visibility.recent_moves import recent_moves
+
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning", revision=1)
+    await observe(app.client, app.machine_id, state="running", revision=1, evictions=0)
+    assert recent_moves.moved_at(app.machine_id, datetime.now(UTC)) is None
+    await observe(app.client, app.machine_id, state="running", revision=1, evictions=1)
+    moved = recent_moves.moved_at(app.machine_id, datetime.now(UTC))
+    assert moved is not None and datetime.now(UTC) - moved < timedelta(minutes=1)
+
+
+async def test_an_eviction_count_out_of_range_is_refused(controller_app):
+    app = controller_app
+    path = f"/hosted-controller/machines/{app.machine_id}/observation"
+    for evictions in (-1, 1_000_001, 1.5, [1]):
+        body = {"state": "running", "revision": 1, "evictions": evictions}
+        response = await app.client.post(path, headers=HEADERS, json=body)
+        assert response.status_code == 422
 
 
 async def test_observation_rejects_unknown_fields_and_codes(controller_app):
@@ -1384,3 +1483,26 @@ async def test_a_stopped_machine_enrolls_its_revoked_controller_at_its_next_star
         assert await enroll_revoked_again(session, here, datetime.now(UTC)) is not None
         await session.commit()
     assert (await machine_of(app.factory, app.machine_id)).revision == before
+
+
+async def test_the_operator_s_machine_list_says_when_machines_are_open_to_all(
+    controller_app,
+):
+    app = controller_app
+    fastapi_app = app.client._transport.app
+    listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert "open_to_all" not in listed.json()  # the fixture lists its workspace
+    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
+        update={"allowed_tenant_ids": None, "allowed_user_ids": None}
+    )
+    listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert listed.json()["open_to_all"] is True
+    # The owner's own view never carries how the server is configured.
+    owned = await app.client.get("/hosted-machines")
+    assert owned.status_code == 200
+    assert "open_to_all" not in owned.json()
+    fastapi_app.state.hosted_controller_settings = app.settings.model_copy(
+        update={"allowed_tenant_ids": None, "allowed_user_ids": [app.owner_id]}
+    )
+    listed = await app.client.get("/hosted-controller/machines", headers=HEADERS)
+    assert "open_to_all" not in listed.json()

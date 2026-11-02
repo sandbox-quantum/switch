@@ -50,12 +50,14 @@ protocols. These five adapters are the only Console session runtime.
 
 ```bash
 cd console/packages/agent-providers
-pnpm test:integration                                   # all providers, sequential
-pnpm exec vitest run src/opencode/opencode.integration.test.ts   # one provider
+SWITCH_RUN_INTEGRATION=1 pnpm test:integration                                   # all providers, sequential
+SWITCH_RUN_INTEGRATION=1 pnpm exec vitest run src/opencode/opencode.integration.test.ts   # one provider
 ```
 
-The suite skips itself when the provider binary or login is missing and says
-why. It spends real tokens. Passing a path after `pnpm test:integration --`
+The suite runs only with `SWITCH_RUN_INTEGRATION=1` set, because it drives the
+real provider CLI on this machine with its own login. Without it every provider
+reports skipped. It also skips itself when the provider binary or login is
+missing, and says why. It spends real tokens. Passing a path after `pnpm test:integration --`
 does not filter; use `pnpm exec vitest run <file>` for one provider.
 
 ## Known provider limits (verified 2026-09-05)

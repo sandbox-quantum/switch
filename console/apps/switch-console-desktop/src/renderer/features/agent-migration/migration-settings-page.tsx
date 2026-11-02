@@ -80,7 +80,8 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
       )}
       {data && data.machines.length === 0 && (
         <p className="text-sm text-foreground-muted">
-          No agent of yours is on a server with agent management.
+          Nothing to move. None of your agents on this computer or your SSH hosts needs it. Agents a
+          server already runs, such as cloud agents, aren&apos;t listed here.
         </p>
       )}
       {data && data.machines.length > 0 && (

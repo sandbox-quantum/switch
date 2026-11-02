@@ -247,6 +247,16 @@ class AgentSessionActivityService:
                 if kind == "turn"
                 else None
             )
+            if (
+                kind == "turn"
+                and prior_status in TURN_ENDED
+                and status not in TURN_ENDED
+            ):
+                # An ended turn stays ended: Core may have closed it for a box
+                # that went away (session_activity/restart_sweep.py), and that
+                # box's late report of the turn still running must not reopen
+                # its card.
+                return False
             moved = await self._activity.upsert(
                 db,
                 AgentSessionActivityItem(

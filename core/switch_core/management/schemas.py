@@ -17,7 +17,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    StrictBool,
+    field_validator,
+    model_validator,
+)
 
 from switch_core.config import ControllerRelease
 from switch_core.db.models import (
@@ -57,6 +66,17 @@ def wire_time_or_none(value: datetime | None) -> str | None:
 
 class _ControllerBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
+
+
+# No box has a petabyte: a memory reading past this is refused.
+MAX_MEMINFO_BYTES = 2**50
+# No box runs anywhere near this many agent hosts: a count past it is refused.
+MAX_VALVE_HOSTS = 1000
+# The provider gateway's daily calls (Level 3, visibility L1): the controller's own
+# ceiling on the cap (`MAX_CAP` in gateway-usage.ts), so no honest figure is refused.
+MAX_GATEWAY_CALLS = 1_000_000_000
+# The memory guard's note codes (status extras): Console words them.
+MEMORY_NOTE_CODES = ("unexplained", "sustained")
 
 
 class _StatusBody(BaseModel):
@@ -192,6 +212,86 @@ class MachineStatus(_StatusBody):
     # The absolute directory the controller makes agents' workspaces in. A
     # controller older than this field does not send it.
     workspaces_dir: str | None = None
+    # The box's own memory from /proc/meminfo (AnonPages and Cached), in
+    # bytes, for the cost model and the live page. Absent where the
+    # controller has no /proc (macOS), and from controllers older than these.
+    mem_anon_bytes: int | None = Field(
+        default=None, ge=0, le=MAX_MEMINFO_BYTES, strict=True
+    )
+    mem_cached_bytes: int | None = Field(
+        default=None, ge=0, le=MAX_MEMINFO_BYTES, strict=True
+    )
+    # The box valve's memory problem (B113): "unprotected" when it has never
+    # read the box's memory (it parks and refuses nothing for memory), or
+    # "failing" while readings fail after good ones (new starts wait). Absent
+    # when readings are fine, the valve is off, or the controller is older.
+    valve_memory: Literal["unprotected", "failing"] | None = None
+    # The box valve's agent hosts on the hub, and how many joined it (B85).
+    # Absent where the valve is off, and from controllers older than these.
+    valve_hosts: int | None = Field(default=None, ge=0, le=MAX_VALVE_HOSTS, strict=True)
+    valve_hosts_joined: int | None = Field(
+        default=None, ge=0, le=MAX_VALVE_HOSTS, strict=True
+    )
+    # The provider gateway (Level 3): agents it fronts and calls it refused, and,
+    # where a daily cap is set, today's calls, whether the cap is reached and the
+    # cap itself (visibility L1, Your cloud's "40 of 200 today"). Declared and
+    # bounded so a box can't store anything else under these names.
+    gateway_agents: int | None = Field(
+        default=None, ge=0, le=MAX_VALVE_HOSTS, strict=True
+    )
+    gateway_refused: int | None = Field(
+        default=None, ge=0, le=MAX_GATEWAY_CALLS, strict=True
+    )
+    gateway_calls_today: int | None = Field(
+        default=None, ge=0, le=MAX_GATEWAY_CALLS, strict=True
+    )
+    gateway_capped: bool | None = Field(default=None, strict=True)
+    gateway_daily_cap: int | None = Field(
+        default=None, ge=1, le=MAX_GATEWAY_CALLS, strict=True
+    )
+    # Which number set today's cap (visibility L1b): the operator's own
+    # setting, or the workspace's daily cap held to the gateway's bounds.
+    gateway_cap_source: Literal["local", "workspace"] | None = None
+    # Since the controller started: agents its memory guard stopped, and
+    # sessions its box valve parked. Bounded ints, so a report can't put
+    # anything else in the hosted metrics. Absent where the guard or valve is
+    # off, and from older controllers.
+    guard_stops: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
+    valve_parks: int | None = Field(default=None, ge=0, le=1_000_000, strict=True)
+    # The memory guard's note while the box is high and no agent explains it:
+    # a fixed code, never text, with the box's reading and its shared-memory
+    # part in bytes. Console builds the wording. An older controller's
+    # free-text note is dropped, never stored (see `_drop_old_memory_note`).
+    memory_note: Literal["unexplained", "sustained"] | None = None
+    memory_note_box_bytes: int | None = Field(
+        default=None, ge=0, le=MAX_MEMINFO_BYTES, strict=True
+    )
+    memory_note_shmem_bytes: int | None = Field(
+        default=None, ge=0, le=MAX_MEMINFO_BYTES, strict=True
+    )
+    # Set when an older controller's free-text `memory_note` was dropped, so
+    # the service can count it without the text ever being kept or logged.
+    _dropped_old_note: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _drop_old_memory_note(
+        cls, data: Any, handler: ModelWrapValidatorHandler[Self]
+    ) -> Self:
+        """An older controller sends the guard's note as a sentence. Refusing it
+        would refuse that box's whole report, so a note that isn't one of the
+        codes is dropped instead (security, status extras), and only counted."""
+        dropped = False
+        if (
+            isinstance(data, dict)
+            and data.get("memory_note") is not None
+            and data["memory_note"] not in MEMORY_NOTE_CODES
+        ):
+            data = {key: value for key, value in data.items() if key != "memory_note"}
+            dropped = True
+        model = handler(data)
+        model._dropped_old_note = dropped
+        return model
 
 
 class ProviderStatus(_StatusBody):
@@ -215,20 +315,44 @@ class AgentSessions(_StatusBody):
     ids: list[str]
 
 
+class AgentLetGo(BaseModel):
+    """The box let one of this agent's messages go for waiting too long for room (visibility V2, U1's
+    `waiting_too_long`). A fixed reason and a time only, so a box can't put text in front of its owner."""
+
+    model_config = ConfigDict(extra="forbid")
+    at: str = Field(max_length=40)
+    reason: Literal["timed_out"]
+
+
 class AgentStatus(_StatusBody):
     agent_id: str
     applied_revision: int | None
     process: str
     attached: bool
     sessions: AgentSessions
+    # Where the agent's sessions stand (shown as Running, Back in a moment or
+    # Resting). Only these three values are accepted, so a box can't put
+    # arbitrary text in its owner's Console. Absent from older controllers.
+    session: Literal["active", "waking", "parked"] | None = None
     restarts_10m: int
     oom_kills: int
+    # This agent's AI calls today through the gateway, where the box has a daily
+    # cap (visibility L1). Display only: L5 files each rise under the agent's
+    # client id, and nothing in Core enforces from it.
+    ai_calls_today: int | None = Field(
+        default=None, ge=0, le=MAX_GATEWAY_CALLS, strict=True
+    )
     # The absolute working directory the agent runs in; null before the
     # controller resolved one, absent from a controller older than this field.
     directory: str | None = None
     since: str
     reason: str | None = None
     detail: str | None = None
+    # The last message the box let go for waiting too long; absent from older controllers.
+    let_go: AgentLetGo | None = None
+    # Whether any of its sessions is mid-turn (visibility V2: working versus idle). Strictly a
+    # boolean, so a box can't put anything else there; absent when its host doesn't report it.
+    busy: StrictBool | None = None
 
     @model_validator(mode="after")
     def _failure_has_a_reason(self) -> AgentStatus:

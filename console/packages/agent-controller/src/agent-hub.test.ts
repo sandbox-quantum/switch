@@ -144,7 +144,9 @@ describe('handing events to the watcher', () => {
     expect(seen.gaps).toEqual([]);
   });
 
-  it('starts a later watcher with no cursor at the newest event, as before', async () => {
+  it('starts a later watcher with no cursor where the last one got to, not past what arrived between', async () => {
+    // Changed for B74 review: starting it at the newest event skipped
+    // event 2, which arrived while no host ran (a crash, a restart, a rest).
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);
     const first = watcher();
@@ -156,8 +158,9 @@ describe('handing events to the watcher', () => {
     const second = watcher();
     second.stream.start();
     hub.ingest(message(3, true));
-    await waitFor(() => second.seen.events.length === 1, 'the event after it started');
-    expect(second.seen.events[0]!.sequence).toBe(3);
+    await waitFor(() => second.seen.events.length === 2, 'what arrived between, and after');
+    expect(second.seen.events.map((event) => event.sequence)).toEqual([2, 3]);
+    expect(second.seen.gaps).toEqual([]);
   });
 
   it('tells a watcher starting from before what is held that it missed events', async () => {
@@ -360,6 +363,80 @@ describe('room controls and approvals', () => {
     ]);
   });
 
+  describe('a reset Switch left the box to announce (B71)', () => {
+    const reset = (commandId: string) => ({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: {
+        commandId,
+        sessionId: null,
+        roomTold: false,
+        body: { type: 'session.reset' },
+        origin: { roomId: 'room-a', threadId: 'thread-1' },
+      },
+    });
+    const refusing = () => {
+      const refused: { agentId: string; notice: unknown }[] = [];
+      hub = new AgentHub({
+        log: silentLogger,
+        onCursor: () => {},
+        onChange: () => {},
+        bufferLimit: 5,
+        resetRefused: async (agentId, notice) => void refused.push({ agentId, notice }),
+      });
+      hub.streamAttached();
+      hub.attach(AGENT, 0, ['room-a', 'room-b']);
+      return refused;
+    };
+
+    it('has Switch tell the room it could not be done when no agent host runs', async () => {
+      const refused = refusing();
+      hub.sessionCommand(reset('reset-1'));
+      await waitFor(() => refused.length === 1, 'the refusal');
+      expect(refused).toEqual([
+        {
+          agentId: AGENT,
+          notice: { roomId: 'room-a', threadId: 'thread-1', commandId: 'reset-1' },
+        },
+      ]);
+    });
+
+    it('has Switch tell the room when no session of the agent works there, and does not pass it on', async () => {
+      const refused = refusing();
+      const { stream, seen } = watcher();
+      stream.start();
+      await stream.replacePlacements({ 'session-1': 'room-b' });
+      hub.sessionCommand(reset('reset-2'));
+      await waitFor(() => refused.length === 1, 'the refusal');
+      await delay(20);
+      expect(seen.commands).toEqual([]);
+    });
+
+    it('passes it to the agent host when a session works in the room, even a resting one', async () => {
+      const refused = refusing();
+      const { stream, seen } = watcher();
+      stream.start();
+      await stream.replacePlacements({ 'session-1': 'room-a' });
+      hub.sessionCommand(reset('reset-3'));
+      await waitFor(() => seen.commands.length === 1, 'the reset');
+      expect(refused).toEqual([]);
+    });
+
+    it('leaves a reset Switch announced, and other controls, as they were', async () => {
+      const refused = refusing();
+      hub.sessionCommand({
+        ...reset('reset-4'),
+        command: { ...reset('reset-4').command, roomTold: undefined },
+      });
+      hub.sessionCommand({
+        ...reset('compact-1'),
+        command: { ...reset('compact-1').command, body: { type: 'session.compact' } },
+      });
+      await delay(20);
+      expect(refused).toEqual([]);
+    });
+  });
+
   it('passes approval outcomes to the running agent host', async () => {
     hub.streamAttached();
     hub.attach(AGENT, 0, ['room-a']);
@@ -382,5 +459,344 @@ describe('room controls and approvals', () => {
       answered_by: null,
       answered_at: null,
     });
+  });
+});
+
+describe('an agent suspended until its next message (B74)', () => {
+  let wakes: string[];
+
+  beforeEach(() => {
+    wakes = [];
+    hub = new AgentHub({
+      log: silentLogger,
+      onCursor: (agentId, cursor) => saved.push([agentId, cursor]),
+      onChange: () => changes++,
+      bufferLimit: 5,
+      onWake: (_agentId, why) => void wakes.push(why),
+    });
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+  });
+
+  it('asks to wake for an addressed event, but not for chatter, and only while suspended', () => {
+    hub.ingest(message(1, true));
+    expect(wakes).toEqual([]);
+    hub.setSuspended(AGENT, true);
+    // What was already held when it was suspended is owed a start.
+    expect(wakes).toEqual(['event']);
+    hub.ingest(message(2, false));
+    expect(wakes).toEqual(['event']);
+    hub.ingest(message(3, true));
+    expect(wakes).toEqual(['event', 'event']);
+    hub.setSuspended(AGENT, false);
+    hub.ingest(message(4, true));
+    expect(wakes).toEqual(['event', 'event']);
+  });
+
+  it('keeps a room control for its next agent host, asks to wake, and hands it over once connected', async () => {
+    hub.setSuspended(AGENT, true);
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { commandId: 'reset-1', sessionId: null, body: { type: 'session.reset' } },
+    });
+    expect(wakes).toEqual(['room_control']);
+    expect(hub.waiting(AGENT)).toBe(true);
+    hub.setSuspended(AGENT, false);
+    const { stream, seen } = watcher();
+    stream.start();
+    await waitFor(() => seen.commands.length === 1, 'the kept room control');
+    expect(seen.commands[0]).toMatchObject({ commandId: 'reset-1', roomId: 'room-a' });
+    expect(hub.waiting(AGENT)).toBe(false);
+  });
+
+  it('drops a room control with no agent host when the agent is not suspended, as before', () => {
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { commandId: 'reset-1', sessionId: null },
+    });
+    expect(wakes).toEqual([]);
+    expect(hub.waiting(AGENT)).toBe(false);
+  });
+
+  it('hands a held agent host nothing more until released, and keeps the cursor behind what it holds', async () => {
+    const { stream, seen } = watcher();
+    stream.start();
+    hub.ingest(message(1, true));
+    await waitFor(() => seen.events.length === 1, 'the first event');
+    await hub.hold(AGENT);
+    hub.ingest(message(2, true));
+    await delay(20);
+    expect(seen.events.map((event) => event.sequence)).toEqual([1]);
+    expect(hub.cursors()).toEqual({ [AGENT]: 1 });
+    expect(hub.waiting(AGENT)).toBe(true);
+    hub.release(AGENT);
+    await waitFor(() => seen.events.length === 2, 'the event held meanwhile');
+    expect(hub.waiting(AGENT)).toBe(false);
+  });
+
+  it('waits out the event being handed over when held', async () => {
+    let finish: () => void = () => {};
+    const { stream, seen } = watcher({
+      onEvent: (event) =>
+        new Promise<void>((resolve) => {
+          seen.events.push(event);
+          finish = resolve;
+        }),
+    });
+    stream.start();
+    hub.ingest(message(1, true));
+    await waitFor(() => seen.events.length === 1, 'the event being taken');
+    let held = false;
+    const holding = hub.hold(AGENT).then(() => (held = true));
+    await delay(20);
+    expect(held).toBe(false);
+    finish();
+    await holding;
+    expect(hub.cursors()).toEqual({ [AGENT]: 1 });
+  });
+
+  it('records when its agent host last took an addressed event, not chatter', async () => {
+    let clock = 1_000;
+    hub = new AgentHub({
+      log: silentLogger,
+      onCursor: () => {},
+      onChange: () => {},
+      bufferLimit: 5,
+      now: () => clock,
+    });
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const { stream } = watcher();
+    stream.start();
+    expect(hub.lastAddressedAt(AGENT)).toBeNull();
+    hub.ingest(message(1, true));
+    await waitFor(() => hub.lastAddressedAt(AGENT) === 1_000, 'the addressed event taken');
+    clock = 5_000;
+    hub.ingest(message(2, false));
+    await delay(20);
+    expect(hub.lastAddressedAt(AGENT)).toBe(1_000);
+  });
+
+  it('hands the next agent host what arrived after Core restarted while the agent rested', async () => {
+    // Fails without the fix: the host, holding a cursor from before the
+    // restart, started at the newest event and skipped the ones since.
+    const first = watcher();
+    first.stream.start();
+    for (const seq of [1, 2, 3]) hub.ingest(message(seq, true));
+    await waitFor(() => first.seen.events.length === 3, 'the first three');
+    first.stop();
+    hub.setSuspended(AGENT, true);
+    hub.gap({
+      agent_id: AGENT,
+      from_sequence: 3,
+      resumed_at: 0,
+      all_rooms: true,
+      rooms: ['room-a'],
+      reason: 'switch restarted',
+    });
+    hub.ingest(message(1, true));
+    hub.ingest(message(2, true));
+    expect(wakes).toEqual(['event', 'event']);
+    hub.setSuspended(AGENT, false);
+    // Its own journal still says 3, from the old numbering.
+    const second = watcher({ startCursor: 3 });
+    second.stream.start();
+    await waitFor(() => second.seen.events.length === 2, 'both events since the restart');
+    expect(second.seen.events.map((event) => event.sequence)).toEqual([1, 2]);
+    expect(second.seen.gaps).toEqual([
+      expect.objectContaining({ resumedAt: 0, cursorReset: true }),
+    ]);
+  });
+
+  it('keeps only the latest room control of each kind per room', async () => {
+    hub.setSuspended(AGENT, true);
+    const reset = (commandId: string, room = 'room-a') =>
+      hub.sessionCommand({
+        agent_id: AGENT,
+        room_id: room,
+        command: { commandId, sessionId: null, body: { type: 'session.reset' } },
+      });
+    reset('reset-1');
+    reset('reset-2');
+    reset('reset-3', 'room-b');
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { commandId: 'compact-1', sessionId: null, body: { type: 'session.compact' } },
+    });
+    hub.setSuspended(AGENT, false);
+    hub.attach(AGENT, 0, ['room-a', 'room-b']);
+    const { stream, seen } = watcher();
+    stream.start();
+    await waitFor(() => seen.commands.length === 3, 'the kept room controls');
+    await delay(20);
+    expect(seen.commands.map((command) => command.commandId)).toEqual([
+      'reset-2',
+      'reset-3',
+      'compact-1',
+    ]);
+  });
+
+  it('drops a room control kept longer than ten minutes, rather than run it on a late start', async () => {
+    let clock = 0;
+    hub = new AgentHub({
+      log: silentLogger,
+      onCursor: () => {},
+      onChange: () => {},
+      bufferLimit: 5,
+      onWake: () => {},
+      now: () => clock,
+    });
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    hub.setSuspended(AGENT, true);
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { commandId: 'reset-1', sessionId: null, body: { type: 'session.reset' } },
+    });
+    expect(hub.waiting(AGENT)).toBe(true);
+    clock = 10 * 60_000;
+    expect(hub.waiting(AGENT)).toBe(false);
+    hub.setSuspended(AGENT, false);
+    const { stream, seen } = watcher();
+    stream.start();
+    await delay(20);
+    expect(seen.commands).toEqual([]);
+  });
+
+  it('drops the room controls it kept when unsuspended to be forgotten (an owner stop, a removal)', async () => {
+    hub.setSuspended(AGENT, true);
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { commandId: 'reset-1', sessionId: null, body: { type: 'session.reset' } },
+    });
+    hub.setSuspended(AGENT, false, { drop: true });
+    expect(hub.waiting(AGENT)).toBe(false);
+    const { stream, seen } = watcher();
+    stream.start();
+    await delay(20);
+    expect(seen.commands).toEqual([]);
+  });
+
+  it('tells of each kept room control that will not reach a host, but not one a newer replaced', () => {
+    const dropped: string[] = [];
+    let clock = 0;
+    hub = new AgentHub({
+      log: silentLogger,
+      onCursor: () => {},
+      onChange: () => {},
+      bufferLimit: 5,
+      onHeldCommandDropped: (_agentId, roomId, command) =>
+        void dropped.push(`${roomId}:${command.commandId}`),
+      now: () => clock,
+    });
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a', 'room-b']);
+    hub.setSuspended(AGENT, true);
+    const reset = (commandId: string, room: string) =>
+      hub.sessionCommand({
+        agent_id: AGENT,
+        room_id: room,
+        command: { commandId, sessionId: null, body: { type: 'session.reset' } },
+      });
+    reset('reset-1', 'room-a');
+    reset('reset-2', 'room-a');
+    expect(dropped).toEqual([]);
+    clock = 10 * 60_000;
+    reset('reset-3', 'room-b');
+    expect(dropped).toEqual(['room-a:reset-2']);
+    hub.setSuspended(AGENT, false, { drop: true });
+    expect(dropped).toEqual(['room-a:reset-2', 'room-b:reset-3']);
+  });
+
+  it("answers a kept reset that won't reach a host with the couldn't-reset line, as wired in the controller (B71)", async () => {
+    const refused: string[] = [];
+    let clock = 0;
+    const wired: AgentHub = new AgentHub({
+      log: silentLogger,
+      onCursor: () => {},
+      onChange: () => {},
+      bufferLimit: 5,
+      now: () => clock,
+      resetRefused: async (_agentId, notice) =>
+        void refused.push(`${notice.roomId}:${notice.threadId}:${notice.commandId}`),
+      onHeldCommandDropped: (agentId, roomId, command) =>
+        wired.refuseReset(agentId, roomId, command),
+    });
+    hub = wired;
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    hub.setSuspended(AGENT, true);
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: {
+        commandId: 'reset-1',
+        sessionId: null,
+        roomTold: false,
+        body: { type: 'session.reset' },
+        origin: { roomId: 'room-a', threadId: 'thread-1' },
+      },
+    });
+    // An interrupt kept and dropped the same way gets no line: only resets do.
+    hub.sessionCommand({
+      agent_id: AGENT,
+      room_id: 'room-a',
+      command: { commandId: 'stop-1', sessionId: null, body: { type: 'turn.interrupt' } },
+    });
+    clock = 11 * 60_000;
+    hub.setSuspended(AGENT, false, { drop: true });
+    await waitFor(() => refused.length === 1, 'the refusal');
+    await delay(20);
+    expect(refused).toEqual(['room-a:thread-1:reset-1']);
+  });
+
+  it('asks to wake a suspended agent for a gap, which must reach a host in order', () => {
+    hub.setSuspended(AGENT, true);
+    hub.gap({ agent_id: AGENT, from_sequence: 0, resumed_at: 4, reason: 'lost' });
+    expect(wakes).toEqual(['event']);
+  });
+
+  it('gives up waiting on an event being handed over after the time allowed, keeping the fence', async () => {
+    const { stream, seen } = watcher({ onEvent: () => new Promise<void>(() => {}) });
+    stream.start();
+    hub.ingest(message(1, true));
+    await waitFor(() => changes >= 0 && hub.attached(AGENT), 'the host connected');
+    await delay(10);
+    expect(await hub.hold(AGENT, 30)).toBe(false);
+    hub.ingest(message(2, true));
+    await delay(20);
+    expect(seen.events).toEqual([]);
+    expect(hub.cursors()).toEqual({});
+  });
+
+  it('says when its agent host has taken an addressed event, and not for chatter', async () => {
+    const taken: number[] = [];
+    hub = new AgentHub({
+      log: silentLogger,
+      onCursor: () => {},
+      onChange: () => {},
+      bufferLimit: 5,
+      onAddressedTaken: (_agentId, event) => void taken.push(event.sequence ?? -1),
+    });
+    hub.streamAttached();
+    hub.attach(AGENT, 0, ['room-a']);
+    const { stream } = watcher();
+    stream.start();
+    hub.ingest(message(1, false));
+    hub.ingest(message(2, true));
+    await waitFor(() => taken.length === 1, 'the addressed event taken');
+    expect(taken).toEqual([2]);
+  });
+
+  it('says Switch carries the agent while the stream is up, host or not', () => {
+    expect(hub.attached(AGENT)).toBe(false);
+    expect(hub.streamCarries(AGENT)).toBe(true);
+    hub.setUpstream(false);
+    expect(hub.streamCarries(AGENT)).toBe(false);
   });
 });

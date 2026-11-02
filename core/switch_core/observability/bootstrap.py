@@ -41,6 +41,7 @@ from switch_core.observability.health import (
     session_activity_listener_check,
     signal_bus_check,
 )
+from switch_core.observability.hosted import HostedSampler
 from switch_core.observability.logs import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_QUEUE_CAPACITY,
@@ -265,6 +266,14 @@ def start_observability(
             registry.register_observer(sampler.readings)
             tasks.append(
                 asyncio.create_task(sampler.run_forever(), name="db-server-sampler")
+            )
+        if db_server_engine is not None and config.hosted_agents_enabled:
+            # Its own connection too: it holds the lock that makes this the
+            # one process reporting the hosted boxes' gauges.
+            hosted = HostedSampler(db_server_engine)
+            registry.register_observer(hosted.readings)
+            tasks.append(
+                asyncio.create_task(hosted.run_forever(), name="hosted-sampler")
             )
         logger.info(
             "Reporting metrics to %s every %.0fs as service %r.",

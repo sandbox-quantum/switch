@@ -36,9 +36,12 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.auth import ControllerPrincipal
+from switch_core.bridges.agent.commands import RESET_NOT_SENT
 from switch_core.bridges.agent.dependencies import get_protocol, get_session
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.controller_presence import (
@@ -52,7 +55,20 @@ from switch_core.bridges.agent.protocol.controller_stream import (
     controller_event_stream,
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_INTERVAL_SECONDS
+from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.models import AuditEvent
 from switch_core.db.session_scope import tenant_session
+from switch_core.delivery.rest_notice import (
+    MAX_REST_KEY_LENGTH,
+    MAX_STOPPED,
+    rest_notice_key,
+    rest_notice_text,
+)
+from switch_core.delivery.restart_notice import (
+    MAX_TURN_ID_LENGTH,
+    RESTART_NOTICE_TEXT,
+    restart_notice_key,
+)
 from switch_core.management import reason_codes
 from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.dependencies import (
@@ -279,6 +295,261 @@ async def put_status(
             f"A status report may be at most {MAX_STATUS_BYTES} bytes.",
         )
     return await management.record_status(session, principal, report)
+
+
+class RestartNoticeRequest(BaseModel):
+    """Where a turn the box's restart cut off was asked: the room, the thread
+    if any, and the turn. The text is Core's, not the controller's."""
+
+    model_config = ConfigDict(extra="forbid")
+    room_id: str = Field(min_length=1, max_length=200)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=200)
+    # It goes into the sender's key and the audit record: plain characters only.
+    turn_id: str = Field(
+        min_length=1, max_length=MAX_TURN_ID_LENGTH, pattern=r"^[A-Za-z0-9:_-]+$"
+    )
+
+
+@router.post(
+    "/v1/management/controllers/{controller_id}/agents/{agent_id}/restart-notice"
+)
+async def post_restart_notice(
+    agent_id: str,
+    request: RestartNoticeRequest,
+    principal: PathController,
+    management: Management,
+    protocol: Protocol,
+    session: Session,
+) -> dict[str, str]:
+    """Tell a room, as the agent, that its host restarted mid-turn (Level 2, 3a).
+
+    Only for an agent bound to this controller, only in a room the agent may
+    post in, and only Core's fixed text. Posted under `restart:<turn_id>` for
+    the agent, so a retry whose answer was lost, or a later start, returns the
+    first notice instead of posting a second.
+    """
+    if not await management.controls_agent(session, principal, agent_id):
+        raise ManagementError(
+            404, reason_codes.NOT_FOUND, "No agent of this controller has that id."
+        )
+    try:
+        event_id = await protocol.send_message(
+            agent_id,
+            request.room_id,
+            RESTART_NOTICE_TEXT,
+            request.thread_id,
+            client_txn_id=restart_notice_key(request.turn_id),
+        )
+    except PermissionError as exc:
+        raise ManagementError(403, reason_codes.FORBIDDEN, str(exc)) from exc
+    except ValueError as exc:
+        raise ManagementError(
+            409, reason_codes.VALIDATION_ERROR, str(exc), retryable=True
+        ) from exc
+    # Every notice Switch posts in an agent's name is on the tenant's record,
+    # retries included (the key makes them one message, not one event); a
+    # retry that returned an earlier notice says so.
+    deduplicated = await _already_audited(
+        session,
+        principal.tenant_id,
+        agent_id,
+        AuditAction.AGENT_RESTART_NOTICE_POSTED,
+        event_id,
+    )
+    await record_audit_event(
+        session,
+        tenant_id=principal.tenant_id,
+        actor_user_id=None,
+        action=AuditAction.AGENT_RESTART_NOTICE_POSTED,
+        target_type="agent",
+        target_id=agent_id,
+        details={
+            "by": "controller",
+            "controller_id": principal.controller_id,
+            "room_id": request.room_id,
+            "thread_id": request.thread_id,
+            "turn_id": request.turn_id,
+            "event_id": event_id,
+            **({"deduplicated": True} if deduplicated else {}),
+        },
+    )
+    await session.commit()
+    return {"event_id": event_id}
+
+
+async def _already_audited(
+    session: AsyncSession,
+    tenant_id: str,
+    agent_id: str,
+    action: AuditAction,
+    event_id: str,
+) -> bool:
+    """Whether a notice posted as `agent_id` under `action` already recorded
+    `event_id`: a keyed retry got the first notice back instead of a new one."""
+    found = await session.scalar(
+        select(AuditEvent.id)
+        .where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.target_type == "agent",
+            AuditEvent.target_id == agent_id,
+            AuditEvent.action == action,
+            AuditEvent.details["event_id"].astext == event_id,
+        )
+        .limit(1)
+    )
+    return found is not None
+
+
+class RestNoticeRequest(BaseModel):
+    """Where the agent's first message after a rest came from, the wake's
+    key, and how many of its background processes were stopped as it went to
+    rest. A count only: the text is Core's, not the controller's."""
+
+    model_config = ConfigDict(extra="forbid")
+    room_id: str = Field(min_length=1, max_length=200)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=200)
+    # It goes into the sender's key and the audit record: plain characters only.
+    key: str = Field(
+        min_length=1, max_length=MAX_REST_KEY_LENGTH, pattern=r"^[A-Za-z0-9:_-]+$"
+    )
+    stopped: int = Field(ge=1, le=MAX_STOPPED, strict=True)
+
+
+@router.post("/v1/management/controllers/{controller_id}/agents/{agent_id}/rest-notice")
+async def post_rest_notice(
+    agent_id: str,
+    request: RestNoticeRequest,
+    principal: PathController,
+    management: Management,
+    protocol: Protocol,
+    session: Session,
+) -> dict[str, str]:
+    """Tell a room, as the agent, that background processes it left running
+    were stopped when it went to rest (B74).
+
+    The same rules as the restart notice: only for an agent bound to this
+    controller, only in a room the agent may post in, and only Core's fixed
+    text. Posted under `rest:<key>` for the agent, so a retry whose answer
+    was lost returns the first notice instead of posting a second.
+    """
+    if not await management.controls_agent(session, principal, agent_id):
+        raise ManagementError(
+            404, reason_codes.NOT_FOUND, "No agent of this controller has that id."
+        )
+    try:
+        event_id = await protocol.send_message(
+            agent_id,
+            request.room_id,
+            rest_notice_text(request.stopped),
+            request.thread_id,
+            client_txn_id=rest_notice_key(request.key),
+        )
+    except PermissionError as exc:
+        raise ManagementError(403, reason_codes.FORBIDDEN, str(exc)) from exc
+    except ValueError as exc:
+        raise ManagementError(
+            409, reason_codes.VALIDATION_ERROR, str(exc), retryable=True
+        ) from exc
+    # A row for every attempt, retries included, the same as the restart
+    # notice; one whose key returned an earlier notice says so.
+    deduplicated = await _already_audited(
+        session,
+        principal.tenant_id,
+        agent_id,
+        AuditAction.AGENT_REST_NOTICE_POSTED,
+        event_id,
+    )
+    await record_audit_event(
+        session,
+        tenant_id=principal.tenant_id,
+        actor_user_id=None,
+        action=AuditAction.AGENT_REST_NOTICE_POSTED,
+        target_type="agent",
+        target_id=agent_id,
+        details={
+            "by": "controller",
+            "controller_id": principal.controller_id,
+            "room_id": request.room_id,
+            "thread_id": request.thread_id,
+            "key": request.key,
+            "stopped": request.stopped,
+            "event_id": event_id,
+            **({"deduplicated": True} if deduplicated else {}),
+        },
+    )
+    await session.commit()
+    return {"event_id": event_id}
+
+
+class ResetRefusedRequest(BaseModel):
+    """Where a `!reset` the box could not hand to any session was typed: the
+    room, its thread if any, and the command. The text is Core's."""
+
+    model_config = ConfigDict(extra="forbid")
+    room_id: str = Field(min_length=1, max_length=200)
+    thread_id: str | None = Field(default=None, min_length=1, max_length=200)
+    # It goes into the sender's key and the audit record: plain characters only.
+    command_id: str = Field(
+        min_length=1, max_length=MAX_TURN_ID_LENGTH, pattern=r"^[A-Za-z0-9:_-]+$"
+    )
+
+
+@router.post(
+    "/v1/management/controllers/{controller_id}/agents/{agent_id}/reset-refused"
+)
+async def post_reset_refused(
+    agent_id: str,
+    request: ResetRefusedRequest,
+    principal: PathController,
+    management: Management,
+    protocol: Protocol,
+    session: Session,
+) -> dict[str, str]:
+    """Tell a room, as the agent, that its `!reset` could not be done (B71).
+
+    Core relays a controller's agent's reset without saying "Resetting my
+    session", leaving the box to say how it went. Where the box has no
+    session to say it as (no agent host running, or none working in that
+    room), it asks here. As for the restart line: only for an agent bound to
+    this controller, only where the agent may post, only Core's fixed text,
+    keyed `reset-refused:<command_id>`, so asking again posts nothing new.
+    """
+    if not await management.controls_agent(session, principal, agent_id):
+        raise ManagementError(
+            404, reason_codes.NOT_FOUND, "No agent of this controller has that id."
+        )
+    try:
+        event_id = await protocol.send_message(
+            agent_id,
+            request.room_id,
+            RESET_NOT_SENT,
+            request.thread_id,
+            client_txn_id=f"reset-refused:{request.command_id}",
+        )
+    except PermissionError as exc:
+        raise ManagementError(403, reason_codes.FORBIDDEN, str(exc)) from exc
+    except ValueError as exc:
+        raise ManagementError(
+            409, reason_codes.VALIDATION_ERROR, str(exc), retryable=True
+        ) from exc
+    await record_audit_event(
+        session,
+        tenant_id=principal.tenant_id,
+        actor_user_id=None,
+        action=AuditAction.AGENT_RESET_REFUSED_POSTED,
+        target_type="agent",
+        target_id=agent_id,
+        details={
+            "by": "controller",
+            "controller_id": principal.controller_id,
+            "room_id": request.room_id,
+            "thread_id": request.thread_id,
+            "command_id": request.command_id,
+            "event_id": event_id,
+        },
+    )
+    await session.commit()
+    return {"event_id": event_id}
 
 
 @router.get("/v1/management/controllers/{controller_id}/operations")

@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { link, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { link, mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
@@ -18,6 +20,70 @@ function alive(pid: number): boolean {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
     throw error;
   }
+}
+
+/**
+ * Whether the ticket at `path` was written before the process now holding
+ * `pid` started: left by an earlier process with that id (after a restart),
+ * so it is no contender. `process-fence`'s `recordPredatesHolder`, written out
+ * for the same reason as `recordMode`. Never true on Windows, whose ids are
+ * not checked here.
+ */
+async function ticketPredatesHolder(path: string, pid: number): Promise<boolean> {
+  if (process.platform === 'win32') return false;
+  // A ticket in an election under way is seconds old, and one left by an
+  // earlier process is older: only those are worth a look, so a busy election
+  // does not run `ps` for every rival on every pass.
+  let mtimeMs: number;
+  try {
+    mtimeMs = (await stat(path)).mtimeMs;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  if (Date.now() - mtimeMs < 5_000) return false;
+  // Written before this box (or machine) started: nothing in it can be alive.
+  // `process-fence`'s box-start check, written out: boot time plus pid 1's
+  // start ticks, from /proc, with no `ps`.
+  if (process.platform === 'linux') {
+    try {
+      const boot = /^btime\s+(\d+)/m.exec(readFileSync('/proc/stat', 'utf8'));
+      const pidOne = readFileSync('/proc/1/stat', 'utf8');
+      const ticks = Number(pidOne.slice(pidOne.lastIndexOf(')') + 2).split(' ')[19]);
+      if (
+        boot &&
+        Number.isFinite(ticks) &&
+        mtimeMs < (Number(boot[1]) + ticks / 100) * 1000 - 2_000
+      )
+        return true;
+    } catch {
+      // Unreadable: fall through to the per-id checks.
+    }
+  }
+  // On Linux a thread's id answers kill(id, 0) too; a thread of some other
+  // process is no contender (`process-fence`'s `processExists`, written out).
+  if (process.platform === 'linux') {
+    try {
+      const tgid = /^Tgid:\s*(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1];
+      if (tgid !== undefined && Number(tgid) !== pid) return true;
+    } catch (error) {
+      // Only "no such process" makes it stale. Any other read error counts the
+      // rival, or an election could end with two winners.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      return false;
+    }
+  }
+  const etime = await new Promise<string | null>((resolve) =>
+    execFile('ps', ['-p', String(pid), '-o', 'etime='], { encoding: 'utf8' }, (error, stdout) =>
+      resolve(error ? null : stdout.trim())
+    )
+  );
+  const match = etime === null ? null : /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime);
+  if (!match) return false;
+  const [, days = '0', hours = '0', minutes, seconds] = match;
+  const elapsed =
+    (((Number(days) * 24 + Number(hours)) * 60 + Number(minutes!)) * 60 + Number(seconds!)) * 1000;
+  return mtimeMs < Date.now() - elapsed - 2_000;
 }
 
 /**
@@ -80,6 +146,14 @@ export class OwnershipContendedError extends Error {
   }
 }
 
+/**
+ * The tickets this process holds right now. A ticket named for this process's
+ * own id that is not in here was left by an earlier process with the same id
+ * (a restarted container gives the controller the same low id), killed in the
+ * middle of an election.
+ */
+const ownTickets = new Set<string>();
+
 /** Bakery election: each contender writes only its own ticket, so reclamation needs no lock. */
 export async function withOwnershipLock<T>(root: string, action: () => Promise<T>): Promise<T> {
   const directory = join(root, 'ownership');
@@ -92,7 +166,12 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
       if (!/^\d+-[a-f0-9-]+\.json$/.test(name)) continue;
       const pid = Number(name.split('-')[0]);
       if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid ownership ticket PID.');
-      if (!alive(pid)) continue;
+      if (
+        pid === process.pid
+          ? !ownTickets.has(join(directory, name))
+          : !alive(pid) || (await ticketPredatesHolder(join(directory, name), pid))
+      )
+        continue;
       try {
         const text = await waitingOutSharing(() => readFile(join(directory, name), 'utf8'));
         result.push({ id: name, value: ticketSchema.parse(JSON.parse(text)) });
@@ -102,8 +181,9 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
     }
     return result;
   };
-  await save(path, { choosing: true, ticket: 0 }, false);
+  ownTickets.add(path);
   try {
+    await save(path, { choosing: true, ticket: 0 }, false);
     const ticket = Math.max(0, ...(await entries()).map((entry) => entry.value.ticket)) + 1;
     if (!Number.isSafeInteger(ticket)) throw new Error('Ownership ticket space exhausted.');
     await save(path, { choosing: false, ticket }, true);
@@ -125,7 +205,10 @@ export async function withOwnershipLock<T>(root: string, action: () => Promise<T
     }
     return await action();
   } finally {
-    await unlink(path);
+    ownTickets.delete(path);
+    await unlink(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
   }
 }
 

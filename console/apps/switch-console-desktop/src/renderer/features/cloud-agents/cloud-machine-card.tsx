@@ -6,21 +6,39 @@ import { Button } from '@renderer/lib/ui/button';
 import { Progress } from '@renderer/lib/ui/progress';
 import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
 import { type MachineAction, machinePresentation } from './cloud-machine-state';
+import { RepairCloud } from './repair-cloud';
 import { CLOUD_MACHINES_KEY } from './use-cloud-agents';
+import { yourCloudView } from './your-cloud';
+
+const localTime = (at: Date) => at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 function gigabytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
-/** The owner's cloud machine: its state, disk, and stop, start and retry. */
+/**
+ * The owner's cloud machine: its state, disk, and stop, start and retry. With
+ * `box`, it's their own box on the shared cloud instead: shown as "Your cloud",
+ * with Your cloud's figures and Repair, and none of a machine's controls, since
+ * Switch runs the box (it stops and starts on its own).
+ */
 export function CloudMachineCard({
   machine,
   serverId,
+  box = false,
 }: {
   machine: CloudMachine;
   serverId: string;
+  box?: boolean;
 }) {
-  const shown = machinePresentation(machine, Date.now());
+  const presented = machinePresentation(machine, Date.now());
+  // Switch refuses to start a paused or turned-off cloud, so don't offer it.
+  const blocked = machine.stop_reason === 'paused' || machine.stop_reason === 'turned_off';
+  const shown = {
+    ...presented,
+    actions: box ? [] : presented.actions.filter((action) => !(blocked && action === 'start')),
+  };
+  const cloud = yourCloudView(machine, localTime);
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => setActionError(null), [machine.revision, machine.state]);
@@ -48,13 +66,14 @@ export function CloudMachineCard({
   const agentCount = machine.agents.length;
   return (
     <div className="mb-[14px] rounded-[11px] bg-[var(--surface-2)] p-[14px]">
-      <div className="text-sm font-medium">Cloud machine</div>
+      <div className="text-sm font-medium">{box ? 'Your cloud' : 'Cloud machine'}</div>
       <div className="text-xs text-foreground-muted">
-        {shown.label}
-        {machine.instance_type && ` · ${machine.instance_type}`} · {agentCount}{' '}
-        {agentCount === 1 ? 'agent' : 'agents'}
+        {!box && shown.label}
+        {!box && machine.instance_type && ` · ${machine.instance_type}`}
+        {!box && ' · '}
+        {agentCount} {agentCount === 1 ? 'agent' : 'agents'}
       </div>
-      {shown.retainUntil && (
+      {!box && shown.retainUntil && (
         <p className="mt-2 text-xs">
           Its disk is deleted on {new Date(shown.retainUntil).toLocaleDateString()}. Add a cloud
           agent before then to keep it.
@@ -73,6 +92,34 @@ export function CloudMachineCard({
           )}
         </div>
       )}
+      {cloud.resting ? (
+        <div className="mt-2 text-xs text-foreground-muted">
+          <span className="font-medium text-foreground">{cloud.heading}</span> · {cloud.line}
+        </div>
+      ) : (
+        (cloud.room || cloud.awake || cloud.aiCalls) && (
+          <div className="mt-2 max-w-[360px] space-y-1">
+            <p className="text-xs font-medium">
+              {box ? cloud.heading : `Your cloud: ${cloud.heading}`}
+            </p>
+            {cloud.room && (
+              <>
+                <Progress value={cloud.room.usedPercent} aria-label="Room to work" />
+                <p className="text-xs text-foreground-muted">Room to work: {cloud.room.label}</p>
+              </>
+            )}
+            {cloud.awake && <p className="text-xs text-foreground-muted">{cloud.awake.label}</p>}
+            {cloud.aiCalls && (
+              <p
+                className={`text-xs ${cloud.aiCalls.capped ? 'text-foreground-warning' : 'text-foreground-muted'}`}
+              >
+                {cloud.aiCalls.label}
+              </p>
+            )}
+          </div>
+        )
+      )}
+      <RepairCloud machine={machine} serverId={serverId} />
       {shown.problem && (
         <p role="alert" className="mt-2 text-xs text-destructive">
           {shown.problem}

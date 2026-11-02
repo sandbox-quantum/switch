@@ -268,3 +268,137 @@ def test_the_registry_refuses_duplicate_operation_names() -> None:
     assert existing is not None
     with pytest.raises(RuntimeError):
         registry.operation(existing.fn)
+
+
+# ── The host's key on a room post (B62) ─────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "restart:turn-1",  # the restart line's key is Core's, never a host's
+        "reply:",
+        "reply:" + "x" * 195,
+        "turn-1",
+        "reply:has space",  # plain characters only (security)
+        "reply:a/b",
+        "reply:\u00e9",
+        "reply:a\nb",
+        "reply:abc\n",  # `$` would allow a final newline; fullmatch does not
+    ],
+)
+def test_a_post_key_that_is_not_a_reply_key_is_refused(value: str) -> None:
+    from fastapi import HTTPException
+
+    from switch_core.bridges.agent.api.operations import checked_reply_key
+
+    with pytest.raises(HTTPException) as excinfo:
+        checked_reply_key(value)
+    assert excinfo.value.status_code == 400
+
+
+def test_a_reply_key_is_taken_as_it_is_and_none_stays_none() -> None:
+    from switch_core.bridges.agent.api.operations import checked_reply_key
+
+    assert checked_reply_key(None) is None
+    key = "reply:" + "x" * 194
+    assert len(key) == 200
+    assert checked_reply_key(key) == key
+    host_keys = (
+        "reply:7f1c0000-0000-4000-8000-000000000001",
+        "reply:7f1c0000-0000-4000-8000-000000000001:lost",
+        "reply:a_b-c:d",
+    )
+    for host_key in host_keys:
+        assert checked_reply_key(host_key) == host_key
+
+
+@pytest.mark.parametrize("operation", ["post_message", "send_targeted_message"])
+async def test_a_post_is_sent_under_the_hosts_key(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from switch_core.bridges.agent.operations import definitions
+
+    sent: list[dict[str, object]] = []
+
+    class _Protocol:
+        async def send_message(self, *args: object, **kwargs: object) -> str:
+            sent.append(kwargs)
+            return "$event"
+
+        async def send_targeted_message(self, *args: object, **kwargs: object) -> Any:
+            sent.append(kwargs)
+            return type("Sent", (), {"event_id": "$event", "target_statuses": {}})()
+
+    async def _room() -> str:
+        return "room-1"
+
+    monkeypatch.setattr(definitions, "require_connected_room", _room)
+    monkeypatch.setattr(definitions, "get_protocol", lambda: _Protocol())
+    arguments: dict[str, Any] = {"body": "the reply"}
+    if operation == "send_targeted_message":
+        arguments["target_names"] = ["louisa"]
+
+    await call_operation(
+        operation=operation,
+        arguments=arguments,
+        agent_id=AGENT,
+        connection_id="conn-9",
+        session=None,
+        client_txn_id="reply:7f1c",
+    )
+    await call_operation(
+        operation=operation,
+        arguments=arguments,
+        agent_id=AGENT,
+        connection_id="conn-9",
+        session=None,
+    )
+
+    assert [call["client_txn_id"] for call in sent] == ["reply:7f1c", None]
+
+
+async def test_an_agent_cannot_name_the_key_in_its_own_arguments() -> None:
+    # Only the host sets it, as a header; the agent's tool input is the body.
+    with pytest.raises(BadArgumentsError) as excinfo:
+        await call_operation(
+            operation="post_message",
+            arguments={"body": "hi", "client_txn_id": "reply:someone-elses"},
+            agent_id=AGENT,
+            connection_id="conn-9",
+            session=None,
+        )
+    assert "client_txn_id" in str(excinfo.value)
+
+
+async def test_a_post_while_the_agents_client_is_not_running_yet_is_a_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Just after Core starts, before the agent's client is up: the host sends
+    the post again (B62) rather than taking it as refused."""
+    from fastapi import HTTPException
+
+    from switch_core.bridges.agent.api import operations as api_operations
+    from switch_core.bridges.agent.protocol.agent_core import AgentClientNotRunning
+
+    async def not_yet(**_kwargs: object) -> object:
+        raise AgentClientNotRunning("Agent client not running")
+
+    async def caller(**_kwargs: object) -> tuple[str, None]:
+        return "conn-9", None
+
+    monkeypatch.setattr(api_operations, "call_operation", not_yet)
+    monkeypatch.setattr(api_operations, "resolve_caller", caller)
+    request = type("Request", (), {"scope": {}})()
+    with pytest.raises(HTTPException) as excinfo:
+        await api_operations.post_operation(
+            request=request,  # type: ignore[arg-type]
+            agent_id=AGENT,
+            operation="post_message",
+            agent=type("Agent", (), {"id": AGENT})(),  # type: ignore[arg-type]
+            protocol=None,  # type: ignore[arg-type]
+            factory=None,  # type: ignore[arg-type]
+            body={"body": "hi"},
+            connection_id="conn-9",
+        )
+    assert excinfo.value.status_code == 503

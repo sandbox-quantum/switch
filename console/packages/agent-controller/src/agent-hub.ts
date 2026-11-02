@@ -4,7 +4,7 @@ import type {
   SessionCommand,
 } from '@sandboxaq/switch-agent-runtime';
 import type { AgentEventStream, AgentStreamDeps } from '@switch-console/agent-providers';
-import { errorMessage, type Logger } from './log';
+import { errorCode, errorMessage, type Logger } from './log';
 import type {
   AgentApprovalOutcomeFrame,
   AgentEventFrame,
@@ -33,7 +33,48 @@ export type AgentHubDeps = {
   onChange: () => void;
   /** The most events held per agent while its agent host is not taking them; past it the oldest go, and it is told. */
   bufferLimit: number;
+  /**
+   * Something arrived that a suspended agent (`setSuspended`) must start its
+   * agent host for: an addressed event or a room control. Called once per
+   * arrival while it stays suspended; the caller decides what to start.
+   */
+  onWake?: (agentId: string, why: WakeReason) => void;
+  /**
+   * A room control kept for a suspended agent will not reach an agent host
+   * after all: kept too long, past the limit, or dropped because the agent
+   * was stopped, removed, or could not be started. One a newer of its kind
+   * replaced is not dropped: the newer runs. For the room to be told (B71's
+   * "couldn't reset" line), rather than hear nothing.
+   */
+  onHeldCommandDropped?: (agentId: string, roomId: string, command: SessionCommand) => void;
+  /** The agent's agent host took an addressed event (its handler resolved). */
+  onAddressedTaken?: (agentId: string, event: AgentBridgeEvent) => void;
+  now?: () => number;
+  /**
+   * Has Switch tell the room, as the agent, that its `!reset` could not be
+   * done (B71). For a reset Switch left the box to announce (`roomTold:
+   * false`) that no session here can take.
+   */
+  resetRefused?: (
+    agentId: string,
+    notice: { roomId: string; threadId: string | null; commandId: string }
+  ) => Promise<unknown>;
 };
+
+export type WakeReason = 'event' | 'room_control';
+
+/** The most room controls kept for a suspended agent until its agent host is back. */
+export const HELD_COMMAND_LIMIT = 20;
+/**
+ * How long a room control is kept for a suspended agent: past it, it is
+ * dropped rather than run on a start long after (security, 27 Oct).
+ */
+export const HELD_COMMAND_MAX_AGE_MS = 10 * 60_000;
+/** The longest `hold` waits for the event being handed over before it gives up. */
+export const HOLD_TIMEOUT_MS = 30_000;
+
+/** A room control kept for a suspended agent: the latest of each kind per room. */
+type HeldCommand = { command: SessionCommand; key: string; at: number };
 
 type Buffered =
   | { kind: 'event'; seq: number; notifiable: boolean; data: AgentBridgeEvent }
@@ -55,6 +96,8 @@ type AgentHostLink = {
   cursor: number | null;
   connected: boolean;
   delivering: boolean;
+  /** The pump's run while `delivering`, for `hold` to wait out. */
+  pumping: Promise<void> | null;
   closed: boolean;
 };
 
@@ -81,13 +124,39 @@ type AgentState = {
   confirmed: number | null;
   buffer: Buffered[];
   /** Core reset the agent's numbering (it restarted). */
-  reset: { reason: string; rooms: string[] } | null;
+  /**
+   * Core reset the agent's numbering (it restarted), resuming at `resumedAt`.
+   * `owed` while no agent host has been told: one that starts later holds a
+   * cursor from the old numbering, so it is told and starts at `resumedAt`.
+   */
+  reset: { reason: string; rooms: string[]; resumedAt: number; owed: boolean } | null;
   /** Each of its sessions' room, as its agent host last stated. */
   placements: Map<string, string>;
   /** Rooms its agent host placed a session in that it is not in, each said once. */
   refusedRooms: Set<string>;
   host: AgentHostLink | null;
   overflowing: boolean;
+  /** Where the last agent host to close had got to; null before one has. */
+  lastHostCursor: number | null;
+  /**
+   * Its agent host was stopped on purpose until something needs it (a
+   * resting agent, B74, or one the memory guard stopped): what it must start
+   * for calls `onWake`, and the hub takes what no agent host would be handed.
+   */
+  suspended: boolean;
+  /**
+   * While suspended: how far the hub has taken events for it, past what
+   * the last agent host reached, over the unaddressed ones no agent host is
+   * handed. The next agent host starts here at the earliest. Null when not
+   * suspended since its last agent host started.
+   */
+  idleCursor: number | null;
+  /** The hub hands its agent host nothing more until released (`hold`). */
+  holding: boolean;
+  /** Room controls that arrived while it was suspended, for its next agent host. */
+  heldCommands: HeldCommand[];
+  /** When its agent host last took an addressed event; null before one has. */
+  lastAddressedAt: number | null;
 };
 
 /** Whether an agent host filtering to what addresses the agent is handed this event, as Switch decides. */
@@ -163,6 +232,15 @@ export class AgentHub {
   }
 
   /**
+   * Switch has the agent attached on a connected controller stream, whether
+   * or not an agent host is taking its events: what a suspended agent reports
+   * as attached, since its events are held here for its next agent host.
+   */
+  streamCarries(agentId: string): boolean {
+    return this.upstream && (this.agents.get(agentId)?.attached ?? false);
+  }
+
+  /**
    * The room a call made for the agent is made in: the calling session's
    * placement when the call names a session, otherwise the agent's only
    * placed room. Null when neither says, and Switch answers as it does for a
@@ -183,6 +261,103 @@ export class AgentHub {
     if (agent.host) agent.host.closed = true;
     this.agents.delete(agentId);
     this.deps.onChange();
+  }
+
+  // -- Suspending an agent whose agent host is stopped on purpose (B74) ----------
+
+  /**
+   * Marks the agent's agent host as stopped on purpose until something needs
+   * it, or no longer so. While suspended, an addressed event or a room
+   * control calls `onWake`, and the hub takes the unaddressed events itself
+   * (they are never handed to an agent host), so a long rest in a busy room
+   * neither overflows what is held nor meets the next agent host with a gap.
+   * Unsuspending to start it (a wake) leaves where the hub got to, and the
+   * room controls it keeps, for the next agent host's start; with `drop`
+   * (its owner stopped it, it was removed, or something else starts it now)
+   * the room controls go, so none runs on a start long after.
+   */
+  setSuspended(agentId: string, suspended: boolean, options: { drop?: boolean } = {}): void {
+    const agent = suspended ? this.agent(agentId) : this.agents.get(agentId);
+    if (!agent) return;
+    if (!suspended && options.drop) this.dropCommands(agent, agent.heldCommands.splice(0));
+    if (agent.suspended === suspended) return;
+    agent.suspended = suspended;
+    if (!suspended) {
+      // Not stopped after all (its stop failed): its running host goes on from its own cursor.
+      if (this.running(agent)) agent.idleCursor = null;
+      return;
+    }
+    agent.idleCursor =
+      this.running(agent)?.cursor ??
+      agent.lastHostCursor ??
+      agent.confirmed ??
+      agent.attachedFrom ??
+      null;
+    this.advanceIdle(agent);
+    this.trim(agent);
+    // What came in while it was being stopped is owed a start now.
+    if (this.waiting(agentId)) this.deps.onWake?.(agentId, 'event');
+  }
+
+  suspended(agentId: string): boolean {
+    return this.agents.get(agentId)?.suspended ?? false;
+  }
+
+  /**
+   * Stops handing the agent's agent host anything, at once: resolves true
+   * once the event it is handing over now, if any, has been taken, or false
+   * if that takes longer than `timeoutMs` (the fence stays up either way;
+   * `release` lifts it). What arrives meanwhile stays held here, its cursor
+   * unmoved. An event whose handing over never finishes is not confirmed,
+   * so the next agent host is handed it again.
+   */
+  async hold(agentId: string, timeoutMs: number = HOLD_TIMEOUT_MS): Promise<boolean> {
+    const agent = this.agent(agentId);
+    agent.holding = true;
+    const pumping = agent.host?.pumping;
+    if (!pumping) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([pumping.then(() => true as const), timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  release(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent || !agent.holding) return;
+    agent.holding = false;
+    const host = this.running(agent);
+    if (host?.connected) this.flushCommands(agent, host);
+    this.pump(agent);
+  }
+
+  /**
+   * Whether anything is held for the agent that its agent host would be
+   * handed or told: an addressed event or a gap past where it stands, or a
+   * room control kept while it was suspended.
+   */
+  waiting(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent) return false;
+    this.pruneCommands(agent);
+    if (agent.heldCommands.length) return true;
+    const host = this.running(agent);
+    const from = host
+      ? host.cursor
+      : (agent.idleCursor ?? agent.lastHostCursor ?? agent.confirmed ?? null);
+    const start = from === null ? 0 : firstAfter(agent.buffer, from);
+    return agent.buffer.slice(start).some((item) => item.kind === 'gap' || item.notifiable);
+  }
+
+  /** When the agent's agent host last took an addressed event; null before one has. */
+  lastAddressedAt(agentId: string): number | null {
+    return this.agents.get(agentId)?.lastAddressedAt ?? null;
   }
 
   // -- What arrives on the controller stream ----------------------------------
@@ -262,16 +437,14 @@ export class AgentHub {
     const agent = this.agent(agentId);
     if (agent.head !== null && seq <= agent.head) return;
     const data = { ...frame.event, sequence: seq } as unknown as AgentBridgeEvent;
-    agent.buffer.push({
-      kind: 'event',
-      seq,
-      notifiable: isNotifiable(frame.event.type, frame.event.payload),
-      data,
-    });
+    const notifiable = isNotifiable(frame.event.type, frame.event.payload);
+    agent.buffer.push({ kind: 'event', seq, notifiable, data });
     if (agent.host?.started && agent.host.cursor === null) agent.host.cursor = seq - 1;
     agent.head = seq;
     this.pump(agent);
+    this.advanceIdle(agent);
     this.trim(agent);
+    if (notifiable && agent.suspended && !this.running(agent)) this.deps.onWake?.(agentId, 'event');
   }
 
   /**
@@ -309,8 +482,12 @@ export class AgentHub {
       agent.buffer = [];
       agent.head = resumedAt;
       agent.droppedThrough = resumedAt;
-      agent.reset = { reason: data.reason, rooms: data.rooms ?? [] };
+      const told = Boolean(agent.host?.started && !agent.host.closed);
+      agent.reset = { reason: data.reason, rooms: data.rooms ?? [], resumedAt, owed: !told };
       agent.confirmed = resumedAt;
+      // Switch's numbering went back: where earlier agent hosts got to no longer applies.
+      agent.lastHostCursor = null;
+      if (agent.idleCursor !== null) agent.idleCursor = resumedAt;
       this.deps.onCursor(agentId, resumedAt);
       const host = agent.host;
       if (host?.started && !host.closed) {
@@ -323,6 +500,29 @@ export class AgentHub {
     agent.head = resumedAt;
     this.pump(agent);
     this.trim(agent);
+    // A gap must reach an agent host in order, and the hub cannot take the
+    // chatter past it for a suspended agent, so it is a reason to start one.
+    if (agent.suspended && !this.running(agent)) this.deps.onWake?.(agentId, 'event');
+  }
+
+  /** Tells the room a reset Switch left to the box could not be done; others are left as they were. */
+  refuseReset(agentId: string, roomId: string, command: RelayedControl) {
+    if (!unannouncedReset(command) || !this.deps.resetRefused) return;
+    const origin = command.origin as { threadId?: unknown } | undefined;
+    void this.deps
+      .resetRefused(agentId, {
+        roomId,
+        threadId: typeof origin?.threadId === 'string' ? origin.threadId : null,
+        commandId: command.commandId,
+      })
+      .catch((error: unknown) =>
+        this.deps.log.warn('Could not tell a room its reset could not be done', {
+          agentId,
+          roomId,
+          commandId: command.commandId,
+          error: errorName(error),
+        })
+      );
   }
 
   /**
@@ -335,6 +535,32 @@ export class AgentHub {
     const roomId = frame.room_id ?? (typeof origin?.roomId === 'string' ? origin.roomId : null);
     const agent = this.agents.get(agentId);
     const host = agent ? this.running(agent) : null;
+    if (roomId && agent && (agent.holding || (agent.suspended && !host))) {
+      // Its agent host is being stopped, or was stopped on purpose: kept for
+      // the next one (or this one, if it is not stopped after all), which a
+      // suspended agent starts for it. Held in memory only, like the events.
+      const relayed = { ...command, sessionId: null, roomId } as unknown as SessionCommand;
+      // The latest of each kind per room only: a `!reset` sent twice runs once.
+      const body = (command as { body?: { type?: unknown } }).body;
+      const key = `${roomId}\u0000${typeof body?.type === 'string' ? body.type : command.commandId}`;
+      this.pruneCommands(agent);
+      agent.heldCommands = agent.heldCommands.filter((held) => held.key !== key);
+      agent.heldCommands.push({ command: relayed, key, at: this.now() });
+      if (agent.heldCommands.length > HELD_COMMAND_LIMIT) {
+        this.dropCommands(agent, agent.heldCommands.splice(0, 1));
+        this.deps.log.warn('Dropped the oldest room control kept for a suspended agent', {
+          agentId,
+          limit: HELD_COMMAND_LIMIT,
+        });
+      }
+      this.deps.log.info('Kept a room control for a suspended agent until its host starts', {
+        agentId,
+        roomId,
+        commandId: command.commandId,
+      });
+      if (agent.suspended && !host) this.deps.onWake?.(agentId, 'room_control');
+      return;
+    }
     if (!roomId || !host?.deps.onSessionCommand) {
       this.deps.log.warn(
         roomId
@@ -342,6 +568,19 @@ export class AgentHub {
           : 'Dropped a room control that names no room',
         { agentId, roomId, commandId: command.commandId }
       );
+      if (roomId) this.refuseReset(agentId, roomId, command);
+      return;
+    }
+    // Every session of the agent here keeps its room while it rests, so none
+    // placed there means none can take it, and the room hears so rather than
+    // nothing (B71).
+    if (unannouncedReset(command) && ![...agent!.placements.values()].includes(roomId)) {
+      this.deps.log.warn('Dropped a room reset: no session of the agent works in its room', {
+        agentId,
+        roomId,
+        commandId: command.commandId,
+      });
+      this.refuseReset(agentId, roomId, command);
       return;
     }
     const relayed = { ...command, sessionId: null, roomId } as unknown as SessionCommand;
@@ -387,13 +626,14 @@ export class AgentHub {
    */
   open(agentId: string, deps: AgentStreamDeps): AgentEventStream {
     const agent = this.agent(agentId);
-    if (agent.host) agent.host.closed = true;
+    if (agent.host) this.closeHost(agent, agent.host);
     const host: AgentHostLink = {
       deps,
       started: false,
       cursor: null,
       connected: false,
       delivering: false,
+      pumping: null,
       closed: false,
     };
     agent.host = host;
@@ -401,7 +641,7 @@ export class AgentHub {
     deps.signal.addEventListener(
       'abort',
       () => {
-        host.closed = true;
+        this.closeHost(agent, host);
         if (agent.host === host) {
           agent.host = null;
           agent.placements.clear();
@@ -418,24 +658,24 @@ export class AgentHub {
       start: () => {
         if (host.started || host.closed) return;
         host.started = true;
-        host.cursor =
-          deps.startCursor ??
-          (!agent.hostStarted && agent.attachedFrom !== null ? agent.attachedFrom : agent.head);
+        host.cursor = this.startCursor(agent, deps.startCursor);
+        agent.idleCursor = null;
         agent.hostStarted = true;
-        if (
-          agent.reset &&
-          host.cursor !== null &&
-          agent.head !== null &&
-          host.cursor > agent.head
-        ) {
+        // An agent host that was not running when Core reset the numbering
+        // holds a cursor from before it. It starts where the new numbering
+        // resumed, not at the newest event, which would skip what arrived
+        // since: for a resting agent, the message it was started for.
+        const reset = agent.reset;
+        if (reset && host.cursor !== null && (reset.owed || host.cursor > (agent.head ?? 0))) {
           void this.tell(agent, {
-            from_sequence: agent.head,
-            resumed_at: agent.head,
-            rooms: agent.reset.rooms,
+            from_sequence: reset.resumedAt,
+            resumed_at: reset.resumedAt,
+            rooms: reset.rooms,
             all_rooms: true,
-            reason: agent.reset.reason,
+            reason: reset.reason,
           });
-          host.cursor = agent.head;
+          host.cursor = reset.resumedAt;
+          reset.owed = false;
         }
         this.refresh(agent);
         this.pump(agent);
@@ -500,10 +740,96 @@ export class AgentHub {
         refusedRooms: new Set(),
         host: null,
         overflowing: false,
+        lastHostCursor: null,
+        suspended: false,
+        idleCursor: null,
+        holding: false,
+        heldCommands: [],
+        lastAddressedAt: null,
       };
       this.agents.set(agentId, agent);
     }
     return agent;
+  }
+
+  /** Marks an agent host closed, keeping where it got to for the next one. */
+  private closeHost(agent: AgentState, host: AgentHostLink): void {
+    if (host.closed) return;
+    host.closed = true;
+    if (host.started && host.cursor !== null) agent.lastHostCursor = host.cursor;
+  }
+
+  /**
+   * Where a starting agent host is handed events from. Its own cursor when
+   * it has one. One with none (it never took an addressed event, so it saves
+   * none) starts where the last agent host got to, or for a new agent's
+   * first run where Switch first attached it; only with neither known (the
+   * controller restarted since) at the newest event. Starting at the newest
+   * event when the hub knows better would skip what arrived while no agent
+   * host ran: after a crash, a restart, or a rest, the message it was started
+   * for. An agent coming back from a suspension starts no earlier than where
+   * the hub took events for it meanwhile.
+   */
+  private startCursor(agent: AgentState, own: number | undefined): number | null {
+    const idle = agent.idleCursor;
+    if (own !== undefined) return idle === null ? own : Math.max(own, idle);
+    if (idle !== null) return idle;
+    if (agent.lastHostCursor !== null) return agent.lastHostCursor;
+    return !agent.hostStarted && agent.attachedFrom !== null ? agent.attachedFrom : agent.head;
+  }
+
+  /**
+   * Takes, for a suspended agent with no agent host, the unaddressed events
+   * past where it stands: up to the first addressed event or gap, which wait
+   * for its next agent host. A running one does the same in `pump`.
+   */
+  private advanceIdle(agent: AgentState): void {
+    if (!agent.suspended || agent.idleCursor === null || this.running(agent)) return;
+    if (agent.idleCursor < agent.droppedThrough) return;
+    for (let index = firstAfter(agent.buffer, agent.idleCursor); ; index++) {
+      const item = agent.buffer[index];
+      if (!item || item.kind === 'gap' || item.notifiable) return;
+      agent.idleCursor = item.seq;
+      this.confirm(agent, item.seq);
+    }
+  }
+
+  /** Hands a newly connected agent host the room controls kept while it was suspended. */
+  private flushCommands(agent: AgentState, host: AgentHostLink): void {
+    this.pruneCommands(agent);
+    if (!agent.heldCommands.length || !host.deps.onSessionCommand) return;
+    const commands = agent.heldCommands.splice(0).map((held) => held.command);
+    for (const command of commands)
+      void Promise.resolve(host.deps.onSessionCommand(command)).catch((error: unknown) =>
+        this.deps.log.error('The agent host failed a room control kept while it was suspended', {
+          agentId: agent.agentId,
+          commandId: (command as { commandId?: unknown }).commandId,
+          error: errorCode(error),
+        })
+      );
+  }
+
+  /** Drops room controls kept longer than `HELD_COMMAND_MAX_AGE_MS`, and says so. */
+  private pruneCommands(agent: AgentState): void {
+    const now = this.now();
+    const kept = agent.heldCommands.filter((held) => now - held.at < HELD_COMMAND_MAX_AGE_MS);
+    if (kept.length === agent.heldCommands.length) return;
+    this.deps.log.warn('Dropped room controls kept too long for a suspended agent', {
+      agentId: agent.agentId,
+      dropped: agent.heldCommands.length - kept.length,
+      maxAgeMs: HELD_COMMAND_MAX_AGE_MS,
+    });
+    const dropped = agent.heldCommands.filter((held) => !kept.includes(held));
+    agent.heldCommands = kept;
+    this.dropCommands(agent, dropped);
+  }
+
+  private dropCommands(agent: AgentState, dropped: HeldCommand[]): void {
+    for (const held of dropped) {
+      const roomId = held.command.roomId;
+      if (typeof roomId === 'string')
+        this.deps.onHeldCommandDropped?.(agent.agentId, roomId, held.command);
+    }
   }
 
   private running(agent: AgentState): AgentHostLink | null {
@@ -523,8 +849,10 @@ export class AgentHub {
     const connected = this.upstream && agent.attached;
     if (connected === host.connected) return;
     host.connected = connected;
-    if (connected) host.deps.onConnected?.();
-    else
+    if (connected) {
+      host.deps.onConnected?.();
+      this.flushCommands(agent, host);
+    } else
       host.deps.onDisconnected?.({
         error: this.upstream
           ? 'Switch detached the agent from this controller.'
@@ -561,11 +889,11 @@ export class AgentHub {
    */
   private pump(agent: AgentState): void {
     const host = this.running(agent);
-    if (!host || host.delivering || host.cursor === null) return;
+    if (!host || host.delivering || host.cursor === null || agent.holding) return;
     host.delivering = true;
-    void (async () => {
+    host.pumping = (async () => {
       try {
-        while (agent.host === host && !host.closed) {
+        while (agent.host === host && !host.closed && !agent.holding) {
           if (host.cursor! < agent.droppedThrough) {
             await this.tell(agent, {
               from_sequence: host.cursor!,
@@ -582,7 +910,11 @@ export class AgentHub {
           if (!item) break;
           if (item.kind === 'gap')
             await this.tell(agent, { ...item.data, from_sequence: host.cursor! });
-          else if (item.notifiable) await host.deps.onEvent(item.data);
+          else if (item.notifiable) {
+            await host.deps.onEvent(item.data);
+            agent.lastAddressedAt = this.now();
+            this.deps.onAddressedTaken?.(agent.agentId, item.data);
+          }
           if (agent.host !== host || host.closed) break;
           host.cursor = item.seq;
           this.confirm(agent, item.seq);
@@ -598,9 +930,14 @@ export class AgentHub {
         );
       } finally {
         host.delivering = false;
+        host.pumping = null;
         this.trim(agent);
       }
     })();
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
   }
 
   private confirm(agent: AgentState, cursor: number): void {
@@ -630,4 +967,20 @@ export class AgentHub {
       );
     agent.overflowing = overflow;
   }
+}
+
+/** A room control as Switch relayed it, or as the hub kept it. */
+type RelayedControl = { commandId: string; [key: string]: unknown };
+
+/** A `!reset` Switch relayed without announcing it, leaving the box to say how it went (B71). */
+function unannouncedReset(command: RelayedControl): boolean {
+  const body = command.body as { type?: unknown } | undefined;
+  return body?.type === 'session.reset' && command.roomTold === false;
+}
+
+/** An error's name or code for a log: never its message, which can carry a path. */
+function errorName(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') return code;
+  return error instanceof Error ? error.name : 'unknown error';
 }

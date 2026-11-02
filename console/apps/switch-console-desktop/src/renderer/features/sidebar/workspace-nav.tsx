@@ -1,5 +1,6 @@
 import { Bot, DoorOpen, FileText, House, type LucideIcon, Plug, ShieldCheck } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
+import { useSharedCloudOverview } from '@renderer/features/shared-cloud/use-shared-cloud';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
 import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
@@ -33,6 +34,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
   const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
+  const sharedCloud = useSharedCloudOverview(active?.id ?? null).data?.viewer === 'operator';
   const warningCount =
     health.data?.agents.filter((agent) => connectionNeedsAttention(agent.state)).length ?? 0;
   if (!active) return null;
@@ -41,7 +43,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
 
   const administers = administersWorkspaceInScope(active.id);
   // Admin also holds the status of a server this Console runs, a view of its own.
-  const adminTarget = adminNavTarget({ serviceConnections, administers, frozen });
+  const adminTarget = adminNavTarget({ serviceConnections, administers, frozen, sharedCloud });
   const onAdmin = isCurrentView(currentView, 'admin') && adminParams?.serverId === active.id;
   const onStatus =
     isCurrentView(currentView, 'managedServer') && managedServerParams?.serverId === active.id;
@@ -57,7 +59,12 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
   };
-  const shown = workspaceNavViews({ managed: active.managed, serviceConnections, administers });
+  const shown = workspaceNavViews({
+    managed: active.managed,
+    serviceConnections,
+    administers,
+    sharedCloud,
+  });
 
   return (
     <SidebarMenu className="flex flex-col gap-[2px] px-2 pt-2">

@@ -7,6 +7,7 @@ import {
   type AgentDetail,
   type AgentSummary,
   type Budget,
+  type HostedUsage,
   type CurrentTenant,
   type UsageTotal,
   type ApiKeyDetail,
@@ -36,6 +37,8 @@ import {
   fetchAgents,
   fetchApiKeys,
   fetchBudgets,
+  fetchFeatureFlags,
+  fetchHostedUsage,
   fetchCurrentTenant,
   fetchUsage,
   fetchAllExternalUsers,
@@ -394,6 +397,24 @@ export function useTemplates(
 
 export function useCurrentTenant(): UseQueryResult<CurrentTenant> {
   return useQuery(fetchCurrentTenant);
+}
+
+/** `usage` is null when the server has no hosted view; a failed read is an error. */
+export function useHostedUsage(
+  tenantId: string,
+): UseQueryResult<{ usage: HostedUsage | null }> {
+  const fetcher = useCallback(
+    () =>
+      fetchHostedUsage(tenantId)
+        .then((usage) => ({ usage }))
+        .catch(() => null),
+    [tenantId],
+  );
+  return useQuery(fetcher);
+}
+
+export function useFeatureFlags(): UseQueryResult<Record<string, boolean>> {
+  return useQuery(fetchFeatureFlags);
 }
 
 export function useBudgets(tenantId: string): UseQueryResult<Budget[]> {

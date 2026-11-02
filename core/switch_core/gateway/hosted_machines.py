@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.models import (
+    AgentController,
     CloudMachine,
     MachineWorkspace,
     User,
@@ -14,6 +15,8 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.hosted_machine_store import (
     MACHINE_CONNECT_TIMEOUT,
+    MACHINE_PAUSED,
+    MACHINE_TURNED_OFF,
     CloudMachineConflict,
     CloudMachineStore,
     claim_conflict,
@@ -24,19 +27,29 @@ from switch_core.db.stores.hosted_machine_store import (
     workspace_on,
 )
 from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.cloud_controllers import workspace_reported
+from switch_core.gateway.cloud_controllers import (
+    revoke_machine_controller,
+    workspace_reported,
+)
 from switch_core.gateway.dependencies import (
     get_config,
     get_session,
     get_session_factory,
 )
-from switch_core.providers.hosted import HostedControllerSettings
+from switch_core.providers.hosted import (
+    NOT_AVAILABLE,
+    HostedControllerSettings,
+    tenant_allowed,
+)
+from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
+from switch_core.visibility.hosted_access import block_reason_in
+from switch_core.visibility.reason_codes import StopReason
 
 router = APIRouter(prefix="/hosted-machines")
 
 RETIRED_STATES = frozenset({"retained", "deleting", "deleted"})
 
-MACHINES_DISABLED = "This server does not support cloud agents."
+MACHINES_DISABLED = NOT_AVAILABLE
 
 
 def hosted_settings(request: Request) -> HostedControllerSettings | None:
@@ -52,15 +65,18 @@ def controller_settings(request: Request) -> HostedControllerSettings:
     return settings
 
 
-def machines_enabled(config: SwitchConfig, settings: HostedControllerSettings) -> bool:
-    """Whether the bound tenant may use cloud machines on this server."""
+def machines_enabled(
+    config: SwitchConfig, settings: HostedControllerSettings, user_id: str
+) -> bool:
+    """Whether this account, in the bound tenant, may use cloud machines on
+    this server. An account off `allowed_user_ids` gets the same answer as a
+    workspace off `allowed_tenant_ids`, so neither tells it which list it
+    missed."""
     return (
         config.hosted_agents_enabled
         and config.hosted_launch_capacity > 0
-        and (
-            settings.allowed_tenant_ids is None
-            or require_tenant_id() in settings.allowed_tenant_ids
-        )
+        and tenant_allowed(settings.allowed_tenant_ids, require_tenant_id())
+        and (settings.allowed_user_ids is None or user_id in settings.allowed_user_ids)
     )
 
 
@@ -71,6 +87,56 @@ def _usage(heartbeat: dict | None, key: str) -> dict | None:
     return {
         "total_bytes": reading["total_bytes"],
         "available_bytes": reading["available_bytes"],
+    }
+
+
+# Bounds for what Your cloud reads back from the stored report: the same as
+# the status schema's, so a figure outside them reads as not reported.
+_MAX_BYTES = 1 << 50
+_MAX_SESSIONS = 1000
+_MAX_CALLS = 1_000_000_000
+
+
+def _bounded(value: object, top: int, *, low: int = 0) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if low <= value <= top else None
+
+
+def next_utc_midnight(now: datetime) -> datetime:
+    """When the gateway's daily count resets: the next 00:00 UTC."""
+    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today + timedelta(days=1)
+
+
+def your_cloud(status: dict | None, now: datetime) -> dict:
+    """Your cloud's figures (visibility L1, U2 and U3), from the workspace
+    controller's last report: room to work, sessions awake, and AI calls today
+    against the cap. Each is null when the report doesn't carry it."""
+    machine = (status or {}).get("machine")
+    machine = machine if isinstance(machine, dict) else {}
+    total = _bounded(machine.get("mem_total_bytes"), _MAX_BYTES, low=1)
+    free = _bounded(machine.get("mem_free_bytes"), _MAX_BYTES)
+    running = _bounded(machine.get("sessions_running"), _MAX_SESSIONS)
+    most = _bounded(machine.get("sessions_max"), _MAX_SESSIONS)
+    cap = _bounded(machine.get("gateway_daily_cap"), _MAX_CALLS, low=1)
+    used = _bounded(machine.get("gateway_calls_today"), _MAX_CALLS)
+    capped = machine.get("gateway_capped")
+    return {
+        "room": None
+        if total is None or free is None
+        else {"used_bytes": max(0, total - free), "total_bytes": total},
+        "awake": None
+        if running is None or most is None
+        else {"running": running, "max": most},
+        "ai_calls_today": None
+        if cap is None or used is None
+        else {
+            "used": used,
+            "cap": cap,
+            "capped": capped is True or used >= cap,
+            "resets_at": next_utc_midnight(now).isoformat(),
+        },
     }
 
 
@@ -108,12 +174,25 @@ async def machine_summary(
     """The machine as its owner sees it from the bound workspace: `agents` are
     the workspace's managed agents placed on the controller the machine
     enrolled as here, `controller_id` (null until it has)."""
-    state, error = workspace_state(machine, workspace, datetime.now(UTC))
+    now = datetime.now(UTC)
+    state, error = workspace_state(machine, workspace, now)
+    controller = (
+        None
+        if workspace.controller_id is None
+        else await session.get(AgentController, workspace.controller_id)
+    )
     return {
         "machine_id": machine.id,
         "state": state,
         "desired_state": machine.desired_state,
-        "stop_reason": machine.stop_reason,
+        # Console's machine schema takes only `idle` or `owner`, so V3's labels
+        # read as the owner's stop here: stopped, and a start is refused with
+        # the block's own words. Why it's blocked comes from V2's reason codes.
+        "stop_reason": (
+            "owner"
+            if machine.stop_reason in ("paused", "turned_off")
+            else machine.stop_reason
+        ),
         "sleeping": idle_sleeping(machine),
         "revision": machine.revision,
         "instance_type": machine.instance_type,
@@ -129,6 +208,8 @@ async def machine_summary(
         "memory": _usage(machine.heartbeat, "memory"),
         "agents": await managed_agent_ids(session, workspace.controller_id),
         "controller_id": workspace.controller_id,
+        # Your cloud (visibility L1): from this workspace's controller only.
+        **your_cloud(None if controller is None else controller.status, now),
     }
 
 
@@ -152,9 +233,16 @@ async def ensure_machine(
     machines and `CloudMachineConflict` when none can be had. The caller
     commits.
     """
-    if settings is None or not machines_enabled(config, settings):
+    if settings is None or not machines_enabled(config, settings, owner_id):
         raise MachineUnavailable(MACHINES_DISABLED)
     machines = CloudMachineStore()
+    # Turned off in this workspace by its admin (visibility V3): no box for it.
+    # A pause is refused by the claim itself (`claim_conflict`).
+    if (
+        await block_reason_in(session, owner_id, require_tenant_id())
+        is StopReason.TURNED_OFF_BY_ADMIN
+    ):
+        raise CloudMachineConflict(MACHINE_TURNED_OFF)
     await lock_claims(session)
     existing = await machines.live_for_owner(session, owner_id)
     if existing is not None:
@@ -177,6 +265,11 @@ async def ensure_machine(
         owner_id=owner_id,
         capacity=config.hosted_launch_capacity,
         now=datetime.now(UTC),
+        # V0: a user keeps one machine id for life, so the box made for them
+        # matches the namespace they already have. With V0 off, as before.
+        revoke=revoke_machine_controller if box_provisioning_on(config) else None,
+        # With V0 on, a new machine is a cluster box V0 makes; off, a v1 one.
+        backend="box" if box_provisioning_on(config) else "vm",
     )
 
 
@@ -202,7 +295,7 @@ async def owned_machines(
     workspace it is the same machine, joined from there. `available` says
     whether the bound workspace may claim one here at all, so a client can
     offer cloud agents only where claiming one can work."""
-    available = settings is not None and machines_enabled(config, settings)
+    available = settings is not None and machines_enabled(config, settings, user.id)
     machine = await CloudMachineStore().live_for_owner(session, user.id)
     workspace = None if machine is None else await workspace_on(session, machine.id)
     if machine is None or workspace is None:
@@ -230,6 +323,14 @@ async def ensure(
     except CloudMachineConflict as error:
         raise HTTPException(409, str(error)) from None
     await session.commit()
+    # V0: a new user's machine asks for its box, just after the claim commits.
+    await ask_for_box(
+        factory,
+        machine_id=machine.id,
+        config=config,
+        settings=settings,
+        now=datetime.now(UTC),
+    )
     return await machine_summary(session, machine, workspace)
 
 
@@ -273,6 +374,13 @@ async def lifecycle(
         machine.state in RETIRED_STATES or machine.desired_state in RETIRED_STATES
     ):
         raise HTTPException(409, f"machine is {machine.desired_state}")
+    # Paused, or turned off here: every action is refused, so the owner can't
+    # undo an operator's pause or an admin's switch (visibility V3, draft 43).
+    blocked = await block_reason_in(session, user.id, workspace.tenant_id)
+    if blocked is StopReason.PAUSED_BY_SWITCH:
+        raise HTTPException(409, MACHINE_PAUSED)
+    if blocked is StopReason.TURNED_OFF_BY_ADMIN:
+        raise HTTPException(409, MACHINE_TURNED_OFF)
     now = datetime.now(UTC)
     if body.action == "stop":
         machines.stop(machine, "owner", now)

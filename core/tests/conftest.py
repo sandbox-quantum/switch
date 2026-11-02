@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass
 
 import pytest
@@ -173,6 +174,24 @@ async def empty_the_database(engine: AsyncEngine) -> None:
     )
 
 
+THROWAWAY_DATABASE = "switch_test_throwaway"
+
+
+def external_test_database(url_text: str, environ: Mapping[str, str]) -> None:
+    """Refuses a test database that could be someone's real one."""
+    url = make_url(url_text)
+    if (
+        environ.get("SWITCH_TEST_POSTGRES_THROWAWAY") != "1"
+        or url.get_backend_name() != "postgresql"
+        or url.host not in {"127.0.0.1", "localhost"}
+        or url.database != THROWAWAY_DATABASE
+    ):
+        raise RuntimeError(
+            "SWITCH_TEST_POSTGRES_URL is used only with SWITCH_TEST_POSTGRES_THROWAWAY=1, "
+            f"a localhost postgresql URL and the database {THROWAWAY_DATABASE}."
+        )
+
+
 @pytest.fixture(scope="session")
 def postgres_url() -> Iterator[str]:
     """A throwaway PostgreSQL instance for the whole test session.
@@ -186,6 +205,15 @@ def postgres_url() -> Iterator[str]:
     entirely write traffic. Nothing about the behaviour under test changes:
     these settings govern what survives a crash, not what a transaction sees.
     """
+    # A runner with no Docker socket (the gVisor integration box) points this at
+    # its own throwaway Postgres instead. Every test truncates and reseeds it, so
+    # it is refused unless all three hold: the explicit throwaway flag, a local
+    # host, and the fixed throwaway database name. Refused before connecting.
+    external = os.environ.get("SWITCH_TEST_POSTGRES_URL")
+    if external:
+        external_test_database(external, os.environ)
+        yield external
+        return
     container = PostgresContainer("postgres:16-alpine").with_command(
         "postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
     )

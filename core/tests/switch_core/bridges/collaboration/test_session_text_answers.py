@@ -22,6 +22,12 @@ from switch_core.session_activity.bridge_answers import Answered, ApprovalAnswer
 
 from .session_fixtures import open_request
 
+
+async def _not_handed_in(_msg: object) -> bool:
+    """No post is in its room yet: these tests are not about second copies."""
+    return False
+
+
 CHANNEL = "C1"
 CARD = "C1:111.0"
 
@@ -121,6 +127,7 @@ def _bridge(approval_answers: Any) -> tuple[Any, list[dict[str, str]]]:
     bridge._bridge_id = "bridge-1"
     # Instance attrs shadow the class methods so the DB is never touched.
     bridge._is_registered_agent = _is_registered_agent  # type: ignore[assignment]
+    bridge._already_handed_in = _not_handed_in  # type: ignore[assignment]
     bridge._repair_placeholder_username = _repair_placeholder_username  # type: ignore[assignment]
     bridge._ensure_human_in_room = _ensure_human_in_room  # type: ignore[assignment]
     return bridge, relayed

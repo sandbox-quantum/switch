@@ -11,6 +11,7 @@ import {
   watcherHealthFileSchema,
   watchFlagsSchema,
 } from '@switch-console/agent-providers';
+import type { MarkerTable, OwnerMarkers } from './owner-marker';
 import type { DataLayout } from './paths';
 import {
   type AgentObservation,
@@ -53,6 +54,17 @@ export class DetachedRuntime implements AgentRunner {
       layout: DataLayout;
       /** The `shared-host-daemon.mjs` bundle from agent-providers. */
       bundlePath: string;
+      /**
+       * Marks everything an agent's host starts as that agent's, for the
+       * memory guard and resting agents to stop with proof (`owner-marker.ts`).
+       */
+      ownerMarkers?: Pick<OwnerMarkers | MarkerTable, 'environmentFor'>;
+      /**
+       * Starts the host from its written template in place of the bundle's
+       * `--ensure-watch`. Level 3's launcher does it in its own process, so the
+       * host is its child and its pid is known from the spawn.
+       */
+      start?: (agentId: string, root: string, templatePath: string) => Promise<void>;
     }
   ) {
     this.bundle = new LaunchedBundle(deps.bundlePath);
@@ -91,10 +103,16 @@ export class DetachedRuntime implements AgentRunner {
     await this.writeFlags(root, { enabled: true, spawn: true });
     const templatePath = join(root, 'template.json');
     await writeAtomic(templatePath, JSON.stringify(template));
-    await this.runBundle([root, templatePath, '--ensure-watch', 'false'], LAUNCH_TIMEOUT_MS);
+    if (this.deps.start) return this.deps.start(agentId, root, templatePath);
+    await this.runBundle(
+      [root, templatePath, '--ensure-watch', 'false'],
+      LAUNCH_TIMEOUT_MS,
+      this.deps.ownerMarkers?.environmentFor(agentId) ?? {}
+    );
   }
 
-  async stop(agentId: string, options: { wait: boolean }): Promise<void> {
+  /** `asked` is not needed here: its worker closes its sessions unasked, so cut-off turns owe their line. */
+  async stop(agentId: string, options: { wait: boolean; asked?: boolean }): Promise<void> {
     const root = this.deps.layout.watcherRoot(agentId);
     await mkdir(root, { recursive: true, mode: 0o700 });
     await this.writeFlags(root, { enabled: false, spawn: false });
@@ -122,9 +140,18 @@ export class DetachedRuntime implements AgentRunner {
     await writeAtomic(join(root, WATCH_FLAGS_FILE), JSON.stringify(watchFlagsSchema.parse(flags)));
   }
 
-  private async runBundle(args: string[], timeoutMs: number): Promise<string> {
+  /**
+   * Runs the bundle with this process's environment and `extraEnv`: the
+   * supervisor it starts, and everything after, inherit both. The controller's
+   * own environment is left as it is.
+   */
+  private async runBundle(
+    args: string[],
+    timeoutMs: number,
+    extraEnv: Record<string, string>
+  ): Promise<string> {
     const child = spawn(process.execPath, [this.deps.bundlePath, ...args], {
-      env: process.env,
+      env: { ...process.env, ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';

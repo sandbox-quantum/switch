@@ -10,8 +10,22 @@ import {
 } from '@sandboxaq/switch-agent-runtime';
 import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
+import type { AdmitKind, BoxValve, LetGoReason } from './box-valve';
+import {
+  DirectHostValve,
+  fallbackFromEnv,
+  giveUpReasonOf,
+  type HostValve,
+  HubHostValve,
+  LegacyHostValve,
+  refusalText,
+  type ValveChannel,
+  waitRequestOf,
+} from './box-valve-client';
 import type { Handoff } from './handoff';
-import { Journal } from './journal';
+import { HeldReplies, OwedLostLines } from './held-replies';
+import { errorCode, Journal } from './journal';
+import { owesRestartReply, readJournalSnapshot } from './journal-snapshot';
 import {
   ensureSharedProcess,
   liveSupervisor,
@@ -19,9 +33,22 @@ import {
   sharedSessionsBase,
   type Supervision,
 } from './launch';
+import { BoxFullError, type ParkCandidate, pressureValve } from './memory-pressure';
+import { announceMemoryStop } from './memory-stop';
 import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './ownership-lock';
 import { SessionPlacements } from './placements';
+import { recordedOwnerAlive } from './process-fence';
+import { RESET_FAILED_LINE, SESSION_READY_MS } from './room-control-followup';
 import { roomInputId } from './room-inbox';
+import {
+  type GiveUpReason,
+  RESET_WHILE_WAITING_MESSAGE,
+  type RoomWaitList,
+  roomWaits,
+  SLOW_START_RETRY_MS,
+  STOPPED_WAITING_MESSAGE,
+  WAITING_FOR_ROOM_MESSAGE,
+} from './room-wait';
 import {
   SessionHostFailedError,
   type SessionRequest,
@@ -34,11 +61,22 @@ import {
   servicesChanged,
 } from './session-services';
 import { readSharedCredentials, sharedConfigSchema, type SharedHostConfig } from './shared-config';
+import {
+  keptLine,
+  readStartFailureKind,
+  SESSION_CLOSED_MESSAGE,
+  START_LET_GO_MESSAGE,
+  type StartFailureKind,
+} from './start-failure';
+import { sessionStarts, untilReady } from './start-limiter';
 import { readTakenOver, recordTakenOver } from './taken-over';
 import { awaitWatchChange, onConfigReplaced, readWatchFlags } from './watch-flags';
+import type { SessionState } from './watcher-tools';
 import {
+  announceBoxFull,
+  announceKept,
   announceSessionStart,
-  announceStartFailure,
+  tellRoomReplyLost,
   type PlaceOutcome,
   sessionToolAnswerer,
   type WatcherControl,
@@ -101,6 +139,27 @@ const releasedSchema = z.strictObject({
     reason: z.string().min(1).optional(),
   }),
 });
+/**
+ * Marks a held delivery as waiting for room in a full box, and since when:
+ * its room has been told so once, and its limit counts from `since`, across
+ * a restart too. Finished by the delivery's `released` record.
+ */
+const waitingSchema = z.strictObject({
+  waiting: z.strictObject({
+    roomId: z.string().min(1),
+    messageId: z.string().min(1),
+    since: z.string().min(1),
+  }),
+});
+/**
+ * Marks that a held delivery's room was actually told it is kept or waiting:
+ * written only once the post went through, so a line that failed (Switch
+ * away) is tried again rather than taken as said (engineer-6, B78 review).
+ * Finished by the delivery's `released` record.
+ */
+const toldSchema = z.strictObject({
+  told: z.strictObject({ roomId: z.string().min(1), messageId: z.string().min(1) }),
+});
 export const assignmentRecordSchema = z.union([
   assignmentSchema,
   restartSchema,
@@ -108,6 +167,8 @@ export const assignmentRecordSchema = z.union([
   parkedSchema,
   releasedSchema,
   warmedSchema,
+  waitingSchema,
+  toldSchema,
 ]);
 
 type Assignment = z.infer<typeof assignmentSchema>;
@@ -129,6 +190,14 @@ function isParked(record: WatchRecord): record is z.infer<typeof parkedSchema> {
 
 function isReleased(record: WatchRecord): record is z.infer<typeof releasedSchema> {
   return 'released' in record;
+}
+
+function isWaiting(record: WatchRecord): record is z.infer<typeof waitingSchema> {
+  return 'waiting' in record;
+}
+
+function isTold(record: WatchRecord): record is z.infer<typeof toldSchema> {
+  return 'told' in record;
 }
 
 /** Whether a relayed room control is a reset (`!reset`). */
@@ -302,7 +371,9 @@ export async function stopSupersededSessions(
     console.warn(
       `Session ${config.session.sessionId} is running a superseded build; stopping it until it is next needed.`
     );
-    await supervision.stop(root);
+    // An upgrade: a turn this cuts off owes its room the "I was restarted"
+    // line, so the stop is not marked as asked for.
+    await supervision.stop(root, { asked: false });
   }
 }
 
@@ -418,13 +489,80 @@ export async function stopRedefinedSessions(
   }
 }
 
+/** A journal this long, and twice what it was last compacted to, is compacted again. */
+export const COMPACT_AT_RECORDS = 1000;
+/**
+ * A released message's text is compacted out this long after the last
+ * release in a burst, so 20 releases close together rewrite the journal once
+ * (security's debounce), and never later than `RELEASE_COMPACT_MAX_MS` after
+ * the first of them.
+ */
+export const RELEASE_COMPACT_QUIET_MS = 1_000;
+export const RELEASE_COMPACT_MAX_MS = 10_000;
+
+/**
+ * The records an assignment journal still needs, in order: what it reads
+ * (`cursor`, `pending`, `placements`, `configOf`, `sessions`, `assign`)
+ * comes out the same from these as from all of them. Dropped:
+ * - a held delivery's `parked` record, with the message text it carries, once
+ *   it is released (delivered or let go). In the current numbering its
+ *   sequence is kept as a `handled` position, which is all the cursor read
+ *   from it;
+ * - its `waiting` record, once released;
+ * - every `handled` record, folded into one for the current numbering, the
+ *   furthest; earlier numberings' positions are never read again;
+ * - a `released` record no assignment of the current numbering names (the
+ *   cursor's only other use of it);
+ * - every `restarted` mark but the last.
+ * Kept whole: every assignment and warmed session (which session serves
+ * which room, and its config), and every held delivery still waiting, text
+ * included, since nothing else keeps it.
+ */
+export function compactAssignments(records: readonly WatchRecord[]): WatchRecord[] {
+  let last = records.length - 1;
+  while (last >= 0 && !restarted(records[last]!)) last--;
+  const released = new Set(records.filter(isReleased).map((record) => delivery(record.released)));
+  const namedNow = new Set(
+    records
+      .slice(last + 1)
+      .filter(isAssignment)
+      .map((record) => delivery(record))
+  );
+  const kept: WatchRecord[] = [];
+  let furthest = 0;
+  records.forEach((record, index) => {
+    const now = index > last;
+    if (restarted(record)) {
+      if (index === last) kept.push(record);
+    } else if (isHandled(record)) {
+      if (now) furthest = Math.max(furthest, record.handled);
+    } else if (isParked(record)) {
+      if (!released.has(delivery(record))) kept.push(record);
+      else if (now) furthest = Math.max(furthest, record.parked);
+    } else if (isWaiting(record)) {
+      if (!released.has(delivery(record.waiting))) kept.push(record);
+    } else if (isTold(record)) {
+      if (!released.has(delivery(record.told))) kept.push(record);
+    } else if (isReleased(record)) {
+      if (namedNow.has(delivery(record.released))) kept.push(record);
+    } else kept.push(record);
+  });
+  if (furthest > 0) kept.push({ handled: furthest });
+  return kept;
+}
+
 /**
  * Which session serves which room, and how far the watcher has got. Both the
  * assignment and the routing that follows it are on disk before the stream is
  * allowed past the event.
  */
 export class AgentHostAssignments {
-  private constructor(private readonly journal: Journal<WatchRecord>) {}
+  /** How long the journal was after it was last compacted. */
+  private compactedTo: number;
+
+  private constructor(private readonly journal: Journal<WatchRecord>) {
+    this.compactedTo = journal.records.length;
+  }
 
   static async open(root: string): Promise<AgentHostAssignments> {
     return new AgentHostAssignments(
@@ -432,6 +570,122 @@ export class AgentHostAssignments {
         assignmentRecordSchema.parse(value)
       )
     );
+  }
+
+  /** How many records the journal holds now (for tests and logs). */
+  get length(): number {
+    return this.journal.records.length;
+  }
+
+  /**
+   * Drops what the journal has finished with (`compactAssignments`): a held
+   * message's text leaves the disk once it is delivered or let go. Run at
+   * host start, and once the journal has grown past `COMPACT_AT_RECORDS` and
+   * twice its last compacted size. Resolves to how many records went.
+   */
+  async compact(): Promise<number> {
+    const dropped = await this.journal.compact(compactAssignments);
+    this.compactedTo = this.journal.records.length;
+    return dropped;
+  }
+
+  /** A released message's text is still on disk: a compaction that should have removed it failed. */
+  private textOwed = false;
+  /** The compaction a release scheduled, and when the first release waiting on it came. */
+  private releaseTimer: NodeJS.Timeout | null = null;
+  private releaseFirstAt = 0;
+  private releaseCompaction: Promise<void> = Promise.resolve();
+
+  /**
+   * Compacts soon after a release that freed held text: once the releases
+   * have been quiet for `RELEASE_COMPACT_QUIET_MS`, and at most
+   * `RELEASE_COMPACT_MAX_MS` after the first, so a burst is one rewrite.
+   */
+  private compactAfterRelease(): void {
+    const now = Date.now();
+    if (this.releaseTimer) {
+      if (now - this.releaseFirstAt >= RELEASE_COMPACT_MAX_MS) return;
+      clearTimeout(this.releaseTimer);
+    } else this.releaseFirstAt = now;
+    const wait = Math.min(
+      RELEASE_COMPACT_QUIET_MS,
+      Math.max(0, this.releaseFirstAt + RELEASE_COMPACT_MAX_MS - now)
+    );
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+      this.releaseCompaction = this.compactNow();
+    }, wait);
+    this.releaseTimer.unref?.();
+  }
+
+  /**
+   * The host is stopping: a compaction a release scheduled runs now, so held
+   * text never outlives the host that released it. The journal has one owner,
+   * so nothing compacts it after this.
+   */
+  async close(): Promise<void> {
+    if (this.releaseTimer) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+      this.releaseCompaction = this.compactNow();
+    }
+    await this.releaseCompaction;
+  }
+
+  private async compactIfLong(): Promise<void> {
+    const length = this.journal.records.length;
+    if (!this.textOwed && (length < COMPACT_AT_RECORDS || length < 2 * this.compactedTo)) return;
+    await this.compactNow();
+  }
+
+  private async compactNow(): Promise<void> {
+    try {
+      await this.compact();
+      this.textOwed = false;
+    } catch (error) {
+      // The journal is still whole (the old one or the new one), so the host
+      // carries on; the next record written tries again.
+      this.compactedTo = this.journal.records.length;
+      this.textOwed = true;
+      console.warn(`Could not compact this agent's assignment journal (${errorCode(error)}).`);
+    }
+  }
+
+  /** When a held delivery started waiting for room, in ms; null if it never has. */
+  waitingSince(event: { roomId: string; messageId: string }): number | null {
+    const identity = delivery(event);
+    if (this.settled.has(identity)) return null;
+    const record = this.journal.records
+      .filter(isWaiting)
+      .find((entry) => delivery(entry.waiting) === identity);
+    if (!record) return null;
+    const since = Date.parse(record.waiting.since);
+    return Number.isFinite(since) ? since : null;
+  }
+
+  /** Whether a held delivery's room was told it is kept or waiting (and it isn't finished). */
+  wasTold(event: { roomId: string; messageId: string }): boolean {
+    const identity = delivery(event);
+    if (this.settled.has(identity)) return false;
+    return this.journal.records.some(
+      (record) => isTold(record) && delivery(record.told) === identity
+    );
+  }
+
+  /** Records that a held delivery's room was told it is kept or waiting. */
+  async told(event: { roomId: string; messageId: string }): Promise<void> {
+    await this.journal.append({ told: { roomId: event.roomId, messageId: event.messageId } });
+  }
+
+  /** Records that a held delivery is waiting for room in a full box, since `sinceMs`. */
+  async waiting(event: { roomId: string; messageId: string }, sinceMs: number): Promise<void> {
+    await this.journal.append({
+      waiting: {
+        roomId: event.roomId,
+        messageId: event.messageId,
+        since: new Date(sinceMs).toISOString(),
+      },
+    });
   }
 
   /** Records written under the server's current numbering. */
@@ -535,6 +789,7 @@ export class AgentHostAssignments {
   /** Records that the event has been routed, or decided not to be. */
   async handled(sequence: number): Promise<void> {
     await this.journal.append({ handled: sequence });
+    await this.compactIfLong();
   }
 
   /**
@@ -545,6 +800,10 @@ export class AgentHostAssignments {
     event: { roomId: string; messageId: string },
     reason: string | null
   ): Promise<void> {
+    const identity = delivery(event);
+    const held = this.journal.records.some(
+      (record) => isParked(record) && delivery(record) === identity
+    );
     await this.journal.append({
       released: {
         roomId: event.roomId,
@@ -552,6 +811,11 @@ export class AgentHostAssignments {
         ...(reason === null ? {} : { reason }),
       },
     });
+    // Security's condition: a released message's text leaves the disk
+    // within seconds, not at the next compaction; a burst of releases is one
+    // rewrite. A failure is retried on the next record.
+    if (held) this.compactAfterRelease();
+    else await this.compactIfLong();
   }
 
   /** Records that the event is waiting for its room's owner to be decided. */
@@ -677,10 +941,24 @@ export type AgentStreamDeps = SwitchEventStreamDeps & {
   onRoomGone?: (info: { roomId: string; sessionId: string }) => Promise<void> | void;
 };
 
-export type OpenAgentStream = (deps: AgentStreamDeps) => AgentEventStream;
+export type OpenAgentStream = ((deps: AgentStreamDeps) => AgentEventStream) & {
+  /** An isolated host's hub: the box valve is reached over it (B85). */
+  valveChannel?: ValveChannel;
+  /** A host in the controller's own process: the controller's box valve, directly. */
+  boxValve?: BoxValve;
+};
 
 /** The watcher's own connection to Switch, with the agent's credentials. */
 export const openSwitchStream: OpenAgentStream = (deps) => new SwitchEventStream(deps);
+
+/**
+ * The owner records this process holds right now, by path. A record naming
+ * this process's own id that is not in here was left by an earlier process
+ * that had the same id: a container restarting gives its processes the same
+ * low ids again, so after a crash the new controller finds its own id in the
+ * lock the old one never released.
+ */
+const heldOwners = new Map<string, string>();
 
 export async function runAgentHost(
   root: string,
@@ -688,7 +966,9 @@ export async function runAgentHost(
   signal: AbortSignal,
   supervision: Supervision,
   control: WatcherControl,
-  openStream: OpenAgentStream
+  openStream: OpenAgentStream,
+  /** Where messages wait for room in a full box: the one this process shares, unless a test gives its own. */
+  waits: RoomWaitList = roomWaits
 ): Promise<void> {
   const ownerPath = join(root, 'shared-owner.lock');
   const owner = { pid: process.pid, token: randomUUID() };
@@ -698,15 +978,21 @@ export async function runAgentHost(
     root,
     async () => {
       try {
-        const { pid } = z
-          .object({ pid: z.number().int().positive() })
+        const { pid, token } = z
+          .object({ pid: z.number().int().positive(), token: z.string().optional() })
           .parse(JSON.parse(await readFile(ownerPath, 'utf8')));
-        process.kill(pid, 0);
-        throw new Error('The shared SDK watcher is already running.');
+        const held = heldOwners.get(ownerPath);
+        const leftByEarlierProcess = pid === process.pid && (held === undefined || held !== token);
+        // Judged first, so a stale lock is seen (and logged) as such, then the
+        // same-id check. Either way an earlier owner's lock is taken over.
+        const mayBeAlive = await recordedOwnerAlive(ownerPath, pid);
+        if (mayBeAlive && !leftByEarlierProcess)
+          throw new Error('The shared SDK watcher is already running.');
       } catch (error) {
         if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
       await replaceOwner(ownerPath, owner);
+      heldOwners.set(ownerPath, owner.token);
     },
     signal
   );
@@ -730,6 +1016,7 @@ export async function runAgentHost(
     detail: null,
   };
   let thrown: unknown = null;
+  let assignmentsOpened: AgentHostAssignments | null = null;
   try {
     if (!template.execution || !template.roomConnection)
       throw new Error('Shared watcher requires execution credentials and a connection identity.');
@@ -757,6 +1044,20 @@ export async function runAgentHost(
     }
     const credentials = await readSharedCredentials(template);
     const assignments = await AgentHostAssignments.open(root);
+    assignmentsOpened = assignments;
+    // At start, before anything reads it: what was delivered or let go since
+    // the last compaction, held message text included, leaves the disk.
+    try {
+      const dropped = await assignments.compact();
+      if (dropped)
+        console.info(
+          `Compacted this agent's assignment journal: ${dropped} finished record(s) removed, ${assignments.length} kept.`
+        );
+    } catch (error) {
+      console.warn(
+        `Could not compact this agent's assignment journal at start (${errorCode(error)}); it is used as it is.`
+      );
+    }
     const links = supervision.links;
     if (!links)
       throw new Error(
@@ -779,21 +1080,226 @@ export async function runAgentHost(
         ...assignments.sessions().map((config) => config.session.sessionId),
         ...Object.keys(placements.snapshot()),
       ]);
-      return [...ids].filter((sessionId) => {
+      const busy = [...ids].filter((sessionId) => {
         const sessionRoot = sharedSessionRoot(sessionId);
         return live.has(sessionRoot) && links.busy(sessionRoot)?.busy !== false;
       });
+      // A session with messages waiting for room owes them a start: busy, so
+      // nothing that waits for idle (a controller update, a rest) takes it as idle.
+      for (const sessionId of waits.sessionsOf(agentId))
+        if (!busy.includes(sessionId)) busy.push(sessionId);
+      return busy;
     };
+    /**
+     * The box valve (B85): the controller's, directly (a host in its process)
+     * or over the hub (an isolated host), or today's valve for this process
+     * where no controller runs it (Console's own hosts, an SSH host).
+     */
+    const valve: HostValve = openStream.boxValve
+      ? new DirectHostValve(openStream.boxValve, agentId, { log: console })
+      : openStream.valveChannel
+        ? new HubHostValve(openStream.valveChannel, fallbackFromEnv(), { log: console })
+        : new LegacyHostValve(pressureValve);
+    /** Why the last start was refused, in plain words, for this host's log. */
+    let lastRefusal = '';
+    /** Sessions being started for a message right now: "Back in a moment". */
+    const waking = new Set<string>();
+    /** Every session of this agent here, and where it stands. */
+    const sessionStates = (): Record<string, SessionState> => {
+      const live = new Set(links.live());
+      const ids = new Set([
+        ...assignments.sessions().map((config) => config.session.sessionId),
+        ...Object.keys(placements.snapshot()),
+      ]);
+      return Object.fromEntries(
+        [...ids].map((sessionId): [string, SessionState] => [
+          sessionId,
+          waking.has(sessionId)
+            ? 'waking'
+            : live.has(sharedSessionRoot(sessionId))
+              ? 'active'
+              : 'parked',
+        ])
+      );
+    };
+    /** Where each session stood when last reported, to log each move once. */
+    const statesReported = new Map<string, SessionState>();
+    const reportSessions = () => {
+      const sessions = sessionStates();
+      // When the move happened here, for comparing with when the controller's
+      // report carried it to Switch (B61 tail). Ids, states and times only.
+      for (const [sessionId, state] of Object.entries(sessions)) {
+        const was = statesReported.get(sessionId) ?? null;
+        if (was === state) continue;
+        statesReported.set(sessionId, state);
+        console.info(
+          `Session ${sessionId} of agent ${agentId}: ${was ?? 'none'} -> ${state} at ${new Date().toISOString()}.`
+        );
+      }
+      control.report({ busy: busySessions(), sessions });
+      valve.changed();
+    };
+    // Console's amber "Waiting for room" card reads this, through the status report.
+    const reportWaiting = () =>
+      control.report({ busy: busySessions(), waitingForRoom: waits.count(agentId) });
+    unbind.push(
+      waits.onChange((changed) => {
+        if (changed === agentId) reportWaiting();
+      }),
+      // This host stopping (signalled, disabled, or stopped by the memory
+      // guard) takes its waiting messages off the list without a line: they
+      // stay in the journal and wait again when the host next starts.
+      () => {
+        waits.removeWhere((waiter) => waiter.host === owner.token);
+      }
+    );
+    /** When each live session last went idle, for parking the quietest first. */
+    const idleSince = new Map<string, number>();
+    const parkCandidates = (): ParkCandidate[] => {
+      const live = new Set(links.live());
+      const awake = Object.entries(sessionStates()).filter(([, state]) => state === 'active');
+      return awake.flatMap(([sessionId]): ParkCandidate[] => {
+        const sessionRoot = sharedSessionRoot(sessionId);
+        if (!live.has(sessionRoot) || links.busy(sessionRoot)?.busy !== false) return [];
+        if (!idleSince.has(sessionRoot)) idleSince.set(sessionRoot, Date.now());
+        return [
+          {
+            sessionId,
+            idleSinceMs: idleSince.get(sessionRoot)!,
+            duplicate: awake.length > 1,
+            park: async () => {
+              const answer = (await links.request(sessionRoot, { type: 'park' }, 5_000)) as {
+                parking?: boolean;
+              } | null;
+              return answer?.parking === true;
+            },
+          },
+        ];
+      });
+    };
+    /**
+     * The box valve let go of a waiting message (its 10 minutes, or the box's
+     * list or this agent's share of it full): its room is told, as for the
+     * same limit here. Held means the guard is stopping this agent: the
+     * journal keeps the message for its next start, so nothing is said.
+     */
+    const boxLetGo = (messageId: string, reason: LetGoReason) => {
+      if (reason === 'held') return;
+      const [waiter] = waits.removeWhere(
+        (other) => other.host === owner.token && other.messageId === messageId
+      );
+      if (!waiter) return;
+      void waiter
+        .giveUp(giveUpReasonOf(reason))
+        .catch((error: unknown) =>
+          console.warn(
+            `Could not let go of message ${messageId} for the box valve: ${errorCode(error)}`
+          )
+        );
+    };
+    // This agent's sessions that are up and idle, for the box's cap and for
+    // parking; its waiting messages, for the box's one list.
+    unbind.push(
+      valve.attach(
+        {
+          awake: () => Object.values(sessionStates()).filter((state) => state === 'active').length,
+          idle: parkCandidates,
+          waiting: () => waits.list((waiter) => waiter.host === owner.token).map(waitRequestOf),
+        },
+        {
+          // Returned, not voided: the box valve's reserved room is handed back as unused once this settles, so it
+          // must settle only after this host's admit has claimed it (QR-1 busy, 28 Oct).
+          start: (sessionId) => waits.startNow(sessionId),
+          letGo: boxLetGo,
+        }
+      ),
+      waits.onRemoved((waiter) => {
+        if (waiter.host === owner.token) valve.unwait(waiter.messageId);
+      })
+    );
     control.report({
       state: 'connecting',
       detail: null,
       placements: placements.snapshot(),
       busy: busySessions(),
+      sessions: sessionStates(),
     });
     unbind.push(
-      placements.onChange((map) => control.report({ placements: map, busy: busySessions() })),
-      links.onBusy(() => control.report({ busy: busySessions() }))
+      placements.onChange((map) =>
+        control.report({ placements: map, busy: busySessions(), sessions: sessionStates() })
+      ),
+      links.onBusy((busyRoot) => {
+        if (links.busy(busyRoot)?.busy === false) idleSince.set(busyRoot, Date.now());
+        else idleSince.delete(busyRoot);
+        reportSessions();
+      }),
+      links.onReady((ready) => {
+        for (const id of [...waking]) if (sharedSessionRoot(id) === ready) waking.delete(id);
+        reportSessions();
+      }),
+      links.onExit((gone) => {
+        for (const id of [...waking]) if (sharedSessionRoot(id) === gone) waking.delete(id);
+        reportSessions();
+      }),
+      links.onFailure((failed) => {
+        for (const id of [...waking]) if (sharedSessionRoot(id) === failed) waking.delete(id);
+        reportSessions();
+      })
     );
+    let resumedCutOff = false;
+    /**
+     * Sessions whose host died mid-turn (a crash, an out-of-memory kill, an
+     * upgrade) are started again as soon as the watcher is connected, not on
+     * the room's next message: starting is what marks the cut-off turn
+     * interrupted, clears its "Working…" and tells the room once (the session
+     * host's recovery). Others stay parked.
+     */
+    const resumeCutOffSessions = async ({ first }: { first: boolean }): Promise<void> => {
+      for (const config of assignments.sessions()) {
+        const sessionId = config.session.sessionId;
+        const sessionRoot = sharedSessionRoot(sessionId);
+        if (links.ready(sessionRoot)) {
+          // Up already: on a reconnect, it tries again any line it still owes.
+          if (!first && (await owesRestartReply(sessionId).catch(() => false)))
+            await links
+              .request(sessionRoot, { type: 'restart-replies' }, 5_000)
+              .catch((error: unknown) =>
+                console.warn(
+                  `Session ${sessionId} owes a room its restart line but did not take the retry: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                )
+              );
+          continue;
+        }
+        let snapshot;
+        try {
+          snapshot = await readJournalSnapshot(sessionId);
+        } catch {
+          continue;
+        }
+        // Cut off by a hard kill (the journal still says running), or by a clean
+        // stop (the provider exited first and the host owes the room its line).
+        if (
+          !snapshot.turns.some((turn) => turn.status === 'running' || turn.status === 'queued') &&
+          !(await owesRestartReply(sessionId).catch(() => false))
+        )
+          continue;
+        // After an out-of-memory kill, starting every cut-off session again
+        // could fill the box straight back up: the same ceiling as any start.
+        // A session skipped here tells its room when it next starts.
+        try {
+          await launch(config, 'resume');
+        } catch (error) {
+          if (!(error instanceof BoxFullError)) throw error;
+          // After an out-of-memory kill, starting every cut-off session again
+          // could fill the box straight back up: the same ceiling as any start.
+          console.warn(
+            `Session ${sessionId} has a turn a restart cut off, but was not started again to say so: ${lastRefusal || 'the box is full'}. It says so when it next starts.`
+          );
+        }
+      }
+    };
     let stream: AgentEventStream | null = null;
     let publishing: Promise<void> = Promise.resolve();
     /**
@@ -844,12 +1350,34 @@ export async function runAgentHost(
       }
       return saved.session.agentId === agentId ? saved : null;
     };
+    // The agent's room posts Switch could not take while it was away, held
+    // in this process only until it is back (B62). Lost, and said so, if this
+    // watcher stops first.
+    const owedLines = await OwedLostLines.open(join(root, 'held-replies.json'));
+    const heldReplies = new HeldReplies({ owed: owedLines });
+    unbind.push(() => heldReplies.stop());
+    // Posts the watcher before this one held when it stopped: lost with it, so
+    // each room is told, once Switch answers.
+    heldReplies.owedFromBefore(owedLines.fromBefore, (line) => async () => {
+      const config = await sessionConfig(line.sessionId);
+      if (!config) return { kind: 'final', detail: 'its session is gone' };
+      return tellRoomReplyLost({
+        identity,
+        connectionId,
+        session: config.session,
+        root: sharedSessionRoot(line.sessionId),
+        cwd: config.start.input.cwd,
+        line,
+        attending: placements.roomOf(line.sessionId),
+      });
+    });
     // Before any session is started below: a host asks for its tools as soon
     // as its provider comes up.
     unbind.push(
       links.answer(
         agentId,
         sessionToolAnswerer({
+          restartNotice: control.restartNotice,
           identity,
           connectionId,
           placements,
@@ -863,6 +1391,7 @@ export async function runAgentHost(
           // the session on either, so the move counts as not taken.
           placementsNameCallRooms: () => stream?.placementsNameCallRooms ?? true,
           redactions: links.redactions,
+          held: heldReplies,
         })
       )
     );
@@ -885,6 +1414,11 @@ export async function runAgentHost(
       failed: string | null;
       restarts: number;
       config: SharedHostConfig;
+      /**
+       * The box had no room to start the host: its queued messages wait on
+       * `waits` and it is started from there, oldest first, once there is.
+       */
+      waiting: boolean;
     };
     // Declared before the ready listener below reads it: another session can
     // come up while this host is still awaiting its own start-up.
@@ -982,7 +1516,21 @@ export async function runAgentHost(
       });
       return true;
     };
-    const launch = async (config: SharedHostConfig) => {
+    /**
+     * Starts under way, by session: a second start asked for while one is
+     * running waits for it rather than racing it (a reset arriving while a
+     * room message wakes the session).
+     */
+    const launching = new Map<string, Promise<void>>();
+    const launch = (config: SharedHostConfig, kind: AdmitKind = 'message'): Promise<void> => {
+      const sessionId = config.session.sessionId;
+      const running = launching.get(sessionId);
+      if (running) return running;
+      const started = launchNow(config, kind).finally(() => launching.delete(sessionId));
+      launching.set(sessionId, started);
+      return started;
+    };
+    const launchNow = async (config: SharedHostConfig, kind: AdmitKind) => {
       // Both flags are re-read here rather than taken from whoever asked for the
       // launch. Everything that reaches this point was admitted earlier and may
       // have waited behind other work since — a queued event, or an assignment
@@ -990,17 +1538,66 @@ export async function runAgentHost(
       // spawning off cannot be taken back.
       const now = await readWatchFlags(root);
       if (!now.enabled || !now.spawn || (await stopped(config.session.sessionId))) return;
-      await ensureSharedProcess({
-        root: sharedSessionRoot(config.session.sessionId),
-        config: reachableBy(withDefinitionOf(config, await currentTemplate()), connectionId),
-        resuming: false,
-        watcher: false,
-        restart: false,
-        supervision,
-        // Every session this watcher starts answers a room message. Recorded
-        // only if this launch creates the session, so a relaunch is not a start.
-        startSource: 'room',
-      });
+      const sessionRoot = sharedSessionRoot(config.session.sessionId);
+      const sessionId = config.session.sessionId;
+      const wasLive = links.ready(sessionRoot);
+      if (!wasLive) {
+        waking.add(sessionId);
+        reportSessions();
+      }
+      // Starts share the machine's CPUs with every other agent's: a few at a
+      // time, each holding its slot until its session host has connected.
+      try {
+        await sessionStarts.run(async () => {
+          // The memory ceiling is asked here, as the start really begins (after
+          // any wait for a slot), and counts this start until it is up.
+          let lease: string | null = null;
+          if (!links.ready(sessionRoot)) {
+            const answer = await valve.admit(sessionId, kind);
+            if (!answer.ok) {
+              lastRefusal = refusalText(answer.reason);
+              throw new BoxFullError(`The box is full: ${lastRefusal}.`);
+            }
+            lease = answer.lease;
+          }
+          let started = false;
+          try {
+            await ensureSharedProcess({
+              root: sessionRoot,
+              config: reachableBy(withDefinitionOf(config, await currentTemplate()), connectionId),
+              resuming: false,
+              watcher: false,
+              restart: false,
+              supervision,
+              // Every session this watcher starts answers a room message. Recorded
+              // only if this launch creates the session, so a relaunch is not a start.
+              startSource: 'room',
+            });
+            // Only a limited machine waits: unlimited, nothing queues behind it.
+            if (Number.isFinite(sessionStarts.capacity))
+              await untilReady(() => links.ready(sessionRoot));
+            started = true;
+          } finally {
+            // Up, or failed: a failed start given room for waiting messages is stepped over.
+            if (lease !== null) valve.settle(lease, started);
+          }
+        });
+      } catch (error) {
+        // Turned away: it is not waking, so Console shows it resting at once
+        // rather than "Back in a moment" for a start that will not happen.
+        if (error instanceof BoxFullError && waking.delete(sessionId)) reportSessions();
+        throw error;
+      } finally {
+        // Waking ends when its host connects, exits or fails (the link events
+        // below), or here if it already has; never later than a minute on.
+        if (links.ready(sessionRoot)) {
+          if (waking.delete(sessionId)) reportSessions();
+        } else if (waking.has(sessionId)) {
+          setTimeout(() => {
+            if (waking.delete(sessionId)) reportSessions();
+          }, 60_000).unref?.();
+        }
+      }
     };
     const superseded = await supersededSessions(template.session.agentId, supervision);
     await stopSupersededSessions(superseded, supervision);
@@ -1042,11 +1639,6 @@ export async function runAgentHost(
       }
     };
     /**
-     * The room messages already answered with a start failure: each message
-     * that runs into it is answered once, however often the host is retried.
-     */
-    const announced = new Set<string>();
-    /**
      * States the placements before a notice posted as the session, so Switch
      * answers it from the room it is in. A statement that is not taken is
      * said and the notice still tried: it is posted once, and a room left
@@ -1083,37 +1675,151 @@ export async function runAgentHost(
         );
       }
     };
-    const announce = async (config: SharedHostConfig, event: Handoff, failure: string) => {
+    /** Tells a message's room, once, that its session can't start and the message is kept (B78). */
+    const tellKept = (
+      config: SharedHostConfig,
+      event: Handoff,
+      kind: StartFailureKind
+    ): Promise<boolean> => {
       const sessionId = config.session.sessionId;
-      const key = `${sessionId}:${event.roomId}:${event.messageId}`;
-      if (announced.has(key)) return;
-      announced.add(key);
-      try {
+      return (async () => {
         // Switch answers the call from where it holds the session placed.
         await publishBeforeNotice(
-          `telling room ${event.roomId} session ${sessionId} failed to start`
+          `telling room ${event.roomId} session ${sessionId} can't start and its message is kept`
         );
-        await announceStartFailure({
+        await announceKept({
           identity,
           connectionId,
           session: config.session,
           root: sharedSessionRoot(sessionId),
           cwd: config.start.input.cwd,
           threadId: threadOf(event.event),
-          failure,
+          line: (owner) => keptLine(kind, owner),
         });
-      } catch (error) {
+        return true;
+      })().catch((error: unknown) => {
         console.error(
-          `Could not tell room ${event.roomId} that session ${sessionId} failed to start (${failure}): ${
+          `Could not tell room ${event.roomId} that session ${sessionId} can't start and its message is kept: ${
             error instanceof Error ? error.message : String(error)
           }`
         );
+        return false;
+      });
+    };
+    /**
+     * A session that can't start (no login, a setup error, or a host that
+     * would not take its message): each message it holds is kept and told so
+     * once, then waits on the wait list as a `start` wait, with the same
+     * limits. It is answered once the session starts, or let go with one
+     * "send it again" line at its limit, and then never answered (B78).
+     * Told once across restarts too: the journal's `told` record, written
+     * only once the post went through, says it was; until then the line is
+     * tried again at each keep, retry or restart (`promise`). The `waiting`
+     * record only starts its 10-minute clock.
+     */
+    /**
+     * Tells the box valve a message now waits here (B85). Null while it waits;
+     * otherwise the box let it go at once (its list or this agent's share is
+     * full, or it waited its limit), it is off this list too, and the caller
+     * lets it go with its line. `gone` when it had already left this list
+     * meanwhile (started or answered): no line at all. Held counts as
+     * waiting: the guard stopping this agent leaves it in the journal.
+     */
+    const boxWait = async (
+      event: Handoff,
+      sessionId: string,
+      sinceMs: number,
+      kind: 'room' | 'start',
+      outcome: 'waiting' | 'already'
+    ): Promise<GiveUpReason | 'gone' | null> => {
+      if (outcome !== 'waiting') return null;
+      const answer = await valve.wait({
+        roomId: event.roomId,
+        messageId: event.messageId,
+        sessionId,
+        sinceMs: Math.max(0, Math.round(sinceMs)),
+        kind,
+      });
+      if (answer === 'waiting' || answer === 'already' || answer === 'held') return null;
+      // Only a message still waiting here is let go with a line: one that
+      // started (or was answered) while the box was asked gets none.
+      const removed = waits.removeWhere(
+        (waiter) => waiter.host === owner.token && waiter.messageId === event.messageId
+      );
+      return removed.length ? giveUpReasonOf(answer) : 'gone';
+    };
+    const keepAfterFailure = async (
+      config: SharedHostConfig,
+      entry: Pump,
+      kind: StartFailureKind
+    ): Promise<void> => {
+      const sessionId = config.session.sessionId;
+      for (const event of [...entry.queue]) {
+        const since = assignments.waitingSince(event);
+        const sinceMs = since ?? Date.now();
+        const outcome = waits.add({
+          agentId,
+          sessionId,
+          host: owner.token,
+          roomId: event.roomId,
+          messageId: event.messageId,
+          sinceMs,
+          kind: 'start',
+          // Only a person can fix these: the fix itself retries (`hurry`, below),
+          // so the clock is a slow backstop rather than a host start every 30 s.
+          ...(kind === 'unknown' ? {} : { retryEveryMs: SLOW_START_RETRY_MS }),
+          retry: () => retryFailed(sessionId),
+          giveUp: (reason: GiveUpReason) =>
+            letGo(config, event, `no start in time (${reason})`, START_LET_GO_MESSAGE),
+        });
+        if (outcome === 'full' || outcome === 'expired') {
+          await letGo(
+            config,
+            event,
+            `no start in time (${outcome === 'full' ? 'list full' : 'timed out'})`,
+            START_LET_GO_MESSAGE
+          );
+          continue;
+        }
+        // The box's list decides too: let go at once, before any line, if it's full.
+        const box = await boxWait(event, sessionId, sinceMs, 'start', outcome);
+        if (box === 'gone') continue;
+        if (box) {
+          await letGo(config, event, `no start in time (${box})`, START_LET_GO_MESSAGE);
+          continue;
+        }
+        if (since === null) await record(() => assignments.waiting(event, sinceMs), false);
+        // Once per message; again only if the last post didn't go through.
+        promise(event, () => tellKept(config, event, kind));
       }
+    };
+    /**
+     * The wait list's retry for a session that failed to start: started
+     * again as if new, and handed its kept messages. True once it was started
+     * (a failure again keeps them again, without a second line); false while
+     * the box has no room for it.
+     */
+    const retryFailed = async (sessionId: string): Promise<boolean> => {
+      const entry = pumps.get(sessionId);
+      if (!entry?.queue.length) return true;
+      if (stop.signal.aborted) return false;
+      const failed = entry.failed;
+      entry.failed = null;
+      entry.restarts = 0;
+      try {
+        if (!links.ready(sharedSessionRoot(sessionId))) await launch(entry.config);
+      } catch (failure) {
+        entry.failed = failed;
+        if (failure instanceof BoxFullError) return false;
+        throw failure;
+      }
+      pump(entry.config);
+      return true;
     };
     const pump = (config: SharedHostConfig) => {
       const sessionId = config.session.sessionId;
       const entry = pumps.get(sessionId)!;
-      if (entry.running || entry.failed !== null) return;
+      if (entry.running || entry.failed !== null || entry.waiting) return;
       entry.running = true;
       void (async () => {
         const sessionRoot = sharedSessionRoot(sessionId);
@@ -1127,6 +1833,13 @@ export async function runAgentHost(
             );
             entry.queue.shift();
             entry.restarts = 0;
+            // Answered: off the wait list, so its limit can't also let it go.
+            waits.removeWhere(
+              (waiter) =>
+                waiter.host === owner.token &&
+                waiter.sessionId === sessionId &&
+                waiter.messageId === event.messageId
+            );
             pending = pending.then(() => assignments.released(event, null));
             await pending;
           } catch (error) {
@@ -1135,8 +1848,7 @@ export async function runAgentHost(
               console.error(
                 `Session ${sessionId} could not start: ${error.failure} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
               );
-              // Answer the newest message: it is the one somebody just sent.
-              void announce(config, entry.queue.at(-1) ?? event, error.failure);
+              await keepAfterFailure(config, entry, await readStartFailureKind(sessionRoot));
               break;
             }
             if (!(error instanceof SessionUnavailableError)) throw error;
@@ -1145,7 +1857,7 @@ export async function runAgentHost(
               console.error(
                 `Session ${sessionId}: ${entry.failed} Its ${entry.queue.length} room message(s) stay queued; it is started again when the room next addresses the agent or the session is restarted from Console.`
               );
-              void announce(config, entry.queue.at(-1) ?? event, entry.failed);
+              await keepAfterFailure(config, entry, 'unknown');
               break;
             }
             entry.restarts++;
@@ -1154,12 +1866,301 @@ export async function runAgentHost(
             console.warn(
               `Session ${sessionId} did not take message ${event.messageId} (${error.message}); starting it again.`
             );
-            await launch(config);
+            try {
+              await launch(config);
+            } catch (failure) {
+              if (!(failure instanceof BoxFullError)) throw failure;
+              // No room to start it again: what it holds waits for room, and
+              // the wait list starts it and hands them over once there is.
+              for (const queuedEvent of [...entry.queue])
+                await waitForRoom(config, entry, queuedEvent);
+              break;
+            }
             await new Promise((resolve) => setTimeout(resolve, OWNERSHIP_RETRY_MS));
           }
         }
         entry.running = false;
       })().catch((error: Error) => fail(error));
+    };
+    /** Records `write` in the journal: directly from inside the `pending` chain, else queued on it. */
+    const record = async (write: () => Promise<void>, inChain: boolean): Promise<void> => {
+      if (inChain) return write();
+      pending = pending.then(write);
+      await pending;
+    };
+    /** Posts one of the wait-for-room lines to the message's room (and thread), as the agent. */
+    const tellRoom = (
+      config: SharedHostConfig,
+      event: Handoff,
+      body: string,
+      what: string
+    ): Promise<boolean> =>
+      announceBoxFull({
+        identity,
+        connectionId,
+        session: config.session,
+        root: sharedSessionRoot(config.session.sessionId),
+        cwd: config.start.input.cwd,
+        threadId: threadOf(event.event),
+        body,
+      }).then(
+        () => true,
+        (failure: unknown) => {
+          console.error(
+            `Could not tell room ${event.roomId} ${what}: ${
+              failure instanceof Error ? failure.message : String(failure)
+            }`
+          );
+          return false;
+        }
+      );
+    /** Promises being posted now, by message, so a retry never posts one twice at once. */
+    const promising = new Set<string>();
+    /**
+     * Tells the room a reset typed there could not be done (B71), as the
+     * session it was for: no line may claim a reset that didn't happen.
+     */
+    const resetFailed = async (
+      command: { commandId: string; origin?: unknown },
+      sessionId: string,
+      why: string
+    ): Promise<void> => {
+      const origin = z
+        .object({ roomId: z.string().nullable(), threadId: z.string().nullable() })
+        .safeParse(command.origin);
+      console.warn(
+        `Could not reset session ${sessionId} for command ${command.commandId}: ${why}.`
+      );
+      const config = await sessionConfig(sessionId);
+      if (!config || !origin.success || !origin.data.roomId) return;
+      await announceBoxFull({
+        identity,
+        connectionId,
+        session: config.session,
+        root: sharedSessionRoot(sessionId),
+        cwd: config.start.input.cwd,
+        threadId: origin.data.threadId,
+        body: RESET_FAILED_LINE,
+      }).catch((error: unknown) =>
+        console.error(
+          `Could not tell room ${origin.data.roomId} that session ${sessionId} was not reset: ${errorName(error)}`
+        )
+      );
+    };
+    /**
+     * A reset for a resting (parked) session: start its host the way a room
+     * message would (the start limit and the memory ceiling apply), hand it
+     * the reset, and let it say so and go back to rest. A host that can't be
+     * started, or doesn't take it, is answered with the "couldn't" line.
+     */
+    const resetResting = async (
+      command: { commandId: string; sessionId: string; origin?: unknown },
+      sessionId: string,
+      requesterName: unknown,
+      told: boolean
+    ): Promise<void> => {
+      const config = await sessionConfig(sessionId);
+      if (!config || (await stopped(sessionId))) {
+        console.warn(
+          `Dropped command ${command.commandId}: session ${sessionId} is not one this agent runs here.`
+        );
+        return;
+      }
+      // Already being woken, or awake by now (a room message got there
+      // first): it was not resting, so the reset is an awake one, taken once
+      // the host is up.
+      const resting = !waking.has(sessionId) && !links.ready(sharedSessionRoot(sessionId));
+      console.info(
+        resting
+          ? `Session ${sessionId} is resting; starting it to take reset ${command.commandId}.`
+          : `Session ${sessionId} is waking; reset ${command.commandId} goes to it once it is up.`
+      );
+      try {
+        if (resting || waking.has(sessionId)) await launch(config);
+      } catch (error) {
+        await resetFailed(
+          command,
+          sessionId,
+          error instanceof BoxFullError
+            ? 'the box is full'
+            : `its host did not start (${errorName(error)})`
+        );
+        return;
+      }
+      const taken = await askSession(
+        sessionId,
+        {
+          type: 'command',
+          command,
+          requesterName: typeof requesterName === 'string' ? requesterName : null,
+          ...(resting ? { resting: true } : {}),
+          ...(told ? {} : { roomTold: false }),
+        },
+        `command ${command.commandId}`,
+        HOST_START_MS
+      );
+      if (!taken) await resetFailed(command, sessionId, 'its host did not take it');
+    };
+    /**
+     * Tells a message's room it is kept or waiting, unless it was already
+     * told: `told` is recorded only once the post went through, so a post
+     * that failed is tried again at the next keep or wait (B78 review).
+     */
+    const promise = (event: Handoff, post: () => Promise<boolean>): void => {
+      const key = `${event.roomId}:${event.messageId}`;
+      if (promising.has(key) || assignments.wasTold(event)) return;
+      promising.add(key);
+      void post()
+        .then(async (posted) => {
+          if (posted) await record(() => assignments.told(event), false);
+        })
+        .catch((error: unknown) =>
+          console.warn(
+            `Could not record that room ${event.roomId} was told about message ${event.messageId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        )
+        .finally(() => promising.delete(key));
+    };
+    /**
+     * Lets go of a message that was waiting for room: off its session's
+     * queue, recorded as released with `reason` (its held text then leaves
+     * the journal at the next compaction), and its room told `body`.
+     */
+    const letGo = async (
+      config: SharedHostConfig,
+      event: Handoff,
+      reason: string,
+      body: string,
+      inChain = false
+    ): Promise<void> => {
+      const entry = pumps.get(config.session.sessionId);
+      const index = entry?.queue.findIndex((queued) => queued.messageId === event.messageId) ?? -1;
+      // Answered or let go already: one outcome per message, never a second.
+      if (!entry || index < 0) return;
+      entry.queue.splice(index, 1);
+      if (!entry.queue.length) entry.waiting = false;
+      await record(() => assignments.released(event, reason), inChain);
+      void tellRoom(config, event, body, `it let go of the message (${reason})`);
+    };
+    /**
+     * The box has no room to start this message's session (the 90% or
+     * 15-awake gate refused it): the message waits for room instead of being
+     * let go. Its room is told once, the first time; it is recorded as
+     * waiting, with since when, so a restart keeps both; and the shared wait
+     * list starts its session, oldest first, once the gate lets it in. Past
+     * the list's limits (20 waiting, 10 minutes each) it is let go with the
+     * designer's line instead.
+     */
+    const waitForRoom = async (
+      config: SharedHostConfig,
+      entry: Pump,
+      event: Handoff,
+      // Called from inside the `pending` chain (an event being routed): record
+      // directly, since waiting on the chain from within it would never end.
+      inChain = false,
+      why: string = lastRefusal || 'the box is full'
+    ): Promise<void> => {
+      const sessionId = config.session.sessionId;
+      const since = assignments.waitingSince(event);
+      const sinceMs = since ?? Date.now();
+      entry.waiting = true;
+      const outcome = waits.add({
+        agentId,
+        sessionId,
+        host: owner.token,
+        roomId: event.roomId,
+        messageId: event.messageId,
+        sinceMs,
+        retry: () => startWaiting(sessionId),
+        giveUp: (reason: GiveUpReason) =>
+          letGo(config, event, `no room in time (${reason})`, STOPPED_WAITING_MESSAGE),
+      });
+      // The box's list decides too: let go at once, before any line, if it's full.
+      const box =
+        outcome === 'waiting' ? await boxWait(event, sessionId, sinceMs, 'room', outcome) : null;
+      if (box === 'gone') return;
+      if (box) {
+        console.warn(
+          `Session ${sessionId} was not started for message ${event.messageId}: ${why}, and the box's wait list let it go (${box}).`
+        );
+        await letGo(config, event, `no room in time (${box})`, STOPPED_WAITING_MESSAGE, inChain);
+        return;
+      }
+      if (outcome === 'already') {
+        // Still waiting: only a line that didn't go through is tried again.
+        promise(event, () =>
+          tellRoom(config, event, WAITING_FOR_ROOM_MESSAGE, 'it is waiting for room')
+        );
+        return;
+      }
+      if (outcome === 'full' || outcome === 'expired') {
+        console.warn(
+          `Session ${sessionId} was not started for message ${event.messageId}: ${why}, and ${
+            outcome === 'full'
+              ? `${waits.max} messages already wait for room`
+              : 'it has already waited its limit'
+          }; letting it go.`
+        );
+        await letGo(
+          config,
+          event,
+          `no room in time (${outcome === 'full' ? 'list full' : 'timed out'})`,
+          STOPPED_WAITING_MESSAGE,
+          inChain
+        );
+        return;
+      }
+      console.warn(
+        `Session ${sessionId} was not started for message ${event.messageId}: ${why}. It waits for room (${waits.size} waiting in this box).`
+      );
+      // Said once per message: a restart finds it told and stays quiet.
+      if (since === null) await record(() => assignments.waiting(event, sinceMs), inChain);
+      promise(event, () =>
+        tellRoom(config, event, WAITING_FOR_ROOM_MESSAGE, 'it is waiting for room')
+      );
+    };
+    /** A reset of `sessionId` while messages wait for room to start it: each is let go with the reset line. */
+    const letGoWaitingForReset = async (sessionId: string): Promise<void> => {
+      const entry = pumps.get(sessionId);
+      const removed = waits.removeWhere(
+        (waiter) => waiter.host === owner.token && waiter.sessionId === sessionId
+      );
+      for (const waiter of removed) {
+        const event = entry?.queue.find((queued) => queued.messageId === waiter.messageId);
+        if (!entry || !event) continue;
+        console.warn(
+          `Session ${sessionId} was reset while message ${event.messageId} waited for room; letting it go.`
+        );
+        await letGo(
+          entry.config,
+          event,
+          'reset while waiting for room',
+          RESET_WHILE_WAITING_MESSAGE
+        );
+      }
+    };
+    /**
+     * The wait list's retry: starts the session its messages wait for, through
+     * the same gate as any start, and hands them over. False while there is
+     * still no room.
+     */
+    const startWaiting = async (sessionId: string): Promise<boolean> => {
+      if (stop.signal.aborted) return false;
+      const entry = pumps.get(sessionId);
+      if (!entry?.queue.length) return true;
+      if (!links.ready(sharedSessionRoot(sessionId))) {
+        try {
+          await launch(entry.config);
+        } catch (failure) {
+          if (failure instanceof BoxFullError) return false;
+          throw failure;
+        }
+      }
+      entry.waiting = false;
+      pump(entry.config);
+      return true;
     };
     /**
      * Hands the event to the session: over the IPC pipe where this process is
@@ -1180,11 +2181,26 @@ export async function runAgentHost(
         failed: null,
         restarts: 0,
         config,
+        waiting: false,
       };
       pumps.set(sessionId, entry);
       entry.config = config;
       const fresh = !entry.queue.some((queuedEvent) => queuedEvent.messageId === event.messageId);
       if (fresh) entry.queue.push(event);
+      // Its session is already waiting for room: this one waits with it, in
+      // its place behind the others, rather than asking the gate again.
+      if (entry.waiting) {
+        await waitForRoom(config, entry, event, true);
+        return true;
+      }
+      // Others in the box are waiting for room, and this needs a start too:
+      // it goes behind them rather than to the gate, so room that frees up
+      // goes to the oldest first, and a round is run now for it.
+      if (waits.waitingForRoom > 0 && !links.ready(sessionRoot)) {
+        await waitForRoom(config, entry, event, true, 'others are already waiting for room');
+        void waits.tick();
+        return true;
+      }
       // A host that failed to start is tried once more for each new message,
       // since whatever stopped it may have been fixed since.
       if (entry.failed !== null) {
@@ -1195,7 +2211,17 @@ export async function runAgentHost(
         entry.failed = null;
         entry.restarts = 0;
       }
-      if (!links.ready(sessionRoot)) await launch(config);
+      if (!links.ready(sessionRoot)) {
+        try {
+          await launch(config);
+        } catch (failure) {
+          if (!(failure instanceof BoxFullError)) throw failure;
+          // No room to start it: what its session holds waits for room.
+          for (const queuedEvent of [...entry.queue])
+            await waitForRoom(config, entry, queuedEvent, true);
+          return true;
+        }
+      }
       pump(config);
       return true;
     };
@@ -1301,6 +2327,24 @@ export async function runAgentHost(
       onConnected: () => {
         control.report({ state: 'connected', detail: null });
         publishQuietly();
+        // Switch is back: the posts held while it was away go now, each to
+        // the room its session still attends (placements are stated first).
+        if (heldReplies.size) {
+          const retry = () => heldReplies.retryNow();
+          void publishing.then(retry, retry);
+        }
+        // On every connection, not just the first: an outage of Switch longer
+        // than a start's tries leaves "I was restarted" lines owed, and only
+        // a reconnect says Switch can take them now (Level 2 plan, item 4).
+        const first = !resumedCutOff;
+        resumedCutOff = true;
+        void resumeCutOffSessions({ first }).catch((error: unknown) =>
+          console.warn(
+            `Could not check this agent's sessions for turns a restart cut off: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        );
       },
       onDisconnected: ({ error }) => control.report({ state: 'disconnected', detail: error }),
       // Another connection of this agent took the room: whichever session
@@ -1339,7 +2383,7 @@ export async function runAgentHost(
       // A room control (!reset, !interrupt) typed in one of the agent's rooms,
       // which only Switch sees. Handed to the session's host like any other.
       onSessionCommand: async (relayed) => {
-        const { requesterName, roomId, ...rest } = relayed;
+        const { requesterName, roomId, roomTold, ...rest } = relayed;
         const sessionId =
           rest.sessionId ?? (typeof roomId === 'string' ? placements.sessionIn(roomId) : null);
         if (!sessionId) {
@@ -1349,6 +2393,17 @@ export async function runAgentHost(
           return;
         }
         const command = { ...rest, sessionId };
+        // Messages waiting for room to start this session are not started
+        // after a reset: each is let go, and its room told why (designer).
+        if (isReset(command)) await letGoWaitingForReset(sessionId);
+        const told = roomTold !== false;
+        // A resting session has no host to take the reset, so it is started
+        // for it, and goes back to rest once its conversation is cleared (B71:
+        // the reset was dropped here, while the room was told it was under way).
+        if (isReset(command) && !links.ready(sharedSessionRoot(sessionId))) {
+          await resetResting(command, sessionId, requesterName, told);
+          return;
+        }
         // A reset runs in the host the session has, which keeps the tools it
         // started with: one granted or taken away since needs a new host first.
         const restarted =
@@ -1376,14 +2431,19 @@ export async function runAgentHost(
             type: 'command',
             command,
             requesterName: typeof requesterName === 'string' ? requesterName : null,
+            ...(told ? {} : { roomTold: false }),
           },
           `command ${command.commandId}`,
-          restarted || relaunched ? HOST_START_MS : 0
+          // A reset can wait for a session still starting (shared-host): the
+          // answer is waited for as long, so it isn't taken as never given.
+          restarted || relaunched ? HOST_START_MS : isReset(command) ? SESSION_READY_MS + 5_000 : 0
         );
-        if (!taken)
+        if (!taken) {
           console.warn(
             `Dropped command ${command.commandId}: session ${sessionId} is not running here.`
           );
+          if (isReset(command)) await resetFailed(command, sessionId, 'its host did not take it');
+        }
       },
       onEvent: (event) => {
         // Read as the event arrives rather than when its turn comes: what is
@@ -1469,10 +2529,39 @@ export async function runAgentHost(
     started.start();
     unbind.push(
       control.bind({
+        stopForMemory: () =>
+          announceMemoryStop({
+            root,
+            busy: busySessions,
+            placed: () => Object.keys(placements.snapshot()),
+            roomOf: (sessionId) => placements.roomOf(sessionId),
+            sessionConfig,
+            sessionRoot: sharedSessionRoot,
+            identity,
+            connectionId,
+          }),
         forget: async (sessionId) => {
           const entry = pumps.get(sessionId);
+          waits.removeWhere(
+            (waiter) => waiter.host === owner.token && waiter.sessionId === sessionId
+          );
           if (entry) {
-            entry.queue.length = 0;
+            // Each message it still owed is released, so a restart can't
+            // answer it from a new session (B78). One that was told it is kept
+            // (or waiting) is told it was let go, once, while the session is
+            // still placed for Switch to post as; one never promised anything
+            // isn't told now either.
+            for (const dropped of entry.queue.splice(0)) {
+              const promised = assignments.waitingSince(dropped) !== null;
+              await record(() => assignments.released(dropped, 'session deleted'), false);
+              if (promised)
+                await tellRoom(
+                  entry.config,
+                  dropped,
+                  SESSION_CLOSED_MESSAGE,
+                  'its session was closed and its message let go'
+                );
+            }
             pumps.delete(sessionId);
           }
           if (await placements.unplace(sessionId)) publishQuietly();
@@ -1509,12 +2598,30 @@ export async function runAgentHost(
         // Queued with the events, so a message arriving meanwhile finds the
         // session this placed rather than starting a second one.
         warm: (roomId) => {
+          /**
+           * A warm is owed nothing: one the box has no room for is skipped
+           * quietly, at info, and answers null like any warm not done (B85).
+           * The room's first message starts the session as usual.
+           */
+          const warmLaunch = async (config: SharedHostConfig): Promise<boolean> => {
+            try {
+              await launch(config, 'warm');
+              return true;
+            } catch (error) {
+              if (!(error instanceof BoxFullError)) throw error;
+              console.info(
+                `Skipped warming session ${config.session.sessionId} for room ${roomId}: ${lastRefusal || 'the box is full'}.`
+              );
+              return false;
+            }
+          };
           const run = async (): Promise<string | null> => {
             const placed = placements.sessionIn(roomId);
             if (placed) {
               const owner = await sessionConfig(placed);
               if (owner && !(await stopped(placed))) {
-                if (!links.ready(sharedSessionRoot(placed))) await launch(owner);
+                if (!links.ready(sharedSessionRoot(placed)) && !(await warmLaunch(owner)))
+                  return null;
                 return placed;
               }
             }
@@ -1522,7 +2629,7 @@ export async function runAgentHost(
             const config = await assignments.warm(await currentTemplate(), roomId);
             await placements.place(config.session.sessionId, roomId);
             publishQuietly();
-            await launch(config);
+            if (!(await warmLaunch(config))) return null;
             return config.session.sessionId;
           };
           const warmed = pending.then(run);
@@ -1618,12 +2725,19 @@ export async function runAgentHost(
         return;
       }
       redefining = true;
-      pending = pending.then(applyDefinition).finally(() => {
-        redefining = false;
-        if (!again) return;
-        again = false;
-        redefine();
-      });
+      pending = pending
+        .then(applyDefinition)
+        // A replaced definition or login may be what a kept message waits
+        // for: its session is tried again now, not on its slow clock (B78).
+        .then(() => {
+          void waits.hurry((waiter) => waiter.host === owner.token);
+        })
+        .finally(() => {
+          redefining = false;
+          if (!again) return;
+          again = false;
+          redefine();
+        });
       void pending.catch((error: Error) => fail(error));
     };
     unbind.push(
@@ -1691,6 +2805,8 @@ export async function runAgentHost(
     if (grantsCheck) clearInterval(grantsCheck);
     signal.removeEventListener('abort', abort);
     await pending.catch(() => {});
+    // What a release scheduled is compacted before the host lets go of the journal.
+    await assignmentsOpened?.close().catch(() => {});
     const failure = fault ?? thrown;
     control.report({
       state: failure ? 'not-running' : ending.state,
@@ -1701,8 +2817,17 @@ export async function runAgentHost(
         : ending.detail,
       placements: {},
       busy: [],
+      sessions: {},
     });
     await releaseOwner(root, ownerPath, owner);
+    if (heldOwners.get(ownerPath) === owner.token) heldOwners.delete(ownerPath);
   }
   if (fault) throw fault;
+}
+
+/** An error's name or code for a log: never its message, which can carry a path. */
+function errorName(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (typeof code === 'string') return code;
+  return error instanceof Error ? error.name : 'unknown error';
 }

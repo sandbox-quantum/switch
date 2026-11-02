@@ -457,6 +457,109 @@ export class ControllerClient {
     return parsed(response, statusResponseSchema);
   }
 
+  /**
+   * Has Switch tell a room, as `agentId`, that a restart cut its turn off:
+   * Switch's own text, posted once per turn however often this is called.
+   * `unsupported` from a server that predates the route.
+   */
+  async restartNotice(
+    agentId: string,
+    notice: { roomId: string; threadId: string | null; turnId: string }
+  ): Promise<'posted' | 'unsupported'> {
+    try {
+      await this.request(
+        `${this.controllerPath}/agents/${encodeURIComponent(agentId)}/restart-notice`,
+        {
+          method: 'POST',
+          body: {
+            room_id: notice.roomId,
+            ...(notice.threadId ? { thread_id: notice.threadId } : {}),
+            turn_id: notice.turnId,
+          },
+        }
+      );
+      return 'posted';
+    } catch (error) {
+      // A server from before this route answers with the framework's own
+      // refusal, which carries no Switch error envelope.
+      if (
+        error instanceof ControllerApiError &&
+        (error.status === 404 || error.status === 405) &&
+        error.code === 'unexpected_response'
+      )
+        return 'unsupported';
+      throw error;
+    }
+  }
+
+  /**
+   * Has Switch tell a room, as `agentId`, that `stopped` of its background
+   * processes were stopped when it went to rest (B74): Switch's own text,
+   * posted once per `key` however often this is called. `unsupported` from a
+   * server that predates the route.
+   */
+  async restNotice(
+    agentId: string,
+    notice: { roomId: string; threadId: string | null; key: string; stopped: number }
+  ): Promise<'posted' | 'unsupported'> {
+    try {
+      await this.request(
+        `${this.controllerPath}/agents/${encodeURIComponent(agentId)}/rest-notice`,
+        {
+          method: 'POST',
+          body: {
+            room_id: notice.roomId,
+            ...(notice.threadId ? { thread_id: notice.threadId } : {}),
+            key: notice.key,
+            stopped: notice.stopped,
+          },
+        }
+      );
+      return 'posted';
+    } catch (error) {
+      if (
+        error instanceof ControllerApiError &&
+        (error.status === 404 || error.status === 405) &&
+        error.code === 'unexpected_response'
+      )
+        return 'unsupported';
+      throw error;
+    }
+  }
+
+  /**
+   * Has Switch tell a room, as `agentId`, that its `!reset` could not be done
+   * (B71): Switch's own text, posted once per command however often this is
+   * called. `unsupported` from a server that predates the route.
+   */
+  async resetRefused(
+    agentId: string,
+    notice: { roomId: string; threadId: string | null; commandId: string }
+  ): Promise<'posted' | 'unsupported'> {
+    try {
+      await this.request(
+        `${this.controllerPath}/agents/${encodeURIComponent(agentId)}/reset-refused`,
+        {
+          method: 'POST',
+          body: {
+            room_id: notice.roomId,
+            ...(notice.threadId ? { thread_id: notice.threadId } : {}),
+            command_id: notice.commandId,
+          },
+        }
+      );
+      return 'posted';
+    } catch (error) {
+      if (
+        error instanceof ControllerApiError &&
+        (error.status === 404 || error.status === 405) &&
+        error.code === 'unexpected_response'
+      )
+        return 'unsupported';
+      throw error;
+    }
+  }
+
   async pendingOperations(): Promise<Operation[]> {
     const response = await this.request(`${this.controllerPath}/operations?state=pending`, {
       method: 'GET',

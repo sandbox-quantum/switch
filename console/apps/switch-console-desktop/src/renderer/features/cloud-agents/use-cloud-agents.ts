@@ -3,6 +3,8 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { rpc } from '@renderer/lib/ipc';
+import type { CloudMachine } from '@shared/core/cloud-agents/cloud-agents';
+import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 
 export const CLOUD_MACHINES_KEY = 'cloud-machines';
 
@@ -32,4 +34,16 @@ export function useCloudMachines(serverId: string | null) {
     refetchInterval: (query) => (query.state.data === null ? false : 5000),
     retry: false,
   });
+}
+
+/**
+ * The cloud machine the agent's controller runs on, as the server lists it,
+ * or null when the agent isn't on one (or the list isn't in yet). On the
+ * shared cloud this is the person's box, which is how an idle stop is seen.
+ */
+export function useCloudMachineFor(agent: ManagedAgentView): CloudMachine | null {
+  const machines = useCloudMachines(agent.serverId);
+  const controllerId = agent.machine?.id;
+  if (!controllerId) return null;
+  return machines.data?.find((machine) => machine.controller_id === controllerId) ?? null;
 }

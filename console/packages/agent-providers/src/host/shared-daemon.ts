@@ -9,9 +9,11 @@ import { dirMode } from './host-permissions';
 import { materializeHostedProvider } from './hosted-provider';
 import { openHubStream } from './hub-stream';
 import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { longRunning, stampConsole } from './log-stamp';
 import { replaceOwner } from './ownership-lock';
 import { ownProcessGroup } from './process-fence';
 import { checkProviderReadiness } from './provider-readiness';
+import { readPushKey } from './push-key';
 import { adapterFor } from './server';
 import { grantedSkills } from './service-access';
 import { runGitCredentialHelper, runGitHubCli } from './service-github';
@@ -28,12 +30,16 @@ import {
   sharedConfigSchema,
 } from './shared-config';
 import { hostSessionProcess } from './shared-host';
+import { NotSignedInError, recordedKindOf } from './start-failure';
 import { onStopRequest } from './stop-request';
 import { superviseSharedHost } from './supervisor';
 import { bundleIdentity, recordWatcherHealth } from './watcher-health-file';
 import { WatcherControl } from './watcher-tools';
 
 const [root, configPath, mode] = process.argv.slice(2);
+// The supervisors and hosts that write supervisor.log and worker.log put the
+// time on every line; a helper whose output its caller parses never does.
+if (longRunning(root, configPath, mode)) stampConsole();
 async function main(): Promise<void> {
   if (!root || !configPath)
     throw new Error('Shared SDK host requires a state directory and configuration file.');
@@ -111,6 +117,12 @@ async function main(): Promise<void> {
       )
     );
   } else if (mode === '--supervise' || mode === '--watch-supervise') {
+    // Level 3: the launcher's push key, read before anything else, on its pipe.
+    const pushKey = process.env.SWITCH_HUB_TICKETS === '1' ? readPushKey() : undefined;
+    if (pushKey === null) {
+      console.error('No push key from the launcher: not starting.');
+      process.exit(1);
+    }
     const stop = new AbortController();
     onStopRequest(() => stop.abort(), resolve(root));
     await superviseSharedHost({
@@ -126,8 +138,17 @@ async function main(): Promise<void> {
       signal: stop.signal,
       build: process.argv[1]!,
       links: null,
+      // On launcher boxes only the controller starts a host again, with a fresh ticket.
+      selfRestart: process.env.SWITCH_HUB_TICKETS !== '1',
+      ...(pushKey ? { pushKey } : {}),
     });
   } else if (mode === '--watch-worker') {
+    // Level 3: the push key first of all, from the supervisor's pipe.
+    const pushKey = process.env.SWITCH_HUB_TICKETS === '1' ? readPushKey() : undefined;
+    if (pushKey === null) {
+      console.error('No push key from the supervisor: not starting.');
+      process.exit(1);
+    }
     // Read before anything else, while the file is the one this process loaded.
     const bundle = await bundleIdentity(process.argv[1]!);
     const stop = new AbortController();
@@ -139,6 +160,7 @@ async function main(): Promise<void> {
     const ensure = ensureSessions(supervision);
     // Console's "Reconnect to room" reaches the watcher through the control port.
     const control = new WatcherControl();
+    if (pushKey) control.setPushKey(pushKey);
     const transfers = new AttachmentTransfers(resolve(root));
     await transfers.clear();
     const context: ControlContext = {
@@ -179,7 +201,16 @@ async function main(): Promise<void> {
           stop.signal,
           supervision,
           control,
-          hub ? openHubStream(hub) : openSwitchStream
+          hub
+            ? openHubStream(
+                hub,
+                // Level 3: on a box where the launcher starts hosts, each hello
+                // carries the one-time ticket it hands this host.
+                process.env.SWITCH_HUB_TICKETS === '1'
+                  ? { ticket: () => control.takeHubTicket(30_000) }
+                  : {}
+              )
+            : openSwitchStream
         ).finally(() => stop.abort()),
         serveControl(resolve(root), context, stop.signal),
       ]);
@@ -249,7 +280,8 @@ async function main(): Promise<void> {
                   cwd: input.cwd,
                   env: input.env,
                 });
-                if (readiness.status === 'unauthenticated') throw new Error(readiness.message);
+                if (readiness.status === 'unauthenticated')
+                  throw new NotSignedInError(readiness.message);
                 if (readiness.status === 'unknown') console.warn(readiness.message);
               }
             : null,
@@ -309,6 +341,8 @@ else
       await mkdir(join(root, 'supervisor'), { recursive: true, mode: dirMode(0o700) });
       await replaceOwner(join(root, 'supervisor', 'failure.json'), {
         message: error instanceof Error ? error.message : String(error),
+        // What the room is told: no login, or another setup failure (B78).
+        kind: recordedKindOf(error),
       });
     }
     console.error(error);

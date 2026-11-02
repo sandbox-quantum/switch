@@ -48,6 +48,7 @@ import type {
   UserInputAnswers,
   UserInputQuestion,
 } from '../events';
+import { ownerMarkerSettingsEnv } from '../host/owner-marker-env';
 import { spawnProvider, stopProvider } from '../provider-process';
 import { CumulativeUsage, mergeUsage } from '../usage';
 import {
@@ -389,12 +390,15 @@ function turnStatusMessage(result: SDKResultMessage, outcome: TurnOutcome): stri
  * its own connection; it is kept off for installs that still have it.
  */
 function sessionSettings(
-  mcpServers: Record<string, McpServerConfig>
+  mcpServers: Record<string, McpServerConfig>,
+  env: Record<string, string> = {}
 ): { settings: Record<string, unknown> } | Record<string, never> {
   const names = Object.keys(mcpServers);
-  if (names.length === 0) return {};
+  const marker = ownerMarkerSettingsEnv(env);
+  if (names.length === 0 && Object.keys(marker).length === 0) return {};
   return {
     settings: {
+      ...(Object.keys(marker).length > 0 ? { env: marker } : {}),
       ...(mcpServers.switch
         ? { enabledPlugins: { 'switch-connector@switch-plugins': false } }
         : {}),
@@ -489,7 +493,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       env: input.env,
       permissionMode,
       strictMcpConfig: false,
-      ...sessionSettings(mcpServers),
+      ...sessionSettings(mcpServers, input.env),
       canUseTool: this.makeCanUseTool(input.sessionId),
       ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),

@@ -4,6 +4,10 @@ import {
   ControllerApiError,
   ControllerClient,
   enroll,
+  isCredentialRefused,
+  isRevoked,
+  isTakenOver,
+  isUpgradeRequired,
   normalizeServerUrl,
   PROTOCOL_HEADER,
 } from './api';
@@ -277,6 +281,57 @@ describe('errors', () => {
   });
 });
 
+// Core answers 403 `workspace_not_enabled` when agent management isn't on for
+// the controller's workspace (`management_tenant_ids`). A code this controller
+// doesn't know is a plain refusal: raised as it came, not retried with a new
+// token, and never read as revoked, replaced, taken over or too old.
+describe('a refusal code the controller does not know', () => {
+  const refusal = {
+    error: {
+      code: 'workspace_not_enabled',
+      message: "Agent management isn't turned on for this workspace on this server.",
+      retryable: false,
+    },
+  };
+
+  it('is raised as it came, with no second token exchange', async () => {
+    const { client: api } = client();
+    await api.pendingOperations();
+    core.scripted.push({
+      method: 'GET',
+      path: `/v1/management/controllers/${core.controllerId}/operations`,
+      status: 403,
+      body: refusal,
+    });
+    const error = await api.pendingOperations().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ControllerApiError);
+    expect(error).toMatchObject({ status: 403, code: 'workspace_not_enabled', retryable: false });
+    expect(core.tokensIssued).toBe(1);
+    for (const terminal of [isRevoked, isCredentialRefused, isTakenOver, isUpgradeRequired])
+      expect(terminal(error)).toBe(false);
+  });
+
+  it('is raised as it came from enrollment too', async () => {
+    core.scripted.push({
+      method: 'POST',
+      path: '/v1/management/controllers/enroll',
+      status: 403,
+      body: refusal,
+    });
+    await expect(
+      enroll(fetch, core.url, {
+        proof: { kind: 'enrollment_code', code: 'swce_x' },
+        controller: {
+          kind: 'daemon',
+          name: 'box',
+          platform: { os: 'linux', arch: 'x64', os_version: '6.1' },
+          version: '0.1.0',
+        },
+      })
+    ).rejects.toMatchObject({ status: 403, code: 'workspace_not_enabled' });
+  });
+});
+
 describe('the controller connection', () => {
   it('opens a connection declaring itself and its cursors, then attaches its socket', async () => {
     core.setAssignment(assignment);
@@ -351,6 +406,59 @@ describe('the machine', () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ControllerApiError);
     expect(error).toMatchObject({ status: 405, code: 'not_supported' });
+  });
+});
+
+describe('the restart notice', () => {
+  const path = () =>
+    `/v1/management/controllers/${core.controllerId}/agents/agent-1/restart-notice`;
+
+  it('asks Switch to post the line for a turn, and sends no text of its own', async () => {
+    core.scripted.push({ method: 'POST', path: path(), status: 200, body: { event_id: '$n' } });
+    const outcome = await client().client.restartNotice('agent-1', {
+      roomId: 'room-1',
+      threadId: '$thread',
+      turnId: 'cut-off',
+    });
+    expect(outcome).toBe('posted');
+    expect(core.requests.filter((r) => r.path === path()).map((r) => r.body)).toEqual([
+      { room_id: 'room-1', thread_id: '$thread', turn_id: 'cut-off' },
+    ]);
+  });
+
+  it('answers unsupported from a server that predates the route', async () => {
+    core.scripted.push({
+      method: 'POST',
+      path: path(),
+      status: 404,
+      body: { detail: 'Not Found' },
+    });
+    expect(
+      await client().client.restartNotice('agent-1', {
+        roomId: 'room-1',
+        threadId: null,
+        turnId: 'cut-off',
+      })
+    ).toBe('unsupported');
+  });
+
+  it("raises Switch's own refusal, such as an agent this controller doesn't run", async () => {
+    core.scripted.push({
+      method: 'POST',
+      path: path(),
+      status: 404,
+      body: {
+        error: {
+          code: 'not_found',
+          message: 'No agent of this controller has that id.',
+          retryable: false,
+        },
+      },
+    });
+    const error = await client()
+      .client.restartNotice('agent-1', { roomId: 'room-1', threadId: null, turnId: 'cut-off' })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ status: 404, code: 'not_found' });
   });
 });
 

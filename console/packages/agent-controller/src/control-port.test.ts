@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { warmOverControlPort } from './control-port';
+import { stopForMemoryOverControlPort, warmOverControlPort } from './control-port';
 
 const TOKEN = 'a-control-token-of-enough-length';
 let dir: string;
@@ -20,7 +20,8 @@ beforeEach(async () => {
       if (message.token === TOKEN) socket.write(`${JSON.stringify({ authenticated: true })}\n`);
       else {
         received.push(message);
-        socket.write(`${JSON.stringify({ id: message.id, ok: true, value: 'session-1' })}\n`);
+        const value = 'stopForMemory' in message ? 2 : 'session-1';
+        socket.write(`${JSON.stringify({ id: message.id, ok: true, value })}\n`);
       }
     });
   });
@@ -52,4 +53,10 @@ it('refuses a control file that is a symlink or names more than a port and a tok
   symlinkSync(controlFile({ port, token: TOKEN }), link);
   await expect(warmOverControlPort(link, 'room-a')).rejects.toThrow('not a regular file');
   expect(received).toEqual([]);
+});
+
+it('asks the agent host to tell its rooms of a memory guard stop, and reads how many it told', async () => {
+  const { port } = server.address() as { port: number };
+  expect(await stopForMemoryOverControlPort(controlFile({ port, token: TOKEN }))).toBe(2);
+  expect(received).toEqual([{ id: 0, stopForMemory: true }]);
 });

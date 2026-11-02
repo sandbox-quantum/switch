@@ -4,12 +4,14 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
+  boxLimitFromEnv,
   cliToolsBase,
   generateSealingKeyPair,
   isProviderRecheckRequest,
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  OWNER_MARKER_ENV,
 } from '@switch-console/agent-providers';
 import packageJson from '../package.json' with { type: 'json' };
 import {
@@ -22,12 +24,14 @@ import {
   nodeWebSocket,
 } from './api';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
+import { controllerReserveFromEnv } from './controller-reserve';
 import { DetachedRuntime } from './detached-runtime';
 import { formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
 import {
   EXIT_CONFIGURATION,
+  EXIT_FAILURE,
   EXIT_OK,
   EXIT_REVOKED,
   EXIT_TAKEN_OVER,
@@ -37,6 +41,7 @@ import {
   exitCodeFor,
   isParseArgsError,
 } from './exit-codes';
+import { gatewayProxyProblem, takeGatewayProxy } from './gateway-proxy';
 import {
   adoptIdentity,
   CREDENTIAL_STDIN_TIMEOUT_MS,
@@ -44,8 +49,26 @@ import {
   defaultSharedHostBundle,
   resolveSharedHostBundle,
 } from './handover';
+import { HostTickets } from './host-tickets';
+import { type LauncherAddress, parseLoopback } from './launcher-address';
+import { LauncherGuard } from './launcher-guard';
+import { LauncherLink } from './launcher-link';
+import { runLauncher } from './launcher-main';
+import { LauncherRunner } from './launcher-runner';
+import {
+  liveStatusDirOrOff,
+  eventsSince,
+  formatEventsSince,
+  formatLiveStatus,
+  imageDigestFromEnv,
+  LIVE_STATUS_DIR_ENV,
+  liveStatusDirFromEnv,
+  readLiveStatus,
+} from './live-status';
 import { createLogger, errorMessage, type Logger } from './log';
 import { loginShellPath, withUserBinDirs } from './login-path';
+import { guardLimitsFromEnv } from './memory-guard';
+import { type OwnerMarkers, openOwnerMarkers, processesOf, signalProven } from './owner-marker';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
@@ -53,7 +76,15 @@ import { definitionProblem } from './reconcile';
 import { TRUSTED_RELEASE_KEYS } from './release-keys';
 import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { isManagedRelease, readCurrent, throughCurrent } from './releases';
-import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
+import { restAfterFromEnv, SWEEP_GRACE_MS } from './rest';
+import { sweepOwned } from './rest-sweep';
+import {
+  clearLeftLoginChecks,
+  emptyObservation,
+  InProcessRuntime,
+  observeOnDisk,
+  probeProvider,
+} from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION, PROVIDERS, type UpdatedBy } from './schemas';
 import {
@@ -101,6 +132,8 @@ import {
   serviceState,
   uninstallService,
 } from './service';
+import { isSplitBox, splitFlagsProblem } from './split-flags';
+import { LaunchGate, SplitRuntime } from './split-runtime';
 import {
   contractPlatform,
   mapAgentProcess,
@@ -157,6 +190,15 @@ Commands:
       clears the description. The same limits as at enrollment.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
+  status --json | --live [--since <ISO time>] [--live-dir <dir>]
+      What the running controller last wrote about itself: counts, states,
+      times and ids cut to 8 characters, never contents, logs or messages.
+      --json prints the document (with its version) for scripts; --live
+      prints one line per reading for a person. --since adds the controller's
+      fixed events since then, counted by kind. Reads one file in <dir>
+      (default: SWITCH_CONTROLLER_LIVE_STATUS_DIR, which the controller writes
+      it to; off when unset). Exits 1 if it is missing, unreadable, or over
+      60 seconds old.
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
       Run this controller as a service of this user: a systemd user unit on
       Linux, a launchd agent on macOS. It starts now and again at each login
@@ -477,10 +519,34 @@ async function runCommand(args: string[]): Promise<number> {
       'updated-by-console': { type: 'boolean' },
       'no-self-update': { type: 'boolean' },
       'provider-seed': { type: 'string' },
+      // Level 3: the controller as its own user, every host through the launcher.
+      'launcher-socket': { type: 'string' },
+      // Level 3 on gVisor: loopback inside the pod (a socket isn't shared between containers there).
+      'launcher-address': { type: 'string' },
+      'agents-data-dir': { type: 'string' },
+      'agents-workspaces': { type: 'string' },
+      // Level 3 test boxes: the template marks the box, and only then may operator exec be on.
+      'test-box': { type: 'boolean' },
+      'operator-exec': { type: 'boolean' },
     },
     strict: true,
   });
   const agentRuntime = values['agent-runtime'] ?? 'default';
+  const launcherSocket = values['launcher-socket'];
+  const launcherAddressFlag = values['launcher-address'];
+  const splitProblem = splitFlagsProblem(
+    {
+      agentRuntime,
+      launcherSocket,
+      launcherAddress: launcherAddressFlag,
+      agentsDataDir: values['agents-data-dir'],
+      agentsWorkspaces: values['agents-workspaces'],
+      testBox: values['test-box'] === true,
+      operatorExec: values['operator-exec'] === true,
+    },
+    process.env
+  );
+  if (splitProblem) throw new UsageError(splitProblem);
   if (agentRuntime !== 'default' && agentRuntime !== 'separate-user')
     throw new UsageError('--agent-runtime must be default or separate-user.');
   if (agentRuntime === 'separate-user' && values['releases-dir'] !== undefined)
@@ -496,6 +562,11 @@ async function runCommand(args: string[]): Promise<number> {
   const fromFile = values['env-file'] ? await readEnvFile(resolve(values['env-file'])) : {};
   Object.assign(process.env, fromFile);
   const selfUpdateOff = selfUpdateTurnedOff(values['no-self-update'] === true, process.env);
+  takeGatewayProxy(process.env);
+  const gatewayProxyRefused = gatewayProxyProblem(
+    isSplitBox({ launcherSocket, launcherAddress: launcherAddressFlag })
+  );
+  if (gatewayProxyRefused) throw new UsageError(gatewayProxyRefused);
   const controllerId = values['controller-id'];
   if ((controllerId === undefined) !== (values.server === undefined))
     throw new UsageError('--controller-id and --server adopt an identity together; pass both.');
@@ -625,35 +696,112 @@ async function runCommand(args: string[]): Promise<number> {
           to: store.identity()?.server,
         });
     }
+    // A login check cut off by the controller stopping left a copy of the login.
+    await clearLeftLoginChecks(dataDir);
+    // A marker in the controller's own environment (started from an agent's
+    // shell, say) would pass to everything it starts for itself.
+    delete process.env[OWNER_MARKER_ENV];
+    // Without markers nothing is provable, so nothing is stopped by proof and
+    // the memory guard stays off; the agents run as before.
+    const ownerMarkers = await openOwnerMarkers(dataDir, log).catch((error: unknown) => {
+      log.error('Owner markers are off: the memory guard and the resting sweep stop nothing', {
+        error: errorMessage(error),
+      });
+      return undefined;
+    });
+    // Markers are only given where agent hosts run as this controller's own
+    // processes; the guard also needs the box's memory limit (cloud boxes).
+    const markers = agentRuntime === 'default' ? ownerMarkers : undefined;
+    // Memory kept back for the controller under the box's limit (decision v4):
+    // always some on a split box, none elsewhere unless set. The limit is read
+    // quietly here; the valve and the guard each say if it isn't valid.
+    const controllerReserve = controllerReserveFromEnv(process.env, {
+      // The one test for split, so a loopback box (`--launcher-address`) gets the reserve too.
+      split: isSplitBox({ launcherSocket, launcherAddress: launcherAddressFlag }),
+      podLimit: boxLimitFromEnv(process.env, { warn: () => {} }),
+      log,
+    });
+    const guardLimits = markers ? guardLimitsFromEnv(process.env, log, controllerReserve) : null;
+    // Level 3: every host through the launcher. Without markers nothing is
+    // provable, so the box doesn't start rather than run unguarded.
+    // Checked by `splitFlagsProblem` above: a path, or 127.0.0.1 and a port.
+    const launcherAddress: LauncherAddress | null =
+      launcherAddressFlag !== undefined
+        ? parseLoopback(launcherAddressFlag)
+        : launcherSocket !== undefined
+          ? { kind: 'path', path: launcherSocket }
+          : null;
+    const split =
+      launcherAddress === null
+        ? undefined
+        : splitMode({
+            address: launcherAddress,
+            markers: ownerMarkers,
+            log,
+          });
+    const agentsLayout = values['agents-data-dir']
+      ? dataLayout(resolve(values['agents-data-dir']))
+      : null;
+    let splitRuntime: SplitRuntime | null = null;
+    const splitRunner = split
+      ? new LauncherRunner({
+          link: split.link,
+          tickets: split.tickets,
+          markers: split.markers,
+          credentials: (agentId) => splitRuntime?.credentialsFor(agentId) ?? null,
+        })
+      : null;
+    // The guard's view through the launcher: figures only for agents launched here.
+    const splitGuard =
+      split && splitRunner
+        ? new LauncherGuard({
+            link: split.link,
+            now: Date.now,
+            launched: (agentId) => splitRunner.launchOf(agentId) !== null,
+            log: (event, fields) => log.warn(`Launcher: ${event}`, fields),
+          })
+        : null;
     const exit = await runController(
       {
         store,
         secrets,
-        runtime: (openStream, workspaces) =>
-          separateUsers
-            ? new SystemdRuntime({
-                config: separateUsers,
-                store,
-                systemctl,
-                env: process.env,
-                log,
-                now: Date.now,
-              })
-            : new AgentRuntimes(
-                new InProcessRuntime({
-                  layout,
-                  workspaces,
-                  bundlePath: sharedHostBundle,
-                  openStream,
+        runtime: (openStream, workspaces, restartNotice) =>
+          split && splitRunner && agentsLayout
+            ? (splitRuntime = new SplitRuntime({
+                runner: splitRunner,
+                link: split.link,
+                store: layout,
+                agents: agentsLayout,
+                workspaces,
+                gate: split.gate,
+              }))
+            : separateUsers
+              ? new SystemdRuntime({
+                  config: separateUsers,
+                  store,
+                  systemctl,
+                  env: process.env,
                   log,
-                  crashBackoffMs: 2_000,
-                }),
-                new DetachedRuntime({ layout, bundlePath: sharedHostBundle })
-              ),
+                  now: Date.now,
+                })
+              : new AgentRuntimes(
+                  new InProcessRuntime({
+                    layout,
+                    workspaces,
+                    bundlePath: sharedHostBundle,
+                    openStream,
+                    log,
+                    crashBackoffMs: 2_000,
+                    restartNotice,
+                    ownerMarkers,
+                  }),
+                  new DetachedRuntime({ layout, bundlePath: sharedHostBundle, ownerMarkers })
+                ),
         locator: new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe')),
         // Agents running as users of their own sign in as those users, which
         // a test prompt from the controller's user would not show.
-        verifyLogin: agentRuntime === 'default' ? providerLoginTest(dataDir) : undefined,
+        // Nor on a split box, where a provider's CLI never runs as the controller's user.
+        verifyLogin: agentRuntime === 'default' && !split ? providerLoginTest(dataDir) : undefined,
         rechecks,
         refreshPath,
         providerSeed,
@@ -664,13 +812,71 @@ async function runCommand(args: string[]): Promise<number> {
         dataDir,
         // Each agent sees its own directory at the same path: an agent named
         // no directory works in a folder of its own there.
-        workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
+        workspacesFor: separateUsers
+          ? () => unitAgentRoot(separateUsers)
+          : values['agents-workspaces']
+            ? () => resolve(values['agents-workspaces']!)
+            : serverWorkspacesDir,
         version: VERSION,
         updatedBy,
         selfUpdate,
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,
+        // Hosted boxes set it to 600000, the shipping default (B74, B105);
+        // agents running as users of their own never rest.
+        restAfterMs: agentRuntime === 'default' ? restAfterFromEnv(process.env, log) : null,
+        // Off unless the box's template names a folder (never the data folder).
+        liveStatusDir: await liveStatusDirOrOff(process.env, dataDir, log),
+        imageDigest: imageDigestFromEnv(process.env),
+        controllerReserve,
+        // --- provider gateway (Level 3, engineer-2) ---
+        // Off unless the box's template sets it; the gateway itself starts
+        // beside the relay in `runController`.
+        providerGateway:
+          agentRuntime === 'default' && process.env.SWITCH_CONTROLLER_PROVIDER_GATEWAY === '1',
+        // The box's daily call cap, read by the controller; a bad value stops it.
+        providerGatewayDailyCalls: process.env.SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS,
+        // --- end provider gateway ---
+        // What a resting agent left running ends with proof it is the agent's.
+        sweepAgent: split
+          ? async (agentId) => {
+              const reply = await split.link.order({ kind: 'sweep', agentId });
+              if (!reply.ok || !reply.counts)
+                throw new Error(
+                  `The launcher did not sweep the agent (${reply.code ?? 'failed'}).`
+                );
+              return {
+                signalled: reply.counts.signalled,
+                killed: reply.counts.signalled,
+                gone: reply.counts.gone,
+                notProven: reply.counts.notProven,
+              };
+            }
+          : markers
+            ? (agentId) =>
+                sweepOwned(
+                  {
+                    find: () => processesOf(markers, agentId),
+                    signal: (entry, signal) => signalProven(entry, signal, markers),
+                  },
+                  SWEEP_GRACE_MS
+                )
+            : undefined,
+        memoryGuard: markers && guardLimits ? { markers, limits: guardLimits } : undefined,
+        split:
+          split && splitRunner && splitGuard
+            ? {
+                link: split.link,
+                tickets: split.tickets,
+                guard: splitGuard,
+                runner: splitRunner,
+                gate: split.gate,
+                operatorExec: values['operator-exec'] === true,
+                // The gateway starts inside the controller: it hands its probe over then.
+                setProbeEnv: (probeEnv) => splitRuntime?.setProbeEnv(probeEnv),
+              }
+            : undefined,
       },
       stop.signal
     );
@@ -682,12 +888,69 @@ async function runCommand(args: string[]): Promise<number> {
   }
 }
 
+/**
+ * What the running controller last wrote about itself (`live-status.json`):
+ * counts and states only. Reads one file and nothing else, so it is safe to
+ * run inside a box at any time.
+ */
+async function liveStatusCommand(
+  dir: string,
+  json: boolean,
+  sinceMs: number | null
+): Promise<number> {
+  const now = Date.now();
+  const read = await readLiveStatus(dir, now);
+  if (read.kind === 'missing' || read.kind === 'unreadable') {
+    process.stderr.write(
+      read.kind === 'missing'
+        ? `No live status in ${dir}: the controller is not running here, or has not written one yet.\n`
+        : `The live status in ${dir} can't be read (${read.why}).\n`
+    );
+    return EXIT_FAILURE;
+  }
+  const since = sinceMs === null ? null : eventsSince(read.status, sinceMs);
+  process.stdout.write(
+    json
+      ? `${JSON.stringify({
+          state: read.kind,
+          age_ms: read.ageMs,
+          ...read.status,
+          ...(since ? { since } : {}),
+        })}\n`
+      : `${read.kind === 'stale' ? `STALE: last written ${Math.round(read.ageMs / 1000)}s ago; the controller may have stopped.\n` : ''}${formatLiveStatus(read.status, read.ageMs, now)}${since ? `\n${formatEventsSince(since)}` : ''}\n`
+  );
+  return read.kind === 'fresh' ? EXIT_OK : EXIT_FAILURE;
+}
+
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
-    options: { 'data-dir': { type: 'string' }, 'shared-host-bundle': { type: 'string' } },
+    options: {
+      'data-dir': { type: 'string' },
+      'shared-host-bundle': { type: 'string' },
+      live: { type: 'boolean' },
+      json: { type: 'boolean' },
+      'live-dir': { type: 'string' },
+      since: { type: 'string' },
+    },
     strict: true,
   });
+  if (values.live || values.json) {
+    const dir = values['live-dir'] ?? liveStatusDirFromEnv(process.env);
+    if (!dir)
+      throw new ConfigurationError(
+        `The live status is off here: pass --live-dir, or set ${LIVE_STATUS_DIR_ENV} as the running controller has it.`
+      );
+    let sinceMs: number | null = null;
+    if (values.since !== undefined) {
+      sinceMs = Date.parse(values.since);
+      if (!/^\d{4}-\d{2}-\d{2}T/.test(values.since) || Number.isNaN(sinceMs))
+        throw new ConfigurationError('--since takes an ISO time, such as 2026-10-28T16:00:00Z.');
+    }
+    return liveStatusCommand(dir, values.json === true, sinceMs);
+  }
+  if (values['live-dir'] || values.since)
+    throw new ConfigurationError('--live-dir and --since go with --live or --json.');
   const { dataDir, layout, store, secrets } = await openState(values['data-dir']);
   try {
     const separateUsers = await separateUsersConfigHere(dataDir);
@@ -1050,6 +1313,7 @@ async function doctorCommand(args: string[]): Promise<number> {
   // key or token there reads as signed in here too.
   if (values['env-file'])
     Object.assign(process.env, await readEnvFile(resolve(values['env-file'])));
+  takeGatewayProxy(process.env);
   const { dataDir, store, secrets } = await openState(values['data-dir']);
   const locator = new PathProviderLocator(() => process.env.PATH, join(dataDir, 'version-probe'));
   try {
@@ -1168,6 +1432,8 @@ async function updateCommand(args: string[]): Promise<number> {
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   try {
+    // Before anything is started: no child may inherit the gateway's proxy password.
+    takeGatewayProxy(process.env);
     switch (command) {
       case 'enroll':
         return await enrollCommand(rest);
@@ -1181,6 +1447,9 @@ export async function main(argv: string[]): Promise<number> {
           ? EXIT_OK
           : code;
       }
+      case 'launcher':
+        // The agents container's pid 1 on boxes where the controller runs as its own user (Level 3).
+        return await runLauncher(rest, { bundle: bundlePath(undefined), version: VERSION });
       case 'set-info':
         return await setInfoCommand(rest);
       case 'status':
@@ -1251,4 +1520,41 @@ function reportFailure(error: unknown): void {
   else if (error instanceof ControllerApiError)
     process.stderr.write(`switch-agent-controller: ${error.code}: ${error.message}\n`);
   else process.stderr.write(`switch-agent-controller: ${errorMessage(error)}\n`);
+}
+
+/**
+ * Level 3's parts, made before the controller: the launcher socket's link,
+ * the one-time host tickets, and the guard's view through the launcher. The
+ * markers are required: without them nothing is provable, so the box refuses
+ * to start rather than run its agents unguarded.
+ */
+function splitMode(input: {
+  address: LauncherAddress;
+  markers: OwnerMarkers | undefined;
+  log: Logger;
+}): {
+  link: LauncherLink;
+  tickets: HostTickets;
+  gate: LaunchGate;
+  markers: OwnerMarkers;
+} {
+  if (!input.markers)
+    throw new ConfigurationError(
+      'This box runs agents through the launcher, which needs the owner markers; they could not be opened.'
+    );
+  const link = new LauncherLink({
+    address: input.address,
+    now: Date.now,
+    // Fixed events with ids and numbers only.
+    log: (event, fields) => {
+      if (event === 'launcher_connected') input.log.info('The launcher connected', fields);
+      else input.log.warn(`Launcher: ${event}`, fields);
+    },
+  });
+  return {
+    link,
+    tickets: new HostTickets(),
+    gate: new LaunchGate(Date.now),
+    markers: input.markers,
+  };
 }

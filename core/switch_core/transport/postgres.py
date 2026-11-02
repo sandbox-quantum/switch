@@ -46,6 +46,9 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
 from switch_core.attachments import parse_attachment_group
 from switch_core.db.models import (
     ClientRoom,
@@ -992,6 +995,7 @@ class PostgresTransport:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        client_txn_id: str | None = None,
     ) -> SendResult:
         content = message_content(
             body,
@@ -1002,7 +1006,12 @@ class PostgresTransport:
             extra_content=extra_content,
         )
         return await self._send(
-            room_id, "m.room.message", content, sender_name, metered=metered
+            room_id,
+            "m.room.message",
+            content,
+            sender_name,
+            metered=metered,
+            client_txn_id=client_txn_id,
         )
 
     async def send_event(
@@ -1053,6 +1062,7 @@ class PostgresTransport:
         sender_name: str,
         *,
         metered: bool,
+        client_txn_id: str | None = None,
     ) -> SendResult:
         """Write the event, which is what sending it means here.
 
@@ -1091,6 +1101,15 @@ class PostgresTransport:
             )
             return result
 
+        if client_txn_id is not None:
+            # A sender's retry under the same key is the message it already
+            # sent, never a second one (uq_messages_sender_client_txn).
+            room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
+            already = await self._sent_under(tenant_id, client_txn_id)
+            if already is not None:
+                return SendResult(
+                    event_id=already, event_type=event_type, content=content
+                )
         try:
             room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
             async with tenant_session(self._session_factory, tenant_id) as session:
@@ -1102,7 +1121,7 @@ class PostgresTransport:
                     sender_name=sender_name,
                     event_type=event_type,
                     content=content,
-                    client_txn_id=None,
+                    client_txn_id=client_txn_id,
                 )
                 routed = await self._router.store(
                     session,
@@ -1131,6 +1150,19 @@ class PostgresTransport:
                         amount=1,
                     )
                 await session.commit()
+        except IntegrityError:
+            # Another writer stored this sender's key between the look above
+            # and this insert: that row is the message.
+            if client_txn_id is not None:
+                raced = await self._sent_under(tenant_id, client_txn_id)
+                if raced is not None:
+                    return SendResult(
+                        event_id=raced, event_type=event_type, content=content
+                    )
+            metrics().increment(
+                SEND_FAILURES, {"kind": kind, "actor": self._actor_role}
+            )
+            raise
         except Exception:
             # `MESSAGES_SENT` is recorded only after the commit, so without
             # this a database outage reads as silence — and so does a quiet
@@ -1144,6 +1176,26 @@ class PostgresTransport:
         if metered and kind in _METERED_KINDS:
             self._observe(tenant_id, room_id, kind, content)
         return result
+
+    async def sent_under(self, room_id: str, client_txn_id: str) -> str | None:
+        _room, tenant_id = await self._resolve_room_and_tenant(room_id)
+        return await self._sent_under(tenant_id, client_txn_id)
+
+    async def _sent_under(self, tenant_id: str, client_txn_id: str) -> str | None:
+        """The event id this client already sent under `client_txn_id`, if any.
+
+        Keyed by the sending client, so one client's key never matches
+        another's message."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            return cast(
+                "str | None",
+                await session.scalar(
+                    select(Message.transport_event_id).where(
+                        Message.sender_client_id == self.client_id,
+                        Message.client_txn_id == client_txn_id,
+                    )
+                ),
+            )
 
     def _observe(
         self, tenant_id: str, room_id: str, kind: str, content: dict[str, object]

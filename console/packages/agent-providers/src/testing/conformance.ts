@@ -74,10 +74,20 @@ const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${++cou
  * scenario gets its own adapter, working directory and session, and each
  * asserts on the normalized event stream only, never on vendor payloads.
  */
+/**
+ * The conformance suites drive the real provider CLI on this machine, with its
+ * own login, so they run only when asked: `SWITCH_RUN_INTEGRATION=1`. A bare
+ * `vitest run` (rather than the package's `test` script, which leaves them
+ * out) then reports them skipped instead of spending someone's account.
+ */
+export function integrationOptedIn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SWITCH_RUN_INTEGRATION === '1';
+}
+
 export function describeConformance(name: string, options: ConformanceOptions): void {
   const timeoutMs = options.timeoutMs ?? 180_000;
 
-  describe(`${name} conformance`, () => {
+  describe.skipIf(!integrationOptedIn())(`${name} conformance`, () => {
     let unavailable: string | null = null;
     beforeAll(async () => {
       unavailable = await options.unavailableReason();

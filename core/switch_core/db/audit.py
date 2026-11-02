@@ -63,6 +63,25 @@ class AuditAction(StrEnum):
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
+    # Switch posted "I was restarted…" in a room as a managed agent: for its
+    # controller (Level 2, 3a) or for a box that never came back (3b).
+    AGENT_RESTART_NOTICE_POSTED = "agent.restart_notice_posted"
+    AGENT_REST_NOTICE_POSTED = "agent.rest_notice_posted"
+    # Switch posted "I couldn't reset my session…" for a controller whose box
+    # had no session to take the reset (B71).
+    AGENT_RESET_REFUSED_POSTED = "agent.reset_refused_posted"
+    # Visibility (spec draft 15). A workspace admin turned hosted agents off or
+    # on for one person (A2).
+    HOSTED_PERSON_TURNED_OFF = "hosted.person_turned_off"
+    HOSTED_PERSON_TURNED_ON = "hosted.person_turned_on"
+    # The workspace's copy of an operator action on its people, shown to its
+    # admins as "Switch operator". The operator's own entry is server-wide.
+    HOSTED_OPERATOR_ACTION = "hosted.operator_action"
+    # A workspace admin added, changed or removed a usage budget (visibility L1,
+    # security): who, which budget, and the limit and period before and after.
+    BUDGET_CREATED = "budget.created"
+    BUDGET_UPDATED = "budget.updated"
+    BUDGET_DELETED = "budget.deleted"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -76,6 +95,27 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    # Visibility (spec draft 15): the operator list, name reveals, operator
+    # actions, and the server-wide copy of each workspace admin change, so the
+    # operators' log is this one table.
+    OPERATOR_GRANTED = "operator.granted"
+    OPERATOR_REMOVED = "operator.removed"
+    OPERATOR_NAME_REVEALED = "operator.name_revealed"
+    HOSTED_USER_PAUSED = "hosted.user_paused"
+    HOSTED_USER_RESUMED = "hosted.user_resumed"
+    HOSTED_BOX_RESTARTED = "hosted.box_restarted"
+    HOSTED_MACHINE_DRAINED = "hosted.machine_drained"
+    HOSTED_ADMIN_CHANGE = "hosted.admin_change"
+    # V0: Core asks the provisioner for a new user's box; claims and the
+    # result are linked entries.
+    HOSTED_BOX_PROVISION = "hosted.box_provision"
+    # V0: a user's cleaned-up machine row brought back, same id, for a new box.
+    HOSTED_BOX_REVIVED = "hosted.box_revived"
+    # Operator alerts (V5): one row per raise and per clear, with no actor.
+    # `alert.` is one of the operators' log's prefixes; it leaves them out
+    # unless asked for.
+    ALERT_RAISED = "alert.raised"
+    ALERT_CLEARED = "alert.cleared"
 
 
 async def record_audit_event(

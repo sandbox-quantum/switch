@@ -7,14 +7,31 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError, type ProviderAdapter } from '../adapter';
 import type { ProviderRuntimeEvent } from '../events';
 import { abandonWaits, announcing, changed, until } from '../testing/until';
+import { RESTART_REPLY_ROUNDS, restartReplyGivenUp, restartReplyRounds } from './restart-rounds';
 import { CONNECTOR_APPROVAL_NOTICE, ServiceNotices } from './service-notices';
-import { HostedSession, type RoomReply, unpostedReply } from './session-host';
+import {
+  HostedSession,
+  RESTART_REPLY_RETRY_MS,
+  RESTARTED_REPLY,
+  type RoomReply,
+  type RoomReplyOutcome,
+  unpostedReply,
+} from './session-host';
+import { markStopAsked, stopWasAsked } from './stop-asked';
 
 // Every step here is a journal write flushed to disk, and Windows runners take
 // many times longer over that. The waits have no deadline of their own (see
 // `until`), so this is the one clock: long enough for a slow disk, short
 // enough that a host that never gets there still fails.
 vi.setConfig({ testTimeout: 30_000 });
+
+/**
+ * Polls a check that reads state nothing announces to `until` (a file the
+ * host writes, a reply recorded by a fake parent), with room for a slow disk.
+ */
+function waitFor<T>(check: () => T | Promise<T>): Promise<T> {
+  return vi.waitFor(check, { timeout: 10_000 });
+}
 
 /** A host that tells `until` each time it calls its provider or publishes an event. */
 async function startHost(
@@ -615,6 +632,21 @@ it('validates native model choices and persists a confirmed choice across restar
       resume: { nativeSessionId: 'native' },
     })
   );
+});
+
+it('replays nothing to a caller already up to date, and the rest to one behind', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'replay-test-'));
+  roots.push(root);
+  const fixture = setup('opencode');
+  const host = await HostedSession.start(root, fixture.config, fixture.adapter);
+  hosts.push(host);
+  await waitFor(() => expect(host.replay(0).events.length).toBeGreaterThan(0));
+  const all = host.replay(0).events;
+  const last = all.at(-1)!.sequence;
+  expect(host.replay(last)).toEqual({ events: [], throughSequence: host.view().throughSequence });
+  expect(host.replay(last + 5).events).toEqual([]);
+  expect(host.replay(last - 1).events.map((e) => e.sequence)).toEqual([last]);
+  expect(host.view()).toEqual(host.snapshot());
 });
 
 it('lists a catalog too large for a session event without its overflow, and keeps working', async () => {
@@ -1289,13 +1321,18 @@ function roomMessage(commandId: string, threadId: string | null): Command {
 
 /** A host that can post to its rooms, through `reply`. */
 async function startReplying(
-  reply: (reply: RoomReply) => Promise<void>,
-  root?: string
+  reply: (reply: RoomReply) => Promise<RoomReplyOutcome | void>,
+  root?: string,
+  retryMs?: number[]
 ): Promise<Awaited<ReturnType<typeof start>>> {
   const dir = root ?? (await mkdtemp(join(tmpdir(), 'sdk-host-test-')));
   if (!root) roots.push(dir);
   const fixture = setup('cursor');
-  const host = await startHost(dir, { ...fixture.config, replyToRoom: reply }, fixture.adapter);
+  const host = await startHost(
+    dir,
+    { ...fixture.config, replyToRoom: reply, ...(retryMs ? { restartReplyRetryMs: retryMs } : {}) },
+    fixture.adapter
+  );
   hosts.push(host);
   await until(() => expect(host.snapshot().session.status).toBe('ready'));
   return { ...fixture, root: dir, host };
@@ -1771,4 +1808,504 @@ describe('retrying a room message', () => {
     await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
     await expect(host.command(retry('busy'))).rejects.toThrow('SESSION_BUSY');
   });
+});
+
+it("tells the turn's room once when the host died mid-turn, however often it restarts", async () => {
+  const replies: RoomReply[] = [];
+  const reply = async (posted: RoomReply) => {
+    replies.push(posted);
+  };
+  const { root, host } = await startReplying(reply);
+  await host.command(roomMessage('cut-off', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe('running')
+  );
+  // The process dies here: no shutdown, so the journal still says "running".
+  const after = await startReplying(reply, root);
+  await waitFor(() => expect(replies).toHaveLength(1));
+  expect(replies[0]).toEqual({
+    roomId: 'room',
+    threadId: 'thread-1',
+    body: RESTARTED_REPLY,
+    once: { afterMessageId: 'message-cut-off' },
+    restartTurnId: 'cut-off',
+  });
+  expect(after.host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe(
+    'interrupted'
+  );
+  await startReplying(reply, root);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(replies).toHaveLength(1);
+});
+
+/**
+ * A room as the parent's `once` check sees it: a reply already there is
+ * answered `already` and not posted again.
+ */
+function roomWithCheck() {
+  const room: RoomReply[] = [];
+  const has = (posted: RoomReply) =>
+    room.some((line) => line.threadId === posted.threadId && line.body === posted.body);
+  return { room, has };
+}
+
+async function restartRecords(root: string) {
+  const lines = (await readFile(join(root, 'inbox.jsonl'), 'utf8').catch(() => ''))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  return lines.filter((record) => record.type === 'restart-reply');
+}
+
+async function cutOff(reply: (posted: RoomReply) => Promise<RoomReplyOutcome | void>) {
+  const { root, host } = await startReplying(reply, undefined, [10, 10]);
+  await host.command(roomMessage('cut-off', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe('running')
+  );
+  return root;
+}
+
+it('posts the restart line once when a post went through but its answer was lost, then retried', async () => {
+  const { room, has } = roomWithCheck();
+  let calls = 0;
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    calls++;
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    if (calls === 1) throw new Error('The session host did not answer in time.');
+    return 'posted';
+  };
+  const root = await cutOff(async () => {});
+  const after = await startReplying(reply, root, [10, 10]);
+  await after.host.restartRepliesSettled();
+  expect(calls).toBe(2);
+  expect(room).toHaveLength(1);
+  expect(await restartRecords(root)).toEqual([
+    { type: 'restart-reply', commandId: 'cut-off', state: 'pending' },
+    { type: 'restart-reply', commandId: 'cut-off', state: 'sent' },
+  ]);
+});
+
+it('retries a restart line that failed, and posts nothing blind while the room cannot be checked', async () => {
+  const room: RoomReply[] = [];
+  let calls = 0;
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    calls++;
+    if (calls < 3) throw new Error('Could not check the room first: down');
+    room.push(posted);
+    return 'posted';
+  };
+  const root = await cutOff(async () => {});
+  const after = await startReplying(reply, root, [10, 10]);
+  await after.host.restartRepliesSettled();
+  expect(calls).toBe(3);
+  expect(room).toHaveLength(1);
+});
+
+it('tries an unconfirmed restart line again on the next start, and never posts it twice', async () => {
+  const { room, has } = roomWithCheck();
+  const root = await cutOff(async () => {});
+  // First start after the cut: every try fails, so the line stays pending.
+  const failing = await startReplying(
+    async () => {
+      throw new Error('Switch is unreachable');
+    },
+    root,
+    [10, 10]
+  );
+  await failing.host.restartRepliesSettled();
+  expect((await restartRecords(root)).map((record) => record.state)).toEqual(['pending']);
+  // Next start: the turn already reads "interrupted", but the line is still owed.
+  let calls = 0;
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    calls++;
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    return 'posted';
+  };
+  const second = await startReplying(reply, root, [10, 10]);
+  await second.host.restartRepliesSettled();
+  expect(room).toHaveLength(1);
+  const third = await startReplying(reply, root, [10, 10]);
+  await third.host.restartRepliesSettled();
+  expect(calls).toBe(1);
+  expect(room).toHaveLength(1);
+});
+
+it('gives up a restart line Switch never takes after 3 starts, and stops waking the session for it', async () => {
+  // A room the agent has since left: Core refuses every post with
+  // "Agent is not a member of this room" (core/switch_core room service).
+  let calls = 0;
+  const refused = async (): Promise<RoomReplyOutcome> => {
+    calls++;
+    throw new Error('Agent is not a member of this room');
+  };
+  const root = await cutOff(async () => {});
+  for (let start = 1; start <= RESTART_REPLY_ROUNDS; start++) {
+    const host = await startReplying(refused, root, [10, 10]);
+    await host.host.restartRepliesSettled();
+    expect(calls).toBe(start * 3);
+    expect(restartReplyGivenUp(await restartReplyRounds(root), 'cut-off')).toBe(
+      start === RESTART_REPLY_ROUNDS
+    );
+  }
+  // The next start neither tries again nor counts as owing a line.
+  const after = await startReplying(refused, root, [10, 10]);
+  await after.host.restartRepliesSettled();
+  expect(calls).toBe(RESTART_REPLY_ROUNDS * 3);
+  expect((await restartRecords(root)).map((record) => record.state)).toEqual(['pending']);
+});
+
+it('tries an owed restart line again when asked after an outage, once per line at a time', async () => {
+  // Switch unreachable for this whole start's round, then back: the watcher
+  // reconnects and asks the session to try again.
+  let reachable = false;
+  const room: RoomReply[] = [];
+  let calls = 0;
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    calls++;
+    if (!reachable) throw new Error('fetch failed');
+    room.push(posted);
+    return 'posted';
+  };
+  const root = await cutOff(async () => {});
+  const after = await startReplying(reply, root, [10, 10]);
+  await after.host.restartRepliesSettled();
+  expect(calls).toBe(3);
+  expect(room).toHaveLength(0);
+
+  reachable = true;
+  // Asked twice at once: one round of tries, not two.
+  expect(after.host.retryOwedRestartReplies()).toBe(1);
+  expect(after.host.retryOwedRestartReplies()).toBe(0);
+  await after.host.restartRepliesSettled();
+  expect(room).toHaveLength(1);
+  expect(room[0]?.restartTurnId).toBe('cut-off');
+  // Sent now: nothing more is owed.
+  expect(after.host.retryOwedRestartReplies()).toBe(0);
+});
+
+it('tries the restart line for about 2 minutes in one start by default', () => {
+  expect(RESTART_REPLY_RETRY_MS.reduce((total, wait) => total + wait, 0)).toBe(120_000);
+});
+
+it('owes the restart line when the provider exits mid-turn on its own, and posts it while the host carries on', async () => {
+  const { room, has } = roomWithCheck();
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    return 'posted';
+  };
+  const { root, host, emit } = await startReplying(reply, undefined, [10, 10]);
+  await host.command(roomMessage('cut-off', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe('running')
+  );
+  // A clean box stop: the CLI gets SIGTERM with everything else and exits first.
+  emit({ type: 'session.exited', reason: 'Terminated' });
+  await waitFor(() => expect(room).toHaveLength(1));
+  await host.restartRepliesSettled();
+  expect(room[0]).toMatchObject({ threadId: 'thread-1', body: RESTARTED_REPLY });
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe(
+    'interrupted'
+  );
+  expect((await restartRecords(root)).map((record) => record.state)).toEqual(['pending', 'sent']);
+});
+
+it('posts the owed line on the next start when the box stopped before the host could', async () => {
+  const { room, has } = roomWithCheck();
+  let calls = 0;
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    calls++;
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    return 'posted';
+  };
+  // The first host waits 500 ms before posting, and is shut down well inside that.
+  const { root, host, emit } = await startReplying(reply, undefined, [500, 10]);
+  await host.command(roomMessage('cut-off', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe('running')
+  );
+  emit({ type: 'session.exited', reason: 'Terminated' });
+  await waitFor(async () =>
+    expect((await restartRecords(root)).map((record) => record.state)).toEqual(['pending'])
+  );
+  await host.shutdown();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  expect(room).toHaveLength(0);
+  // The next start finds the turn interrupted but the line still owed.
+  const next = await startReplying(reply, root, [10, 10]);
+  await waitFor(() => expect(room).toHaveLength(1));
+  await next.host.restartRepliesSettled();
+  const third = await startReplying(reply, root, [10, 10]);
+  await third.host.restartRepliesSettled();
+  expect(calls).toBe(1);
+  expect(room).toHaveLength(1);
+});
+
+it('owes nothing when the session was stopped on purpose', async () => {
+  const room: RoomReply[] = [];
+  const { root, host } = await startReplying(
+    async (posted) => {
+      room.push(posted);
+    },
+    undefined,
+    [10, 10]
+  );
+  await host.command(roomMessage('stopped', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'stopped')?.status).toBe('running')
+  );
+  await host.command({ ...message('stop-it'), body: { type: 'session.stop' } } as Command);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(room.filter((posted) => posted.body === RESTARTED_REPLY)).toHaveLength(0);
+  expect(await restartRecords(root)).toEqual([]);
+});
+
+it('owes the restart line when the provider reports the turn interrupted without anyone asking (a clean box stop)', async () => {
+  const { room, has } = roomWithCheck();
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    return 'posted';
+  };
+  const { root, host, emit } = await startReplying(reply, undefined, [500, 10]);
+  await host.command(roomMessage('cut-off', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe('running')
+  );
+  // On SIGTERM the CLI ends its turn as interrupted, and then this host shuts down.
+  emit({ type: 'turn.completed', turnId: 'cut-off', outcome: 'interrupted', usage: [] });
+  await waitFor(async () =>
+    expect((await restartRecords(root)).map((record) => record.state)).toEqual(['pending'])
+  );
+  await host.shutdown();
+  expect(room).toHaveLength(0);
+  const next = await startReplying(reply, root, [10, 10]);
+  await waitFor(() => expect(room).toHaveLength(1));
+  await next.host.restartRepliesSettled();
+  expect(room[0]).toMatchObject({ threadId: 'thread-1', body: RESTARTED_REPLY });
+});
+
+it('owes nothing for a turn someone interrupted on purpose', async () => {
+  const room: RoomReply[] = [];
+  const { root, host, emit } = await startReplying(
+    async (posted) => {
+      room.push(posted);
+    },
+    undefined,
+    [10, 10]
+  );
+  await host.command(roomMessage('asked', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'asked')?.status).toBe('running')
+  );
+  await host.command({
+    ...message('interrupt'),
+    body: { type: 'turn.interrupt', turnId: 'asked' },
+  } as Command);
+  emit({ type: 'turn.completed', turnId: 'asked', outcome: 'interrupted', usage: [] });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(room.filter((posted) => posted.body === RESTARTED_REPLY)).toHaveLength(0);
+  expect(await restartRecords(root)).toEqual([]);
+});
+
+/**
+ * The journal B's host wrote on 26 Oct (R5 recheck, 11:06Z) for a turn cut
+ * off when B's pod was deleted: running, the assistant's first message and a
+ * tool started, then interrupted with the tool never finished, and nothing
+ * after it until the next start. The provider side of that: on SIGTERM the
+ * CLI ends its turn as interrupted while the host is going down.
+ */
+it("owes and posts the line for the event sequence B's host recorded on a clean stop (replayed from the journal)", async () => {
+  const recorded = JSON.parse(
+    await readFile(
+      join(import.meta.dirname, '../testing/fixtures/r5-recheck-b-cut-off-turn.json'),
+      'utf8'
+    )
+  ) as {
+    body: {
+      type: string;
+      status?: string;
+      item?: { kind: string; status: string; text: string; title: string };
+    };
+  }[];
+  const { room, has } = roomWithCheck();
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    return 'posted';
+  };
+  const { root, host, emit, adapter } = await startReplying(reply, undefined, [10, 10]);
+  await host.command(roomMessage('cut-off', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut-off')?.status).toBe('running')
+  );
+  // What the provider said before the stop, as the journal shows: the first message, then a tool starting.
+  const message = recorded.find(
+    (r) => r.body.item?.kind === 'assistant-message' && r.body.item.status === 'completed'
+  )!;
+  const tool = recorded.find((r) => r.body.item?.kind === 'tool-activity')!;
+  emit({
+    type: 'item.completed',
+    turnId: 'cut-off',
+    item: {
+      id: 'msg',
+      type: 'assistant_message',
+      status: 'completed',
+      title: '',
+      text: message.body.item!.text,
+    },
+  });
+  emit({
+    type: 'item.started',
+    turnId: 'cut-off',
+    item: { id: 'tool', type: 'tool_call', status: 'in_progress', title: tool.body.item!.title },
+  });
+  // The box stops: the CLI ends the turn interrupted while this host shuts down.
+  vi.mocked(adapter.stopSession).mockImplementation(async () => {
+    emit({ type: 'turn.completed', turnId: 'cut-off', outcome: 'interrupted', usage: [] });
+    emit({ type: 'session.exited', reason: 'Terminated' });
+  });
+  await host.shutdown();
+  // The host's own journal now ends the way B's did: interrupted, with the tool never finished.
+  const ended = (await readFile(join(root, 'events.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l).body);
+  const turnStates = ended
+    .filter((b) => b.type === 'turn.upsert' && b.turnId === 'cut-off')
+    .map((b) => b.status);
+  expect(turnStates.slice(-2)).toEqual(
+    recorded.filter((r) => r.body.type === 'turn.upsert').map((r) => r.body.status)
+  );
+  expect((await restartRecords(root)).map((record) => record.state)).toEqual(['pending']);
+  expect(room).toHaveLength(0);
+  const next = await startReplying(reply, root, [10, 10]);
+  await waitFor(() => expect(room).toHaveLength(1));
+  await next.host.restartRepliesSettled();
+  expect(room[0]).toMatchObject({ threadId: 'thread-1', body: RESTARTED_REPLY });
+});
+
+it('owes nothing when its supervisor stopped it on purpose (the agent turned off, a new build or definition)', async () => {
+  const room: RoomReply[] = [];
+  const { root, host, emit, adapter } = await startReplying(
+    async (posted) => {
+      room.push(posted);
+    },
+    undefined,
+    [10, 10]
+  );
+  await host.command(roomMessage('stopped-on-purpose', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'stopped-on-purpose')?.status).toBe(
+      'running'
+    )
+  );
+  await markStopAsked(root);
+  vi.mocked(adapter.stopSession).mockImplementation(async () => {
+    emit({
+      type: 'turn.completed',
+      turnId: 'stopped-on-purpose',
+      outcome: 'interrupted',
+      usage: [],
+    });
+    emit({ type: 'session.exited', reason: 'Terminated' });
+  });
+  await host.shutdown();
+  expect(await restartRecords(root)).toEqual([]);
+  // The next start clears the mark and owes nothing.
+  const next = await startReplying(
+    async (posted) => {
+      room.push(posted);
+    },
+    root,
+    [10, 10]
+  );
+  await next.host.restartRepliesSettled();
+  expect(room.filter((posted) => posted.body === RESTARTED_REPLY)).toHaveLength(0);
+  expect(await stopWasAsked(root)).toBe(false);
+});
+
+it('owes nothing for a turn ended by a person cancelling an approval', async () => {
+  const room: RoomReply[] = [];
+  const { root, host, emit } = await startReplying(
+    async (posted) => {
+      room.push(posted);
+    },
+    undefined,
+    [10, 10]
+  );
+  await host.command(roomMessage('needs-approval', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'needs-approval')?.status).toBe(
+      'running'
+    )
+  );
+  emit({
+    type: 'request.opened',
+    turnId: 'needs-approval',
+    requestId: 'approve-1',
+    requestType: 'tool_approval',
+    title: 'Run it?',
+    options: [
+      { decision: 'accept', label: 'Yes' },
+      { decision: 'cancel', label: 'Cancel' },
+    ],
+  });
+  await waitFor(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+  const request = host.snapshot().requests[0]!;
+  const cancel =
+    request.content.kind === 'approval'
+      ? request.content.options.find((o) => o.label === 'Cancel')
+      : undefined;
+  expect(cancel).toBeDefined();
+  await host.command({
+    ...message('answer'),
+    body: {
+      type: 'request.answer',
+      requestId: request.requestId,
+      expectedRevision: request.revision,
+      answer: { kind: 'approval', optionId: cancel!.optionId },
+    },
+  } as Command);
+  emit({ type: 'turn.completed', turnId: 'needs-approval', outcome: 'interrupted', usage: [] });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(await restartRecords(root)).toEqual([]);
+  expect(room.filter((posted) => posted.body === RESTARTED_REPLY)).toHaveLength(0);
+});
+
+it('clears the asked-for mark on every start, even one with nothing to recover', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sdk-host-test-'));
+  roots.push(dir);
+  await markStopAsked(dir);
+  const { host } = await startReplying(async () => {}, dir, [10, 10]);
+  await host.restartRepliesSettled();
+  expect(await stopWasAsked(dir)).toBe(false);
+});
+
+it('after a force-kill and a start on a new build, posts the owed line at start, before any message', async () => {
+  const { room, has } = roomWithCheck();
+  const reply = async (posted: RoomReply): Promise<RoomReplyOutcome> => {
+    if (posted.once && has(posted)) return 'already';
+    room.push(posted);
+    return 'posted';
+  };
+  const { root, host } = await startReplying(reply, undefined, [10, 10]);
+  await host.command(roomMessage('upgrade-cut', 'thread-1'));
+  await waitFor(() =>
+    expect(host.snapshot().turns.find((turn) => turn.turnId === 'upgrade-cut')?.status).toBe(
+      'running'
+    )
+  );
+  // The old box is force-killed before the provider can report anything: the journal still says running.
+  // The new build's controller found no live host to stop (a new box starts with none), so no mark.
+  const started = Date.now();
+  const next = await startReplying(reply, root, [10, 10]);
+  await waitFor(() => expect(room).toHaveLength(1));
+  await next.host.restartRepliesSettled();
+  expect(Date.now() - started).toBeLessThan(120_000);
+  expect(room[0]).toMatchObject({ threadId: 'thread-1', body: RESTARTED_REPLY });
 });
