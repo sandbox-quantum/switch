@@ -88,6 +88,10 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    # WorkOS refused where the directory mirror had got to in its events, and
+    # the mirror started again from now, with a full check of every linked
+    # organization.
+    DIRECTORY_EVENTS_RESTARTED = "directory.events_restarted"
 
 
 async def record_audit_event(

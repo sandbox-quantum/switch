@@ -124,15 +124,12 @@ from switch_core.gateway.schemas import (
     UsageTotalResponse,
 )
 from switch_core.gateway.service_connections import service_refusal
-from switch_core.gateway.workspace_access import (
-    finish_revocation,
-    revoke_workspace_access,
-)
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
     create_organization_for,
     directory_failed,
 )
+from switch_core.organization_access import AccessRevocation, remove_membership
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
 from switch_core.telemetry import emit_safely
 from switch_core.telemetry.ages import age_hours
@@ -1463,35 +1460,25 @@ async def remove_member(
             ),
         )
 
+    revocation = AccessRevocation(
+        agent_store=agent_store,
+        api_key_store=api_key_store,
+        broker=broker,
+        protocol=protocol,
+        sign_in_flows=request.app.state.sign_in_flows,
+    )
     try:
-        revoked = await revoke_workspace_access(
+        revoked = await remove_membership(
             session,
-            user_id,
-            api_key_store=api_key_store,
-            broker=broker,
-            sign_in_flows=request.app.state.sign_in_flows,
+            revocation,
+            membership,
+            actor_id=admin.id,
+            details={},
             keep_agent_keys=False,
         )
     except ServiceError as error:
         return service_refusal(error)
-
-    await record_audit_event(
-        session,
-        tenant_id=tenant_id,
-        actor_user_id=admin.id,
-        action=AuditAction.MEMBER_REMOVED,
-        target_type="user",
-        target_id=user_id,
-        details={
-            "role": membership.role,
-            "api_keys_deleted": len(revoked.key_hashes),
-            "service_connections_deleted": len(revoked.removed_services),
-        },
-    )
-    await session.delete(membership)
     await session.commit()
 
-    warning = await finish_revocation(
-        session, user_id, revoked, protocol=protocol, broker=broker
-    )
+    warning = await revocation.finish(session, user_id, revoked)
     return {"ok": True, "warning": warning}

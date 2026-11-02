@@ -44,18 +44,22 @@ async def revoke_workspace_access(
     when a connection is busy, before anything is removed. The caller
     commits, then calls `finish_revocation`.
 
-    `keep_agent_keys` keeps the keys agents they own run on, for a caller
-    that leaves those agents in place rather than refusing while they exist.
+    `keep_agent_keys` keeps the agent keys (`type` "agent") agents run on,
+    for a caller that leaves those agents in place rather than refusing while
+    they exist. Such a key authenticates as its agent, never as the person
+    (`bridges/agent/auth.py`), so keeping it leaves the agent working and the
+    person nothing of their own; every other key of theirs goes.
     """
     removed_services = await broker.remove_connections(session, user_id)
     keys = await api_key_store.get_by_user(session, user_id)
-    if keep_agent_keys and keys:
+    if keep_agent_keys:
+        agent_keys = [key.id for key in keys if key.type == "agent"]
         in_use = set(
             await session.scalars(
-                select(Agent.api_key_id).where(
-                    Agent.api_key_id.in_([key.id for key in keys])
-                )
+                select(Agent.api_key_id).where(Agent.api_key_id.in_(agent_keys))
             )
+            if agent_keys
+            else ()
         )
         keys = [key for key in keys if key.id not in in_use]
     for key in keys:

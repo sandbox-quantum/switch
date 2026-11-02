@@ -1,10 +1,15 @@
 """Ending someone's access to an organization's workspaces: what being demoted
-from `org_admin`, or leaving the organization, takes away.
+from `org_admin`, or leaving a workspace or the organization, takes away.
 
-Shared by the organization routes (`gateway/organizations.py`), which refuse
-first while the person owns agents there, and the directory mirror
-(`organization_mirror.py`), which applies a change made in the directory
-whatever it breaks and reports what it broke.
+Shared by the workspace and organization routes (`gateway/tenants.py`,
+`gateway/organizations.py`), which refuse first while the person owns agents
+there, and the directory mirror (`organization_mirror.py`), which applies a
+change made in the directory whatever it breaks and reports what it broke.
+
+Each step works on one workspace's session and leaves the commit to the
+caller, so whatever else belongs with it (a refusal, a conflict recorded for
+the organization) commits or rolls back with it. After the commit, the caller
+calls `finish_revocation` with what the step returned.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway.workspace_access import (
+    RevokedAccess,
     finish_revocation,
     revoke_workspace_access,
 )
@@ -37,6 +43,14 @@ class AccessRevocation:
     broker: ServiceBroker
     protocol: AgentCore
     sign_in_flows: SignInFlows
+
+    async def finish(
+        self, session: AsyncSession, user_id: str, revoked: RevokedAccess
+    ) -> str | None:
+        """`finish_revocation`, once the step's transaction has committed."""
+        return await finish_revocation(
+            session, user_id, revoked, protocol=self.protocol, broker=self.broker
+        )
 
 
 async def workspaces_where_they_own_agents(
@@ -55,109 +69,113 @@ async def workspaces_where_they_own_agents(
     return found
 
 
+async def end_organization_admin_access(
+    session: AsyncSession,
+    revocation: AccessRevocation,
+    *,
+    tenant_id: str,
+    user_id: str,
+    actor_id: str | None,
+    details: dict[str, Any],
+    keep_agent_keys: bool,
+) -> RevokedAccess:
+    """In workspace `tenant_id`, bound on `session`, where `user_id` stands
+    only as their organization's `org_admin`: remove their keys, service
+    connections and sign-ins under way, recorded in its audit log with
+    `details`; `keep_agent_keys` as `revoke_workspace_access` has it. Raises
+    `ServiceError` when a connection is busy."""
+    revoked = await revoke_workspace_access(
+        session,
+        user_id,
+        api_key_store=revocation.api_key_store,
+        broker=revocation.broker,
+        sign_in_flows=revocation.sign_in_flows,
+        keep_agent_keys=keep_agent_keys,
+    )
+    await record_audit_event(
+        session,
+        tenant_id=tenant_id,
+        actor_user_id=actor_id,
+        action=AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
+        target_type="user",
+        target_id=user_id,
+        details={
+            **details,
+            "api_keys_deleted": len(revoked.key_hashes),
+            "service_connections_deleted": len(revoked.removed_services),
+        },
+    )
+    return revoked
+
+
+async def remove_membership(
+    session: AsyncSession,
+    revocation: AccessRevocation,
+    membership: TenantMember,
+    *,
+    actor_id: str | None,
+    details: dict[str, Any],
+    keep_agent_keys: bool,
+) -> RevokedAccess:
+    """Remove `membership` from its workspace, bound on `session`, with the
+    member's keys, service connections and sign-ins under way there, recorded
+    in its audit log with `details`; `keep_agent_keys` as
+    `revoke_workspace_access` has it. Agents they own are left as they are.
+    Raises `ServiceError` when a connection is busy, before anything is
+    removed."""
+    revoked = await revoke_workspace_access(
+        session,
+        membership.user_id,
+        api_key_store=revocation.api_key_store,
+        broker=revocation.broker,
+        sign_in_flows=revocation.sign_in_flows,
+        keep_agent_keys=keep_agent_keys,
+    )
+    await record_audit_event(
+        session,
+        tenant_id=membership.tenant_id,
+        actor_user_id=actor_id,
+        action=AuditAction.MEMBER_REMOVED,
+        target_type="user",
+        target_id=membership.user_id,
+        details={
+            **details,
+            "role": membership.role,
+            "api_keys_deleted": len(revoked.key_hashes),
+            "service_connections_deleted": len(revoked.removed_services),
+        },
+    )
+    await session.delete(membership)
+    return revoked
+
+
 async def end_access_through_organization(
     session_factory: async_sessionmaker[AsyncSession],
     revocation: AccessRevocation,
     *,
     user_id: str,
     reached: list[Tenant],
-    actor_id: str | None,
+    actor_id: str,
     details: dict[str, Any],
-    keep_agent_keys: bool,
 ) -> str | None:
-    """Take away what `user_id` holds in `reached`, the workspaces they stand
-    in only as their organization's `org_admin`: their keys, service
-    connections and sign-ins under way, one workspace at a time, each
-    recorded in that workspace's audit log with `details`;
-    `keep_agent_keys` as `revoke_workspace_access` has it. Raises
-    `ServiceError` when a connection is busy. Returns a warning naming what
-    could not be revoked at a vendor, or None."""
+    """`end_organization_admin_access` in each of `reached`, one workspace at
+    a time, each committed on its own, for a route that has refused already
+    while they own agents there. Returns a warning naming what could not be
+    revoked at a vendor, or None."""
     warnings = []
     for tenant in reached:
         async with tenant_session(session_factory, tenant.id) as session:
-            revoked = await revoke_workspace_access(
+            revoked = await end_organization_admin_access(
                 session,
-                user_id,
-                api_key_store=revocation.api_key_store,
-                broker=revocation.broker,
-                sign_in_flows=revocation.sign_in_flows,
-                keep_agent_keys=keep_agent_keys,
-            )
-            await record_audit_event(
-                session,
+                revocation,
                 tenant_id=tenant.id,
-                actor_user_id=actor_id,
-                action=AuditAction.ORGANIZATION_ADMIN_ACCESS_ENDED,
-                target_type="user",
-                target_id=user_id,
-                details={
-                    **details,
-                    "api_keys_deleted": len(revoked.key_hashes),
-                    "service_connections_deleted": len(revoked.removed_services),
-                },
+                user_id=user_id,
+                actor_id=actor_id,
+                details=details,
+                keep_agent_keys=False,
             )
             await session.commit()
-            warning = await finish_revocation(
-                session,
-                user_id,
-                revoked,
-                protocol=revocation.protocol,
-                broker=revocation.broker,
-            )
+            warning = await revocation.finish(session, user_id, revoked)
         if warning:
             warnings.append(f"{tenant.name}: {warning}")
     return " ".join(warnings) or None
-
-
-async def remove_from_workspace(
-    session_factory: async_sessionmaker[AsyncSession],
-    revocation: AccessRevocation,
-    *,
-    user_id: str,
-    tenant: Tenant,
-    actor_id: str | None,
-    details: dict[str, Any],
-    keep_agent_keys: bool,
-) -> str | None:
-    """Remove `user_id` from `tenant`, with their keys, service connections
-    and sign-ins under way there, recorded in its audit log with `details`.
-    Agents they own are left as they are, and with `keep_agent_keys` so are
-    the keys they run on. Raises `ServiceError` when a
-    connection is busy. Returns a warning naming what could not be revoked
-    at a vendor, or None."""
-    async with tenant_session(session_factory, tenant.id) as session:
-        membership = await session.get(TenantMember, (tenant.id, user_id))
-        if membership is None:
-            return None
-        revoked = await revoke_workspace_access(
-            session,
-            user_id,
-            api_key_store=revocation.api_key_store,
-            broker=revocation.broker,
-            sign_in_flows=revocation.sign_in_flows,
-            keep_agent_keys=keep_agent_keys,
-        )
-        await record_audit_event(
-            session,
-            tenant_id=tenant.id,
-            actor_user_id=actor_id,
-            action=AuditAction.MEMBER_REMOVED,
-            target_type="user",
-            target_id=user_id,
-            details={
-                **details,
-                "role": membership.role,
-                "api_keys_deleted": len(revoked.key_hashes),
-                "service_connections_deleted": len(revoked.removed_services),
-            },
-        )
-        await session.delete(membership)
-        await session.commit()
-        warning = await finish_revocation(
-            session,
-            user_id,
-            revoked,
-            protocol=revocation.protocol,
-            broker=revocation.broker,
-        )
-    return f"{tenant.name}: {warning}" if warning else None

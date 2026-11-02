@@ -13,7 +13,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.connections.broker import ServiceBroker
+from switch_core import organization_mirror
+from switch_core.connections.broker import ServiceBroker, ServiceError
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.audit import AuditAction, OrganizationAuditAction
@@ -31,11 +32,13 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.keys import Keyring
 from switch_core.organization_access import AccessRevocation
-from switch_core.organization_mirror import apply_from_directory
+from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
 from tests.conftest import RLSHarness
 
 pytestmark = pytest.mark.no_ambient_tenant
@@ -47,6 +50,16 @@ _KEYRING = Keyring.parse(
 
 def _id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def _dependencies(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> MirrorDependencies:
+    return MirrorDependencies(
+        revocation=_revocation(session_factory),
+        organization_store=OrganizationStore(),
+        user_store=UserStore(),
+    )
 
 
 def _revocation(session_factory: async_sessionmaker[AsyncSession]) -> AccessRevocation:
@@ -79,6 +92,7 @@ class _World:
 
     def __init__(self, organization_id: str, joined: str, reached: str) -> None:
         self.organization_id = organization_id
+        self.workos_organization_id = _id("org_workos")
         self.joined = joined
         self.reached = reached
         self.ada = _id("ada")
@@ -99,7 +113,7 @@ class _World:
                     id=world.organization_id,
                     slug=world.organization_id,
                     name="Acme",
-                    workos_organization_id=_id("org_workos"),
+                    workos_organization_id=world.workos_organization_id,
                 )
             )
             for user_id in (world.ada, world.bea):
@@ -230,11 +244,18 @@ async def _workspace_actions(owner, tenant_id: str) -> list[str]:
         )
 
 
-async def _apply(rls_harness: RLSHarness, world: _World, wanted: str | None) -> None:
+async def _apply(
+    rls_harness: RLSHarness,
+    world: _World,
+    wanted: str | None,
+    *,
+    workos_organization_id: str | None = None,
+) -> None:
     await apply_from_directory(
         rls_harness.restricted,
-        _revocation(rls_harness.restricted),
+        _dependencies(rls_harness.restricted),
         organization_id=world.organization_id,
+        workos_organization_id=workos_organization_id or world.workos_organization_id,
         user_id=world.ada,
         wanted=wanted,
         source="directory_event",
@@ -282,6 +303,19 @@ class TestTakingAway:
         assert await _keys(owner, world.reached, world.ada) == []
         [(action, _)] = await _organization_events(owner, world.organization_id)
         assert action == OrganizationAuditAction.MEMBER_DEMOTED_FROM_DIRECTORY
+
+    async def test_nothing_is_applied_once_the_organization_follows_another(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        """A role read from a WorkOS organization the organization no longer
+        follows (unlinked or relinked meanwhile) is not WorkOS's say here."""
+        owner = rls_harness.owner
+        world = await _World.make(owner)
+
+        await _apply(rls_harness, world, None, workos_organization_id=_id("org_old"))
+
+        assert await _role(owner, world.organization_id, world.ada) == "org_admin"
+        assert await _organization_events(owner, world.organization_id) == []
 
     async def test_the_same_role_changes_nothing(self, rls_harness: RLSHarness) -> None:
         owner = rls_harness.owner
@@ -373,8 +407,9 @@ class TestGranting:
 
         await apply_from_directory(
             rls_harness.restricted,
-            _revocation(rls_harness.restricted),
+            _dependencies(rls_harness.restricted),
             organization_id=world.organization_id,
+            workos_organization_id=world.workos_organization_id,
             user_id=cy,
             wanted="member",
             source="daily_check",
@@ -384,3 +419,54 @@ class TestGranting:
         [(action, details)] = await _organization_events(owner, world.organization_id)
         assert action == OrganizationAuditAction.MEMBER_ADDED_FROM_DIRECTORY
         assert details == {"source": "daily_check", "role": "member"}
+
+
+class TestARetryAfterAFailure:
+    async def test_finds_the_workspaces_left_and_their_conflicts_recorded(
+        self, rls_harness: RLSHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ada is the only owner of `joined` and owns an agent there; a second
+        workspace she is in has a busy connection the first time."""
+        owner = rls_harness.owner
+        world = await _World.make(owner, ada_owns_joined=True)
+        await _agent(owner, world.joined, world.ada)
+        busy = _id("busy")
+        async with owner() as session:
+            session.add(
+                Tenant(
+                    id=busy,
+                    slug=busy,
+                    name="Busy",
+                    organization_id=world.organization_id,
+                )
+            )
+            await session.flush()
+            session.add(TenantMember(tenant_id=busy, user_id=world.ada, role="member"))
+            await session.commit()
+        real = organization_mirror.remove_membership
+
+        async def busy_once(session, revocation, membership, **kwargs):
+            if membership.tenant_id == busy:
+                raise ServiceError(
+                    409, "internal", "A connection is busy.", retryable=True
+                )
+            return await real(session, revocation, membership, **kwargs)
+
+        monkeypatch.setattr(organization_mirror, "remove_membership", busy_once)
+        with pytest.raises(ServiceError):
+            await _apply(rls_harness, world, None)
+        monkeypatch.setattr(organization_mirror, "remove_membership", real)
+        await _apply(rls_harness, world, None)
+
+        conflicts = [
+            details["kind"]
+            for action, details in await _organization_events(
+                owner, world.organization_id
+            )
+            if action == OrganizationAuditAction.DIRECTORY_CONFLICT
+        ]
+        assert sorted(conflicts) == [
+            "agents_left_with_owner",
+            "workspace_left_without_owner",
+        ]
+        assert await _role(owner, world.organization_id, world.ada) is None

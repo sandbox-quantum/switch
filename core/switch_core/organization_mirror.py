@@ -30,9 +30,10 @@ events and its daily check (`apply_from_directory`).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -48,6 +49,8 @@ from switch_core.db.models import (
     TenantMember,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
+from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import directory_organizations_of_user
 from switch_core.gateway.auth import (
     workspaces_in_organization,
@@ -55,9 +58,8 @@ from switch_core.gateway.auth import (
 )
 from switch_core.organization_access import (
     AccessRevocation,
-    end_access_through_organization,
-    remove_from_workspace,
-    workspaces_where_they_own_agents,
+    end_organization_admin_access,
+    remove_membership,
 )
 from switch_core.organization_directory import DirectoryMembership
 
@@ -103,80 +105,128 @@ async def bring_in_memberships(
                 )
 
 
+@dataclass(frozen=True)
+class MirrorDependencies:
+    """What applying a change from the directory needs."""
+
+    revocation: AccessRevocation
+    organization_store: OrganizationStore
+    user_store: UserStore
+
+
 async def apply_from_directory(
     session_factory: async_sessionmaker[AsyncSession],
-    revocation: AccessRevocation,
+    dependencies: MirrorDependencies,
     *,
     organization_id: str,
+    workos_organization_id: str,
     user_id: str,
     wanted: str | None,
     source: str,
 ) -> None:
     """Make `user_id`'s membership of `organization_id` what the directory
-    says, `wanted` (a role, or None for no membership). Raises `ServiceError`
-    when a connection to revoke is busy, having changed nothing that a retry
-    would not finish."""
+    says, `wanted` (a role, or None for no membership), as read from WorkOS
+    organization `workos_organization_id`. Nothing is changed unless the
+    organization still follows that one.
+
+    Each workspace is worked on in a transaction of its own, with the
+    conflicts it raises recorded in the same one, so a retry after a failure
+    part-way (`ServiceError`, a busy connection) finds the workspaces already
+    done done, and their conflicts recorded.
+    """
     async with organization_session(session_factory, organization_id) as session:
-        _, current = await _link_and_role(session, organization_id, user_id)
+        linked, current = await _link_and_role(session, organization_id, user_id)
+        if linked != workos_organization_id:
+            logger.warning(
+                "Organization %s no longer follows WorkOS organization %s; "
+                "user %s's membership there is not applied",
+                organization_id,
+                workos_organization_id,
+                user_id,
+            )
+            return
         if current == wanted:
             return
-        if _grants(current, wanted):
-            assert wanted is not None
+        if wanted is not None and _grants(current, wanted):
             await _grant(session, organization_id, user_id, current, wanted, source)
             return
-        admins = await _count_admins(session, organization_id)
     assert current is not None
-    conflicts: list[dict[str, Any]] = []
-    warnings: list[str] = []
     details = {"source": source}
+    revocation = dependencies.revocation
+    warnings: list[str] = []
 
     if current == ORGANIZATION_ADMIN_ROLE:
-        if admins <= 1:
-            conflicts.append({"kind": "last_org_admin"})
-        reached = await workspaces_reached_through_organization(
+        reason = "demoted" if wanted is not None else "removed"
+        for tenant in await workspaces_reached_through_organization(
             session_factory, user_id, organization_id
-        )
-        conflicts += await _agents_left(session_factory, revocation, user_id, reached)
-        warning = await end_access_through_organization(
-            session_factory,
-            revocation,
-            user_id=user_id,
-            reached=reached,
-            actor_id=None,
-            details={
-                "reason": "demoted" if wanted is not None else "removed",
-                **details,
-            },
-            keep_agent_keys=True,
-        )
-        if warning:
-            warnings.append(warning)
+        ):
+            async with tenant_session(session_factory, tenant.id) as session:
+                await _conflict_if_agents_left(
+                    session, dependencies, organization_id, user_id, tenant, details
+                )
+                revoked = await end_organization_admin_access(
+                    session,
+                    revocation,
+                    tenant_id=tenant.id,
+                    user_id=user_id,
+                    actor_id=None,
+                    details={"reason": reason, **details},
+                    keep_agent_keys=True,
+                )
+                await session.commit()
+                warning = await revocation.finish(session, user_id, revoked)
+            if warning:
+                warnings.append(f"{tenant.name}: {warning}")
 
     if wanted is None:
-        workspaces = await workspaces_in_organization(
+        for tenant in await workspaces_in_organization(
             session_factory, user_id, organization_id
-        )
-        conflicts += await _agents_left(
-            session_factory, revocation, user_id, workspaces
-        )
-        for tenant in workspaces:
-            if await _is_last_owner(session_factory, tenant.id, user_id):
-                conflicts.append(
-                    {"kind": "workspace_left_without_owner", "workspace": tenant.name}
+        ):
+            async with tenant_session(session_factory, tenant.id) as session:
+                membership = await session.get(TenantMember, (tenant.id, user_id))
+                if membership is None:
+                    continue
+                await _conflict_if_agents_left(
+                    session, dependencies, organization_id, user_id, tenant, details
                 )
-            warning = await remove_from_workspace(
-                session_factory,
-                revocation,
-                user_id=user_id,
-                tenant=tenant,
-                actor_id=None,
-                details=details,
-                keep_agent_keys=True,
-            )
+                if (
+                    membership.role == "owner"
+                    and await dependencies.user_store.count_owners(session) <= 1
+                ):
+                    await _conflict(
+                        session,
+                        organization_id,
+                        user_id,
+                        {
+                            **details,
+                            "kind": "workspace_left_without_owner",
+                            "workspace": tenant.name,
+                        },
+                    )
+                revoked = await remove_membership(
+                    session,
+                    revocation,
+                    membership,
+                    actor_id=None,
+                    details=details,
+                    keep_agent_keys=True,
+                )
+                await session.commit()
+                warning = await revocation.finish(session, user_id, revoked)
             if warning:
-                warnings.append(warning)
+                warnings.append(f"{tenant.name}: {warning}")
 
     async with organization_session(session_factory, organization_id) as session:
+        admins = await dependencies.organization_store.lock_admins(
+            session, organization_id
+        )
+        _, current = await _link_and_role(session, organization_id, user_id)
+        if current is None or current == wanted:
+            return
+        if current == ORGANIZATION_ADMIN_ROLE and admins <= 1:
+            await _conflict(
+                session, organization_id, user_id, {**details, "kind": "last_org_admin"}
+            )
         if wanted is None:
             await session.execute(
                 delete(OrganizationMember).where(
@@ -202,23 +252,6 @@ async def apply_from_directory(
                 **({"warning": " ".join(warnings)} if warnings else {}),
             },
         )
-        for conflict in conflicts:
-            logger.error(
-                "Applying WorkOS's change to user %s in organization %s broke "
-                "a rule Switch keeps: %s",
-                user_id,
-                organization_id,
-                conflict,
-            )
-            await record_organization_audit_event(
-                session,
-                organization_id=organization_id,
-                actor_user_id=None,
-                action=OrganizationAuditAction.DIRECTORY_CONFLICT,
-                target_type="user",
-                target_id=user_id,
-                details={**details, **conflict},
-            )
         await session.commit()
 
 
@@ -298,43 +331,48 @@ async def _set_role(
     )
 
 
-async def _count_admins(session: AsyncSession, organization_id: str) -> int:
-    return (
-        await session.scalar(
-            select(func.count()).where(
-                OrganizationMember.organization_id == organization_id,
-                OrganizationMember.role == ORGANIZATION_ADMIN_ROLE,
-            )
-        )
-    ) or 0
-
-
-async def _agents_left(
-    session_factory: async_sessionmaker[AsyncSession],
-    revocation: AccessRevocation,
+async def _conflict_if_agents_left(
+    session: AsyncSession,
+    dependencies: MirrorDependencies,
+    organization_id: str,
     user_id: str,
-    workspaces: list[Tenant],
-) -> list[dict[str, Any]]:
-    """A conflict for each of `workspaces` where `user_id` owns agents, which
-    stay, with the keys they run on, owned by someone who can no longer act
-    there, for an admin to deal with."""
-    return [
-        {"kind": "agents_left_with_owner", "workspace": tenant.name}
-        for tenant in await workspaces_where_they_own_agents(
-            session_factory, revocation.agent_store, user_id, workspaces
+    tenant: Tenant,
+    details: dict[str, Any],
+) -> None:
+    """Agents `user_id` owns in `tenant`, bound on `session`, stay, with the
+    keys they run on, owned by someone who can no longer act there, for an
+    admin to deal with."""
+    if await dependencies.revocation.agent_store.get_by_owner(session, user_id):
+        await _conflict(
+            session,
+            organization_id,
+            user_id,
+            {**details, "kind": "agents_left_with_owner", "workspace": tenant.name},
         )
-    ]
 
 
-async def _is_last_owner(
-    session_factory: async_sessionmaker[AsyncSession], tenant_id: str, user_id: str
-) -> bool:
-    async with tenant_session(session_factory, tenant_id) as session:
-        owners = list(
-            await session.scalars(
-                select(TenantMember.user_id).where(
-                    TenantMember.tenant_id == tenant_id, TenantMember.role == "owner"
-                )
-            )
-        )
-    return owners == [user_id]
+async def _conflict(
+    session: AsyncSession,
+    organization_id: str,
+    user_id: str,
+    details: dict[str, Any],
+) -> None:
+    """Record, in the caller's transaction, that a change from the directory
+    broke a rule Switch keeps. `session` may be bound to the organization or
+    to one of its workspaces."""
+    logger.error(
+        "Applying WorkOS's change to user %s in organization %s broke a rule "
+        "Switch keeps: %s",
+        user_id,
+        organization_id,
+        details,
+    )
+    await record_organization_audit_event(
+        session,
+        organization_id=organization_id,
+        actor_user_id=None,
+        action=OrganizationAuditAction.DIRECTORY_CONFLICT,
+        target_type="user",
+        target_id=user_id,
+        details=details,
+    )
