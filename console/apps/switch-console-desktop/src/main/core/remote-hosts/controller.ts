@@ -93,6 +93,7 @@ export const remoteHostsController = createRPCController({
       await hostControllerService.forgetHost(sshHost);
       await removeRemoteHost(sshHost);
       await discardSetupPlan(sshHost);
+      await hostReachabilityService.reset(sshHost);
       await releaseHostIfUnused(sshHost);
       evictRemoteDependencyManager(sshHost);
     } catch (error) {

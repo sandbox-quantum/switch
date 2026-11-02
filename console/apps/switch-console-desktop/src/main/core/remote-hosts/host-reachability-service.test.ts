@@ -240,4 +240,54 @@ describe('HostReachabilityService', () => {
     expect(timers).toHaveLength(0);
     expect(svc.getAll()).toEqual([]);
   });
+
+  it('lets a save already in flight land before forget deletes the row', async () => {
+    const order: string[] = [];
+    let land!: () => void;
+    vi.mocked(savePersistedReachability).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (land = () => (order.push('save'), resolve())))
+    );
+    vi.mocked(deletePersistedReachability).mockImplementationOnce(async () => {
+      order.push('delete');
+    });
+    const { service: svc } = makeService(async () => {});
+
+    svc.reportFailure('example-gone', new Error('Connection lost before handshake'));
+    const forgetting = svc.forget('example-gone');
+    await settle();
+    land();
+    await forgetting;
+
+    expect(order).toEqual(['save', 'delete']);
+  });
+
+  it('does not resurrect a forgotten host on a later failure or read', async () => {
+    const { service: svc, timers } = makeService(async () => {});
+
+    await svc.forget('example-gone');
+    expect(svc.isBlocked('example-gone')).toBe(false);
+    svc.reportFailure('example-gone', new Error('Connection lost before handshake'));
+    await settle();
+
+    expect(savePersistedReachability).not.toHaveBeenCalled();
+    expect(timers).toHaveLength(0);
+    expect(svc.getAll()).toEqual([]);
+
+    await svc.checkNow('example-gone');
+    expect(svc.getAll().map((r) => r.sshHost)).toEqual(['example-gone']);
+  });
+
+  it('resets a suspended host to unknown and deletes its saved record', async () => {
+    const { service: svc, published } = makeService(async () => {
+      throw new AuthError('All configured authentication methods failed');
+    });
+    await svc.checkNow('example-host');
+    expect(svc.get('example-host').status).toBe('suspended');
+
+    await svc.reset('example-host');
+
+    expect(deletePersistedReachability).toHaveBeenCalledWith('example-host');
+    expect(svc.get('example-host').status).toBe('unknown');
+    expect(published.at(-1)?.status).toBe('unknown');
+  });
 });

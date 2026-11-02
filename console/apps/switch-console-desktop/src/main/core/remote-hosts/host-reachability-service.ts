@@ -60,6 +60,8 @@ type HostEntry = {
   timer?: NodeJS.Timeout;
   /** In-flight probe, so concurrent callers coalesce onto one round trip. */
   inFlight?: Promise<HostReachability>;
+  /** Saves run one after another, so the last state written is the last one set. */
+  saving?: Promise<void>;
 };
 
 export type HostReachabilityChange = {
@@ -78,6 +80,8 @@ export type HostReachabilityChange = {
 export class HostReachabilityService extends EventEmitter {
   private readonly deps: Required<HostReachabilityServiceDeps>;
   private readonly hosts = new Map<string, HostEntry>();
+  /** Hosts released as unused: failures reported for them are not tracked until a probe or success adopts them again. */
+  private readonly forgotten = new Set<string>();
   private loaded = false;
 
   constructor(deps: HostReachabilityServiceDeps) {
@@ -151,10 +155,11 @@ export class HostReachabilityService extends EventEmitter {
    * never probed redundantly.
    */
   reportSuccess(sshHost: string): void {
+    this.forgotten.delete(sshHost);
     const entry = this.entry(sshHost);
     if (entry.reachability.status === 'reachable') return;
     this.cancelProbe(entry);
-    void this.transition(sshHost, {
+    void this.transition(entry, sshHost, {
       status: 'reachable',
       lastError: null,
       consecutiveFailures: 0,
@@ -172,7 +177,7 @@ export class HostReachabilityService extends EventEmitter {
     const status: HostReachabilityStatus = this.deps.isAuthError(error)
       ? 'suspended'
       : 'unreachable';
-    void this.transition(sshHost, {
+    void this.transition(entry, sshHost, {
       status,
       lastError: message,
       consecutiveFailures: entry.reachability.consecutiveFailures + 1,
@@ -189,6 +194,7 @@ export class HostReachabilityService extends EventEmitter {
    * validation and background recovery share one code path.
    */
   async checkNow(sshHost: string): Promise<HostReachability> {
+    this.forgotten.delete(sshHost);
     const entry = this.entry(sshHost);
     if (entry.inFlight) return entry.inFlight;
     this.cancelProbe(entry);
@@ -198,7 +204,7 @@ export class HostReachabilityService extends EventEmitter {
       try {
         await this.deps.probe(sshHost);
         if (this.hosts.get(sshHost) !== entry) return entry.reachability;
-        return await this.transition(sshHost, {
+        return await this.transition(entry, sshHost, {
           status: 'reachable',
           lastError: null,
           consecutiveFailures: 0,
@@ -209,7 +215,7 @@ export class HostReachabilityService extends EventEmitter {
         const status: HostReachabilityStatus = this.deps.isAuthError(error)
           ? 'suspended'
           : 'unreachable';
-        const next = await this.transition(sshHost, {
+        const next = await this.transition(entry, sshHost, {
           status,
           lastError: message,
           consecutiveFailures: entry.reachability.consecutiveFailures + 1,
@@ -239,10 +245,11 @@ export class HostReachabilityService extends EventEmitter {
       return;
     }
     if (event.type === 'reconnect-failed') {
-      void this.transition(sshHost, {
+      const entry = this.entry(sshHost);
+      void this.transition(entry, sshHost, {
         status: 'suspended',
-        lastError: this.get(sshHost).lastError ?? 'SSH authentication failed',
-        consecutiveFailures: this.get(sshHost).consecutiveFailures + 1,
+        lastError: entry.reachability.lastError ?? 'SSH authentication failed',
+        consecutiveFailures: entry.reachability.consecutiveFailures + 1,
       });
       return;
     }
@@ -259,14 +266,28 @@ export class HostReachabilityService extends EventEmitter {
   }
 
   /**
-   * Stop tracking a host nothing uses any more: cancel its probe and delete its
-   * persisted record. A probe already in flight settles without saving it back.
+   * Drop a host's state back to unknown: cancel its probe and delete its
+   * persisted record once any save already in flight has landed. A probe still
+   * in flight settles without saving it back.
+   */
+  async reset(sshHost: string): Promise<void> {
+    const entry = this.hosts.get(sshHost);
+    this.hosts.delete(sshHost);
+    if (entry) {
+      this.cancelProbe(entry);
+      await entry.saving;
+    }
+    await deletePersistedReachability(sshHost);
+    this.deps.publish(unknownHostReachability(sshHost));
+  }
+
+  /**
+   * Stop tracking a host nothing uses any more. Until a probe or a success
+   * adopts it again, failures reported for it neither save nor schedule probes.
    */
   async forget(sshHost: string): Promise<void> {
-    const entry = this.hosts.get(sshHost);
-    if (entry) this.cancelProbe(entry);
-    this.hosts.delete(sshHost);
-    await deletePersistedReachability(sshHost);
+    this.forgotten.add(sshHost);
+    await this.reset(sshHost);
   }
 
   /** Stop all timers (app shutdown / tests). */
@@ -278,7 +299,7 @@ export class HostReachabilityService extends EventEmitter {
     let entry = this.hosts.get(sshHost);
     if (!entry) {
       entry = { reachability: unknownHostReachability(sshHost) };
-      this.hosts.set(sshHost, entry);
+      if (!this.forgotten.has(sshHost)) this.hosts.set(sshHost, entry);
     }
     return entry;
   }
@@ -291,10 +312,10 @@ export class HostReachabilityService extends EventEmitter {
   }
 
   private async transition(
+    entry: HostEntry,
     sshHost: string,
     patch: Pick<HostReachability, 'status' | 'lastError' | 'consecutiveFailures'>
   ): Promise<HostReachability> {
-    const entry = this.entry(sshHost);
     const previous = entry.reachability.status;
     const checkedAt = new Date(this.deps.now()).toISOString();
 
@@ -308,6 +329,7 @@ export class HostReachabilityService extends EventEmitter {
       nextProbeAt: patch.status === 'reachable' ? null : entry.reachability.nextProbeAt,
     };
     entry.reachability = next;
+    if (this.hosts.get(sshHost) !== entry) return next;
 
     // Log only on a status change: an unreachable host must be loud once, not
     // once per retry — the log spam was half of what CHOO-1682 reports.
@@ -325,7 +347,9 @@ export class HostReachabilityService extends EventEmitter {
       this.emit('change', { previous, current: next } satisfies HostReachabilityChange);
     }
 
-    await this.persist(next);
+    const saving = (entry.saving ?? Promise.resolve()).then(() => this.persist(next));
+    entry.saving = saving;
+    await saving;
     return next;
   }
 
