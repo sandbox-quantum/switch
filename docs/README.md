@@ -28,7 +28,7 @@ the one users act on.
 
 ## Reference pages at this level
 
-- [`contributing/quickstart.md`](contributing/quickstart.md): a five-minute
+- [`contributing/quickstart.md`](contributing/quickstart.md): a step-by-step
   introduction to setting up a local development environment.
 
 - [`TEMPLATES.md`](TEMPLATES.md): the template language, the one YAML
