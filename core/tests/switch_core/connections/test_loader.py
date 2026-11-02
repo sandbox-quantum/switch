@@ -47,6 +47,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
+    assert "SKILL.md" in CATALOG["datadog"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
 
 
@@ -1169,29 +1170,64 @@ tools: { mode: pass_through }
 """
 
 
-def test_the_shipped_datadog_entry_puts_both_keys_in_its_mcp_headers():
+DATADOG_SITES = [
+    "datadoghq.com",
+    "us3.datadoghq.com",
+    "us5.datadoghq.com",
+    "datadoghq.eu",
+    "ap1.datadoghq.com",
+    "ap2.datadoghq.com",
+    "uk1.datadoghq.com",
+]
+
+
+def test_the_shipped_datadog_entry_signs_in_at_the_site_people_pick():
     definition = CATALOG["datadog"].definition
-    assert definition.adapter == "api_key"
-    sign_in = definition.auth.api_key
-    assert sign_in is not None
-    assert [(f.name, f.secret) for f in sign_in.fields] == [
-        ("api_key", True),
-        ("application_key", True),
-        ("site", False),
-    ]
-    assert definition.mcp is not None
-    [server] = definition.mcp.servers
-    assert server.url == "https://mcp.{site}/api/unstable/mcp-server/mcp"
-    # The MCP server's header names have underscores; the REST API's hyphens.
-    assert server.headers == {
-        "DD_API_KEY": "{api_key}",
-        "DD_APPLICATION_KEY": "{application_key}",
-    }
-    assert sign_in.identity.headers == {"DD-API-KEY": "{api_key}"}
-    # A key never expires, so it is never handed to an agent.
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Datadog registers a public client at each site; Console's listener by
+    # default, Core's callback where the server names it, since an
+    # organization's admin must allow-list it first.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "dynamic",
+        ["loopback", "core"],
+    )
+    assert oauth.loopback_ports == [39241, 39242, 39243, 39244, 39245]
+    [site] = oauth.choices
+    assert (site.name, site.secret, site.choices) == ("site", False, DATADOG_SITES)
+    # No revocation endpoint: people remove Switch in Datadog themselves.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.revocation_ends_tokens is False
+    assert oauth.remove_access is not None
+    assert "Authorized Apps" in oauth.remove_access
+    # Refresh tokens are reused, not rotated; access tokens live 3,599 s.
+    assert definition.auth.refresh == "reusable"
     assert definition.token is not None
-    assert definition.token.max_lifetime is None
-    assert definition.token.issued_to_agents is False
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    identity = definition.auth.identity
+    assert identity is not None
+    assert (identity.url, identity.account_id, identity.label) == (
+        "https://api.{site}/api/v2/current_user",
+        "data.id",
+        "data.attributes.email",
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url, s.headers) for s in definition.mcp.servers] == [
+        ("datadog", "https://mcp.{site}/v1/mcp", None)
+    ]
+    # Datadog offers the one scope; its consent page decides the level, which
+    # the token's scope says by its markers.
+    access = definition.access
+    assert access is not None and access.write is not None
+    assert access.read.scopes == access.write.scopes == ["mcp_all"]
+    assert access.consent is not None
+    assert (access.consent.read, access.consent.write) == ("mcp_read", "mcp_write")
+    assert definition.tools is not None and definition.tools.mode == "pass_through"
+    assert "SKILL.md" in CATALOG["datadog"].skill_files
 
 
 def test_loads_an_api_key_entry(catalog_copy):
