@@ -15,6 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import Message, MessageAttachment
 from switch_core.db.raw import RawStatement
 
@@ -200,7 +201,7 @@ class MessageStore:
         if not room_ids:
             return {}
         query = select(Message.room_id, func.max(Message.seq)).where(
-            Message.room_id.in_(room_ids)
+            any_of(Message.room_id, room_ids)
         )
         if types is not None:
             query = query.where(Message.event_type.in_(list(types)))
