@@ -31,6 +31,23 @@ function detail(extra: Partial<ToolDetail>): ToolDetail {
 }
 
 describe('presentTool', () => {
+  it('names the subagent a row runs, with no host details to go on', () => {
+    const shown = presentTool(
+      { ...item('count files', 'in-progress'), subagent: { agent: 'Explore' } },
+      null
+    );
+    expect(shown).toMatchObject({
+      kind: 'agent',
+      verb: 'Running agent:',
+      subject: 'Explore: count files',
+    });
+  });
+
+  it('reads a subagent Switch could not name by its task alone', () => {
+    const shown = presentTool({ ...item('count files'), subagent: { agent: null } }, null);
+    expect(shown).toMatchObject({ kind: 'agent', verb: 'Ran agent:', subject: 'count files' });
+  });
+
   it('shows a command with its output and a failing exit code', () => {
     const shown = presentTool(
       item('ls -la'),

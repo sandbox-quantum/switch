@@ -199,6 +199,10 @@ class AddAgentRequest(CamelModel):
     agent_id: str
 
 
+class SubagentView(CamelModel):
+    agent: str | None
+
+
 class ActivityItemView(CamelModel):
     """One step of a turn; `revision` only grows, so a lower one is stale."""
 
@@ -215,6 +219,8 @@ class ActivityItemView(CamelModel):
     room_id: str | None
     thread_id: str | None
     message_id: str | None
+    # On a tool call that runs a subagent: the agent it runs, when named.
+    subagent: SubagentView | None
     occurred_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -235,6 +241,11 @@ class ActivityItemView(CamelModel):
             room_id=row.room_id,
             thread_id=row.thread_id,
             message_id=row.message_id,
+            subagent=(
+                SubagentView(agent=row.subagent.get("agent"))
+                if row.subagent is not None
+                else None
+            ),
             occurred_at=row.occurred_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
