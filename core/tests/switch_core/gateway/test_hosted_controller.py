@@ -1579,6 +1579,27 @@ async def test_v2_off_stops_a_running_box_and_keeps_it(controller_app, v2_off):
     assert item["desired_state"] == "stopped"
 
 
+async def test_v2_off_an_agentless_box_is_stopped_and_never_retained(
+    controller_app, v2_off
+):
+    """With v2 off a box is only kept stopped, its data kept: not retained or
+    expired, even with no agents on it. Retained, the box scaler (which scales
+    down only `stopped`) would leave it running."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        backend="box",
+        state="ready",
+        desired_state="running",
+    )
+    for _ in range(2):  # and on the next pass too
+        await listed(app.client, app.machine_id)
+        machine = await machine_of(app.factory, app.machine_id)
+        assert (machine.desired_state, machine.stop_reason) == ("stopped", "idle")
+        assert machine.retain_until is None
+
+
 async def test_v2_off_leaves_a_v1_machine_running(controller_app, v2_off):
     app = controller_app
     await update_machine(

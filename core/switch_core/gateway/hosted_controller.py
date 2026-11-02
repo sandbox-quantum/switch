@@ -331,6 +331,12 @@ async def machines(
     for candidate in candidates:
         if candidate.id in being_made:
             continue
+        if not v2 and candidate.backend == "box":
+            # With v2 off, a v2 box is only kept stopped (above): never retained,
+            # expired or deleted, so its data stays until v2 is on again. The box
+            # scaler scales a box down only for `stopped`, so a box retained in
+            # this same pass would also be left running.
+            continue
         if not _needs_sweep(candidate, now, config.hosted_idle_stop_minutes):
             continue
         machine = await store.locked(session, candidate.id)
