@@ -2192,6 +2192,55 @@ it('stops stating a session placed in a room Switch says the agent is not in, an
   }
 });
 
+it('stops stating a share Switch left out, and keeps the session and its other shares', async () => {
+  // A room the shared session answered from its home room was deleted, the
+  // agent taken out, or isolated since: Switch names it back, and stating it
+  // again each time would only be refused again.
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-gone-share-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  const lead = await existing(root, config);
+  await writeFile(
+    join(root, 'placements.json'),
+    JSON.stringify({
+      placements: { [lead.sessionId]: 'home' },
+      shares: { 'room-gone': lead.sessionId, 'room-kept': lead.sessionId },
+    })
+  );
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+  placementsRefusal.refusedRooms = ['room-gone'];
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    sessionHosts().supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    streams[0]!.onConnected!();
+    await eventually(() => published.length >= 1);
+    expect(publishedShares[0]).toEqual({ [lead.sessionId]: ['room-gone', 'room-kept'] });
+    placementsRefusal.refusedRooms = [];
+    await eventually(
+      async () =>
+        JSON.parse(await readFile(join(root, 'placements.json'), 'utf8')).shares?.['room-gone'] ===
+        undefined
+    );
+    const before = published.length;
+    streams[0]!.onConnected!();
+    await eventually(() => published.length === before + 1);
+    expect(published.at(-1)).toEqual({ [lead.sessionId]: 'home' });
+    expect(publishedShares.at(-1)).toEqual({ [lead.sessionId]: ['room-kept'] });
+  } finally {
+    abort.abort();
+    await run;
+  }
+});
+
 it('drops a session’s placement once its room is deleted, and the live session keeps its room', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-room-deleted-'));
   roots.push(root);

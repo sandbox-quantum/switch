@@ -317,7 +317,7 @@ async def test_a_share_that_no_longer_holds_is_left_out_not_the_whole_set(
     assert result["shares"] == {"lead": [ROOM_B]}
     assert sorted(
         (each["room_id"], each.get("share", False)) for each in result["refused"]
-    ) == [(FOREIGN_ROOM, True), (ROOM_A, True)]
+    ) == [(ROOM_A, True), (FOREIGN_ROOM, True)]
     registry = protocol.connections
     assert registry.session_in_room(AGENT_ID, ROOM_B) == "lead"
     assert registry.session_in_room(AGENT_ID, ROOM_A) is None
