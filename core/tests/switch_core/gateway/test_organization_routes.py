@@ -1269,3 +1269,165 @@ class TestLosingOrgAdmin:
         assert first == 200 and second in (403, 409)
         async with session_factory() as session:
             assert await OrganizationStore().count_admins(session, organization_id) == 1
+
+
+async def _organization_of(
+    session_factory: async_sessionmaker[AsyncSession], tenant_id: str
+) -> str:
+    async with tenant_session(session_factory, tenant_id) as session:
+        tenant = await session.get(Tenant, tenant_id)
+        assert tenant is not None and tenant.organization_id is not None
+        return tenant.organization_id
+
+
+class TestIssues:
+    """What needs an organization admin's attention, read from how things
+    stand: an issue is gone once fixed."""
+
+    async def test_a_healthy_organization_has_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == []
+
+    async def test_a_workspace_without_an_owner_until_one_is_made(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("admin", "org_admin"), bob: ("member", "member")}
+        )
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            before = await client.get("/organizations/current/issues")
+            async with tenant_session(session_factory, tenant_id) as session:
+                member = await session.get(TenantMember, (tenant_id, bob))
+                assert member is not None
+                member.role = "owner"
+                await session.commit()
+            after = await client.get("/organizations/current/issues")
+
+        assert before.json() == [
+            {
+                "kind": "workspace_without_owner",
+                "workspace_id": tenant_id,
+                "workspace_name": "Acme",
+                "agents": [],
+            }
+        ]
+        assert after.json() == []
+
+    async def test_agents_whose_owner_can_no_longer_act_for_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Bob left the workspace and the organization; his agent stayed.
+        Ada's own agent, held as the organization's admin with no membership
+        row, is no issue."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+        )
+        await _agent(session_factory, tenant_id, bob)
+        await _agent(session_factory, tenant_id, ada)
+        organization_id = await _organization_of(session_factory, tenant_id)
+        async with tenant_session(session_factory, tenant_id) as session:
+            await session.delete(await session.get(TenantMember, (tenant_id, bob)))
+            await session.delete(await session.get(TenantMember, (tenant_id, ada)))
+            await session.delete(
+                await session.get(OrganizationMember, (organization_id, bob))
+            )
+            await session.commit()
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        [stranded] = [
+            issue
+            for issue in response.json()
+            if issue["kind"] == "agents_without_acting_owner"
+        ]
+        assert stranded["workspace_id"] == tenant_id
+        assert len(stranded["agents"]) == 1
+
+    async def test_a_deleted_workos_organization_until_it_is_linked_again(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+        organization_id = await _organization_of(session_factory, tenant_id)
+        async with session_factory() as session:
+            organization = await session.get(Organization, organization_id)
+            assert organization is not None
+            organization.workos_organization_id = _name("org_workos")
+            for action, details in (
+                (OrganizationAuditAction.LINKED_TO_DIRECTORY, {}),
+                (
+                    OrganizationAuditAction.DIRECTORY_CONFLICT,
+                    {"kind": "directory_organization_deleted"},
+                ),
+            ):
+                session.add(
+                    OrganizationAuditEvent(
+                        organization_id=organization_id,
+                        actor_user_id=None,
+                        action=action,
+                        target_type="organization",
+                        target_id=organization_id,
+                        details=details,
+                    )
+                )
+                await session.commit()
+
+        app = _app(session_factory)
+        async with _client(app, ada, tenant_id) as client:
+            deleted = await client.get("/organizations/current/issues")
+            async with session_factory() as session:
+                session.add(
+                    OrganizationAuditEvent(
+                        organization_id=organization_id,
+                        actor_user_id=None,
+                        action=OrganizationAuditAction.LINKED_TO_DIRECTORY,
+                        target_type="organization",
+                        target_id=organization_id,
+                        details={},
+                    )
+                )
+                await session.commit()
+            relinked = await client.get("/organizations/current/issues")
+
+        assert [issue["kind"] for issue in deleted.json()] == [
+            "directory_organization_deleted"
+        ]
+        assert relinked.json() == []
+
+    async def test_with_no_org_admin_the_operator_is_told(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        bob = _name("bob")
+        tenant_id = await _workspace(session_factory, {bob: ("owner", "member")})
+        operator_id = await _operator(session_factory)
+
+        async with _client(_app(session_factory), operator_id, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        assert response.status_code == 200, response.text
+        assert [issue["kind"] for issue in response.json()] == ["no_org_admin"]
+
+    async def test_a_member_is_refused(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory, {ada: ("owner", "org_admin"), bob: ("member", "member")}
+        )
+
+        async with _client(_app(session_factory), bob, tenant_id) as client:
+            response = await client.get("/organizations/current/issues")
+
+        assert response.status_code == 403

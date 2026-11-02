@@ -79,6 +79,7 @@ from switch_core.gateway.schemas import (
     OrganizationAuditEventDetail,
     OrganizationCreateRequest,
     OrganizationCreateResponse,
+    OrganizationIssueDetail,
     OrganizationMemberDetail,
     OrganizationMemberUpdateRequest,
     OrganizationSummary,
@@ -99,6 +100,7 @@ from switch_core.organization_access import (
     workspaces_where_they_own_agents,
 )
 from switch_core.organization_directory import DirectoryError, OrganizationDirectory
+from switch_core.organization_issues import organization_issues
 
 router = APIRouter()
 
@@ -387,6 +389,49 @@ async def list_organization_audit_log(
             details=event.details,
         )
         for event in events
+    ]
+
+
+@router.get("/organizations/current/issues")
+async def list_organization_issues(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> list[OrganizationIssueDetail]:
+    """What in the organization needs an admin's attention now
+    (`organization_issues.py`), read from how things stand rather than from
+    the audit log, so an issue is gone once fixed. `org_admin` only, and the
+    platform operator while the organization has none."""
+    access = await _require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=True
+    )
+    organization_id = access.organization_id
+    workspaces = await organization_workspaces_bindable_by(
+        session_factory,
+        user_store,
+        user.id,
+        organization_id,
+        is_operator=access.platform_access,
+    )
+    issues = await organization_issues(
+        session,
+        session_factory,
+        user_store,
+        organization_id=organization_id,
+        workspaces=[(workspace.id, workspace.name) for workspace in workspaces],
+    )
+    return [
+        OrganizationIssueDetail(
+            kind=issue.kind,
+            workspace_id=issue.workspace_id,
+            workspace_name=issue.workspace_name,
+            agents=issue.agents,
+        )
+        for issue in issues
     ]
 
 

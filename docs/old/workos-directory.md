@@ -104,6 +104,12 @@ first do. A member with no WorkOS identity (an account nobody linked) can't be
 compared, and is logged and left. Deleting a linked organization in WorkOS
 removes nobody: it is logged and recorded for an operator to deal with.
 
+The organization's admins see what is still wrong at the top of its
+Organization page, until it is fixed: no admin (shown to the platform
+operator, who may then make one), a workspace with no owner, agents whose
+owner can no longer act for them, and a linked WorkOS organization that was
+deleted. The audit log keeps the history.
+
 ## Not done yet
 
 - **Granting from Switch is refused** for a linked organization: adding a
@@ -111,6 +117,4 @@ removes nobody: it is logged and recorded for an operator to deal with.
   those changes in WorkOS. Removing a member or taking Org Admin away from
   Switch is allowed and changes only Switch; whatever WorkOS still grants
   comes back at the next sign-in or check.
-- The organization's admins see conflicts only in its audit log, not yet as a
-  notice on the dashboard.
 - A new organization created on the server is Switch's own until it is linked.

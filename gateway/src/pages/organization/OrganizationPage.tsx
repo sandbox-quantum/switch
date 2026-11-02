@@ -5,6 +5,7 @@ import { fetchCurrentOrganization } from "../../data/api";
 import { administersOrganization } from "../../data/sessionState";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
+import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
 import OrganizationMembersSection from "./OrganizationMembersSection";
 import WorkspacesSection from "./WorkspacesSection";
 
@@ -38,6 +39,7 @@ export default function OrganizationPage() {
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
       <Stack spacing={4}>
+        {(isAdmin || session.user.is_operator) && <OrganizationIssuesNotice />}
         <WorkspacesSection currentId={tenant.id} canAdd={session.can_add_workspace} />
         {(isAdmin || session.user.is_operator) && (
           <OrganizationMembersSection selfId={session.user.id} asOperator={!isAdmin} />

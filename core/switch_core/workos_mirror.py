@@ -66,6 +66,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
 from switch_core.db.tenant_lookup import directory_organizations
+from switch_core.organization_issues import DIRECTORY_ORGANIZATION_DELETED
 from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
@@ -369,7 +370,7 @@ class WorkOSMirror:
                 target_id=organization_id,
                 details={
                     "source": FROM_EVENT,
-                    "kind": "directory_organization_deleted",
+                    "kind": DIRECTORY_ORGANIZATION_DELETED,
                 },
             )
             await session.commit()

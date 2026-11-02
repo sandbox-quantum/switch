@@ -106,6 +106,7 @@ describe("OrganizationPage", () => {
           details: { from: "member", to: "org_admin", platform_access: true },
         },
       ],
+      "GET /organizations/current/issues": [],
     });
 
     render(<OrganizationPage />);
@@ -132,6 +133,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [bob],
       "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
       "PATCH /organizations/current/members/u2": {
         ...bob,
         role: "member",
@@ -170,6 +172,7 @@ describe("OrganizationPage", () => {
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
       "POST /organizations/current/workspaces": workspace("t2", "Research"),
     };
     const fetchMock = answer(routes);
@@ -197,6 +200,7 @@ describe("OrganizationPage", () => {
     "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: null },
     "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
     "GET /organizations/current/members": membersAnswer,
+    "GET /organizations/current/issues": new Refusal(403, "Only an organization admin may do this"),
   });
 
   it("lets the operator make an admin where there is none, and nothing more", async () => {
@@ -230,5 +234,61 @@ describe("OrganizationPage", () => {
 
     expect(await screen.findByText("The database is unavailable")).toBeTruthy();
     expect(screen.queryByText(/only while it has no admin/)).toBeNull();
+  });
+
+  it("tells an organization admin what needs their attention", async () => {
+    signedInAs(session("org_admin", true));
+    answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [
+        { kind: "workspace_without_owner", workspace_id: "t1", workspace_name: "Acme", agents: [] },
+        {
+          kind: "agents_without_acting_owner",
+          workspace_id: "t1",
+          workspace_name: "Acme",
+          agents: ["reviewer", "triage"],
+        },
+      ],
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText("2 things need your attention")).toBeTruthy();
+    expect(screen.getByText(/Acme has no owner/)).toBeTruthy();
+    expect(screen.getByText(/reviewer, triage/)).toBeTruthy();
+  });
+
+  it("says nothing when nothing needs attention", async () => {
+    signedInAs(session("org_admin", true));
+    answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText("Acme (current)")).toBeTruthy();
+    expect(screen.queryByText(/need(s)? your attention/)).toBeNull();
+  });
+
+  it("shows a failure to check as a failure", async () => {
+    signedInAs(session("org_admin", true));
+    answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": new Refusal(500, "The database is unavailable"),
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText(/Could not check this organization for problems/)).toBeTruthy();
   });
 });
