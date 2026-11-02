@@ -772,6 +772,12 @@ class ChatService:
             await self._approval_store.for_room(session, room_id, since),
         )
 
+    async def shows_tool_detail(
+        self, session: AsyncSession, room_id: str | None
+    ) -> bool:
+        """Whether `room_id` has tool detail on, as its activity is read now."""
+        return await self._room_store.shows_tool_detail(session, room_id, lock=False)
+
     async def turn_items(
         self, session: AsyncSession, agent_id: str, session_id: str, turn_id: str
     ) -> list[AgentSessionActivityItem]:

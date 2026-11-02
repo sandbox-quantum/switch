@@ -171,3 +171,60 @@ class TestRoomAccessPermissionAuthz:
                     req=RoomUpdateRequest(read_visibility="public"),
                     user=admin,
                 )
+
+    async def test_non_owner_cannot_switch_tool_detail_on_in_a_public_write_room(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # Tool detail is a disclosure choice, so it is the owner's or an
+        # admin's, not anyone's who can write in the room.
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            room = await _add_room(
+                session,
+                name="r1",
+                owner_id=owner.id,
+                read_visibility="public",
+                write_visibility="public",
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await _patch(
+                    session,
+                    room_id=room.id,
+                    req=RoomUpdateRequest(tool_detail=True),
+                    user=other,
+                )
+
+            assert exc.value.status_code == 403
+
+    async def test_owner_can_switch_tool_detail(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            room = await _add_room(session, name="r1", owner_id=owner.id)
+
+            with pytest.raises(_GatePassed):
+                await _patch(
+                    session,
+                    room_id=room.id,
+                    req=RoomUpdateRequest(tool_detail=True),
+                    user=owner,
+                )
+
+    async def test_admin_can_switch_tool_detail_in_a_room_they_dont_own(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            admin = await _add_user(session, name="admin", role="admin")
+            room = await _add_room(session, name="r1", owner_id=owner.id)
+
+            with pytest.raises(_GatePassed):
+                await _patch(
+                    session,
+                    room_id=room.id,
+                    req=RoomUpdateRequest(tool_detail=False),
+                    user=admin,
+                )

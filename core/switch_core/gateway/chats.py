@@ -211,6 +211,8 @@ class ActivityItemView(CamelModel):
     status: str
     title: str
     text: str
+    # A tool call's redacted input and output, only while its room shows them.
+    tool_detail: str | None
     command_id: str | None
     room_id: str | None
     thread_id: str | None
@@ -220,7 +222,11 @@ class ActivityItemView(CamelModel):
     updated_at: datetime
 
     @classmethod
-    def of(cls, row: AgentSessionActivityItem) -> ActivityItemView:
+    def of(
+        cls, row: AgentSessionActivityItem, *, shows_tool_detail: bool
+    ) -> ActivityItemView:
+        """`shows_tool_detail` is whether the row's room has tool detail on
+        now; what the row kept while it was on is left out once it is off."""
         return cls(
             agent_id=row.agent_id,
             session_id=row.session_id,
@@ -231,6 +237,7 @@ class ActivityItemView(CamelModel):
             status=row.status,
             title=row.title,
             text=row.text,
+            tool_detail=row.tool_detail if shows_tool_detail else None,
             command_id=row.command_id,
             room_id=row.room_id,
             thread_id=row.thread_id,
@@ -409,7 +416,10 @@ async def room_activity(
         room, _ = await service.require_member(session, tenant_id, user, room_id)
         items, approvals = await service.room_activity(session, room.id)
         return RoomActivity(
-            items=[ActivityItemView.of(row) for row in items],
+            items=[
+                ActivityItemView.of(row, shows_tool_detail=room.tool_detail)
+                for row in items
+            ],
             approvals=[ApprovalRequestView.of(row) for row in approvals],
         )
 
@@ -1072,12 +1082,13 @@ async def _activity_frames(
                 rows = await service.turn_items(
                     session, change.agent_id, change.session_id, change.key
                 )
+            shows_tool_detail = await service.shows_tool_detail(session, change.room_id)
             frames = []
             for row in rows:
                 key = (row.agent_id, row.session_id, row.turn_id, row.item_id)
                 if row.room_id == change.room_id and sent.get(key, -1) < row.revision:
                     sent[key] = row.revision
-                    view = ActivityItemView.of(row)
+                    view = ActivityItemView.of(row, shows_tool_detail=shows_tool_detail)
                     frames.append(
                         _frame("activity", view.model_dump(mode="json", by_alias=True))
                     )

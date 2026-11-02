@@ -1068,9 +1068,7 @@ class AgentSessionActivityPublisher:
         self, key: _Key, agent_id: str, session_id: str, turn_id: str
     ) -> None:
         async with tenant_session(self._sessions, self._tenant_id) as db:
-            view = turn_view(
-                await self._activity.turn(db, agent_id, session_id, turn_id)
-            )
+            view = await self._turn_view(db, agent_id, session_id, turn_id)
             if view is None or view.row.room_id is None:
                 self._forget_turn(key)
                 return
@@ -1115,6 +1113,7 @@ class AgentSessionActivityPublisher:
             view.turn,
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
+            tool_details=view.tool_details,
         )
         state = status_state(
             view,
@@ -1656,6 +1655,7 @@ class AgentSessionActivityPublisher:
             turn=view.turn,
             elapsed_seconds=view.elapsed_seconds(now),
             read_at=now,
+            tool_details=view.tool_details,
         )
 
     async def stop_target(self, channel_id: str, ref: str) -> StopTarget | None:
@@ -1674,6 +1674,22 @@ class AgentSessionActivityPublisher:
             running_turn_id=running,
         )
 
+    async def _turn_view(
+        self, db: AsyncSession, agent_id: str, session_id: str, turn_id: str
+    ) -> TurnView | None:
+        """A turn's rows as drawn, with tool detail only where its room shows it
+        as they are read."""
+        rows = await self._activity.turn(db, agent_id, session_id, turn_id)
+        room_id = next(
+            (row.room_id for row in rows if row.item_id == TURN_ITEM_ID), None
+        )
+        return turn_view(
+            rows,
+            shows_tool_detail=await self._rooms.shows_tool_detail(
+                db, room_id, lock=False
+            ),
+        )
+
     async def _turn_at(
         self, db: AsyncSession, channel_id: str, ref: str
     ) -> tuple[TurnView, str | None] | None:
@@ -1681,9 +1697,7 @@ class AgentSessionActivityPublisher:
         post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
         if post is None:
             return None
-        view = turn_view(
-            await self._activity.turn(db, post.agent_id, post.session_id, post.turn_id)
-        )
+        view = await self._turn_view(db, post.agent_id, post.session_id, post.turn_id)
         if view is None or view.row.room_id is None:
             return None
         found = await self._rooms.get_with_membership(

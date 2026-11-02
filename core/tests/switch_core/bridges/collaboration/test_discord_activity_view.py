@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     _refresh_id,
 )
+from switch_core.bridges.collaboration.session.renderers import NO_TOOL_DETAILS
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
@@ -274,6 +275,7 @@ def _snapshot(**fields: Any) -> ActivitySnapshot:
         "turn": _turn("completed"),
         "elapsed_seconds": 12.0,
         "read_at": datetime(2026, 9, 16, 12, 0, tzinfo=UTC),
+        "tool_details": NO_TOOL_DETAILS,
     }
     return ActivitySnapshot(**{**defaults, **fields})
 

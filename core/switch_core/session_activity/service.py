@@ -55,6 +55,8 @@ from switch_core.sessions.errors import SessionError
 MAX_TITLE_CHARS = 500
 MAX_TEXT_CHARS = 8000
 MAX_DETAIL_CHARS = 4000
+# A tool call's redacted input and output: a preview, not the whole of it.
+MAX_TOOL_DETAIL_CHARS = 2000
 MAX_OPTIONS = 10
 MAX_QUESTIONS = 50
 MAX_QUESTION_OPTIONS = 50
@@ -199,11 +201,16 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        tool_detail: str | None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
         `usage` is what the turn spent, and only a turn's own row, reported as
         ended, carries it.
+
+        `tool_detail` is a tool call's input and output as its host redacted
+        them. It is kept only when the call's room has `Room.tool_detail` on
+        as this row is written, whatever the host believes the setting to be.
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
@@ -230,6 +237,15 @@ class AgentSessionActivityService:
             raise SessionError(
                 "INVALID_EVENT", "Only an ended turn's own row carries its usage."
             )
+        if tool_detail is not None and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only a tool call's row carries tool detail."
+            )
+        if tool_detail is not None and len(tool_detail) > MAX_TOOL_DETAIL_CHARS:
+            raise SessionError(
+                "INVALID_EVENT",
+                f"A tool call's detail is at most {MAX_TOOL_DETAIL_CHARS} characters.",
+            )
         if len(title) > MAX_TITLE_CHARS or len(text) > MAX_TEXT_CHARS:
             raise SessionError(
                 "INVALID_EVENT",
@@ -240,6 +256,13 @@ class AgentSessionActivityService:
         async with tenant_session(self._sessions, tenant_id) as db, db.begin():
             if room_id is not None:
                 await self._require_member(db, agent_id, room_id)
+            # Locked, so a switch-off is ordered against this write: one
+            # committed first means nothing is kept, and one committed after
+            # means what was kept is no longer served.
+            if tool_detail is not None and not await self._rooms.shows_tool_detail(
+                db, room_id, lock=True
+            ):
+                tool_detail = None
             prior_status = (
                 await self._activity.status_for_update(
                     db, agent_id, session_id, turn_id, item_id
@@ -260,6 +283,7 @@ class AgentSessionActivityService:
                     status=status,
                     title=title,
                     text=text,
+                    tool_detail=tool_detail,
                     command_id=command_id,
                     room_id=room_id,
                     thread_id=thread_id,

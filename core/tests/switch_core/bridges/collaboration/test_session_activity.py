@@ -18,6 +18,7 @@ from typing import Any
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
 from switch_core.bridges.collaboration.session.renderers import (
+    NO_TOOL_DETAILS,
     RequestReference,
     turn_state,
 )
@@ -684,7 +685,7 @@ async def test_a_turn_activity_card_is_unaffected_by_the_request_card_change() -
 
     rendered = _slack_adapter()._render_rich(TurnActivity(items, turn))
 
-    assert rendered == render_activity_plan(items, turn)
+    assert rendered == render_activity_plan(items, turn, tool_details=NO_TOOL_DETAILS)
 
 
 async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> None:
@@ -693,7 +694,9 @@ async def test_the_one_message_leads_with_the_state_and_the_step_it_is_on() -> N
     items = await _items()
     running = _item(itemId="live", status="in-progress", title="Read")
 
-    drawn = render_activity_plan([*items, running], _turn(), elapsed_seconds=140)
+    drawn = render_activity_plan(
+        [*items, running], _turn(), elapsed_seconds=140, tool_details=NO_TOOL_DETAILS
+    )
 
     plan = drawn.blocks[0]
     assert plan["type"] == "plan"
@@ -709,8 +712,10 @@ async def test_a_turn_with_nothing_to_plan_yet_still_shows_it_is_working() -> No
     the session card is in it before the turn has done anything, which is what
     lets one shape serve a turn at both ends of its life.
     """
-    running = render_activity_plan([], _turn(), elapsed_seconds=3)
-    ended = render_activity_plan([], _turn("completed"))
+    running = render_activity_plan(
+        [], _turn(), elapsed_seconds=3, tool_details=NO_TOOL_DETAILS
+    )
+    ended = render_activity_plan([], _turn("completed"), tool_details=NO_TOOL_DETAILS)
 
     assert running.blocks[0]["type"] == "plan"
     assert [task["status"] for task in running.blocks[0]["tasks"]] == ["in_progress"]
@@ -734,6 +739,7 @@ async def test_what_the_agent_said_is_a_card_in_the_plan_marked_as_speech() -> N
     drawn = render_activity_plan(
         [_item(itemId="call", title="Ran the tests"), _said("All green.")],
         _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
     )
 
     titles = [task["title"] for task in _turn_cards(drawn.blocks[0])]
@@ -745,7 +751,9 @@ async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> No
     still open when the turn ends. "Unfinished" belongs to a call that never
     came back, not to the sentence the agent had just finished saying."""
     drawn = render_activity_plan(
-        [_said("Handing it over.", status="in-progress")], _turn("completed")
+        [_said("Handing it over.", status="in-progress")],
+        _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
     )
 
     card = _turn_cards(drawn.blocks[0])[0]
@@ -756,7 +764,11 @@ async def test_a_sentence_is_never_marked_unfinished_when_the_turn_stops() -> No
 async def test_a_turn_that_only_talked_has_a_plan_rather_than_a_bare_line() -> None:
     """It called nothing, so it used to have no disclosure at all — and the
     thing it produced was exactly what a reader would have opened it for."""
-    drawn = render_activity_plan([_said("Fixed that yesterday.")], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("Fixed that yesterday.")],
+        _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
+    )
 
     assert drawn.blocks[0]["type"] == "plan"
     assert _turn_cards(drawn.blocks[0])[0]["title"] == "❝ Fixed that yesterday."
@@ -766,7 +778,9 @@ async def test_a_paragraph_is_folded_onto_the_one_line_its_card_gives_it() -> No
     """A card title is one line. Prose arrives with its own breaks in it, and
     four lines of sentence in a list of calls reads as four things happening."""
     drawn = render_activity_plan(
-        [_said("First thought.\n\nSecond thought.")], _turn("completed")
+        [_said("First thought.\n\nSecond thought.")],
+        _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert (
@@ -779,7 +793,9 @@ async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() 
     there threw the rest away, which is the part a reader opened the block for
     — the detail is the one place in this block Slack offers to expand."""
     said = "Right. " + "The failure is in the retry path. " * 12
-    drawn = render_activity_plan([_said(said)], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said(said)], _turn("completed"), tool_details=NO_TOOL_DETAILS
+    )
 
     card = _turn_cards(drawn.blocks[0])[0]
     assert card["title"].endswith("…")
@@ -791,7 +807,9 @@ async def test_a_remark_too_long_for_its_line_keeps_the_rest_where_it_expands() 
 async def test_even_a_remark_that_would_fit_a_line_is_drawn_in_the_detail() -> None:
     """The detail used to be the overflow and is now the whole card: the title
     is hidden, so a remark left out of the detail is a remark nobody sees."""
-    drawn = render_activity_plan([_said("All green.")], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("All green.")], _turn("completed"), tool_details=NO_TOOL_DETAILS
+    )
 
     card = _turn_cards(drawn.blocks[0])[0]
     assert card["hide_title"] is True
@@ -801,7 +819,9 @@ async def test_even_a_remark_that_would_fit_a_line_is_drawn_in_the_detail() -> N
 async def test_a_hidden_title_still_says_what_the_card_is() -> None:
     """Hiding is the card asking; a client that does not honour it falls back to
     the title, and an empty one would leave the remark showing as nothing."""
-    drawn = render_activity_plan([_said("All green.")], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("All green.")], _turn("completed"), tool_details=NO_TOOL_DETAILS
+    )
 
     assert _turn_cards(drawn.blocks[0])[0]["title"] == "❝ All green."
 
@@ -813,6 +833,7 @@ async def test_prose_and_calls_are_told_apart_by_the_glyph_not_by_the_status() -
     drawn = render_activity_plan(
         [_said("Looking now."), _item(status="completed", title="Read backoff.py")],
         _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
     )
 
     said, call = _turn_cards(drawn.blocks[0])
@@ -827,6 +848,7 @@ async def test_the_markdown_an_agent_wrote_reaches_the_reader_unstripped() -> No
     drawn = render_activity_plan(
         [_said("The failure is in **retry** — see `backoff.reset()`.")],
         _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert (
@@ -840,7 +862,9 @@ async def test_the_expansion_keeps_the_breaks_the_line_had_to_fold_out() -> None
     list of calls. That reason is about the line; it does not apply to the body
     behind it, where the breaks are how the remark was written."""
     said = "First thought.\n\nSecond thought. " + "More on that. " * 20
-    drawn = render_activity_plan([_said(said)], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said(said)], _turn("completed"), tool_details=NO_TOOL_DETAILS
+    )
 
     card = _turn_cards(drawn.blocks[0])[0]
     assert "\n" not in card["title"]
@@ -854,7 +878,9 @@ async def test_a_remark_longer_than_the_expansion_is_says_so_where_it_was_cut() 
     the end of a sentence reads as punctuation rather than as a warning. The
     notice has to be something no agent would have typed.
     """
-    drawn = render_activity_plan([_said("word " * 4000)], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("word " * 4000)], _turn("completed"), tool_details=NO_TOOL_DETAILS
+    )
 
     detail = _detail(_turn_cards(drawn.blocks[0])[0])
     assert len(detail) <= _MAX_SAID_DETAILS
@@ -863,7 +889,11 @@ async def test_a_remark_longer_than_the_expansion_is_says_so_where_it_was_cut() 
 
 async def test_a_remark_that_fits_is_not_accused_of_being_cut() -> None:
     """The notice is a claim about missing text, so it has to be false silently."""
-    drawn = render_activity_plan([_said("A short remark. " * 30)], _turn("completed"))
+    drawn = render_activity_plan(
+        [_said("A short remark. " * 30)],
+        _turn("completed"),
+        tool_details=NO_TOOL_DETAILS,
+    )
 
     assert "truncated" not in _detail(_turn_cards(drawn.blocks[0])[0])
 
@@ -899,6 +929,7 @@ async def test_the_worst_streamed_message_is_one_slack_would_accept() -> None:
         _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert (
@@ -920,6 +951,7 @@ async def test_the_worst_ordinary_post_is_one_slack_would_accept() -> None:
         _talkative(_MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert len(_turn_cards(drawn.blocks[0])) == _MAX_SECTION_ITEMS
@@ -936,6 +968,7 @@ async def test_a_message_cut_down_to_fit_says_so_on_every_card_it_cut() -> None:
         _talkative(2 * _MAX_SECTION_ITEMS, "漢" * _MAX_SAID_DETAILS),
         _turn("completed"),
         elapsed_seconds=90,
+        tool_details=NO_TOOL_DETAILS,
     )
 
     details = [_detail(task) for block in drawn.blocks for task in _turn_cards(block)]
@@ -951,7 +984,10 @@ async def test_a_turn_that_fits_keeps_every_word_the_per_card_budget_allows() ->
     budget was widened to give them.
     """
     drawn = render_activity_stream(
-        [_said("漢" * 10_000)], _turn("completed"), elapsed_seconds=90
+        [_said("漢" * 10_000)],
+        _turn("completed"),
+        elapsed_seconds=90,
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert len(_detail(_turn_cards(drawn.blocks[0])[0])) == _MAX_SAID_DETAILS
@@ -964,6 +1000,7 @@ async def test_the_header_still_counts_calls_rather_than_everything_drawn() -> N
         [_item(itemId="call", title="Ran the tests"), _said("All green.")],
         _turn("completed"),
         elapsed_seconds=5,
+        tool_details=NO_TOOL_DETAILS,
     )
 
     assert "1 tool call" in drawn.blocks[0]["title"]
@@ -980,7 +1017,9 @@ async def test_the_live_step_label_lands_on_the_page_the_call_is_actually_on() -
     ]
     live = _item(itemId="live", title="Grep", status="in-progress")
 
-    drawn = render_activity_stream([*talked, *calls, live], _turn("running"))
+    drawn = render_activity_stream(
+        [*talked, *calls, live], _turn("running"), tool_details=NO_TOOL_DETAILS
+    )
 
     pages = [block for block in drawn.blocks if block["type"] == "plan"]
     assert "Running: Grep" not in pages[0]["title"]

@@ -32,6 +32,7 @@ from switch_core.session_activity.service import (
     MAX_TEXT_CHARS,
     MAX_TITLE_CHARS,
     MAX_TOKENS,
+    MAX_TOOL_DETAIL_CHARS,
     AgentSessionActivityService,
     ApprovalOption,
     Decision,
@@ -95,6 +96,9 @@ class ActivityReport(BaseModel):
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
     )
+    # A tool call's redacted input and output. Hosts that predate it do not
+    # send it; one that does resends without it when a server refuses it.
+    tool_detail: str | None = Field(None, max_length=MAX_TOOL_DETAIL_CHARS)
 
 
 class OptionIn(BaseModel):
@@ -224,6 +228,7 @@ async def report_activity(
             )
             for u in body.usage
         ],
+        tool_detail=body.tool_detail,
     )
     return ActivityReceipt(recorded=recorded)
 

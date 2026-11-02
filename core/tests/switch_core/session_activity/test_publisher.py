@@ -194,6 +194,7 @@ async def _step(
         message_id=ASKED,
         occurred_at=datetime.now(UTC),
         usage=[],
+        tool_detail=None,
     )
 
 

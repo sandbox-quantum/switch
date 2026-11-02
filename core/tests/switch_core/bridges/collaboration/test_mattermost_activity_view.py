@@ -40,6 +40,7 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     action_context,
     activity_action,
 )
+from switch_core.bridges.collaboration.session.renderers import NO_TOOL_DETAILS
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     ACTIVITY_AUDIENCE_UNKNOWN,
     ACTIVITY_FAILED,
@@ -93,6 +94,7 @@ def _snapshot(**fields: Any) -> ActivitySnapshot:
         "turn": _turn("completed"),
         "elapsed_seconds": 12.0,
         "read_at": datetime(2026, 9, 16, 12, 34, 56, tzinfo=UTC),
+        "tool_details": NO_TOOL_DETAILS,
     }
     return ActivitySnapshot(**{**defaults, **fields})
 

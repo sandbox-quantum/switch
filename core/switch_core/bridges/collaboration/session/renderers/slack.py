@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from html import unescape
 from typing import Any
@@ -137,6 +138,10 @@ _MAX_SECTION_ITEMS = _MAX_PLAN_TASKS - 1
 _MAX_PLAN_TITLE = 150
 _MAX_PLAN_TASK_TITLE = 200
 _MAX_PLAN_TASK_DETAILS = 200
+# A call's redacted input and output, where its room shows them: what a reader
+# expands a card for. The host cuts it to this preview before sending it, and
+# `_fit_details` still bounds the whole message.
+_MAX_TOOL_DETAILS = 2000
 # Prose gets more room than a tool result because it is read rather than
 # scanned, and because a card's detail is the one part of this block Slack will
 # expand on request.
@@ -1188,6 +1193,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    tool_details: Mapping[str, str],
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1226,7 +1232,14 @@ def render_activity_plan(
             "title": _truncate(title, _MAX_PLAN_TITLE),
             "tasks": [
                 _session_card(live=turn.status not in TURN_ENDED),
-                *(_settled(_plan_task(item), item, turn) for item in kept),
+                *(
+                    _settled(
+                        _plan_task(item, tool_detail=tool_details.get(item.item_id)),
+                        item,
+                        turn,
+                    )
+                    for item in kept
+                ),
             ],
         }
     ]
@@ -1272,6 +1285,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    tool_details: Mapping[str, str],
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1295,7 +1309,14 @@ def render_activity_stream(
     """
     shown = [item for item in items if in_activity_log(item)]
     blocks = _step_blocks(
-        [_settled(_plan_task(item), item, turn) for item in shown],
+        [
+            _settled(
+                _plan_task(item, tool_detail=tool_details.get(item.item_id)),
+                item,
+                turn,
+            )
+            for item in shown
+        ],
         _running(shown, turn),
         turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
         turn.status not in TURN_ENDED,
@@ -1615,11 +1636,13 @@ def _plan(
     return {
         "type": "plan",
         "title": _truncate(title, _MAX_PLAN_TITLE),
-        "tasks": [_plan_task(item) for item in kept],
+        # Drawn only beside a request, and no request is drawn with its
+        # turn's tool detail: `RequestCard` carries none.
+        "tasks": [_plan_task(item, tool_detail=None) for item in kept],
     }
 
 
-def _plan_task(item: Item) -> dict[str, Any]:
+def _plan_task(item: Item, *, tool_detail: str | None) -> dict[str, Any]:
     """One tool call as a card inside the plan.
 
     Plain text, not mrkdwn: a card's title renders none, so markup passed into
@@ -1683,6 +1706,11 @@ def _plan_task(item: Item) -> dict[str, Any]:
         "icon": {"type": "icon", "name": _TOOL_ICON},
         "status": _TASK_STATUS[item.status],
     }
+    if tool_detail:
+        # Literal: a command's `<`, `&` and `*` are what ran, and a card's
+        # detail renders no markup that would need them taken out.
+        task["details"] = _rich_text(_truncate(tool_detail, _MAX_TOOL_DETAILS))
+        return task
     details = plain_text(item.text) if item.text else ""
     if details:
         task["details"] = _rich_text(_truncate_prose(details, _MAX_PLAN_TASK_DETAILS))

@@ -905,6 +905,7 @@ class MattermostAdapter(PlatformAdapter):
             markup=self.rich_markup(),
             elapsed_seconds=snapshot.elapsed_seconds,
             heading=True,
+            tool_details=snapshot.tool_details,
         )
         return f"{body}\n{stamp}"
 

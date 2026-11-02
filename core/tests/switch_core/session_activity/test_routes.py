@@ -11,7 +11,11 @@ from switch_core.bridges.agent.api.activity_routes import router
 from switch_core.bridges.agent.auth import get_agent_from_scope
 from switch_core.bridges.agent.dependencies import get_session_factory
 from switch_core.db.models import Agent, ApprovalRequest, TenantUsage
-from switch_core.session_activity.service import ApprovalOption, PlatformPerson
+from switch_core.session_activity.service import (
+    MAX_TOOL_DETAIL_CHARS,
+    ApprovalOption,
+    PlatformPerson,
+)
 from switch_core.sessions.contract import Answer, QuestionsResult
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
@@ -160,6 +164,32 @@ async def test_an_ended_turn_row_carries_what_the_turn_spent(client, session_fac
 async def test_usage_anywhere_but_an_ended_turn_or_malformed_is_a_422(client, body):
     response = await client.post(f"/agent-sessions/{SESSION}/activity", json=body)
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _activity(
+            item_id="said-1",
+            kind="assistant-message",
+            tool_detail="$ ls",
+        ),
+        _activity(tool_detail="x" * (MAX_TOOL_DETAIL_CHARS + 1)),
+        _activity(tool_detail=["$ ls"]),
+    ],
+)
+async def test_tool_detail_off_a_tool_call_or_malformed_is_a_422(client, body):
+    """The status a host that sent it reads as "this server will not take
+    detail", and resends the row without it."""
+    response = await client.post(f"/agent-sessions/{SESSION}/activity", json=body)
+    assert response.status_code == 422
+
+
+async def test_tool_detail_on_a_tool_call_is_taken(client):
+    response = await client.post(
+        f"/agent-sessions/{SESSION}/activity", json=_activity(tool_detail="$ ls")
+    )
+    assert response.status_code == 200
 
 
 async def test_a_questions_request_over_http(client, service, people):

@@ -75,6 +75,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
+    NO_TOOL_DETAILS,
     Control,
     Drawn,
     Markup,
@@ -1573,6 +1574,7 @@ class TelegramAdapter(PlatformAdapter):
             markup=self.rich_markup(),
             elapsed_seconds=content.elapsed_seconds,
             heading=False,
+            tool_details=NO_TOOL_DETAILS,
         )
         if not log:
             return ""
