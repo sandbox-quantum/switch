@@ -967,10 +967,25 @@ describe('runController', () => {
     }
     const enrolled = deps();
     await secrets.delete(CONTROLLER_CREDENTIAL);
+    const missing = runController(enrolled, stop.signal);
+    await expect(missing).rejects.toThrow(/credential is missing/);
+    await expect(missing).rejects.toBeInstanceOf(ConfigurationError);
+  });
+
+  // E11: a pause revoked the controller and that run wiped its credential. A
+  // later start (the box woken after the resume) ends as revoked again, exit 3,
+  // so the box's entrypoint enrols afresh with its new code. It asks Switch
+  // nothing and keeps the identity, which the entrypoint moves aside.
+  it('ends as revoked, asking Switch nothing, when an earlier run was revoked and wiped its credential', async () => {
+    const enrolled = deps();
+    await secrets.delete(CONTROLLER_CREDENTIAL);
     store.markRevoked('2026-01-02T00:00:00Z');
-    const wiped = runController(enrolled, stop.signal);
-    await expect(wiped).rejects.toThrow(/revoked at/);
-    await expect(wiped).rejects.toBeInstanceOf(ConfigurationError);
+    const before = core.requests.length;
+    expect(await runController(enrolled, stop.signal)).toBe('revoked');
+    expect(core.requests.length).toBe(before);
+    expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBeNull();
+    expect(store.identity()?.controllerId).toBe(core.controllerId);
+    expect(store.revokedAt()).toBe('2026-01-02T00:00:00Z');
   });
 
   it('refuses to run with a daily call cap that isn’t a whole number, so a typo never means no cap', async () => {

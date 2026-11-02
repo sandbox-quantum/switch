@@ -422,7 +422,8 @@ export function valveSheddingHook(
  * pulls the assignment (with its ETag) and reconciles, each
  * `operation.pending` runs the pending operations, and `credential.revoked`
  * — or any request refused as `controller_revoked` — stops every agent,
- * wipes the credential and ends the loop with `'revoked'`. A full resync runs
+ * wipes the credential and ends the loop with `'revoked'`. A later start whose
+ * credential that revoke wiped ends with `'revoked'` straight away. A full resync runs
  * every ten minutes regardless. Status goes out when something changes, and
  * at least every `report_within_s`.
  *
@@ -453,10 +454,19 @@ export async function runController(
   const credential = await deps.secrets.get(CONTROLLER_CREDENTIAL);
   if (!credential) {
     const revokedAt = store.revokedAt();
+    if (revokedAt) {
+      // An earlier run was revoked and wiped the credential (a box started
+      // again after a pause and resume, E11). End as revoked, exit 3, as that
+      // run did: the box's entrypoint then keeps this identity aside and enrols
+      // afresh with the code in its Secret, if Switch gave it one.
+      log.warn(
+        'This controller was revoked earlier and its credential wiped; it needs enrolling again with a new code',
+        { controllerId: identity.controllerId, revokedAt }
+      );
+      return 'revoked';
+    }
     throw new ConfigurationError(
-      revokedAt
-        ? `This controller was revoked at ${revokedAt} and its credential wiped. Enroll it again with a new code.`
-        : `The controller credential is missing from ${deps.secrets.description}. Enroll again with a new code.`
+      `The controller credential is missing from ${deps.secrets.description}. Enroll again with a new code.`
     );
   }
   const warning = deps.secrets.startupWarning();

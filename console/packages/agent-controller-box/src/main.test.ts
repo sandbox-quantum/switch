@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
+import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK, EXIT_REVOKED } from './exit-codes';
 import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
 import { dataLayout } from './paths';
 import { CONTROLLER_CREDENTIAL, FileSecretStore } from './secrets';
@@ -334,6 +334,21 @@ describe('main', () => {
       EXIT_CONFIGURATION
     );
     expect(lastLine()).toMatch(/not enrolled/);
+  });
+
+  it('exits 3 when an earlier run was revoked and wiped its credential (E11)', async () => {
+    const store = ControllerStore.open(join(dir, 'controller.db'));
+    store.saveIdentity({
+      controllerId: 'controller-1',
+      server: 'https://switch.example.com',
+      name: 'box',
+      enrolledAt: '2026-01-01T00:00:00.000Z',
+    });
+    store.markRevoked('2026-01-02T00:00:00.000Z');
+    store.close();
+    expect(await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle])).toBe(
+      EXIT_REVOKED
+    );
   });
 });
 
