@@ -18,7 +18,11 @@ import httpx
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.adapters.oauth import (
+    OAuthAdapter,
+    OAuthClientCredentials,
+    StaticClient,
+)
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG_ROOT, load_catalog
@@ -106,7 +110,12 @@ def _world(
         adapters={
             "example": OAuthAdapter(
                 catalog["example"].definition, client, vendor.client()
-            )
+            ),
+            "snowflake": OAuthAdapter(
+                catalog["snowflake"].definition,
+                StaticClient(OAuthClientCredentials("placeholder", None, None)),
+                vendor.client(),
+            ),
         },
         disabled=disabled or {},
         store=STORE,
@@ -133,10 +142,18 @@ class Console:
         self.state = secrets.token_urlsafe(32)
         self.secret = secrets.token_urlsafe(32)
 
-    async def start(self, service: str = "example", port: int = PORT) -> httpx.Response:
+    async def start(
+        self,
+        service: str = "example",
+        port: int = PORT,
+        mcp_endpoint: str | None = None,
+    ) -> httpx.Response:
+        body = {"port": port, "state": self.state, "completion_secret": self.secret}
+        if mcp_endpoint is not None:
+            body["mcp_endpoint"] = mcp_endpoint
         return await self.client.post(
             f"/gateway/service-connections/{service}/flows",
-            json={"port": port, "state": self.state, "completion_secret": self.secret},
+            json=body,
             cookies=cookies_for(self.user),
         )
 
@@ -166,6 +183,43 @@ def _listener_code(url: str, state: str) -> str:
     query = parse_qs(parts.query)
     assert query["state"] == [state]
     return query["code"][0]
+
+
+class TestSnowflake:
+    async def test_start_stores_the_account_mcp_endpoint(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", public_url=PUBLIC)
+        ada = await add_member(session_factory, "ada")
+        endpoint = (
+            "https://account.snowflakecomputing.com/api/v2/databases/DATABASE/"
+            "schemas/SCHEMA/mcp-servers/SERVER"
+        )
+
+        async with world.harness.client() as client:
+            started = await Console(client, ada).start(
+                "snowflake", mcp_endpoint=endpoint
+            )
+
+        assert started.status_code == 200, started.text
+        assert started.json()["mode"] == "core"
+        flow = await _flow_row(session_factory, started.json()["id"])
+        assert flow.details["mcp_endpoint"] == endpoint
+
+    async def test_start_requires_a_valid_mcp_endpoint(
+        self, session_factory, tmp_path
+    ) -> None:
+        world = _world(session_factory, tmp_path / "catalog", public_url=PUBLIC)
+        ada = await add_member(session_factory, "ada")
+
+        async with world.harness.client() as client:
+            missing = await Console(client, ada).start("snowflake")
+            invalid = await Console(client, ada).start(
+                "snowflake", mcp_endpoint="https://attacker.example/mcp"
+            )
+
+        assert missing.status_code == 422
+        assert invalid.status_code == 422
 
 
 async def _flow_ids(session_factory: async_sessionmaker[AsyncSession]) -> set[str]:

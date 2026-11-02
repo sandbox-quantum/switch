@@ -50,6 +50,12 @@ const EXAMPLE: ConnectionCatalogEntry = {
   consent: null,
   workspace_enabled: null,
 };
+const SNOWFLAKE: ConnectionCatalogEntry = {
+  ...EXAMPLE,
+  slug: 'snowflake',
+  name: 'Snowflake',
+  description: 'Query Snowflake data',
+};
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -194,4 +200,41 @@ it('counts a cancel of a sign-in the server already dropped as cancelled', async
   await vi.waitFor(() => expect(button(/^connect example/i, dialog())).toBeDefined());
   expect(dialog().querySelector('[role="alert"]')).toBeNull();
   expect(closable()).toBe(true);
+});
+
+it('requires and sends the complete Snowflake MCP endpoint before sign-in', async () => {
+  switchServers.startServiceConnection.mockResolvedValue('flow-1');
+  switchServers.getServiceFlow.mockResolvedValue({
+    status: 'pending',
+    account: null,
+    error: null,
+    warning: null,
+  });
+  await render(
+    <ServiceConnectStep
+      calls={serverServiceCalls('server')}
+      connection={SNOWFLAKE}
+      onBack={() => {}}
+    />
+  );
+  const connect = button(/^connect snowflake/i, dialog())!;
+  expect(connect.disabled).toBe(true);
+
+  const input = dialog().querySelector<HTMLInputElement>('input[type="url"]')!;
+  const endpoint =
+    'https://account.snowflakecomputing.com/api/v2/databases/DATABASE/schemas/SCHEMA/mcp-servers/SERVER';
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+      input,
+      endpoint
+    );
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(connect.disabled).toBe(false);
+  await act(async () => connect.click());
+  expect(switchServers.startServiceConnection).toHaveBeenCalledWith(
+    'server',
+    'snowflake',
+    endpoint
+  );
 });

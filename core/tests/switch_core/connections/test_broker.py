@@ -1002,6 +1002,55 @@ class TestPassThrough:
         assert grant["cli_tools"] == []
         assert grant["skill"]["name"] == "example"
 
+    async def test_snowflake_grant_uses_the_connected_mcp_endpoint(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        endpoint = (
+            "https://account.snowflakecomputing.com/api/v2/databases/DATABASE/"
+            "schemas/SCHEMA/mcp-servers/SERVER"
+        )
+        async with session_factory() as session:
+            await STORE.save_connection(
+                session,
+                user_id=pt.world.owner.id,
+                service="snowflake",
+                consent="read",
+                granted_scopes=["session:role:all"],
+                account_id="placeholder",
+                external_identity="placeholder",
+                encrypted_secret=TEST_KEYRING.encrypt(
+                    json.dumps({"mcp_endpoint": endpoint})
+                ),
+                oauth_client_id=None,
+            )
+            await STORE.save_grant(
+                session,
+                agent_id=pt.world.agent.id,
+                owner_id=pt.world.owner.id,
+                service="snowflake",
+                access="read",
+                tool_mode="deny",
+                tools=[],
+                resources={},
+                account_id="placeholder",
+                created_by=pt.world.owner.id,
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            agent = await session.get(Agent, pt.world.agent.id)
+            assert agent is not None
+            grants = await pt.broker.grants_for(session, agent, Principal.agent_key())
+        snowflake = next(grant for grant in grants if grant["service"] == "snowflake")
+        assert snowflake["mcp_servers"] == [
+            {
+                "name": "snowflake",
+                "url": endpoint,
+                "headers": {"Authorization": "Bearer {token}"},
+            }
+        ]
+
     async def test_the_grant_names_the_vendors_cli_as_the_catalog_has_it(
         self, session_factory, tmp_path
     ) -> None:

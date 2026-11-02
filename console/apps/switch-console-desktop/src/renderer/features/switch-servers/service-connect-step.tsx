@@ -1,5 +1,5 @@
 import { ExternalLink } from 'lucide-react';
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   canCloseConnectFlow,
   connectFlowReducer,
@@ -14,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
+import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
 import type { ServiceCalls } from './service-calls';
@@ -37,6 +38,7 @@ export function ServiceConnectStep({
   onConnected?: (warning: string | null) => void;
 }) {
   const service = connection.slug;
+  const [mcpEndpoint, setMcpEndpoint] = useState('');
   const [state, dispatch] = useReducer(
     connectFlowReducer,
     connection.status === 'connected',
@@ -89,7 +91,10 @@ export function ServiceConnectStep({
     try {
       dispatch({
         type: 'started',
-        flowId: await calls.startSignIn(service),
+        flowId: await calls.startSignIn(
+          service,
+          service === 'snowflake' ? mcpEndpoint.trim() : undefined
+        ),
       });
     } catch (cause) {
       dispatch({ type: 'failed', error: failureText(cause, fallback) });
@@ -138,6 +143,23 @@ export function ServiceConnectStep({
                 ? `Agents you turn ${connection.name} on for act as you there, with what you allowed when you signed in.`
                 : `You sign in at ${connection.name}, and allow what Switch asks for. Agents you then turn ${connection.name} on for act as you there.`}
             </p>
+            {service === 'snowflake' && !connected && (
+              <label className="block space-y-1.5 text-sm">
+                <span>Snowflake MCP endpoint</span>
+                <Input
+                  type="url"
+                  autoComplete="url"
+                  value={mcpEndpoint}
+                  onChange={(event) => setMcpEndpoint(event.currentTarget.value)}
+                  placeholder="https://account.snowflakecomputing.com/api/v2/databases/DATABASE/schemas/SCHEMA/mcp-servers/SERVER"
+                  aria-describedby="snowflake-endpoint-help"
+                />
+                <span id="snowflake-endpoint-help" className="block text-xs text-foreground-muted">
+                  Enter the complete URL of the MCP server configured in Snowflake. Only HTTPS
+                  Snowflake account endpoints are accepted.
+                </span>
+              </label>
+            )}
             {needsReconnect && !connected && (
               <p className="text-sm text-destructive">
                 Switch can no longer use your {connection.name} sign-in. Connect again.
@@ -181,7 +203,14 @@ export function ServiceConnectStep({
               </Button>
             )}
             {(!connected || error) && (
-              <Button disabled={busy || !connection.connectable} onClick={() => void start()}>
+              <Button
+                disabled={
+                  busy ||
+                  !connection.connectable ||
+                  (service === 'snowflake' && !mcpEndpoint.trim())
+                }
+                onClick={() => void start()}
+              >
                 Connect {connection.name} <ExternalLink className="size-4" />
               </Button>
             )}

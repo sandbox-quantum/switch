@@ -38,6 +38,7 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.loader import AccessLevel, ConnectionDefinition
+from switch_core.connections.snowflake import validate_mcp_endpoint
 
 MAX_METADATA_BYTES = 64 * 1024
 
@@ -70,6 +71,7 @@ class AuthorizationEndpoints:
     # where the catalog names the endpoints.
     resource: str | None
     client_authentication: ClientAuthentication
+    userinfo: str | None = None
 
 
 def client_fields(
@@ -167,6 +169,8 @@ class OAuthAdapter:
         definition: ConnectionDefinition,
         client: ClientSource,
         http: httpx.AsyncClient,
+        *,
+        mcp_endpoint: str | None = None,
     ) -> None:
         oauth = definition.auth.oauth
         identity = definition.auth.identity
@@ -180,9 +184,27 @@ class OAuthAdapter:
         self._definition = definition
         self._oauth = oauth
         self._identity = identity
-        self._mcp_url = (
+        self._mcp_endpoint = (
+            None if mcp_endpoint is None else validate_mcp_endpoint(mcp_endpoint)
+        )
+        self._mcp_url = self._mcp_endpoint or (
             None if definition.mcp is None else definition.mcp.servers[0].url
         )
+        self._expected_origin = (
+            None
+            if self._mcp_endpoint is None
+            else f"https://{urlsplit(self._mcp_endpoint).hostname.lower()}"
+        )
+        self._expected_origins = frozenset(
+            {self._expected_origin, *self._paired_snowflake_origins()}
+            if self._expected_origin is not None
+            else ()
+        )
+        self._identity_url = identity.url
+        if self._mcp_endpoint is not None and "{mcp_origin}" in identity.url:
+            self._identity_url = identity.url.replace(
+                "{mcp_origin}", self._expected_origin or ""
+            )
         self._client = client
         self._http = http
         self._endpoints: AuthorizationEndpoints | None = None
@@ -190,6 +212,64 @@ class OAuthAdapter:
     @property
     def _name(self) -> str:
         return self._definition.name
+
+    def for_mcp_endpoint(self, endpoint: str) -> OAuthAdapter:
+        """Bind this OAuth client to one validated Snowflake MCP endpoint."""
+        if self._definition.slug != "snowflake":
+            raise ValueError(
+                "Only Snowflake accepts a connection-specific MCP endpoint."
+            )
+        return OAuthAdapter(
+            self._definition,
+            self._client,
+            self._http,
+            mcp_endpoint=endpoint,
+        )
+
+    def _same_origin(self, url: str) -> bool:
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError:
+            return False
+        return (
+            parsed.scheme == "https"
+            and parsed.hostname is not None
+            and f"https://{parsed.hostname.lower()}" in self._expected_origins
+            and parsed.netloc.lower() == parsed.hostname.lower()
+            and port is None
+            and parsed.username is None
+            and parsed.password is None
+        )
+
+    def _paired_snowflake_origins(self) -> set[str]:
+        if self._expected_origin is None:
+            return set()
+        for suffix in ("snowflakecomputing.com", "snowflakecomputing.cn"):
+            if self._expected_origin.endswith(f".privatelink.{suffix}"):
+                return {
+                    self._expected_origin.replace(
+                        f".privatelink.{suffix}", f".{suffix}", 1
+                    )
+                }
+            if self._expected_origin.endswith(f".{suffix}"):
+                return {
+                    self._expected_origin.removesuffix(f".{suffix}")
+                    + f".privatelink.{suffix}"
+                }
+        return set()
+
+    def _for_secret(self, secret: ConnectionSecret) -> OAuthAdapter:
+        if self._definition.slug != "snowflake":
+            return self
+        endpoint = secret.values.get("mcp_endpoint")
+        if not isinstance(endpoint, str):
+            raise ServiceAdapterError(
+                "The Snowflake connection has no MCP endpoint. Reconnect it."
+            )
+        if endpoint == self._mcp_endpoint:
+            return self
+        return self.for_mcp_endpoint(endpoint)
 
     # ── The vendor's HTTP side ───────────────────────────────────────────────
 
@@ -261,6 +341,15 @@ class OAuthAdapter:
         # are the fallback, and on a host serving several MCP servers the
         # root one may describe another.
         named = await self._resource_metadata_url(mcp_url)
+        if (
+            named is not None
+            and self._expected_origin is not None
+            and not self._same_origin(named)
+        ):
+            raise ServiceAdapterError(
+                f"{self._name}'s protected resource metadata is not on its "
+                "Snowflake account host."
+            )
         resource = await self._metadata(
             [named]
             if named is not None
@@ -279,7 +368,13 @@ class OAuthAdapter:
             raise ServiceAdapterError(
                 f"{self._name}'s MCP server names no authorization server."
             )
-        issuer = urlsplit(_https(servers[0], "authorization server"))
+        issuer_url = _https(servers[0], "authorization server")
+        if self._expected_origin is not None and not self._same_origin(issuer_url):
+            raise ServiceAdapterError(
+                f"{self._name}'s authorization server is not on its Snowflake "
+                "account host."
+            )
+        issuer = urlsplit(issuer_url)
         issuer_origin = f"{issuer.scheme}://{issuer.netloc}"
         issuer_path = issuer.path.rstrip("/")
         candidates = (
@@ -303,6 +398,7 @@ class OAuthAdapter:
             )
         registration = metadata.get("registration_endpoint")
         revocation = metadata.get("revocation_endpoint")
+        userinfo = metadata.get("userinfo_endpoint")
         # The form body, unless the vendor takes a secret only as HTTP Basic:
         # Airtable refuses one in the body. Metadata that lists no methods
         # means Basic (RFC 8414 §2).
@@ -314,7 +410,7 @@ class OAuthAdapter:
             and "client_secret_basic" in auth_methods
             and "client_secret_post" not in auth_methods
         )
-        self._endpoints = AuthorizationEndpoints(
+        endpoints = AuthorizationEndpoints(
             authorization=_https(
                 metadata.get("authorization_endpoint"), "authorization endpoint"
             ),
@@ -333,7 +429,24 @@ class OAuthAdapter:
             client_authentication=(
                 "client_secret_basic" if basic_only else "client_secret_post"
             ),
+            userinfo=(
+                None if userinfo is None else _https(userinfo, "userinfo endpoint")
+            ),
         )
+        if self._expected_origin is not None and any(
+            endpoint is not None and not self._same_origin(endpoint)
+            for endpoint in (
+                endpoints.authorization,
+                endpoints.token,
+                endpoints.registration,
+                endpoints.revocation,
+                endpoints.userinfo,
+            )
+        ):
+            raise ServiceAdapterError(
+                f"{self._name}'s OAuth endpoints are not on its Snowflake account host."
+            )
+        self._endpoints = endpoints
         return self._endpoints
 
     async def _resource_metadata_url(self, mcp_url: str) -> str | None:
@@ -479,6 +592,8 @@ class OAuthAdapter:
             }
         )
         values = self._credentials(answer.body, {})
+        if self._mcp_endpoint is not None:
+            values["mcp_endpoint"] = self._mcp_endpoint
         granted = values.get("scope")
         return SignIn(
             ConnectionSecret(values),
@@ -488,10 +603,16 @@ class OAuthAdapter:
 
     async def identify(self, access_token: str) -> Identity:
         """The account the token acts as, as the catalog says to read it."""
+        endpoints = await self.endpoints()
+        identity_url = endpoints.userinfo or self._identity_url
+        if self._expected_origin is not None and not self._same_origin(identity_url):
+            raise ServiceAdapterError(
+                f"{self._name}'s account endpoint is not on its Snowflake account host."
+            )
         response = await self._send(
             self._http.build_request(
                 "GET",
-                self._identity.url,
+                identity_url,
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Accept": "application/json",
@@ -521,6 +642,9 @@ class OAuthAdapter:
     # ── ServiceAdapter ───────────────────────────────────────────────────────
 
     async def refresh(self, secret: ConnectionSecret) -> ConnectionSecret:
+        adapter = self._for_secret(secret)
+        if adapter is not self:
+            return await adapter.refresh(secret)
         refresh_token = secret.values.get("refresh_token")
         if not isinstance(refresh_token, str) or not refresh_token:
             raise ReauthorizationRequiredError(
@@ -556,6 +680,10 @@ class OAuthAdapter:
         )
 
     async def revoke_connection(self, secret: ConnectionSecret) -> None:
+        adapter = self._for_secret(secret)
+        if adapter is not self:
+            await adapter.revoke_connection(secret)
+            return
         if self._oauth.revocation_url is None and not self._oauth.revocation_discovered:
             raise ConnectionNotRevocable(
                 f"Switch has stopped using the {self._name} sign-in but cannot "

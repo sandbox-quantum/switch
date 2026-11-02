@@ -32,6 +32,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "atlassian",
         "datadog",
         "google-workspace",
+        "snowflake",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,34 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "snowflake",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["snowflake"].skill_files
+
+
+def test_the_shipped_snowflake_entry_uses_static_oauth_and_an_account_endpoint():
+    definition = CATALOG["snowflake"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "SNOWFLAKE",
+    )
+    assert oauth.redirect == ["core"]
+    assert oauth.revocation_discovered
+    assert definition.auth.refresh == "rotating"
+    assert definition.access is not None and definition.access.write is None
+    assert definition.access.read.scopes == ["session:role:all"]
+    assert definition.token is not None
+    assert definition.token.max_lifetime == 3600
+    assert definition.mcp is not None
+    assert definition.mcp.servers[0].url == "https://{snowflake_mcp_endpoint}"
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -272,6 +295,13 @@ def test_rejects_a_skill_whose_name_differs_from_the_slug(catalog_copy):
     path.write_text(path.read_text().replace("name: github", "name: git"))
     with pytest.raises(CatalogError, match="frontmatter"):
         load_catalog(catalog_copy)
+
+
+def test_accepts_a_skill_with_crlf_frontmatter(catalog_copy):
+    path = catalog_copy / "github" / "skill" / "SKILL.md"
+    content = path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    path.write_bytes(content)
+    assert "github" in load_catalog(catalog_copy)
 
 
 def test_rejects_a_placeholder_that_ships_a_skill(catalog_copy):

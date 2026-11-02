@@ -52,6 +52,7 @@ from switch_core.connections.sign_in_flows import (
     StoredFlow,
     digest,
 )
+from switch_core.connections.snowflake import validate_mcp_endpoint
 
 KIND = "service"
 # Some vendors issue codes as signed tokens: Atlassian's run past 2,000
@@ -156,6 +157,7 @@ class ServiceFlows:
         port: int,
         completion_secret: str,
         owner_label: str,
+        mcp_endpoint: str | None,
     ) -> ServiceFlow:
         mode = self.mode(definition)
         if mode is None:
@@ -164,6 +166,17 @@ class ServiceFlows:
                 "which has no public address (GATEWAY_PUBLIC_URL)."
             )
         assert definition.auth.oauth is not None
+        if definition.slug == "snowflake":
+            if mcp_endpoint is None:
+                raise FlowError("Enter the Snowflake MCP endpoint before connecting.")
+            try:
+                mcp_endpoint = validate_mcp_endpoint(mcp_endpoint)
+            except ValueError as error:
+                raise FlowError(str(error)) from None
+        elif mcp_endpoint is not None:
+            raise FlowError(
+                "This service does not accept a connection-specific endpoint."
+            )
         ports = definition.auth.oauth.loopback_ports
         if mode == "loopback" and ports is not None and port not in ports:
             raise FlowError(
@@ -199,6 +212,7 @@ class ServiceFlows:
                     "scopes": list(level.scopes),
                     "read_scopes": list(access.read.scopes),
                     "write_scopes": list(level.scopes) if consent == "write" else [],
+                    **({} if mcp_endpoint is None else {"mcp_endpoint": mcp_endpoint}),
                 },
                 completion_secret=completion_secret,
             )
@@ -239,6 +253,11 @@ class ServiceFlows:
         is sent through, so a code issued to one client is never exchanged
         with another."""
         nonce = secrets.token_urlsafe(32)
+        endpoint = flow.stored.details.get("mcp_endpoint")
+        if endpoint is not None:
+            if not isinstance(endpoint, str):
+                raise FlowError(INTERRUPTED)
+            adapter = adapter.for_mcp_endpoint(endpoint)
         client_id = await adapter.client_id()
         taken = await self._flows.advance(
             flow.stored,
@@ -319,6 +338,11 @@ class ServiceFlows:
         if checking is None:
             raise refused
         try:
+            endpoint = flow.stored.details.get("mcp_endpoint")
+            if endpoint is not None:
+                if not isinstance(endpoint, str):
+                    raise FlowError(INTERRUPTED)
+                adapter = adapter.for_mcp_endpoint(endpoint)
             recorded = flow.stored.details.get("client_id")
             if recorded is not None and recorded != await adapter.client_id():
                 raise ServiceAdapterError(client_changed(flow.name))

@@ -27,7 +27,8 @@ const key = (server: SwitchServer, service: string, id: string) =>
 export async function startServiceBrowserFlow(
   server: SwitchServer,
   service: string,
-  open: (url: string) => Promise<void>
+  open: (url: string) => Promise<void>,
+  mcpEndpoint?: string
 ): Promise<string> {
   const state = randomBytes(32).toString('base64url');
   const secret = randomBytes(32).toString('base64url');
@@ -63,6 +64,7 @@ export async function startServiceBrowserFlow(
       port: listener.port,
       state,
       completion_secret: secret,
+      ...(mcpEndpoint === undefined ? {} : { mcp_endpoint: mcpEndpoint }),
     });
     started = true;
     try {
