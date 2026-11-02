@@ -59,8 +59,7 @@ for the bot, and Switch relays them as soon as it is back, oldest first.
 - **No buttons.** Approval and question cards are answered by typing; each
   card says how.
 - **No slash commands.** Use the `!` commands, for example `!invite-agent @helper`.
-- **No typing indicator**, and **no searching the organization's members**
-  by name from Switch.
+- **No typing indicator.**
 - **Direct messages to the bot** are not relayed; use a stream.
 - **Links to Switch Console** arrive as text to copy, since Zulip only links
   web addresses.

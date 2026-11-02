@@ -46,6 +46,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     ChannelRetirement,
     ChannelType,
+    DirectoryUser,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -131,8 +132,7 @@ class ZulipAdapter(PlatformAdapter):
     keeps_quiet_unless_listening: ClassVar[bool] = True
     # A generic bot cannot archive a stream, and the people in it keep its history.
     channel_on_delete: ClassVar[ChannelRetirement] = "left"
-    # The bot has no way to search the organization's members by name here yet.
-    supports_directory_search: ClassVar[bool] = False
+    supports_directory_search: ClassVar[bool] = True
     # Zulip links only web addresses, so a Console deeplink would arrive as text.
     renders_custom_url_schemes: ClassVar[bool] = False
     # Turns, and the approval and question cards they wait on, are drawn as
@@ -652,6 +652,37 @@ class ZulipAdapter(PlatformAdapter):
                 )
                 left_out.append(external_id)
         return left_out
+
+    async def search_directory_users(self, query: str) -> list[DirectoryUser]:
+        """The organization's people whose name contains `query`, ignoring case.
+
+        Zulip has no search by name for a bot, so this filters the member
+        list, which an organization keeps small enough to read whole. A person
+        is named as a message from them is relayed: by user id and full name.
+        Zulip hides people's addresses from a bot, so no email is offered.
+        """
+        term = query.strip().casefold()
+        if not term:
+            return []
+        try:
+            answer = await self._call("GET", "/api/v1/users")
+        except ZulipError as exc:
+            raise BridgeOperationError(
+                f"Zulip would not list its members: {exc.msg}"
+            ) from exc
+        found = [
+            DirectoryUser(
+                external_user_id=str(member["user_id"]),
+                username=str(member["full_name"]),
+                display_name=str(member["full_name"]),
+                email=None,
+            )
+            for member in answer["members"]
+            if not member["is_bot"]
+            and member["is_active"]
+            and term in str(member["full_name"]).casefold()
+        ]
+        return sorted(found, key=lambda user: user.display_name.casefold())
 
     async def create_agent_identity(self, agent: AgentIdentity) -> None:
         """Nothing: Zulip gives a bot no per-message identity to create."""
