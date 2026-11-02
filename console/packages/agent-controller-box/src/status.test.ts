@@ -5,6 +5,7 @@ import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent
 import type { ProviderReadiness } from '@switch-console/agent-providers-box';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers-box/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ControllerApiError } from './api';
 import { silentLogger } from './log';
 import type { RestState } from './rest';
 import { type AgentObservation, emptyObservation } from './runtime';
@@ -458,6 +459,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
   const keys = generateSealingKeyPair();
   let answer: SealedLoginResponse | null;
   let reachable: boolean;
+  let refusal: Error | null = null;
 
   function sealedAnswer(
     credential: string,
@@ -485,6 +487,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
         client: {
           sealedLogin: async () => {
             if (!reachable) throw new Error('Switch is unreachable');
+            if (refusal) throw refusal;
             return answer;
           },
         },
@@ -501,6 +504,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
   beforeEach(() => {
     answer = null;
     reachable = true;
+    refusal = null;
   });
 
   it('uses the machine’s own login first, and never asks Switch then', async () => {
@@ -667,6 +671,24 @@ describe('ProviderStatuses with logins given to the machine', () => {
       auth_source: 'sealed',
     });
     expect(await statuses.givenLogin('claude')).toBeNull();
+  });
+
+  it('keeps a given login when Switch refuses the read with 403 hosted_v2_off, and never treats it as withdrawn', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 8);
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    // Hosted agents switched off on the server while the box is still up.
+    refusal = new ControllerApiError(
+      403,
+      'hosted_v2_off',
+      'This server does not support cloud agents.',
+      false,
+      null
+    );
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect((await statuses.givenLogin('claude'))?.credential).toBe('sk-ant-oat-given');
   });
 
   it('never keeps a withdrawn login because a sign-in check can’t run (security)', async () => {

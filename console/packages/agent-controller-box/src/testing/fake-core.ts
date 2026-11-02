@@ -91,6 +91,8 @@ export class FakeCore {
   reportWithinS = 60;
   heartbeatIntervalS = 0.05;
   revoked = false;
+  /** Set, every request and stream is refused 403 with this code (Switch with hosted agents off). */
+  forbidden: string | null = null;
   assignment: Assignment = { revision: 0, agents: [] };
   /** Each agent's rooms, as `agent.attached` carries them. */
   readonly rooms = new Map<string, string[]>();
@@ -212,6 +214,7 @@ export class FakeCore {
     if (url.pathname !== `/v1/controllers/${this.controllerId}/connection/ws`)
       return refuse(404, 'not_found');
     const bearer = socket.headers.Authorization?.replace(/^Bearer /, '') ?? '';
+    if (this.forbidden) return refuse(403, this.forbidden);
     if (this.revoked) return refuse(401, 'controller_revoked');
     if (!this.tokens.has(bearer)) return refuse(401, 'token_expired');
     const connection = this.connections.get(url.searchParams.get('connection_id') ?? '');
@@ -359,6 +362,8 @@ export class FakeCore {
         return this.refuse(res, 400, 'enrollment_code_invalid');
       return this.json(res, 201, { controller_id: this.controllerId, credential: this.credential });
     }
+    if (this.forbidden && url.pathname !== '/v1/management/controllers/enroll')
+      return this.refuse(res, 403, this.forbidden);
     if (method === 'POST' && url.pathname === `${base}/token`) {
       if (this.revoked) return this.refuse(res, 401, 'controller_revoked');
       if ((body as { credential?: string }).credential !== this.credential)

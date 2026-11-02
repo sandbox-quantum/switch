@@ -862,6 +862,45 @@ describe('runController', () => {
     expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBeNull();
   });
 
+  // Switch with hosted agents switched off refuses a box controller with a 403
+  // while the box is still up. That is not a revocation: the controller keeps
+  // its identity and credential and tries again, so the box resumes with its
+  // data when hosted agents come back on. Exiting 3 or 6 here would have the
+  // box's entrypoint retire the identity and enrol a new one (security).
+  for (const code of ['hosted_v2_off', 'forbidden']) {
+    it(`keeps its identity and retries when the token exchange is refused 403 ${code}`, async () => {
+      core.forbidden = code;
+      running = runController(deps(), stop.signal);
+      const ending = running.then(String, () => 'threw');
+      await waitFor(
+        () => core.requests.filter((request) => request.path.endsWith('/token')).length >= 2,
+        'the token exchange tried again'
+      );
+      core.forbidden = null;
+      await waitFor(() => core.streamCount === 1, 'the stream back once Switch takes it again');
+      stop.abort();
+      expect(await ending).toBe('stopped');
+      expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBe(core.credential);
+      expect(store.identity()?.controllerId).toBe(core.controllerId);
+    });
+
+    it(`keeps its identity and reconnects when the stream is refused 403 ${code}`, async () => {
+      running = runController(deps(), stop.signal);
+      await waitFor(() => core.streamCount === 1, 'the stream up');
+      core.forbidden = code;
+      core.closeStreams();
+      const before = core.requests.length;
+      await waitFor(() => core.requests.length >= before + 3, 'reconnects refused');
+      expect(core.streamCount).toBe(0);
+      core.forbidden = null;
+      await waitFor(() => core.streamCount === 1, 'the stream back');
+      stop.abort();
+      expect(await running).toBe('stopped');
+      expect(await secrets.get(CONTROLLER_CREDENTIAL)).toBe(core.credential);
+      expect(store.identity()?.controllerId).toBe(core.controllerId);
+    });
+  }
+
   it('runs on an adopted identity with the credential in memory, and writes it nowhere', async () => {
     const handedDir = mkdtempSync(join(tmpdir(), 'controller-handed-'));
     const handed = ControllerStore.open(join(handedDir, 'controller.db'));
