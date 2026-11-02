@@ -25,6 +25,7 @@ import { embeddedControllerService } from './core/embedded-controller/embedded-c
 import { featureFlagsService } from './core/feature-flags/feature-flags';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
+import { deleteUnusedLocations } from './core/locations/store';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
 import { serverVersionChoice } from './core/managed-switch-server/server-version';
@@ -133,6 +134,11 @@ void app.whenReady().then(async () => {
   try {
     await initializeDatabase();
     searchService.initialize();
+    try {
+      await deleteUnusedLocations();
+    } catch (e: unknown) {
+      log.warn('locations: failed to delete locations no agent uses', { error: e });
+    }
     try {
       viewStateService.pruneOrphans();
     } catch (e: unknown) {

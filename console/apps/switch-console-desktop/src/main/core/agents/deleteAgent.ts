@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm';
 import { forgetManagedAgent } from '@main/core/agent-migration/managed-agents-store';
+import { deleteLocationIfUnused } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { releaseHostIfUnused } from '@main/core/remote-hosts/production-host-reachability';
 import { discardControllerState } from '@main/core/sdk-host/agent-host';
 import { sessionHooks } from '@main/core/sessions/session-hooks';
 import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
@@ -200,8 +202,9 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    processes untouched — on a shared host they may belong to another install
  *    (CHOO-2560). Sibling agents' files are never touched either way.
  *
- * The agent's location row is intentionally kept — locations are reusable
- * and other agents may still live there.
+ * The agent's location row goes with its last agent (its directory never
+ * does); a location other agents still use is kept. A remote host nothing
+ * uses any more stops being probed.
  */
 export async function deleteAgent(agentId: string, options: DeleteAgentOptions): Promise<void> {
   const agent = await getAgentById(agentId);
@@ -310,4 +313,19 @@ async function removeAgent(
   // notice it left.
   for (const row of sessionRows) sessionHooks._emit('session:deleted', row.id);
   agentEvents._emit('agent:deleted', agentId);
+
+  if (location) await releaseLocationIfUnused(location);
+}
+
+/** Housekeeping after the agent is gone: a failure here must not report the delete as failed. */
+async function releaseLocationIfUnused(location: Location): Promise<void> {
+  try {
+    await deleteLocationIfUnused(location.id);
+    if (location.sshHost) await releaseHostIfUnused(location.sshHost);
+  } catch (error) {
+    log.warn('deleteAgent: failed to release the unused location', {
+      locationId: location.id,
+      error: String(error),
+    });
+  }
 }
