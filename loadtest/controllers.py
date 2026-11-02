@@ -20,7 +20,12 @@ dropped socket is reopened from the last cursors with the real controller's
 backoff (1 s, doubling to 8 s), and counted, per agent, as a drop.
 
 A controller-backed agent has no key or socket of its own: it posts and reads
-on the agent routes with its controller's token (`ManagedAgent`).
+with its controller's token (`ManagedAgent`). How, `calls` says: `message`
+posts on `/agents/{id}/message` and reads through the `read_context`
+operation over HTTP; `ops` does both as operations over HTTP, the way the
+real controller relays its agents' tool calls, naming the calling session's
+room in `X-Switch-Room-Id`; `socket` sends the same operations as calls on
+the controller's socket, once its first frame says the server takes them.
 """
 
 from __future__ import annotations
@@ -92,6 +97,10 @@ class FakeController:
         self._tasks: list[asyncio.Task] = []
         self._refusal: dict | None = None
         self.honor_busy = honor_busy
+        self._ws = None  # the socket, while it is open
+        self.takes_calls = False  # its first frame offered calls
+        self._call_ids = itertools.count(1)
+        self._answers: dict[int, asyncio.Future] = {}
 
     def add(self, agent: ManagedAgent) -> None:
         self.agents[agent.s.id] = agent
@@ -171,7 +180,12 @@ class FakeController:
                         max_size=None,
                         ping_interval=None,  # the server's ping frames are the heartbeat
                     ) as ws:
-                        why = await self._read(ws, opened)
+                        self._ws = ws
+                        try:
+                            why = await self._read(ws, opened)
+                        finally:
+                            self._ws = None
+                            self.takes_calls = False
                     close_code = ws.close_code
             except asyncio.CancelledError:
                 raise
@@ -202,6 +216,10 @@ class FakeController:
             backoff = min(backoff * 2, MAX_BACKOFF_S)
 
     def _lost(self, why: str) -> None:
+        for answer in self._answers.values():
+            if not answer.done():
+                answer.set_exception(ConnectionError(f"socket ended: {why}"))
+        self._answers.clear()
         if self.attached.is_set():
             self.stats.event("controller_drop", self.name, why=why)
         else:
@@ -232,7 +250,13 @@ class FakeController:
                 if agent is not None and isinstance(data.get("event"), dict):
                     agent._on_event(data["event"])
                 continue
+            if ev == "call.result":
+                answer = self._answers.pop(data.get("id"), None)
+                if answer is not None and not answer.done():
+                    answer.set_result((data.get("status"), data.get("body")))
+                continue
             if ev == "connection_state":
+                self.takes_calls = isinstance(data.get("calls"), dict)
                 self.report_within = float(data.get("report_within_s") or 60)
                 self.revision = int(data.get("assignment_revision") or 0)
                 if not self.attached.is_set():
@@ -297,6 +321,38 @@ class FakeController:
         self.stats.event("connected", agent.s.name, open_s=round(waited, 3))
         agent.connected.set()
         self._changed.set()
+
+    async def call(
+        self, agent_id: str, operation: str, arguments: dict, room_id: str | None
+    ) -> tuple[int, object]:
+        """One of its agents' operations as a call on the socket: the status and
+        body it is answered with. Raises ConnectionError when the socket is
+        not open or takes no calls, or ends before the answer."""
+        ws = self._ws
+        if ws is None or not self.takes_calls:
+            raise ConnectionError("no socket that takes calls")
+        id_ = next(self._call_ids)
+        answer = asyncio.get_running_loop().create_future()
+        self._answers[id_] = answer
+        try:
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "call",
+                        "id": id_,
+                        "agent_id": agent_id,
+                        "operation": operation,
+                        "arguments": arguments,
+                        "room_id": room_id,
+                        "request_id": self.ids.next(),
+                    }
+                )
+            )
+            return await answer
+        except websockets.ConnectionClosed as exc:
+            raise ConnectionError(type(exc).__name__) from exc
+        finally:
+            self._answers.pop(id_, None)
 
     # ── What the controller sends besides its beat ─────────────────────────
 
@@ -439,12 +495,14 @@ class ManagedAgent(Agent):
         seed: int,
         controller: FakeController,
         admin: Admin,
+        calls: str = "message",
     ) -> None:
         self.controller = controller
         super().__init__(
             seeded, rooms, "http://unused", ids, stats, http, read_fraction, seed
         )
         self.admin = admin
+        self.calls = calls
         self.waiting_since: float | None = None
         controller.add(self)
 
@@ -458,6 +516,43 @@ class ManagedAgent(Agent):
 
     def start(self) -> None:
         self.task = asyncio.create_task(self._place())
+
+    async def post(self, room: str, content: str) -> int:
+        if self.calls == "message":
+            return await super().post(room, content)
+        status, _ = await self._operation("post_message", {"body": content}, room)
+        return status
+
+    async def read(self, room: str) -> tuple[int, str]:
+        if self.calls == "message":
+            return await super().read(room)
+        status, body = await self._operation(
+            "read_context", {"room_id": room, "limit": 20}, room
+        )
+        return status, "" if status == 200 else str(body)[:200]
+
+    async def _operation(
+        self, operation: str, arguments: dict, room: str | None
+    ) -> tuple[int, object]:
+        """An operation as the real controller relays one: the calling
+        session's room named with it, over HTTP or on the socket."""
+        if self.calls == "socket":
+            try:
+                return await self.controller.call(self.s.id, operation, arguments, room)
+            except ConnectionError as exc:
+                self.stats.event("send_error", self.s.name, why=str(exc)[:80])
+                return -1, str(exc)
+        headers = {**self.auth, "X-Request-Id": self.ids.next()}
+        if room is not None:
+            headers["X-Switch-Room-Id"] = room
+        try:
+            r = await self.http.post(
+                f"/agents/{self.s.id}/ops/{operation}", headers=headers, json=arguments
+            )
+        except httpx.HTTPError as exc:
+            self.stats.event("send_error", self.s.name, why=type(exc).__name__)
+            return -1, type(exc).__name__
+        return r.status_code, r.text[:200]
 
     async def _place(self) -> None:
         backoff = 1.0

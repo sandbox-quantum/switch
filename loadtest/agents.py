@@ -283,19 +283,38 @@ class Agent:
 
     async def read_context(self, room: str, phase: str) -> None:
         t = time.monotonic()
+        status, detail = await self.read(room)
+        if status == 200:
+            self.stats.reads[phase].append(time.monotonic() - t)
+        else:
+            self.stats.read_errors[phase] += 1
+            self.stats.event("read_error", self.s.name, status=status, detail=detail)
+
+    async def read(self, room: str) -> tuple[int, str]:
+        """One `read_context` of `room`: the status, -1 when nothing came back,
+        and what was said about a failure."""
         try:
             r = await self.http.post(
                 f"/agents/{self.s.id}/ops/read_context",
                 headers={**self.auth, "X-Request-Id": self.ids.next()},
                 json={"room_id": room, "limit": 20},
             )
-            ok = r.status_code == 200
-        except httpx.HTTPError:
-            ok = False
-        if ok:
-            self.stats.reads[phase].append(time.monotonic() - t)
-        else:
-            self.stats.read_errors[phase] += 1
+        except httpx.HTTPError as exc:
+            return -1, type(exc).__name__
+        return r.status_code, "" if r.status_code == 200 else r.text[:200]
+
+    async def post(self, room: str, content: str) -> int:
+        """Post `content` to `room`: the status, -1 when nothing came back."""
+        try:
+            r = await self.http.post(
+                f"/agents/{self.s.id}/message",
+                headers={**self.auth, "X-Request-Id": self.ids.next()},
+                json={"room_id": room, "content": content},
+            )
+        except httpx.HTTPError as exc:
+            self.stats.event("send_error", self.s.name, why=type(exc).__name__)
+            return -1
+        return r.status_code
 
 
 def _text(data: dict) -> str:
@@ -379,16 +398,7 @@ async def _post(
             if a != send.sender and a < len(agents)
         )
         content = " ".join(f"@{n}" for n in names) + " " + content
-    try:
-        r = await sender.http.post(
-            f"/agents/{sender.s.id}/message",
-            headers={**sender.auth, "X-Request-Id": sender.ids.next()},
-            json={"room_id": msg.room, "content": content},
-        )
-        msg.status = r.status_code
-    except httpx.HTTPError as exc:
-        msg.status = -1
-        stats.event("send_error", sender.s.name, why=type(exc).__name__)
+    msg.status = await sender.post(msg.room, content)
     msg.acked = time.monotonic()
     if msg.status != 200:
         stats.send_errors[phase] += 1
