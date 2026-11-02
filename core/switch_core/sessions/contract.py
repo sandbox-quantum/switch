@@ -248,11 +248,14 @@ class SessionUpsert(_Model):
 class TurnUpsert(_Model):
     type: Literal["turn.upsert"]
     turn_id: Id
-    status: Literal["queued", "running", "completed", "interrupted", "error"]
+    status: Literal[
+        "queued", "running", "completed", "interrupted", "error", "cancelled"
+    ]
     command_id: Id | None
 
 
-TURN_ENDED = frozenset({"completed", "interrupted", "error"})
+# `cancelled` is a turn taken out of the queue before the agent started on it.
+TURN_ENDED = frozenset({"completed", "interrupted", "error", "cancelled"})
 
 # The text Switch gives a subagent it settles because the agent's session went
 # away while the subagent was still running, so nothing said how it ended.

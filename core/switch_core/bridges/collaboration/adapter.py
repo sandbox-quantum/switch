@@ -178,6 +178,10 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    # What cancels this turn while it waits in the queue, as typed in the room
+    # (`!cancel @agent 378893ee`). Set only for a queued turn a room message
+    # started, since only its sender may cancel it; None otherwise.
+    cancel_command: str | None = None
 
 
 @dataclass(frozen=True)

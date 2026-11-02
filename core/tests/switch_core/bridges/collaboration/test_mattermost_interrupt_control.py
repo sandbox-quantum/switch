@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
+    cancel_note,
 )
 
 from .session_fixtures import _item, _turn
@@ -376,3 +377,30 @@ async def test_the_presser_is_told_the_outcome_and_nobody_else() -> None:
 
     assert _shown(answer) == "Switch has asked the agent to stop."
     assert _posts(adapter).created == []
+
+
+# ── Cancelling a queued turn ─────────────────────────────────────────────────
+
+_CANCEL = "!cancel @worker 378893ee"
+
+
+async def test_a_queued_turn_says_how_to_cancel_it_even_with_nothing_to_stop() -> None:
+    """Cancelling is typed, so it needs no control of its own to be offered."""
+    adapter, _ = _stopper()
+    await adapter.post_rich(
+        CHANNEL,
+        "worker",
+        _activity("queued", interrupt_turn_id=None, cancel_command=_CANCEL),
+        "root-1",
+    )
+    text = _posts(adapter).created[0]["message"]
+    assert cancel_note(_CANCEL) in text
+
+
+async def test_a_started_turn_is_not_offered_a_cancel() -> None:
+    adapter, _ = _stopper()
+    await adapter.post_rich(
+        CHANNEL, "worker", _activity(cancel_command=_CANCEL), "root-1"
+    )
+    text = _posts(adapter).created[0]["message"]
+    assert "!cancel" not in text

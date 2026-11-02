@@ -1259,3 +1259,30 @@ async def test_a_task_that_died_is_logged_on_stopping_and_not_raised(
     died = [r for r in caplog.records if "stopped on an error" in r.getMessage()]
     assert len(died) == 1
     assert "tick" in died[0].getMessage()
+
+
+# ── Cancelling a queued turn ─────────────────────────────────────────────────
+
+
+async def test_a_queued_turn_asked_in_the_room_offers_its_cancel_command(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "queued", 1)
+    [card] = await platform.wait_for(1)
+
+    assert card.content.cancel_command == f"!cancel @{AGENT} turn-1"
+
+
+async def test_a_cancelled_turn_is_drawn_ended_with_no_cancel_and_its_mark_off(
+    service, publisher, platform, bridged
+):
+    await _turn(service, bridged.room_id, "queued", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+
+    await _turn(service, bridged.room_id, "cancelled", 2)
+    await platform.wait_until(lambda: len(platform.marks) == 2)
+
+    redrawn = _turns(platform)[-1]
+    assert redrawn.content.turn.status == "cancelled"
+    assert redrawn.content.cancel_command is None
+    assert platform.marks[-1] == (ASKED_POST, "working", False)

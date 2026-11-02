@@ -42,6 +42,7 @@ from switch_core.bridges.collaboration.session.renderers import (
     INTERRUPT_ACTION,
     INTERRUPT_LABEL,
     INTERRUPT_QUEUED_NOTE,
+    cancel_note,
 )
 
 from .session_fixtures import _item, _turn
@@ -450,3 +451,25 @@ async def test_a_press_discord_would_not_acknowledge_is_not_acted_on(
 
     assert seen == []
     assert "not acknowledged in time" in caplog.text
+
+
+# ── Cancelling a queued turn ─────────────────────────────────────────────────
+
+_CANCEL = "!cancel @worker 378893ee"
+
+
+async def test_a_queued_turn_says_how_to_cancel_it_even_with_nothing_to_stop() -> None:
+    """Cancelling is typed, so it needs no control of its own to be offered."""
+    adapter, webhook, _seen = _stopper()
+    await _post(
+        adapter, _activity("queued", interrupt_turn_id=None, cancel_command=_CANCEL)
+    )
+    text = webhook.sent[0]["content"]
+    assert cancel_note(_CANCEL) in text
+
+
+async def test_a_started_turn_is_not_offered_a_cancel() -> None:
+    adapter, webhook, _seen = _stopper()
+    await _post(adapter, _activity(cancel_command=_CANCEL))
+    text = webhook.sent[0]["content"]
+    assert "!cancel" not in text
