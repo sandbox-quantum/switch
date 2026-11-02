@@ -25,13 +25,14 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_hubspot():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "hubspot",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -39,12 +40,63 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
         "datadog",
         "github",
         "google-workspace",
+        "hubspot",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["hubspot"].skill_files
+
+
+def test_the_shipped_hubspot_entry_uses_static_oauth_and_limited_crm_scopes():
+    definition = CATALOG["hubspot"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "HUBSPOT"
+    assert oauth.revocation_discovered is True
+    assert definition.auth.refresh == "rotating"
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        1800,
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("hubspot", "https://mcp.hubspot.com")
+    ]
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == (
+        "https://api.hubapi.com/account-info/v3/details"
+    )
+    assert (definition.auth.identity.account_id, definition.auth.identity.label) == (
+        "portalId",
+        "portalId",
+    )
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read.scopes == [
+        "oauth",
+        "account-info.security.read",
+        "crm.objects.contacts.read",
+        "crm.objects.companies.read",
+        "crm.objects.deals.read",
+    ]
+    assert definition.access.write.scopes == [
+        "oauth",
+        "account-info.security.read",
+        "crm.objects.contacts.read",
+        "crm.objects.contacts.write",
+        "crm.objects.companies.read",
+        "crm.objects.companies.write",
+        "crm.objects.deals.read",
+        "crm.objects.deals.write",
+    ]
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
