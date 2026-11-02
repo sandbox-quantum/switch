@@ -35,6 +35,15 @@ class DirectoryOrganization:
     customer_id: str | None
 
 
+@dataclass(frozen=True)
+class DirectoryMembership:
+    """Someone's membership of a customer's organization, as the directory
+    has it: the customer, and whether they are its `org_admin`."""
+
+    customer_id: str
+    role: str
+
+
 class DirectoryError(Exception):
     """The directory did not make a change. `message` says why, for people to
     read."""
@@ -56,6 +65,14 @@ class OrganizationDirectory(Protocol):
     """Implementations work outside Switch's database, over the network, and
     bound every call: they are handed rows, never a session, and a route may
     hold locks while it waits on them."""
+
+    async def memberships_at_sign_in(
+        self, subject: str
+    ) -> list[DirectoryMembership] | None:
+        """The organizations the person who signed in as `subject` (their
+        OIDC `sub`) belongs to, for Switch's rows to be brought up to date
+        with; None where Switch's rows are the record."""
+        ...
 
     async def create_organization(
         self, creator: User, name: str
@@ -88,6 +105,11 @@ class OrganizationDirectory(Protocol):
 class LocalDirectory:
     """Switch's own tables are the record: each change is the route's write
     to them, and nothing is asked first."""
+
+    async def memberships_at_sign_in(
+        self, subject: str
+    ) -> list[DirectoryMembership] | None:
+        return None
 
     async def create_organization(
         self, creator: User, name: str

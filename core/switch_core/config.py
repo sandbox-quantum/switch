@@ -394,6 +394,15 @@ class SwitchConfig(BaseSettings):
     # docs/old/multi-tenancy-phase2-tenants.md, §5.
     gateway_max_workspaces_per_user: int = 3
 
+    # Who keeps the record of organizations and their members
+    # (`organization_directory.py`). "local": this server, in its own tables.
+    # "workos": the WorkOS environment behind the gateway's OIDC sign-in, read
+    # with `WORKOS_API_KEY`; organization membership comes from there, and
+    # workspaces and their roles stay here.
+    organization_directory: Literal["local", "workos"] = "local"
+    workos_api_key: str | None = None
+    workos_api_url: str = "https://api.workos.com"
+
     # Outbound mail for invitations addressed to an e-mail. Setting the host
     # turns it on; any SMTP relay works. Unset, an addressed invitation is
     # still created and the admin is told nothing was sent, so they can share
@@ -1522,6 +1531,23 @@ class SwitchConfig(BaseSettings):
                     "register an http redirect or event URL, so an http origin "
                     f"cannot work, got {self.messaging_public_url!r}."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_organization_directory(self) -> "SwitchConfig":
+        if self.organization_directory != "workos":
+            return self
+        if not self.workos_api_key:
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs WORKOS_API_KEY, to read "
+                "who belongs to which organization."
+            )
+        if not self.gateway_oidc_issuer_url:
+            raise ValueError(
+                "ORGANIZATION_DIRECTORY=workos needs the gateway's OIDC sign-in "
+                "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
+                "the sign-in is what names the person there."
+            )
         return self
 
     @model_validator(mode="after")

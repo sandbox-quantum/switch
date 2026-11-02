@@ -171,6 +171,15 @@ two. It discloses which workspaces a person belongs to or administers
 through an organization; the gateway asks it only about the signed-in
 caller.
 
+**`organization_of_customer` is the fifteenth**, and the one that answers
+with an organization rather than a workspace. Under the WorkOS directory
+(`workos_directory.py`) a sign-in names the customers the person belongs to,
+by the customer's id; which Switch organization each one is has to be read
+before anything is bound, to bring the person's membership rows up to date.
+It discloses whether a customer has a Switch organization, and its id; the
+gateway asks it only about customers WorkOS says the signed-in person belongs
+to.
+
 Why not the obvious alternatives is argued in
 `docs/old/multi-tenancy-phase1-db.md`, "The bootstrap problem"; the short
 version is that returning rows instead of tenant ids would put a second copy
@@ -447,6 +456,17 @@ TENANT_LOOKUPS: tuple[TenantLookup, ...] = (
         ),
     ),
     TenantLookup(
+        name="organization_of_customer",
+        arguments=("customer_id",),
+        query="SELECT id FROM organizations WHERE customer_id = p_customer_id",
+        purpose=(
+            "Which organization is a customer's, from the customer's id a "
+            "WorkOS sign-in names. Read before anything is bound, to bring the "
+            "person's organization memberships up to date; unique by "
+            "constraint."
+        ),
+    ),
+    TenantLookup(
         name="tenant_of_messaging_install",
         arguments=("platform", "external_workspace_id"),
         query=(
@@ -571,6 +591,9 @@ _LOOKUP_STATEMENTS: dict[str, TextClause] = {
     ),
     "tenant_of_sign_in_flow": text(
         "SELECT tenant_id FROM tenant_of_sign_in_flow(:state) AS tenant_id"
+    ),
+    "organization_of_customer": text(
+        "SELECT tenant_id FROM organization_of_customer(:customer_id) AS tenant_id"
     ),
 }
 
@@ -727,3 +750,10 @@ async def tenant_of_sign_in_flow(
 ) -> str | None:
     lookup = TENANT_LOOKUPS_BY_NAME["tenant_of_sign_in_flow"]
     return _at_most_one(lookup, await _call(session_factory, lookup, state))
+
+
+async def organization_of_customer(
+    session_factory: async_sessionmaker[AsyncSession], customer_id: str
+) -> str | None:
+    lookup = TENANT_LOOKUPS_BY_NAME["organization_of_customer"]
+    return _at_most_one(lookup, await _call(session_factory, lookup, customer_id))

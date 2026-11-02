@@ -29,10 +29,16 @@ from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
 from switch_core.gateway.dependencies import (
     current_telemetry,
     get_config,
+    get_organization_directory,
     get_session_factory,
     get_system_session,
     get_user_store,
 )
+from switch_core.organization_directory import (
+    DirectoryUnavailable,
+    OrganizationDirectory,
+)
+from switch_core.organization_mirror import bring_in_memberships
 from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 
@@ -221,6 +227,30 @@ async def oidc_login(
     return await client.authorize_redirect(request, redirect_uri, **params)
 
 
+async def _bring_in_organizations(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    user: User,
+    subject: str,
+) -> None:
+    """Bring the person's organization memberships up to date with a directory
+    kept outside Switch (`organization_mirror.py`). One that can't be reached
+    doesn't stop the sign-in: authorization reads Switch's rows, which stay as
+    they were, and the failure is logged."""
+    try:
+        memberships = await organization_directory.memberships_at_sign_in(subject)
+    except DirectoryUnavailable as error:
+        logger.warning(
+            "Could not read user %s's organizations at sign-in; Switch's are "
+            "left as they were: %s",
+            user.id,
+            error.message,
+        )
+        return
+    if memberships is not None:
+        await bring_in_memberships(session_factory, user.id, memberships)
+
+
 @router.get("/auth/oidc/callback", name="oidc_callback")
 async def oidc_callback(
     request: Request,
@@ -230,6 +260,9 @@ async def oidc_callback(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
 ) -> RedirectResponse:
     # `get_system_session`: nobody is signed in yet, so there is no principal
     # to take a tenant from — the tenant this route writes into is chosen
@@ -339,6 +372,7 @@ async def oidc_callback(
                 sub=sub,
                 email_verified=verified,
                 join_tenant=join_tenant,
+                link_by_email=config.organization_directory == "local",
             )
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
@@ -357,6 +391,7 @@ async def oidc_callback(
         await session.commit()
     if created:
         emit_safely(current_telemetry(), "account_created", {"method": "oidc"})
+    await _bring_in_organizations(session_factory, organization_directory, user, sub)
 
     # Verify-at-login only: we don't persist the IdP tokens.
     handoff = request.session.pop(_HANDOFF_SESSION_KEY, None)
