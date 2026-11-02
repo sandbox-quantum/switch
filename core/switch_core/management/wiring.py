@@ -154,6 +154,7 @@ def build_management(
     operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
+    auth_cache.follow(signal_bus)
     signals = ControllerSignals(
         notifier=ControllerNotifier(),
         presence=presence,
@@ -254,6 +255,7 @@ def create_management(
         auth_cache=ControllerAuthCache(
             ttl_seconds=config.agent_auth_cache_ttl_seconds,
             max_entries=config.agent_auth_cache_max_entries,
+            max_agents=config.controller_auth_cache_max_agents,
         ),
         clock=utc_now,
         signal_bus=signal_bus,

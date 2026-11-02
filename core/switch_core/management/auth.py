@@ -92,7 +92,7 @@ class ManagementAuthenticator:
         if cached is not None and cached.owner_id == claims.owner_id:
             return cached
 
-        generation = self._auth_cache.generation
+        ticket = self._auth_cache.ticket()
         async with tenant_session(self._session_factory, claims.tenant_id) as session:
             controller = await self._controllers.get(
                 session, claims.tenant_id, claims.controller_id
@@ -111,7 +111,7 @@ class ManagementAuthenticator:
             owner_id=controller.owner_id,
             tenant_id=claims.tenant_id,
         )
-        self._auth_cache.put_controller(principal, generation)
+        self._auth_cache.put_controller(principal, ticket)
         return principal
 
     async def tenant_of_secret(self, secret: str) -> str | None:

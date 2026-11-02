@@ -49,6 +49,7 @@ from switch_core.bridges.agent.registration_bootstrap import (
     RETIRED_KEY_TYPE,
     ensure_bootstrap_owner,
 )
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.adapter import PlatformAdapter
 from switch_core.bridges.collaboration.bridge_signals import BridgeSignals
 from switch_core.bridges.collaboration.discord.adapter import (
@@ -1050,6 +1051,12 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     )
 
     # ── FastAPI apps ─────────────────────────────────────────────────────────
+    # What every post checks first, kept until a signal says it changed.
+    room_access = RoomAccessCache(
+        ttl_seconds=config.agent_auth_cache_ttl_seconds,
+        max_entries=config.room_access_cache_max_entries,
+    )
+    room_access.follow(signal_bus)
     agent_bridge_app, protocol = create_agent_bridge_app(
         agent_store=agent_store,
         agent_session_store=agent_session_store,
@@ -1069,6 +1076,7 @@ async def run(config: SwitchConfig, process_id: str) -> None:
         ),
         controller_auth=management.authenticator if management is not None else None,
         connections=connections,
+        room_access=room_access,
         telemetry=telemetry,
         trust_client=trust_client,
         gateway_ui=(

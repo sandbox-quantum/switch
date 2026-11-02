@@ -32,6 +32,14 @@ from switch_core.db.agent_event_notify_ddl import (
     CREATE_AGENT_EVENT_NOTIFY_TRIGGER,
     DROP_AGENT_EVENT_NOTIFY_TRIGGER,
 )
+from switch_core.db.auth_rows_notify_ddl import (
+    CREATE_AGENT_NOTIFY_FUNCTION,
+    CREATE_AGENT_NOTIFY_TRIGGER,
+    CREATE_CONTROLLER_NOTIFY_FUNCTION,
+    CREATE_CONTROLLER_NOTIFY_TRIGGER,
+    DROP_AGENT_NOTIFY_TRIGGER,
+    DROP_CONTROLLER_NOTIFY_TRIGGER,
+)
 from switch_core.db.base import Base
 from switch_core.db.encrypted_json import EncryptedJSONB
 from switch_core.db.membership_notify_ddl import (
@@ -45,6 +53,17 @@ from switch_core.db.notify_ddl import (
     DROP_NOTIFY_TRIGGER,
 )
 from switch_core.db.rls_ddl import attach_row_level_security
+from switch_core.db.room_access_notify_ddl import (
+    CREATE_BUDGETS_NOTIFY_FUNCTION,
+    CREATE_BUDGETS_NOTIFY_TRIGGER,
+    CREATE_ROOM_AGENT_NOTIFY_FUNCTION,
+    CREATE_ROOM_AGENT_NOTIFY_TRIGGER,
+    CREATE_ROOM_NOTIFY_FUNCTION,
+    CREATE_ROOM_NOTIFY_TRIGGER,
+    DROP_BUDGETS_NOTIFY_TRIGGER,
+    DROP_ROOM_AGENT_NOTIFY_TRIGGER,
+    DROP_ROOM_NOTIFY_TRIGGER,
+)
 from switch_core.db.session_activity_notify_ddl import (
     CREATE_ACTIVITY_TRIGGER,
     CREATE_APPROVAL_INSERT_TRIGGER,
@@ -4046,6 +4065,28 @@ class AgentController(TenantScoped, Base):
     )
 
 
+# The triggers that signal every process when an agent's row changes, or a
+# controller's owner, credential or revocation does, so each process drops
+# what it kept of them for authorizing controller tokens. As for the triggers
+# above, `create_all` builds them for the tests and real databases get them
+# from a migration. The SQL lives in `db/auth_rows_notify_ddl.py`.
+for _table, _ddls, _drop in (
+    (
+        Agent.__table__,
+        (CREATE_AGENT_NOTIFY_FUNCTION, CREATE_AGENT_NOTIFY_TRIGGER),
+        DROP_AGENT_NOTIFY_TRIGGER,
+    ),
+    (
+        AgentController.__table__,
+        (CREATE_CONTROLLER_NOTIFY_FUNCTION, CREATE_CONTROLLER_NOTIFY_TRIGGER),
+        DROP_CONTROLLER_NOTIFY_TRIGGER,
+    ),
+):
+    for _ddl in _ddls:
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+    event.listen(_table, "before_drop", DDL(_drop).execute_if(dialect="postgresql"))
+
+
 class AgentControllerEnrollmentCode(TenantScoped, Base):
     """A one-time code a headless controller enrolls with.
 
@@ -4642,3 +4683,30 @@ attach_row_level_security(Base.metadata)
 # `create_all` built without them is not the schema the server runs against.
 # After the tables, not before — see `db/tenant_lookup.py`.
 attach_tenant_lookups(Base.metadata)
+
+
+# The triggers that signal every process when an agent joins or leaves a room,
+# a room's descriptor changes or a tenant's budgets do, so each process drops
+# what it kept of them for the checks every post makes. As for the triggers
+# above, `create_all` builds them for the tests and real databases get them
+# from a migration. The SQL lives in `db/room_access_notify_ddl.py`.
+for _table, _ddls, _drop in (
+    (
+        room_agents,
+        (CREATE_ROOM_AGENT_NOTIFY_FUNCTION, CREATE_ROOM_AGENT_NOTIFY_TRIGGER),
+        DROP_ROOM_AGENT_NOTIFY_TRIGGER,
+    ),
+    (
+        Room.__table__,
+        (CREATE_ROOM_NOTIFY_FUNCTION, CREATE_ROOM_NOTIFY_TRIGGER),
+        DROP_ROOM_NOTIFY_TRIGGER,
+    ),
+    (
+        UsageBudget.__table__,
+        (CREATE_BUDGETS_NOTIFY_FUNCTION, CREATE_BUDGETS_NOTIFY_TRIGGER),
+        DROP_BUDGETS_NOTIFY_TRIGGER,
+    ),
+):
+    for _ddl in _ddls:
+        event.listen(_table, "after_create", DDL(_ddl).execute_if(dialect="postgresql"))
+    event.listen(_table, "before_drop", DDL(_drop).execute_if(dialect="postgresql"))

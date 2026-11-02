@@ -250,6 +250,15 @@ version of their own to them without also giving them a release of their own.
   about to be asked again. A room's facts are now kept for fifteen minutes,
   a sender and an agent's runtime, which do not change, for an hour, and up
   to 50,000 of each.
+- **A post's first checks are kept until a signal says they changed.**
+  Every post checks that its agent is in the room and that no budget
+  covering it has run out, and a controller relaying it checks the
+  membership again: two transactions per post. Each process now keeps those
+  answers as it keeps a controller token's rows. Triggers on `room_agents`,
+  `rooms` and `usage_budgets` signal every change, so an answer is kept while
+  the signal connection listens and for `AGENT_AUTH_CACHE_TTL_SECONDS`
+  otherwise. A refusal is never kept. `ROOM_ACCESS_CACHE_MAX_ENTRIES`
+  (20,000) bounds what is kept.
 - **An agent's stream reads in one database session per pass, and pooled
   connections are no longer pinged before use.** A pass that delivered a
   message opened a session for each of its reads, six pool checkouts and six
@@ -377,6 +386,13 @@ version of their own to them without also giving them a release of their own.
 - **Reading a room's context costs one transaction.** The room's newest
   message number, the membership check and the history read share one
   session, where each opened its own.
+- **A controller's requests no longer read its row and its agent's row each
+  time.** They were kept for 5 seconds, and a controller's requests, spread
+  over several processes, rarely came back to one within that. They are now
+  kept until a signal says they changed, which triggers on `agents` and
+  `agent_controllers` send, and a miss reads all of the controller's agents
+  at once. `CONTROLLER_AUTH_CACHE_MAX_AGENTS` (20,000) bounds the agent rows
+  kept.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a
