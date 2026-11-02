@@ -10,6 +10,7 @@ import { codexSourceHome, prepareCodexSessionHome } from '../codex/home';
 import { codexKeyringReaderEnvironment } from './agent-env';
 import { agentHasOwnUser } from './host-permissions';
 import { type HostedCredential, hostedCredentialSchema } from './provider-login';
+import { launchSecrets } from './redaction';
 import { roomConnectionSchema } from './room-inbox';
 import { startSchema } from './server';
 import {
@@ -235,6 +236,7 @@ export async function prepareSharedConfig(
     connectorMcpServers: Object.keys(vendors),
     ...(codexKeyringLogin ? { codexKeyringLogin } : {}),
   };
+  for (const secret of launchSecrets(started.env, started.mcpServers)) redact(secret);
   return { agentApiUrl, token, input: started, notices };
 }
 

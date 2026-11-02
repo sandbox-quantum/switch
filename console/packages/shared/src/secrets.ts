@@ -2,7 +2,7 @@ type RedactionReplacement = string | ((substring: string, ...args: string[]) => 
 
 /** The words that mark a value as a credential. */
 const SECRET_KEY_WORDS =
-  'authorization|api[_-]?key|private[_-]?key|token|password|passphrase|secret|credential';
+  'authorization|bearer|api[_-]?key|private[_-]?key|token|password|passphrase|secret|credential';
 
 /**
  * A credential-bearing key name, with any number of leading qualifier segments.
@@ -14,6 +14,16 @@ const SECRET_KEY_WORDS =
  * the alternation only caught the unqualified spelling nobody uses.
  */
 const SECRET_KEY_NAMES = `(?:[a-z0-9]+[_-])*(?:${SECRET_KEY_WORDS})`;
+
+const SECRET_NAME = new RegExp(`^${SECRET_KEY_NAMES}$`, 'i');
+
+/**
+ * Whether a variable or header name marks its value as a credential:
+ * `OPENAI_API_KEY`, `SLACK_BOT_TOKEN`, `Authorization`, `X-Api-Key`.
+ */
+export function isSecretName(name: string): boolean {
+  return SECRET_NAME.test(name);
+}
 
 const SECRET_PATTERNS: Array<[RegExp, RedactionReplacement]> = [
   // JSON-quoted key/value: handles both "key":"value" and escaped \"key\":\"value\"
