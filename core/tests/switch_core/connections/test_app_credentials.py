@@ -41,6 +41,7 @@ from tests.switch_core.connections.standing import connectable, sign_in
 
 PUBLIC_URL = "https://switch.example.test"
 GOOGLE_VARIABLE = "GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH"
+DROPBOX_VARIABLE = "DROPBOX_CLIENT_CONFIG_PATH"
 
 
 def _pem(key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey) -> str:
@@ -145,9 +146,11 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "dropbox": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
+        assert specs["dropbox"].variables == (DROPBOX_VARIABLE,)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
 
 

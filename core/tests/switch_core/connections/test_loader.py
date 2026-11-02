@@ -26,18 +26,20 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_dropbox():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "dropbox",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
         "datadog",
+        "dropbox",
         "github",
         "google-workspace",
     ]
@@ -46,6 +48,7 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["dropbox"].skill_files
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -313,6 +316,56 @@ def test_a_server_choosing_no_profile_offers_the_catalog_as_shipped():
 def test_a_profile_the_catalog_does_not_have_stops_the_server(chosen, message):
     with pytest.raises(CatalogError, match=message):
         with_access_profiles(CATALOG, chosen)
+
+
+def test_the_shipped_dropbox_entry_reads_dropbox_as_dropbox_requires():
+    definition = CATALOG["dropbox"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # Dynamic registration is for a trusted client list alone, so each
+    # server's operator registers a Dropbox app.
+    assert (definition.adapter, oauth.registration, oauth.redirect) == (
+        "oauth",
+        "static",
+        ["core"],
+    )
+    assert oauth.client_settings == "DROPBOX"
+    # Dropbox takes an http redirect only on localhost, so sign-ins come back
+    # to Core's own https callback, as Google's and Airtable's do.
+    assert oauth.loopback_ports is None
+    # Dropbox's advertised revocation endpoint refuses the form a standard
+    # revocation request sends, so people remove Switch in Dropbox instead.
+    assert (oauth.revocation_url, oauth.revocation_discovered) == (None, False)
+    assert oauth.remove_access is not None
+    assert "Settings, Apps" in oauth.remove_access
+    assert "still reaches your Dropbox" in oauth.remove_access
+    # A refresh token comes only for offline access.
+    assert oauth.authorization_params == {"token_access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    identity = definition.auth.identity
+    assert identity is not None
+    # get_current_account takes no arguments; the POST is the whole call.
+    assert (identity.method, identity.body) == ("POST", None)
+    assert identity.url == "https://api.dropboxapi.com/2/users/get_current_account"
+    assert (identity.account_id, identity.label) == ("account_id", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        14400,
+    )
+    assert definition.mcp is not None
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        ("dropbox", "https://mcp.dropbox.com/mcp")
+    ]
+    access = definition.access
+    assert access is not None and access.write is None
+    assert access.read.scopes == [
+        "account_info.read",
+        "files.metadata.read",
+        "files.content.read",
+    ]
+    assert definition.tools is not None
+    assert definition.tools.mode == "pass_through"
 
 
 @pytest.fixture
@@ -610,7 +663,9 @@ def test_an_identity_call_may_post(catalog_copy):
 def test_a_post_identity_call_may_send_no_body(catalog_copy):
     # Dropbox's get_current_account is a POST that takes no arguments, so a
     # POST with no body is a call, not a mistake.
-    _write_example(catalog_copy, OAUTH_ENTRY.replace("    method: GET\n", "    method: POST\n"))
+    _write_example(
+        catalog_copy, OAUTH_ENTRY.replace("    method: GET\n", "    method: POST\n")
+    )
     identity = load_catalog(catalog_copy)["example"].definition.auth.identity
     assert identity is not None
     assert (identity.method, identity.body) == ("POST", None)

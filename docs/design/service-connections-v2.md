@@ -541,6 +541,62 @@ back, add `airtable` to `DISABLED_SERVICES`, remove its client under
 Connector apps or unset `AIRTABLE_CLIENT_CONFIG_PATH`, or set the entry's
 `enabled: false`.
 
+## Dropbox
+
+Built from Dropbox's live OAuth metadata and its MCP server's published tools;
+the operator's setup is in
+[`docs/old/dropbox-setup.md`](../old/dropbox-setup.md).
+
+- Shape 1 with a static client. Dropbox registers clients dynamically only for
+  a trusted list of MCP clients (Claude, ChatGPT, Cursor), so each server's
+  operator registers an app and saves it under Connector apps, or names it in
+  `DROPBOX_CLIENT_CONFIG_PATH`: Scoped access, Full Dropbox, with the three
+  scopes below ticked. A development-status app links only its owner until
+  **Enable additional users** is set, and links up to 500 accounts; Dropbox
+  asks for production status two weeks after the 50th.
+- The endpoints are discovered from the MCP server: its protected-resource
+  metadata names `https://www.dropbox.com` as the authorization server, whose
+  metadata offers PKCE with S256 and accepts the secret in the body
+  (`client_secret_post`).
+- Dropbox advertises `/2/auth/token/revoke` as its revocation endpoint, but it
+  is not an RFC 7009 one: it takes the token as a Bearer header and answers a
+  standard revocation request with 400, "Invalid authorization value". So the
+  entry names no revocation endpoint, and its `remove_access` tells the person
+  to disconnect Switch under Settings, Apps. The sign-in Switch drops still
+  works until they do.
+- Dropbox matches the redirect URI exactly and takes a plain http one only on
+  localhost. Switch Console's loopback listener is on `127.0.0.1`, which
+  Dropbox does not count as localhost, so a sign-in comes back to Core's own
+  https callback, as Google's and Airtable's do; the server needs
+  `GATEWAY_PUBLIC_URL`. A made-up code shows the app's permissions not at
+  all, and its redirect URI only through a real sign-in, so the entry's
+  `unchecked` tells the operator to confirm both.
+- The identity call is `POST /2/users/get_current_account`, which takes no
+  arguments: the POST is the whole request, and the token goes in the header.
+  It answers `account_id` and `email`. This is the call the loader's identity
+  `method`, with an optional body, was added for.
+- Dropbox hands out a refresh token only for `token_access_type=offline`, so
+  the entry sets it. Access tokens live four hours (`expires_in: 14400` in the
+  metadata), so a token handed out never has longer left; a refresh does not
+  spend the refresh token.
+- Least access: `account_info.read`, `files.metadata.read` and
+  `files.content.read` cover `WhoAmI`, `Search`, `ListFolder`,
+  `GetFileMetadata`, `GetFileContent`, `GetMarkdown` and `GetTranscript`.
+  Dropbox's own setup page ticks eight scopes, including `files.content.write`,
+  `sharing.write` and the file-request pair; this entry asks for none of them,
+  nor for `sharing.read`, `files.metadata.write`, `files.permanent_delete` or
+  any team scope. The server lists its writing, sharing, file-request, Sign
+  and Paper-editing tools anyway, and Dropbox refuses them without the scopes:
+  the entry therefore names no write level, and the read level is the whole
+  connection. The skill says so, so an agent tells the person it can only
+  read.
+- The Dropbox MCP server is in open beta.
+
+To connect: Settings, Connections in Switch Console, then Dropbox. To roll
+back, add `dropbox` to `DISABLED_SERVICES`, remove its app under Connector
+apps or unset `DROPBOX_CLIENT_CONFIG_PATH`, or set the entry's `enabled:
+false`.
+
 ## Google Workspace
 
 Drive, Docs, Sheets, Slides and Calendar; not Gmail. Google's Workspace MCP

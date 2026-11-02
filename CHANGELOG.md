@@ -263,6 +263,21 @@ version of their own to them without also giving them a release of their own.
   answers with its checks too, so the page can show them. A passing Google
   Workspace check now says it can't see the redirect URI either: Google
   compares it only when someone signs in.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console and
+  a granted agent searches, browses and reads their files and folders, as that
+  person, through Dropbox's MCP server. Dropbox registers clients dynamically
+  only for a trusted list, so each server's operator registers a Dropbox app
+  and saves it under Connector apps, or names it in
+  `DROPBOX_CLIENT_CONFIG_PATH`; see `docs/old/dropbox-setup.md`. Without it,
+  Dropbox is listed as not set up. Like Google Workspace, it needs
+  `GATEWAY_PUBLIC_URL`: Dropbox takes a plain http redirect only on localhost,
+  so people come back to the server's own https callback. The connection asks
+  only for `account_info.read`, `files.metadata.read` and `files.content.read`;
+  the server's tools that create, move, copy or delete files, share links,
+  request files, send for signature or edit Paper docs are not granted, and
+  Dropbox refuses them. Dropbox advertises a revocation endpoint that wants the
+  token as a bearer header rather than a standard revocation form, so
+  disconnecting says where in Dropbox to remove the app.
 
 #### Changed
 - **Unlinking a resource from a room is for those taking part in it.** It

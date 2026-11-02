@@ -25,6 +25,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14.
 | `datadog.svg` | Datadog | Simple Icons 16.33.0, `datadog` | CC0-1.0; guidelines https://www.datadoghq.com/about/resources/ | `#632CA6`, white in dark theme |
 | `new-relic.svg` | New Relic | Simple Icons 16.33.0, `newrelic` | CC0-1.0; guidelines https://newrelic.com/about/media-assets | black in light theme, `#1CE783` in dark theme |
 | `notion.svg` | Notion | Simple Icons 16.33.0, `notion` | CC0-1.0 | theme foreground |
+| `dropbox.svg` | Dropbox | Simple Icons 16.33.0, `dropbox` | CC0-1.0; guidelines https://www.dropbox.com/branding | `#0061FF` |
 | `linear.svg` | Linear | Simple Icons 16.33.0, `linear` | CC0-1.0 | `#5E6AD2` |
 | `box.svg` | Box | Simple Icons 16.33.0, `box` | CC0-1.0; guidelines https://www.box.com/en-gb/about-us/press | `#0061D5`, white in dark theme |
 | `airtable.svg` | Airtable | Simple Icons 16.33.0, `airtable` | CC0-1.0 | black in light theme, `#18BFFF` in dark theme |

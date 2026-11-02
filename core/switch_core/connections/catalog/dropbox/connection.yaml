@@ -1,0 +1,64 @@
+slug: dropbox
+name: Dropbox
+category: File storage
+description: Search and read the files and folders in your Dropbox, as you.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  # A refresh does not spend the refresh token, which keeps working.
+  refresh: reusable
+  oauth:
+    # Dropbox registers clients dynamically only for a trusted list (Claude,
+    # ChatGPT, Cursor), so each server's operator registers a Dropbox app and
+    # saves it under Connector apps, or names its settings in
+    # DROPBOX_CLIENT_CONFIG_PATH: Scoped access, Full Dropbox, with every
+    # scope below ticked under Permissions. Dropbox refuses a sign-in that
+    # asks for a scope the app does not have.
+    registration: static
+    client_settings: DROPBOX
+    # Dropbox matches the redirect URI exactly, and takes a plain http one
+    # only on localhost, never on the 127.0.0.1 Switch Console listens on. So
+    # a sign-in comes back to Core's own https callback, and the server needs
+    # GATEWAY_PUBLIC_URL.
+    redirect: [core]
+    # The check sends a made-up code, which shows the app's permissions not at
+    # all and its redirect URI only through a real sign-in.
+    unchecked: >-
+      Switch can't check the redirect URI or that the app's permissions are
+      ticked. Connect once to confirm both.
+    # Dropbox hands out a refresh token only when the authorization asks for
+    # offline access. Its access tokens live four hours (expires_in 14400).
+    authorization_params: { token_access_type: offline }
+    # Dropbox advertises /2/auth/token/revoke as its revocation endpoint, but
+    # it wants the token as a Bearer header and refuses the form a standard
+    # revocation request sends (400, "Invalid authorization value"), so Switch
+    # cannot revoke a sign-in for the person.
+    remove_access: >-
+      Remove Switch under Settings, Apps, in your account menu at
+      dropbox.com/account/connected_apps. Until you do, the sign-in Switch
+      stopped using still reaches your Dropbox.
+  identity:
+    # get_current_account takes no arguments, and Dropbox serves it as a POST.
+    method: POST
+    url: https://api.dropboxapi.com/2/users/get_current_account
+    account_id: account_id
+    label: email
+# An access token lives four hours, so one handed out never has more left.
+token: { kind: pass_through, max_lifetime: 14400 }
+mcp:
+  servers:
+    - { name: dropbox, url: "https://mcp.dropbox.com/mcp" }
+access:
+  # Search, browse and read. Dropbox's server also lists tools that create,
+  # move, copy, delete, share, request files, send for signature and edit
+  # Paper docs; without the scopes they need Dropbox refuses them, so there is
+  # no write level and this connection cannot change anything. Not asked for:
+  # files.metadata.write, files.content.write, sharing.read, sharing.write,
+  # file_requests.read, file_requests.write.
+  read:
+    scopes:
+      - account_info.read
+      - files.metadata.read
+      - files.content.read
+tools: { mode: pass_through }
