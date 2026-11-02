@@ -1,6 +1,7 @@
 import type { FileHandle } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
-import { redactSecrets } from '@switch-console/shared';
+import { isSecretName, redactSecrets } from '@switch-console/shared';
+import type { McpServerSpec } from '../adapter';
 
 /**
  * Exact-value redaction of secrets: what a host scrubs from the logs, journals
@@ -86,6 +87,40 @@ const TOKEN_SHAPES = [
 ];
 
 const CUT_TAIL_MIN = 8;
+
+/**
+ * Shorter values are left alone: a secret-named flag set to `1` or `true` is
+ * no secret, and masking it would mask every `1` a tool prints.
+ */
+const LAUNCH_SECRET_MIN = 8;
+
+/**
+ * The credentials a host itself hands an agent: the values of its
+ * secret-named environment variables, and of the secret-named headers and
+ * environment variables of its MCP servers. Nothing issued them through this
+ * process, so no other source of redactions knows them, yet the agent can
+ * print any of them in a tool's output. A header's value counts with and
+ * without its scheme (`Bearer …`), as a tool may print either.
+ */
+export function launchSecrets(
+  env: Record<string, string>,
+  mcpServers: Record<string, McpServerSpec>
+): string[] {
+  const secrets = new Set<string>();
+  const take = (entries: Record<string, string> | undefined) => {
+    for (const [name, value] of Object.entries(entries ?? {})) {
+      if (!isSecretName(name)) continue;
+      const whole = value.trim();
+      const scheme = /^(?:bearer|bot|token|basic)\s+(\S+)$/i.exec(whole);
+      for (const secret of scheme ? [whole, scheme[1]] : [whole])
+        if (secret.length >= LAUNCH_SECRET_MIN) secrets.add(secret);
+    }
+  };
+  take(env);
+  for (const spec of Object.values(mcpServers))
+    take(spec.transport === 'http' ? spec.headers : spec.env);
+  return [...secrets];
+}
 
 function redactShapes(text: string): string {
   return TOKEN_SHAPES.reduce((output, shape) => output.replace(shape, '[REDACTED]'), text);
