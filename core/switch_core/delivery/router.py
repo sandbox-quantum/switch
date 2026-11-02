@@ -66,11 +66,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-from sqlalchemy import and_, delete, func, literal, select, update
+from sqlalchemy import and_, bindparam, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
+from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
 from switch_core.budgets import BudgetGuard
 from switch_core.clients.actor import AgentActor, ClientConfig
 from switch_core.clients.admin_messages import PLATFORM_MARKER
@@ -88,6 +89,7 @@ from switch_core.db.models import (
     SwitchCoreProcess,
     room_agents,
 )
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
 from switch_core.db.stores.template_install_store import TemplateInstallStore
@@ -538,7 +540,7 @@ class Routed:
         row: InboundEvent,
         *,
         seq: int,
-        stored: list[str],
+        stored: list[tuple[str, int]],
         deadline_in: float | None,
     ) -> None:
         self._router = router
@@ -571,8 +573,8 @@ class Routed:
 
     def _committed(self) -> None:
         router = self._router
-        for agent_id in self._stored:
-            router.services.event_buffer.ring(agent_id)
+        for agent_id, seq in self._stored:
+            router.services.event_buffer.ring(agent_id, seq)
         reads = self._reads
         if reads is None:
             return
@@ -883,7 +885,7 @@ class MessageRouter:
                 )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
-        stored: list[str] = []
+        stored: list[tuple[str, int]] = []
         if reads is not None:
             if plan.group is not None:
                 deadline_in = await self._step_group(session, reads, plan, row)
@@ -904,15 +906,10 @@ class MessageRouter:
         its members. Read with the room's lock held, when every arrival
         numbered before the row being written has committed."""
         known = {member.client_id for member in reads.members}
-        now = set(
-            (
-                await session.scalars(
-                    select(ClientRoom.client_id)
-                    .join(Agent, Agent.client_id == ClientRoom.client_id)
-                    .where(ClientRoom.room_id == reads.room_id)
-                )
-            ).all()
-        )
+        now = {
+            row.client_id
+            for row in await _AGENT_MEMBERS.all(session, {"room_id": reads.room_id})
+        }
         return bool(now - known)
 
     async def membership_changed(self, change: tuple[str, str, str]) -> None:
@@ -1332,18 +1329,54 @@ class MessageRouter:
         reads: RoomReads,
         deliveries: list[tuple[AgentRecipient, Delivery]],
         row: InboundEvent,
-    ) -> list[str]:
+    ) -> list[tuple[str, int]]:
         """Store every own event decided for `row`, in the order of the
-        agents' ids, and return the agents whose events were stored."""
-        stored: list[str] = []
+        agents' ids, and return the agents whose events were stored, each with
+        its event's number.
+
+        Stored together, in two statements whatever the number of agents
+        (`EventBuffer.store_together`). If that fails they are stored one at
+        a time, each in a savepoint of its own, so that one agent's failure
+        costs that agent its event and nothing more."""
+        built: list[tuple[AgentRecipient, OwnEventToStore]] = []
         for recipient, delivery in sorted(
             deliveries, key=lambda decided: decided[0].agent.id
         ):
             if delivery.own_event is None:
                 continue
-            agent_id = recipient.agent.id
             try:
-                own = delivery.own_event(row)
+                decided = delivery.own_event(row)
+            except Exception:
+                self._store_failed(recipient, row, reads)
+                continue
+            built.append(
+                (
+                    recipient,
+                    OwnEventToStore(
+                        agent_id=recipient.agent.id,
+                        client_id=recipient.client_id,
+                        event=decided.event,
+                        room_seq=decided.room_seq,
+                        message_key=decided.message_key,
+                    ),
+                )
+            )
+        together = await self.services.event_buffer.store_together(
+            session,
+            tenant_id=reads.tenant_id,
+            room_id=reads.room_id,
+            events=[own for _, own in built],
+        )
+        if together is not None:
+            return [
+                (own.agent_id, together[own.agent_id])
+                for _, own in built
+                if own.agent_id in together
+            ]
+        stored: list[tuple[str, int]] = []
+        for recipient, own in built:
+            agent_id = own.agent_id
+            try:
                 seq = await self.services.event_buffer.store(
                     session,
                     tenant_id=reads.tenant_id,
@@ -1355,19 +1388,25 @@ class MessageRouter:
                     message_key=own.message_key,
                 )
             except Exception:
-                metrics().increment(ROUTING_FAILURES, {"stage": "store"})
-                logger.error(
-                    "Could not store agent %s's own event for row %s in room %s; "
-                    "the row is written and the agent misses it",
-                    recipient.agent.name,
-                    row.event_id,
-                    reads.room_id,
-                    exc_info=True,
-                )
+                self._store_failed(recipient, row, reads)
                 continue
             if seq is not None:
-                stored.append(agent_id)
+                stored.append((agent_id, seq))
         return stored
+
+    @staticmethod
+    def _store_failed(
+        recipient: AgentRecipient, row: InboundEvent, reads: RoomReads
+    ) -> None:
+        metrics().increment(ROUTING_FAILURES, {"stage": "store"})
+        logger.error(
+            "Could not store agent %s's own event for row %s in room %s; "
+            "the row is written and the agent misses it",
+            recipient.agent.name,
+            row.event_id,
+            reads.room_id,
+            exc_info=True,
+        )
 
     async def _step_group(
         self, session: AsyncSession, reads: RoomReads, plan: _Plan, row: InboundEvent
@@ -1702,3 +1741,12 @@ def _unwritten(message: Message) -> _Unwritten:
 
 # The time on a row not written yet, which nothing deciding it reads.
 _NOT_STAMPED = datetime.fromtimestamp(0, UTC)
+
+
+# The room's agent members, read again under its lock for every message
+# (`MessageRouter._joined_since`), run by asyncpg directly (`db/raw.py`).
+_AGENT_MEMBERS = RawStatement(
+    select(ClientRoom.client_id)
+    .join(Agent, Agent.client_id == ClientRoom.client_id)
+    .where(ClientRoom.room_id == bindparam("room_id"))
+)

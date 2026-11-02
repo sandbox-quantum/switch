@@ -1,10 +1,22 @@
 from collections.abc import Collection
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Text, and_, column, func, or_, select, text, values
+from sqlalchemy import (
+    BigInteger,
+    Text,
+    and_,
+    bindparam,
+    column,
+    func,
+    or_,
+    select,
+    text,
+    values,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.models import Message, MessageAttachment
+from switch_core.db.raw import RawStatement
 
 
 class MessageStore:
@@ -146,16 +158,9 @@ class MessageStore:
         The cost is per-room serialisation of a single INSERT. Rooms do not
         contend with each other.
         """
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"),
-            {"room_id": room_id},
-        )
-        result = await session.execute(
-            select(func.coalesce(func.max(Message.seq), 0)).where(
-                Message.room_id == room_id
-            )
-        )
-        return int(result.scalar_one()) + 1
+        await _LOCK_ROOM.all(session, {"room_id": room_id})
+        head = await _ROOM_HEAD.all(session, {"room_id": room_id})
+        return int(head[0].head) + 1
 
     async def head_seq(self, session: AsyncSession, room_id: str) -> int:
         """The room's current position, or 0 when nothing has been sent.
@@ -355,3 +360,14 @@ class MessageStore:
             .order_by(MessageAttachment.position)
         )
         return list(result.scalars().all())
+
+
+# The two statements a message's number costs, run by asyncpg directly
+# (`db/raw.py`): every message an agent or a person sends takes the room's
+# lock and reads its head.
+_LOCK_ROOM = RawStatement(text("SELECT pg_advisory_xact_lock(hashtext(:room_id))"))
+_ROOM_HEAD = RawStatement(
+    select(func.coalesce(func.max(Message.seq), 0).label("head")).where(
+        Message.room_id == bindparam("room_id")
+    )
+)

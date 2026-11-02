@@ -8,12 +8,14 @@ connection, so every process listens here and rings the agent's doorbell
 (`EventBuffer.ring`). The stream behind the connection then reads the rows
 past its position from the table.
 
-A notification only wakes a stream; the event itself is always read from the
-table. If a notification is lost, the stream finds the event when its wait
-times out and it reads again, so the event arrives later but still arrives.
-Notifications sent while the listening connection is down are lost, so after
-every reconnect every stream in this process is woken to look for events it
-may have missed.
+A notification wakes a stream and tells it the new event's number, which the
+stream takes as the agent's head instead of reading it; the event itself is
+always read from the table. If a notification is lost, the stream finds the
+event when its wait times out and it reads the heads again, so the event
+arrives later but still arrives. Notifications sent while the listening
+connection is down are lost, so each time it starts or stops listening every
+head this process was told is forgotten, and when it starts every stream is
+woken to look for events it may have missed (`EventBuffer.listening`).
 
 Connection handling follows `MessageListener`: a dedicated connection outside
 the pool, a periodic heartbeat query, and reconnects with a capped backoff.
@@ -104,7 +106,7 @@ class AgentEventListener:
                     )
                 await driver.add_listener(AGENT_EVENT_CHANNEL, self._on_notify)
                 try:
-                    self._buffer.ring_everyone()
+                    self._buffer.listening(True)
                     self.connected.set()
                     while self._running:
                         await asyncio.sleep(HEARTBEAT_SECONDS)
@@ -113,6 +115,7 @@ class AgentEventListener:
                         )
                 finally:
                     self.connected.clear()
+                    self._buffer.listening(False)
                     with contextlib.suppress(Exception):
                         await driver.remove_listener(
                             AGENT_EVENT_CHANNEL, self._on_notify
@@ -123,16 +126,22 @@ class AgentEventListener:
     def _on_notify(
         self, _connection: Any, _pid: int, _channel: str, payload: str
     ) -> None:
-        """Handle one notification by ringing the agent's doorbell.
+        """Handle one notification by ringing the agent's doorbell with the
+        new event's number.
 
         asyncpg calls this from the connection's read loop, so it does nothing
         that waits and returns straight away.
         """
         try:
-            agent_id = json.loads(payload)["agent_id"]
+            announced = json.loads(payload)
+            agent_id = announced["agent_id"]
         except (ValueError, TypeError, KeyError):
             logger.warning(
                 "Ignoring an unreadable agent event announcement: %r", payload[:200]
             )
             return
-        self._buffer.ring(agent_id)
+        seq = announced.get("seq")
+        self._buffer.ring(
+            agent_id,
+            seq if isinstance(seq, int) and not isinstance(seq, bool) else None,
+        )

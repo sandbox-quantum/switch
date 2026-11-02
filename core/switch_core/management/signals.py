@@ -316,15 +316,12 @@ class ControllerSignals:
         here, and the stream that loads them runs over there."""
         if self._held_elsewhere(controller, leases) is None:
             return {}
-        return {
-            agent_id: {
-                room.id
-                for room in await self._rooms.get_rooms_for_agent(
-                    session, agent_id, include_archived=True
-                )
-            }
-            for agent_id in sorted(self._presence.agents_of(controller.id))
-        }
+        # One query for all of them: every process re-reads this for every
+        # controller another process holds at each re-check, so a query per
+        # agent would grow with processes times agents.
+        return await self._rooms.room_ids_by_agent(
+            session, self._presence.agents_of(controller.id)
+        )
 
     def _held_elsewhere(
         self, controller: AgentController, leases: ProcessLeases

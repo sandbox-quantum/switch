@@ -50,18 +50,22 @@ baseline (`caught_up_seq`) and the reader currently in the room are stored in
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol, cast
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     Text,
+    all_,
+    any_,
     bindparam,
     delete,
     func,
@@ -104,6 +108,7 @@ from switch_core.db.models import (
     PendingAttachmentGroup,
     Room,
 )
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import (
     holds_shared_session,
     shared_tenant_session,
@@ -196,6 +201,17 @@ COUNTED_FROM_WINDOW = (
     "counted over the retention window only; you have not caught up on this "
     "room for longer than that"
 )
+
+
+@dataclass(frozen=True)
+class OwnEventToStore:
+    """One agent's own event for `EventBuffer.store_together`."""
+
+    agent_id: str
+    client_id: str
+    event: AgentEvent
+    room_seq: int
+    message_key: str | None
 
 
 class CursorExpiredError(Exception):
@@ -332,7 +348,7 @@ def message_key(row: Message) -> str:
     return group[0] if group is not None else row.transport_event_id
 
 
-# `message_key` as a SQL expression over `messages m`, so that `_UNREAD_SQL`
+# `message_key` as a SQL expression over `messages m`, so that `_UNREAD_IN_ROOM_SQL`
 # can count in the database without loading every row.
 _MESSAGE_KEY_SQL = (
     "COALESCE(m.content->'com.switch.attachment_group'->>'id', m.transport_event_id)"
@@ -341,7 +357,7 @@ _MESSAGE_KEY_SQL = (
 # The unread counts of one room at several positions (`:throughs`, each a
 # `messages.seq` in the room), in one statement. A message counts at a
 # position when it is a message, not sent by the agent, not one of its own
-# events, and inside (`:baseline`, position]. Several rows of one message share
+# events, and inside (baseline, position]. Several rows of one message share
 # a key and count once, so each key is reduced to its first qualifying row, and
 # the count at a position is the number of keys whose first row is at or
 # before it. That is the same number as counting the distinct keys of the
@@ -350,17 +366,39 @@ _MESSAGE_KEY_SQL = (
 # of `:throughs`. `firsts` is MATERIALIZED because Postgres otherwise copies it
 # into the per-position count, and under a cached generic plan that reruns the
 # room scan once per position (224 ms instead of 5 ms for 200 positions).
-_UNREAD_SQL = text(
+# The baseline is the larger of the agent's own in the room
+# (`agent_room_reads.caught_up_seq`) and the room's window start (its newest
+# row sent before `:cutoff`); both come back with each position, the agent's
+# own a NULL for a room it has none in, so the caller can tell which reason
+# applies. They, and the agent's own user id, are read in this statement
+# rather than in three of their own.
+_UNREAD_IN_ROOM_SQL = text(
     f"""
-    WITH firsts AS MATERIALIZED (
+    WITH base AS MATERIALIZED (
+      SELECT r.caught_up_seq AS caught_up,
+             coalesce((
+               SELECT m.seq FROM messages m
+               WHERE m.room_id = :room_id AND m.sent_at < :cutoff
+               ORDER BY m.sent_at DESC
+               LIMIT 1
+             ), 0) AS window_start,
+             coalesce((
+               SELECT c.matrix_user_id FROM clients c
+               JOIN agents a ON a.client_id = c.id
+               WHERE a.id = :agent_id
+             ), '') AS me
+      FROM agent_room_reads r
+      WHERE r.agent_id = :agent_id AND r.room_id = :room_id
+    ),
+    firsts AS MATERIALIZED (
       SELECT min(m.seq) AS first_seq
-      FROM messages m
+      FROM messages m, base b
       WHERE m.room_id = :room_id
-        AND m.seq > :baseline
+        AND m.seq > greatest(b.caught_up, b.window_start)
         AND m.seq <= :through
         AND m.seq > 0
         AND m.event_type = 'm.room.message'
-        AND m.sender_id <> :me
+        AND m.sender_id <> b.me
         AND NOT EXISTS (
           SELECT 1 FROM agent_events e
           WHERE e.agent_id = :agent_id
@@ -371,11 +409,83 @@ _UNREAD_SQL = text(
         )
       GROUP BY {_MESSAGE_KEY_SQL}
     )
-    SELECT t.through,
+    SELECT b.caught_up, b.window_start, t.through,
            (SELECT count(*) FROM firsts f WHERE f.first_seq <= t.through)
     FROM unnest(:throughs) AS t(through)
+    LEFT JOIN base b ON true
     """
 ).bindparams(bindparam("throughs", type_=ARRAY(BigInteger)))
+# Run by asyncpg directly (`db/raw.py`): a stream counts an agent's unread
+# messages for every event it delivers.
+_UNREAD_IN_ROOM = RawStatement(_UNREAD_IN_ROOM_SQL)
+
+
+# Locks the rows in `agent_event_heads` of the agents named by `:agent_ids`
+# (in that order, which callers keep sorted, as `store` asks), giving each
+# agent with no row one numbered from `:floor`, and returns each agent's head.
+# An agent deleted meanwhile is not in `agents`, so it gets no row and is not
+# returned. Updating a row to itself is what takes its lock.
+_LOCK_HEADS_SQL = text(
+    """
+    INSERT INTO agent_event_heads (tenant_id, agent_id, first_seq, last_seq)
+    SELECT a.tenant_id, a.id, CAST(:floor AS bigint), CAST(:floor AS bigint) - 1
+    FROM agents a
+    JOIN unnest(CAST(:agent_ids AS text[])) WITH ORDINALITY AS t(agent_id, n)
+      ON t.agent_id = a.id
+    ORDER BY t.n
+    ON CONFLICT (agent_id) DO UPDATE SET last_seq = agent_event_heads.last_seq
+    RETURNING agent_id, last_seq
+    """
+)
+
+# Inserts one own event per agent, numbered `:seqs` (each the agent's head
+# plus one, read under the lock `_LOCK_HEADS_SQL` took), for each agent that is
+# still a member of the room and has no event from the same source yet
+# (`uq_agent_events_source`), and moves each agent whose event went in to its
+# number. An agent whose event did not go in keeps its head, so no number is
+# taken and left unused. Returns the agents stored and their numbers.
+_STORE_OWN_EVENTS_SQL = text(
+    """
+    WITH wanted AS (
+      SELECT * FROM unnest(
+        CAST(:agent_ids AS text[]),
+        CAST(:client_ids AS text[]),
+        CAST(:seqs AS bigint[]),
+        CAST(:room_seqs AS bigint[]),
+        CAST(:message_keys AS text[]),
+        CAST(:types AS text[]),
+        CAST(:payloads AS text[]),
+        CAST(:notifiables AS boolean[])
+      ) AS w(agent_id, client_id, seq, room_seq, message_key, type, payload,
+             notifiable)
+    ),
+    stored AS (
+      INSERT INTO agent_events (tenant_id, agent_id, seq, room_id, room_seq,
+                                message_key, type, payload, notifiable)
+      SELECT :tenant_id, w.agent_id, w.seq, :room_id, w.room_seq, w.message_key,
+             w.type, CAST(w.payload AS jsonb), w.notifiable
+      FROM wanted w
+      WHERE EXISTS (
+        SELECT 1 FROM client_rooms m
+        WHERE m.client_id = w.client_id AND m.room_id = :room_id
+      )
+      ON CONFLICT (agent_id, message_key, room_id, room_seq, type)
+        WHERE message_key IS NOT NULL DO NOTHING
+      RETURNING agent_id, seq
+    ),
+    moved AS (
+      UPDATE agent_event_heads h SET last_seq = s.seq
+      FROM stored s WHERE h.agent_id = s.agent_id
+      RETURNING h.agent_id
+    )
+    SELECT agent_id, seq FROM stored
+    """
+)
+
+# The two statements above, run by asyncpg directly (`db/raw.py`): every
+# message stores its agents' own events with them.
+_LOCK_HEADS = RawStatement(_LOCK_HEADS_SQL)
+_STORE_OWN_EVENTS = RawStatement(_STORE_OWN_EVENTS_SQL)
 
 
 def session_slots_for(pool_size: int, max_overflow: int) -> int:
@@ -418,6 +528,23 @@ class EventBuffer:
         # listener sets it for own events written by other processes. The events
         # themselves are always read from `agent_events`.
         self._notify: dict[str, asyncio.Event] = {}
+        # Events of readers that serve several agents at once (a controller's
+        # stream), set with each of those agents' doorbells, so such a reader
+        # waits on one event rather than one per agent (`listen`).
+        self._bells: dict[str, set[asyncio.Event]] = {}
+        # The head of each agent read here, as this process was last told it:
+        # by the notification of an own event written anywhere, or by a write
+        # of its own. Kept only while the notification listener is listening,
+        # since a notification sent while it was not is lost, and forgotten
+        # whenever that may have happened. A head only ever rises, so of two
+        # values for one agent the larger is kept. A delivery pass takes its
+        # heads from here and reads the database for an agent with none
+        # (`heads`).
+        self._told_heads: dict[str, int] = {}
+        self._listening = False
+        # Advanced each time the told heads are forgotten, so a head read from
+        # the database before that is not kept after it (`heads`).
+        self._told_epoch = 0
 
     @asynccontextmanager
     async def one_session(self, tenant_id: str) -> AsyncIterator[AsyncSession]:
@@ -521,6 +648,78 @@ class EventBuffer:
             return None
         await savepoint.commit()
         return int(seq)
+
+    async def store_together(
+        self,
+        session: AsyncSession,
+        *,
+        tenant_id: str,
+        room_id: str,
+        events: list[OwnEventToStore],
+    ) -> dict[str, int] | None:
+        """`store` for several agents' own events from one room row, in two
+        statements rather than four per agent: one locks the agents' rows in
+        `agent_event_heads`, and one inserts each event and moves its agent's
+        head to it. Returns each stored event's number by agent, or None when
+        the statements failed, with nothing stored and the caller's
+        transaction usable, for the caller to store the events one at a time.
+
+        `events` must be in the order of their agents' ids, one per agent, as
+        `store` asks of a caller storing several. What `store` promises holds
+        for each: membership is read after the agent's row is locked, an event
+        from a source already stored is not stored again, and an event not
+        stored takes no number. The work runs in one savepoint, and a failure
+        in it costs every agent of the row its event until the caller stores
+        them one at a time, so that one agent's failure stays that agent's.
+        """
+        if not events:
+            return {}
+        savepoint = await session.begin_nested()
+        try:
+            heads: dict[str, int] = {
+                agent_id: head
+                for agent_id, head in await _LOCK_HEADS.all(
+                    session,
+                    {
+                        "agent_ids": [own.agent_id for own in events],
+                        "floor": self.sequence_floor,
+                    },
+                )
+            }
+            wanted = [own for own in events if own.agent_id in heads]
+            stored: dict[str, int] = {
+                agent_id: seq
+                for agent_id, seq in await _STORE_OWN_EVENTS.all(
+                    session,
+                    {
+                        "tenant_id": tenant_id,
+                        "room_id": room_id,
+                        "agent_ids": [own.agent_id for own in wanted],
+                        "client_ids": [own.client_id for own in wanted],
+                        "seqs": [heads[own.agent_id] + 1 for own in wanted],
+                        "room_seqs": [own.room_seq for own in wanted],
+                        "message_keys": [own.message_key for own in wanted],
+                        "types": [own.event.type for own in wanted],
+                        "payloads": [
+                            json.dumps(own.event.model_dump(mode="json"))
+                            for own in wanted
+                        ],
+                        "notifiables": [is_notifiable(own.event) for own in wanted],
+                    },
+                )
+            }
+        except Exception:
+            await savepoint.rollback()
+            logger.warning(
+                "[EVENT-BUF] storing %d own event(s) together in room %s failed; "
+                "storing them one at a time",
+                len(events),
+                room_id,
+                exc_info=True,
+            )
+            return None
+        await savepoint.commit()
+        return {agent_id: int(seq) for agent_id, seq in stored.items()}
 
     def _claim(self, tenant_id: str, agent_id: str) -> Any:
         """The next number of the agent's own events, taken from its row in
@@ -667,7 +866,7 @@ class EventBuffer:
                 )
                 break
             except Exception as exc:
-                if delay is None or not _transient(exc):
+                if delay is None or not transient_failure(exc):
                     raise
                 logger.warning(
                     "[EVENT-BUF] storing an own event for agent %s in room %s "
@@ -685,7 +884,7 @@ class EventBuffer:
             event.type,
             seq,
         )
-        self.ring(agent_id)
+        self.ring(agent_id, seq)
         return seq
 
     async def _store_own_event(
@@ -781,33 +980,35 @@ class EventBuffer:
         after `after_seq`.
         """
         started = time.perf_counter()
-        query = (
-            select(AgentEventRow)
-            .where(
-                AgentEventRow.agent_id == agent_id,
-                AgentEventRow.seq > after_seq,
-                AgentEventRow.type.not_in(RETIRED_EVENT_TYPES),
-            )
-            .order_by(AgentEventRow.seq)
+        query = _own_events_read(
+            rooms=rooms is not None,
+            notifiable_only=notifiable_only,
+            through=through_seq is not None,
+            limit=limit is not None,
         )
+        parameters: dict[str, Any] = {"agent_id": agent_id, "after_seq": after_seq}
         if rooms is not None:
-            query = query.where(AgentEventRow.room_id.in_(rooms))
-        if notifiable_only:
-            query = query.where(AgentEventRow.notifiable.is_(True))
+            parameters["rooms"] = list(rooms)
         if through_seq is not None:
-            query = query.where(AgentEventRow.seq <= through_seq)
+            parameters["through_seq"] = through_seq
         if limit is not None:
-            query = query.limit(limit)
+            parameters["limit"] = limit
         async with tenant_session(self._session_factory, tenant_id) as session:
-            rows = (await session.scalars(query)).all()
-        # Checked after the read, not before. `expire` deletes rows and records
-        # what it deleted in one transaction. A deletion that commits before
-        # the read above is recorded by the time of this check, so a reader is
-        # never handed the events after a deleted one as if nothing were
-        # missing. Checked first, a deletion landing between the check and the
-        # read would go unreported. One landing after the read is reported
-        # too, though the rows were read: a spare gap, never a silent one.
-        await self.check_cursor(tenant_id, agent_id, after_seq)
+            found = await query.all(session, parameters)
+        # `expire` deletes rows and records what it deleted in one
+        # transaction, and the rooms it dropped after `after_seq` are read in
+        # the statement that reads the events, so the two are one snapshot: a
+        # reader is never handed the events after a deleted one as if nothing
+        # were missing. With no event to carry them, they are read after the
+        # read, where a deletion that committed before the read is recorded by
+        # then, and one landing after it is reported too: a spare gap, never a
+        # silent one.
+        if found:
+            dropped = found[0].dropped
+            if dropped:
+                await self._expired(tenant_id, agent_id, after_seq, dropped)
+        else:
+            await self.check_cursor(tenant_id, agent_id, after_seq)
         out = [
             BufferedEvent(
                 seq=row.seq,
@@ -818,7 +1019,7 @@ class EventBuffer:
                 room_seq=row.room_seq,
                 at=_epoch(row.created_at),
             )
-            for row in rows
+            for row in found
         ]
         self._record_scan(_READ, len(out), started)
         return out
@@ -829,7 +1030,7 @@ class EventBuffer:
         A wake-up is advisory: callers re-read from their position rather than
         trusting this to deliver anything.
         """
-        notify = self._notify.setdefault(agent_id, asyncio.Event())
+        notify = self.doorbell(agent_id)
         notify.clear()
         try:
             await asyncio.wait_for(notify.wait(), timeout=timeout)
@@ -844,27 +1045,74 @@ class EventBuffer:
         signal carries no payload, so a spurious or missed wake-up costs
         latency, never correctness.
         """
-        return self._notify.setdefault(agent_id, asyncio.Event())
+        notify = self._notify.get(agent_id)
+        if notify is None:
+            notify = self._notify[agent_id] = asyncio.Event()
+        return notify
 
-    def ring(self, agent_id: str) -> None:
-        """Set the agent's doorbell in this process.
+    def listen(self, agent_id: str, bell: asyncio.Event) -> None:
+        """Set `bell` whenever the agent's doorbell rings, until
+        `stop_listening`: for a reader serving several agents, which then
+        waits on its one `bell` rather than on a doorbell per agent."""
+        self._bells.setdefault(agent_id, set()).add(bell)
 
-        `enqueue` calls this after inserting an own event, and the notification
-        listener calls it when another process inserts one.
+    def stop_listening(self, agent_id: str, bell: asyncio.Event) -> None:
+        bells = self._bells.get(agent_id)
+        if bells is None:
+            return
+        bells.discard(bell)
+        if not bells:
+            del self._bells[agent_id]
+
+    def _served(self, agent_id: str) -> bool:
+        """Whether a reader in this process waits on the agent's doorbell."""
+        return agent_id in self._notify or agent_id in self._bells
+
+    def ring(self, agent_id: str, seq: int | None = None) -> None:
+        """Set the agent's doorbell in this process, and keep `seq`, the
+        number of the own event that rang it, as the agent's head here.
+
+        `enqueue` and the router call this after inserting an own event, and
+        the notification listener calls it when another process inserts one.
+        An agent's numbers are handed out in commit order (`store`), so the
+        event numbered `seq` has committed after every lower one: once it has,
+        the agent's head is at least `seq`. A ring without a number forgets the
+        head kept, and the next pass reads it.
         """
         notify = self._notify.get(agent_id)
+        bells = self._bells.get(agent_id)
+        if notify is None and bells is None:
+            return
+        if seq is None or not self._listening:
+            self._told_heads.pop(agent_id, None)
+        else:
+            self._told_heads[agent_id] = max(seq, self._told_heads.get(agent_id, seq))
         if notify is not None:
             notify.set()
+        for bell in bells or ():
+            bell.set()
 
     def ring_everyone(self) -> None:
-        """Set every doorbell in this process.
+        """Set every doorbell in this process, and forget every head kept.
 
-        The notification listener calls this each time it starts listening on
-        a Postgres connection, because it may have missed notifications while
-        it was not listening.
+        Called whenever notifications may have been missed, so every reader
+        looks for events it was not told of.
         """
+        self._told_heads.clear()
+        self._told_epoch += 1
         for notify in self._notify.values():
             notify.set()
+        for bells in self._bells.values():
+            for bell in bells:
+                bell.set()
+
+    def listening(self, now_listening: bool) -> None:
+        """Told by the notification listener each time it starts or stops
+        listening on a Postgres connection. Notifications sent while it was
+        not listening are lost, so the heads kept are forgotten either way,
+        and from the start of listening every reader looks again."""
+        self._listening = now_listening
+        self.ring_everyone()
 
     async def head(self, tenant_id: str, agent_id: str) -> int:
         """The number of the agent's newest own event, or the number just
@@ -879,25 +1127,49 @@ class EventBuffer:
                 last = await session.scalar(query)
         return self.sequence_floor - 1 if last is None else last
 
-    async def heads(self, tenant_id: str, agent_ids: set[str]) -> dict[str, int]:
-        """`head` for several agents in one query, for a connection that
-        serves many agents."""
+    async def heads(
+        self, tenant_id: str, agent_ids: set[str], *, fresh: bool = False
+    ) -> dict[str, int]:
+        """`head` for several agents, for a connection that serves many agents.
+
+        An agent's head is the one this process was told (`ring`), when it
+        has one and `fresh` is not asked for. The others are read in one
+        query, and kept as told while the listener goes on listening, since
+        any event numbered after the read rings with its number.
+        """
+        heads: dict[str, int] = {}
+        if not fresh:
+            heads = {
+                agent_id: self._told_heads[agent_id]
+                for agent_id in agent_ids
+                if agent_id in self._told_heads
+            }
+        unknown = agent_ids - heads.keys()
+        if not unknown:
+            return heads
 
         def query(ids: set[str]) -> Any:
             return select(AgentEventHead.agent_id, AgentEventHead.last_seq).where(
                 AgentEventHead.agent_id.in_(ids)
             )
 
+        epoch = self._told_epoch
         async with tenant_session(self._session_factory, tenant_id) as session:
-            found = dict((await session.execute(query(agent_ids))).tuples().all())
-            missing = agent_ids - found.keys()
+            found = dict((await session.execute(query(unknown))).tuples().all())
+            missing = unknown - found.keys()
             if missing:
                 await self._start_numbering(session, missing)
                 found.update((await session.execute(query(missing))).tuples().all())
-        return {
-            agent_id: found.get(agent_id, self.sequence_floor - 1)
-            for agent_id in agent_ids
-        }
+        keep = self._listening and epoch == self._told_epoch
+        for agent_id in unknown:
+            head = max(
+                found.get(agent_id, self.sequence_floor - 1),
+                self._told_heads.get(agent_id, 0),
+            )
+            heads[agent_id] = head
+            if keep and self._served(agent_id):
+                self._told_heads[agent_id] = head
+        return heads
 
     async def first_seq(self, tenant_id: str, agent_id: str) -> int:
         """The number of the agent's first own event.
@@ -969,10 +1241,8 @@ class EventBuffer:
         async with tenant_session(self._session_factory, tenant_id) as session:
             rooms = (
                 await session.scalars(
-                    select(AgentEventDrop.room_id).where(
-                        AgentEventDrop.agent_id == agent_id,
-                        AgentEventDrop.dropped_through > after_seq,
-                    )
+                    _ROOMS_DROPPED_AFTER,
+                    {"agent_id": agent_id, "after_seq": after_seq},
                 )
             ).all()
         return tuple(sorted(rooms))
@@ -1692,11 +1962,11 @@ class EventBuffer:
         is woken for, up to a few hundred in one batch. Counted one at a time,
         each count read the room's baseline, its retention window and the
         agent's own user id again, then rescanned the same stretch of the
-        room's log. Here the agent's baselines and user id are read once, and
-        each room in the batch costs two statements however many positions are
-        asked of it: its window start, and one scan that counts at all of its
-        positions together (`_UNREAD_SQL`). The counts are the ones `unread`
-        gives for each pair on its own.
+        room's log. Here each room in the batch costs one statement however
+        many positions are asked of it: it reads the agent's baseline in the
+        room, the room's window start and the agent's user id, and counts at
+        all of the room's positions together (`_UNREAD_IN_ROOM_SQL`). The
+        counts are the ones `unread` gives for each pair on its own.
         """
         wanted: dict[str, set[int]] = {}
         for room_id, through_seq in positions:
@@ -1704,56 +1974,30 @@ class EventBuffer:
         if not wanted:
             return {}
         counts: dict[tuple[str, int], Unread] = {}
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
         async with tenant_session(self._session_factory, tenant_id) as session:
-            baselines: dict[str, int] = {
-                room_id: seq
-                for room_id, seq in (
-                    await session.execute(
-                        select(
-                            AgentRoomRead.room_id, AgentRoomRead.caught_up_seq
-                        ).where(
-                            AgentRoomRead.agent_id == agent_id,
-                            AgentRoomRead.room_id.in_(wanted),
-                        )
-                    )
-                ).all()
-            }
-            for room_id in wanted.keys() - baselines.keys():
-                for through_seq in wanted[room_id]:
-                    counts[(room_id, through_seq)] = Unread(
-                        count=None, reason=NO_BASELINE
-                    )
-            if not baselines:
-                return counts
-            me = await session.scalar(
-                select(Client.transport_user_id)
-                .join(Agent, Agent.client_id == Client.id)
-                .where(Agent.id == agent_id)
-            )
-            cutoff = datetime.now(UTC) - timedelta(seconds=self._retention_seconds)
-            for room_id, baseline in baselines.items():
-                window_start = await session.scalar(_window_start(room_id, cutoff)) or 0
-                reason = None
-                if baseline < window_start:
-                    baseline, reason = window_start, COUNTED_FROM_WINDOW
-                throughs = sorted(wanted[room_id])
+            for room_id, room_throughs in wanted.items():
+                throughs = sorted(room_throughs)
                 started = time.perf_counter()
-                at = {
-                    through: count
-                    for through, count in (
-                        await session.execute(
-                            _UNREAD_SQL,
-                            {
-                                "room_id": room_id,
-                                "baseline": baseline,
-                                "through": throughs[-1],
-                                "throughs": throughs,
-                                "me": me or "",
-                                "agent_id": agent_id,
-                            },
+                rows = await _UNREAD_IN_ROOM.all(
+                    session,
+                    {
+                        "room_id": room_id,
+                        "agent_id": agent_id,
+                        "cutoff": cutoff,
+                        "through": throughs[-1],
+                        "throughs": throughs,
+                    },
+                )
+                caught_up = rows[0][0] if rows else None
+                if caught_up is None:
+                    for through_seq in throughs:
+                        counts[(room_id, through_seq)] = Unread(
+                            count=None, reason=NO_BASELINE
                         )
-                    ).all()
-                }
+                    continue
+                reason = COUNTED_FROM_WINDOW if caught_up < rows[0][1] else None
+                at = {through: count for _, _, through, count in rows}
                 # One scan of the room's log, recorded with what it counted at
                 # the furthest position asked, which every other count is part of.
                 self._record_scan(_UNREAD, at[throughs[-1]] or 0, started)
@@ -1774,6 +2018,8 @@ class EventBuffer:
         row in `agents` (`ON DELETE CASCADE`).
         """
         self._notify.pop(agent_id, None)
+        self._bells.pop(agent_id, None)
+        self._told_heads.pop(agent_id, None)
 
     # ------------------------------------------------------------------
     # Retention
@@ -2181,11 +2427,23 @@ class EventBuffer:
         own events numbered after `after_seq`, naming the rooms they were in
         and the number to resume after."""
         rooms = await self.rooms_dropped_after(tenant_id, agent_id, after_seq)
-        if not rooms:
-            return
+        if rooms:
+            await self._expired(tenant_id, agent_id, after_seq, rooms)
+
+    async def _expired(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        after_seq: int,
+        rooms: Iterable[str],
+    ) -> NoReturn:
+        """Raise `CursorExpiredError` for a reader at `after_seq` that missed
+        own events `expire` deleted in `rooms`."""
         oldest = await self.oldest_retained(tenant_id, agent_id)
         resume_after = await self.before_retained(tenant_id, agent_id)
-        raise CursorExpiredError(agent_id, after_seq, oldest, rooms, resume_after)
+        raise CursorExpiredError(
+            agent_id, after_seq, oldest, tuple(sorted(rooms)), resume_after
+        )
 
     async def before_retained(self, tenant_id: str, agent_id: str) -> int:
         """The own-events number just before the agent's oldest one still kept,
@@ -2210,7 +2468,7 @@ class EventBuffer:
         return max(dropped_through or 0, (oldest or 0) - 1, 0)
 
 
-def _transient(exc: BaseException) -> bool:
+def transient_failure(exc: BaseException) -> bool:
     """Whether a failed database call is worth retrying: the connection or the
     connection pool failed, not the statement itself."""
     if isinstance(exc, OperationalError | InterfaceError | PoolTimeoutError):
@@ -2255,6 +2513,70 @@ def _window_start(room_id: str, cutoff: datetime) -> Any:
         .order_by(Message.sent_at.desc())
         .limit(1)
     )
+
+
+# `EventBuffer.rooms_dropped_after`, built once: every read that finds no
+# event asks it.
+_ROOMS_DROPPED_AFTER = select(AgentEventDrop.room_id).where(
+    AgentEventDrop.agent_id == bindparam("agent_id"),
+    AgentEventDrop.dropped_through > bindparam("after_seq"),
+)
+
+
+@functools.cache
+def _own_events_read(
+    *, rooms: bool, notifiable_only: bool, through: bool, limit: bool
+) -> RawStatement:
+    """The statement `EventBuffer.read_from` runs for one shape of read, built
+    once per shape (there are sixteen) and run with bind parameters by asyncpg
+    directly (`db/raw.py`): the agent's own events after `:after_seq`, oldest
+    first, each with the rooms in which `expire` deleted own events of the
+    agent numbered after `:after_seq` (NULL for none), so the two are read in
+    one statement. A stream reads an agent's events for every event it
+    delivers, and building the statement each time, or running it through
+    SQLAlchemy's execution, cost more than Postgres takes to run it.
+
+    Optional parts, by flag: only the rooms in `:rooms`, only notifiable
+    events, none numbered after `:through_seq`, at most `:limit` of them."""
+    dropped = (
+        select(func.array_agg(AgentEventDrop.room_id))
+        .where(
+            AgentEventDrop.agent_id == bindparam("agent_id"),
+            AgentEventDrop.dropped_through > bindparam("after_seq"),
+        )
+        .scalar_subquery()
+        .label("dropped")
+    )
+    query = (
+        select(
+            AgentEventRow.seq,
+            AgentEventRow.room_id,
+            AgentEventRow.room_seq,
+            AgentEventRow.payload,
+            AgentEventRow.notifiable,
+            AgentEventRow.created_at,
+            dropped,
+        )
+        .where(
+            AgentEventRow.agent_id == bindparam("agent_id"),
+            AgentEventRow.seq > bindparam("after_seq"),
+            # `NOT IN`, in the form that compiles once.
+            AgentEventRow.type
+            != all_(literal(sorted(RETIRED_EVENT_TYPES), ARRAY(Text))),
+        )
+        .order_by(AgentEventRow.seq)
+    )
+    if rooms:
+        query = query.where(
+            AgentEventRow.room_id == any_(bindparam("rooms", type_=ARRAY(Text)))
+        )
+    if notifiable_only:
+        query = query.where(AgentEventRow.notifiable.is_(True))
+    if through:
+        query = query.where(AgentEventRow.seq <= bindparam("through_seq"))
+    if limit:
+        query = query.limit(bindparam("limit"))
+    return RawStatement(query)
 
 
 def _room_head(room_id: str) -> Any:

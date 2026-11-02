@@ -195,7 +195,7 @@ def _refuse_a_binding_that_came_too_late(state: ORMExecuteState) -> None:
     nothing to compare and nothing to refuse. From the second onwards the two
     must agree.
     """
-    _refuse_drift(state.session)
+    refuse_drift(state.session)
 
 
 def _note_that_a_statement_was_issued(state: ORMExecuteState) -> None:
@@ -207,10 +207,10 @@ def _refuse_a_flush_that_drifted(
     session: Session, flush_context: object, instances: object
 ) -> None:
     """The same check, on the path `do_orm_execute` does not see."""
-    _refuse_drift(session)
+    refuse_drift(session)
 
 
-def _refuse_drift(session: Session) -> None:
+def refuse_drift(session: Session) -> None:
     if _STAMPED not in session.info:
         return
     stamped_organization = session.info.get(_STAMPED_ORGANIZATION)
@@ -383,7 +383,7 @@ class TenantCheckedSession(Session):
     """
 
     def get(self, *args: Any, **kwargs: Any) -> Any:
-        _refuse_drift(self)
+        refuse_drift(self)
         self.info[_ISSUED_A_STATEMENT] = False
         instance = super().get(*args, **kwargs)
         if instance is not None and not self.info[_ISSUED_A_STATEMENT]:
@@ -392,7 +392,7 @@ class TenantCheckedSession(Session):
         return instance
 
     def get_one(self, *args: Any, **kwargs: Any) -> Any:
-        _refuse_drift(self)
+        refuse_drift(self)
         self.info[_ISSUED_A_STATEMENT] = False
         instance = super().get_one(*args, **kwargs)
         if not self.info[_ISSUED_A_STATEMENT]:
