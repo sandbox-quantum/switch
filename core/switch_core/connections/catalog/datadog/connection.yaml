@@ -1,22 +1,29 @@
 slug: datadog
 name: Datadog
 category: Observability
-description: Query Datadog metrics, logs, traces, monitors and incidents, with your keys.
+description: Query Datadog metrics, logs, traces, monitors and incidents, as you.
 enabled: true
-adapter: api_key
+adapter: oauth
 auth:
-  type: api_key
-  refresh: none
-  api_key:
-    fields:
-      - name: api_key
-        label: API key
-        secret: true
-        help: Organization Settings, API Keys.
-      - name: application_key
-        label: Application key
-        secret: true
-        help: Personal Settings, Application Keys. Give it the mcp_read scope, and mcp_write only if agents should change things.
+  type: oauth
+  # A refresh returns a new access token and leaves the refresh token as it is.
+  refresh: reusable
+  oauth:
+    # Datadog's MCP authorization server registers a public client for each
+    # site, so Core registers one itself at each site people pick.
+    registration: dynamic
+    # Sign-ins come back to Switch Console by default, which Datadog accepts
+    # from any organization. A server may send them to Core's own callback
+    # instead (SERVICE_SIGN_IN_REDIRECT names `core` for datadog), which
+    # Datadog accepts only once an organization admin has added it to the MCP
+    # OAuth redirect URLs in Organization Settings. Switching either way
+    # registers new clients, so every Datadog connection on that server
+    # reconnects once.
+    redirect: [loopback, core]
+    loopback_ports: [39241, 39242, 39243, 39244, 39245]
+    # Each site is a Datadog of its own: its own accounts, MCP server and
+    # authorization server. Government sites offer no MCP server.
+    choices:
       - name: site
         label: Datadog site
         secret: false
@@ -28,24 +35,27 @@ auth:
           - datadoghq.eu
           - ap1.datadoghq.com
           - ap2.datadoghq.com
-    # Checks the API key, the one whose refusal is least clear later. The
-    # application key is checked by the MCP server on the first call.
-    identity:
-      method: GET
-      url: "https://api.{site}/api/v1/validate"
-      headers: { DD-API-KEY: "{api_key}" }
-    help_url: https://docs.datadoghq.com/account_management/api-app-keys/
-# A key does not expire, and only Datadog can revoke it, so it is never handed
-# to an agent: whatever runs beside the agent could keep it for good.
-token: { kind: pass_through, max_lifetime: null }
+          - uk1.datadoghq.com
+    # Datadog advertises no revocation endpoint.
+    remove_access: Remove it in Datadog under Personal Settings, Authorized Apps.
+  # The user in the organization signed in to: one person in two organizations
+  # is two accounts.
+  identity:
+    url: "https://api.{site}/api/v2/current_user"
+    account_id: data.id
+    label: data.attributes.email
+# Datadog's access tokens live 3,599 seconds.
+token: { kind: pass_through, max_lifetime: 3600 }
 mcp:
   servers:
-    # Datadog's remote MCP server takes the keys in headers named with
-    # underscores, unlike its REST API. MCP access is turned on per
-    # organization, under Organization Settings, Preferences.
-    - name: datadog
-      url: "https://mcp.{site}/api/unstable/mcp-server/mcp"
-      headers:
-        DD_API_KEY: "{api_key}"
-        DD_APPLICATION_KEY: "{application_key}"
+    # MCP access is turned on per organization, and its write tools may be
+    # turned off there, under Organization Settings.
+    - { name: datadog, url: "https://mcp.{site}/v1/mcp" }
+access:
+  # Datadog's authorization server offers one scope. Its consent page offers
+  # Full access or Limited (read-only) access, and the token's scope lists the
+  # permissions given: mcp_write only with Full.
+  read: { scopes: [mcp_all] }
+  write: { scopes: [mcp_all] }
+  consent: { read: mcp_read, write: mcp_write }
 tools: { mode: pass_through }
