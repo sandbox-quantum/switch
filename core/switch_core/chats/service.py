@@ -1365,6 +1365,7 @@ class ChatService:
         greeting: str | None,
         kind: Literal["group"] | None,
         bridge_id: str | None,
+        resume_only: bool,
     ) -> Room:
         """A private room with the agents and members, owned by and joined by
         the user.
@@ -1385,6 +1386,9 @@ class ChatService:
 
         `bridge_id` makes the direct chat a private channel on that bridge
         between the user's own linked account there and the agent.
+
+        `resume_only` only finishes a create this request id already started;
+        when it started none, nothing is made and the chat is 404.
         """
         member_user_ids = sorted(set(member_user_ids) - {user.id})
         direct = kind != "group" and len(agent_ids) == 1 and not member_user_ids
@@ -1432,6 +1436,12 @@ class ChatService:
         async with self._lock("create", tenant_id, user.id):
             async with tenant_session(self.session_factory, tenant_id) as session:
                 operation = await self._operation(session, user.id, request_id)
+                if operation is None and resume_only:
+                    raise ChatError(
+                        404,
+                        "NO_SUCH_OPERATION",
+                        "No chat was started with this request id, so there is none to resume.",
+                    )
                 if operation is not None:
                     self._require_same(operation, "create_chat", payload_hash)
                     if operation.state == "done" and operation.room_id is not None:

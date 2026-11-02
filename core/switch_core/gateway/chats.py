@@ -117,6 +117,9 @@ class CreateChatRequest(CamelModel):
     # Makes the direct chat a private channel on this collaboration bridge
     # (Slack), with the caller's own linked account; older clients send none.
     bridge_id: str | None = None
+    # Only finishes the create this request id already started: 404 when it
+    # started none; older clients send none.
+    resume_only: bool = False
 
     def chosen_agents(self) -> list[str]:
         if (self.agent_id is None) == (self.agent_ids is None):
@@ -330,6 +333,7 @@ async def create_chat(
         greeting=req.greeting,
         kind=req.kind,
         bridge_id=req.bridge_id,
+        resume_only=req.resume_only,
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return ChatEnvelope(

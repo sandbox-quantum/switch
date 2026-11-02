@@ -6,41 +6,57 @@ export type BuddySetupStep =
   | { kind: 'unknown' }
   | { kind: 'connect' }
   | { kind: 'link'; bridge: RemoteBridge }
+  | { kind: 'resuming' }
   | { kind: 'create'; bridge: RemoteBridge }
-  | { kind: 'confirm'; bridge: RemoteBridge };
+  | { kind: 'done'; chat: ChatSummary };
+
+/** A hand-off resumed on one Slack connection: its chat, null for none started, or failed. */
+export type BuddyResume = ChatSummary | null | 'failed';
+
+/** The active Slack connections the person has linked, where a hand-off could have been made. */
+export function buddyResumeBridges(
+  bridges: RemoteBridge[] | null,
+  identities: LinkedIdentity[] | null
+): RemoteBridge[] {
+  return (bridges ?? []).filter(
+    (bridge) =>
+      bridge.type === 'slack' &&
+      bridge.status === 'active' &&
+      identities?.some((identity) => identity.bridgeId === bridge.id)
+  );
+}
 
 /**
  * Where the person is in moving their buddy to Slack, from live reads. A read
  * not in yet is `loading`; one that failed is `unknown`, never "not connected".
- * A Slack chat with the buddy is `confirm`, not done: the server lists it
- * before its hand-off has finished, so the hand-off is resumed to know.
+ * Done only when resuming the hand-off on a connection, which never makes one,
+ * found its chat: a Slack chat with the buddy made by hand is not a hand-off.
+ * `resumes` is by bridge id, a bridge missing still being resumed.
  */
 export function buddySetupStep({
-  agentId,
   bridges,
   identities,
-  chats,
+  resumes,
   failed,
 }: {
-  agentId: string;
   bridges: RemoteBridge[] | null;
   identities: LinkedIdentity[] | null;
-  chats: ChatSummary[] | null;
+  resumes: Partial<Record<string, BuddyResume>>;
   failed: boolean;
 }): BuddySetupStep {
-  const handedOff = chats?.find(
-    (chat) =>
-      chat.channelType === 'direct' &&
-      chat.bridgeType === 'slack' &&
-      chat.agents.some((agent) => agent.id === agentId)
-  );
   if (failed) return { kind: 'unknown' };
-  if (!bridges || !chats) return { kind: 'loading' };
+  if (!bridges) return { kind: 'loading' };
   const slack = bridges.find((bridge) => bridge.type === 'slack' && bridge.status === 'active');
   if (!slack) return { kind: 'connect' };
-  if (handedOff) return { kind: 'confirm', bridge: slack };
   if (!identities) return { kind: 'loading' };
-  if (!identities.some((identity) => identity.bridgeId === slack.id))
-    return { kind: 'link', bridge: slack };
-  return { kind: 'create', bridge: slack };
+  const linked = buddyResumeBridges(bridges, identities);
+  if (linked.length === 0) return { kind: 'link', bridge: slack };
+  const results = linked.map((bridge) => resumes[bridge.id]);
+  const chat = results.find(
+    (result): result is ChatSummary => typeof result === 'object' && result !== null
+  );
+  if (chat) return { kind: 'done', chat };
+  if (results.includes('failed')) return { kind: 'unknown' };
+  if (results.includes(undefined)) return { kind: 'resuming' };
+  return { kind: 'create', bridge: linked[0] };
 }

@@ -5,6 +5,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { firstNameOf } from './buddy-identity';
 import { buddyIntroStore } from './buddy-intro-store';
 import { buddyPerson } from './buddy-person';
@@ -125,29 +126,60 @@ export function buddyHandoffRequestId(agentId: string, bridgeId: string): string
 /** The handoffs under way, by request id: one at a time each. */
 const handingOff = new Map<string, Promise<ChatSummary>>();
 
+function buddyHandoff(serverId: string, agentId: string, bridgeId: string) {
+  return {
+    serverId,
+    agentIds: [agentId],
+    name: null,
+    bridgeId,
+    requestId: buddyHandoffRequestId(agentId, bridgeId),
+    greeting: buddySlackOpener(firstNameOf(buddyPerson(serverId).name)),
+  };
+}
+
 /** Makes the person's private Slack channel with their buddy, the buddy opening it. */
 export function continueBuddyInSlack(
   serverId: string,
   agent: { agentId: string },
   bridgeId: string
 ): Promise<ChatSummary> {
-  const requestId = buddyHandoffRequestId(agent.agentId, bridgeId);
-  const running = handingOff.get(requestId);
+  const params = buddyHandoff(serverId, agent.agentId, bridgeId);
+  const running = handingOff.get(params.requestId);
   if (running) return running;
   const made = rpc.chats
-    .create({
-      serverId,
-      agentIds: [agent.agentId],
-      name: null,
-      bridgeId,
-      requestId,
-      greeting: buddySlackOpener(firstNameOf(buddyPerson(serverId).name)),
-    })
+    .create(params)
     .then((chat) => {
       chatsStore.add(serverId, chat);
       return chat;
     })
-    .finally(() => handingOff.delete(requestId));
-  handingOff.set(requestId, made);
+    .finally(() => handingOff.delete(params.requestId));
+  handingOff.set(params.requestId, made);
   return made;
+}
+
+/**
+ * The buddy's Slack channel on this connection when a hand-off was started
+ * there, finishing it if it was cut short; null when none was. Never makes one.
+ */
+export async function resumeBuddyInSlack(
+  serverId: string,
+  agentId: string,
+  bridgeId: string
+): Promise<ChatSummary | null> {
+  try {
+    const chat = await rpc.chats.create({
+      ...buddyHandoff(serverId, agentId, bridgeId),
+      resumeOnly: true,
+    });
+    chatsStore.add(serverId, chat);
+    return chat;
+  } catch (cause) {
+    if (
+      cause instanceof RpcError &&
+      cause.code === 'ChatApiError' &&
+      cause.stringField('apiCode') === 'NO_SUCH_OPERATION'
+    )
+      return null;
+    throw cause;
+  }
 }

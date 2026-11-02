@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
@@ -13,8 +13,13 @@ import { Alert, AlertAction, AlertDescription, AlertTitle } from '@renderer/lib/
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
-import { buddySetupStep } from './buddy-setup-step';
-import { BUDDY_CHAT_NAME, buddyHandoffRequestId, continueBuddyInSlack } from './open-buddy';
+import { type BuddyResume, buddyResumeBridges, buddySetupStep } from './buddy-setup-step';
+import {
+  BUDDY_CHAT_NAME,
+  buddyHandoffRequestId,
+  continueBuddyInSlack,
+  resumeBuddyInSlack,
+} from './open-buddy';
 
 /**
  * The setup cards under the greeting in the buddy's Welcome chat: pick Slack,
@@ -56,33 +61,35 @@ const Cards = observer(function Cards({
     queryKey: ['remote-bridges', workspaceId],
     queryFn: () => rpc.workspaces.listBridges(workspaceId),
   });
-  const chatsQuery = useQuery({
-    queryKey: ['buddy-handoff-chats', serverId],
-    queryFn: () => rpc.chats.list(serverId),
-  });
   const ids = useMyIdentities(workspaceId);
+  const resumeBridges = buddyResumeBridges(bridgesQuery.data ?? null, ids.identities);
+  const resumeQueries = useQueries({
+    queries: resumeBridges.map((bridge) => ({
+      queryKey: ['buddy-handoff', buddyHandoffRequestId(agentId, bridge.id)],
+      queryFn: () => resumeBuddyInSlack(serverId, agentId, bridge.id),
+      retry: false,
+      staleTime: Infinity,
+    })),
+  });
+  const resumes: Record<string, BuddyResume> = {};
+  resumeBridges.forEach((bridge, index) => {
+    const query = resumeQueries[index];
+    if (query.isError) resumes[bridge.id] = 'failed';
+    else if (query.isSuccess) resumes[bridge.id] = query.data;
+  });
   const step = buddySetupStep({
-    agentId,
     bridges: bridgesQuery.data ?? null,
     identities: ids.identities,
-    chats: chatsQuery.data ?? null,
-    failed: bridgesQuery.isError || chatsQuery.isError || ids.error != null,
+    resumes,
+    failed: bridgesQuery.isError || ids.error != null,
   });
   const retry = () => {
     void bridgesQuery.refetch();
-    void chatsQuery.refetch();
     ids.refresh();
+    for (const query of resumeQueries) if (query.isError) void query.refetch();
   };
 
-  const confirmBridgeId = step.kind === 'confirm' ? step.bridge.id : null;
-  const confirmQuery = useQuery({
-    queryKey: ['buddy-handoff', buddyHandoffRequestId(agentId, confirmBridgeId ?? '')],
-    queryFn: () => continueBuddyInSlack(serverId, { agentId }, confirmBridgeId as string),
-    enabled: confirmBridgeId !== null,
-    retry: false,
-    staleTime: Infinity,
-  });
-  const doneRoomId = confirmBridgeId ? (confirmQuery.data?.roomId ?? null) : null;
+  const doneRoomId = step.kind === 'done' ? step.chat.roomId : null;
   const roomQuery = useQuery({
     queryKey: ['buddy-handoff-room', workspaceId, doneRoomId],
     queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId, roomId: doneRoomId as string }),
@@ -100,9 +107,10 @@ const Cards = observer(function Cards({
     setCreating(true);
     setCreateError(null);
     try {
-      const chat = await continueBuddyInSlack(serverId, { agentId }, bridge.id);
-      queryClient.setQueryData(['buddy-handoff', buddyHandoffRequestId(agentId, bridge.id)], chat);
-      await queryClient.invalidateQueries({ queryKey: ['buddy-handoff-chats', serverId] });
+      await continueBuddyInSlack(serverId, { agentId }, bridge.id);
+      await queryClient.invalidateQueries({
+        queryKey: ['buddy-handoff', buddyHandoffRequestId(agentId, bridge.id)],
+      });
     } catch (cause) {
       setCreateError(failureText(cause, 'Switch did not answer.'));
     } finally {
@@ -112,7 +120,7 @@ const Cards = observer(function Cards({
 
   const slackIcon = <BridgeIcon bridgeType="slack" className="size-4" />;
   const pastChoice =
-    picked || step.kind === 'link' || step.kind === 'create' || step.kind === 'confirm';
+    picked || (step.kind !== 'loading' && step.kind !== 'unknown' && step.kind !== 'connect');
 
   return (
     <div className="mt-4 flex flex-col gap-2" data-testid="buddy-setup-cards">
@@ -199,30 +207,10 @@ const Cards = observer(function Cards({
         </Alert>
       )}
 
-      {step.kind === 'confirm' && confirmQuery.isPending && (
+      {step.kind === 'resuming' && (
         <Alert>
           <Spinner size="sm" />
           <AlertTitle>Finishing setup…</AlertTitle>
-        </Alert>
-      )}
-
-      {step.kind === 'confirm' && confirmQuery.isError && (
-        <Alert variant="destructive">
-          <AlertTitle>Couldn’t finish moving to Slack</AlertTitle>
-          <AlertDescription>
-            {failureText(confirmQuery.error, 'Switch did not answer.')}
-          </AlertDescription>
-          <AlertAction>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={confirmQuery.isFetching}
-              onClick={() => void confirmQuery.refetch()}
-            >
-              {confirmQuery.isFetching && <Spinner size="sm" />}
-              Try again
-            </Button>
-          </AlertAction>
         </Alert>
       )}
 

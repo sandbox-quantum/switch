@@ -935,6 +935,7 @@ async def test_one_create_on_two_processes_makes_one_room(
             request_id="c1",
             greeting=None,
             bridge_id=None,
+            resume_only=False,
         )
 
     first, second = await asyncio.gather(create(chats.service), create(other))
@@ -1212,6 +1213,7 @@ async def test_one_request_id_with_two_payloads_on_two_processes_is_one_request(
                 request_id="c1",
                 greeting=None,
                 bridge_id=None,
+                resume_only=False,
             )
         except ChatError as refused:
             return refused

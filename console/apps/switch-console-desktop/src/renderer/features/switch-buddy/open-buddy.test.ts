@@ -31,8 +31,23 @@ vi.mock('./buddy-welcome-message', () => ({
     `welcome ${firstName} from ${agentName}`,
 }));
 
-const { BUDDY_CHAT_NAME, continueBuddyInSlack, openBuddyAfterOnboarding, openBuddyChat } =
-  await import('./open-buddy');
+const {
+  BUDDY_CHAT_NAME,
+  continueBuddyInSlack,
+  openBuddyAfterOnboarding,
+  openBuddyChat,
+  resumeBuddyInSlack,
+} = await import('./open-buddy');
+const { RpcError } = await import('@shared/lib/ipc/rpc-error');
+
+function chatApiError(apiCode: string, status: number) {
+  return new RpcError({
+    __switchConsoleRpcError: true,
+    code: 'ChatApiError',
+    message: 'refused',
+    data: { apiCode, status },
+  });
+}
 
 const buddy = { agentId: 'a-1', name: 'switch-buddy-max' };
 
@@ -189,5 +204,33 @@ describe('continueBuddyInSlack', () => {
       requestId: 'buddy-handoff:a-1:b-1',
       greeting: 'opener',
     });
+  });
+});
+
+describe('resumeBuddyInSlack', () => {
+  const handoff = {
+    serverId: 'srv-1',
+    agentIds: ['a-1'],
+    name: null,
+    bridgeId: 'b-1',
+    requestId: 'buddy-handoff:a-1:b-1',
+    greeting: 'opener',
+  };
+
+  it('asks only to resume the hand-off, with the same request', async () => {
+    const slackChat = chat('r-slack', '', 'a-1', 'direct', 'slack');
+    createChat.mockResolvedValue(slackChat);
+
+    await expect(resumeBuddyInSlack('srv-1', 'a-1', 'b-1')).resolves.toBe(slackChat);
+
+    expect(createChat).toHaveBeenCalledWith({ ...handoff, resumeOnly: true });
+  });
+
+  it('is null when none was started, and throws any other refusal', async () => {
+    createChat.mockRejectedValueOnce(chatApiError('NO_SUCH_OPERATION', 404));
+    await expect(resumeBuddyInSlack('srv-1', 'a-1', 'b-1')).resolves.toBeNull();
+
+    createChat.mockRejectedValueOnce(chatApiError('REQUEST_REUSED', 409));
+    await expect(resumeBuddyInSlack('srv-1', 'a-1', 'b-1')).rejects.toThrow('refused');
   });
 });

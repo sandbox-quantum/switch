@@ -4,15 +4,12 @@ import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/s
 import { buddySetupStep } from './buddy-setup-step';
 
 const slack = { id: 'b-1', type: 'slack', status: 'active' } as RemoteBridge;
+const slack2 = { id: 'b-2', type: 'slack', status: 'active' } as RemoteBridge;
 const linked = { bridgeId: 'b-1' } as LinkedIdentity;
-const slackChat = {
-  roomId: 'r-1',
-  channelType: 'direct',
-  bridgeType: 'slack',
-  agents: [{ id: 'a-1' }],
-} as ChatSummary;
+const linked2 = { bridgeId: 'b-2' } as LinkedIdentity;
+const handedOff = { roomId: 'r-2', channelType: 'direct', bridgeType: 'slack' } as ChatSummary;
 
-const base = { agentId: 'a-1', bridges: [], identities: [], chats: [], failed: false };
+const base = { bridges: [], identities: [], resumes: {}, failed: false };
 
 describe('buddySetupStep', () => {
   it('waits for the reads, and says unknown when one failed, never not connected', () => {
@@ -20,7 +17,7 @@ describe('buddySetupStep', () => {
     expect(buddySetupStep({ ...base, bridges: null, failed: true })).toEqual({ kind: 'unknown' });
   });
 
-  it('walks connect, link, create', () => {
+  it('walks connect, link, resuming, create', () => {
     expect(buddySetupStep(base)).toEqual({ kind: 'connect' });
     expect(buddySetupStep({ ...base, bridges: [{ ...slack, status: 'error' }] }).kind).toBe(
       'connect'
@@ -30,26 +27,43 @@ describe('buddySetupStep', () => {
     });
     expect(buddySetupStep({ ...base, bridges: [slack] })).toEqual({ kind: 'link', bridge: slack });
     expect(buddySetupStep({ ...base, bridges: [slack], identities: [linked] })).toEqual({
-      kind: 'create',
-      bridge: slack,
+      kind: 'resuming',
     });
+    expect(
+      buddySetupStep({ ...base, bridges: [slack], identities: [linked], resumes: { 'b-1': null } })
+    ).toEqual({ kind: 'create', bridge: slack });
   });
 
-  it('confirms, not assumes, a Slack direct chat with the buddy', () => {
-    expect(buddySetupStep({ ...base, bridges: [slack], chats: [slackChat] })).toEqual({
-      kind: 'confirm',
-      bridge: slack,
-    });
-    expect(buddySetupStep({ ...base, bridges: [slack], chats: [slackChat], failed: true })).toEqual(
-      { kind: 'unknown' }
-    );
+  it('offers to create, never assumes, when no hand-off was started, even with a Slack chat made by hand', () => {
+    expect(
+      buddySetupStep({
+        ...base,
+        bridges: [slack, slack2],
+        identities: [linked, linked2],
+        resumes: { 'b-1': null, 'b-2': null },
+      })
+    ).toEqual({ kind: 'create', bridge: slack });
+  });
+
+  it('is done with the room of the hand-off on whichever connection made it', () => {
+    expect(
+      buddySetupStep({
+        ...base,
+        bridges: [slack, slack2],
+        identities: [linked, linked2],
+        resumes: { 'b-1': null, 'b-2': handedOff },
+      })
+    ).toEqual({ kind: 'done', chat: handedOff });
+  });
+
+  it('says unknown when a resume failed', () => {
     expect(
       buddySetupStep({
         ...base,
         bridges: [slack],
         identities: [linked],
-        chats: [{ ...slackChat, agents: [] }] as ChatSummary[],
-      }).kind
-    ).toBe('create');
+        resumes: { 'b-1': 'failed' },
+      })
+    ).toEqual({ kind: 'unknown' });
   });
 });

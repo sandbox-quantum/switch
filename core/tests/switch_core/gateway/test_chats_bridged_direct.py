@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+from sqlalchemy import func, select
 
 from switch_core.db.models import (
     Agent,
@@ -136,7 +137,11 @@ async def _slack(chats: _Harness, *, link: User | None) -> tuple[str, _FakeCore]
 
 
 async def _create(
-    chats: _Harness, agents: list[Agent], bridge_id: str, request_id: str = "c1"
+    chats: _Harness,
+    agents: list[Agent],
+    bridge_id: str,
+    request_id: str = "c1",
+    resume_only: bool = False,
 ) -> httpx.Response:
     return await chats.client.post(
         "/chats",
@@ -144,6 +149,7 @@ async def _create(
             "agentIds": [agent.id for agent in agents],
             "requestId": request_id,
             "bridgeId": bridge_id,
+            "resumeOnly": resume_only,
         },
         headers=chats.as_user(chats.alice),
     )
@@ -251,6 +257,7 @@ async def _create_on(
             greeting=None,
             kind=None,
             bridge_id=bridge_id,
+            resume_only=False,
         )
 
 
@@ -322,4 +329,63 @@ async def test_a_retry_after_a_failed_bridge_invite_puts_the_bridge_in(
 
     assert bridge_invites == [room.transport_room_id]
     assert core.users_added == [["alice.s"]]
+    assert len(core.dm_calls) == 1
+
+
+async def test_resuming_a_create_that_never_started_makes_nothing(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+
+    response = await _create(chats, [agent], bridge_id, resume_only=True)
+
+    assert response.status_code == 404
+    assert _code(response) == "NO_SUCH_OPERATION"
+    assert core.dm_calls == []
+    async with chats.factory() as session:
+        rooms = await session.scalar(
+            select(func.count()).select_from(Room).where(Room.bridge_id == bridge_id)
+        )
+    assert rooms == 0
+    created = await _create(chats, [agent], bridge_id)
+    assert created.status_code == 200, created.text
+
+
+async def test_resuming_a_finished_create_returns_its_chat(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+
+    first = await _create(chats, [agent], bridge_id)
+    again = await _create(chats, [agent], bridge_id, resume_only=True)
+
+    assert again.status_code == 200, again.text
+    assert again.json()["chat"]["roomId"] == first.json()["chat"]["roomId"]
+    assert len(core.dm_calls) == 1
+
+
+async def test_resuming_a_create_that_failed_after_saving_finishes_it(
+    chats: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    make_lasting = chats.service._make_lasting
+    failures = [RuntimeError("join failed")]
+
+    async def failing_make_lasting(*args: Any) -> None:
+        if failures:
+            raise failures.pop()
+        await make_lasting(*args)
+
+    monkeypatch.setattr(chats.service, "_make_lasting", failing_make_lasting)
+
+    with pytest.raises(RuntimeError, match="join failed"):
+        await _create_on(chats, chats.service, agent, bridge_id)
+    resumed = await _create(chats, [agent], bridge_id, resume_only=True)
+    again = await _create(chats, [agent], bridge_id)
+
+    assert resumed.status_code == 200, resumed.text
+    assert again.json()["chat"]["roomId"] == resumed.json()["chat"]["roomId"]
     assert len(core.dm_calls) == 1
