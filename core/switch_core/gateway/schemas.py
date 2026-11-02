@@ -117,6 +117,13 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
+    # What the caller may do with it, so a client offers a change only where
+    # the server would allow it. `can_write` covers its settings, roles,
+    # participants, attached resources and links; `can_manage` (owner or
+    # tenant admin) covers its access, deleting it and taking the platform
+    # channel's name.
+    can_write: bool
+    can_manage: bool
 
 
 class RoomCreateRequest(BaseModel):

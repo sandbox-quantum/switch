@@ -25,9 +25,10 @@ import { useLinkedRooms, useRooms } from "../../data/hooks";
 
 interface Props {
   roomId: string;
+  canWrite: boolean;
 }
 
-export default function RoomLinkedRoomsSection({ roomId }: Props) {
+export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
   const { data: linked, loading, refetch } = useLinkedRooms(roomId);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,39 +93,46 @@ export default function RoomLinkedRoomsSection({ roomId }: Props) {
                   </Typography>
                 )}
               </Stack>
-              <IconButton
-                size="small"
-                disabled={busy}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDetach(link.target_room_id);
-                }}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {canWrite && (
+                <IconButton
+                  size="small"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDetach(link.target_room_id);
+                  }}
+                  aria-label={`Remove link to ${link.target_room_name}`}
+                >
+                  <DeleteOutline fontSize="small" />
+                </IconButton>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setDialogOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Add linked room
-      </Button>
-      <AddLinkedRoomDialog
-        open={dialogOpen}
-        sourceRoomId={roomId}
-        existingTargetIds={existingTargetIds}
-        onClose={() => setDialogOpen(false)}
-        onCreated={() => {
-          setDialogOpen(false);
-          refetch();
-        }}
-      />
+      {canWrite && (
+        <>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={() => setDialogOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            Add linked room
+          </Button>
+          <AddLinkedRoomDialog
+            open={dialogOpen}
+            sourceRoomId={roomId}
+            existingTargetIds={existingTargetIds}
+            onClose={() => setDialogOpen(false)}
+            onCreated={() => {
+              setDialogOpen(false);
+              refetch();
+            }}
+          />
+        </>
+      )}
     </Stack>
   );
 }

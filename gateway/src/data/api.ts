@@ -203,6 +203,11 @@ export interface RoomDetail extends RoomSummary {
   // Agent ids configured to receive room_join events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
+  // What the viewer may do, as the server decides it. `can_write` covers the
+  // room's settings, roles, participants, resources and links; `can_manage`
+  // (owner or workspace admin) covers its access and deleting it.
+  can_write: boolean;
+  can_manage: boolean;
 }
 
 export interface CreateRoomInput {

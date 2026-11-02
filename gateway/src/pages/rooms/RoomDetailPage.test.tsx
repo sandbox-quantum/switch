@@ -1,18 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RoomDetail } from "../../data/api";
+import type { AgentSummary, RoomDetail } from "../../data/api";
 import * as api from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import RoomDetailPage from "./RoomDetailPage";
 
 vi.mock("react-router", () => ({
   useNavigate: () => vi.fn(),
   useParams: () => ({ roomId: "r1" }),
-}));
-
-vi.mock("../../data/AuthContext", () => ({
-  useAuth: vi.fn(),
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -28,23 +23,32 @@ vi.mock("../../data/api", async (importOriginal) => {
 });
 
 vi.mock("./RoomGraphView", () => ({ default: () => null }));
-vi.mock("./RoomLinkedRoomsSection", () => ({ default: () => null }));
-vi.mock("./RoomResourcesSection", () => ({ default: () => null }));
 vi.mock("./ExportRoomYamlDialog", () => ({ default: () => null }));
+// Their own tests cover what they do with it; here, only that they are told.
+vi.mock("./RoomLinkedRoomsSection", () => ({
+  default: ({ canWrite }: { canWrite: boolean }) => (
+    <div data-testid="linked-rooms" data-can-write={String(canWrite)} />
+  ),
+}));
+vi.mock("./RoomResourcesSection", () => ({
+  default: ({ canWrite }: { canWrite: boolean }) => (
+    <div data-testid="resources" data-can-write={String(canWrite)} />
+  ),
+}));
 
 // Public read & write is the default for a new room, so any workspace member
-// can edit it.
-const publicRoom = {
+// can edit it. What the viewer may do comes from the server.
+const room = {
   id: "r1",
   name: "planning",
   description: "Sprint planning",
   channel_type: null,
   admin_mode: false,
-  agent_count: 0,
+  agent_count: 1,
   connected_user_count: 0,
   connected_user_names: [],
-  bridge_id: null,
-  bridge_display_name: null,
+  bridge_id: "b1",
+  bridge_display_name: "Slack",
   group_id: null,
   group_name: null,
   owner_id: "owner",
@@ -59,27 +63,25 @@ const publicRoom = {
   instructions: null,
   protection_config: null,
   observe_config: null,
-  agent_ids: [],
+  agent_ids: ["a1"],
   agent_statuses: {},
   roles: [],
   join_event_listeners: [],
   archived_at: null,
+  can_write: true,
+  can_manage: false,
 } as RoomDetail;
 
-function showRoom(room: RoomDetail) {
+const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
+
+function viewAs(can: { can_write: boolean; can_manage: boolean }) {
   vi.mocked(hooks.useRoom).mockReturnValue({
-    data: room,
+    data: { ...room, ...can },
     loading: false,
     error: null,
     refetch: vi.fn(),
   });
-}
-
-function signInAs(userId: string, canAdminTenant: boolean) {
-  vi.mocked(useAuth).mockReturnValue({
-    user: { id: userId },
-    canAdminTenant,
-  } as unknown as ReturnType<typeof useAuth>);
+  render(<RoomDetailPage />);
 }
 
 function accessSelect() {
@@ -90,9 +92,14 @@ function nameField() {
   return screen.getByRole<HTMLInputElement>("textbox", { name: "Name" });
 }
 
-describe("RoomDetailPage access control", () => {
+function joinEventsSwitch() {
+  return screen.getByRole<HTMLInputElement>("switch", {
+    name: "Notify planner when someone joins",
+  });
+}
+
+describe("RoomDetailPage permissions", () => {
   beforeEach(() => {
-    showRoom(publicRoom);
     vi.mocked(hooks.useRoomGroups).mockReturnValue({
       data: [],
       loading: false,
@@ -100,7 +107,7 @@ describe("RoomDetailPage access control", () => {
       refetch: vi.fn(),
     });
     vi.mocked(hooks.useAgents).mockReturnValue({
-      data: [],
+      data: [agent],
       loading: false,
       error: null,
       refetch: vi.fn(),
@@ -111,7 +118,7 @@ describe("RoomDetailPage access control", () => {
       error: null,
       refetch: vi.fn(),
     });
-    vi.mocked(api.updateRoom).mockResolvedValue(publicRoom);
+    vi.mocked(api.updateRoom).mockResolvedValue(room);
   });
 
   afterEach(() => {
@@ -119,15 +126,21 @@ describe("RoomDetailPage access control", () => {
     vi.clearAllMocks();
   });
 
-  it("lets a member edit a publicly writable room but not its access", async () => {
-    signInAs("member", false);
-    render(<RoomDetailPage />);
+  it("lets someone who may write but not manage edit everything but access", async () => {
+    viewAs({ can_write: true, can_manage: false });
 
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
-    expect(accessSelect().getAttribute("aria-describedby")).toBeTruthy();
-    const hint = document.getElementById(accessSelect().getAttribute("aria-describedby")!);
-    expect(hint?.textContent).toContain("Only its owner and admins can change its access.");
+    const describedBy = accessSelect().getAttribute("aria-describedby");
+    expect(document.getElementById(describedBy!)?.textContent).toContain(
+      "Only its owner and admins can change its access.",
+    );
     expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
+    screen.getByRole("button", { name: "Add agent" });
+    screen.getByRole("button", { name: "Remove planner" });
+    screen.getByRole("button", { name: "Add user" });
+    expect(joinEventsSwitch().disabled).toBe(false);
+    expect(screen.getByTestId("resources").dataset.canWrite).toBe("true");
+    expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("true");
 
     fireEvent.change(nameField(), { target: { value: "retro" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -139,9 +152,8 @@ describe("RoomDetailPage access control", () => {
     expect(sent).not.toHaveProperty("write_visibility");
   });
 
-  it("lets the owner change access", async () => {
-    signInAs("owner", false);
-    render(<RoomDetailPage />);
+  it("lets someone who may manage the room change its access and delete it", async () => {
+    viewAs({ can_write: true, can_manage: true });
 
     expect(accessSelect().getAttribute("aria-disabled")).toBeNull();
     screen.getByRole("button", { name: "Delete room" });
@@ -157,21 +169,19 @@ describe("RoomDetailPage access control", () => {
     });
   });
 
-  it("lets a tenant admin who does not own the room change access", () => {
-    signInAs("admin", true);
-    render(<RoomDetailPage />);
+  it("offers a reader nothing to change", () => {
+    viewAs({ can_write: false, can_manage: false });
 
-    expect(accessSelect().getAttribute("aria-disabled")).toBeNull();
-    screen.getByRole("button", { name: "Delete room" });
-  });
-
-  it("leaves a member with no write access nothing to edit", () => {
-    showRoom({ ...publicRoom, write_visibility: "private" });
-    signInAs("member", false);
-    render(<RoomDetailPage />);
-
+    screen.getByText(/You don't have write access to this room/);
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
     expect(nameField().disabled).toBe(true);
-    screen.getByText(/You don't have write access to this room/);
+    expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
+    // The setting still shows; it just cannot be changed.
+    expect(joinEventsSwitch().disabled).toBe(true);
+    expect(screen.getByTestId("resources").dataset.canWrite).toBe("false");
+    expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
   });
 });

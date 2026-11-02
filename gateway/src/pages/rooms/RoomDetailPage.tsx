@@ -48,7 +48,6 @@ import {
   updateRoomRole,
 } from "../../data/api";
 import { useAgents, useBridgeUsers, useRoom, useRoomGroups } from "../../data/hooks";
-import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel, toAccessLevel } from "../../data/visibility";
 import {
@@ -67,7 +66,6 @@ import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
   const { data: room, loading, error, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
@@ -92,16 +90,8 @@ export default function RoomDetailPage() {
     );
   }
 
-  // Room write access: owner, admin, or a publicly-writable room.
-  const canWrite =
-    !!user &&
-    (user.id === room.owner_id ||
-      canAdminTenant ||
-      room.write_visibility === "public");
-  // Delete and access changes are stricter — owner or admin only, never via
-  // public write. The server applies the same rule to both.
-  const canManage =
-    !!user && (user.id === room.owner_id || canAdminTenant);
+  const canWrite = room.can_write;
+  const canManage = room.can_manage;
 
   return (
     <Box>
@@ -140,11 +130,11 @@ export default function RoomDetailPage() {
           onSaved={refetch}
         />
         <Divider />
-        <ParticipantsSection room={room} onChanged={refetch} />
+        <ParticipantsSection room={room} canWrite={canWrite} onChanged={refetch} />
         <Divider />
-        <RoomResourcesSection roomId={room.id} />
+        <RoomResourcesSection roomId={room.id} canWrite={canWrite} />
         <Divider />
-        <RoomLinkedRoomsSection roomId={room.id} />
+        <RoomLinkedRoomsSection roomId={room.id} canWrite={canWrite} />
         <Divider />
         <RoomGraphView roomId={room.id} />
         {room.bridge_id && (
@@ -728,9 +718,11 @@ function EditableFieldsSection({
 
 function ParticipantsSection({
   room,
+  canWrite,
   onChanged,
 }: {
   room: RoomDetail;
+  canWrite: boolean;
   onChanged: () => void;
 }) {
   const { data: allAgents, loading: agentsLoading } = useAgents();
@@ -875,10 +867,12 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                working ? undefined : (next) => handleToggleJoinEvents(id, next)
+                !canWrite || working
+                  ? undefined
+                  : (next) => handleToggleJoinEvents(id, next)
               }
               onRemove={
-                isFixedMembership || working
+                !canWrite || isFixedMembership || working
                   ? undefined
                   : () => handleRemoveAgent(id)
               }
@@ -890,7 +884,7 @@ function ParticipantsSection({
             </Typography>
           )}
         </Stack>
-        {!isFixedMembership && (
+        {canWrite && !isFixedMembership && (
           <>
             <Button
               size="small"
@@ -937,25 +931,29 @@ function ParticipantsSection({
               </Typography>
             )}
           </Stack>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AddIcon />}
-            onClick={() => setAddUserOpen(true)}
-            sx={{ alignSelf: "flex-start" }}
-          >
-            Add user
-          </Button>
-          <SearchablePickerDialog
-            open={addUserOpen}
-            title="Add users"
-            searchPlaceholder="Search users…"
-            submitLabel="Add"
-            options={addableUserOptions}
-            loading={bridgeUsersLoading}
-            onClose={() => setAddUserOpen(false)}
-            onSubmit={handleAddUsers}
-          />
+          {canWrite && (
+            <>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<AddIcon />}
+                onClick={() => setAddUserOpen(true)}
+                sx={{ alignSelf: "flex-start" }}
+              >
+                Add user
+              </Button>
+              <SearchablePickerDialog
+                open={addUserOpen}
+                title="Add users"
+                searchPlaceholder="Search users…"
+                submitLabel="Add"
+                options={addableUserOptions}
+                loading={bridgeUsersLoading}
+                onClose={() => setAddUserOpen(false)}
+                onSubmit={handleAddUsers}
+              />
+            </>
+          )}
         </Box>
       )}
     </Stack>
@@ -1001,7 +999,8 @@ function AgentRow({
   agentId: string;
   name: string;
   status: string | undefined;
-  receivesJoinEvents?: boolean;
+  receivesJoinEvents: boolean;
+  // Absent while the switch cannot be changed; it still shows the setting.
   onToggleJoinEvents?: (next: boolean) => void;
   onRemove?: () => void;
 }) {
@@ -1043,33 +1042,32 @@ function AgentRow({
       <Typography variant="caption" color="text.secondary">
         {meta.label}
       </Typography>
-      {onToggleJoinEvents && (
-        <Tooltip title="When on, this agent is notified when someone joins the room (room_join events) — useful for a welcome/onboarding agent. Does not affect the agent's presence or status.">
-          <FormControlLabel
-            onClick={(e) => e.stopPropagation()}
-            labelPlacement="start"
-            sx={{ mr: 0, ml: 0 }}
-            control={
-              <Switch
-                size="small"
-                checked={!!receivesJoinEvents}
-                onChange={(e) => onToggleJoinEvents(e.target.checked)}
-                inputProps={{ "aria-label": `Notify ${name} when someone joins` }}
+      <Tooltip title="When on, this agent is notified when someone joins the room (room_join events) — useful for a welcome/onboarding agent. Does not affect the agent's presence or status.">
+        <FormControlLabel
+          onClick={(e) => e.stopPropagation()}
+          labelPlacement="start"
+          sx={{ mr: 0, ml: 0 }}
+          control={
+            <Switch
+              size="small"
+              checked={receivesJoinEvents}
+              disabled={!onToggleJoinEvents}
+              onChange={(e) => onToggleJoinEvents?.(e.target.checked)}
+              slotProps={{ input: { "aria-label": `Notify ${name} when someone joins` } }}
+            />
+          }
+          label={
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <NotificationsActiveOutlined
+                sx={{ fontSize: 15, color: "text.secondary" }}
               />
-            }
-            label={
-              <Stack direction="row" spacing={0.5} alignItems="center">
-                <NotificationsActiveOutlined
-                  sx={{ fontSize: 15, color: "text.secondary" }}
-                />
-                <Typography variant="caption" color="text.secondary">
-                  Notify on join
-                </Typography>
-              </Stack>
-            }
-          />
-        </Tooltip>
-      )}
+              <Typography variant="caption" color="text.secondary">
+                Notify on join
+              </Typography>
+            </Stack>
+          }
+        />
+      </Tooltip>
       {onRemove && (
         <IconButton
           size="small"

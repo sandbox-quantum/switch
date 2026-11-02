@@ -33,9 +33,10 @@ import {
 
 interface Props {
   roomId: string;
+  canWrite: boolean;
 }
 
-export default function RoomResourcesSection({ roomId }: Props) {
+export default function RoomResourcesSection({ roomId, canWrite }: Props) {
   const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
     () => new Set((roomPackages ?? []).map((p) => p.id)),
@@ -54,16 +55,19 @@ export default function RoomResourcesSection({ roomId }: Props) {
       </Typography>
       <RoomReferences
         roomId={roomId}
+        canWrite={canWrite}
         attachedPackageIds={attachedPackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomDocuments
         roomId={roomId}
+        canWrite={canWrite}
         attachedPackageIds={attachedPackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomPackages
         roomId={roomId}
+        canWrite={canWrite}
         packages={roomPackages ?? []}
         refetch={refetchPackages}
       />
@@ -103,10 +107,12 @@ function PackageChips({
 
 function RoomReferences({
   roomId,
+  canWrite,
   attachedPackageIds,
   packageDescriptions,
 }: {
   roomId: string;
+  canWrite: boolean;
   attachedPackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
@@ -213,46 +219,55 @@ function RoomReferences({
                 attachedPackageIds={attachedPackageIds}
                 packageDescriptions={packageDescriptions}
               />
-              <IconButton
-                size="small"
-                onClick={() => handleDetach(ref.id)}
-                disabled={busy}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {canWrite && (
+                <IconButton
+                  size="small"
+                  onClick={() => handleDetach(ref.id)}
+                  disabled={busy}
+                  aria-label={`Detach ${ref.name || ref.description}`}
+                >
+                  <DeleteOutline fontSize="small" />
+                </IconButton>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setPickerOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Attach reference
-      </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach references"
-        searchPlaceholder="Search references…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
-      />
+      {canWrite && (
+        <>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={() => setPickerOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            Attach reference
+          </Button>
+          <SearchablePickerDialog
+            open={pickerOpen}
+            title="Attach references"
+            searchPlaceholder="Search references…"
+            submitLabel="Attach"
+            options={options}
+            loading={allLoading}
+            onClose={() => setPickerOpen(false)}
+            onSubmit={handleAttach}
+          />
+        </>
+      )}
     </Stack>
   );
 }
 
 function RoomDocuments({
   roomId,
+  canWrite,
   attachedPackageIds,
   packageDescriptions,
 }: {
   roomId: string;
+  canWrite: boolean;
   attachedPackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
@@ -353,13 +368,16 @@ function RoomDocuments({
                     attachedPackageIds={attachedPackageIds}
                     packageDescriptions={packageDescriptions}
                   />
-                  <IconButton
-                    size="small"
-                    onClick={() => handleDetach(doc.id)}
-                    disabled={busy}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
+                  {canWrite && (
+                    <IconButton
+                      size="small"
+                      onClick={() => handleDetach(doc.id)}
+                      disabled={busy}
+                      aria-label={`Detach ${doc.name || doc.description}`}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  )}
                 </Stack>
               ))}
             </Stack>
@@ -400,51 +418,60 @@ function RoomDocuments({
                       variant="outlined"
                     />
                   )}
-                  <IconButton
-                    size="small"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDetach(doc.id);
-                    }}
-                    disabled={busy}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
+                  {canWrite && (
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDetach(doc.id);
+                      }}
+                      disabled={busy}
+                      aria-label={`Delete ${doc.name || doc.description}`}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  )}
                 </Stack>
               ))}
             </Stack>
           )}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setPickerOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Attach document
-      </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach documents"
-        searchPlaceholder="Search documents…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
-      />
+      {canWrite && (
+        <>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={() => setPickerOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            Attach document
+          </Button>
+          <SearchablePickerDialog
+            open={pickerOpen}
+            title="Attach documents"
+            searchPlaceholder="Search documents…"
+            submitLabel="Attach"
+            options={options}
+            loading={allLoading}
+            onClose={() => setPickerOpen(false)}
+            onSubmit={handleAttach}
+          />
+        </>
+      )}
     </Stack>
   );
 }
 
 function RoomPackages({
   roomId,
+  canWrite,
   packages,
   refetch,
 }: {
   roomId: string;
+  canWrite: boolean;
   packages: Array<{ id: string; name: string; description: string }>;
   refetch: () => void;
 }) {
@@ -526,39 +553,46 @@ function RoomPackages({
               <Typography variant="body2" sx={{ flexGrow: 1 }}>
                 {p.name || p.description}
               </Typography>
-              <IconButton
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDetach(p.id);
-                }}
-                disabled={busy}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {canWrite && (
+                <IconButton
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDetach(p.id);
+                  }}
+                  disabled={busy}
+                  aria-label={`Detach ${p.name || p.description}`}
+                >
+                  <DeleteOutline fontSize="small" />
+                </IconButton>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setPickerOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Attach package
-      </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach packages"
-        searchPlaceholder="Search packages…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
-      />
+      {canWrite && (
+        <>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={() => setPickerOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            Attach package
+          </Button>
+          <SearchablePickerDialog
+            open={pickerOpen}
+            title="Attach packages"
+            searchPlaceholder="Search packages…"
+            submitLabel="Attach"
+            options={options}
+            loading={allLoading}
+            onClose={() => setPickerOpen(false)}
+            onSubmit={handleAttach}
+          />
+        </>
+      )}
     </Stack>
   );
 }

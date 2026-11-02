@@ -85,6 +85,11 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **A room's detail says what the caller may do with it.** Every gateway
+  route that returns a room's detail (`GET /rooms/{id}` and the routes that
+  change a room) now carries `can_write` and `can_manage`, decided by the same
+  rules the routes enforce, so a client offers a change only where the server
+  would allow it.
 - **An agent controller can send its agents' operations on its socket.**
   Every operation a controller's agents call was an HTTP request of its own,
   parsed, routed and authenticated with the controller's token, though the
@@ -428,12 +433,17 @@ version of their own to them without also giving them a release of their own.
   token again; revocation is still checked on every request.
 
 #### Fixed
-- **The dashboard's room page offers Access only to the room's owner and
-  admins.** On a publicly writable room, the default, anyone could change the
-  Access setting and press Save, only for the server to refuse it. The setting
-  is now read-only for everyone else, and its description says who can see
-  the room and who can change it, for whoever is looking rather than only the
-  owner. The room's other settings stay editable as before.
+- **The dashboard's room page offers only the changes the server would
+  allow.** On a publicly writable room, the default, anyone could change the
+  Access setting and press Save, only for the server to refuse it. Someone who
+  could only read a room was still offered adding and removing its agents and
+  users, attaching and detaching its resources, linking it to other rooms and
+  deleting its room documents, and each was refused when tried. Access is now
+  read-only for everyone but the room's owner and admins, and its description
+  says so. Everything else is offered only to those who may write to the
+  room. A reader still sees each agent's "Notify on join" setting, but cannot
+  change it. A publicly writable room's other settings stay editable by
+  everyone, as before.
 - **A client in more than 32,767 rooms starts reading them.** The reads a
   client makes as it starts matched its rooms with one parameter each, and
   Postgres takes at most 32,767 per statement. Switch's own client is in
