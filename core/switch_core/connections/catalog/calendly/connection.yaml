@@ -1,0 +1,32 @@
+slug: calendly
+name: Calendly
+category: Productivity
+description: Manage meeting scheduling, check availability, and retrieve booking links.
+enabled: true
+adapter: oauth
+auth:
+  type: oauth
+  refresh: rotating
+  oauth:
+    registration: dynamic
+    redirect: [loopback]
+    loopback_ports: [38341, 38342, 38343, 38344, 38345]
+    prompt: consent
+    revocation_discovered: true
+  identity:
+    url: https://api.calendly.com/users/me
+    account_id: resource.uri
+    label: resource.email
+token: { kind: pass_through, max_lifetime: 7200 }
+mcp:
+  servers:
+    - name: calendly
+      url: "https://mcp.calendly.com/mcp"
+access:
+  read:
+    scopes:
+      - "default"
+  write:
+    scopes:
+      - "default"
+tools: { mode: pass_through }
