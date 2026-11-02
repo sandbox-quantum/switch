@@ -10,7 +10,7 @@ is written only while the call's room has the switch on.
 Expand only: a release from before this revision never reads either column.
 
 Revision ID: b3e91c4d7f20
-Revises: 9d41b7e2c6a3
+Revises: 10f6d02ac5bc
 Create Date: 2026-11-02 10:00:00.000000
 
 """
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b3e91c4d7f20"
-down_revision: str | None = "9d41b7e2c6a3"
+down_revision: str | None = "10f6d02ac5bc"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
