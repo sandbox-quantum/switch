@@ -274,3 +274,62 @@ class TestAfterTheWrite:
         assert len(await own_events(session_factory, agent.id)) == 1
         assert asked == []
         assert [r["agent_live"] for r in process.telemetry.addressed] == [True]
+
+
+class TestFindingTheRoom:
+    async def test_a_room_one_client_found_costs_the_next_no_read(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        """Every client looks a room up before its first write there. The
+        answers are shared by the process's clients, so a room another client
+        already wrote to costs the write alone (`RoomIds`)."""
+        process, room, _, _ = await _seed(session_factory, names=["member"])
+        rita = await make_person(session_factory, "rita")
+        await add_member(session_factory, room, rita)
+
+        with pool_checkouts.scope("say") as scope:
+            await process.say(room, "first time here", sender=rita)
+
+        assert (scope.taken, scope.peak) == (1, 1)
+
+    async def test_the_first_room_found_finds_every_open_room_of_the_tenant(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        """The first miss in a process reads every open room of the tenant,
+        so a room nobody in the process has written to yet costs no read of
+        its own either; a room archived by then is left to be read on its own."""
+        process = process_on(session_factory)
+        louisa = await make_person(session_factory, "louisa")
+        rooms = [await make_room(session_factory, f"room-{n}") for n in range(3)]
+        for room in rooms:
+            await add_member(session_factory, room, louisa)
+        await process.say(rooms[0], "hello", sender=louisa)
+        rita = await make_person(session_factory, "rita")
+        await add_member(session_factory, rooms[2], rita)
+
+        with pool_checkouts.scope("say") as scope:
+            await process.say(rooms[2], "first time anyone writes here", sender=rita)
+
+        assert (scope.taken, scope.peak) == (1, 1)
+
+    async def test_a_room_created_after_the_first_read_is_read_on_its_own(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        process = process_on(session_factory)
+        louisa = await make_person(session_factory, "louisa")
+        first = await make_room(session_factory, "first")
+        await add_member(session_factory, first, louisa)
+        await process.say(first, "hello", sender=louisa)
+        later = await make_room(session_factory, "later")
+        await add_member(session_factory, later, louisa)
+
+        with pool_checkouts.scope("say") as scope:
+            await process.say(later, "a room made since", sender=louisa)
+
+        assert (scope.taken, scope.peak) == (2, 1)

@@ -361,6 +361,11 @@ version of their own to them without also giving them a release of their own.
   connections and of the live processes first, and when it reads, reads only
   the connection columns, where it read every row with its status and
   platform, and the rooms of every agent on a controller another process held.
+- **Writing to a room for the first time through a process no longer reads the
+  room.** A process's clients now share the room ids they look up, where each
+  kept its own, and the first one a process misses reads every open room of
+  the workspace at once, so with many agents behind a load balancer most sends
+  no longer start with a read of the room.
 
 #### Fixed
 - **A client in more than 32,767 rooms starts reading them.** The reads a

@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
@@ -174,6 +175,77 @@ MEMBERSHIP_EVENT_TYPE = "m.room.member"
 STOP_GRACE_SECONDS = 5.0
 
 
+class RoomIds:
+    """The room id behind each transport room id a process's transports
+    have resolved, by tenant, shared between them.
+
+    Every client looks up a room before its first write there, and with
+    each client keeping its own answers, a deployment of thousands of agents
+    behind a load balancer read a room for nearly every message: an agent
+    writes to a room rarely, and seldom twice through the same process. A
+    room's transport id never changes, so this only grows and never goes
+    stale. Keyed by tenant as well, since `rooms.matrix_room_id` is unique per
+    tenant, not globally.
+
+    The first time a transport of a tenant misses, every open room of the
+    tenant is read at once (`TenantRoomIds.read_all_once`), so a process does
+    not read thousands of rooms one at a time as its clients first write to
+    them. A room created after that is read on its own, once.
+    """
+
+    def __init__(self) -> None:
+        self._ids: dict[tuple[str, str], str] = {}
+        # The tenants whose open rooms were read in full, or are being read,
+        # set once the read has ended.
+        self._read: dict[str, asyncio.Event] = {}
+
+    def of_tenant(self, tenant_id: str) -> TenantRoomIds:
+        return TenantRoomIds(self._ids, self._read, tenant_id)
+
+
+class TenantRoomIds:
+    """`RoomIds` as the transports of one tenant read and write it."""
+
+    __slots__ = ("_ids", "_read", "_tenant_id")
+
+    def __init__(
+        self,
+        ids: dict[tuple[str, str], str],
+        read: dict[str, asyncio.Event],
+        tenant_id: str,
+    ) -> None:
+        self._ids = ids
+        self._read = read
+        self._tenant_id = tenant_id
+
+    def get(self, transport_room_id: str) -> str | None:
+        return self._ids.get((self._tenant_id, transport_room_id))
+
+    def __setitem__(self, transport_room_id: str, room_id: str) -> None:
+        self._ids[(self._tenant_id, transport_room_id)] = room_id
+
+    async def read_all_once(
+        self, read: Callable[[], Awaitable[list[tuple[str, str]]]]
+    ) -> None:
+        """Read every open room of the tenant with `read`, the first time
+        this is asked in the process. A caller asking while that read is under
+        way waits for it, holding nothing; one asking after it returns at
+        once. A read that fails is tried again by the next caller."""
+        done = self._read.get(self._tenant_id)
+        if done is not None:
+            await done.wait()
+            return
+        done = self._read[self._tenant_id] = asyncio.Event()
+        try:
+            for transport_room_id, room_id in await read():
+                self._ids[(self._tenant_id, transport_room_id)] = room_id
+        except BaseException:
+            del self._read[self._tenant_id]
+            raise
+        finally:
+            done.set()
+
+
 class PostgresTransport:
     """Carries a room's events in the `messages` table.
 
@@ -200,6 +272,7 @@ class PostgresTransport:
         room_cache: RoomDeliveryCache,
         message_observer: ParticipantMessageObserver,
         router: MessageRouter,
+        room_ids: RoomIds | None = None,
     ) -> None:
         self.user_id = user_id
         self.client_id = client_id
@@ -290,8 +363,11 @@ class PostgresTransport:
         self._wake = asyncio.Event()
         self._delivering = False
         # A room's transport id never changes, so this only grows and never
-        # goes stale.
-        self._room_ids: dict[str, str] = {}
+        # goes stale. Shared with every other transport of the tenant in the
+        # process, so a room one client found costs the next client no read.
+        self._room_ids = (room_ids if room_ids is not None else RoomIds()).of_tenant(
+            tenant_id
+        )
 
     # ── Session ───────────────────────────────────────────────────────────────
 
@@ -1440,9 +1516,19 @@ class PostgresTransport:
         cached = self._room_ids.get(transport_room_id)
         if cached is not None:
             return cached, tenant_id
+        await self._room_ids.read_all_once(self._open_rooms)
+        cached = self._room_ids.get(transport_room_id)
+        if cached is not None:
+            return cached, tenant_id
         async with tenant_session(self._session_factory, tenant_id) as session:
             room_id = await self._resolve_room(session, transport_room_id)
         return room_id, tenant_id
+
+    async def _open_rooms(self) -> list[tuple[str, str]]:
+        async with tenant_session(self._session_factory, self.tenant_id) as session:
+            return await self._room_store.transport_ids_of_open_rooms(
+                session, self.tenant_id
+            )
 
 
 def _now_ms() -> int:
