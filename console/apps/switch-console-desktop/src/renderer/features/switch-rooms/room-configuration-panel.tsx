@@ -58,6 +58,7 @@ import { roomAgentPresence } from './room-agent-presence';
 import { channelOnDeleteSummary } from './room-delete-wording';
 import { addableAgents, addablePeople, membershipSummary, roomTitle } from './room-labels';
 import { openRoomChannel } from './room-links';
+import { roomInviteability } from './room-membership';
 import {
   AgentMark,
   agentKindFor,
@@ -940,7 +941,8 @@ const ParticipantsSection = observer(function ParticipantsSection({
   const remoteById = new Map((remoteAgents.data ?? []).map((agent) => [agent.id, agent]));
   const detailQueryKey = roomDetailKey(workspaceId, room.id);
   const canWrite = permissions.canWrite;
-  const canInvitePeople = canWrite && room.bridgeId !== null;
+  const inviteability = roomInviteability(room, bridgePlatformLabel(room.bridgeType));
+  const canInvitePeople = canWrite && inviteability.canInvite;
 
   async function refresh() {
     await queryClient.invalidateQueries({ queryKey: detailQueryKey });
@@ -1009,6 +1011,9 @@ const ParticipantsSection = observer(function ParticipantsSection({
         <AddPeoplePanel workspaceId={workspaceId} room={room} bridgeId={room.bridgeId} />
       )}
       {error !== null && <p className="text-xs text-destructive">{error}</p>}
+      {canWrite && !inviteability.canInvite && inviteability.reason !== null && (
+        <p className="text-xs text-foreground-muted">{inviteability.reason}</p>
+      )}
 
       {room.agentIds.length === 0 && room.connectedUserNames.length === 0 ? (
         <p className="text-sm text-foreground-muted">Nobody is in this room yet.</p>
