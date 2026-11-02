@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSummary, RoomDetail } from "../../data/api";
 import * as api from "../../data/api";
@@ -35,7 +41,13 @@ vi.mock("./RoomLinkedRoomsSection", () => ({
   ),
 }));
 vi.mock("./RoomResourcesSection", () => ({
-  default: ({ canWrite, canUnlink }: { canWrite: boolean; canUnlink: boolean }) => (
+  default: ({
+    canWrite,
+    canUnlink,
+  }: {
+    canWrite: boolean;
+    canUnlink: boolean;
+  }) => (
     <div
       data-testid="resources"
       data-can-write={String(canWrite)}
@@ -82,9 +94,14 @@ const room = {
   can_unlink: false,
   can_transfer: false,
   can_change_members: true,
+  show_tool_detail: false,
 } as RoomDetail;
 
-const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
+const agent = {
+  id: "a1",
+  name: "planner",
+  parent_agent_id: null,
+} as AgentSummary;
 
 // Members can be changed by whoever may write to the room, as the server
 // says, unless a test sets otherwise.
@@ -106,6 +123,12 @@ function accessSelect() {
 
 function nameField() {
   return screen.getByRole<HTMLInputElement>("textbox", { name: "Name" });
+}
+
+function toolDetailSwitch() {
+  return screen.getByRole<HTMLInputElement>("switch", {
+    name: "Show tool detail in the chat",
+  });
 }
 
 function joinEventsSwitch() {
@@ -212,6 +235,38 @@ describe("RoomDetailPage permissions", () => {
       read_visibility: "private",
       write_visibility: "private",
     });
+  });
+
+  it("lets someone who may manage the room turn tool detail on, and saves only that", async () => {
+    viewAs({ can_write: true, can_manage: true, can_unlink: false });
+
+    fireEvent.click(toolDetailSwitch());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(api.updateRoom).toHaveBeenCalledTimes(1));
+    const [, sent] = vi.mocked(api.updateRoom).mock.calls[0];
+    expect(sent.show_tool_detail).toBe(true);
+    expect(sent.name).toBeUndefined();
+    expect(sent).not.toHaveProperty("read_visibility");
+  });
+
+  it("shows tool detail as it is to someone who may write but not manage", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        can_write: true,
+        can_manage: false,
+        can_unlink: false,
+        show_tool_detail: true,
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    expect(toolDetailSwitch().checked).toBe(true);
+    expect(toolDetailSwitch().disabled).toBe(true);
   });
 
   it("loads the platform's users only when someone adds one", async () => {
