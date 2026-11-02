@@ -4,9 +4,10 @@ Status: built (Phases 1 and 2). This note covers what v2 adds to
 [`service-connections-v1.md`](service-connections-v1.md): any OAuth vendor
 whose tools are its own MCP servers or its command-line tool, and any vendor
 people connect with a key they paste, connected, granted and called from a
-session on generic parts. Atlassian (Jira), Google Workspace and Airtable are
-live; Datadog, built as the first key, is refused now, as every key is (see
-[Keys](#keys)). v1's tables,
+session on generic parts. Atlassian (Jira), Google Workspace, Airtable and
+Datadog are live; Datadog was built as the first key, and signs in at the
+site people pick now that keys are refused (see [Keys](#keys) and
+[Datadog](#datadog)). v1's tables,
 broker checks, agent routes, token cache and redaction carry over unchanged;
 GitHub works as it did.
 
@@ -140,9 +141,15 @@ from), its identity's, and its `authorization_url`, `token_url` and
 choice that is secret or has no list, and any template at all in an entry
 without choices.
 
-Switch Console sends what was picked with the start of the sign-in
+`GET /gateway/service-connections` answers each entry's choices as
+`sign_in_choices` (name, label, help and list, as a key form's fields; null
+for an entry without), and Switch Console's Connect dialog shows a picker for
+each above its Connect button, starting on the connection's own choice when
+the person connects again. Switch Console sends what was picked with the
+start of the sign-in
 (`POST /gateway/service-connections/{service}/flows` with
-`choices: {site: ...}`). Core refuses, with 422, a start that leaves one out,
+`choices: {site: ...}`), and sends no `choices` for an entry without, as a
+server from before them takes a start. Core refuses, with 422, a start that leaves one out,
 picks a value not in its list, or names a choice the entry does not have. The
 flow keeps the choices in `sign_in_flows.details`, and every step of the
 sign-in calls the URLs rendered with them. The connection keeps them twice:
@@ -168,7 +175,13 @@ Each connection also records how it was made, `service_connections.method`:
 `oauth` for a sign-in, `keys` for pasted keys (Datadog's connections from
 before the column read so), and `token` for a pasted token, which no entry
 offers yet. `GET /gateway/service-connections` answers each connection's
-`method` and `choices`, null where the person has not connected it.
+`method` and `choices`, null where the person has not connected it. Each
+entry offers the ways its adapter connects (`ConnectionDefinition.methods`:
+`keys` for an `api_key` entry, `oauth` for any other). A connection made in a
+way its entry no longer offers, as Datadog's keys once Datadog signed in,
+reads as needing reconnecting, a grant on it is refused, and asking for its
+token is refused before anything it holds is used; its row is left as it is,
+so an entry that offers that way again takes the connection back.
 
 ## Tokens
 
@@ -233,7 +246,8 @@ client per service and choice, and replicas that differ keep replacing it.
 Some vendors take Core's callback,
 `<GATEWAY_PUBLIC_URL>/gateway/service-connections/<service>/flows/callback`,
 only once their admin has allow-listed it (for Atlassian, an admin of each
-site people sign in to), so that comes first; until then the vendor shows its
+site people sign in to; for Datadog, an admin of each organization, under
+the MCP OAuth redirect URLs in Organization Settings), so that comes first; until then the vendor shows its
 own error page, which never reaches Switch, and the start answers the callback
 (`callback_url`) for Console's Connect dialog to show under its spinner with
 the line "If <Service> shows an error, an admin must allow-list this URL at
@@ -442,8 +456,8 @@ what each person can do about it (`UnavailableCode` in
 
 ## Keys
 
-For a vendor whose people connect with a key rather than a sign-in (Datadog,
-PagerDuty, Snowflake and the like), an entry names
+For a vendor whose people connect with a key rather than a sign-in (PagerDuty,
+Snowflake and the like, and Datadog until it signed in), an entry names
 `adapter: api_key`:
 
 ```yaml
@@ -506,34 +520,30 @@ for a later server-side use of the key.
 - **Disconnecting** forgets the key, and says that only the vendor can revoke
   it. Keys do not expire and are not refreshed.
 
-### Datadog
-
-Datadog was the first entry built this way, and is refused now with every
-key. As built, its remote MCP server takes an API key and an application key
-in headers named with underscores (`DD_API_KEY`, `DD_APPLICATION_KEY`), unlike
-its REST API's hyphens, at the address its entry names, for the six
-commercial sites (not GovCloud). The identity call is the REST API's
-`/api/v1/validate`, which checks the API key; the application key is checked
-by the MCP server on the first call, since a key scoped to `mcp_read` alone
-may not read the current user. A Datadog administrator turns MCP access on for
-the organization (Organization Settings, Preferences), and the application key
-needs `mcp_read`, and `mcp_write` for changes.
+Datadog was the first entry built this way. Its remote MCP server takes an
+API key and an application key in headers named with underscores
+(`DD_API_KEY`, `DD_APPLICATION_KEY`), unlike its REST API's hyphens. Refused
+with every key, it now signs in instead (see [Datadog](#datadog)), and no
+shipped entry is connected with a key; the key tests run against an entry of
+their own.
 
 ## Adding a connector
 
 A connector is a catalog entry and a skill, with no code, when the vendor fits
 one of three shapes. Pick the first that fits:
 
-1. **A remote MCP server with OAuth** (Atlassian): `adapter: oauth` with `mcp`.
-   Where the vendor offers dynamic client registration, nothing is set up on
-   the server (`registration: dynamic`); otherwise each server's operator
-   registers an OAuth app and saves it under Connectors in the dashboard,
-   or names it in `<PREFIX>_CLIENT_CONFIG_PATH` (`registration: static`).
+1. **A remote MCP server with OAuth** (Atlassian, Datadog): `adapter: oauth`
+   with `mcp`. Where the vendor offers dynamic client registration, nothing is
+   set up on the server (`registration: dynamic`); otherwise each server's
+   operator registers an OAuth app and saves it under Connectors in the
+   dashboard, or names it in `<PREFIX>_CLIENT_CONFIG_PATH`
+   (`registration: static`). A vendor with a deployment per region names its
+   sites as [choices before the sign-in](#choices-before-a-sign-in).
 2. **A command-line tool with OAuth** (Google Workspace): `adapter: oauth` with
    `cli`, a pinned release per platform with its SHA-256, and the allow and
    deny lists that keep it to the vendor's own commands.
-3. **A key** (Datadog): `adapter: api_key`, above, with `mcp` or `cli`. Such
-   an entry is refused today, since a key is never handed to an agent.
+3. **A key**: `adapter: api_key`, above, with `mcp` or `cli`. Such an entry
+   is refused today, since a key is never handed to an agent.
 
 Then:
 
@@ -586,6 +596,53 @@ settings:
 To connect: Connectors in Switch Console, then Atlassian. Nothing
 needs configuring on the server. To roll back, add `atlassian` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+
+## Datadog
+
+Built from Datadog's public MCP and OAuth metadata at each of its sites, and
+sign-in runs against a trial organization at one:
+
+- Each site is a Datadog of its own: its own accounts, MCP server and
+  authorization server. The person picks theirs before signing in, from the
+  seven public sites (`datadoghq.com`, `us3.datadoghq.com`,
+  `us5.datadoghq.com`, `datadoghq.eu`, `ap1.datadoghq.com`,
+  `ap2.datadoghq.com`, `uk1.datadoghq.com`); government sites offer no MCP
+  server. Every URL in the entry names the site: the MCP server,
+  `https://mcp.{site}/v1/mcp`, and the identity call,
+  `https://api.{site}/api/v2/current_user`.
+- The MCP server's 401 names its resource metadata, which names the MCP
+  server itself as the authorization server; that server's metadata, on the
+  MCP host, names endpoints on the site's app host. Discovery needs nothing
+  of its own.
+- Datadog offers only dynamic registration, of a public client (PKCE S256,
+  no secret), so Core registers one at each site people sign in at. The one
+  scope is `mcp_all`. Datadog's consent page calls every client "Datadog
+  Generic MCP Client", whatever name it registered.
+- The consent page offers Full access or Limited (read-only) access, and the
+  token's `scope` lists every permission given, never `mcp_all`, with
+  `mcp_write` only for Full. The entry's consent markers read the level from
+  it: `write` with `mcp_write`, `read` with `mcp_read` alone, refused with
+  neither. Write tools are listed either way, and an organization admin can
+  hide them for everyone with the MCP Write Access switch; the skill says so.
+- Access tokens live 3,599 seconds; refresh tokens are reused, never rotated.
+  Datadog advertises no revocation, so a disconnect says where to remove the
+  sign-in in Datadog (Personal Settings, Authorized Apps).
+- The account is the user in the organization signed in to (`data.id`), named
+  by their email; one person in two organizations is two accounts. Connectors
+  shows the site beside the email.
+- A sign-in comes back to Switch Console on five fixed ports, which Datadog
+  takes from any organization; it adds `site`, `domain`, `dd_oid` and
+  `dd_org_name` to the redirect, which neither Console's listener nor Core's
+  callback reads. Core's callback works only once an organization admin has
+  added it to the MCP OAuth redirect URLs in Organization Settings; then the
+  server may name `core` for datadog in `SERVICE_SIGN_IN_REDIRECT` (see
+  [Connecting](#connecting)).
+- A connection made with keys, when Datadog was connected with keys, reads as
+  needing reconnecting and is never used.
+
+To connect: Connectors in Switch Console, then Datadog. Nothing needs
+configuring on the server. To roll back, add `datadog` to
+`DISABLED_SERVICES`.
 
 ## Airtable
 
@@ -735,7 +792,7 @@ it as unavailable, with its reason, and the next token request fails.
 - Keeping a CLI vendor's token out of the CLI's process (a credential proxy).
 - Live runs against a real Jira site, a real Google Workspace and a real
   Datadog organization stay manual and outside CI, which tests `gws`'s
-  handling against a stand-in, never the real binary, and Datadog's key check
-  against a stand-in transport.
+  handling against a stand-in, never the real binary, and Datadog's sign-in
+  against a stand-in for each of its sites.
 - Connecting a key from the web dashboard: Switch Console starts it, as every
   connect.
