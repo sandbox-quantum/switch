@@ -489,6 +489,35 @@ class TestUse:
         assert listed["ada"]["connectable"] is True
         assert listed["ada"]["loopback_ports"] == [39241, 39242, 39243, 39244, 39245]
 
+    async def test_the_list_says_what_to_pick_before_signing_in(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory, public_url=None, named=None)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            entries = {
+                entry["slug"]: entry
+                for entry in (
+                    await client.get(
+                        "/gateway/service-connections", cookies=cookies_for(ada)
+                    )
+                ).json()["connections"]
+            }
+        assert entries["datadog"]["sign_in_choices"] == [
+            {
+                "name": "site",
+                "label": "Datadog site",
+                "secret": False,
+                "help": "The address you open Datadog at, without app.",
+                "choices": list(SITES),
+            }
+        ]
+        assert entries["datadog"]["key"] is None
+        # An entry that asks for nothing before its sign-in, and one with no
+        # sign-in of Switch's own.
+        assert entries["atlassian"]["sign_in_choices"] is None
+        assert entries["github"]["sign_in_choices"] is None
+
 
 class TestKeysConnectedBefore:
     """A connection made with Datadog's API and application keys, when Datadog
