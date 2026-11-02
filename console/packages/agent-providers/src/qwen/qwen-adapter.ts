@@ -52,7 +52,7 @@ export const qwenAcp: AcpProviderHooks = {
     args: env.OPENAI_API_KEY ? ['--acp', '--auth-type=openai'] : ['--acp'],
     env,
   }),
-  loginCommand: 'export OPENAI_API_KEY=<your key>',
+  loginCommand: 'export OPENAI_API_KEY=<your Model Studio or other OpenAI-compatible key>',
   inheritEnv: ['OPENAI_BASE_URL', 'OPENAI_MODEL'],
   // The key is the sign-in, so its presence is the answer; asking the agent
   // would mean starting a session.

@@ -157,7 +157,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     AgentProvider(
         id="qwen",
         label="Qwen Code",
-        sign_in_command="export OPENAI_API_KEY=<your key>",
+        sign_in_command="export OPENAI_API_KEY=<your Model Studio or other OpenAI-compatible key>",
         tools=(
             ToolSpec(name="run_shell_command", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),
