@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
@@ -904,7 +905,7 @@ def _keyed_id_key_or_none(request: Request) -> KeyedIdKey | None:
     return key if isinstance(key, KeyedIdKey) else None
 
 
-@router.get("/tenants/{tenant_id}/audit-events")
+@router.get("/tenants/{tenant_id}/audit-events", response_model=list[AuditEventDetail])
 async def list_tenant_audit_events(
     tenant_id: str,
     request: Request,
@@ -912,7 +913,7 @@ async def list_tenant_audit_events(
     _user: Annotated[User, Depends(require_tenant_admin)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     before: Annotated[datetime | None, Query()] = None,
-) -> list[AuditEventDetail]:
+) -> list[AuditEventDetail] | JSONResponse:
     """The bound tenant's audit log, newest first. `owner`/`admin` only.
 
     Page back by passing the oldest `occurred_at` returned as `before`.
@@ -942,7 +943,7 @@ async def list_tenant_audit_events(
         members=await member_names(session, tenant_id),
         key=_keyed_id_key_or_none(request),
     )
-    return [
+    named = [
         NamedAuditEventDetail(
             **_entry(event).model_dump(),
             actor_name=actor_name,
@@ -950,6 +951,9 @@ async def list_tenant_audit_events(
         )
         for event, (actor_name, target_name) in zip(events, names, strict=True)
     ]
+    # Sent as they are: the declared response model is upstream's entry, which
+    # would drop the names on the way out. The schema stays upstream's.
+    return JSONResponse(jsonable_encoder(named))
 
 
 @router.delete("/tenants/{tenant_id}/invitations/{invitation_id}")

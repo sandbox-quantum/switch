@@ -2484,6 +2484,37 @@ class TestBudgetRoutes:
             "details",
         }
 
+    async def test_with_v2_on_the_audit_log_names_the_workspaces_members(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The v1/v2 switch: with hosted agents v2 on, each entry carries the
+        member names over HTTP, not just in the handler's return value."""
+        from switch_core import hosted_v2
+        from switch_core.db.audit import AuditAction, record_audit_event
+
+        monkeypatch.setattr(hosted_v2, "_process_on", True)
+        user_id, token = await self._admin(session_factory, "audit-v2-on")
+        async with _client(_app(session_factory), token) as client:
+            async with tenant_session(session_factory, TENANT_A) as session:
+                await record_audit_event(
+                    session,
+                    tenant_id=TENANT_A,
+                    actor_user_id=user_id,
+                    action=AuditAction.MEMBER_ROLE_CHANGED,
+                    target_type="user",
+                    target_id=user_id,
+                    details={},
+                )
+                await session.commit()
+            audit = await client.get(f"/tenants/{TENANT_A}/audit-events")
+        assert audit.status_code == 200, audit.text
+        [entry] = audit.json()
+        assert {"actor_name", "target_name"} <= set(entry)
+        assert entry["actor_name"]
+        assert entry["target_name"] == entry["actor_name"]
+
     async def test_a_limit_that_is_not_positive_is_refused(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
