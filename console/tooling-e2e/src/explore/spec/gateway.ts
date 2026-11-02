@@ -76,13 +76,26 @@ const signedIn = extract(
 
 /**
  * Whether the last action opened a page: a link, back, forward, reload or a
- * jump. No action at all is the first state, the page the run starts on. Read
- * loosely because Bombadil hands the action over in its trace shape (snake
- * case, empty fields left out), not the one its types declare; the tag is
- * lowercase there, as `getFingerprint` writes it.
+ * jump, but not back or forward to a page restored as it was left. No action
+ * at all is the first state, the page the run starts on. Read loosely because
+ * Bombadil hands the action over in its trace shape (snake case, empty fields
+ * left out), not the one its types declare; the tag is lowercase there, as
+ * `getFingerprint` writes it.
  */
 const openedPage = extract((state) => {
+  // A listener installed with the first read of each page load marks a
+  // restore from the back/forward cache, and every read takes the mark, so it
+  // holds in the one state the restore landed in.
+  const page = state.window as Window & { switchExploreRestored?: boolean };
+  if (page.switchExploreRestored === undefined) {
+    page.addEventListener('pageshow', (event) => {
+      if (event.persisted) page.switchExploreRestored = true;
+    });
+  }
+  const restored = page.switchExploreRestored === true;
+  page.switchExploreRestored = false;
   const action = state.lastAction as unknown;
+  if (action === 'Back' || action === 'Forward') return !restored;
   if (action === null || typeof action === 'string') return action !== 'Wait';
   const { Click, Custom } = action as {
     Click?: { fingerprint: { tag: string; href?: string } };
