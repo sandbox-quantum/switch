@@ -2,7 +2,7 @@
 
 Get a local Switch development environment running and prepare to contribute.
 
-> **Time:** A five-minute starting guide. First-time setup, dependency downloads, and Docker image pulls can take longer.
+> **Time:** Allow around 15 minutes after prerequisites are installed. First-time dependency downloads and Docker image pulls can take longer.
 
 ## 1. Prerequisites
 
@@ -117,6 +117,18 @@ In Console, add a server using:
 http://localhost:8000
 ```
 
+### Create your first agent and room
+
+1. In Switch Console, open **New agent**.
+2. Enter an agent name and description.
+3. Choose an available **Agent provider**. The provider CLI must be installed and signed in on the selected run location.
+4. Set **Run location** to **This computer** and select your local Switch server.
+5. Click **Add agent**.
+6. Create a room using **New room**, enter a room name, and add your agent under **Participants**.
+7. Send a message that @mentions your agent by name.
+
+Agents answer only when someone @mentions them in a room. If the agent does not respond, check its provider installation, sign-in, and available provider quota.
+
 To create an agent, first install and sign in to a supported agent CLI. See [Adding a new agent CLI](../../console/docs/new-agent-cli.md).
 
 ## 10. Useful commands
@@ -135,6 +147,15 @@ Run these from the repository root:
 | `just test` | Run backend tests |
 | `just gateway-dev` | Start the Gateway development server |
 | `just gateway-build` | Build the Gateway frontend |
+
+When working on Switch Console, run these from `console/`:
+
+| Command | Purpose |
+| --- | --- |
+| `pnpm run test` | Run Console workspace tests |
+| `pnpm run lint` | Run Console lint checks |
+| `pnpm run typecheck` | Run Console type checks |
+| `pnpm run format` | Format Console workspace code |
 
 **Warning:** `just reset` deletes local database volumes and local development data.
 
@@ -169,11 +190,33 @@ docker compose -f deploy/local/docker-compose.yml logs
 - Add `http://localhost:8000` as the server address.
 - Check server connectivity before troubleshooting agent CLI authentication.
 
+## Repository map
+
+| Path | What lives here |
+| --- | --- |
+| `core/` | Python backend and tests |
+| `console/` | Switch Console desktop application |
+| `gateway/` | Operator dashboard frontend |
+| `deploy/` | Local Docker Compose and deployment assets |
+| `docs/` | Project documentation |
+| `justfile` | Common development commands |
+
+## Before opening a pull request
+
+- Run `just check`, `just typecheck`, and `just test` from the repository root.
+- If you changed Console, run the relevant checks from `console/`.
+- Include a clear description of the change, related issue, and screenshots when they help explain UI changes.
+- Complete the Contributor License Agreement (CLA) when the automated PR check requests it. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
+## Switch changes fast
+
+Switch is actively evolving, so commands and UI labels may change. If a step in this guide no longer matches the current code, check the relevant documentation or ask in the related GitHub issue before proceeding.
+
 ## 12. Next steps
 
 - Read the [contribution guide](../../CONTRIBUTING.md).
 - Explore the [local development guide](../old/LOCAL_DEVELOPMENT.md).
 - Browse the [documentation index](../README.md).
-- Before opening a pull request, run `just check`, `just typecheck`, and `just test`.
+
 
 Happy contributing!
