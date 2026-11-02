@@ -3,8 +3,8 @@
 Several switch-core processes share one database, and some work must run in
 exactly one of them: a client's consumer, such as the admin's, which answers
 commands and posts warnings; a collaboration bridge's platform connection and
-the consumer that posts to the platform; a server-side connector polling its
-agents. Run in two processes, every such effect happens twice.
+the consumer that posts to the platform. Run in two processes, every such
+effect happens twice.
 
 Each piece of work is a kind and a key ("client" and a client id). A process
 wants the keys it could run, and runs those it owns. Which process owns a key

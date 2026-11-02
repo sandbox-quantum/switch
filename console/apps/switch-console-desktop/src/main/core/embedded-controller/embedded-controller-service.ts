@@ -94,8 +94,13 @@ export type EmbeddedControllerDeps = {
 
 const SUPPORTED_PLATFORMS: readonly NodeJS.Platform[] = ['darwin', 'linux', 'win32'];
 
-/** Every provider's sign-in check runs at once; the slowest allows itself 15 seconds. */
-const RECHECK_TIMEOUT_MS = 60_000;
+/**
+ * Every provider is checked at once. Claude Code's is the slowest: its status
+ * command (up to 15 seconds), then a test prompt (up to 30), then the report
+ * to Switch, so the wait leaves room for all three and resolves on the
+ * report that has them rather than timing out ahead of it.
+ */
+const RECHECK_TIMEOUT_MS = 90_000;
 
 function providerSeedArgs(file: string | null): string[] {
   return file === null ? [] : ['--provider-seed', file];

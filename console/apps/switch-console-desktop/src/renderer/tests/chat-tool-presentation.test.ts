@@ -1,6 +1,6 @@
 import type { Item } from '@switch-console/shared/session-v1';
 import { describe, expect, it } from 'vitest';
-import { presentTool, shortPath, summarizeTools } from '@renderer/features/chats/tool-presentation';
+import { presentTool, shortPath } from '@renderer/features/chats/tool-presentation';
 import type { ToolDetail } from '@shared/core/sessions/reasoning';
 
 function item(title: string, status: Item['status'] = 'completed'): Item {
@@ -155,20 +155,6 @@ describe('presentTool', () => {
       kind: 'other',
       verb: 'ToolSearch',
       details: null,
-    });
-  });
-});
-
-describe('summarizeTools', () => {
-  it('counts each kind in the order it first appears', () => {
-    expect(summarizeTools(['shell', 'read', 'read', 'edit'])).toEqual({
-      label: 'Ran 1 command, read 2 files and edited 1 file',
-      kind: null,
-    });
-    expect(summarizeTools(['read', 'read'])).toEqual({ label: 'Read 2 files', kind: 'read' });
-    expect(summarizeTools(['switch', 'switch', 'shell'])).toEqual({
-      label: 'Used 2 tools and ran 1 command',
-      kind: null,
     });
   });
 });

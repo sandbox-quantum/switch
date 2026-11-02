@@ -11,7 +11,13 @@ from typing import Any
 
 from sqlalchemy import insert
 
-from switch_core.bridges.collaboration.adapter import RichContent, RichContentFailed
+from switch_core.bridges.collaboration.adapter import (
+    RichContent,
+    RichContentFailed,
+    RichContentFailedAfterPost,
+    RichContentThrottledAfterPost,
+    TurnActivity,
+)
 from switch_core.db.models import Client, CollaborationBridge, Room, room_agents
 
 
@@ -69,6 +75,8 @@ class RecordingPlatform:
     separate_attention_slot: bool = True
     notifies_only_by_mention: bool = False
     redraws_for_elapsed_time: bool = False
+    # What `activity_closes_in` answers for every message posted.
+    closes_in: float | None = None
     supports_activity_reactions: bool = True
     supports_queue_reaction: bool = True
     activity_reactions_per_agent: bool = False
@@ -79,6 +87,14 @@ class RecordingPlatform:
     drawn: list[Drawn] = field(default_factory=list)
     marks: list[tuple[str, str, bool]] = field(default_factory=list)
     refuse_posts: bool = False
+    # Raised for every post of a turn's activity while its turn id is here.
+    turn_post_errors: dict[str, RichContentFailed] = field(default_factory=dict)
+    # Turns whose next post opens a message, then is asked to wait before
+    # drawing into it.
+    open_undrawn: set[str] = field(default_factory=set)
+    # Turns whose next post opens a message, then cannot draw into it.
+    open_unfilled: set[str] = field(default_factory=set)
+    held_for: float = 0.0
     found_card: str | None = None
     first_reply: bool = True
     _next: int = 0
@@ -96,7 +112,22 @@ class RecordingPlatform:
     ) -> str:
         if self.refuse_posts:
             raise RichContentFailed("refused", text="")
+        turn_id = (
+            content.turn.turn_id
+            if isinstance(content, TurnActivity) and not content.status_only
+            else None
+        )
+        if turn_id in self.turn_post_errors:
+            raise self.turn_post_errors[turn_id]
         ref = self._ref()
+        if turn_id in self.open_undrawn:
+            self.open_undrawn.discard(turn_id)
+            self.drawn.append(Drawn("opened", channel_id, ref, thread_root_id, None))
+            raise RichContentThrottledAfterPost(ref=ref, retry_after=0.2, text="")
+        if turn_id in self.open_unfilled:
+            self.open_unfilled.discard(turn_id)
+            self.drawn.append(Drawn("opened", channel_id, ref, thread_root_id, None))
+            raise RichContentFailedAfterPost("refused", ref=ref, text="")
         self.drawn.append(Drawn("post_rich", channel_id, ref, thread_root_id, content))
         return ref
 
@@ -111,6 +142,12 @@ class RecordingPlatform:
         self.drawn.append(
             Drawn("update_rich", channel_id, message_ref, thread_root_id, content)
         )
+
+    def rich_updates_held_for(self) -> float:
+        return self.held_for
+
+    def activity_closes_in(self, message_ref: str) -> float | None:
+        return self.closes_in
 
     async def send_message(
         self,

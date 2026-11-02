@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { SERVER_TOO_OLD_FOR_ACTIVITY } from '@shared/core/chats/activity';
 import type { ChatMessage, ChatSummary } from '@shared/core/chats/chats';
+import { useChatPeople } from '../chat-people';
+import { readThroughSeq } from '../read-progress';
+import { directChats } from '../start-direct-chat';
 import { agentActivities } from '../stores/activities';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline } from '../stores/chat-timeline-store';
@@ -75,13 +78,27 @@ export const ChatPanel = observer(function ChatPanel({
 }) {
   const timeline = chatsStore.timelines.get(serverId, roomId);
   const chat = chatsStore.chat(roomId);
+  const unsaved = directChats.unsavedChat(roomId);
+  // An unsaved chat has no summary yet; its agent is known from the agent's other chats, if any.
+  const agents =
+    chat?.agents ??
+    (unsaved
+      ? chatsStore
+          .chatsOfAgent(unsaved.agentId)
+          .flatMap((each) => each.agents)
+          .filter((agent) => agent.id === unsaved.agentId)
+          .slice(0, 1)
+      : []);
   const activities = useAgentActivities(serverId, chat);
+  const people = useChatPeople(serverId, chat);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const lost = timeline.accessLost || chatsStore.removed.has(roomId);
 
   useEffect(() => {
     if (!timeline.loaded && !lost && !timeline.notMember) void timeline.load();
   }, [timeline, lost, timeline.notMember]);
+  const panel = useRef<HTMLDivElement>(null);
+  const shown = useShown(panel, lost || timeline.notMember);
 
   // Reasoning lives only on a local or SSH host and is read while a turn runs,
   // and whenever the joined turns change.
@@ -132,14 +149,18 @@ export const ChatPanel = observer(function ChatPanel({
     );
 
   return (
-    <div data-chat-panel className="flex h-full min-h-0 flex-col bg-background text-foreground">
+    <div
+      ref={panel}
+      data-chat-panel
+      className="flex h-full min-h-0 flex-col bg-background text-foreground"
+    >
       {timeline.loadError && (
         <div
           role="alert"
           className="flex items-center justify-between gap-3 bg-background-1 px-5 py-2 text-sm"
         >
           <span>{timeline.loadError}</span>
-          <Button size="sm" variant="outline" onClick={() => void timeline.load()}>
+          <Button size="sm" variant="outline" onClick={() => timeline.retryLoad()}>
             Try again
           </Button>
         </div>
@@ -153,7 +174,8 @@ export const ChatPanel = observer(function ChatPanel({
               <ChatTimelineView
                 serverId={serverId}
                 timeline={timeline}
-                agents={chat?.agents ?? []}
+                agents={agents}
+                people={people.known}
                 activities={activities}
                 onReply={setReplyTo}
               />
@@ -171,12 +193,16 @@ export const ChatPanel = observer(function ChatPanel({
         />
         <MessageScrollerButton className="absolute bottom-3 left-1/2 -translate-x-1/2" />
         <FollowOwnSends timeline={timeline} />
+        <ReadWhileFollowing roomId={roomId} timeline={timeline} shown={shown} />
       </MessageScroller>
       <ActivityUnavailable serverId={serverId} activities={activities} />
       <ChatComposer
         serverId={serverId}
         timeline={timeline}
-        agents={chat?.agents ?? []}
+        agents={agents}
+        // Everyone but the viewer can be mentioned from here.
+        people={people.members.filter((person) => person.userId !== chatsStore.userId)}
+        groupName={chat && chat.channelType !== 'direct' ? chat.name : null}
         activity={activities[0] ?? null}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
@@ -188,6 +214,65 @@ export const ChatPanel = observer(function ChatPanel({
       />
     </div>
   );
+});
+
+/** Whether the conversation is on screen in a focused window; a hidden tab or a background window is not. */
+function useShown(panel: React.RefObject<HTMLDivElement | null>, hidden: boolean): boolean {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const update = () =>
+      setShown(
+        !hidden &&
+          document.visibilityState === 'visible' &&
+          document.hasFocus() &&
+          (panel.current?.checkVisibility() ?? false)
+      );
+    update();
+    document.addEventListener('visibilitychange', update);
+    window.addEventListener('focus', update);
+    window.addEventListener('blur', update);
+    return () => {
+      document.removeEventListener('visibilitychange', update);
+      window.removeEventListener('focus', update);
+      window.removeEventListener('blur', update);
+    };
+  }, [panel, hidden]);
+  return shown;
+}
+
+/**
+ * While the conversation is on screen and followed at the bottom, it is the
+ * chat being read: its new messages do not count as unread, and it is marked
+ * read through the last one. Scrolled up, arrivals count until the reader
+ * comes back down.
+ */
+const ReadWhileFollowing = observer(function ReadWhileFollowing({
+  roomId,
+  timeline,
+  shown,
+}: {
+  roomId: string;
+  timeline: ChatTimeline;
+  shown: boolean;
+}) {
+  const { isAtBottom } = useMessageScroller();
+  const reading = shown && isAtBottom;
+  const seq = readThroughSeq({
+    shown,
+    atBottom: isAtBottom,
+    lastSeq: timeline.loaded ? (timeline.messages.at(-1)?.seq ?? null) : null,
+  });
+  useEffect(() => {
+    if (!reading) return;
+    chatsStore.setViewing(roomId);
+    return () => {
+      if (chatsStore.viewing === roomId) chatsStore.setViewing(null);
+    };
+  }, [reading, roomId]);
+  useEffect(() => {
+    if (seq !== null) chatsStore.read(roomId, seq);
+  }, [roomId, seq]);
+  return null;
 });
 
 /**
@@ -220,7 +305,9 @@ const ActivityUnavailable = observer(function ActivityUnavailable({
   const feedDown = activities.length > 0 && agentActivities.feedDown.has(serverId);
   const tooOld = agentActivities.feedDown.get(serverId) === SERVER_TOO_OLD_FOR_ACTIVITY;
   const notes = activities.flatMap((activity) =>
-    [activity.feedError, activity.resolveError].filter((note) => note !== null)
+    [activity.feedError, activity.resolveError, activity.reasoningError].filter(
+      (note) => note !== null
+    )
   );
   const unique = [...new Set(notes)].filter(
     (note) => !(feedDown && tooOld && note === SERVER_TOO_OLD_FOR_ACTIVITY)

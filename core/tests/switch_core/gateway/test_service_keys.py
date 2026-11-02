@@ -1,15 +1,16 @@
-"""Connecting a service with a pasted key, and using it, against Postgres.
+"""A service connected with a pasted key, against Postgres.
 
-Datadog, the shipped entry, is the service: its API key is checked with the
-vendor (a stand-in transport here) before anything is stored, the connection
-keeps the fields as the token a session host is handed, and a grant hands that
-token out like any pass-through one.
+Datadog, the shipped entry, is the service. Its keys do not expire and only
+Datadog can revoke them, so Switch never hands one to an agent: a key is
+neither checked nor stored, nothing can be granted, and a connection and grant
+made before that rule are refused at issue time rather than dropped. The
+connection can still be disconnected.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+import time
 
 import httpx
 import pytest
@@ -19,11 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
-from switch_core.db.models import ServiceConnection
+from switch_core.db.models import ServiceConnection, ServiceTokenIssuance
 from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.service_harness import (
+    STORE,
     agent_with_key,
     build_service_harness,
 )
@@ -39,6 +41,10 @@ KEYS = {
     "application_key": "app-key-xxxxxxxx",
     "site": "datadoghq.eu",
 }
+NEVER_EXPIRES = (
+    "Datadog keys do not expire and only Datadog can revoke them, so Switch "
+    "does not hand them to agents."
+)
 
 
 class DatadogStandIn:
@@ -90,8 +96,54 @@ async def _connections(harness: Harness) -> list[ServiceConnection]:
         return list(await session.scalars(select(ServiceConnection)))
 
 
+async def _connected_before(
+    session_factory: async_sessionmaker[AsyncSession],
+    owner_id: str,
+    agent_id: str,
+) -> None:
+    """A Datadog connection and grant as a server before the rule left them."""
+    token = json.dumps(
+        {
+            "secret": {
+                "api_key": KEYS["api_key"],
+                "application_key": KEYS["application_key"],
+            },
+            "public": {"site": KEYS["site"]},
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    async with session_factory() as session:
+        await STORE.save_connection(
+            session,
+            user_id=owner_id,
+            service="datadog",
+            consent="write",
+            granted_scopes=[],
+            account_id="dd-key",
+            external_identity="Datadog key · datadoghq.eu",
+            encrypted_secret=TEST_KEYRING.encrypt(
+                json.dumps({"access_token": token, "expires_at": time.time()})
+            ),
+            oauth_client_id=None,
+        )
+        await STORE.save_grant(
+            session,
+            agent_id=agent_id,
+            owner_id=owner_id,
+            service="datadog",
+            access="write",
+            tool_mode="deny",
+            tools=[],
+            resources={},
+            account_id="dd-key",
+            created_by=owner_id,
+        )
+        await session.commit()
+
+
 class TestConnect:
-    async def test_the_list_offers_the_key_form(self, service) -> None:
+    async def test_the_list_says_why_it_cannot_be_connected(self, service) -> None:
         harness, _ = service
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
@@ -99,20 +151,15 @@ class TestConnect:
                 "/gateway/service-connections", cookies=cookies_for(owner)
             )
         entry = next(e for e in listed.json()["connections"] if e["slug"] == "datadog")
-        assert entry["connectable"] is True
+        assert entry["connectable"] is False
         assert entry["auth_type"] == "api_key"
-        form = entry["key"]
-        assert [(f["name"], f["secret"]) for f in form["fields"]] == [
-            ("api_key", True),
-            ("application_key", True),
-            ("site", False),
-        ]
-        assert "datadoghq.eu" in form["fields"][2]["choices"]
-        assert form["help_url"].startswith("https://docs.datadoghq.com/")
-        github = next(e for e in listed.json()["connections"] if e["slug"] == "github")
-        assert github["key"] is None
+        assert (entry["unavailable_code"], entry["unavailable_reason"]) == (
+            "key_never_expires",
+            NEVER_EXPIRES,
+        )
+        assert entry["token_lifetime"] is None
 
-    async def test_a_key_the_vendor_accepts_is_stored_and_never_sent_back(
+    async def test_a_key_is_neither_checked_nor_stored(
         self, service, datadog: DatadogStandIn
     ) -> None:
         harness, _ = service
@@ -120,79 +167,22 @@ class TestConnect:
 
         response = await _connect(harness, owner, KEYS)
 
-        assert response.status_code == 200, response.text
-        assert response.json()["external_identity"] == "Datadog key · datadoghq.eu"
-        assert KEYS["api_key"] not in response.text
-        [request] = datadog.requests
-        assert str(request.url) == "https://api.datadoghq.eu/api/v1/validate"
-        assert request.headers["DD-API-KEY"] == KEYS["api_key"]
-        [connection] = await _connections(harness)
-        assert (connection.service, connection.consent, connection.status) == (
-            "datadog",
-            "write",
-            "active",
-        )
-        assert KEYS["api_key"] not in connection.encrypted_secret
-        stored = json.loads(TEST_KEYRING.decrypt(connection.encrypted_secret))
-        assert json.loads(stored["access_token"]) == {
-            "secret": {
-                "api_key": KEYS["api_key"],
-                "application_key": KEYS["application_key"],
-            },
-            "public": {"site": "datadoghq.eu"},
+        assert response.status_code == 403, response.text
+        assert response.json() == {
+            "detail": NEVER_EXPIRES,
+            "code": "forbidden",
+            "retryable": False,
         }
-
-    async def test_a_refused_key_is_not_stored(
-        self, service, datadog: DatadogStandIn
-    ) -> None:
-        harness, _ = service
-        owner = await add_member(harness.session_factory, "ada")
-
-        response = await _connect(harness, owner, {**KEYS, "api_key": "WRONG-KEY"})
-
-        assert response.status_code == 422, response.text
-        assert "refused the key" in response.json()["detail"]
+        assert datadog.requests == []
         assert await _connections(harness) == []
 
-    @pytest.mark.parametrize(
-        ("fields", "message"),
-        [
-            ({**KEYS, "site": "evil.example"}, "must be one of"),
-            ({**KEYS, "api_key": "has a space"}, "without spaces"),
-            ({k: v for k, v in KEYS.items() if k != "application_key"}, "required"),
-            ({**KEYS, "extra": "x"}, "takes no field named extra"),
-        ],
-        ids=["site-not-offered", "space", "missing", "unknown"],
-    )
-    async def test_malformed_fields_are_refused_before_the_vendor_is_asked(
-        self, service, datadog: DatadogStandIn, fields, message
-    ) -> None:
-        harness, _ = service
-        owner = await add_member(harness.session_factory, "ada")
-
-        response = await _connect(harness, owner, fields)
-
-        assert response.status_code == 422, response.text
-        assert message in response.json()["detail"]
-        assert datadog.requests == []
-
-    async def test_a_key_someone_else_linked_is_refused(self, service) -> None:
-        harness, _ = service
-        ada = await add_member(harness.session_factory, "ada")
-        grace = await add_member(harness.session_factory, "grace")
-        assert (await _connect(harness, ada, KEYS)).status_code == 200
-
-        response = await _connect(harness, grace, KEYS)
-
-        assert response.status_code == 409, response.text
-        assert response.json()["code"] == "account_linked_elsewhere"
-
-    async def test_disconnecting_says_the_key_still_works_at_the_vendor(
+    async def test_a_key_connected_before_can_still_be_disconnected(
         self, service
     ) -> None:
         harness, _ = service
         owner = await add_member(harness.session_factory, "ada")
-        await _connect(harness, owner, KEYS)
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "sre")
+        await _connected_before(harness.session_factory, owner.id, agent_id)
 
         async with harness.client() as client:
             response = await client.delete(
@@ -205,21 +195,14 @@ class TestConnect:
 
 
 class TestUse:
-    async def test_a_granted_agent_is_handed_the_fields_for_an_hour(
+    async def test_a_grant_made_before_is_left_out_and_refused_at_issue(
         self, service
     ) -> None:
         harness, _ = service
         owner = await add_member(harness.session_factory, "ada")
         agent_id, key = await agent_with_key(harness.session_factory, owner, "sre")
-        await _connect(harness, owner, KEYS)
+        await _connected_before(harness.session_factory, owner.id, agent_id)
         async with harness.client() as client:
-            granted = await client.put(
-                f"/gateway/agents/{agent_id}/service-grants/datadog",
-                json={"resources": {}},
-                cookies=cookies_for(owner),
-            )
-            assert granted.status_code == 200, granted.text
-            assert granted.json()["grant"]["access"] == "write"
             grants = await client.get(
                 f"/agents/{agent_id}/service-grants", headers=bearer(key)
             )
@@ -227,22 +210,34 @@ class TestUse:
                 f"/agents/{agent_id}/service-tokens/datadog", headers=bearer(key)
             )
 
-        assert token.status_code == 200, token.text
-        body = token.json()
-        assert json.loads(body["token"])["secret"]["api_key"] == KEYS["api_key"]
-        expires_at = datetime.fromisoformat(body["expires_at"])
-        assert expires_at <= datetime.now(UTC) + timedelta(hours=1, minutes=1)
-        [grant] = grants.json()["grants"]
-        assert grant["mcp_servers"] == [
-            {
-                "name": "datadog",
-                "url": "https://mcp.{site}/api/unstable/mcp-server/mcp",
-                "headers": {
-                    "DD_API_KEY": "{api_key}",
-                    "DD_APPLICATION_KEY": "{application_key}",
-                },
-            }
-        ]
+        # Left out of what a session starts with, as a switched-off service is:
+        # it would be refused every token anyway.
+        assert grants.json()["grants"] == []
+        assert token.status_code == 403, token.text
+        assert token.json()["error"] == {
+            "code": "forbidden",
+            "message": NEVER_EXPIRES,
+            "retryable": False,
+        }
+        assert KEYS["api_key"] not in token.text
+        async with harness.session_factory() as session:
+            assert list(await session.scalars(select(ServiceTokenIssuance))) == []
+
+    async def test_a_new_grant_is_refused(self, service) -> None:
+        harness, _ = service
+        owner = await add_member(harness.session_factory, "ada")
+        agent_id, _ = await agent_with_key(harness.session_factory, owner, "sre")
+        other_id, _ = await agent_with_key(harness.session_factory, owner, "ops")
+        await _connected_before(harness.session_factory, owner.id, other_id)
+        async with harness.client() as client:
+            granted = await client.put(
+                f"/gateway/agents/{agent_id}/service-grants/datadog",
+                json={"resources": {}},
+                cookies=cookies_for(owner),
+            )
+
+        assert granted.status_code == 422, granted.text
+        assert granted.json()["detail"] == NEVER_EXPIRES
 
 
 class TestWorkspaceSwitch:

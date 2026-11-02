@@ -228,6 +228,18 @@ switchCore:
   imagePullPolicy: ""
   logLevel: INFO
 
+  # The ServiceAccount switch-core runs as: one of its own, never the
+  # namespace's `default`, which every pod that names no account shares.
+  # Anything outside the cluster that trusts switch-core's identity — the
+  # distributed Teams app's federated credential (teamsApp.credential:
+  # federated) above all — then trusts switch-core alone. Empty name means
+  # <release>-switch-core. Set create: false to run as an account made
+  # elsewhere (by terraform, say), and name it.
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
   # Logging. "text" is for reading in a terminal; "json" is what a log pipeline
   # wants, and the only format that carries the context fields as fields — the
   # tenant, and the request, agent and user a line belongs to — rather than
@@ -308,10 +320,14 @@ switchCore:
   # Agents and people drawn by outside avatar services. An agent with no icon
   # of its own wears a face from api.dicebear.com seeded with its name, and a
   # person relayed from another platform a lettered badge from ui-avatars.com
-  # with their name in the URL. Chat clients load those images, so the services
-  # see the name and each reader's address. false sends no such URL, stored
-  # icons included: each platform shows its own default icon, new agents get no
-  # generated icon, and Switch Console stops drawing them for this server.
+  # with their name in the URL, so the services see the name. Slack and Discord
+  # fetch the image on their own servers, Teams draws it inside each card (some
+  # Teams clients may load it from the service directly), the Mattermost bridge
+  # fetches it from switch-core, and Switch Console loads it on each user's
+  # machine. false sends no such URL, stored icons included: each platform
+  # shows its own default icon (a Mattermost bot keeps the image it already
+  # has), new agents get no generated icon, and Switch Console stops drawing
+  # them for this server.
   thirdPartyAvatars:
     enabled: true
 
@@ -423,7 +439,7 @@ switchCore:
     # The package's SHA-256, 64 lowercase hex characters.
     sha256: ""
   # Private hosts switch-core may reach at a URL a tenant or agent supplied —
-  # a Mattermost server, an OpenCode server, an agent icon. Hostnames or CIDRs.
+  # a Mattermost server, an agent icon. Hostnames or CIDRs.
   # Anything else that is not a public address is refused, and link-local and
   # cloud metadata addresses are refused even when listed. The bundled
   # Mattermost (mattermost.enabled) is added automatically.
@@ -526,7 +542,9 @@ switchCore:
     # (secrets.teamsAppClientSecret), certificate
     # (secrets.teamsAppCertificate + secrets.teamsAppCertificatePrivateKey), or
     # federated — a projected service-account token the app registration
-    # trusts as a federated credential, so no secret exists at all.
+    # trusts as a federated credential, so no secret exists at all. The
+    # credential's subject is switch-core's own account (serviceAccount
+    # above): system:serviceaccount:<namespace>:<release>-switch-core.
     credential: secret
     # Shown to the admin approving the app, and required in its package.
     privacyUrl: ""
@@ -660,13 +678,13 @@ switchCore:
     # default.
     port: 8081
   # How many switch-core pods to run. Every pod serves the API and holds client
-  # connections. Each bridge's listener and outbound relay, each server
-  # connector and each command reader runs on one pod at a time, through
-  # leases in the database, and each message is routed to its agents as it is
-  # written, so any pod can take any request. So does the deployment's shared
-  # Discord gateway connection (the distributed Discord app), with its Discord
-  # bridges on the same pod, and each Teams bridge's Graph subscriptions, made
-  # and renewed by the pod that holds the bridge.
+  # connections. Each bridge's listener and outbound relay and each command
+  # reader runs on one pod at a time, through leases in the database, and
+  # each message is routed to its agents as it is written, so any pod can take
+  # any request. So does the deployment's shared Discord gateway connection
+  # (the distributed Discord app), with its Discord bridges on the same pod,
+  # and each Teams bridge's Graph subscriptions, made and renewed by the pod
+  # that holds the bridge.
   #
   # One replica is replaced (Recreate): the old pod stops before the new one
   # starts, so an upgrade has a short outage. More than one rolls (see
@@ -696,8 +714,17 @@ switchCore:
     maxSkew: 1
     topologyKey: kubernetes.io/hostname
     whenUnsatisfiable: ScheduleAnyway
+  # Which nodes the switch-core pods may run on. Empty, they go wherever the
+  # cluster has room. To keep them to nodes of their own, label and taint those
+  # nodes and match both here, e.g. a load test on a node group that carries
+  # `workload: loadtest` and the taint `loadtest=true:NoSchedule`:
+  #   nodeSelector: {workload: loadtest}
+  #   tolerations:
+  #     - {key: loadtest, operator: Equal, value: "true", effect: NoSchedule}
+  nodeSelector: {}
+  tolerations: []
   # How long the kubelet waits after SIGTERM before killing the pod. On SIGTERM
-  # switch-core hands the bridges, connectors and readers it owns to the other
+  # switch-core hands the bridges and readers it owns to the other
   # pods (up to 10s), releases its lease (up to 1s), keeps serving for 5s while
   # the Service stops routing to it (only with more than one replica), stops
   # the bridges it still runs (giving one still starting up to 5s) and gives

@@ -43,7 +43,12 @@ const featureFlags = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { workspaces, featureFlags, switchServers },
+  rpc: {
+    workspaces,
+    featureFlags,
+    switchServers,
+    userChanges: { watch: async () => false, unwatch: async () => {} },
+  },
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({

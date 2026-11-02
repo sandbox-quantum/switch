@@ -166,6 +166,12 @@ instance of the image must give the files on it the same owners.
 `agent-users` (16 by default) is how many agents each controller on a machine
 can run at once.
 
+`install.sh` installs the package it is given with `npm install --ignore-scripts`
+and checks no signature: give it a package from a controller release whose
+signature you checked (the controller's `install.sh` shows how), since the image
+runs what it bakes. The controllers then update only to releases signed with a
+key built into that package.
+
 ## Running it
 
 - Core needs the `hosted_agents` and `agent_management` feature flags as

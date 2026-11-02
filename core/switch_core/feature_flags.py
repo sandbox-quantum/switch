@@ -63,6 +63,15 @@ AGENT_CHATS = "agent_chats"
 # on, so a server without the template is never asked to make one.
 SWITCH_BUDDY = "switch_buddy"
 
+# Group chats in Switch Console: chats with people and with no or several
+# agents, adding and removing a chat's agents, naming people in a message, and
+# the agents a person may add. Turn it on only once every switch-core process
+# runs a release that has it: the guarantee is server-first rollout, then the
+# flag. An upgraded process refuses those requests while it is off, but a
+# process still on an older release ignores the fields it does not know, so
+# turning it on before the rollout finishes is not protected.
+GROUP_CHATS = "group_chats"
+
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
     {
@@ -74,5 +83,6 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         FOLLOW_THE_CONVERSATION,
         AGENT_CHATS,
         SWITCH_BUDDY,
+        GROUP_CHATS,
     }
 )

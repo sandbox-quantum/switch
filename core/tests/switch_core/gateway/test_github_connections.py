@@ -639,6 +639,7 @@ async def test_with_the_flag_off_the_workspace_switch_is_ignored(github_app):
 @pytest.mark.parametrize("github_app", [True], indirect=True)
 async def test_switched_off_mid_flow_the_sign_in_is_revoked_and_not_kept(github_app):
     client, github, identity, factory = github_app
+    await _switch_github(factory, identity["user"].id, True)
     flow_id = await authorize(client)
     await relay(client, flow_id)
     await _switch_github(factory, identity["user"].id, False)

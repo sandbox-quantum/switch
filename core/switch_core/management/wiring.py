@@ -57,6 +57,7 @@ from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLease
 from switch_core.signals import SignalBus
+from switch_core.user_changes import UserChangePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,6 @@ class Management:
         return await load_bindings(
             session_factory=self.session_factory,
             definitions=self.service.definitions,
-            controllers=self.service.controllers,
             presence=self.service.presence,
         )
 
@@ -141,6 +141,7 @@ def build_management(
     clock: Callable[[], datetime],
     signal_bus: SignalBus,
     lease: ProcessLease,
+    user_changes: UserChangePublisher,
 ) -> Management:
     process_id = lease.process_id
     if signal_bus.process_id != process_id:
@@ -153,6 +154,7 @@ def build_management(
     operations = AgentControllerOperationStore()
     processes = SwitchCoreProcessStore()
     presence.use_auth_cache(auth_cache)
+    auth_cache.follow(signal_bus)
     signals = ControllerSignals(
         notifier=ControllerNotifier(),
         presence=presence,
@@ -164,6 +166,7 @@ def build_management(
         rooms=RoomStore(),
         processes=processes,
         clock=clock,
+        user_changes=user_changes,
     )
     ledger = ControllerConnectionLedger(
         process_id=process_id,
@@ -182,6 +185,7 @@ def build_management(
             controller_release=controller_release,
         ),
         signals=signals,
+        user_changes=user_changes,
         controllers=controllers,
         definitions=definitions,
         operations=operations,
@@ -228,6 +232,7 @@ def create_management(
     presence: ControllerPresence,
     signal_bus: SignalBus,
     lease: ProcessLease,
+    user_changes: UserChangePublisher,
 ) -> Management | None:
     if not config.agent_management_enabled:
         return None
@@ -250,8 +255,10 @@ def create_management(
         auth_cache=ControllerAuthCache(
             ttl_seconds=config.agent_auth_cache_ttl_seconds,
             max_entries=config.agent_auth_cache_max_entries,
+            max_agents=config.controller_auth_cache_max_agents,
         ),
         clock=utc_now,
         signal_bus=signal_bus,
         lease=lease,
+        user_changes=user_changes,
     )

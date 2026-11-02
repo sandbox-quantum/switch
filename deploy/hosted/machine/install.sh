@@ -89,7 +89,7 @@ while [ "$slot" -le "$agent_users" ]; do
 done
 
 install -d -o root -g root -m 0755 /opt/switch/controller /usr/local/libexec /etc/switch-hosted /data
-npm install --global --prefix /opt/switch/controller "$controller_package"
+npm install --global --ignore-scripts --prefix /opt/switch/controller "$controller_package"
 cli=/opt/switch/controller/bin/switch-agent-controller
 "$cli" --version >/dev/null
 

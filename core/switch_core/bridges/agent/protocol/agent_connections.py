@@ -334,6 +334,9 @@ class ClientDeclaration:
     accepts: int | None = None
     artifact: str | None = None
     version: str | None = None
+    # Why a client that has the WebSocket opened the event stream instead, as
+    # `sse_fallback` cleaned it. Logged only: not recorded and not reported.
+    fallback: str | None = None
 
     @property
     def declares_protocol(self) -> bool:
@@ -361,6 +364,31 @@ class ClientDeclaration:
         }
 
 
+SSE_FALLBACK_REASONS = frozenset({"socket_never_opened"})
+
+
+def sse_fallback(reason: str | None, close_code: str | None) -> str | None:
+    """Why a client opened the event stream, as it goes in the log line.
+
+    A runtime that has the WebSocket asks for the event stream only when its
+    socket never opened, and says so, so the log can tell it apart from a
+    client built before the socket. Both values are the client's own, so an
+    unknown reason becomes "other" and a close code that is not a short number
+    is dropped.
+    """
+    if not reason:
+        return None
+    label = reason if reason in SSE_FALLBACK_REASONS else "other"
+    if (
+        close_code
+        and close_code.isascii()
+        and close_code.isdigit()
+        and len(close_code) <= 4
+    ):
+        return f"{label}:{close_code}"
+    return label
+
+
 def client_label(declaration: ClientDeclaration) -> str:
     """The declared artifact as a metric value: a registered name, or a bucket.
 
@@ -373,6 +401,14 @@ def client_label(declaration: ClientDeclaration) -> str:
     if declaration.artifact in ARTIFACT_VERSIONS:
         return declaration.artifact
     return "other"
+
+
+def _fallback_suffix(declaration: ClientDeclaration) -> str:
+    """` fallback=<why>` for the `[CONN]` log lines, or nothing when the
+    client did not fall back, so the line reads as it always has."""
+    if declaration.fallback is None:
+        return ""
+    return f" fallback={declaration.fallback}"
 
 
 class ProtocolVersionError(ConnectionError_):
@@ -728,13 +764,14 @@ class AgentConnectionRegistry:
             metrics().increment(AGENT_CONNECTIONS_OPENED, {"kind": "reattach"})
             logger.info(
                 "[CONN] reattached agent=%s connection=%s scope=%s generation=%s "
-                "transport=%s%s",
+                "transport=%s%s%s",
                 agent_id,
                 connection_id,
                 scope,
                 existing.stream_generation,
                 transport,
                 f" from process={moved_from}" if moved_from is not None else "",
+                _fallback_suffix(declaration),
             )
             return existing
 
@@ -765,7 +802,7 @@ class AgentConnectionRegistry:
         )
         logger.info(
             "[CONN] opened agent=%s connection=%s scope=%s filter=%s spawn=%s "
-            "client=%s version=%s protocol=%s transport=%s",
+            "client=%s version=%s protocol=%s transport=%s%s",
             agent_id,
             connection_id,
             scope,
@@ -777,6 +814,7 @@ class AgentConnectionRegistry:
             if declaration.declares_protocol
             else "unknown",
             transport,
+            _fallback_suffix(declaration),
         )
         return conn
 

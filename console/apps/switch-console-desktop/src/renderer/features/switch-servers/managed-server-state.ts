@@ -35,6 +35,7 @@ export type ManagedReason =
   | 'downgrade'
   | 'docker-unavailable'
   | 'start-failed'
+  | 'stopped-unexpectedly'
   | 'stop-failed'
   | 'reset-failed';
 
@@ -55,6 +56,7 @@ const REASON: Record<ManagedReason, { tone: ManagedTone; label: string; answerin
   downgrade: { tone: 'failed', label: 'Newer than this app', answering: false },
   'docker-unavailable': { tone: 'failed', label: 'Docker not running', answering: false },
   'start-failed': { tone: 'failed', label: 'Failed to start', answering: false },
+  'stopped-unexpectedly': { tone: 'failed', label: 'Stopped unexpectedly', answering: false },
   'stop-failed': { tone: 'failed', label: "Couldn't stop", answering: false },
   'reset-failed': { tone: 'failed', label: 'Reset failed', answering: false },
 };
@@ -88,8 +90,9 @@ export type ManagedStateInput = {
   /** Waiting for another Console to finish with the server. */
   waiting: boolean;
   dockerUnavailable: boolean;
-  /** What broke, when an error is from a stop or a reset rather than a start. */
-  failedTo: 'stop' | 'reset' | null;
+  /** What broke, when an error is not from a start: a stop, a reset, or a
+   * running server that stopped or stopped answering on its own. */
+  failedTo: 'stop' | 'reset' | 'run' | null;
 };
 
 function stateFor(reason: ManagedReason, known: boolean): ManagedServerState {
@@ -107,6 +110,7 @@ function reasonFor(input: ManagedStateInput): ManagedReason {
   if (phase === 'error') {
     if (input.failedTo === 'stop') return 'stop-failed';
     if (input.failedTo === 'reset') return 'reset-failed';
+    if (input.failedTo === 'run') return 'stopped-unexpectedly';
     if (drift?.direction === 'downgrade') return 'downgrade';
     if (upgrade?.state === 'failed') return 'update-failed';
     if (input.dockerUnavailable) return 'docker-unavailable';

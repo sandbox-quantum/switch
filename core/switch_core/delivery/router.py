@@ -66,15 +66,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
-from sqlalchemy import and_, delete, func, literal, select, update
+from sqlalchemy import and_, bindparam, delete, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import DBAPIError
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY, parse_attachment_group
+from switch_core.bridges.agent.protocol.event_buffer import OwnEventToStore
 from switch_core.budgets import BudgetGuard
-from switch_core.clients.actor import AgentActor, ClientConfig
-from switch_core.clients.admin_messages import PLATFORM_MARKER
+from switch_core.clients.actor import AgentActor, ClientConfig, SystemActor
+from switch_core.clients.admin_messages import ADMIN_MARKER, PLATFORM_MARKER
+from switch_core.clients.mention_warnings import MentionWarnings, unmatched_mentions
 from switch_core.clients.room_meta import RoomMeta
+from switch_core.db.agent_event_notify_ddl import (
+    AGENT_EVENT_CHANNEL,
+    agent_event_announcement,
+)
 from switch_core.db.models import (
     Agent,
     AgentConnectionRecord,
@@ -88,8 +94,11 @@ from switch_core.db.models import (
     SwitchCoreProcess,
     room_agents,
 )
+from switch_core.db.notify_ddl import MESSAGE_CHANNEL, message_announcement
+from switch_core.db.raw import RawStatement
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.room_store import follow_ups_enabled_in, main_agent_in
+from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.delivery.addressing import AddressingResolver, SenderPrincipal
 from switch_core.delivery.conversation import (
     ConversationMessage,
@@ -117,6 +126,7 @@ from switch_core.transport.types import (
     InboundMedia,
     InboundMembership,
     InboundMessage,
+    RoomRef,
 )
 
 if TYPE_CHECKING:
@@ -148,6 +158,9 @@ GROUP_SWEEP_SECONDS = 5.0
 # The one custom event an agent can be part of. The rest (reports,
 # observations) are the platform's own bookkeeping and are nobody's own event.
 _COMMAND_EVENT = "com.switch.command"
+
+
+_INSTALLS = TemplateInstallStore()
 
 
 class RoomReads:
@@ -190,6 +203,7 @@ class RoomReads:
         self._claims: dict[str, list[str]] = {}
         self._standings: list[BudgetStanding] | None = None
         self._clients: dict[str, Client | None] = {}
+        self._notices: dict[str, str] | None = None
         self.addressing = _RoomAddressing(
             self, services=services, client_store=client_store
         )
@@ -215,7 +229,13 @@ class RoomReads:
         """
         found = (
             await session.execute(
-                select(Room, CollaborationBridge.agent_greetings_enabled)
+                select(
+                    Room,
+                    CollaborationBridge.agent_greetings_enabled,
+                    select(func.count())
+                    .where(room_agents.c.room_id == Room.id)
+                    .scalar_subquery(),
+                )
                 .outerjoin(
                     CollaborationBridge,
                     and_(
@@ -228,7 +248,7 @@ class RoomReads:
         ).first()
         if found is None:
             return None
-        room, greetings = found
+        room, greetings, agent_count = found
         rows = (
             await session.execute(
                 select(
@@ -286,9 +306,11 @@ class RoomReads:
                 bridge_id=room.bridge_id,
                 agent_greetings_enabled=True if greetings is None else greetings,
                 channel_type=room.channel_type,
+                agent_count=agent_count,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
                 agent_greeting=(room.metadata_ or {}).get("agent_greeting"),
+                console_chat="chat_operation_id" in (room.metadata_ or {}),
             ),
             group_id=room.group_id,
             members=sorted(members, key=lambda member: member.agent.id),
@@ -375,6 +397,15 @@ class RoomReads:
             )
         return self._standings
 
+    async def switch_notice(self, session: AsyncSession, agent_id: str) -> str | None:
+        """What Switch has to tell an agent before its next message (see
+        `TemplateInstallResource.notice`), read for every agent member at once."""
+        if self._notices is None:
+            self._notices = await _INSTALLS.notices_for_agents(
+                session, [member.agent.id for member in self.members]
+            )
+        return self._notices.get(agent_id)
+
     async def get_by_transport_user_id(
         self, session: AsyncSession, transport_user_id: str
     ) -> Client | None:
@@ -421,6 +452,16 @@ class _RoomAddressing(AddressingResolver):
         if room_id != self._reads.room_id:
             return await super().role_of(session, room_id, agent_id)
         return (await self._reads.role_names(session)).get(agent_id)
+
+    async def auto_addressed_room(
+        self, session: AsyncSession, *, room_id: str, channel_type: str | None
+    ) -> bool:
+        count = self._reads.meta.agent_count
+        if room_id != self._reads.room_id or count is None:
+            return await super().auto_addressed_room(
+                session, room_id=room_id, channel_type=channel_type
+            )
+        return channel_type == "direct" and count == 1
 
     async def group_of(self, session: AsyncSession, room_id: str) -> str | None:
         if room_id != self._reads.room_id:
@@ -506,8 +547,9 @@ class Routed:
         row: InboundEvent,
         *,
         seq: int,
-        stored: list[str],
+        stored: list[tuple[str, int]],
         deadline_in: float | None,
+        announcement: str | None = None,
     ) -> None:
         self._router = router
         self._reads = reads
@@ -517,6 +559,9 @@ class Routed:
         self.seq = seq
         self._stored = stored
         self._deadline_in = deadline_in
+        # What the trigger would have announced for the row, when the writer
+        # announces it and its own events itself once it has committed.
+        self._announcement = announcement
 
     def committed(self) -> None:
         """Wake the agents the row is for, and leave the replies it owes to
@@ -539,8 +584,15 @@ class Routed:
 
     def _committed(self) -> None:
         router = self._router
-        for agent_id in self._stored:
-            router.services.event_buffer.ring(agent_id)
+        announcer = router.services.announcer
+        if self._announcement is not None and announcer is not None:
+            announcer.announce(MESSAGE_CHANNEL, self._announcement)
+            for agent_id, seq in self._stored:
+                announcer.announce(
+                    AGENT_EVENT_CHANNEL, agent_event_announcement(agent_id, seq)
+                )
+        for agent_id, seq in self._stored:
+            router.services.event_buffer.ring(agent_id, seq)
         reads = self._reads
         if reads is None:
             return
@@ -551,14 +603,32 @@ class Routed:
             )
         if self._deadline_in is not None:
             router.flush_groups_after(reads.tenant_id, self._deadline_in)
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]] = []
+        work: list[tuple[str, Callable[[], Awaitable[None]]]] = []
         row = self._row
         for recipient, delivery in plan.deliveries:
             if delivery.after is not None:
-                work.append((recipient, _bind(recipient, delivery.after, row)))
+                work.append(
+                    (
+                        recipient.agent.name,
+                        _bind(
+                            recipient,
+                            delivery.after,
+                            row,
+                            checks_membership=delivery.checks_membership,
+                        ),
+                    )
+                )
         if plan.arrival is not None:
             arrival = plan.arrival
-            work.append((arrival, _bind(arrival, lambda _row: arrival.greet(), row)))
+            work.append(
+                (
+                    arrival.agent.name,
+                    _bind(arrival, lambda _row: arrival.greet(), row),
+                )
+            )
+        warning = router.mention_warning(reads, row)
+        if warning is not None:
+            work.append(("Switch", warning))
         if work:
             router.after_commit(reads.tenant_id, reads.room_id, work)
 
@@ -567,13 +637,16 @@ def _bind(
     recipient: AgentRecipient,
     after: Callable[[InboundEvent], Awaitable[None]],
     row: InboundEvent,
+    *,
+    checks_membership: bool = False,
 ) -> Callable[[], Awaitable[None]]:
     """The work `row` left the agent, run as the agent once the row has
     committed, and only while the agent is still a member of the room
-    (`AgentRecipient.still_member`)."""
+    (`AgentRecipient.still_member`), which work that `checks_membership`
+    asks itself before it says anything."""
 
     async def run() -> None:
-        if not await recipient.still_member():
+        if not checks_membership and not await recipient.still_member():
             logger.info(
                 "Agent %s was taken out of room %s after row %s was decided; "
                 "what the row left it to say is not said",
@@ -677,11 +750,11 @@ class _AfterCommit:
         self,
         tenant_id: str,
         room_id: str,
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]],
+        work: list[tuple[str, Callable[[], Awaitable[None]]]],
     ) -> None:
+        """Queue `work`, each piece named by who it posts as."""
         queue = self._queues.setdefault(room_id, deque())
-        for recipient, run in work:
-            queue.append((recipient.agent.name, run))
+        queue.extend(work)
         if room_id not in self._runners:
             self._runners[room_id] = asyncio.get_running_loop().create_task(
                 self._drain(tenant_id, room_id), context=contextvars.Context()
@@ -692,7 +765,7 @@ class _AfterCommit:
         try:
             with tenant_scope(tenant_id), log_context(room_id=room_id):
                 while queue:
-                    agent_name, run = queue.popleft()
+                    poster, run = queue.popleft()
                     try:
                         await run()
                     except asyncio.CancelledError:
@@ -700,9 +773,9 @@ class _AfterCommit:
                     except Exception:
                         metrics().increment(ROUTING_FAILURES, {"stage": "after_commit"})
                         logger.error(
-                            "A reply owed by agent %s in room %s could not be "
+                            "A reply owed by %s in room %s could not be "
                             "posted; the message it answers was delivered",
-                            agent_name,
+                            poster,
                             room_id,
                             exc_info=True,
                         )
@@ -743,6 +816,7 @@ class MessageRouter:
         # The "machine is waking" notices posted for each agent's rooms.
         self._cloud_waking: dict[str, set[tuple[str, int]]] = {}
         self._after = _AfterCommit()
+        self._admin_for: Callable[[str], SystemActor | None] | None = None
         self._timers: set[asyncio.TimerHandle] = set()
         self._flushes: set[asyncio.Task[None]] = set()
 
@@ -822,10 +896,22 @@ class MessageRouter:
             plan = await self._decide(
                 session, reads, unwritten, sender_client_id=message.sender_client_id
             )
+        # With an announcer, the row and its own events are announced once the
+        # caller has committed (`Routed.committed`), in a batch, rather than by
+        # the triggers from inside this transaction (`announcer.py`).
+        announced_by_writer = self.services.announcer is not None
         if not unless_stored:
-            await self._messages.create(session, message, attachments)
+            await self._messages.create(
+                session,
+                message,
+                attachments,
+                announced_by_writer=announced_by_writer,
+            )
         elif not await self._messages.create_unless_stored(
-            session, message, attachments
+            session,
+            message,
+            attachments,
+            announced_by_writer=announced_by_writer,
         ):
             return None
         if reads is not None and await self._joined_since(session, reads):
@@ -851,7 +937,7 @@ class MessageRouter:
                 )
         row = to_inbound(message, attachments, transport_room_id=transport_room_id)
         deadline_in: float | None = None
-        stored: list[str] = []
+        stored: list[tuple[str, int]] = []
         if reads is not None:
             if plan.group is not None:
                 deadline_in = await self._step_group(session, reads, plan, row)
@@ -864,6 +950,13 @@ class MessageRouter:
             seq=message.seq,
             stored=stored,
             deadline_in=deadline_in,
+            announcement=(
+                message_announcement(
+                    room_id, message.seq, message.id, message.event_type
+                )
+                if announced_by_writer
+                else None
+            ),
         )
 
     @staticmethod
@@ -872,15 +965,10 @@ class MessageRouter:
         its members. Read with the room's lock held, when every arrival
         numbered before the row being written has committed."""
         known = {member.client_id for member in reads.members}
-        now = set(
-            (
-                await session.scalars(
-                    select(ClientRoom.client_id)
-                    .join(Agent, Agent.client_id == ClientRoom.client_id)
-                    .where(ClientRoom.room_id == reads.room_id)
-                )
-            ).all()
-        )
+        now = {
+            row.client_id
+            for row in await _AGENT_MEMBERS.all(session, {"room_id": reads.room_id})
+        }
         return bool(now - known)
 
     async def membership_changed(self, change: tuple[str, str, str]) -> None:
@@ -1259,6 +1347,7 @@ class MessageRouter:
             addressing=reads.addressing,
             budget_guard=reads.budget_guard,
             clients=reads,
+            notices=reads,
             cloud_waking_notices=self._cloud_waking.setdefault(member.agent.id, set()),
         )
 
@@ -1299,18 +1388,54 @@ class MessageRouter:
         reads: RoomReads,
         deliveries: list[tuple[AgentRecipient, Delivery]],
         row: InboundEvent,
-    ) -> list[str]:
+    ) -> list[tuple[str, int]]:
         """Store every own event decided for `row`, in the order of the
-        agents' ids, and return the agents whose events were stored."""
-        stored: list[str] = []
+        agents' ids, and return the agents whose events were stored, each with
+        its event's number.
+
+        Stored together, in two statements whatever the number of agents
+        (`EventBuffer.store_together`). If that fails they are stored one at
+        a time, each in a savepoint of its own, so that one agent's failure
+        costs that agent its event and nothing more."""
+        built: list[tuple[AgentRecipient, OwnEventToStore]] = []
         for recipient, delivery in sorted(
             deliveries, key=lambda decided: decided[0].agent.id
         ):
             if delivery.own_event is None:
                 continue
-            agent_id = recipient.agent.id
             try:
-                own = delivery.own_event(row)
+                decided = delivery.own_event(row)
+            except Exception:
+                self._store_failed(recipient, row, reads)
+                continue
+            built.append(
+                (
+                    recipient,
+                    OwnEventToStore(
+                        agent_id=recipient.agent.id,
+                        client_id=recipient.client_id,
+                        event=decided.event,
+                        room_seq=decided.room_seq,
+                        message_key=decided.message_key,
+                    ),
+                )
+            )
+        together = await self.services.event_buffer.store_together(
+            session,
+            tenant_id=reads.tenant_id,
+            room_id=reads.room_id,
+            events=[own for _, own in built],
+        )
+        if together is not None:
+            return [
+                (own.agent_id, together[own.agent_id])
+                for _, own in built
+                if own.agent_id in together
+            ]
+        stored: list[tuple[str, int]] = []
+        for recipient, own in built:
+            agent_id = own.agent_id
+            try:
                 seq = await self.services.event_buffer.store(
                     session,
                     tenant_id=reads.tenant_id,
@@ -1322,19 +1447,25 @@ class MessageRouter:
                     message_key=own.message_key,
                 )
             except Exception:
-                metrics().increment(ROUTING_FAILURES, {"stage": "store"})
-                logger.error(
-                    "Could not store agent %s's own event for row %s in room %s; "
-                    "the row is written and the agent misses it",
-                    recipient.agent.name,
-                    row.event_id,
-                    reads.room_id,
-                    exc_info=True,
-                )
+                self._store_failed(recipient, row, reads)
                 continue
             if seq is not None:
-                stored.append(agent_id)
+                stored.append((agent_id, seq))
         return stored
+
+    @staticmethod
+    def _store_failed(
+        recipient: AgentRecipient, row: InboundEvent, reads: RoomReads
+    ) -> None:
+        metrics().increment(ROUTING_FAILURES, {"stage": "store"})
+        logger.error(
+            "Could not store agent %s's own event for row %s in room %s; "
+            "the row is written and the agent misses it",
+            recipient.agent.name,
+            row.event_id,
+            reads.room_id,
+            exc_info=True,
+        )
 
     async def _step_group(
         self, session: AsyncSession, reads: RoomReads, plan: _Plan, row: InboundEvent
@@ -1602,9 +1733,57 @@ class MessageRouter:
         self,
         tenant_id: str,
         room_id: str,
-        work: list[tuple[AgentRecipient, Callable[[], Awaitable[None]]]],
+        work: list[tuple[str, Callable[[], Awaitable[None]]]],
     ) -> None:
         self._after.add(tenant_id, room_id, work)
+
+    def use_admin(self, admin_for: Callable[[str], SystemActor | None]) -> None:
+        """Who posts as Switch in a tenant, for the heads-up a message owes
+        when it tags something that cannot answer. Given once the clients are
+        running; until then no heads-up is posted."""
+        self._admin_for = admin_for
+
+    def mention_warning(
+        self, reads: RoomReads, row: InboundEvent
+    ) -> Callable[[], Awaitable[None]] | None:
+        """The heads-up check `row` owes, or None when it tags no name but the
+        room's agents.
+
+        Deciding the row read the room's agents already, so this costs no read
+        for a message that tags only them, which is most of them. A message
+        that tags anything else (a role, a person, an agent not in the room) is
+        checked once it has committed, on this process. Switch's own messages
+        are never checked, so a heads-up cannot set off another.
+        """
+        if self._admin_for is None or not isinstance(row, InboundMessage):
+            return None
+        if ADMIN_MARKER in row.content or "@" not in (row.body or ""):
+            return None
+        names = [member.agent.name for member in reads.members]
+        names += [member.alias for member in reads.members if member.alias]
+        if not unmatched_mentions(row.body, names):
+            return None
+        admin = self._admin_for(reads.tenant_id)
+        if admin is None:
+            return None
+        services = self.services
+        warnings = MentionWarnings(
+            actor=admin,
+            tenant_id=reads.tenant_id,
+            session_factory=services.session_factory,
+            connections=services.connections,
+            room_store=services.room_store,
+            room_role_store=services.room_role_store,
+            agent_store=services.agent_store,
+        )
+        room = RoomRef(room_id=reads.transport_room_id)
+        member_ids = {member.agent.id for member in reads.members}
+        room_id = reads.room_id
+
+        async def check() -> None:
+            await warnings.check(room, row, room_id, member_ids)
+
+        return check
 
     async def idle(self) -> None:
         """Wait for the replies already owed, and posts already being decided,
@@ -1669,3 +1848,12 @@ def _unwritten(message: Message) -> _Unwritten:
 
 # The time on a row not written yet, which nothing deciding it reads.
 _NOT_STAMPED = datetime.fromtimestamp(0, UTC)
+
+
+# The room's agent members, read again under its lock for every message
+# (`MessageRouter._joined_since`), run by asyncpg directly (`db/raw.py`).
+_AGENT_MEMBERS = RawStatement(
+    select(ClientRoom.client_id)
+    .join(Agent, Agent.client_id == ClientRoom.client_id)
+    .where(ClientRoom.room_id == bindparam("room_id"))
+)

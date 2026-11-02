@@ -1,7 +1,7 @@
 {{- $pdb := .Values.switchCore.podDisruptionBudget }}
 {{- if and (gt (int .Values.switchCore.replicaCount) 1) $pdb.enabled }}
 # Keeps a node drain or cluster upgrade from evicting every switch-core pod at
-# once. A pod evicted here hands its bridges, connectors and readers to the
+# once. A pod evicted here hands its bridges and readers to the
 # pods still running, the same as on a roll.
 apiVersion: policy/v1
 kind: PodDisruptionBudget

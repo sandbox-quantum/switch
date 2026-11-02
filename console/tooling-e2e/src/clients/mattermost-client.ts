@@ -102,6 +102,71 @@ export class MattermostClient {
     return (text === '' ? undefined : JSON.parse(text)) as T;
   }
 
+  /**
+   * Sign a new person up, as anyone may on a server with open sign-up, and
+   * log them in. `POST /api/v4/users`, then `POST /api/v4/users/login`, whose
+   * `Token` header is the session token the returned client posts with.
+   */
+  static async signUp(
+    env: MattermostEnv,
+    environment: Environment,
+    person: { username: string; email: string; password: string }
+  ): Promise<{ client: MattermostClient; user: MattermostUser; token: string }> {
+    const base = env.url.endsWith('/') ? env.url.slice(0, -1) : env.url;
+    const send = async (path: string, body: unknown): Promise<Response> => {
+      assertAllowed(environment, 'POST', `/api/v4${path}`);
+      const response = await fetch(`${base}/api/v4${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) {
+        throw new MattermostHttpError('POST', path, response.status, await response.text());
+      }
+      return response;
+    };
+    const user = (await (await send('/users', person)).json()) as MattermostUser;
+    const login = await send('/users/login', {
+      login_id: person.username,
+      password: person.password,
+    });
+    const token = login.headers.get('Token');
+    if (token === null) throw new Error(`Mattermost logged ${person.username} in without a token.`);
+    return { client: new MattermostClient({ ...env, token }, environment), user, token };
+  }
+
+  /**
+   * Take a person the harness signed up off the server again: deactivate them
+   * (`DELETE /api/v4/users/{id}`, as themselves), or, where Mattermost does not
+   * let a person deactivate themselves, take them out of every team and sign
+   * them out, and say that the account itself is left behind.
+   */
+  async leave(userId: string): Promise<void> {
+    try {
+      await this.request('DELETE', `/users/${userId}`);
+      return;
+    } catch (error) {
+      if (!(error instanceof MattermostHttpError) || ![401, 403, 501].includes(error.status)) {
+        throw error;
+      }
+      const teams = await this.request<MattermostTeam[]>('GET', `/users/${userId}/teams`);
+      for (const team of teams) {
+        await this.request('DELETE', `/teams/${team.id}/members/${userId}`);
+      }
+      await this.request('POST', '/users/logout');
+      console.warn(
+        `Mattermost does not let ${userId} deactivate itself here (${error.status}); ` +
+          'it was taken out of its teams and signed out, but the account remains.'
+      );
+    }
+  }
+
+  /** `POST /api/v4/teams/{id}/members` — join a team that is open to anyone, as the token's user. */
+  async joinTeam(teamId: string, userId: string): Promise<void> {
+    await this.request('POST', `/teams/${teamId}/members`, { team_id: teamId, user_id: userId });
+  }
+
   /** `GET /api/v4/users/me` — also the reachability + token-validity probe. */
   async me(): Promise<MattermostUser> {
     return this.request<MattermostUser>('GET', '/users/me');

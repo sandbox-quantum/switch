@@ -2,18 +2,27 @@ import { ChevronDown, ChevronRight, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { agentConversations } from '@renderer/features/chats/agent-conversations';
+import { ArchivedFold } from '@renderer/features/chats/components/archived-fold';
 import { ChatPanel } from '@renderer/features/chats/components/chat-panel';
-import { ChatRow } from '@renderer/features/chats/components/chat-row';
+import { ChatRow, UnsavedChatRow } from '@renderer/features/chats/components/chat-row';
+import { useOpenGroupAsRoom } from '@renderer/features/chats/console-chat-redirect';
 import { directChats } from '@renderer/features/chats/start-direct-chat';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { RoomListRow } from '@renderer/features/sidebar/main-section';
 import { SidebarItemMiniButton } from '@renderer/features/sidebar/sidebar-primitives';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
+import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { showModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@renderer/lib/ui/dropdown-menu';
 import { EmptyState } from '@renderer/lib/ui/empty-state';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
@@ -53,11 +62,14 @@ function Section({
   title,
   addLabel,
   onAdd,
+  addChoices,
   children,
 }: {
   title: string;
   addLabel: string;
   onAdd: () => void;
+  /** Ways to add, offered as a menu on the button instead of `onAdd`; null for just `onAdd`. */
+  addChoices: { label: string; onSelect: () => void }[] | null;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(true);
@@ -74,9 +86,28 @@ function Section({
           <Chevron className="size-3.5" />
           {title}
         </button>
-        <SidebarItemMiniButton aria-label={addLabel} title={addLabel} onClick={onAdd}>
-          <Plus className="size-3.5" />
-        </SidebarItemMiniButton>
+        {addChoices ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <SidebarItemMiniButton aria-label={addLabel} title={addLabel}>
+                  <Plus className="size-3.5" />
+                </SidebarItemMiniButton>
+              }
+            />
+            <DropdownMenuContent align="end">
+              {addChoices.map((choice) => (
+                <DropdownMenuItem key={choice.label} onClick={choice.onSelect}>
+                  {choice.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <SidebarItemMiniButton aria-label={addLabel} title={addLabel} onClick={onAdd}>
+            <Plus className="size-3.5" />
+          </SidebarItemMiniButton>
+        )}
       </div>
       {open && children}
     </section>
@@ -89,18 +120,39 @@ const Note = ({ children }: { children: ReactNode }) => (
 
 function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   // The chats store follows the window's server; another server's chats are not in it.
-  const agentChats = chatsStore.serverId === serverId ? chatsStore.chatsOfAgent(agentId) : [];
+  const ownServer = chatsStore.serverId === serverId;
+  const agentChats = ownServer ? chatsStore.chatsOfAgent(agentId) : [];
+  const archived = ownServer
+    ? chatsStore.archivedOfAgent(agentId).filter(isConsoleDirectChatSummary)
+    : [];
   const agentRooms = switchRoomsStore.roomsFor(workspaceId, agentId);
-  return { agentRooms, ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed) };
+  return {
+    agentRooms,
+    archived,
+    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed),
+  };
 }
 
-/** The direct chat open on an agent's page: the one in the params, else its newest. */
+/** Whether `roomId` is the agent's unsaved chat, open now or kept from before a reload. */
+function isUnsavedChatOf(agent: ManagedAgentView, roomId: string): boolean {
+  return (
+    directChats.unsavedChat(roomId) !== undefined ||
+    directChats.waiting(agent.serverId, agent.agentId) === roomId
+  );
+}
+
+/**
+ * The direct chat open on an agent's page: the one in the params, archived or
+ * not, else its newest; none while the open chat is unsaved, so nothing of
+ * another chat stands in for it.
+ */
 export function openAgentChat(
   agent: ManagedAgentView,
   roomId: string | undefined
 ): ChatSummary | null {
-  const { direct } = conversationsOf(agent);
-  return direct.find((chat) => chat.roomId === roomId) ?? direct[0] ?? null;
+  if (roomId && isUnsavedChatOf(agent, roomId)) return null;
+  const { direct, archived } = conversationsOf(agent);
+  return [...direct, ...archived].find((chat) => chat.roomId === roomId) ?? direct[0] ?? null;
 }
 
 /** The room shown on an agent's page in place of a chat, if one is. */
@@ -126,22 +178,34 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
     return switchRoomsStore.watchMembership(workspaceId, agentId);
   }, [workspaceId, agentId]);
 
-  const { agentRooms, direct, rooms } = conversationsOf(agent);
+  const { agentRooms, direct, archived, rooms } = conversationsOf(agent);
   const roomsError = switchRoomsStore.errorFor(workspaceId, agentId);
   const { sections, section } = useAgentSection(serverId, agent, params.section);
   const thisComputer = useRunsOnThisComputer(agent);
   const shownRoom = openAgentRoom(agent, params.room, section);
-  const roomId = shownRoom ? null : (openAgentChat(agent, params.roomId)?.roomId ?? null);
+  // The unsaved chat open before a reload is kept, but not in memory yet: it opens again.
+  const restoring =
+    !!params.roomId &&
+    !directChats.unsavedChat(params.roomId) &&
+    isUnsavedChatOf(agent, params.roomId);
+  const roomId =
+    shownRoom || restoring
+      ? null
+      : params.roomId && directChats.unsavedChat(params.roomId)
+        ? params.roomId
+        : (openAgentChat(agent, params.roomId)?.roomId ?? null);
   const open = (id: string) => setParams({ roomId: id, section: undefined, room: undefined });
-  const newChat = async () => {
-    const chat = await directChats.start(serverId, agentId);
-    if (chat) open(chat.roomId);
-  };
+  useEffect(() => {
+    if (restoring) setParams({ roomId: directChats.start(serverId, agentId) });
+  }, [restoring, serverId, agentId, setParams]);
+  // The chat open here that becomes a group follows into its room, rather than another chat taking its place.
+  useOpenGroupAsRoom(shownRoom || section ? null : (params.roomId ?? null), 'managedAgent');
+  const newChat = () => open(directChats.start(serverId, agentId));
+  const unsavedId = directChats.waiting(serverId, agentId);
 
   const ownServer = chatsStore.serverId === serverId;
   const listing = ownServer && chatsStore.userId === null && !chatsStore.listError;
   const autoStartTried = useRef(false);
-  const [autoStarting, setAutoStarting] = useState(false);
   const autoStart = shouldAutoStartChat({
     listed: ownServer && chatsStore.userId !== null,
     listFailed: chatsStore.listError !== null,
@@ -152,8 +216,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
   useEffect(() => {
     if (!autoStart) return;
     autoStartTried.current = true;
-    setAutoStarting(true);
-    void newChat().finally(() => setAutoStarting(false));
+    newChat();
     // oxlint-disable-next-line react-hooks/exhaustive-deps -- runs when the decision turns true, not when newChat is redefined
   }, [autoStart]);
 
@@ -169,8 +232,21 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
           selected={section}
           onSelect={(chosen) => setParams({ section: chosen })}
         />
-        <Section title="Direct chats" addLabel="New chat" onAdd={() => void newChat()}>
-          {chatsStore.listError && <Note>{chatsStore.listError}</Note>}
+        <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
+          {ownServer && chatsStore.listError && (
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-2 px-2 py-1 text-xs text-foreground-muted"
+            >
+              <span>{chatsStore.listError}</span>
+              <Button size="sm" variant="outline" onClick={() => void chatsStore.connect(serverId)}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {unsavedId && (
+            <UnsavedChatRow isActive={!section && unsavedId === roomId} onOpen={newChat} />
+          )}
           {direct.map((chat) => (
             <ChatRow
               key={chat.roomId}
@@ -180,17 +256,46 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               onOpen={() => open(chat.roomId)}
             />
           ))}
-          {direct.length === 0 && <Note>No direct chats yet.</Note>}
+          {direct.length === 0 && !unsavedId && !chatsStore.listError && (
+            <Note>No direct chats yet.</Note>
+          )}
+          <ArchivedFold count={archived.length} error={ownServer ? chatsStore.archivedError : null}>
+            {archived.map((chat) => (
+              <ChatRow
+                key={chat.roomId}
+                serverId={serverId}
+                chat={chat}
+                isActive={!section && chat.roomId === roomId}
+                onOpen={() => open(chat.roomId)}
+              />
+            ))}
+          </ArchivedFold>
         </Section>
         <Section
           title="Rooms"
-          addLabel="Create room"
-          onAdd={() => showModal('createRoomModal', { serverId })}
+          addLabel="Add to a room"
+          onAdd={() => showModal('createRoomModal', { serverId, agentId })}
+          addChoices={[
+            {
+              label: 'New room',
+              onSelect: () => showModal('createRoomModal', { serverId, agentId }),
+            },
+            {
+              label: 'Add to existing room',
+              onSelect: () =>
+                showModal('addAgentToRoomModal', {
+                  workspaceId,
+                  switchAgentId: agentId,
+                  agentName: managedAgentLabel(agent),
+                }),
+            },
+          ]}
         >
           {roomsError && <Note>{roomsError}</Note>}
           {rooms.map((room) => (
             <RoomListRow
               key={room.roomId}
+              roomId={room.roomId}
               room={{
                 name: switchRoomsStore.roomNameById(room.roomId) ?? room.roomName,
                 bridgeType: switchRoomsStore.roomBridgeTypeById(room.roomId),
@@ -226,11 +331,11 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-linear-to-b from-background to-transparent"
             />
           </>
-        ) : listing || autoStart || autoStarting ? null : (
+        ) : listing || autoStart || restoring ? null : (
           <EmptyState
             label="No chat open"
             description="Start a chat with this agent."
-            action={<Button onClick={() => void newChat()}>Start a chat</Button>}
+            action={<Button onClick={newChat}>Start a chat</Button>}
           />
         )}
       </div>

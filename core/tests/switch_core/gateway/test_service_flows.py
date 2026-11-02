@@ -681,6 +681,7 @@ class TestWorkspaceSwitch:
             workspace_gate=True,
         )
         ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, True, ada)
         async with world.harness.client() as client:
             console = Console(client, ada)
             code = await _loopback_code(world, console)
@@ -703,6 +704,7 @@ class TestWorkspaceSwitch:
     ) -> None:
         world = _world(session_factory, tmp_path / "catalog", workspace_gate=True)
         ada = await add_member(session_factory, "ada")
+        await _switch(session_factory, True, ada)
         async with world.harness.client() as client:
             console = Console(client, ada)
             code = await _loopback_code(world, console)

@@ -32,6 +32,7 @@ from switch_core.management.auth import ManagementAuthenticator
 from switch_core.management.wiring import create_management
 from switch_core.tenant_context import current_tenant_id
 from switch_core.trust.client import NullTrustClient
+from switch_core.user_changes import LocalUserChanges
 from tests.db_buffer import QuietRooms
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
@@ -286,6 +287,7 @@ class TestTheFlagOff:
                 AgentConnectionRegistry().controllers,
                 object(),  # type: ignore[arg-type]
                 object(),  # type: ignore[arg-type]
+                LocalUserChanges(),
             )
             is None
         )
@@ -294,6 +296,7 @@ class TestTheFlagOff:
         class _Config:
             agent_auth_cache_ttl_seconds = 1
             agent_auth_cache_max_entries = 16
+            agent_open_limit = 8
             keyring = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
             oauth_issuer_url = None
             oauth_audience = None
@@ -308,7 +311,9 @@ class TestTheFlagOff:
             room_service=object(),  # type: ignore[arg-type]
             client_lifecycle=object(),  # type: ignore[arg-type]
             collab_lifecycle=object(),  # type: ignore[arg-type]
-            event_buffer=EventBuffer(object(), sequence_base=0, rooms=QuietRooms()),  # type: ignore[arg-type]
+            event_buffer=EventBuffer(
+                object(), sequence_base=0, rooms=QuietRooms(), session_slots=None
+            ),  # type: ignore[arg-type]
             resource_service=object(),  # type: ignore[arg-type]
             api_key_store=object(),  # type: ignore[arg-type]
             external_user_store=object(),  # type: ignore[arg-type]

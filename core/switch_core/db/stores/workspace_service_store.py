@@ -1,27 +1,43 @@
-"""Which catalog services a workspace admin switched off for the workspace.
+"""Which catalog services a workspace admin switched on or off for the workspace.
 
-No row means on. Every query runs in the bound tenant.
+No row means the workspace's default, `Tenant.services_on_by_default`: off
+for a workspace made since services started off. Every query runs in the
+bound tenant.
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.db.models import WorkspaceServiceSetting, require_tenant_id
+from switch_core.db.models import Tenant, WorkspaceServiceSetting, require_tenant_id
 
 
 class WorkspaceServiceStore:
-    async def disabled_services(self, session: AsyncSession) -> set[str]:
-        return set(
-            await session.scalars(
-                select(WorkspaceServiceSetting.service).where(
-                    WorkspaceServiceSetting.tenant_id == require_tenant_id(),
-                    WorkspaceServiceSetting.enabled.is_(False),
-                )
-            )
+    async def on_by_default(self, session: AsyncSession) -> bool:
+        """Whether a service no admin has switched is on in the workspace."""
+        tenant_id = require_tenant_id()
+        on = await session.scalar(
+            select(Tenant.services_on_by_default).where(Tenant.id == tenant_id)
         )
+        if on is None:
+            raise LookupError(f"No workspace {tenant_id!r}.")
+        return on
+
+    async def disabled_services(
+        self, session: AsyncSession, services: Iterable[str]
+    ) -> set[str]:
+        """Those of `services` that are off in the workspace."""
+        default = await self.on_by_default(session)
+        settings = await self.list_settings(session)
+        return {
+            service
+            for service in services
+            if not (settings[service].enabled if service in settings else default)
+        }
 
     async def is_enabled(self, session: AsyncSession, service: str) -> bool:
         enabled = await session.scalar(
@@ -30,7 +46,9 @@ class WorkspaceServiceStore:
                 WorkspaceServiceSetting.service == service,
             )
         )
-        return enabled is not False
+        if enabled is None:
+            return await self.on_by_default(session)
+        return enabled
 
     async def list_settings(
         self, session: AsyncSession

@@ -23,7 +23,9 @@ from sqlalchemy import delete, event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.adapters import (
+    AccessToken,
     ConnectionSecret,
+    IssuedToken,
     ReauthorizationRequiredError,
     ServiceAdapterError,
 )
@@ -44,6 +46,7 @@ from switch_core.db.models import (
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
+    Tenant,
     TenantMember,
     User,
 )
@@ -685,7 +688,10 @@ class TestRevocation:
         await _issue(broker, session_factory, world.agent.id)
         async with session_factory() as session:
             await session.execute(
-                ServiceTokenIssuance.__table__.update().values(encrypted_token=None)
+                ServiceTokenIssuance.__table__.update().values(
+                    encrypted_token=None,
+                    expires_at=datetime.now(UTC) - timedelta(minutes=5),
+                )
             )
             await session.commit()
 
@@ -1075,20 +1081,47 @@ class TestPassThrough:
         await _issue(broker, session_factory, world.agent.id)
         assert vendor.refreshes == 0
 
-    async def test_refuses_a_token_past_the_catalogs_lifetime_and_revokes_nothing(
+    async def test_holds_back_a_token_past_the_catalogs_lifetime_and_revokes_nothing(
         self, session_factory, tmp_path
     ) -> None:
+        """The owner's token runs down to the cap, so the refusal is retryable."""
         pt = await _pass_through(session_factory, tmp_path / "c", expires_in=2 * 3600)
         refused = await _refused(
             pt.broker, session_factory, pt.world.agent.id, service="example"
         )
         assert (refused.status_code, refused.code, refused.retryable) == (
-            500,
+            503,
             "internal",
-            False,
+            True,
         )
-        assert "does not expire within an hour" in refused.message
+        assert "lasts longer than an hour" in refused.message
         assert pt.vendor.revoked == []
+        assert await _issuances(session_factory) == []
+
+    async def test_refuses_the_owners_token_handed_out_with_a_shorter_expiry(
+        self, session_factory, tmp_path, monkeypatch
+    ) -> None:
+        """The lifetime checked is the vendor's: an adapter cannot pass a
+        long-lived owner's token off as one that lapses within the cap."""
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=8 * 3600)
+        issue = pt.vendor.issue
+
+        async def claims_an_hour(access: AccessToken, request) -> IssuedToken:
+            issued = await issue(access, request)
+            return IssuedToken(
+                token=issued.token,
+                expires_at=datetime.now(UTC) + timedelta(minutes=50),
+                resources={},
+                revocable=False,
+            )
+
+        monkeypatch.setattr(pt.vendor, "issue", claims_an_hour)
+        refused = await _refused(
+            pt.broker, session_factory, pt.world.agent.id, service="example"
+        )
+        assert (refused.status_code, refused.code) == (500, "internal")
+        assert "with another expiry" in refused.message
+        assert await _issuances(session_factory) == []
 
     async def test_a_longer_lived_token_is_used_for_an_hour_at_most(
         self, session_factory, tmp_path
@@ -1182,10 +1215,99 @@ class TestPassThrough:
             grant = await STORE.get_grant(session, pt.world.agent.id, "example")
             assert grant is not None
             warning = await pt.broker.revoke_grant(session, grant, pt.world.owner.id)
-        assert warning is None
         await maintain_once(session_factory, pt.broker, prune=False)
         assert pt.vendor.revoked == []
         assert pt.vendor.connections_revoked == []
+        # Nothing could take it back, so the record says it was withdrawn and
+        # the warning says until when it may keep working.
+        async with session_factory() as session:
+            [record] = await session.scalars(select(ServiceTokenIssuance))
+        assert (record.revoke_requested, record.encrypted_token) == (True, None)
+        assert warning == (
+            "Example access already given to agents cannot be taken back and may "
+            f"keep working until {record.expires_at.astimezone(UTC):%Y-%m-%d %H:%M} UTC."
+        )
+
+    async def test_withdrawing_access_marks_only_the_live_pass_through_tokens(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            [live] = await session.scalars(select(ServiceTokenIssuance))
+            expired = ServiceTokenIssuance(
+                tenant_id=TENANT_ZERO_ID,
+                grant_id=live.grant_id,
+                agent_id=live.agent_id,
+                owner_id=live.owner_id,
+                service="example",
+                principal="agent_key",
+                controller_id=None,
+                permissions={},
+                resources={},
+                expires_at=datetime.now(UTC) - timedelta(minutes=5),
+                token_sha256="0" * 64,
+                encrypted_token=None,
+                revoke_requested=False,
+                attempts=0,
+            )
+            session.add(expired)
+            await session.commit()
+            live_id, expired_id = live.id, expired.id
+
+        async with session_factory() as session:
+            await pt.broker.queue_revocation(
+                session, ServiceTokenIssuance.agent_id == pt.world.agent.id
+            )
+            await session.commit()
+            warning = await pt.broker.revoke_withdrawn(
+                session, (ServiceTokenIssuance.agent_id == pt.world.agent.id,)
+            )
+        async with session_factory() as session:
+            marked = {
+                row.id: row.revoke_requested
+                for row in await session.scalars(select(ServiceTokenIssuance))
+            }
+        assert marked == {live_id: True, expired_id: False}
+        assert warning is not None and warning.startswith("Example access already")
+
+    async def test_the_sweep_marks_a_pass_through_token_whose_owner_left(
+        self, session_factory, tmp_path
+    ) -> None:
+        """A workspace holding only pass-through tokens is still swept."""
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            await session.execute(
+                delete(TenantMember).where(TenantMember.user_id == pt.world.owner.id)
+            )
+            await session.commit()
+        await maintain_once(session_factory, pt.broker, prune=False)
+        async with session_factory() as session:
+            [record] = await session.scalars(select(ServiceTokenIssuance))
+        assert (record.revoke_requested, record.encrypted_token) == (True, None)
+        assert pt.vendor.revoked == []
+
+    async def test_disconnecting_another_service_names_only_what_it_withdrew(
+        self, session_factory, tmp_path
+    ) -> None:
+        pt = await _pass_through(session_factory, tmp_path / "c", expires_in=50 * 60)
+        await _issue(pt.broker, session_factory, pt.world.agent.id, service="example")
+        async with session_factory() as session:
+            await pt.broker.queue_revocation(
+                session, ServiceTokenIssuance.agent_id == pt.world.agent.id
+            )
+            await session.commit()
+            # A service this server has no adapter for: its sign-in cannot be
+            # revoked, so the secret is never read.
+            warning = await pt.broker.finish_disconnect(
+                session,
+                pt.world.owner.id,
+                [("unset", None)],  # type: ignore[list-item]
+            )
+        assert warning is not None
+        assert "unset is not set up on this server" in warning
+        assert "Example access" not in warning
 
 
 def _workspace_refusal(name: str) -> str:
@@ -1271,6 +1393,17 @@ async def _gated(
         )
         await session.commit()
     return Gated(broker, github, example, world)
+
+
+async def _on_by_default(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """Make the workspace one that had members before services started off."""
+    async with session_factory() as session:
+        await session.execute(
+            update(Tenant)
+            .where(Tenant.id == TENANT_ZERO_ID)
+            .values(services_on_by_default=True)
+        )
+        await session.commit()
 
 
 async def _switch(
@@ -1363,7 +1496,6 @@ ENTRY_POINTS = {
     "issue": (_issue_github, "github", "GitHub"),
     "set_grant": (_set_grant_github, "github", "GitHub"),
     "connect_github": (_connect_github, "github", "GitHub"),
-    "connect_key": (_connect_key, "datadog", "Datadog"),
     "relink_oauth": (_relink_oauth, "example", "Example"),
 }
 
@@ -1371,17 +1503,36 @@ ENTRY_POINTS = {
 class TestWorkspaceSwitch:
     @pytest.mark.parametrize("entry_point", sorted(ENTRY_POINTS))
     @pytest.mark.parametrize(
-        ("gate", "row"),
-        [(False, False), (True, True), (True, None)],
-        ids=["gate_off_row_off", "gate_on_enabled", "gate_on_no_row"],
+        ("gate", "row", "on_by_default"),
+        [(False, False, False), (True, True, False), (True, None, True)],
+        ids=["gate_off_row_off", "gate_on_enabled", "gate_on_no_row_on_by_default"],
     )
     async def test_allowed(
-        self, session_factory, tmp_path, entry_point, gate, row
+        self, session_factory, tmp_path, entry_point, gate, row, on_by_default
     ) -> None:
         call, service, _ = ENTRY_POINTS[entry_point]
         g = await _gated(session_factory, tmp_path / "c", gate=gate)
+        if on_by_default:
+            await _on_by_default(session_factory)
         if row is not None:
             await _switch(session_factory, service, row, g.world.owner.id)
+        await call(g, session_factory)
+
+    @pytest.mark.parametrize("entry_point", sorted(ENTRY_POINTS))
+    async def test_a_new_workspace_has_every_service_off_until_an_admin_switches_it_on(
+        self, session_factory, tmp_path, entry_point
+    ) -> None:
+        call, service, name = ENTRY_POINTS[entry_point]
+        g = await _gated(session_factory, tmp_path / "c", gate=True)
+        async with session_factory() as session:
+            assert await g.broker.workspace_disabled(session) == set(g.broker._catalog)
+
+        with pytest.raises(ServiceError) as caught:
+            await call(g, session_factory)
+        assert (caught.value.status_code, caught.value.code) == (403, "forbidden")
+        assert caught.value.message == _workspace_refusal(name)
+
+        await _switch(session_factory, service, True, g.world.owner.id)
         await call(g, session_factory)
 
     @pytest.mark.parametrize("entry_point", sorted(ENTRY_POINTS))
@@ -1443,14 +1594,19 @@ class TestWorkspaceSwitch:
             "gho_access_new"
         ]
 
-    async def test_a_key_refused_by_the_workspace_is_not_stored(
-        self, session_factory, tmp_path
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_a_key_that_never_expires_is_not_stored(
+        self, session_factory, tmp_path, enabled
     ) -> None:
         g = await _gated(session_factory, tmp_path / "c", gate=True)
-        await _switch(session_factory, "datadog", False, g.world.owner.id)
+        await _switch(session_factory, "datadog", enabled, g.world.owner.id)
         with pytest.raises(ServiceError) as caught:
             await _connect_key(g, session_factory)
-        assert caught.value.message == _workspace_refusal("Datadog")
+        assert (caught.value.status_code, caught.value.code) == (403, "forbidden")
+        assert caught.value.message == (
+            "Datadog keys do not expire and only Datadog can revoke them, so "
+            "Switch does not hand them to agents."
+        )
         assert "datadog" not in {
             service for service, _, _ in await _all_connections(session_factory)
         }
@@ -1476,6 +1632,7 @@ class TestWorkspaceSwitch:
         self, session_factory, tmp_path
     ) -> None:
         g = await _gated(session_factory, tmp_path / "c", gate=True)
+        await _on_by_default(session_factory)
 
         async def listed() -> list[str]:
             async with session_factory() as session:

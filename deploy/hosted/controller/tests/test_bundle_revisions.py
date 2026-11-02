@@ -314,7 +314,7 @@ def test_a_bundle_for_a_superseded_revision_is_not_recorded(tmp_path):
 def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
     store, core, gateway = harness(tmp_path)
     cloud = FakeCloud(store)
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
 
     def poll() -> None:
         gateway.sync_machines(gateway.machines())
@@ -381,7 +381,7 @@ def test_sleep_wake_refreshes_the_bundle_before_the_instance_starts(tmp_path):
 def test_an_enrolled_machine_wakes_on_the_user_data_it_enrolled_with(tmp_path):
     store, core, gateway = harness(tmp_path)
     cloud = FakeCloud(store)
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
 
     def poll() -> None:
         gateway.sync_machines(gateway.machines())
@@ -421,7 +421,7 @@ def test_an_enrolled_machine_wakes_on_the_user_data_it_enrolled_with(tmp_path):
 def running_machine(tmp_path):
     store, core, gateway = harness(tmp_path)
     cloud = FakeCloud(store)
-    reconciler = Reconciler(store, cloud)
+    reconciler = Reconciler(store, cloud, instance_type=None)
 
     def poll() -> None:
         gateway.sync_machines(gateway.machines())

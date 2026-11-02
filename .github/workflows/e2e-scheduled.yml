@@ -55,6 +55,9 @@ jobs:
     with:
       lane: provider
       agent_type: claude-code
+    # Environment secrets reach a called workflow only through inherit,
+    # even though its job names the environment.
+    secrets: inherit
 
   fast:
     name: Fast lane
@@ -71,6 +74,9 @@ jobs:
     with:
       lane: agentic
       agent_type: claude-code
+    # Environment secrets reach a called workflow only through inherit,
+    # even though its job names the environment.
+    secrets: inherit
 
   notify:
     name: Report

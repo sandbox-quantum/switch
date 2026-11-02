@@ -14,6 +14,9 @@
 #   --no-service                   Enroll, but do not install the service.
 #   --version <x.y.z>              Install this release rather than the newest.
 #
+# It installs only a release signed with one of the release signing keys
+# below, and runs no npm install scripts.
+#
 # It installs where npm installs global packages. When this user cannot write
 # there (Node from the system's packages installs into /usr), it installs into
 # ~/.local instead, without changing npm's settings.
@@ -28,6 +31,48 @@ fail() {
   echo "switch-agent-controller install: $*" >&2
   exit 1
 }
+
+# The release signing keys this installer trusts, one "<id> <base64 SPKI>" per
+# line: a copy of src/release-keys.ts, which release-keys.test.ts keeps equal.
+# BEGIN TRUSTED RELEASE KEYS
+TRUSTED_RELEASE_KEYS='
+release-2026-10 MCowBQYDK2VwAyEAaRFfp1Yd/b91KkZs8Vj/OQSdsZS2ifd+rZu24pKTMpU=
+'
+# END TRUSTED RELEASE KEYS
+
+# Verifies <package> against <signature file> for <version>: the Ed25519
+# signature over "switch-agent-controller-release-v1\n<version>\n<sha256>\n"
+# by one of TRUSTED_RELEASE_KEYS. Prints the id of the key that verifies it.
+# BEGIN VERIFY RELEASE
+VERIFY_RELEASE_JS='
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const [file, signatureFile, version] = process.argv.slice(1);
+const refuse = (why) => {
+  process.stderr.write(why + "\n");
+  process.exit(1);
+};
+const sha256 = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+const text = fs.readFileSync(signatureFile, "utf8").trim();
+const signature = /^[A-Za-z0-9+/]+={0,2}$/.test(text) ? Buffer.from(text, "base64") : null;
+if (!signature || signature.length !== 64) refuse("The release signature is not a base64 Ed25519 signature.");
+const message = Buffer.from(`switch-agent-controller-release-v1\n${version}\n${sha256}\n`, "utf8");
+const ids = [];
+for (const line of (process.env.TRUSTED_RELEASE_KEYS || "").split("\n")) {
+  const [id, key] = line.trim().split(/\s+/);
+  if (!id) continue;
+  ids.push(id);
+  const publicKey = crypto.createPublicKey({ key: Buffer.from(key || "", "base64"), format: "der", type: "spki" });
+  if (publicKey.asymmetricKeyType !== "ed25519") refuse(`Trusted release key ${id} is not an Ed25519 key.`);
+  if (crypto.verify(null, message, publicKey, signature)) {
+    process.stdout.write(id);
+    process.exit(0);
+  }
+}
+if (ids.length === 0) refuse("This installer trusts no release signing key.");
+refuse(`The release signature does not verify switch-agent-controller ${version} with SHA-256 ${sha256} against any trusted release key (${ids.join(", ")}).`);
+'
+# END VERIFY RELEASE
 
 SERVER=""
 CODE=""
@@ -60,6 +105,8 @@ command -v node >/dev/null 2>&1 || fail "Node 22.13 or later is needed (https://
 command -v npm >/dev/null 2>&1 || fail "npm is needed; it comes with Node."
 node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 13) ? 0 : 1)' ||
   fail "Node $(node --version) is too old; the controller needs 22.13 or later."
+[ -n "$(printf '%s' "$TRUSTED_RELEASE_KEYS" | tr -d '[:space:]')" ] ||
+  fail "This installer trusts no release signing key yet, so it installs no release: it could not tell a signed release from any other package."
 
 if [ -n "$VERSION" ]; then
   case "$VERSION" in
@@ -69,7 +116,7 @@ if [ -n "$VERSION" ]; then
 else
   # The repository also releases Switch and Switch Console: take the highest
   # controller release that carries its package, leaving out drafts and prereleases.
-  URL="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=100" |
+  FOUND="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases?per_page=100" |
     TAG_PREFIX="$TAG_PREFIX" node -e '
       let input = "";
       process.stdin.on("data", (chunk) => (input += chunk));
@@ -86,11 +133,28 @@ else
           const order = (x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
           if (!best || order(parts, best.parts) > 0) best = { parts, url: asset.browser_download_url };
         }
-        if (best) process.stdout.write(best.url);
+        if (best) process.stdout.write(`${best.parts.join(".")} ${best.url}`);
       });
     ')" || fail "Could not list the releases of $REPO."
-  [ -n "$URL" ] || fail "$REPO has no switch-agent-controller release yet."
+  [ -n "$FOUND" ] || fail "$REPO has no switch-agent-controller release yet."
+  VERSION="${FOUND%% *}"
+  URL="${FOUND#* }"
 fi
+case "$URL" in
+  https://*) ;;
+  *) fail "The release package must be downloaded over https, not from $URL." ;;
+esac
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+PACKAGE="$WORK/switch-agent-controller-$VERSION.tgz"
+echo "Downloading $URL"
+curl -fsSL -o "$PACKAGE" "$URL" || fail "Could not download $URL."
+curl -fsSL -o "$PACKAGE.sig" "$URL.sig" ||
+  fail "Could not download $URL.sig: the release has no signature, and only signed releases are installed."
+KEY_ID="$(TRUSTED_RELEASE_KEYS="$TRUSTED_RELEASE_KEYS" node -e "$VERIFY_RELEASE_JS" "$PACKAGE" "$PACKAGE.sig" "$VERSION")" ||
+  fail "$URL is not a release signed with a trusted key; nothing was installed."
+echo "The package is signed with trusted release key $KEY_ID."
 
 PREFIX="$(npm config get prefix)"
 if [ ! -w "$PREFIX" ] && [ ! -w "$PREFIX/lib/node_modules" ]; then
@@ -99,8 +163,8 @@ if [ ! -w "$PREFIX" ] && [ ! -w "$PREFIX/lib/node_modules" ]; then
   mkdir -p "$PREFIX"
 fi
 
-echo "Installing $URL"
-npm install --global --prefix "$PREFIX" "$URL"
+echo "Installing switch-agent-controller $VERSION"
+npm install --global --ignore-scripts --prefix "$PREFIX" "$PACKAGE"
 BIN="$PREFIX/bin/switch-agent-controller"
 [ -x "$BIN" ] || fail "npm did not install $BIN."
 case ":$PATH:" in

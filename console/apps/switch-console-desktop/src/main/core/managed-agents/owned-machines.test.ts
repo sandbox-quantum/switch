@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ManagementController } from '@main/core/switch-servers/gateway-client';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
-import { machineProvider, ownedMachines, thisComputerReport } from './owned-machines';
+import {
+  machineProvider,
+  ownedMachines,
+  preferredFirst,
+  thisComputerReport,
+} from './owned-machines';
 
 function controller(patch: Partial<ManagementController> & { id: string }): ManagementController {
   return {
@@ -22,23 +27,31 @@ function controller(patch: Partial<ManagementController> & { id: string }): Mana
 describe('machineProvider', () => {
   it('is ready only when installed and logged in', () => {
     expect(
-      machineProvider({ provider: 'claude', installed: true, auth: 'ok', problem: null })
+      machineProvider({
+        provider: 'claude',
+        installed: true,
+        auth: 'ok',
+        problem: null,
+        loginHelps: true,
+      })
     ).toEqual({
       provider: 'claude',
       ready: true,
       problem: null,
       detail: null,
+      loginHelps: true,
     });
   });
 
   it('says why a provider is not ready', () => {
     const problem = (installed: boolean, auth: 'ok' | 'expired' | 'missing' | 'unknown') =>
-      machineProvider({ provider: 'codex', installed, auth, problem: null });
+      machineProvider({ provider: 'codex', installed, auth, problem: null, loginHelps: true });
     expect(problem(false, 'ok')).toEqual({
       provider: 'codex',
       ready: false,
       problem: 'not installed',
       detail: null,
+      loginHelps: true,
     });
     expect(problem(true, 'missing').problem).toBe('not logged in');
     expect(problem(true, 'expired').problem).toBe('login expired');
@@ -47,6 +60,7 @@ describe('machineProvider', () => {
       ready: false,
       problem: 'login not checked yet',
       detail: null,
+      loginHelps: true,
     });
   });
 
@@ -57,13 +71,27 @@ describe('machineProvider', () => {
         installed: true,
         auth: 'unknown',
         problem: 'Claude Code did not say whether it is signed in. It may be too old.',
+        loginHelps: true,
       })
     ).toEqual({
       provider: 'claude',
       ready: false,
       problem: 'login could not be checked',
       detail: 'Claude Code did not say whether it is signed in. It may be too old.',
+      loginHelps: true,
     });
+  });
+
+  it('passes on that signing in would not make a provider ready', () => {
+    expect(
+      machineProvider({
+        provider: 'codex',
+        installed: true,
+        auth: 'missing',
+        problem: 'An administrator pins where Codex keeps logins.',
+        loginHelps: false,
+      })
+    ).toMatchObject({ ready: false, problem: 'not logged in', loginHelps: false });
   });
 });
 
@@ -74,7 +102,9 @@ describe('ownedMachines', () => {
         controller({
           id: 'laptop',
           kind: 'console',
-          providers: [{ provider: 'claude', installed: true, auth: 'ok', problem: null }],
+          providers: [
+            { provider: 'claude', installed: true, auth: 'ok', problem: null, loginHelps: true },
+          ],
           workspacesDir: '/data/workspaces',
           os: null,
         }),
@@ -90,7 +120,9 @@ describe('ownedMachines', () => {
         name: 'laptop',
         kind: 'console',
         state: 'online',
-        providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+        providers: [
+          { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true },
+        ],
         workspacesDir: '/data/workspaces',
         os: null,
         local: { kind: 'this-computer' },
@@ -134,7 +166,7 @@ describe('ownedMachines', () => {
 });
 
 describe('thisComputerReport', () => {
-  const claude = { provider: 'claude', ready: true, problem: null, detail: null };
+  const claude = { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true };
   function machine(patch: Partial<OwnedMachine>): OwnedMachine {
     return {
       id: 'mac',
@@ -173,5 +205,13 @@ describe('thisComputerReport', () => {
 
   it('is null when this computer runs no controller', async () => {
     expect(await thisComputerReport([], () => Promise.resolve([machine({})]))).toBeNull();
+  });
+});
+
+describe('preferredFirst', () => {
+  it('asks the server Console is on first, then the rest in order', () => {
+    expect(preferredFirst(['a', 'b', 'c'], 'b')).toEqual(['b', 'a', 'c']);
+    expect(preferredFirst(['a', 'b'], 'elsewhere')).toEqual(['a', 'b']);
+    expect(preferredFirst(['a', 'b'], null)).toEqual(['a', 'b']);
   });
 });

@@ -1172,3 +1172,55 @@ class TestADeletedAgent:
         (conn,) = opened
         assert conn.closure is None
         assert a.registry.get(CONN) is conn
+
+
+class TestIncarnationsDrawnAtOnce:
+    async def test_two_agents_opening_while_a_batch_is_drawn_both_get_one(
+        self,
+        processes: tuple[Process, Process],
+        session_factory: SessionFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two agents connecting at once on a fresh process: the second
+        reaches the draw while the first's batch is still being fetched. Both
+        open, each on a number of its own."""
+        a, _ = processes
+        await seed_agent(session_factory, "agent-2")
+        draw = AgentConnectionStore.incarnations
+        read_agent = AgentConnectionStore.read_agent
+        drawing = asyncio.Event()
+        release = asyncio.Event()
+        second_read = asyncio.Event()
+
+        async def held_draw(
+            store: AgentConnectionStore, session: AsyncSession, count: int
+        ) -> list[int]:
+            drawing.set()
+            await release.wait()
+            return await draw(store, session, count)
+
+        async def noting_read(
+            store: AgentConnectionStore,
+            session: AsyncSession,
+            agent_id: str,
+            **kwargs: Any,
+        ) -> Any:
+            rows = await read_agent(store, session, agent_id, **kwargs)
+            if agent_id == "agent-2":
+                second_read.set()
+            return rows
+
+        monkeypatch.setattr(AgentConnectionStore, "incarnations", held_draw)
+        monkeypatch.setattr(AgentConnectionStore, "read_agent", noting_read)
+
+        first = asyncio.create_task(_open(a))
+        await asyncio.wait_for(drawing.wait(), WAIT_SECONDS)
+        second = asyncio.create_task(
+            _open(a, agent_id="agent-2", connection_id="conn-2")
+        )
+        await asyncio.wait_for(second_read.wait(), WAIT_SECONDS)
+        release.set()
+        opened = await asyncio.wait_for(asyncio.gather(first, second), WAIT_SECONDS)
+
+        generations = [conn.stream_generation for conn in opened]
+        assert len(set(generations)) == 2

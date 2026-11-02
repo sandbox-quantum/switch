@@ -61,6 +61,8 @@ PAGE_PATHS: tuple[str, ...] = (
     "/users",
     "/connectors",
     "/workspace",
+    "/organization",
+    "/operator/workspaces",
 )
 
 _PARAM = re.compile(r"\{[^/}]+\}")

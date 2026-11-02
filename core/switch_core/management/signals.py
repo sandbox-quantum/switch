@@ -22,6 +22,12 @@ run by a controller connected to any process then reads as live in every one,
 and a connection this process holds that another process has since replaced
 or taken up is closed `taken_over`.
 
+Each change to a controller's connection is also told to the controller's
+owner, whose Console shows the machine as connected or not
+(`switch_core.user_changes`). The process that made the change reads the
+owner from the controller's row once it has committed (`_tell_owner`), and
+publishes the notice for every process to hand to the owner's sockets.
+
 Nothing here depends on a signal arriving. When the signal connection comes
 back, every binding and every controller's connection is read again and every
 controller held here is re-nudged from the database, so one that missed a
@@ -39,6 +45,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from switch_core.db.fingerprint import Fingerprint
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.management.bindings import (
@@ -47,6 +54,7 @@ from switch_core.management.bindings import (
 )
 from switch_core.process_lease import ProcessLeases, read_leases
 from switch_core.tenant_context import no_tenant
+from switch_core.user_changes import MACHINE
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -58,7 +66,10 @@ if TYPE_CHECKING:
     from switch_core.db.stores.agent_controller_operation_store import (
         AgentControllerOperationStore,
     )
-    from switch_core.db.stores.agent_controller_store import AgentControllerStore
+    from switch_core.db.stores.agent_controller_store import (
+        AgentControllerStore,
+        ControllerConnection,
+    )
     from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
     from switch_core.db.stores.room_store import RoomStore
     from switch_core.db.stores.switch_core_process_store import (
@@ -66,6 +77,7 @@ if TYPE_CHECKING:
     )
     from switch_core.management.notifier import ControllerNotifier
     from switch_core.signals import SignalBus
+    from switch_core.user_changes import UserChangePublisher
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +107,7 @@ class ControllerSignals:
         rooms: RoomStore,
         processes: SwitchCoreProcessStore,
         clock: Callable[[], datetime],
+        user_changes: UserChangePublisher,
     ) -> None:
         self.notifier = notifier
         # The process this is, as signals and the rows naming a holder call it.
@@ -108,10 +121,22 @@ class ControllerSignals:
         self._rooms = rooms
         self._processes = processes
         self._clock = clock
+        self._user_changes = user_changes
         # What each controller has been nudged with from this process, so the
         # periodic re-check tells a held controller only what is new to it.
         self._nudged_revision: dict[str, int] = {}
         self._nudged_operations: dict[str, set[str]] = {}
+        # Each tenant's placements as the last full read of the bindings here
+        # found them, which the periodic re-check compares first.
+        self._binding_fingerprints: dict[str, Fingerprint] = {}
+        # Each tenant's controller connections as the last full read of them
+        # here found them, with the processes holding a lease then, which the
+        # periodic re-check compares first; and the controllers that read
+        # found, which a re-check that skips the read still counts as seen.
+        self._connection_fingerprints: dict[
+            str, tuple[Fingerprint, frozenset[str]]
+        ] = {}
+        self._connections_seen: dict[str, set[str]] = {}
         # Controllers, by (tenant id, controller id), whose bindings another
         # process changed and this one has still to read.
         self._bindings_owed = bus.pending_work(
@@ -122,6 +147,9 @@ class ControllerSignals:
         self._connections_owed = bus.pending_work(
             "controller connections", self._read_connection_of
         )
+        # Controllers, by (tenant id, controller id), whose connection this
+        # process changed and whose owner has still to be told.
+        self._owners_owed = bus.pending_work("controller owners", self._tell_owner)
         bus.handle(ASSIGNMENT_CHANGED_SIGNAL, self._on_assignment_changed)
         bus.handle(OPERATION_PENDING_SIGNAL, self._on_operation_pending)
         bus.handle(REVOKED_SIGNAL, self._on_revoked)
@@ -176,6 +204,19 @@ class ControllerSignals:
         on it."""
         self._bus.publish(
             CONNECTION_CHANGED_SIGNAL, tenant_id=tenant_id, controller_id=controller_id
+        )
+        self._owners_owed.add((tenant_id, controller_id))
+
+    async def _tell_owner(self, key: tuple[str, str]) -> None:
+        """Tell the controller's owner that its machine changed. Their
+        Console reads the machine again, so the notice carries nothing else."""
+        tenant_id, controller_id = key
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            controller = await self._controllers.get(session, tenant_id, controller_id)
+        if controller is None:
+            return
+        self._user_changes.publish(
+            tenant_id, controller.owner_id, MACHINE, controller_id
         )
 
     # ── Receiving, in every other process ─────────────────────────────────────
@@ -244,10 +285,18 @@ class ControllerSignals:
             self._apply_connection(controller, leases, rooms)
             return
 
-    async def read_connections(self) -> None:
+    async def read_connections(self, *, check_first: bool = False) -> None:
         """Read every controller's connection row again, in every tenant, and
         make this process's view of who holds each socket agree. Run at
-        startup, before the bridge serves, and on resync and each re-check."""
+        startup, before the bridge serves, and on resync and each re-check.
+
+        With `check_first`, as the periodic re-check runs it, a tenant whose
+        connection rows and live processes are what its last full read here
+        found is not read again: comparing costs one row, and reading them,
+        with the rooms of every agent of each controller another process
+        holds, cost each process a few seconds of database time every 30
+        seconds at thousands of controllers. Those rooms are kept up to date
+        by the membership signals and `MessageRouter.recheck_agent_rooms`."""
         seen: set[str] = set()
         elsewhere = self._presence.controllers_elsewhere()
         with no_tenant():
@@ -256,11 +305,31 @@ class ControllerSignals:
             mark = self._presence.connection_mark()
             async with tenant_session(self._session_factory, tenant_id) as session:
                 leases = await read_leases(session, self._processes)
+                holding = frozenset(
+                    process_id
+                    for process_id in leases.leases
+                    if leases.holds(process_id)
+                )
+                last = self._connection_fingerprints.get(tenant_id)
+                if (
+                    check_first
+                    and last is not None
+                    and last
+                    == (
+                        await self._controllers.connections_fingerprint(
+                            session, tenant_id
+                        ),
+                        holding,
+                    )
+                ):
+                    seen |= self._connections_seen.get(tenant_id, set())
+                    continue
+                read, fingerprint = await self._controllers.connections(
+                    session, tenant_id
+                )
                 found = [
                     controller
-                    for controller in await self._controllers.list_with_connections(
-                        session, tenant_id
-                    )
+                    for controller in read
                     if controller.tenant_id == tenant_id
                 ]
                 rooms = {
@@ -269,6 +338,8 @@ class ControllerSignals:
                     )
                     for controller in found
                 }
+            self._connection_fingerprints[tenant_id] = (fingerprint, holding)
+            self._connections_seen[tenant_id] = {controller.id for controller in found}
             for controller in found:
                 seen.add(controller.id)
                 if self._presence.connection_changed_since(controller.id, mark):
@@ -282,7 +353,7 @@ class ControllerSignals:
     async def _rooms_if_held_elsewhere(
         self,
         session: AsyncSession,
-        controller: AgentController,
+        controller: AgentController | ControllerConnection,
         leases: ProcessLeases,
     ) -> dict[str, set[str]]:
         """The rooms of each agent the controller runs, when another process
@@ -290,18 +361,15 @@ class ControllerSignals:
         here, and the stream that loads them runs over there."""
         if self._held_elsewhere(controller, leases) is None:
             return {}
-        return {
-            agent_id: {
-                room.id
-                for room in await self._rooms.get_rooms_for_agent(
-                    session, agent_id, include_archived=True
-                )
-            }
-            for agent_id in sorted(self._presence.agents_of(controller.id))
-        }
+        # One query for all of them: every process re-reads this for every
+        # controller another process holds at each re-check, so a query per
+        # agent would grow with processes times agents.
+        return await self._rooms.room_ids_by_agent(
+            session, self._presence.agents_of(controller.id)
+        )
 
     def _held_elsewhere(
-        self, controller: AgentController, leases: ProcessLeases
+        self, controller: AgentController | ControllerConnection, leases: ProcessLeases
     ) -> str | None:
         """The other process holding the controller's live socket, if any."""
         process_id = controller.connection_process_id
@@ -317,7 +385,7 @@ class ControllerSignals:
 
     def _apply_connection(
         self,
-        controller: AgentController,
+        controller: AgentController | ControllerConnection,
         leases: ProcessLeases,
         rooms: dict[str, set[str]],
     ) -> None:
@@ -365,30 +433,32 @@ class ControllerSignals:
         re-nudge every controller this process holds from what the database
         says now: its assignment revision and its open operations, or its
         revocation."""
-        await self._reconcile_all_bindings()
+        await self._reconcile_all_bindings(check_first=False)
         await self._read_all_connections()
         await self._renudge_held(only_new=False)
 
     async def recheck(self) -> None:
-        """What `resync` does, but a held controller is nudged only with what
-        this process has not told it yet."""
-        await self._reconcile_all_bindings()
-        await self._read_all_connections()
+        """What `resync` does, but the bindings are read only when a tenant's
+        placements have changed since the last full read, the connections only
+        when they or the processes holding a lease have, and a held controller
+        is nudged only with what this process has not told it yet."""
+        await self._reconcile_all_bindings(check_first=True)
+        await self._read_all_connections(check_first=True)
         await self._renudge_held(only_new=True)
 
-    async def _read_all_connections(self) -> None:
+    async def _read_all_connections(self, *, check_first: bool = False) -> None:
         try:
-            await self.read_connections()
+            await self.read_connections(check_first=check_first)
         except Exception:
             logger.error("Could not re-read controller connections", exc_info=True)
 
-    async def _reconcile_all_bindings(self) -> None:
+    async def _reconcile_all_bindings(self, *, check_first: bool) -> None:
         try:
             await reconcile_bindings(
                 session_factory=self._session_factory,
                 definitions=self._definitions,
-                controllers=self._controllers,
                 presence=self._presence,
+                fingerprints=self._binding_fingerprints if check_first else None,
             )
         except Exception:
             logger.error("Could not re-read controller bindings", exc_info=True)
