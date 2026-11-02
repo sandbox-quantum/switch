@@ -41,7 +41,7 @@ MINTED_MAX_LIFETIME = 3600
 SKILL_PATH_RE = re.compile(
     r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}(/[A-Za-z0-9_-][A-Za-z0-9._-]{0,99}){0,7}$"
 )
-FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 # A skill describes tasks, tools and limits. How a credential reaches the agent
 # is its host's business, and a skill that names one invites the agent to go
 # looking for it.
@@ -681,8 +681,12 @@ class ConnectionDefinition(BaseModel):
             raise ValueError("an oauth sign-in is refreshed: rotating or reusable")
         if self.token is not None and self.token.kind != "pass_through":
             raise ValueError("the oauth adapter passes the owner's token through")
-        if self.tools is not None and self.tools.mode != "pass_through":
-            raise ValueError("an oauth entry's tools pass through until classified")
+        if (
+            self.tools is not None
+            and self.tools.mode == "listed"
+            and (self.access is None or self.access.write is None)
+        ):
+            raise ValueError("listed OAuth tools need read and write access levels")
         if self.access is not None and any(
             level is not None and level.scopes is None
             for level in (self.access.read, self.access.write)

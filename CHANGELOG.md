@@ -45,6 +45,11 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **BigQuery is a service connection.** A person connects a Google account,
+  then can grant agents read-only dataset inspection and queries by default,
+  or add the write-capable SQL tool explicitly. Switch filters the vendor's
+  tools by grant level; the BigQuery OAuth scope alone cannot make the grant
+  read-only (#841).
 - **Templates carry packages.** A room in a template takes `packages:`, a list
   of packages that already exist, by `id` or by `name`, attached when the room
   is created. The person running the template must be able to attach each one

@@ -25,17 +25,19 @@ PLACEHOLDERS = {
 }
 
 
-def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_workspace():
+def test_shipped_catalog_enables_github_airtable_atlassian_datadog_google_workspace_and_bigquery():
     assert set(CATALOG) == PLACEHOLDERS | {
         "github",
         "airtable",
         "atlassian",
         "datadog",
         "google-workspace",
+        "bigquery",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
         "atlassian",
+        "bigquery",
         "datadog",
         "github",
         "google-workspace",
@@ -45,6 +47,73 @@ def test_shipped_catalog_enables_github_airtable_atlassian_datadog_and_google_wo
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
     assert "SKILL.md" in CATALOG["google-workspace"].skill_files
+    assert "SKILL.md" in CATALOG["bigquery"].skill_files
+
+
+def test_the_shipped_bigquery_entry_uses_a_separate_static_oauth_client():
+    definition = CATALOG["bigquery"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "BIGQUERY",
+    )
+    assert oauth.redirect == ["core"]
+    assert oauth.authorization_url is None
+    assert oauth.token_url is None
+    assert oauth.revocation_url == "https://oauth2.googleapis.com/revoke"
+    assert oauth.prompt == "consent select_account"
+    assert oauth.authorization_params == {"access_type": "offline"}
+    assert definition.auth.refresh == "reusable"
+    assert definition.auth.identity is not None
+    assert (
+        definition.auth.identity.url,
+        definition.auth.identity.account_id,
+        definition.auth.identity.label,
+    ) == ("https://openidconnect.googleapis.com/v1/userinfo", "sub", "email")
+    assert definition.token is not None
+    assert (definition.token.kind, definition.token.max_lifetime) == (
+        "pass_through",
+        3600,
+    )
+    assert definition.mcp is not None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("bigquery", "https://bigquery.googleapis.com/mcp")
+    ]
+    assert definition.access is not None and definition.access.read is not None
+    assert (
+        definition.access.write is not None
+        and definition.access.write.scopes is not None
+    )
+    expected_scopes = {
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/bigquery",
+    }
+    assert set(definition.access.read.scopes or []) == expected_scopes
+    assert set(definition.access.write.scopes or []) == expected_scopes
+    assert definition.tools is not None and definition.tools.mode == "listed"
+    assert definition.level_tools("read") == [
+        "list_dataset_ids",
+        "get_dataset_info",
+        "list_table_ids",
+        "get_table_info",
+        "execute_sql_readonly",
+    ]
+    assert definition.level_tools("write") == [
+        "list_dataset_ids",
+        "get_dataset_info",
+        "list_table_ids",
+        "get_table_info",
+        "execute_sql_readonly",
+        "execute_sql",
+    ]
+    skill = CATALOG["bigquery"].skill_files["SKILL.md"]
+    assert "`LIMIT` does not reduce bytes scanned" in skill
+    assert "3,000 rows" in skill
+    assert "three minutes" in skill
+    assert "credential" not in skill.lower()
 
 
 GOOGLE = "https://www.googleapis.com/auth/"
@@ -79,7 +148,7 @@ def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_mu
         3920,
     )
     access = definition.access
-    assert access is not None and access.write is not None
+    assert access is not None and access.read is not None and access.write is not None
     read = set(access.read.scopes or [])
     write = set(access.write.scopes or [])
     # Google answers with full scope URLs, which the level is read from.
@@ -151,7 +220,11 @@ def test_the_shipped_atlassian_entry_signs_in_as_the_spike_found_it_must():
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("atlassian", "https://mcp.atlassian.com/v2/mcp")
     ]
-    assert definition.access is not None and definition.access.write is not None
+    assert definition.access is not None and definition.access.read is not None
+    assert (
+        definition.access.write is not None
+        and definition.access.write.scopes is not None
+    )
     identity = ["read:me", "read:account", "email", "offline_access"]
     jira_read = ["read:jira:agent-interface", "search:jira:agent-interface"]
     confluence_read = [
@@ -206,7 +279,11 @@ def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
     assert [(s.name, s.url) for s in definition.mcp.servers] == [
         ("airtable", "https://mcp.airtable.com/mcp")
     ]
-    assert definition.access is not None and definition.access.write is not None
+    assert definition.access is not None and definition.access.read is not None
+    assert (
+        definition.access.write is not None
+        and definition.access.write.scopes is not None
+    )
     read = [
         "data.records:read",
         "schema.bases:read",
@@ -318,6 +395,29 @@ def test_the_shipped_github_entry_says_what_each_level_reaches():
     assert definition.token is not None
     assert (definition.token.kind, definition.token.max_lifetime) == ("minted", 3600)
     assert definition.mcp is None
+
+
+def test_an_oauth_entry_can_limit_tools_by_access_level(catalog_copy):
+    listed = OAUTH_ENTRY.replace(
+        "tools: { mode: pass_through }",
+        "tools:\n  mode: listed\n  read: [search_items]\n  write: [update_item]\n",
+    )
+    _write_example(catalog_copy, listed)
+    definition = load_catalog(catalog_copy)["example"].definition
+    assert definition.level_tools("read") == ["search_items"]
+    assert definition.level_tools("write") == ["search_items", "update_item"]
+
+
+def test_oauth_listed_tools_need_a_write_access_level(catalog_copy):
+    listed_without_write = OAUTH_ENTRY.replace(
+        '  write: { scopes: ["read:items", "write:items"] }\n', ""
+    ).replace(
+        "tools: { mode: pass_through }",
+        "tools:\n  mode: listed\n  read: [search_items]\n  write: [update_item]\n",
+    )
+    _write_example(catalog_copy, listed_without_write)
+    with pytest.raises(CatalogError, match="listed OAuth tools need read and write"):
+        load_catalog(catalog_copy)
 
 
 def _rewrite_github(root, old: str, new: str) -> None:
@@ -583,11 +683,6 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
             "share a name",
         ),
         ("kind: pass_through", "kind: minted", "passes the owner's token through"),
-        (
-            "tools: { mode: pass_through }",
-            "tools: { mode: listed, read: [], write: [] }",
-            "pass through until classified",
-        ),
         (
             "tools: { mode: pass_through }",
             "tools: { mode: pass_through, read: [] }",
