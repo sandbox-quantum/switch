@@ -88,7 +88,7 @@ describe("OrganizationPage", () => {
   it("shows an organization admin its members and audit log", async () => {
     signedInAs(session("org_admin", true));
     answer({
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
         { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
@@ -129,7 +129,7 @@ describe("OrganizationPage", () => {
       warning: null,
     };
     answer({
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [bob],
       "GET /organizations/current/audit-events": [],
@@ -168,7 +168,7 @@ describe("OrganizationPage", () => {
   it("adds a workspace, lists it, and refreshes the session", async () => {
     const refresh = signedInAs(session("org_admin", true));
     const routes: Record<string, unknown> = {
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
@@ -196,8 +196,14 @@ describe("OrganizationPage", () => {
   const members = [
     { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
   ];
-  const operatorRoutes = (membersAnswer: unknown) => ({
-    "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: null },
+  const operatorRoutes = (membersAnswer: unknown, fromDirectory = false) => ({
+    "GET /organizations/current": {
+      id: "o1",
+      slug: "acme",
+      name: "Acme Inc",
+      role: null,
+      members_from_directory: fromDirectory,
+    },
     "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
     "GET /organizations/current/members": membersAnswer,
     "GET /organizations/current/issues": new Refusal(403, "Only an organization admin may do this"),
@@ -214,6 +220,18 @@ describe("OrganizationPage", () => {
     expect(screen.getByText(/This organization has no admin/)).toBeTruthy();
     expect(screen.getByText(/You are here as platform operator/)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Audit log" })).toBeNull();
+  });
+
+  it("tells the operator an organization from the account settings gets its admin there", async () => {
+    signedInAs(session(null, false, true));
+    answer(operatorRoutes(members, true));
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText(/someone has to be made an organization admin there/)).toBeTruthy();
+    fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+    const orgAdmin = await screen.findByRole("option", { name: "Org Admin" });
+    expect(orgAdmin.getAttribute("aria-disabled")).toBe("true");
   });
 
   it("tells the operator why where the organization has an admin", async () => {
@@ -236,10 +254,62 @@ describe("OrganizationPage", () => {
     expect(screen.queryByText(/only while it has no admin/)).toBeNull();
   });
 
+  it("says where an organization's members come from when it is not here", async () => {
+    signedInAs(session("org_admin", true));
+    answer({
+      "GET /organizations/current": {
+        id: "o1",
+        slug: "acme",
+        name: "Acme Inc",
+        role: "org_admin",
+        members_from_directory: true,
+      },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+        { user_id: "u3", name: "Cy", email: "cy@example.com", role: "org_admin", created_at: "2026-01-01" },
+      ],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByText(/come from your organization's account settings/)).toBeTruthy();
+    fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+    const promote = await screen.findByRole("option", { name: "Org Admin" });
+    expect(promote.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.keyDown(promote, { key: "Escape" });
+    fireEvent.mouseDown(within(screen.getByTestId("row-u3")).getByRole("combobox"));
+    const demote = await screen.findByRole("option", { name: "Member" });
+    expect(demote.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.getByLabelText("Remove bob@example.com from the organization")).toBeTruthy();
+  });
+
+  it("says nothing of account settings for an organization kept here", async () => {
+    signedInAs(session("org_admin", true));
+    answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [
+        { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
+      ],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+    });
+
+    render(<OrganizationPage />);
+
+    fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+    const promote = await screen.findByRole("option", { name: "Org Admin" });
+    expect(promote.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(/account settings/)).toBeNull();
+  });
+
   it("tells an organization admin what needs their attention", async () => {
     signedInAs(session("org_admin", true));
     answer({
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
@@ -264,7 +334,7 @@ describe("OrganizationPage", () => {
   it("checks again after a change to the members", async () => {
     signedInAs(session("org_admin", true));
     const routes: Record<string, unknown> = {
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [
         { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" },
@@ -289,7 +359,7 @@ describe("OrganizationPage", () => {
   it("says nothing when nothing needs attention", async () => {
     signedInAs(session("org_admin", true));
     answer({
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],
@@ -305,7 +375,7 @@ describe("OrganizationPage", () => {
   it("shows a failure to check as a failure", async () => {
     signedInAs(session("org_admin", true));
     answer({
-      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin", members_from_directory: false },
       "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
       "GET /organizations/current/members": [],
       "GET /organizations/current/audit-events": [],

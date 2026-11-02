@@ -236,6 +236,9 @@ async def create_organization(
 async def current_organization(
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
     user: Annotated[User, Depends(get_current_user)],
 ) -> CurrentOrganizationResponse:
     """The organization the bound workspace belongs to, and the caller's role
@@ -250,6 +253,7 @@ async def current_organization(
         slug=organization.slug,
         name=organization.name,
         role=await user_store.organization_role(session, require_tenant_id(), user.id),
+        members_from_directory=organization_directory.keeps_members_of(organization),
     )
 
 

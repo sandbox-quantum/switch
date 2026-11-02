@@ -63,6 +63,9 @@ class _Directory:
         if self.failure is not None:
             raise self.failure
 
+    def keeps_members_of(self, organization: Organization) -> bool:
+        return True
+
     async def create_organization(
         self, creator: User, name: str
     ) -> DirectoryOrganization:
@@ -457,3 +460,18 @@ class TestRemoving:
 
         assert response.status_code == 409
         assert directory.asked == []
+
+
+class TestTheCurrentOrganization:
+    async def test_says_when_the_directory_keeps_its_members(
+        self, session_factory, directory: _Directory
+    ) -> None:
+        """So the dashboard can say where people are added and made Org Admin."""
+        ada = _name("ada")
+        tenant_id = await _workspace(session_factory, {ada: ("owner", "org_admin")})
+
+        async with _client(_with(session_factory, directory), ada, tenant_id) as client:
+            response = await client.get("/organizations/current")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["members_from_directory"] is True
