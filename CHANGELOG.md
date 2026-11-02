@@ -85,6 +85,19 @@ version of their own to them without also giving them a release of their own.
   Now a room the runner cannot read reads as missing.
 
 #### Added
+- **Email is a messaging platform.** Connect a mailbox over IMAP and SMTP, and
+  it becomes a room: each new email starts a thread, replies stay in their
+  thread on both sides, and agents answer by email under their own names. One
+  connection is one mailbox and one room. Only senders on the connection's list
+  are posted, and by default only when the receiving mail server verified them,
+  so a forged `From:` is not believed. Auto-replies, bounces and list mail are
+  never posted, and quoted history and signatures stay out of the room.
+  `!commands` and attachments work, and an approval is answered by replying with
+  its handle, as `A1 yes`. A turn's running status is not mailed, because a sent
+  email cannot be edited; a failed turn is said once. Handled mail is marked on
+  the mail server, so a restart loses and repeats nothing. New dependency:
+  `imapclient`, because the standard library has no IMAP IDLE before Python
+  3.14. See `docs/messaging-platforms/email.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)
