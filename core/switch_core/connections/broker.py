@@ -9,7 +9,10 @@ its own and none assumes where tokens go next:
   for a connection. Decrypt, refresh under the connection's lock when the
   cached token expires within five minutes (fifteen for a pass-through
   service, whose agents are handed that token itself), store the new pair,
-  commit. One owner's agents share one token and one refresh.
+  commit. One owner's agents share one token and one refresh. A credential
+  the owner pasted in place of a sign-in is never refreshed: it is checked at
+  the vendor's MCP server instead, under the same lock, and a refusal marks
+  the connection as needing a new one.
 - **Grant decision** (`decide`): the ordered checks every issuance runs,
   returning what the grant allows or raising a coded `ServiceError`.
 - **Delivery** (`issue`): the only code, with the adapter's `issue` and
@@ -50,7 +53,7 @@ from switch_core.connections.adapters import (
     ServiceUnavailableError,
 )
 from switch_core.connections.adapters.api_key import ApiKeyAdapter
-from switch_core.connections.adapters.oauth import OAuthAdapter
+from switch_core.connections.adapters.oauth import OAuthAdapter, credential_words
 from switch_core.connections.app_credentials import (
     app_kind,
     cannot_work_here,
@@ -67,6 +70,8 @@ from switch_core.connections.loader import (
     ConnectionDefinition,
     ConnectionMethod,
     McpServer,
+    PasteMethod,
+    PasteMethodName,
     TokenPolicy,
     render,
 )
@@ -149,6 +154,16 @@ SWITCHED_OFF = "Switched off on this server."
 # Why a connection needs reconnecting: the operator replaced the app it
 # signed in through.
 CLIENT_REPLACED = "client_replaced"
+# Why a connection needs reconnecting: the vendor refused the credential the
+# owner pasted.
+TOKEN_REFUSED = "token_refused"
+# Why a connection needs reconnecting: it was made with a pasted credential
+# this server no longer takes (one that never expires, which it no longer
+# allows).
+METHOD_NOT_OFFERED = "method_not_offered"
+# Why a connection needs reconnecting: this server now asks for other scopes
+# than it was granted (`SERVICE_ACCESS_PROFILES`).
+SCOPES_CHANGED = "scopes_changed"
 
 
 # Why a service can't be used on this server, for a client to act on; the
@@ -374,9 +389,11 @@ class GrantDecision:
 @dataclass(frozen=True)
 class ServiceToken:
     token: str = field(repr=False)
-    expires_at: datetime
+    # None for a credential the owner pasted, which its vendor ends on a date
+    # Switch is not told.
+    expires_at: datetime | None
     # When the holder must ask again: `expires_at`, or an hour after the
-    # issue if that is sooner.
+    # issue if that is sooner or there is none.
     use_until: datetime
     resources: dict[str, Any]
     # The grant's revision it was issued under: an agent host holding the
@@ -432,6 +449,33 @@ def _never_expires(name: str) -> str:
         f"{name} keys do not expire and only {name} can revoke them, so Switch "
         "does not hand them to agents."
     )
+
+
+def _pasted_never_expires(name: str, method: PasteMethodName) -> str:
+    if method == "keys":
+        return _never_expires(name)
+    return (
+        f"These {name} tokens do not expire and only {name} can revoke them, so "
+        "Switch does not hand them to agents."
+    )
+
+
+def _pasted_refused(name: str, method: str) -> str:
+    words, _ = credential_words(method)
+    return f"{name} refused the pasted {words}."
+
+
+def _paste_again(method: str) -> str:
+    return "a new one" if method == "token" else "new ones"
+
+
+def _lapsed(name: str, connection: ServiceConnection) -> str:
+    """Why a connection that is no longer active stopped working."""
+    if connection.error_code == CLIENT_REPLACED:
+        return _through_replaced_client(name)
+    if connection.error_code == TOKEN_REFUSED:
+        return _pasted_refused(name, connection.method)
+    return f"The {name} sign-in was revoked or has lapsed."
 
 
 def _level_reach(entry: Connection, access: AccessLevel) -> dict[str, Any] | None:
@@ -547,6 +591,7 @@ class ServiceBroker:
         workspace_services: WorkspaceServiceStore,
         workspace_gate: bool,
         public_url: str | None,
+        allow_non_expiring_keys: bool,
     ) -> None:
         unknown = sorted(set(adapters) - set(catalog))
         if unknown:
@@ -578,6 +623,9 @@ class ServiceBroker:
         self._workspace_gate = workspace_gate
         # `GATEWAY_PUBLIC_URL`, which decides whether GitHub's App can work here.
         self._public_url = public_url
+        # `ALLOW_NON_EXPIRING_KEYS`: whether a credential pasted in place of
+        # a sign-in that never expires (`expires: never`) is taken here.
+        self._allow_non_expiring_keys = allow_non_expiring_keys
         # The access token being fetched for each connection, by (tenant,
         # owner, service), for callers that ask while it is.
         self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
@@ -723,6 +771,39 @@ class ServiceBroker:
             )
         return choice.adapter
 
+    def paste_methods(self, service: str) -> list[PasteMethod]:
+        """The credentials `service` takes pasted in place of a sign-in on
+        this server: every one its entry lists, but one that never expires
+        where the server does not allow those (`ALLOW_NON_EXPIRING_KEYS`)."""
+        entry = self._catalog.get(service)
+        if entry is None:
+            return []
+        return [
+            method
+            for method in entry.definition.auth.paste
+            if method.expires == "vendor" or self._allow_non_expiring_keys
+        ]
+
+    def _method_refusal(
+        self, definition: ConnectionDefinition, method: str
+    ) -> str | None:
+        """Why a connection made with `method` cannot be used on this server,
+        or None where it can: a credential pasted in place of an OAuth
+        sign-in that the entry no longer lists, or that never expires where
+        the server does not allow such keys. An `api_key` entry's keys are
+        held to its own rule (`key_never_expires`)."""
+        if method == "oauth" or definition.adapter != "oauth":
+            return None
+        paste = definition.auth.paste_method(method)
+        if paste is None:
+            words, _ = credential_words(method)
+            return (
+                f"This server no longer connects {definition.name} with pasted {words}."
+            )
+        if paste.expires == "never" and not self._allow_non_expiring_keys:
+            return _pasted_never_expires(definition.name, paste.name)
+        return None
+
     # ── Grant decision ───────────────────────────────────────────────────────
 
     async def decide(
@@ -829,7 +910,10 @@ class ServiceBroker:
             raise ServiceError(
                 409,
                 CONNECTOR_REVOKED,
-                f"The agent's owner must reconnect {name}: its sign-in was "
+                f"{_pasted_refused(name, connection.method)} The agent's owner "
+                f"must paste {_paste_again(connection.method)} under Connectors."
+                if connection.error_code == TOKEN_REFUSED
+                else f"The agent's owner must reconnect {name}: its sign-in was "
                 "revoked or has lapsed. Reconnect it under Connectors.",
                 retryable=False,
             )
@@ -842,6 +926,9 @@ class ServiceBroker:
                 "under Connectors.",
                 retryable=False,
             )
+        refusal = self._method_refusal(entry.definition, connection.method)
+        if refusal is not None:
+            raise ServiceError(403, FORBIDDEN, refusal, retryable=False)
         if grant.account_id != connection.account_id:
             raise ServiceError(
                 409,
@@ -981,9 +1068,23 @@ class ServiceBroker:
                 "so it was not handed out.",
                 retryable=False,
             )
-        if (
+        now = datetime.now(UTC)
+        if issued.expires_at is None:
+            # A credential the owner pasted, which only its vendor ends: the
+            # catalog's lifetime bounds the sign-in's token, not it. It is
+            # handed out for the hour, and checked again at the vendor then.
+            if policy.kind != "pass_through":
+                raise ServiceError(
+                    500,
+                    INTERNAL,
+                    f"{definition.name} issued a token with no expiry, so it was "
+                    "not handed out.",
+                    retryable=False,
+                )
+            until = now + USE_WITHIN
+        elif (
             policy.kind == "pass_through"
-            and issued.expires_at > datetime.now(UTC) + max_lifetime + TOKEN_LEEWAY
+            and issued.expires_at > now + max_lifetime + TOKEN_LEEWAY
         ):
             # The owner's token outlives the cap only until enough of it has
             # run down, so asking again later succeeds. Nothing was handed out,
@@ -996,9 +1097,10 @@ class ServiceBroker:
                 "out until it has less than that left.",
                 retryable=True,
             )
+        else:
+            until = issued.expires_at
         try:
-            now = datetime.now(UTC)
-            if not (
+            if issued.expires_at is not None and not (
                 now + TOKEN_LEEWAY
                 < issued.expires_at
                 <= now + max_lifetime + TOKEN_LEEWAY
@@ -1011,14 +1113,16 @@ class ServiceBroker:
                     "handed out.",
                     retryable=False,
                 )
-            await self._record(session, decision, principal, issued)
+            await self._record(session, decision, principal, issued, until)
         except BaseException as error:
-            await self._discard(adapter, decision, principal, issued, session, error)
+            await self._discard(
+                adapter, decision, principal, issued, until, session, error
+            )
             raise
         return ServiceToken(
             issued.token,
             issued.expires_at,
-            min(issued.expires_at, now + USE_WITHIN),
+            min(until, now + USE_WITHIN),
             issued.resources,
             decision.grant_revision,
         )
@@ -1040,8 +1144,10 @@ class ServiceBroker:
         decision: GrantDecision,
         principal: Principal,
         issued: IssuedToken,
+        until: datetime,
     ) -> None:
-        """Record the token under the connection's lock, if nothing changed.
+        """Record the token under the connection's lock, if nothing changed,
+        as live until `until`.
 
         A disconnect or a removed grant takes the same lock, so either it
         commits first, the checks below fail and the token is discarded, or
@@ -1064,7 +1170,8 @@ class ServiceBroker:
                 retryable=True,
             )
         self._store.add_issuance(
-            session, self._issuance(decision, principal, issued, revoke_requested=False)
+            session,
+            self._issuance(decision, principal, issued, until, revoke_requested=False),
         )
         await session.commit()
 
@@ -1073,6 +1180,7 @@ class ServiceBroker:
         decision: GrantDecision,
         principal: Principal,
         issued: IssuedToken,
+        until: datetime,
         *,
         revoke_requested: bool,
     ) -> ServiceTokenIssuance:
@@ -1086,7 +1194,7 @@ class ServiceBroker:
             controller_id=principal.controller_id,
             permissions=decision.reach,
             resources=issued.resources,
-            expires_at=issued.expires_at,
+            expires_at=until,
             token_sha256=hashlib.sha256(issued.token.encode()).hexdigest(),
             encrypted_token=(
                 self._keyring.encrypt(issued.token) if issued.revocable else None
@@ -1101,6 +1209,7 @@ class ServiceBroker:
         decision: GrantDecision,
         principal: Principal,
         issued: IssuedToken,
+        until: datetime,
         session: AsyncSession,
         original: BaseException,
     ) -> None:
@@ -1139,7 +1248,9 @@ class ServiceBroker:
                     "A discarded %s token cannot be revoked and stays valid until "
                     "%s; recording it. Original failure: %r",
                     decision.service,
-                    issued.expires_at.isoformat(),
+                    "its vendor ends it"
+                    if issued.expires_at is None
+                    else issued.expires_at.isoformat(),
                     original,
                 )
             try:
@@ -1149,7 +1260,7 @@ class ServiceBroker:
                     self._store.add_issuance(
                         record_session,
                         self._issuance(
-                            decision, principal, issued, revoke_requested=True
+                            decision, principal, issued, until, revoke_requested=True
                         ),
                     )
                     await record_session.commit()
@@ -1238,16 +1349,16 @@ class ServiceBroker:
                     retryable=False,
                 )
             if connection.status != "active":
-                raise _MustReconnect(
-                    _through_replaced_client(name)
-                    if connection.error_code == CLIENT_REPLACED
-                    else f"The {name} sign-in was revoked or has lapsed."
-                )
+                raise _MustReconnect(_lapsed(name, connection))
             if _client_replaced(connection, adapter):
                 raise await self._replaced_client(session, owner_id, service)
             if self.method_withdrawn(connection):
                 raise _MustReconnect(_through_withdrawn_method(name))
             secret = self._secret(connection)
+            if definition.adapter == "oauth" and connection.method != "oauth":
+                return await self._checked_pasted(
+                    session, owner_id, service, adapter, secret
+                )
             token = secret.access_token
             fresh = secret.expires_at > time.time() + before.total_seconds()
             if refresh == "none" or (token is not None and fresh):
@@ -1298,6 +1409,56 @@ class ServiceBroker:
             )
             await session.commit()
             return AccessToken(token, _expiry(renewed))
+
+    async def _checked_pasted(
+        self,
+        session: AsyncSession,
+        owner_id: str,
+        service: str,
+        adapter: ServiceAdapter,
+        secret: ConnectionSecret,
+    ) -> AccessToken:
+        """The credential the owner pasted, once the vendor's MCP server
+        still takes it. It has no expiry Switch knows, and is never
+        refreshed: a refusal marks the connection as needing a new one.
+        Under the connection's lock, in `session`, which this ends."""
+        name = self._entry(service).definition.name
+        if not isinstance(adapter, OAuthAdapter):
+            raise ServiceError(
+                500,
+                INTERNAL,
+                f"The {name} connection holds a pasted credential that nothing "
+                "on this server checks.",
+                retryable=False,
+            )
+        token = secret.access_token
+        try:
+            pasted = adapter.pasted(secret)
+            if pasted is None or token is None:
+                raise ServiceAdapterError(
+                    f"The {name} connection holds no pasted credential."
+                )
+            async with asyncio.timeout(VENDOR_CALL_SECONDS):
+                await adapter.check_pasted(pasted.method, pasted.values, pasted.choices)
+        except TimeoutError:
+            raise ServiceError(
+                503,
+                INTERNAL,
+                f"{name} did not answer in time. Please try again.",
+                retryable=True,
+            ) from None
+        except ServiceUnavailableError as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        except ReauthorizationRequiredError as error:
+            await self._store.mark_needs_reauthorization(
+                session, owner_id, service, TOKEN_REFUSED
+            )
+            await session.commit()
+            raise _MustReconnect(str(error)) from None
+        except ServiceAdapterError as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=False) from None
+        await session.commit()
+        return AccessToken(token, None)
 
     async def _replaced_client(
         self, session: AsyncSession, owner_id: str, service: str
@@ -1440,9 +1601,10 @@ class ServiceBroker:
             skill = entry.skill_files.get("SKILL.md")
             mcp = entry.definition.mcp
             cli = entry.definition.cli
-            choices = await self._connection_choices(session, grant)
-            if choices is None:
+            made_with = await self._made_with(session, grant)
+            if made_with is None:
                 continue
+            choices, paste = made_with
             grants.append(
                 {
                     "service": grant.service,
@@ -1459,8 +1621,8 @@ class ServiceBroker:
                     # Where the session calls the service's tools: its host
                     # serves each to the CLI on loopback and calls the vendor.
                     # `url` and `headers` are templates: `{token}` is the token
-                    # handed out, and an api_key entry's `{field}`s are the
-                    # fields its token carries.
+                    # handed out, and an api_key entry's `{field}`s, or a
+                    # pasted credential's, are the fields its token carries.
                     "mcp_servers": (
                         []
                         if mcp is None
@@ -1468,7 +1630,9 @@ class ServiceBroker:
                             {
                                 "name": server.name,
                                 "url": _server_url(entry, server, choices),
-                                "headers": server.headers
+                                "headers": dict(paste.headers)
+                                if paste is not None
+                                else server.headers
                                 or {"Authorization": f"Bearer {{{TOKEN_PLACEHOLDER}}}"},
                             }
                             for server in mcp.servers
@@ -1481,24 +1645,32 @@ class ServiceBroker:
             )
         return grants
 
-    async def _connection_choices(
+    async def _made_with(
         self, session: AsyncSession, grant: ServiceGrant
-    ) -> dict[str, str] | None:
-        """What the grant's connection was made with, for an entry that asks
-        before its sign-in (a vendor's site); none for one that does not.
+    ) -> tuple[dict[str, str], PasteMethod | None] | None:
+        """What the grant's connection was made with: the choices, for an
+        entry that asks before its sign-in (a vendor's site), and the
+        credential pasted in place of the sign-in, None for a sign-in.
         None leaves the grant out: its connection is gone, as the grant is
-        about to be, or was made for a choice this server no longer offers,
-        whose sign-in is refused at its next refresh."""
-        oauth = self._catalog[grant.service].definition.auth.oauth
-        if oauth is None or not oauth.choices:
-            return {}
+        about to be, was made for a choice this server no longer offers,
+        whose sign-in is refused at its next refresh, or with a credential
+        this server no longer takes, which every token request refuses."""
+        definition = self._catalog[grant.service].definition
+        oauth = definition.auth.oauth
+        if oauth is None or not (oauth.choices or definition.auth.paste):
+            return {}, None
         connection = await self._store.get_connection(
             session, grant.owner_id, grant.service
         )
         if connection is None:
             return None
+        if self._method_refusal(definition, connection.method) is not None:
+            return None
         try:
-            return oauth.checked_choices(dict(connection.choices))
+            return (
+                oauth.checked_choices(dict(connection.choices)),
+                definition.auth.paste_method(connection.method),
+            )
         except ChoicesError as error:
             logger.warning(
                 "%s grant left out of agent %s's grants: its connection was made "
@@ -1541,8 +1713,9 @@ class ServiceBroker:
         """A connection's status as people and agents act on it, where its
         service stands as `standing`: "not_connected", "active",
         "needs_reauthorization" or "error". One made through a client its
-        service no longer uses, in a way its service no longer offers, or
-        granted other scopes than this server now asks for, needs reconnecting
+        service no longer uses, in a way its service no longer offers, granted
+        other scopes than this server now asks for, or with a pasted credential
+        this server no longer takes, needs reconnecting
         before anyone uses it and finds out, though its row stays active."""
         if connection is None:
             return "not_connected"
@@ -1550,6 +1723,7 @@ class ServiceBroker:
             standing.client_replaced(connection)
             or self.method_withdrawn(connection)
             or self.scopes_changed(connection)
+            or self._connection_refusal(connection) is not None
         ):
             return "needs_reauthorization"
         return connection.status
@@ -1559,6 +1733,46 @@ class ServiceBroker:
         for on this server now, so it must reconnect."""
         entry = self._catalog.get(connection.service)
         return entry is not None and _scopes_changed(connection, entry)
+
+    def _connection_refusal(self, connection: ServiceConnection) -> str | None:
+        entry = self._catalog.get(connection.service)
+        if entry is None:
+            return None
+        return self._method_refusal(entry.definition, connection.method)
+
+    def reconnect_reason(
+        self, standing: ServiceStanding, connection: ServiceConnection
+    ) -> tuple[str, str] | None:
+        """Why `connection` must be reconnected, where its service stands as
+        `standing`, as a code and the sentence its owner reads; None where its
+        status does not ask for it.
+
+        Codes: `token_refused` (the vendor refused the pasted credential: a
+        new one is needed), `method_not_offered` (pasted with a credential
+        this server no longer takes), `scopes_changed` (this server now asks
+        for other access than the sign-in granted), `client_replaced`,
+        `refresh_refused` and `sign_in_refused`."""
+        if self.connection_status(standing, connection) != "needs_reauthorization":
+            return None
+        entry = self._catalog.get(connection.service)
+        name = connection.service if entry is None else entry.definition.name
+        if connection.status == "active":
+            refusal = self._connection_refusal(connection)
+            if refusal is not None:
+                return METHOD_NOT_OFFERED, refusal
+            if self.scopes_changed(connection):
+                return SCOPES_CHANGED, (
+                    f"This server now asks for other {name} access than the "
+                    "sign-in granted."
+                )
+            return CLIENT_REPLACED, _through_replaced_client(name)
+        code = connection.error_code or "sign_in_refused"
+        if code == TOKEN_REFUSED:
+            return code, (
+                f"{_pasted_refused(name, connection.method)} Paste "
+                f"{_paste_again(connection.method)}."
+            )
+        return code, _lapsed(name, connection)
 
     def replace_adapter(self, service: str, adapter: ServiceAdapter | None) -> None:
         """Use `adapter` for `service` from the next call on, or none, where
@@ -1715,6 +1929,9 @@ class ServiceBroker:
                 f"Reconnect {name} under Connectors first.",
                 retryable=False,
             )
+        refusal = self._method_refusal(entry.definition, connection.method)
+        if refusal is not None:
+            raise ServiceError(422, VALIDATION_ERROR, refusal, retryable=False)
         if _passes_through(entry):
             if access is not None or tool_mode is not None or tools is not None:
                 raise ServiceError(
@@ -1989,10 +2206,14 @@ class ServiceBroker:
                 raise ServiceError(
                     403, FORBIDDEN, _never_expires(name), retryable=False
                 )
+            refusal = self._method_refusal(entry.definition, method)
+            if refusal is not None:
+                raise ServiceError(403, FORBIDDEN, refusal, retryable=False)
             await self.require_workspace_enabled(session, service)
         except ServiceError as refusal:
             # The vendor has already issued this sign-in: one Switch will not
             # keep is revoked, rather than left live with nobody holding it.
+            # A pasted credential is the person's own, and theirs to keep.
             previous = await self._store.get_connection(session, user_id, service)
             kept = previous is not None and (
                 self._secret(previous).access_token == secret.access_token
@@ -2012,7 +2233,7 @@ class ServiceBroker:
             await session.rollback()
             note = (
                 None
-                if kept
+                if kept or method != "oauth"
                 else await self._revoke_unkept(
                     session, service, secret, oauth_client_id, choices
                 )
@@ -2182,6 +2403,78 @@ class ServiceBroker:
             label=identity.label,
             secret=adapter.secret(values),
             choices=adapter.choices(values),
+        )
+
+    async def check_paste(
+        self,
+        service: str,
+        method: PasteMethodName,
+        fields: dict[str, str],
+        choices: dict[str, str],
+    ) -> CheckedKey:
+        """A credential pasted for `service` in place of its sign-in, once the
+        vendor's MCP server takes it: whose it is, and the secret a connection
+        keeps. Connect it with `connect`, with `method`, at `KEY_CONSENT`: it
+        reaches whatever the person let it at the vendor.
+
+        Named by the entry's identity call where that answers with the
+        credential, and otherwise by the credential itself (`identify_pasted`).
+        """
+        entry = self._entry(service)
+        definition = entry.definition
+        self._require_switched_on(service)
+        paste = definition.auth.paste_method(method)
+        if definition.adapter != "oauth" or paste is None:
+            words, _ = credential_words(method)
+            raise ServiceError(
+                404,
+                NOT_FOUND,
+                f"{definition.name} is not connected with pasted {words}.",
+                retryable=False,
+            )
+        refusal = self._method_refusal(definition, method)
+        if refusal is not None:
+            raise ServiceError(403, FORBIDDEN, refusal, retryable=False)
+        # Nothing it connects could be handed out where the service can't be.
+        adapter = self._adapters.get(service)
+        oauth = definition.auth.oauth
+        unavailable = self.server_availability(service)
+        if (
+            unavailable is not None
+            or not isinstance(adapter, OAuthAdapter)
+            or oauth is None
+        ):
+            raise ServiceError(
+                503,
+                INTERNAL,
+                unavailable or "Not available on this server.",
+                retryable=False,
+            )
+        try:
+            picked = oauth.checked_choices(choices)
+            values = adapter.checked_paste(paste, fields)
+            async with asyncio.timeout(VENDOR_CALL_SECONDS):
+                await adapter.check_pasted(paste, values, picked)
+            async with asyncio.timeout(VENDOR_CALL_SECONDS):
+                identity = await adapter.identify_pasted(paste, values, picked)
+        except ServiceUnavailableError as error:
+            raise ServiceError(503, INTERNAL, str(error), retryable=True) from None
+        except TimeoutError:
+            raise ServiceError(
+                503,
+                INTERNAL,
+                f"{definition.name} did not answer in time. Please try again.",
+                retryable=True,
+            ) from None
+        except (ChoicesError, ServiceAdapterError) as error:
+            raise ServiceError(
+                422, VALIDATION_ERROR, str(error), retryable=False
+            ) from None
+        return CheckedKey(
+            account_id=identity.account_id,
+            label=identity.label,
+            secret=adapter.pasted_secret(paste, values, picked),
+            choices=picked,
         )
 
     async def connection_access_token(

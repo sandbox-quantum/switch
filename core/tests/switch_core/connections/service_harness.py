@@ -78,6 +78,7 @@ def build_service_harness(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     harness.app.include_router(service_router, prefix="/agents")
     harness.gateway_app.include_router(service_connections_router)

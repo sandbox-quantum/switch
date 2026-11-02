@@ -61,10 +61,12 @@ class ConnectionSecret:
 
 @dataclass(frozen=True)
 class AccessToken:
-    """The owner's access token for a connection, fresh, and when it expires."""
+    """The owner's access token for a connection, fresh, and when it expires:
+    None for a credential the owner pasted, which its vendor ends on a date
+    Switch is not told."""
 
     token: str = field(repr=False)
-    expires_at: datetime
+    expires_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -81,7 +83,8 @@ class IssueRequest:
 @dataclass(frozen=True)
 class IssuedToken:
     token: str = field(repr=False)
-    expires_at: datetime
+    # None for a credential the owner pasted, handed out as it is.
+    expires_at: datetime | None
     resources: dict[str, Any]
     # Whether the vendor can revoke this one token. Only then is it kept,
     # encrypted, until it expires.

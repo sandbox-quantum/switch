@@ -461,6 +461,7 @@ class TestMemberRemoval:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            allow_non_expiring_keys=False,
         )
 
         token = _token(admin_id, "svc-admin@example.invalid", TENANT_A)

@@ -129,6 +129,7 @@ def _process(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     app.include_router(router, prefix="/gateway")
     app.dependency_overrides[get_current_user] = lambda: identity["user"]
@@ -159,6 +160,7 @@ def _rebroker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=public_url,
+        allow_non_expiring_keys=False,
     )
 
 

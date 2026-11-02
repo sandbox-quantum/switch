@@ -109,6 +109,7 @@ def _keyed(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     harness.app.state.service_broker = broker
     harness.gateway_app.state.service_broker = broker
