@@ -187,6 +187,7 @@ from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
 from switch_core.management.template_updates import TemplateUpdates
 from switch_core.management.wiring import Management, create_management
+from switch_core.members_service import MembersService
 from switch_core.messages.notify import MessageListener
 from switch_core.observability.bootstrap import (
     Observability,
@@ -234,6 +235,7 @@ from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
+from switch_core.workos_sign_in import WorkOSOrganizationSignIn
 
 logger = logging.getLogger(__name__)
 
@@ -530,9 +532,19 @@ def _organization_directory(
     """The directory `ORGANIZATION_DIRECTORY` names (`organization_directory.py`)."""
     if config.organization_directory == "local":
         return LocalDirectory()
-    # `_validate_organization_directory` has refused a missing key already.
+    # `_validate_organization_directory` has refused a missing key or
+    # sign-in already.
     assert config.workos_api_key is not None
-    return WorkOSDirectory(http, config.workos_api_key, config.workos_api_url)
+    assert config.gateway_oidc_issuer_url is not None
+    return WorkOSDirectory(
+        http,
+        config.workos_api_key,
+        config.workos_api_url,
+        config.gateway_oidc_issuer_url,
+        MembersService(http, config.members_service_url)
+        if config.members_service_url
+        else None,
+    )
 
 
 async def _close_by(
@@ -1401,6 +1413,19 @@ async def run(config: SwitchConfig, process_id: str) -> None:
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
     gateway_app.state.organization_apps = organization_apps
+    if config.members_service_url:
+        # Checked set together, under the WorkOS directory
+        # (`_validate_organization_directory`).
+        assert config.workos_api_key is not None
+        assert config.workos_client_id is not None
+        assert config.workos_redirect_url is not None
+        gateway_app.state.workos_sign_in = WorkOSOrganizationSignIn(
+            service_http,
+            config.workos_api_key,
+            config.workos_api_url,
+            config.workos_client_id,
+            config.workos_redirect_url,
+        )
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
         apps=connector_apps,

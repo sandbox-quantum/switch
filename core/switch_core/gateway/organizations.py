@@ -23,7 +23,7 @@ from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
@@ -41,6 +41,7 @@ from switch_core.db.audit import (
     record_organization_audit_event,
 )
 from switch_core.db.models import (
+    OidcIdentity,
     Organization,
     OrganizationMember,
     Tenant,
@@ -88,6 +89,7 @@ from switch_core.gateway.schemas import (
     WorkspaceCreateRequest,
 )
 from switch_core.gateway.service_connections import service_refusal
+from switch_core.gateway.workos_sign_in_routes import directory_access_token
 from switch_core.gateway.workspace_creation import (
     NOTHING_CHANGED,
     create_organization_for,
@@ -100,11 +102,17 @@ from switch_core.organization_access import (
     end_access_through_organization,
     workspaces_where_they_own_agents,
 )
-from switch_core.organization_directory import DirectoryError, OrganizationDirectory
+from switch_core.organization_directory import (
+    DirectoryError,
+    DirectorySignInRequired,
+    MemberChange,
+    OrganizationDirectory,
+)
 from switch_core.organization_issues import (
     organization_wide_issues,
     workspace_issues,
 )
+from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
 
@@ -254,6 +262,7 @@ async def current_organization(
         name=organization.name,
         role=await user_store.organization_role(session, require_tenant_id(), user.id),
         members_from_directory=organization_directory.keeps_members_of(organization),
+        directory_takes_changes=organization_directory.sends_changes_for(organization),
     )
 
 
@@ -473,23 +482,76 @@ async def _ask_directory(
     session: AsyncSession,
     organization_id: str,
     *args: str,
+    member_change: MemberChange,
     access_ended: bool,
 ) -> None:
     """Ask the directory to make `change` to a member of `organization_id`,
-    with `args`: after every check that can refuse, under the lock on the
-    organization's admins, and before the write and its commit
-    (`organization_directory.py`). `access_ended` says the person's access
-    through the organization was ended on the way, which a refusal does not
-    give back."""
+    with `args` and `member_change`: after every check that can refuse, under
+    the lock on the organization's admins, and before the write and its
+    commit (`organization_directory.py`). `access_ended` says the person's
+    access through the organization was ended on the way, which a refusal
+    does not give back."""
     organization = await session.get(Organization, organization_id)
     if organization is None:
         raise RuntimeError(f"Organization {organization_id} is not visible here")
+    outcome = _ACCESS_ALREADY_ENDED if access_ended else NOTHING_CHANGED
     try:
-        await change(organization, *args)
+        await change(organization, *args, member_change)
+    except DirectorySignInRequired as error:
+        raise _sign_in_required(error, outcome) from None
     except DirectoryError as error:
-        raise directory_failed(
-            error, _ACCESS_ALREADY_ENDED if access_ended else NOTHING_CHANGED
-        ) from None
+        raise directory_failed(error, outcome) from None
+
+
+def _sign_in_required(error: DirectorySignInRequired, outcome: str) -> HTTPException:
+    """403 the dashboard tells apart by its `error`: it sends the admin to
+    sign in to the organization's WorkOS account and back to make the change
+    again (`gateway/workos_sign_in_routes.py`)."""
+    return HTTPException(
+        status_code=403,
+        detail={
+            "error": "directory_sign_in_required",
+            "message": f"{error.message} {outcome}",
+        },
+    )
+
+
+async def _member_change(
+    session: AsyncSession,
+    organization_directory: OrganizationDirectory,
+    token: OrganizationToken | None,
+    organization_id: str,
+    user_id: str,
+) -> MemberChange:
+    """What a change to `user_id`'s membership carries for the directory: the
+    admin's token, when it was issued for the organization's WorkOS
+    organization, and `user_id`'s id there. Refuses, before anything is
+    changed, a change the directory takes only with a token there is none
+    of."""
+    organization = await session.get(Organization, organization_id)
+    if organization is None:
+        raise RuntimeError(f"Organization {organization_id} is not visible here")
+    access_token = (
+        token.access_token
+        if token is not None
+        and token.workos_organization_id == organization.workos_organization_id
+        else None
+    )
+    try:
+        organization_directory.check_can_change(organization, access_token)
+    except DirectorySignInRequired as error:
+        raise _sign_in_required(error, NOTHING_CHANGED) from None
+    subject = (
+        await session.scalar(
+            select(OidcIdentity.sub).where(
+                OidcIdentity.user_id == user_id,
+                OidcIdentity.iss == organization_directory.identity_issuer,
+            )
+        )
+        if organization_directory.identity_issuer is not None
+        else None
+    )
+    return MemberChange(access_token=access_token, subject=subject)
 
 
 async def _end_access_through_organization(
@@ -551,6 +613,9 @@ async def update_organization_member_role(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    directory_token: Annotated[
+        OrganizationToken | None, Depends(directory_access_token)
+    ],
     user: Annotated[User, Depends(get_current_user)],
 ) -> OrganizationMemberDetail | JSONResponse:
     """Make a member `org_admin`, or an `org_admin` a `member`. `org_admin` only,
@@ -571,6 +636,17 @@ async def update_organization_member_role(
         raise HTTPException(status_code=404, detail="Not a member of this organization")
     demoting = (
         member.role == ORGANIZATION_ADMIN_ROLE and req.role != ORGANIZATION_ADMIN_ROLE
+    )
+    member_change = (
+        await _member_change(
+            session,
+            organization_directory,
+            directory_token,
+            organization_id,
+            user_id,
+        )
+        if member.role != req.role
+        else MemberChange(access_token=None, subject=None)
     )
     last_admin = HTTPException(
         status_code=409, detail="Cannot demote the last organization admin"
@@ -620,6 +696,7 @@ async def update_organization_member_role(
             organization_id,
             user_id,
             req.role,
+            member_change=member_change,
             access_ended=demoting,
         )
         await record_organization_audit_event(
@@ -660,6 +737,9 @@ async def remove_organization_member(
     api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    directory_token: Annotated[
+        OrganizationToken | None, Depends(directory_access_token)
+    ],
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict | JSONResponse:
     """Remove someone from the organization. `org_admin` only.
@@ -689,6 +769,9 @@ async def remove_organization_member(
         and await organization_store.count_admins(session, organization_id) <= 1
     ):
         raise last_admin
+    member_change = await _member_change(
+        session, organization_directory, directory_token, organization_id, user_id
+    )
     # Let go of the request's connection while each workspace is read on a
     # session of its own.
     await session.commit()
@@ -735,6 +818,7 @@ async def remove_organization_member(
         session,
         organization_id,
         user_id,
+        member_change=member_change,
         access_ended=was_admin,
     )
     role = member.role

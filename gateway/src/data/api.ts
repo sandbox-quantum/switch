@@ -1267,6 +1267,9 @@ export interface CurrentOrganization {
   // Its members, and who is its Org Admin, come from a directory kept outside
   // Switch: people are added and made Org Admin there, not here.
   members_from_directory: boolean;
+  // Changes made here to those members are made in that directory too, so
+  // they last; the admin may first be sent to sign in there.
+  directory_takes_changes: boolean;
 }
 
 export interface OperatorWorkspace {
@@ -1474,6 +1477,19 @@ export async function fetchAuthConfig(): Promise<AuthConfig | null> {
 // at the top level so cookies and the callback redirect work.
 export function oidcLoginUrl(): string {
   return `${BASE}/auth/oidc/login`;
+}
+
+/** Where an admin signs in to their organization's WorkOS account, for the
+ * token a change to its members needs, and comes back to `returnTo`. */
+export function organizationSignInUrl(returnTo: string): string {
+  return `${BASE}/auth/workos/organization?return_to=${encodeURIComponent(returnTo)}`;
+}
+
+/** The server's answer when a change to a linked organization's members
+ * waits on the admin signing in to its WorkOS account. */
+export function needsOrganizationSignIn(err: unknown): boolean {
+  if (!(err instanceof ApiError) || !err.detail || typeof err.detail !== "object") return false;
+  return (err.detail as Record<string, unknown>).error === "directory_sign_in_required";
 }
 
 export async function changePassword(

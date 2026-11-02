@@ -63,10 +63,47 @@ class DirectoryRefusal(DirectoryError):
     """The directory refused the change by its own rules: trying again won't."""
 
 
+class DirectorySignInRequired(DirectoryError):
+    """The directory takes the change only from the admin as it knows them,
+    and Switch holds no token of theirs for it: they sign in there for the
+    organization (`gateway/workos_sign_in.py`) and try again. Raised before
+    anything is changed."""
+
+
+@dataclass(frozen=True)
+class MemberChange:
+    """What a change made from Switch to someone's membership carries for the
+    directory: the access token the directory issued the admin making it for
+    the organization, and the directory's own id for the person it is about
+    (their `oidc_identities` subject under `identity_issuer`). Either is None
+    where there is none."""
+
+    access_token: str | None
+    subject: str | None
+
+
 class OrganizationDirectory(Protocol):
     """Implementations work outside Switch's database, over the network, and
     bound every call: they are handed rows, never a session, and a route may
     hold locks while it waits on them."""
+
+    # The OIDC issuer whose subjects are the directory's ids for people, for
+    # a route to read a `MemberChange.subject` with; None where it has none.
+    identity_issuer: str | None
+
+    def check_can_change(
+        self, organization: Organization, access_token: str | None
+    ) -> None:
+        """Raise `DirectorySignInRequired` when a change to `organization`'s
+        members needs a token from the admin and `access_token` is None.
+        Asked before a route changes anything, so a sign-in costs nothing."""
+        ...
+
+    def sends_changes_for(self, organization: Organization) -> bool:
+        """Whether changes made from Switch to `organization`'s members are
+        made in the directory too, so that they last. False where Switch's
+        tables are the record."""
+        ...
 
     def keeps_members_of(self, organization: Organization) -> bool:
         """Whether the directory, not Switch, is the record of who is in
@@ -101,12 +138,18 @@ class OrganizationDirectory(Protocol):
         ...
 
     async def set_role(
-        self, organization: Organization, user_id: str, role: str
+        self,
+        organization: Organization,
+        user_id: str,
+        role: str,
+        change: MemberChange,
     ) -> None:
         """Change a member's role in `organization` to `role`."""
         ...
 
-    async def remove(self, organization: Organization, user_id: str) -> None:
+    async def remove(
+        self, organization: Organization, user_id: str, change: MemberChange
+    ) -> None:
         """End `user_id`'s membership of `organization`."""
         ...
 
@@ -114,6 +157,16 @@ class OrganizationDirectory(Protocol):
 class LocalDirectory:
     """Switch's own tables are the record: each change is the route's write
     to them, and nothing is asked first."""
+
+    identity_issuer: str | None = None
+
+    def check_can_change(
+        self, organization: Organization, access_token: str | None
+    ) -> None:
+        return None
+
+    def sends_changes_for(self, organization: Organization) -> bool:
+        return False
 
     def keeps_members_of(self, organization: Organization) -> bool:
         return False
@@ -135,9 +188,15 @@ class LocalDirectory:
         return None
 
     async def set_role(
-        self, organization: Organization, user_id: str, role: str
+        self,
+        organization: Organization,
+        user_id: str,
+        role: str,
+        change: MemberChange,
     ) -> None:
         return None
 
-    async def remove(self, organization: Organization, user_id: str) -> None:
+    async def remove(
+        self, organization: Organization, user_id: str, change: MemberChange
+    ) -> None:
         return None

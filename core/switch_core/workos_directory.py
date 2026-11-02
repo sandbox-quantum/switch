@@ -15,13 +15,17 @@ Switch holds which workspaces, and the roles there. At sign-in the person's
 memberships are read from WorkOS (`memberships_at_sign_in`), by their WorkOS
 user id, which the sign-in's `sub` is.
 
-Changes made from Switch to a linked organization go through the service that
-owns the customer record, not through this module's API key, so each
-product's rules apply in one place; until that is wired in, this directory
-refuses those that grant (adding someone, making them Org Admin). Those that
-take away (a removal, a demotion) change only Switch, so an Org Admin can end
-access WorkOS has already ended. An organization nobody has linked is Switch's own, as under the
-local directory, and that is what a new organization is until then.
+Changes made from Switch to a linked organization go through the members
+service (`members_service.py`), with the admin's own WorkOS token for it, not
+through this module's API key, so each product's rules apply in one place.
+Making someone Org Admin makes them `org_admin` in WorkOS; making them a
+Member makes them `viewer` there, the least a member of a shared organization
+can be. Adding someone stays refused: nobody from Switch can add a person to
+the organization yet. Where no members service is configured, those that
+grant are refused, and those that take away (a removal, a demotion) change
+only Switch, so an Org Admin can end access WorkOS has already ended, until
+WorkOS is read again. An organization nobody has linked is Switch's own, as
+under the local directory, and that is what a new organization is until then.
 """
 
 from __future__ import annotations
@@ -34,11 +38,14 @@ import httpx
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.db.models import Organization, User
+from switch_core.members_service import MembersService
 from switch_core.organization_directory import (
     DirectoryMembership,
     DirectoryOrganization,
     DirectoryRefusal,
+    DirectorySignInRequired,
     DirectoryUnavailable,
+    MemberChange,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +63,12 @@ NOT_FROM_SWITCH_YET = (
     "This organization's members are managed in your organization's account "
     "settings, not here yet."
 )
+SIGN_IN_FIRST = (
+    "Confirm your sign-in to your organization's account to change its members."
+)
+# The WorkOS role of a member Switch makes a Member: the least a member of a
+# shared organization can be.
+MEMBER_ROLE_IN_WORKOS = "viewer"
 
 
 def customer_id_of(organization: dict[str, Any]) -> str | None:
@@ -92,10 +105,19 @@ def _unreadable(what: str) -> DirectoryUnavailable:
 
 
 class WorkOSDirectory:
-    def __init__(self, http: httpx.AsyncClient, api_key: str, api_url: str) -> None:
+    def __init__(
+        self,
+        http: httpx.AsyncClient,
+        api_key: str,
+        api_url: str,
+        identity_issuer: str,
+        members: MembersService | None,
+    ) -> None:
         self._http = http
         self._api_key = api_key
         self._api_url = api_url.rstrip("/")
+        self.identity_issuer: str | None = identity_issuer
+        self._members = members
 
     async def _get(
         self, path: str, params: Mapping[str, str | list[str]]
@@ -251,6 +273,22 @@ class WorkOSDirectory:
         existing accounts."""
         return await self._list("/user_management/users", {"email": email})
 
+    def check_can_change(
+        self, organization: Organization, access_token: str | None
+    ) -> None:
+        if (
+            organization.workos_organization_id is not None
+            and self._members is not None
+            and access_token is None
+        ):
+            raise DirectorySignInRequired(SIGN_IN_FIRST)
+
+    def sends_changes_for(self, organization: Organization) -> bool:
+        return (
+            organization.workos_organization_id is not None
+            and self._members is not None
+        )
+
     def keeps_members_of(self, organization: Organization) -> bool:
         """Only an organization an operator linked follows WorkOS; any other
         is still Switch's own."""
@@ -270,18 +308,68 @@ class WorkOSDirectory:
         raise DirectoryRefusal(NOT_FROM_SWITCH_YET)
 
     async def set_role(
-        self, organization: Organization, user_id: str, role: str
+        self,
+        organization: Organization,
+        user_id: str,
+        role: str,
+        change: MemberChange,
     ) -> None:
-        """Taking Org Admin away in Switch needs nothing from WorkOS: it is how
-        Switch catches up with a demotion there, and a sign-in makes them Org
-        Admin again for as long as WorkOS still has them as one."""
+        """Through the members service where there is one. A demotion of
+        someone WorkOS no longer lists needs nothing: it is Switch catching up.
+        Without the service, taking Org Admin away needs nothing from WorkOS
+        either, and a sign-in or the mirror makes them Org Admin again for as
+        long as WorkOS still has them as one."""
         if organization.workos_organization_id is None:
             return None
-        if role == ORGANIZATION_ADMIN_ROLE:
-            raise DirectoryRefusal(NOT_FROM_SWITCH_YET)
-        return None
+        promoting = role == ORGANIZATION_ADMIN_ROLE
+        if self._members is None:
+            if promoting:
+                raise DirectoryRefusal(NOT_FROM_SWITCH_YET)
+            return None
+        access_token = _token_of(change)
+        membership = await self._membership(access_token, user_id, change)
+        if membership is None:
+            if promoting:
+                raise DirectoryRefusal(
+                    "They are not a member of your organization's account; "
+                    "add them there first."
+                )
+            return None
+        await self._members.set_role(
+            access_token,
+            membership,
+            ORGANIZATION_ADMIN_ROLE if promoting else MEMBER_ROLE_IN_WORKOS,
+        )
 
-    async def remove(self, organization: Organization, user_id: str) -> None:
-        """As with a demotion: Switch catching up with a removal in WorkOS,
-        undone at the next sign-in for as long as WorkOS still lists them."""
-        return None
+    async def remove(
+        self, organization: Organization, user_id: str, change: MemberChange
+    ) -> None:
+        """Through the members service where there is one; someone WorkOS no
+        longer lists needs nothing. Without it, as with a demotion: Switch
+        catching up with a removal in WorkOS, undone for as long as WorkOS
+        still lists them."""
+        if organization.workos_organization_id is None or self._members is None:
+            return None
+        access_token = _token_of(change)
+        membership = await self._membership(access_token, user_id, change)
+        if membership is not None:
+            await self._members.remove(access_token, membership)
+
+    async def _membership(
+        self, access_token: str, user_id: str, change: MemberChange
+    ) -> str | None:
+        assert self._members is not None
+        if change.subject is None:
+            raise DirectoryRefusal(
+                f"User {user_id} has no WorkOS identity, so their membership "
+                "there can't be changed from Switch."
+            )
+        return await self._members.membership_of(access_token, change.subject)
+
+
+def _token_of(change: MemberChange) -> str:
+    """The admin's token; `check_can_change` has refused a change without one
+    before anything was changed, so its absence here is a route's mistake."""
+    if change.access_token is None:
+        raise DirectorySignInRequired(SIGN_IN_FIRST)
+    return change.access_token

@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { app } from "../connector-apps/testFixtures";
@@ -393,6 +393,123 @@ describe("OrganizationPage", () => {
     const demote = await screen.findByRole("option", { name: "Member" });
     expect(demote.getAttribute("aria-disabled")).toBeNull();
     expect(screen.getByLabelText("Remove bob@example.com from the organization")).toBeTruthy();
+  });
+
+  describe("where changes go to the organization's account settings", () => {
+    const originalLocation = window.location;
+    const bob = { user_id: "u2", name: "Bob", email: "bob@example.com", role: "member", created_at: "2026-01-01" };
+    const routes = (patchAnswer: unknown) => ({
+      "GET /organizations/current": {
+        id: "o1",
+        slug: "acme",
+        name: "Acme Inc",
+        role: "org_admin",
+        members_from_directory: true,
+        directory_takes_changes: true,
+      },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [bob],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+      "PATCH /organizations/current/members/u2": patchAnswer,
+    });
+    const signInFirst = new Refusal(403, "");
+    // `answer` sends a refusal's detail as a string; this one is structured.
+    const structured = (detail: unknown) => {
+      const fetchMock = vi.mocked(fetch);
+      const original = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        if (init?.method === "PATCH") {
+          return new Response(JSON.stringify({ detail }), { status: 403 });
+        }
+        return original(input, init);
+      });
+    };
+
+    beforeEach(() => {
+      window.sessionStorage.clear();
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: { ...originalLocation, href: "", pathname: "/organization" },
+      });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        writable: true,
+        value: originalLocation,
+      });
+    });
+
+    it("offers Org Admin and says changes are made there too", async () => {
+      signedInAs(session("org_admin", true));
+      answer(routes({ ...bob, role: "org_admin", warning: null }));
+
+      render(<OrganizationPage />);
+
+      expect(await screen.findByText(/Changes you make here are made there too/)).toBeTruthy();
+      fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+      const promote = await screen.findByRole("option", { name: "Org Admin" });
+      expect(promote.getAttribute("aria-disabled")).toBeNull();
+    });
+
+    it("sends the admin to sign in there, keeping the change", async () => {
+      signedInAs(session("org_admin", true));
+      answer(routes(signInFirst));
+      structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });
+
+      render(<OrganizationPage />);
+      fireEvent.mouseDown(within(await screen.findByTestId("row-u2")).getByRole("combobox"));
+      fireEvent.click(await screen.findByRole("option", { name: "Org Admin" }));
+
+      await waitFor(() =>
+        expect(window.location.href).toBe(
+          "/gateway/auth/workos/organization?return_to=%2Forganization",
+        ),
+      );
+      expect(JSON.parse(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")!)).toEqual({
+        userId: "u2",
+        role: "org_admin",
+      });
+    });
+
+    it("makes the kept change on coming back", async () => {
+      window.sessionStorage.setItem(
+        "switch.pendingOrganizationMemberChange",
+        JSON.stringify({ userId: "u2", role: "org_admin" }),
+      );
+      signedInAs(session("org_admin", true));
+      const fetchMock = answer(routes({ ...bob, role: "org_admin", warning: null }));
+
+      render(<OrganizationPage />);
+
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(
+            ([input, init]) =>
+              init?.method === "PATCH" && String(input).endsWith("/organizations/current/members/u2"),
+          ),
+        ).toBe(true),
+      );
+      expect(window.sessionStorage.getItem("switch.pendingOrganizationMemberChange")).toBeNull();
+    });
+
+    it("shows a kept change that still asks for a sign-in as a failure", async () => {
+      window.sessionStorage.setItem(
+        "switch.pendingOrganizationMemberChange",
+        JSON.stringify({ userId: "u2", role: "org_admin" }),
+      );
+      signedInAs(session("org_admin", true));
+      answer(routes(signInFirst));
+      structured({ error: "directory_sign_in_required", message: "Confirm your sign-in." });
+
+      render(<OrganizationPage />);
+
+      expect(await screen.findByText("Confirm your sign-in.")).toBeTruthy();
+      expect(window.location.href).toBe("");
+    });
   });
 
   it("says nothing of account settings for an organization kept here", async () => {

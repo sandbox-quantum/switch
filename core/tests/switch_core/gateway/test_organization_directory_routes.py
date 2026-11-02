@@ -32,6 +32,7 @@ from switch_core.organization_directory import (
     DirectoryOrganization,
     DirectoryRefusal,
     DirectoryUnavailable,
+    MemberChange,
 )
 from tests.switch_core.gateway.test_organization_routes import (
     _app,
@@ -54,9 +55,19 @@ class _Directory:
     """Records what it is asked, in order, and fails every change with
     `failure` when one is given."""
 
+    identity_issuer: str | None = None
+
     def __init__(self, failure: DirectoryError | None) -> None:
         self.failure = failure
         self.asked: list[tuple] = []
+
+    def check_can_change(
+        self, organization: Organization, access_token: str | None
+    ) -> None:
+        return None
+
+    def sends_changes_for(self, organization: Organization) -> bool:
+        return True
 
     def _answer(self, *call: object) -> None:
         self.asked.append(call)
@@ -81,11 +92,17 @@ class _Directory:
         self._answer("join", organization.id, user_id, role)
 
     async def set_role(
-        self, organization: Organization, user_id: str, role: str
+        self,
+        organization: Organization,
+        user_id: str,
+        role: str,
+        change: MemberChange,
     ) -> None:
         self._answer("set_role", organization.id, user_id, role)
 
-    async def remove(self, organization: Organization, user_id: str) -> None:
+    async def remove(
+        self, organization: Organization, user_id: str, change: MemberChange
+    ) -> None:
         self._answer("remove", organization.id, user_id)
 
 

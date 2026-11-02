@@ -110,13 +110,49 @@ operator, who may then make one), a workspace with no owner, agents whose
 owner can no longer act for them, and a linked WorkOS organization that was
 deleted. The audit log keeps the history.
 
+## Changes made from Switch
+
+When several products share one WorkOS environment, one service usually owns
+each customer's account there, and every product changes its members through
+it, so its rules (nobody grants above their own role, the last `org_admin`
+stays) apply once for all of them. Switch can send its changes to such a
+service. Set all three, or none:
+
+- `MEMBERS_SERVICE_URL`: the service. Switch calls, with the admin's token,
+  `GET /v1/auth/tenants/members` (paginated with `limit` and `offset`,
+  answering `{"data": [{"id", "user_id"}], "total"}`),
+  `PATCH /v1/auth/tenants/members/{id}` with `{"role": <slug>}`, and
+  `DELETE /v1/auth/tenants/members/{id}`, each acting on the organization
+  the token was issued for, and reads a refusal's `{"error": ...}`.
+- `WORKOS_CLIENT_ID`: the AuthKit application Switch signs admins in to for
+  that token.
+- `WORKOS_REDIRECT_URL`: its callback, `.../gateway/auth/workos/callback`,
+  registered on that application.
+
+Then, on a linked organization, making a member Org Admin makes them
+`org_admin` in WorkOS, making an Org Admin a Member makes them `viewer`
+there, and removing someone removes their membership there, so each change
+lasts. Switch uses no credential of its own for this: the first time an admin
+changes the members, the dashboard sends them to sign in to the organization
+through the AuthKit application (usually without a prompt, while their
+AuthKit session lasts) and makes the change on their return. Switch keeps the
+access token that sign-in gives, encrypted in the browser's short-lived
+sign-in cookie, only for as long as the token lasts, and keeps no refresh
+token. A sign-in as another WorkOS user than the one the Switch account signs
+in as, or to another organization, is refused. Switch's own checks still run
+first; the service may refuse by its own rules, and its reason is shown.
+
+Adding someone new to a linked organization from Switch is still refused.
+
 ## In the dashboard
 
 On a linked organization's Organization page, the Members section says that
 its members and Org Admins come from the organization's account settings
-(WorkOS), and does not offer making a member Org Admin. Removing someone or
-making an Org Admin a Member is still offered: it ends their access at once,
-and the page says it lasts only until WorkOS is read again (their next
+(WorkOS). With changes sent to WorkOS (above), it offers every change but
+adding someone, and says the admin may be asked to confirm their sign-in
+there. Without, it does not offer making a member Org Admin; removing someone
+or making an Org Admin a Member is still offered: it ends their access at
+once, and the page says it lasts only until WorkOS is read again (their next
 sign-in, or the daily check) unless the same change is made there. The
 platform operator, on a linked organization with no admin, is told the admin
 has to be made in WorkOS. A workspace's Invitations section says that only
@@ -125,9 +161,9 @@ anyone new to it.
 
 ## Not done yet
 
-- **Granting from Switch is refused** for a linked organization: adding a
-  member (from the dashboard or by invitation) or making one Org Admin. Make
-  those changes in WorkOS. Removing a member or taking Org Admin away from
-  Switch is allowed and changes only Switch; whatever WorkOS still grants
-  comes back at the next sign-in or check.
+- **Adding someone to a linked organization from Switch is refused**, from
+  the dashboard or by invitation: add them in WorkOS. Without changes sent to
+  WorkOS (above), making someone Org Admin is refused too, and a removal or
+  demotion changes only Switch; whatever WorkOS still grants comes back at
+  the next sign-in or check.
 - A new organization created on the server is Switch's own until it is linked.

@@ -141,10 +141,14 @@ version of their own to them without also giving them a release of their own.
   seconds, and in a full check once a day. A change from WorkOS is applied
   even when it breaks a rule Switch keeps (the last Org Admin, agents left
   without an owner who can act for them), and the Organization page tells
-  its admins what is left to fix. Adding someone to a linked organization or
-  making them Org Admin is done in WorkOS, and the dashboard says so; taking
-  either away in Switch ends access at once but lasts only while WorkOS
-  agrees. Setup and limits: `docs/old/workos-directory.md`.
+  its admins what is left to fix. With a members service configured
+  (`MEMBERS_SERVICE_URL`, `WORKOS_CLIENT_ID`, `WORKOS_REDIRECT_URL`), an Org
+  Admin's role changes and removals on the Organization page are made in
+  WorkOS too, with the admin's own WorkOS token, which the dashboard gets by
+  sending them through the organization's sign-in when needed. Without one,
+  making someone Org Admin is done in WorkOS, and taking it away in Switch
+  lasts only while WorkOS agrees. Adding someone new is done in WorkOS either
+  way. Setup and limits: `docs/old/workos-directory.md`.
 - **A reconnect storm is paced instead of taking the pool.** When a pod goes
   away, every agent and controller it held opens a connection on the pods
   left within seconds. On staging (two pods, 1,000 agents, one pod deleted)

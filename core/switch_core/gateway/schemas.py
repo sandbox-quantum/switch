@@ -1070,13 +1070,16 @@ class CurrentOrganizationResponse(BaseModel):
     """The bound workspace's organization, and the caller's role in it: None
     for the platform operator there on the operator flag alone.
     `members_from_directory`: its members and `org_admin`s come from a
-    directory kept outside Switch (`OrganizationDirectory.keeps_members_of`)."""
+    directory kept outside Switch (`OrganizationDirectory.keeps_members_of`);
+    `directory_takes_changes`: changes made here to them are made there too
+    (`OrganizationDirectory.sends_changes_for`)."""
 
     id: str
     slug: str
     name: str
     role: str | None
     members_from_directory: bool
+    directory_takes_changes: bool
 
 
 class OrganizationIssueDetail(BaseModel):

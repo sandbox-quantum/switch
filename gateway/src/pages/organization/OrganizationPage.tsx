@@ -52,6 +52,7 @@ export default function OrganizationPage() {
             selfId={session.user.id}
             asOperator={!isAdmin}
             fromDirectory={organization?.members_from_directory === true}
+            directoryTakesChanges={organization?.directory_takes_changes === true}
             onChanged={onMembersChanged}
           />
         )}
