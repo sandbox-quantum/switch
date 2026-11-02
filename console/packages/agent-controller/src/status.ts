@@ -371,6 +371,8 @@ export class ProviderStatuses {
     let status = providerStatusFrom(provider, located, readiness, checkedAt);
     let login: GivenLogin | null = null;
     let problem: ProviderEntry['problem'] = null;
+    // The sign-in check of a given login did not run: not cached (see below).
+    let unchecked = false;
     if (
       located &&
       readiness?.status !== 'authenticated' &&
@@ -390,6 +392,38 @@ export class ProviderStatuses {
             reason: undefined,
             auth_problem: undefined,
           };
+        } else if (signedIn === null || signedIn.status === 'unknown') {
+          // The sign-in check did not run: on a split box, the agents
+          // container's launcher isn't linked yet, as just after the box wakes.
+          // That says nothing about the login, so it isn't marked expired. A
+          // login held from a check that signed in, at this revision, is kept;
+          // otherwise none is used yet. Either way the result isn't cached, so
+          // the next use checks again (login-after-wake defect, 1 Nov).
+          unchecked = true;
+          const held = this.entries.get(provider);
+          const kept =
+            held?.login &&
+            held.status.auth === 'ok' &&
+            held.status.auth_source === 'sealed' &&
+            held.login.revision === given.login.revision
+              ? held.login
+              : null;
+          login = kept;
+          status = kept
+            ? {
+                ...status,
+                auth: 'ok',
+                auth_source: 'sealed',
+                reason: undefined,
+                auth_problem: undefined,
+              }
+            : {
+                ...status,
+                auth: 'unknown',
+                auth_source: 'sealed',
+                reason: undefined,
+                auth_problem: `The sign-in check of the ${provider} login given to this machine did not run.`,
+              };
         } else {
           problem = {
             code: 'provider_login_expired',
@@ -430,7 +464,8 @@ export class ProviderStatuses {
     this.entries.set(provider, {
       status,
       path: located?.path ?? null,
-      at,
+      // A check that couldn't try the given login is stale at once.
+      at: unchecked ? at - PROVIDER_TTL_MS : at,
       login,
       problem,
       sequence,
@@ -453,6 +488,16 @@ export class ProviderStatuses {
     const entry = this.entries.get(provider);
     if (!entry || this.deps.now() - entry.at >= PROVIDER_TTL_MS) await this.check(provider);
     return this.entries.get(provider)?.login ?? null;
+  }
+
+  /**
+   * Whether a login given to the machine is waiting on a sign-in check that
+   * could not run (`unknown`, from Switch): the controller tries it again.
+   */
+  hasUnchecked(): boolean {
+    for (const entry of this.entries.values())
+      if (entry.status.auth === 'unknown' && entry.status.auth_source === 'sealed') return true;
+    return false;
   }
 
   /** Stops using logins given to the machine: Switch could not take this machine's key. */

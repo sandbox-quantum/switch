@@ -150,6 +150,39 @@ describe('DetachedRuntime', () => {
     expect(process.env.SWITCH_OWNER_MARKER).toBeUndefined();
   });
 
+  it('clears a control.json left by a host that died without stopping, before launching (1 Nov defect)', async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    // A host killed with its box left its control port behind; no host is alive.
+    writeFileSync(
+      join(root, 'control.json'),
+      JSON.stringify({ port: 40123, token: 'a'.repeat(32) })
+    );
+    await runtime.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    expect(existsSync(join(root, 'control.json'))).toBe(false);
+  });
+
+  it('keeps a live host’s own control.json at launch (1 Nov defect, negative case)', async () => {
+    const root = join(dir, 'data', 'watchers', 'agent-1');
+    mkdirSync(root, { recursive: true });
+    const watcher = await fakeWatcher(root);
+    writeFileSync(join(root, 'shared-owner.lock'), JSON.stringify({ pid: watcher.pid }));
+    const own = JSON.stringify({ port: 40124, token: 'b'.repeat(32) });
+    writeFileSync(join(root, 'control.json'), own);
+    await runtime.launch('agent-1', template(), {
+      isolation: 'isolated',
+      restart: false,
+      replaceIdentity: false,
+      clearTakenOver: false,
+    });
+    expect(readFileSync(join(root, 'control.json'), 'utf8')).toBe(own);
+  });
+
   it('starts the host with no marker when it has none to give', async () => {
     await runtime.launch('agent-1', template(), {
       isolation: 'isolated',

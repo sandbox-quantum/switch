@@ -52,6 +52,48 @@ export async function giveHubTicketOverControlPort(
   return overControlPort(controlFile, (client) => client.giveHubTicket(ticket, mac), ownsPort);
 }
 
+/** How long a new host is given to write its own control file and take its ticket. */
+export const TICKET_HANDOVER_MS = 10_000;
+const TICKET_RETRY_MS = 500;
+
+/**
+ * Level 3, from the launcher: hands a spawned host its ticket, waiting until
+ * `deadlineMs` for the host's own control file. Every attempt asks `ownsPort`
+ * first, so the ticket only ever goes to the spawned host's own port: a file
+ * naming any other port (a dead host's left on the disk, or another process's)
+ * is waited past, never used. Still not the host's port at the deadline:
+ * `wrong_port`, and the launcher ends the host (security's fix 4). Other
+ * failures (no file yet) are retried the same way, then thrown.
+ */
+export async function pushTicketUntilTaken(input: {
+  controlFile: string;
+  ticket: string;
+  mac: string;
+  ownsPort: (port: number) => Promise<boolean>;
+  taken: (answer: string) => boolean;
+  deadlineMs?: number;
+  retryMs?: number;
+}): Promise<'taken' | 'wrong_port' | 'not_taken'> {
+  const deadline = Date.now() + (input.deadlineMs ?? TICKET_HANDOVER_MS);
+  for (;;) {
+    try {
+      const answer = await giveHubTicketOverControlPort(
+        input.controlFile,
+        input.ticket,
+        input.mac,
+        input.ownsPort
+      );
+      return input.taken(answer) ? 'taken' : 'not_taken';
+    } catch (error) {
+      if (Date.now() > deadline) {
+        if (error instanceof WrongPortError) return 'wrong_port';
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, input.retryMs ?? TICKET_RETRY_MS));
+    }
+  }
+}
+
 async function overControlPort<T>(
   controlFile: string,
   ask: (client: ControlClient) => Promise<T>,

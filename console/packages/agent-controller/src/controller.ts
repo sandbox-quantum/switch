@@ -121,6 +121,8 @@ export type ControllerTiming = {
   eventBufferLimit: number;
   /** Split mode: the wait before trying the launcher listener's address again (`LAUNCHER_LISTEN_RETRY_MS`). */
   launcherListenRetryMs?: number;
+  /** The waits before each new try of a given login whose sign-in check could not run (`UNCHECKED_RETRY_MS`). */
+  uncheckedRetryMs?: readonly number[];
 };
 
 export const DEFAULT_TIMING: ControllerTiming = {
@@ -291,6 +293,9 @@ function sameLogin(a: GivenLogin | null, b: GivenLogin | null): boolean {
     a.credential === b.credential
   );
 }
+
+/** When a given login whose sign-in check could not run is tried again: four tries, backing off. */
+export const UNCHECKED_RETRY_MS = [15_000, 30_000, 60_000, 120_000] as const;
 
 export async function ensureRelayCredentials(
   agentId: string,
@@ -1151,6 +1156,39 @@ export async function runController(
     onLocalChange: () => void reconcileLocally(),
   });
 
+  // A login given to the machine whose sign-in check could not run (just after
+  // a box wakes, before the agents container's launcher links) is tried again
+  // a bounded number of times, backing off, and the agents waiting on it start
+  // once it signs in, rather than at the next nudge or resync (1 Nov defect).
+  // Only the provider and the try are logged, never the login.
+  let uncheckedTry = 0;
+  let uncheckedTimer: ReturnType<typeof setTimeout> | null = null;
+  const retryUnchecked = (): void => {
+    if (!providers.hasUnchecked()) {
+      uncheckedTry = 0;
+      return;
+    }
+    const waits = timing.uncheckedRetryMs ?? UNCHECKED_RETRY_MS;
+    if (uncheckedTimer || stop.signal.aborted || uncheckedTry >= waits.length) return;
+    const delay = waits[uncheckedTry++]!;
+    log.info('A given login’s sign-in check could not run; trying it again', {
+      try: uncheckedTry,
+      inMs: delay,
+    });
+    uncheckedTimer = setTimeout(() => {
+      uncheckedTimer = null;
+      if (stop.signal.aborted) return;
+      void providers
+        .checkAll({ verify: true })
+        .catch((error: unknown) => failed('Checking providers', error))
+        .then(() => {
+          void reconcileLocally();
+          retryUnchecked();
+        });
+    }, delay);
+    uncheckedTimer.unref?.();
+  };
+
   const stopServingRechecks = deps.rechecks.serve(async () => {
     await deps.refreshPath();
     // A recheck is asked for by someone setting up or fixing a login, so
@@ -1159,6 +1197,7 @@ export async function runController(
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();
+    retryUnchecked();
   });
 
   let localQueued = false;
@@ -1431,7 +1470,10 @@ export async function runController(
   relay.setReady();
   gateway?.gateway.setReady();
 
-  void providers.refreshStale().catch((error: unknown) => failed('Checking providers', error));
+  void providers
+    .refreshStale()
+    .catch((error: unknown) => failed('Checking providers', error))
+    .then(retryUnchecked);
 
   const resync = setInterval(() => {
     void sync('periodic resync');
@@ -1504,6 +1546,7 @@ export async function runController(
       log.info('Exiting for the service to start this controller on its new release.');
   } finally {
     stopServingRechecks();
+    if (uncheckedTimer) clearTimeout(uncheckedTimer);
     memoryGuard?.stop();
     clearInterval(resync);
     stopValve();

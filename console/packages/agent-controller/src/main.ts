@@ -65,12 +65,12 @@ import {
   liveStatusDirFromEnv,
   readLiveStatus,
 } from './live-status';
-import { createLogger, errorMessage, type Logger } from './log';
+import { createLogger, errorCode, errorMessage, type Logger } from './log';
 import { loginShellPath, withUserBinDirs } from './login-path';
 import { guardLimitsFromEnv } from './memory-guard';
 import { type OwnerMarkers, openOwnerMarkers, processesOf, signalProven } from './owner-marker';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
-import { ProviderRechecks } from './provider-rechecks';
+import { ProviderRechecks, RechecksNotServing } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
 import { definitionProblem } from './reconcile';
 import { TRUSTED_RELEASE_KEYS } from './release-keys';
@@ -738,6 +738,21 @@ async function runCommand(args: string[]): Promise<number> {
             address: launcherAddress,
             markers: ownerMarkers,
             log,
+            // A login check that ran before the launcher linked (just after the
+            // box wakes) couldn't try the given login: check every provider
+            // again now, which also starts agents waiting on one (1 Nov).
+            onConnected: () =>
+              void rechecks.run().then(
+                () => log.info('Checked the providers again once the launcher connected'),
+                (error: unknown) => {
+                  // Not connected to Switch yet: its first check runs with the launcher linked.
+                  if (error instanceof RechecksNotServing) return;
+                  // Anything else is said, by its kind only, never its message.
+                  log.warn('Re-check after the launcher connected failed', {
+                    kind: errorCode(error),
+                  });
+                }
+              ),
           });
     const agentsLayout = values['agents-data-dir']
       ? dataLayout(resolve(values['agents-data-dir']))
@@ -1532,6 +1547,8 @@ function splitMode(input: {
   address: LauncherAddress;
   markers: OwnerMarkers | undefined;
   log: Logger;
+  /** The launcher linked: a given login's sign-in check can run now. */
+  onConnected?: () => void;
 }): {
   link: LauncherLink;
   tickets: HostTickets;
@@ -1547,8 +1564,10 @@ function splitMode(input: {
     now: Date.now,
     // Fixed events with ids and numbers only.
     log: (event, fields) => {
-      if (event === 'launcher_connected') input.log.info('The launcher connected', fields);
-      else input.log.warn(`Launcher: ${event}`, fields);
+      if (event === 'launcher_connected') {
+        input.log.info('The launcher connected', fields);
+        input.onConnected?.();
+      } else input.log.warn(`Launcher: ${event}`, fields);
     },
   });
   return {

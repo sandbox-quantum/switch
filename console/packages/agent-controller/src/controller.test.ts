@@ -16,6 +16,7 @@ import { callOperation, SESSION_SELECTOR_HEADERS } from '@sandboxaq/switch-agent
 import {
   HUB_CLOSE,
   HUB_PROTOCOL,
+  generateSealingKeyPair,
   openHubStream,
   sealProviderLogin,
 } from '@switch-console/agent-providers';
@@ -41,7 +42,7 @@ import { OwnerMarkers } from './owner-marker';
 import { ProviderRechecks } from './provider-rechecks';
 import type { LocalRelay } from './relay';
 import type { AgentAssignment, StatusReport } from './schemas';
-import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore } from './secrets';
+import { CONTROLLER_CREDENTIAL, FileSecretStore, MemorySecretStore, SEALING_KEY } from './secrets';
 import { type ReleaseInstaller, SelfUpdater, type UpdateAttempt } from './self-update';
 import { LaunchGate, type ProbeEnv } from './split-runtime';
 import { ControllerStore } from './store';
@@ -633,6 +634,55 @@ describe('runController', () => {
         ),
       'a status report saying Claude is ready through the given login'
     );
+    stop.abort();
+    expect(await running).toBe('stopped');
+  });
+
+  it('after a restart, starts its agent on the given login once a sign-in check that could not run at first succeeds (wake defect, 1 Nov)', async () => {
+    // The box wakes: its key is already saved, Switch already holds a login
+    // sealed to it, and the agents container isn't linked yet, so the first
+    // sign-in check of the given login can't run.
+    const keys = generateSealingKeyPair();
+    await secrets.set(SEALING_KEY, JSON.stringify(keys));
+    core.sealedLogins.set('claude', {
+      revision: 1,
+      sealed: sealProviderLogin({
+        publicKey: keys.publicKey,
+        controllerId: core.controllerId,
+        provider: 'claude',
+        login: { kind: 'setup-token', credential: 'sk-ant-oat-given' },
+      }),
+    });
+    runtime.readiness = { status: 'unauthenticated', message: 'Not signed in.', models: [] };
+    runtime.loginReadiness = {
+      status: 'unknown',
+      message: 'The sign-in check did not run (not_connected).',
+      models: [],
+    };
+    core.setAssignment({ revision: 1, agents: [agent(1)] });
+    const base = deps();
+    running = runController(
+      { ...base, timing: { ...base.timing, uncheckedRetryMs: [100, 100, 100, 100] } },
+      stop.signal
+    );
+    // Its first start can't use the login: there's no usable one yet.
+    await waitFor(() => runtime.launches('agent-1').length >= 1, 'the first start');
+    expect(runtime.launches('agent-1')[0]!.template.start.input.env).not.toHaveProperty(
+      'CLAUDE_CODE_OAUTH_TOKEN'
+    );
+
+    // The launcher links: a retry signs in, and the agent moves onto the login,
+    // with no nudge or resync from Switch.
+    runtime.loginReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
+    await waitFor(
+      () => runtime.credentials.get('agent-1')?.providerLogin?.revision === '1',
+      'the agent on the given login',
+      3_000
+    );
+    await waitFor(() => runtime.launches('agent-1').length >= 2, 'the agent moved onto it', 3_000);
+    expect(runtime.launches('agent-1').at(-1)!.template.start.input.env).toMatchObject({
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given',
+    });
     stop.abort();
     expect(await running).toBe('stopped');
   });

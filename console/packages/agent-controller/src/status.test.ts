@@ -623,6 +623,84 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(statuses.loginProblem('claude')?.code).toBe('internal');
   });
 
+  it('doesn’t mark a given login expired when its sign-in check didn’t run, and checks again on the next use', async () => {
+    // Just after a box wakes, the agents container's launcher isn't linked yet,
+    // so the check can't run. That is no verdict on the login (1 Nov defect).
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    runtime.loginReadiness = {
+      status: 'unknown',
+      message: 'The sign-in check did not run (not_connected).',
+      models: [],
+    };
+    answer = sealedAnswer(vertexCredentialFixture(), 2, 'vertex');
+    const statuses = build(runtime);
+    const first = await statuses.check('claude');
+    expect(first).toMatchObject({ auth: 'unknown', auth_source: 'sealed' });
+    expect(first.reason).toBeUndefined();
+    expect(first.auth_problem).toContain('did not run');
+    expect(statuses.loginProblem('claude')).toBeNull();
+    expect(statuses.hasUnchecked()).toBe(true);
+    expect(await statuses.givenLogin('claude')).toBeNull();
+
+    // The launcher links: the next use checks again at once, not ten minutes later.
+    runtime.loginReadiness = { status: 'authenticated', message: 'Signed in.', models: [] };
+    expect((await statuses.givenLogin('claude'))?.kind).toBe('vertex');
+    expect(runtime.loginProbes).toHaveLength(3);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(statuses.hasUnchecked()).toBe(false);
+  });
+
+  it('keeps a given login that signed in while a later check can’t run', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 5);
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    runtime.loginReadiness = { status: 'unknown', message: 'not linked', models: [] };
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect((await statuses.givenLogin('claude'))?.credential).toBe('sk-ant-oat-given');
+    // A new revision that can't be checked isn't used on trust.
+    answer = sealedAnswer('sk-ant-oat-newer', 6);
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'unknown',
+      auth_source: 'sealed',
+    });
+    expect(await statuses.givenLogin('claude')).toBeNull();
+  });
+
+  it('never keeps a withdrawn login because a sign-in check can’t run (security)', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    answer = sealedAnswer('sk-ant-oat-given', 7);
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    // Withdrawn in Switch while the box's check can't run: nothing is used.
+    answer = null;
+    runtime.loginReadiness = { status: 'unknown', message: 'not linked', models: [] };
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'missing',
+      reason: 'provider_login_missing',
+    });
+    expect(await statuses.givenLogin('claude')).toBeNull();
+    expect(statuses.hasUnchecked()).toBe(false);
+  });
+
+  it('still marks a given login expired when its sign-in check runs and fails', async () => {
+    const runtime = new FakeRuntime();
+    runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
+    runtime.loginReadiness = { status: 'unauthenticated', message: 'Token expired.', models: [] };
+    answer = sealedAnswer('sk-ant-oat-expired');
+    const statuses = build(runtime);
+    expect(await statuses.check('claude')).toMatchObject({
+      auth: 'expired',
+      reason: 'provider_login_expired',
+    });
+    // Cached as before: no second probe within the TTL.
+    expect(await statuses.givenLogin('claude')).toBeNull();
+    expect(runtime.loginProbes).toHaveLength(1);
+  });
+
   it('keeps the login it holds while Switch cannot be asked', async () => {
     const runtime = new FakeRuntime();
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };

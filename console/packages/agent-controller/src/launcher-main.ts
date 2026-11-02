@@ -12,9 +12,8 @@ import {
   ticketMac,
 } from '@switch-console/agent-providers';
 import {
-  giveHubTicketOverControlPort,
+  pushTicketUntilTaken,
   stopForMemoryOverControlPort,
-  WrongPortError,
   warmOverControlPort,
 } from './control-port';
 import { DetachedRuntime } from './detached-runtime';
@@ -40,8 +39,6 @@ import type { Provider } from './schemas';
  */
 
 export const DEFAULT_LAUNCHER_SOCKET = '/run/switch/launcher.sock';
-/** How long a ticket hand-over keeps trying while its host comes up; tickets expire about then. */
-const TICKET_HANDOVER_MS = 10_000;
 /** How long the launcher waits at start for the controller's socket, then exits as before. */
 export const CONTROLLER_WAIT_MS = 30_000;
 const CONTROLLER_RETRY_MS = 500;
@@ -159,25 +156,17 @@ export async function runLauncher(
             });
           },
         }),
-      pushTicket: async (agentId, ticket, host) => {
-        const file = join(layout.watcherRoot(agentId), CONTROL_FILE);
-        const deadline = Date.now() + TICKET_HANDOVER_MS;
-        for (;;) {
-          try {
-            const answer = await giveHubTicketOverControlPort(
-              file,
-              ticket,
-              ticketMac(host.key, ticket),
-              (port) => portIsHosts('/proc', host.pid, port)
-            );
-            return macEquals(answer, takenMac(host.key, ticket)) ? 'taken' : 'not_taken';
-          } catch (error) {
-            if (error instanceof WrongPortError) return 'wrong_port';
-            if (Date.now() > deadline) throw error;
-            await delay(500);
-          }
-        }
-      },
+      // The ticket goes only to the spawned host's own port: a control file a
+      // dead host left behind is waited past until the new host writes its
+      // own, and still wrong at the deadline ends the host (`wrong_port`).
+      pushTicket: (agentId, ticket, host) =>
+        pushTicketUntilTaken({
+          controlFile: join(layout.watcherRoot(agentId), CONTROL_FILE),
+          ticket,
+          mac: ticketMac(host.key, ticket),
+          ownsPort: (port) => portIsHosts('/proc', host.pid, port),
+          taken: (answer) => macEquals(answer, takenMac(host.key, ticket)),
+        }),
       probe: (provider, binaryPath, env) =>
         mkdir(join(dataDir, 'probe'), { recursive: true, mode: 0o700 }).then(() =>
           probeProvider(bundlePath, provider as Provider, binaryPath, join(dataDir, 'probe'), {
